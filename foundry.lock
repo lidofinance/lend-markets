@@ -1,0 +1,17 @@
+{
+  "lib/morpho-blue": {
+    "rev": "1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a"
+  },
+  "lib/morpho-blue-irm": {
+    "rev": "2bce6da3ebe910ceeec963781aa3f4b4322c296e"
+  },
+  "lib/openzeppelin-contracts": {
+    "rev": "dbb6104ce834628e473d2173bbc9d47f81a9eec3"
+  },
+  "lib/openzeppelin-contracts-upgradeable": {
+    "rev": "723f8cab09cdae1aca9ec9cc1cfa040c2d4b06c1"
+  },
+  "lib/vault-v2": {
+    "rev": "425f6b1fb3a1d25083a9515348bd5e7bd3ab9017"
+  }
+}

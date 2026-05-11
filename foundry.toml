@@ -1,0 +1,38 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+names = true
+sizes = true
+
+# Keep compiler optimization settings aligned with the pinned Morpho Blue fork.
+# `evm_version = "paris"` is intentionally not set here because Vault V2 uses
+# transient storage and requires a Cancun-compatible EVM during integration tests.
+optimizer = true
+optimizer_runs = 999999
+via_ir = true
+bytecode_hash = "none"
+fs_permissions = [
+    { access = "read", path = "./out" },
+    { access = "read", path = "./lib" },
+]
+
+[profile.default.invariant]
+runs = 1024
+depth = 32
+fail_on_revert = true
+
+[profile.default.fmt]
+wrap_comments = true
+
+[lint]
+exclude_lints = [
+    "unaliased-plain-import",
+    "asm-keccak256",
+    "unwrapped-modifier-logic",
+]
+ignore = ["test/**/*.sol", "lib/**/*.sol", "src/proxy/OssifiableProxy.sol"]
+
+[profile.no_via_ir]
+via-ir = false
