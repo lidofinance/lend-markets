@@ -257,7 +257,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         } else if (e == IMarketController.HookEvent.Borrow) {
             _handleBorrow(id, abi.decode(data, (IMarketController.BorrowHookData)));
         } else if (e == IMarketController.HookEvent.Repay) {
-            // Repay is non-custody and never gated; nothing to validate.
+            _handleRepay(id);
         } else if (e == IMarketController.HookEvent.SupplyCollateral) {
             _handleSupplyCollateral(id, abi.decode(data, (IMarketController.SupplyCollateralHookData)));
         } else if (e == IMarketController.HookEvent.WithdrawCollateral) {
@@ -273,10 +273,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
     function _handleSupply(Id id, IMarketController.SupplyHookData memory hookData) internal view {
         _requireNotPaused(id);
-        // Blocks apply to both caller and onBehalf — blocked actors must not fund even a clean
-        // lender account.
-        _requireNotBlocked(id, hookData.caller);
-        _requireNotBlocked(id, hookData.onBehalf);
+        if (_storage().marketState[id].isFrozen) revert MarketIsFrozen();
         IMarketController.MarketConfig memory cfg = _config(id);
         if (hookData.assets > 0 && hookData.assets < cfg.lenderMinDeposit) {
             revert BelowMinDeposit();
@@ -314,6 +311,10 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         // by reading post-maturity-sync state.
         uint256 matured = _storage().collateralState[id][hookData.onBehalf].maturedCollateral;
         _requireMaturedHealth(id, hookData.onBehalf, matured, hookData.assets);
+    }
+
+    function _handleRepay(Id id) internal view {
+        _requireNotPaused(id);
     }
 
     function _validateSupplyCollateral(Id id, address caller, address onBehalf) internal view {
