@@ -37,20 +37,20 @@ import {IMarketController} from "./interfaces/IMarketController.sol";
 /// @notice Error strings added by the forked core, kept in this file to make the upstream diff explicit.
 library MorphoBlueForkErrorsLib {
     string internal constant CONTROLLER_MISMATCH = "controller mismatch";
-    string internal constant FALLBACK_DISABLED = "fallback disabled";
+    string internal constant DELEVERAGE_DISABLED = "deleverage disabled";
     string internal constant ZERO_SHARES = "zero shares";
-    string internal constant FALLBACK_LIQUIDITY_AVAILABLE = "fallback liquidity available";
-    string internal constant FALLBACK_INELIGIBLE = "borrower not fallback-eligible";
-    string internal constant FALLBACK_OVER_CAP = "fallback over cap";
+    string internal constant DELEVERAGE_LIQUIDITY_AVAILABLE = "ordinary liquidity available";
+    string internal constant DELEVERAGE_INELIGIBLE = "borrower not deleverage-eligible";
+    string internal constant DELEVERAGE_OVER_CAP = "deleverage over cap";
 }
 
 /// @title MorphoBlueForkEventsLib
 /// @notice Events added by the forked core, kept in this file to make the upstream diff explicit.
 library MorphoBlueForkEventsLib {
     event MarketControllerSet(Id indexed id, address controller);
-    event FallbackEnabled(Id indexed id);
+    event DeleverageEnabled(Id indexed id);
 
-    event FallbackExit(
+    event Deleverage(
         Id indexed id,
         address indexed caller,
         address indexed lender,
@@ -66,7 +66,7 @@ library MorphoBlueForkEventsLib {
 /// @notice Working-name Morpho Blue fork core with optional per-market controllers.
 /// @dev `Position`, `Market`, `MarketParams`, and market id derivation stay upstream-shaped.
 ///      Optional controllers can enforce additional policy through action hooks. The
-///      `fallbackExit` extension is core functionality: with no controller it uses the
+///      `deleverage` extension is core functionality: with no controller it uses the
 ///      core default rules, and with a controller it can be restricted further by market policy.
 contract MorphoBlueFork is IMorphoStaticTyping {
     using MathLib for uint128;
@@ -106,8 +106,8 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
     /// @notice Optional market controller. Zero address means ordinary Morpho behavior.
     mapping(Id => address) public marketController;
-    /// @notice Per-market opt-in for the Lido `fallbackExit` extension. Set only at market creation.
-    mapping(Id => bool) public fallbackEnabled;
+    /// @notice Per-market opt-in for the Lido `deleverage` extension. Set only at market creation.
+    mapping(Id => bool) public deleverageEnabled;
 
     /* CONSTRUCTOR */
 
@@ -191,20 +191,20 @@ contract MorphoBlueFork is IMorphoStaticTyping {
         _createMarket(marketParams, address(0), false);
     }
 
-    /// @notice Create a market and atomically bind its controller and fallback setting.
+    /// @notice Create a market and atomically bind its controller and deleverage setting.
     ///         Both are immutable for the life of the market — there is no separate setter.
     /// @param marketParams Market parameters (loan/collateral tokens, oracle, IRM, LLTV).
     /// @param controller Address of the controller. Pass `address(0)` for ordinary Morpho
     ///                   behavior with no controller hooks.
-    /// @param fallbackEnabled_ Whether the `fallbackExit` extension is enabled for this market.
-    function createMarket(MarketParams memory marketParams, address controller, bool fallbackEnabled_)
+    /// @param deleverageEnabled_ Whether `deleverage` is enabled for this market.
+    function createMarket(MarketParams memory marketParams, address controller, bool deleverageEnabled_)
         external
         onlyOwner
     {
-        _createMarket(marketParams, controller, fallbackEnabled_);
+        _createMarket(marketParams, controller, deleverageEnabled_);
     }
 
-    function _createMarket(MarketParams memory marketParams, address controller, bool fallbackEnabled_) internal {
+    function _createMarket(MarketParams memory marketParams, address controller, bool deleverageEnabled_) internal {
         Id id = marketParams.id();
         require(isIrmEnabled[marketParams.irm], ErrorsLib.IRM_NOT_ENABLED);
         require(isLltvEnabled[marketParams.lltv], ErrorsLib.LLTV_NOT_ENABLED);
@@ -223,9 +223,9 @@ contract MorphoBlueFork is IMorphoStaticTyping {
             marketController[id] = controller;
             emit MorphoBlueForkEventsLib.MarketControllerSet(id, controller);
         }
-        if (fallbackEnabled_) {
-            fallbackEnabled[id] = true;
-            emit MorphoBlueForkEventsLib.FallbackEnabled(id);
+        if (deleverageEnabled_) {
+            deleverageEnabled[id] = true;
+            emit MorphoBlueForkEventsLib.DeleverageEnabled(id);
         }
 
         emit EventsLib.CreateMarket(id, marketParams);
@@ -558,29 +558,29 @@ contract MorphoBlueFork is IMorphoStaticTyping {
         return (seizedAssets, repaidAssets);
     }
 
-    /* FALLBACK EXIT */
+    /* DELEVERAGE */
 
-    /// @notice Per-lender fallback into market collateral when ordinary loan-asset liquidity is insufficient.
+    /// @notice Cancels borrower debt against lender supply shares when ordinary loan liquidity is insufficient.
     /// @dev Core computes the default oracle-rate collateral amount. A controller, if set, may
     ///      validate the action and update external policy state before core accounting changes.
-    function fallbackExit(
+    function deleverage(
         MarketParams memory marketParams,
         uint256 supplyShares,
         address borrower,
-        address onBehalf,
+        address lender,
         address receiver
     ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
-        require(fallbackEnabled[id], MorphoBlueForkErrorsLib.FALLBACK_DISABLED);
+        require(deleverageEnabled[id], MorphoBlueForkErrorsLib.DELEVERAGE_DISABLED);
         require(supplyShares != 0, MorphoBlueForkErrorsLib.ZERO_SHARES);
         require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
-        require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
+        require(_isSenderAuthorized(lender), ErrorsLib.UNAUTHORIZED);
 
         _accrueInterest(marketParams, id);
 
         debtCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        require(debtCanceled > _availableLiquidity(id), MorphoBlueForkErrorsLib.FALLBACK_LIQUIDITY_AVAILABLE);
+        require(debtCanceled > _availableLiquidity(id), MorphoBlueForkErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
 
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
         uint256 borrowSharesToBurn;
@@ -588,27 +588,27 @@ contract MorphoBlueFork is IMorphoStaticTyping {
             uint256 borrowerRawCollateral = position[id][borrower].collateral;
             uint256 borrowerBorrowAssets = uint256(position[id][borrower].borrowShares)
                 .toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-            require(borrowerBorrowAssets != 0, MorphoBlueForkErrorsLib.FALLBACK_INELIGIBLE);
+            require(borrowerBorrowAssets != 0, MorphoBlueForkErrorsLib.DELEVERAGE_INELIGIBLE);
             require(
-                _isHealthy(marketParams, id, borrower, collateralPrice), MorphoBlueForkErrorsLib.FALLBACK_INELIGIBLE
+                _isHealthy(marketParams, id, borrower, collateralPrice), MorphoBlueForkErrorsLib.DELEVERAGE_INELIGIBLE
             );
 
             collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
-            require(collateralSeized != 0, MorphoBlueForkErrorsLib.FALLBACK_OVER_CAP);
+            require(collateralSeized != 0, MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP);
 
             borrowSharesToBurn = debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
             require(
-                borrowSharesToBurn <= position[id][borrower].borrowShares, MorphoBlueForkErrorsLib.FALLBACK_OVER_CAP
+                borrowSharesToBurn <= position[id][borrower].borrowShares, MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP
             );
-            require(collateralSeized <= borrowerRawCollateral, MorphoBlueForkErrorsLib.FALLBACK_OVER_CAP);
+            require(collateralSeized <= borrowerRawCollateral, MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP);
 
             _hook(
                 id,
-                IMarketController.HookEvent.FallbackExit,
+                IMarketController.HookEvent.Deleverage,
                 abi.encode(
-                    IMarketController.FallbackExitHookData({
+                    IMarketController.DeleverageHookData({
                         caller: msg.sender,
-                        lender: onBehalf,
+                        lender: lender,
                         borrower: borrower,
                         receiver: receiver,
                         assetsToCancel: debtCanceled,
@@ -621,7 +621,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
             );
         }
 
-        position[id][onBehalf].supplyShares -= supplyShares;
+        position[id][lender].supplyShares -= supplyShares;
         market[id].totalSupplyShares -= supplyShares.toUint128();
         market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, debtCanceled).toUint128();
 
@@ -630,10 +630,10 @@ contract MorphoBlueFork is IMorphoStaticTyping {
         market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, debtCanceled).toUint128();
 
         position[id][borrower].collateral -= collateralSeized.toUint128();
-        require(_isHealthy(marketParams, id, borrower, collateralPrice), MorphoBlueForkErrorsLib.FALLBACK_OVER_CAP);
+        require(_isHealthy(marketParams, id, borrower, collateralPrice), MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP);
 
-        emit MorphoBlueForkEventsLib.FallbackExit(
-            id, msg.sender, onBehalf, borrower, supplyShares, collateralSeized, debtCanceled
+        emit MorphoBlueForkEventsLib.Deleverage(
+            id, msg.sender, lender, borrower, supplyShares, collateralSeized, debtCanceled
         );
 
         IERC20(marketParams.collateralToken).safeTransfer(receiver, collateralSeized);

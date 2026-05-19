@@ -28,6 +28,14 @@ interface IWstETH {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
+interface IControllerDeleverageCandidatesRegistryAdmin {
+    function CONFIGURATOR_ROLE() external view returns (bytes32);
+
+    function grantRole(bytes32 role, address account) external;
+
+    function setDeleverageCandidatesRegistry(address registry) external;
+}
+
 contract MorphoBlueForkMainnetForkTest is Test {
     using MarketParamsLib for MarketParams;
 
@@ -131,7 +139,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.market.fallbackExit(ctx.marketParams, sharesToExit, BORROWER, LENDER, LENDER);
+            ctx.market.deleverage(ctx.marketParams, sharesToExit, BORROWER, LENDER, LENDER);
 
         uint256 expectedCollateralSeized = debtCanceled * 1e36 / ctx.price;
         assertEq(collateralSeized, expectedCollateralSeized, "oracle-rate collateral");
@@ -160,7 +168,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
         _assertCollateralState(ctx.controller, ctx.id, BORROWER, initialCollateral - collateralSeized, 0, 0);
     }
 
-    function _deployMarket(bool fallbackEnabled) internal returns (TestMarket memory ctx) {
+    function _deployMarket(bool deleverageEnabled) internal returns (TestMarket memory ctx) {
         ctx.market = new MorphoBlueFork(address(this));
         WstEthRateOracle oracle = new WstEthRateOracle(WSTETH_ADDRESS);
         AdaptiveCurveIrm irm = new AdaptiveCurveIrm(address(ctx.market));
@@ -178,7 +186,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
 
         ctx.market.enableIrm(address(irm));
         ctx.market.enableLltv(LLTV);
-        ctx.market.createMarket(ctx.marketParams, address(ctx.controller), fallbackEnabled);
+        ctx.market.createMarket(ctx.marketParams, address(ctx.controller), deleverageEnabled);
     }
 
     function _mintWETH(MorphoBlueFork market, address user, uint256 amount) internal {
@@ -213,6 +221,11 @@ contract MorphoBlueForkMainnetForkTest is Test {
         );
         address proxy =
             _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(implementation, address(this), initData));
+        IControllerDeleverageCandidatesRegistryAdmin admin = IControllerDeleverageCandidatesRegistryAdmin(proxy);
+        admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
+        address candidatesRegistry =
+            _deployArtifact("DeleverageCandidatesRegistry.sol:DeleverageCandidatesRegistry", abi.encode(proxy));
+        admin.setDeleverageCandidatesRegistry(candidatesRegistry);
         return (IMarketController(proxy), accessRegistry);
     }
 

@@ -20,7 +20,6 @@ interface IMarketController {
         // Minimum collateral amount that can enter activation.
         uint128 minCollateralActivationAmount;
         uint128 maturationRatePerHour; // Global throttle.
-        uint128 fallbackMinRequest; // Anti-dust on lender side of fallback.
         uint128 lenderMinDeposit; // Lender-side minimum deposit, default 0.
         uint128 supplyCap; // Aggregate supply cap, default unlimited.
         uint128 borrowCap; // Aggregate borrow cap, default unlimited.
@@ -34,6 +33,17 @@ interface IMarketController {
         uint128 inflowDecayPerSecond; // Accumulator decay rate, tokens/sec.
         uint128 inflowReferenceSize; // Effective load that maps to maxDelay.
         uint128 inflowMaxAccumulator; // Cap to bound accumulator (overflow safety).
+    }
+
+    /// @notice Deleverage borrower selection policy based on equal-width risk buckets.
+    /// @dev Risk is `borrowAssets / (rawCollateralValue * lltv)`, where 1e18 is the
+    ///      liquidation boundary. Immature collateral improves this risk metric and can be
+    ///      debited by deleverage. Bucket 0 is the lowest-risk bucket and bucketCount - 1 is
+    ///      the highest healthy bucket.
+    struct DeleverageBucketConfig {
+        uint16 bucketCount; // 1..200.
+        uint16 layerStep; // Number of buckets in one waterfall layer.
+        uint128 dustDebtThreshold; // Residual debt threshold that allows full close.
     }
 
     /// @notice Controller's collateral classification for one borrower position.
@@ -74,7 +84,7 @@ interface IMarketController {
         SupplyCollateral,
         WithdrawCollateral,
         Liquidate,
-        FallbackExit
+        Deleverage
     }
 
     struct SupplyHookData {
@@ -128,7 +138,7 @@ interface IMarketController {
         uint256 repaidShares;
     }
 
-    struct FallbackExitHookData {
+    struct DeleverageHookData {
         address caller;
         address lender;
         address borrower;
@@ -155,6 +165,8 @@ interface IMarketController {
 
     function marketConfig(Id id) external view returns (MarketConfig memory);
 
+    function deleverageBucketConfig(Id id) external view returns (DeleverageBucketConfig memory);
+
     /// @notice Strict action callback. Reverts to abort the calling action.
     /// @dev The core calls each action hook after input normalization and action-specific amount
     ///      computation, before the matching core state mutation and before any external
@@ -168,6 +180,6 @@ interface IMarketController {
     ///        - SupplyCollateral: abi.encode(SupplyCollateralHookData)
     ///        - WithdrawCollateral: abi.encode(WithdrawCollateralHookData)
     ///        - Liquidate: abi.encode(LiquidateHookData)
-    ///        - FallbackExit: abi.encode(FallbackExitHookData)
+    ///        - Deleverage: abi.encode(DeleverageHookData)
     function on(Id id, HookEvent e, bytes calldata data) external;
 }

@@ -38,7 +38,7 @@ interface IWstETH is IERC20Like {
 interface IMorphoBlueForkLike {
     function enableIrm(address irm) external;
     function enableLltv(uint256 lltv) external;
-    function createMarket(LidoMarketParams memory marketParams, address controller, bool fallbackEnabled) external;
+    function createMarket(LidoMarketParams memory marketParams, address controller, bool deleverageEnabled) external;
     function supply(
         LidoMarketParams memory marketParams,
         uint256 assets,
@@ -59,7 +59,7 @@ interface IMorphoBlueForkLike {
         address onBehalf,
         address receiver
     ) external returns (uint256, uint256);
-    function fallbackExit(
+    function deleverage(
         LidoMarketParams memory marketParams,
         uint256 supplyShares,
         address borrower,
@@ -70,6 +70,14 @@ interface IMorphoBlueForkLike {
         external
         view
         returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral);
+}
+
+interface IControllerDeleverageCandidatesRegistryAdmin {
+    function CONFIGURATOR_ROLE() external view returns (bytes32);
+
+    function grantRole(bytes32 role, address account) external;
+
+    function setDeleverageCandidatesRegistry(address registry) external;
 }
 
 contract MorphoBlueForkVaultV2IntegrationTest is Test {
@@ -232,7 +240,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
 
         vm.prank(DIRECT_LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.market.fallbackExit(ctx.lidoParams, supplyShares, BORROWER, DIRECT_LENDER, DIRECT_LENDER);
+            ctx.market.deleverage(ctx.lidoParams, supplyShares, BORROWER, DIRECT_LENDER, DIRECT_LENDER);
 
         (uint256 directSupplySharesAfterFallback,,) = ctx.market.position(ctx.marketId, DIRECT_LENDER);
         (,, uint128 borrowerRawCollateralAfter) = ctx.market.position(ctx.marketId, BORROWER);
@@ -289,8 +297,14 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         bytes memory initData = abi.encodeWithSignature(
             "initialize(address,bytes32,address,address)", market, marketId, accessRegistry, address(this)
         );
-        return
+        address proxy =
             _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(implementation, address(this), initData));
+        IControllerDeleverageCandidatesRegistryAdmin admin = IControllerDeleverageCandidatesRegistryAdmin(proxy);
+        admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
+        address candidatesRegistry =
+            _deployArtifact("DeleverageCandidatesRegistry.sol:DeleverageCandidatesRegistry", abi.encode(proxy));
+        admin.setDeleverageCandidatesRegistry(candidatesRegistry);
+        return proxy;
     }
 
     function _deployArtifact(string memory artifact, bytes memory args) internal returns (address deployed) {

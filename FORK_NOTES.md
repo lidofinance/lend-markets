@@ -18,8 +18,8 @@ Main changes in `MorphoBlueFork.sol`:
 
 - Adds optional per-market controller binding at market creation.
 - Adds controller hook dispatch for market actions.
-- Adds immutable per-market `fallbackExit` availability at market creation.
-- Adds `fallbackExit` as a core settlement primitive.
+- Adds immutable per-market `deleverage` availability at market creation.
+- Adds `deleverage` as the core settlement primitive for fallback exit workflows.
 - Keeps plain `createMarket(MarketParams)` for zero-controller markets with fallback disabled.
 - Keeps Morpho-compatible market params, position shape, market shape, and market id derivation.
 
