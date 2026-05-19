@@ -266,6 +266,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
             _handleLiquidate(id, abi.decode(data, (IMarketController.LiquidateHookData)));
         } else if (e == IMarketController.HookEvent.FallbackExit) {
             _handleFallbackExit(id, abi.decode(data, (IMarketController.FallbackExitHookData)));
+        } else if (e == IMarketController.HookEvent.AccrueInterest) {
+            _handleAccrueInterest(id);
         } else {
             revert ConfigOutOfBounds();
         }
@@ -477,6 +479,10 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         if (hookData.collateralSeized > 0) {
             _consumeMatured(id, hookData.borrower, hookData.collateralSeized);
         }
+    }
+
+    function _handleAccrueInterest(Id id) internal view {
+        _requireNotPaused(id);
     }
 
     /* MATURITY SYNC */

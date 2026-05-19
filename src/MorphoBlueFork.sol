@@ -698,6 +698,12 @@ contract MorphoBlueFork is IMorphoStaticTyping {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
 
+        _hook(
+            id,
+            IMarketController.HookEvent.AccrueInterest,
+            abi.encode(IMarketController.AccrueInterestHookData({caller: msg.sender}))
+        );
+
         _accrueInterest(marketParams, id);
     }
 
