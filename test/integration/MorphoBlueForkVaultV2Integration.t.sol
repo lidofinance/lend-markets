@@ -72,12 +72,12 @@ interface IMorphoBlueForkLike {
         returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral);
 }
 
-interface IControllerDeleverageCandidatesRegistryAdmin {
+interface IControllerDeleverageHeapAdmin {
     function CONFIGURATOR_ROLE() external view returns (bytes32);
 
     function grantRole(bytes32 role, address account) external;
 
-    function setDeleverageCandidatesRegistry(address registry) external;
+    function setDeleverageHeap(address heap) external;
 }
 
 contract MorphoBlueForkVaultV2IntegrationTest is Test {
@@ -299,11 +299,10 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         );
         address proxy =
             _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(implementation, address(this), initData));
-        IControllerDeleverageCandidatesRegistryAdmin admin = IControllerDeleverageCandidatesRegistryAdmin(proxy);
+        IControllerDeleverageHeapAdmin admin = IControllerDeleverageHeapAdmin(proxy);
         admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
-        address candidatesRegistry =
-            _deployArtifact("DeleverageCandidatesRegistry.sol:DeleverageCandidatesRegistry", abi.encode(proxy));
-        admin.setDeleverageCandidatesRegistry(candidatesRegistry);
+        address heap = _deployArtifact("DeleverageHeap.sol:DeleverageHeap", abi.encode(proxy));
+        admin.setDeleverageHeap(heap);
         return proxy;
     }
 

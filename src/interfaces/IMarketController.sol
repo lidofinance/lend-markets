@@ -35,15 +35,15 @@ interface IMarketController {
         uint128 inflowMaxAccumulator; // Cap to bound accumulator (overflow safety).
     }
 
-    /// @notice Deleverage borrower selection policy based on equal-width risk buckets.
-    /// @dev Risk is `borrowAssets / (rawCollateralValue * lltv)`, where 1e18 is the
-    ///      liquidation boundary. Immature collateral improves this risk metric and can be
-    ///      debited by deleverage. Bucket 0 is the lowest-risk bucket and bucketCount - 1 is
-    ///      the highest healthy bucket.
-    struct DeleverageBucketConfig {
-        uint16 bucketCount; // 1..200.
-        uint16 layerStep; // Number of buckets in one waterfall layer.
-        uint128 dustDebtThreshold; // Residual debt threshold that allows full close.
+    /// @notice Deleverage waterfall policy. Borrowers are tracked in a max-heap keyed by
+    ///         `borrowShares × 1e18 / rawCollateral` (see `DeleverageHeap`). The iteration
+    ///         peeks the root, computes a slice that brings the root's key down to (or below)
+    ///         the higher-keyed child, and repeats until target debt is covered, the heap is
+    ///         empty, or `maxIterations` is exhausted.
+    struct DeleverageHeapConfig {
+        uint128 sliceFloorAssets; // Minimum loan-asset slice per cut. Avoids micro-cuts when root and runner-up are nearly tied.
+        uint32 maxIterations; // Hard cap on per-call cut iterations. Bounds gas.
+        uint128 dustDebtThreshold; // Residual debt threshold that allows full close on the last viable cut.
     }
 
     /// @notice Controller's collateral classification for one borrower position.
@@ -165,7 +165,10 @@ interface IMarketController {
 
     function marketConfig(Id id) external view returns (MarketConfig memory);
 
-    function deleverageBucketConfig(Id id) external view returns (DeleverageBucketConfig memory);
+    function deleverageHeapConfig(Id id) external view returns (DeleverageHeapConfig memory);
+
+    /// @notice Address of the deleverage candidates heap used by this controller.
+    function DELEVERAGE_HEAP() external view returns (address);
 
     /// @notice Strict action callback. Reverts to abort the calling action.
     /// @dev The core calls each action hook after input normalization and action-specific amount

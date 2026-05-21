@@ -13,7 +13,7 @@ import {UtilsLib} from "@morpho-blue/src/libraries/UtilsLib.sol";
 
 import {IMarketController} from "../interfaces/IMarketController.sol";
 import {IMarketAccessRegistry} from "../interfaces/IMarketAccessRegistry.sol";
-import {IDeleverageCandidatesRegistry} from "../interfaces/IDeleverageCandidatesRegistry.sol";
+import {IDeleverageHeap} from "../interfaces/IDeleverageHeap.sol";
 
 /// @title LidoMarketController
 /// @notice Stateful market policy for Lido Lending markets.
@@ -38,9 +38,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     uint128 internal constant DEFAULT_INFLOW_MAX_ACCUMULATOR = type(uint128).max;
     uint128 internal constant DEFAULT_SUPPLY_CAP = type(uint128).max;
     uint128 internal constant DEFAULT_BORROW_CAP = type(uint128).max;
-    uint16 internal constant MAX_DELEVERAGE_BUCKETS = 200;
-    uint16 internal constant DEFAULT_DELEVERAGE_BUCKET_COUNT = 10;
-    uint16 internal constant DEFAULT_DELEVERAGE_LAYER_STEP = 1;
+    uint128 internal constant DEFAULT_SLICE_FLOOR_ASSETS = 0.1 ether;
+    uint32 internal constant DEFAULT_MAX_ITERATIONS = 100;
     uint128 internal constant DEFAULT_DELEVERAGE_DUST_DEBT_THRESHOLD = 0;
 
     error ZeroAddress();
@@ -55,13 +54,14 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     error BorrowCapExceeded();
     error DeleverageIneligible();
     error DeleverageOverCap();
-    error DeleverageCandidatesRegistryNotSet();
-    error DeleverageCandidatesRegistryAlreadySet();
+    error DeleverageBelowSliceFloor();
+    error DeleverageHeapNotSet();
+    error DeleverageHeapAlreadySet();
     error AddressBlocked();
     error PositionBlocked();
     error InsufficientMaturedCollateral();
 
-    event DeleverageCandidatesRegistrySet(address indexed registry);
+    event DeleverageHeapSet(address indexed heap);
     event MarketFrozen(Id indexed id, bool frozen, address indexed by);
     event MarketPaused(Id indexed id, bool paused, address indexed by);
     event MarketConfigSet(Id indexed id);
@@ -86,8 +86,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         Id controlledMarketId;
         // Deployment-scoped registry for global address and market-position restrictions.
         address marketAccessRegistry;
-        // Required borrower candidate registry for deleverage previews and opt-in targets.
-        address deleverageCandidatesRegistry;
+        // Required borrower candidate heap for the deleverage waterfall.
+        address deleverageHeap;
         // Per-borrower collateral classification.
         mapping(Id => mapping(address => IMarketController.CollateralState)) collateralState;
         // Controlled-market totals & gating flags.
@@ -95,7 +95,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         // Controlled-market governance config (zeroed = not yet configured, controller falls back to
         // `defaultMarketConfig`).
         mapping(Id => IMarketController.MarketConfig) marketConfig;
-        mapping(Id => IMarketController.DeleverageBucketConfig) deleverageBucketConfig;
+        mapping(Id => IMarketController.DeleverageHeapConfig) deleverageHeapConfig;
     }
 
     function _storage() private pure returns (ControllerStorage storage s) {
@@ -157,8 +157,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         return _storage().marketAccessRegistry;
     }
 
-    function DELEVERAGE_CANDIDATES_REGISTRY() external view returns (address) {
-        return _storage().deleverageCandidatesRegistry;
+    function DELEVERAGE_HEAP() external view returns (address) {
+        return _storage().deleverageHeap;
     }
 
     function collateralState(Id id, address borrower) external view returns (IMarketController.CollateralState memory) {
@@ -173,10 +173,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         return _storage().marketConfig[id];
     }
 
-    function deleverageBucketConfig(Id id) external view returns (IMarketController.DeleverageBucketConfig memory) {
-        IMarketController.DeleverageBucketConfig memory cfg = _storage().deleverageBucketConfig[id];
-        if (cfg.bucketCount == 0) return defaultDeleverageBucketConfig();
-        return cfg;
+    function deleverageHeapConfig(Id id) external view returns (IMarketController.DeleverageHeapConfig memory) {
+        return _heapConfig(id);
     }
 
     /* MARKET CONFIG */
@@ -196,10 +194,10 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         });
     }
 
-    function defaultDeleverageBucketConfig() public pure returns (IMarketController.DeleverageBucketConfig memory cfg) {
-        cfg = IMarketController.DeleverageBucketConfig({
-            bucketCount: DEFAULT_DELEVERAGE_BUCKET_COUNT,
-            layerStep: DEFAULT_DELEVERAGE_LAYER_STEP,
+    function defaultDeleverageHeapConfig() public pure returns (IMarketController.DeleverageHeapConfig memory cfg) {
+        cfg = IMarketController.DeleverageHeapConfig({
+            sliceFloorAssets: DEFAULT_SLICE_FLOOR_ASSETS,
+            maxIterations: DEFAULT_MAX_ITERATIONS,
             dustDebtThreshold: DEFAULT_DELEVERAGE_DUST_DEBT_THRESHOLD
         });
     }
@@ -215,29 +213,29 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         emit MarketConfigSet(id);
     }
 
-    function setDeleverageBucketConfig(Id id, IMarketController.DeleverageBucketConfig calldata cfg)
+    function setDeleverageHeapConfig(Id id, IMarketController.DeleverageHeapConfig calldata cfg)
         external
         onlyRole(CONFIGURATOR_ROLE)
         onlyControlledId(id)
     {
-        _validateDeleverageBucketConfig(cfg);
-        _storage().deleverageBucketConfig[id] = cfg;
+        _validateDeleverageHeapConfig(cfg);
+        _storage().deleverageHeapConfig[id] = cfg;
         emit MarketConfigSet(id);
     }
 
-    function setDeleverageCandidatesRegistry(address registry) external onlyRole(CONFIGURATOR_ROLE) {
-        if (registry == address(0)) revert ZeroAddress();
-        if (registry.code.length == 0) revert NoCode();
+    function setDeleverageHeap(address heap) external onlyRole(CONFIGURATOR_ROLE) {
+        if (heap == address(0)) revert ZeroAddress();
+        if (heap.code.length == 0) revert NoCode();
 
         ControllerStorage storage s = _storage();
-        if (s.deleverageCandidatesRegistry != address(0)) revert DeleverageCandidatesRegistryAlreadySet();
-        if (IDeleverageCandidatesRegistry(registry).CONTROLLER() != address(this)) revert Unauthorized();
-        if (Id.unwrap(IDeleverageCandidatesRegistry(registry).MARKET_ID()) != Id.unwrap(s.controlledMarketId)) {
+        if (s.deleverageHeap != address(0)) revert DeleverageHeapAlreadySet();
+        if (IDeleverageHeap(heap).CONTROLLER() != address(this)) revert Unauthorized();
+        if (Id.unwrap(IDeleverageHeap(heap).MARKET_ID()) != Id.unwrap(s.controlledMarketId)) {
             revert InvalidMarketId();
         }
 
-        s.deleverageCandidatesRegistry = registry;
-        emit DeleverageCandidatesRegistrySet(registry);
+        s.deleverageHeap = heap;
+        emit DeleverageHeapSet(heap);
     }
 
     function increaseCollateralActivationParams(
@@ -295,9 +293,9 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         }
     }
 
-    function _validateDeleverageBucketConfig(IMarketController.DeleverageBucketConfig memory cfg) internal pure {
-        if (cfg.bucketCount == 0 || cfg.bucketCount > MAX_DELEVERAGE_BUCKETS) revert ConfigOutOfBounds();
-        if (cfg.layerStep == 0 || cfg.layerStep > cfg.bucketCount) revert ConfigOutOfBounds();
+    function _validateDeleverageHeapConfig(IMarketController.DeleverageHeapConfig memory cfg) internal pure {
+        if (cfg.maxIterations == 0) revert ConfigOutOfBounds();
+        // sliceFloorAssets == 0 is allowed (no floor); dustDebtThreshold == 0 disables close-out.
     }
 
     /* CORE HOOK DISPATCH */
@@ -370,20 +368,16 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         // standard health check uses raw collateral; this hook adds the matured-only ceiling
         // by reading post-maturity-sync state.
         uint256 matured = _storage().collateralState[id][hookData.onBehalf].maturedCollateral;
-        uint256 projectedBorrowAssets = _currentBorrowAssets(id, hookData.onBehalf) + hookData.assets;
         _requireMaturedHealth(id, hookData.onBehalf, matured, hookData.assets);
-        _syncDeleverageCandidatesRegistry(
-            hookData.onBehalf, projectedBorrowAssets, _currentRawCollateral(id, hookData.onBehalf)
-        );
+
+        (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.onBehalf);
+        _syncDeleverageHeap(hookData.onBehalf, currentBorrowShares + hookData.shares, currentRawCollateral);
     }
 
     function _handleRepay(Id id, IMarketController.RepayHookData memory hookData) internal {
-        uint256 currentBorrowAssets = _currentBorrowAssets(id, hookData.onBehalf);
-        uint256 projectedBorrowAssets =
-            currentBorrowAssets > hookData.assets ? currentBorrowAssets - hookData.assets : 0;
-        _syncDeleverageCandidatesRegistry(
-            hookData.onBehalf, projectedBorrowAssets, _currentRawCollateral(id, hookData.onBehalf)
-        );
+        (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.onBehalf);
+        uint256 projectedBorrowShares = currentBorrowShares > hookData.shares ? currentBorrowShares - hookData.shares : 0;
+        _syncDeleverageHeap(hookData.onBehalf, projectedBorrowShares, currentRawCollateral);
     }
 
     function _validateSupplyCollateral(Id id, address caller, address onBehalf) internal view {
@@ -452,11 +446,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
             p.dustCollateral += addedDust;
             m.totalDustCollateral += addedDust;
         }
-        _syncDeleverageCandidatesRegistry(
-            hookData.onBehalf,
-            _currentBorrowAssets(id, hookData.onBehalf),
-            _currentRawCollateral(id, hookData.onBehalf) + hookData.assets
-        );
+        (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.onBehalf);
+        _syncDeleverageHeap(hookData.onBehalf, currentBorrowShares, currentRawCollateral + hookData.assets);
     }
 
     function _handleWithdrawCollateral(Id id, IMarketController.WithdrawCollateralHookData memory hookData) internal {
@@ -488,26 +479,23 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         // Keep controller buckets synchronized before the core applies the matching raw collateral
         // decrement. A later revert rolls both updates back.
         _consumeCollateralByPriority(id, hookData.onBehalf, hookData.assets);
-        _syncDeleverageCandidatesRegistry(
-            hookData.onBehalf,
-            _currentBorrowAssets(id, hookData.onBehalf),
-            _currentRawCollateral(id, hookData.onBehalf) - hookData.assets
-        );
+
+        (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.onBehalf);
+        _syncDeleverageHeap(hookData.onBehalf, currentBorrowShares, currentRawCollateral - hookData.assets);
     }
 
     function _handleLiquidate(Id id, IMarketController.LiquidateHookData memory hookData) internal {
         _requireNotPaused(id);
-        uint256 currentBorrowAssets = _currentBorrowAssets(id, hookData.borrower);
-        uint256 repaidAssets = _borrowSharesToAssetsUp(id, hookData.repaidShares);
+        (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.borrower);
         // Liquidator's seizure already known here. Debit controller's split (dust → activating →
         // matured) before core decrements raw `position.collateral`. Both decrements are in the
         // same tx, so a revert anywhere rolls them back together.
         if (hookData.seizedAssets > 0) _consumeCollateralByPriority(id, hookData.borrower, hookData.seizedAssets);
-        uint256 projectedBorrowAssets = currentBorrowAssets > repaidAssets ? currentBorrowAssets - repaidAssets : 0;
-        _syncDeleverageCandidatesRegistry(
-            hookData.borrower,
-            projectedBorrowAssets,
-            _currentRawCollateral(id, hookData.borrower) - hookData.seizedAssets
+
+        uint256 projectedBorrowShares =
+            currentBorrowShares > hookData.repaidShares ? currentBorrowShares - hookData.repaidShares : 0;
+        _syncDeleverageHeap(
+            hookData.borrower, projectedBorrowShares, currentRawCollateral - hookData.seizedAssets
         );
     }
 
@@ -546,71 +534,36 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         // Settle maturity before debiting the controller's collateral split.
         _syncMaturity(id, hookData.borrower);
 
-        _validateDeleverage(
-            id,
-            hookData.borrowerBorrowAssets,
-            hookData.assetsToCancel,
-            hookData.borrowerRawCollateral,
-            hookData.collateralPrice,
-            hookData.collateralSeized,
-            hookData.borrower
-        );
+        _validateDeleverage(id, hookData);
 
         // Core decrements raw `position.collateral` immediately after; keep the controller split
         // in sync in the same tx so a later revert rolls both updates back together.
         if (hookData.collateralSeized > 0) {
             _consumeCollateralByPriority(id, hookData.borrower, hookData.collateralSeized);
         }
-        uint256 projectedBorrowAssets = hookData.borrowerBorrowAssets > hookData.assetsToCancel
-            ? hookData.borrowerBorrowAssets - hookData.assetsToCancel
-            : 0;
-        _syncDeleverageCandidatesRegistry(
-            hookData.borrower, projectedBorrowAssets, hookData.borrowerRawCollateral - hookData.collateralSeized
+
+        // Heap key uses borrowShares, so sync with the post-cut shares not assets.
+        uint256 sharesToBurn = hookData.assetsToCancel.toSharesUp(
+            _totalBorrowAssets(id), _totalBorrowShares(id)
+        );
+        (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.borrower);
+        uint256 projectedBorrowShares = currentBorrowShares > sharesToBurn ? currentBorrowShares - sharesToBurn : 0;
+        _syncDeleverageHeap(
+            hookData.borrower, projectedBorrowShares, currentRawCollateral - hookData.collateralSeized
         );
     }
 
-    /// @notice Preview the controller's deleverage bucket classification and max cut for a borrower.
-    /// @dev This is intended for solvers and UIs. It does not prove that the borrower is the
-    ///      highest-risk account in the market; deleverage execution still validates the same values.
-    function previewDeleverageBucket(Id id, address borrower)
+    /// @notice Preview the heap key and slice eligibility for a borrower. Intended for UIs and
+    ///         off-chain solvers. Deleverage execution re-validates inside `_validateDeleverage`.
+    function previewDeleverageBorrower(Id id, address borrower)
         external
         view
         onlyControlledId(id)
-        returns (
-            uint256 riskWad,
-            uint16 bucket,
-            bool eligible,
-            uint256 maxDebtAssetsToCancel,
-            uint256 maxCollateralToSeize
-        )
+        returns (uint256 heapKey, bool eligible, uint256 borrowShares_, uint256 rawCollateral_)
     {
-        IMorphoStaticTyping core = IMorphoStaticTyping(_storage().lendingMarket);
-        (, uint128 borrowShares, uint128 rawCollateral) = core.position(id, borrower);
-        if (borrowShares == 0) return (0, 0, false, 0, 0);
-
-        (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = core.market(id);
-        (,, address oracle,, uint256 lltv) = core.idToMarketParams(id);
-        uint256 borrowed = uint256(borrowShares).toAssetsUp(totalBorrowAssets, totalBorrowShares);
-        uint256 price = IOracle(oracle).price();
-        IMarketController.DeleverageBucketConfig memory bucketCfg = _deleverageBucketConfig(id);
-
-        riskWad = _riskWad(borrowed, uint256(rawCollateral), price, lltv);
-        if (riskWad >= WAD) return (riskWad, bucketCfg.bucketCount - 1, false, 0, 0);
-
-        bucket = _riskBucket(riskWad, bucketCfg.bucketCount);
-        uint256 targetRisk = _deleverageTargetRisk(bucketCfg, bucket, borrower, riskWad);
-        eligible = true;
-
-        uint256 thresholdLtv = targetRisk.wMulDown(lltv);
-        maxCollateralToSeize = _maxDeleverageSeizable(borrowed, uint256(rawCollateral), price, thresholdLtv);
-        maxDebtAssetsToCancel = maxCollateralToSeize.mulDivDown(price, ORACLE_PRICE_SCALE);
-        if (maxDebtAssetsToCancel > borrowed) {
-            maxDebtAssetsToCancel = borrowed;
-            maxCollateralToSeize = borrowed.mulDivDown(ORACLE_PRICE_SCALE, price);
-        } else if (borrowed - maxDebtAssetsToCancel <= bucketCfg.dustDebtThreshold) {
-            maxDebtAssetsToCancel = borrowed;
-            maxCollateralToSeize = borrowed.mulDivDown(ORACLE_PRICE_SCALE, price);
-        }
+        (uint256 bs, uint256 rc) = _currentPosition(id, borrower);
+        if (bs == 0 || rc == 0) return (0, false, bs, rc);
+        return ((bs * 1e18) / rc, true, bs, rc);
     }
 
     /* MATURITY SYNC */
@@ -734,153 +687,62 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
     /* INTERNAL ACCOUNTING */
 
-    /// @dev Healthy borrowers are reachable through the deleverage waterfall. The configured layer
-    ///      only caps how deep one normal cut may go; it is not a permanent low-risk exclusion.
-    ///      The collateral amount is computed by the core at the oracle rate.
-    function _validateDeleverage(
-        Id id,
-        uint256 borrowerBorrowAssets,
-        uint256 assetsToCancel,
-        uint256 borrowerRawCollateral,
-        uint256 collateralPrice,
-        uint256 collateralSeized,
-        address borrower
-    ) internal view {
-        if (borrowerBorrowAssets == 0 || borrowerRawCollateral == 0) {
+    /// @dev Validates one cut on the deleverage waterfall. The slice size is decided by the
+    ///      caller (typically the ERC-4626 wrapper) using the heap's runner-up key; this
+    ///      function only checks that the cut is consistent with the borrower's current state
+    ///      and respects the slice floor / dust close-out config.
+    function _validateDeleverage(Id id, IMarketController.DeleverageHookData memory hookData) internal view {
+        if (hookData.borrowerBorrowAssets == 0 || hookData.borrowerRawCollateral == 0) {
             revert DeleverageIneligible();
         }
-
-        IMarketController.DeleverageBucketConfig memory bucketCfg = _deleverageBucketConfig(id);
-        uint256 lltv = _lltv(id);
-        uint256 risk = _riskWad(borrowerBorrowAssets, borrowerRawCollateral, collateralPrice, lltv);
-        if (risk >= WAD) revert DeleverageIneligible();
-        uint16 bucket = _riskBucket(risk, bucketCfg.bucketCount);
-        uint256 targetRisk = _deleverageTargetRisk(bucketCfg, bucket, borrower, risk);
-
-        if (collateralSeized == 0 || collateralSeized > borrowerRawCollateral) {
+        if (hookData.collateralSeized == 0 || hookData.collateralSeized > hookData.borrowerRawCollateral) {
             revert DeleverageOverCap();
         }
 
-        uint256 threshold = targetRisk.wMulDown(lltv);
-        uint256 maxSeize =
-            _maxDeleverageSeizable(borrowerBorrowAssets, borrowerRawCollateral, collateralPrice, threshold);
-        if (collateralSeized <= maxSeize) return;
+        IMarketController.DeleverageHeapConfig memory cfg = _heapConfig(id);
 
-        uint256 maxDebt = maxSeize.mulDivDown(collateralPrice, ORACLE_PRICE_SCALE);
-        if (!_isDeleverageDustCloseAllowed(borrowerBorrowAssets, assetsToCancel, maxDebt, bucketCfg.dustDebtThreshold))
-        {
-            revert DeleverageOverCap();
+        // Slice floor: each cut must cancel at least `sliceFloorAssets` worth of debt, unless
+        // the residual debt after the cut would land at or below `dustDebtThreshold` — in
+        // which case a small cut is allowed to close the position out.
+        if (hookData.assetsToCancel < cfg.sliceFloorAssets) {
+            uint256 remaining = hookData.borrowerBorrowAssets > hookData.assetsToCancel
+                ? hookData.borrowerBorrowAssets - hookData.assetsToCancel
+                : 0;
+            if (remaining > cfg.dustDebtThreshold) revert DeleverageBelowSliceFloor();
         }
     }
 
-    function _deleverageTargetRisk(
-        IMarketController.DeleverageBucketConfig memory bucketCfg,
-        uint16 bucket,
-        address borrower,
-        uint256 riskWad
-    ) internal view returns (uint256) {
-        uint256 targetRisk = _bucketLowerRisk(_layerLowerBucket(bucket, bucketCfg.layerStep), bucketCfg.bucketCount);
-        uint256 optInTargetRisk = _deleverageOptInTargetRisk(borrower);
-        if (optInTargetRisk != 0 && optInTargetRisk < targetRisk && riskWad > optInTargetRisk) {
-            return optInTargetRisk;
-        }
-        return targetRisk;
+    function _heapConfig(Id id) internal view returns (IMarketController.DeleverageHeapConfig memory cfg) {
+        cfg = _storage().deleverageHeapConfig[id];
+        if (cfg.maxIterations == 0) return defaultDeleverageHeapConfig();
     }
 
-    function _isDeleverageDustCloseAllowed(
-        uint256 borrowerBorrowAssets,
-        uint256 assetsToCancel,
-        uint256 maxDebtAssetsToCancel,
-        uint256 dustDebtThreshold
-    ) internal pure returns (bool) {
-        if (assetsToCancel != borrowerBorrowAssets) return false;
-        if (borrowerBorrowAssets <= maxDebtAssetsToCancel) return true;
-        return borrowerBorrowAssets - maxDebtAssetsToCancel <= dustDebtThreshold;
+    function _syncDeleverageHeap(address borrower, uint256 borrowShares, uint256 rawCollateral) internal {
+        IDeleverageHeap(_deleverageHeap()).upsert(borrower, borrowShares, rawCollateral);
     }
 
-    function _deleverageBucketConfig(Id id)
+    function _deleverageHeap() internal view returns (address heap) {
+        heap = _storage().deleverageHeap;
+        if (heap == address(0)) revert DeleverageHeapNotSet();
+    }
+
+    function _currentPosition(Id id, address borrower)
         internal
         view
-        returns (IMarketController.DeleverageBucketConfig memory cfg)
+        returns (uint256 borrowShares, uint256 rawCollateral)
     {
-        cfg = _storage().deleverageBucketConfig[id];
-        if (cfg.bucketCount == 0) return defaultDeleverageBucketConfig();
+        (, uint128 bs, uint128 rc) = IMorphoStaticTyping(_storage().lendingMarket).position(id, borrower);
+        return (uint256(bs), uint256(rc));
     }
 
-    function _lltv(Id id) internal view returns (uint256) {
-        (,,,, uint256 lltv) = IMorphoStaticTyping(_storage().lendingMarket).idToMarketParams(id);
-        return lltv;
+    function _totalBorrowAssets(Id id) internal view returns (uint256) {
+        (,, uint128 totalBorrowAssets,,,) = IMorphoStaticTyping(_storage().lendingMarket).market(id);
+        return uint256(totalBorrowAssets);
     }
 
-    function _deleverageOptInTargetRisk(address borrower) internal view returns (uint256) {
-        return IDeleverageCandidatesRegistry(_deleverageCandidatesRegistry()).deleverageOptInTargetRisk(borrower);
-    }
-
-    function _syncDeleverageCandidatesRegistry(address borrower, uint256 borrowAssets, uint256 rawCollateral) internal {
-        IDeleverageCandidatesRegistry(_deleverageCandidatesRegistry())
-            .syncBorrowerState(borrower, borrowAssets, rawCollateral);
-    }
-
-    function _deleverageCandidatesRegistry() internal view returns (address registry) {
-        registry = _storage().deleverageCandidatesRegistry;
-        if (registry == address(0)) revert DeleverageCandidatesRegistryNotSet();
-    }
-
-    function _currentBorrowAssets(Id id, address borrower) internal view returns (uint256) {
-        (, uint128 borrowShares,) = IMorphoStaticTyping(_storage().lendingMarket).position(id, borrower);
-        if (borrowShares == 0) return 0;
-        return _borrowSharesToAssetsUp(id, borrowShares);
-    }
-
-    function _currentRawCollateral(Id id, address borrower) internal view returns (uint256) {
-        (,, uint128 rawCollateral) = IMorphoStaticTyping(_storage().lendingMarket).position(id, borrower);
-        return uint256(rawCollateral);
-    }
-
-    function _borrowSharesToAssetsUp(Id id, uint256 borrowShares) internal view returns (uint256) {
-        (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) =
-            IMorphoStaticTyping(_storage().lendingMarket).market(id);
-        return borrowShares.toAssetsUp(totalBorrowAssets, totalBorrowShares);
-    }
-
-    function _riskWad(uint256 borrowed, uint256 collateral, uint256 price, uint256 lltv)
-        internal
-        pure
-        returns (uint256)
-    {
-        if (borrowed == 0) return 0;
-        uint256 collateralValue = collateral.mulDivDown(price, ORACLE_PRICE_SCALE);
-        if (collateralValue == 0) return type(uint256).max;
-        uint256 maxBorrow = collateralValue.wMulDown(lltv);
-        if (maxBorrow == 0) return type(uint256).max;
-        return borrowed.wDivUp(maxBorrow);
-    }
-
-    function _riskBucket(uint256 riskWad, uint16 bucketCount) internal pure returns (uint16) {
-        if (riskWad >= WAD) return bucketCount - 1;
-        // casting to `uint16` is safe because bucketCount is capped by MAX_DELEVERAGE_BUCKETS.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        return uint16((riskWad * bucketCount) / WAD);
-    }
-
-    function _bucketLowerRisk(uint16 bucket, uint16 bucketCount) internal pure returns (uint256) {
-        return uint256(bucket).wDivDown(uint256(bucketCount));
-    }
-
-    function _layerLowerBucket(uint16 bucket, uint16 layerStep) internal pure returns (uint16) {
-        return bucket - (bucket % layerStep);
-    }
-
-    function _maxDeleverageSeizable(uint256 borrowed, uint256 rawCollateral, uint256 price, uint256 threshold)
-        internal
-        pure
-        returns (uint256)
-    {
-        uint256 colValue = rawCollateral.mulDivDown(price, ORACLE_PRICE_SCALE);
-        uint256 thresholdValue = colValue.wMulDown(threshold);
-        if (borrowed <= thresholdValue) return 0;
-        uint256 deltaValue = (borrowed - thresholdValue).wDivDown(WAD - threshold);
-        return deltaValue.mulDivDown(ORACLE_PRICE_SCALE, price);
+    function _totalBorrowShares(Id id) internal view returns (uint256) {
+        (,,, uint128 totalBorrowShares,,) = IMorphoStaticTyping(_storage().lendingMarket).market(id);
+        return uint256(totalBorrowShares);
     }
 
     function _consumeCollateralByPriority(Id id, address borrower, uint256 amount) internal {

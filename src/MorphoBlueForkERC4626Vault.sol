@@ -13,7 +13,9 @@ import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
 import {MorphoBalancesLib} from "@morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 
-import {IDeleverageCandidatesRegistry} from "./interfaces/IDeleverageCandidatesRegistry.sol";
+import {IDeleverageHeap} from "./interfaces/IDeleverageHeap.sol";
+import {IMarketController} from "./interfaces/IMarketController.sol";
+import {IOracle} from "@morpho-blue/src/interfaces/IOracle.sol";
 
 interface IMorphoBlueForkVaultMorpho is IMorpho {
     function deleverage(
@@ -37,6 +39,7 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
     error ZeroMorphoSupplyShares();
     error InsufficientCollateralOut(uint256 received, uint256 minimum);
     error InsufficientDeleverageCuts(uint256 coveredDebtAssets, uint256 targetDebtAssets);
+    error MaxIterationsExhausted();
 
     event FallbackExit(
         address indexed caller,
@@ -56,12 +59,9 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         uint256 debtCanceled
     );
 
-    uint256 public constant MAX_DELEVERAGE_CUTS = 8;
-    uint256 public constant MAX_DELEVERAGE_SCANS_PER_CUT = 32;
-    uint256 public constant MIN_DELEVERAGE_DEBT_CUT = 0;
-
     IMorphoBlueForkVaultMorpho public immutable MORPHO;
-    IDeleverageCandidatesRegistry public immutable DELEVERAGE_CANDIDATES_REGISTRY;
+    IDeleverageHeap public immutable DELEVERAGE_HEAP;
+    IMarketController public immutable CONTROLLER;
     Id public immutable MARKET_ID;
     IERC20 public immutable COLLATERAL_TOKEN;
 
@@ -70,7 +70,8 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
     constructor(
         address morpho,
         MarketParams memory marketParams_,
-        address deleverageCandidatesRegistry,
+        address controller,
+        address deleverageHeap,
         string memory name_,
         string memory symbol_
     )
@@ -78,14 +79,15 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         ERC4626(IERC20(marketParams_.loanToken))
     {
         if (
-            morpho == address(0) || deleverageCandidatesRegistry == address(0)
+            morpho == address(0) || controller == address(0) || deleverageHeap == address(0)
                 || marketParams_.collateralToken == address(0)
         ) {
             revert ZeroAddress();
         }
 
         MORPHO = IMorphoBlueForkVaultMorpho(morpho);
-        DELEVERAGE_CANDIDATES_REGISTRY = IDeleverageCandidatesRegistry(deleverageCandidatesRegistry);
+        DELEVERAGE_HEAP = IDeleverageHeap(deleverageHeap);
+        CONTROLLER = IMarketController(controller);
         MARKET_ID = marketParams_.id();
         COLLATERAL_TOKEN = IERC20(marketParams_.collateralToken);
         _marketParams = marketParams_;
@@ -150,7 +152,7 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
 
         if (loanAssets != 0) IERC20(asset()).safeTransfer(receiver, loanAssets);
 
-        (collateralSeized, debtCanceled) = _deleverageFromRegistry(morphoSupplyShares, receiver);
+        (collateralSeized, debtCanceled) = _deleverageFromHeap(morphoSupplyShares, receiver);
         if (collateralSeized < minCollateralOut) revert InsufficientCollateralOut(collateralSeized, minCollateralOut);
 
         emit FallbackExit(caller, owner, receiver, shares, loanAssets, morphoSupplyShares, collateralSeized, debtCanceled);
@@ -183,41 +185,76 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         if (idleAssets < assets) MORPHO.withdraw(_marketParams, assets - idleAssets, 0, address(this), address(this));
     }
 
-    function _deleverageFromRegistry(uint256 morphoSupplyShares, address receiver)
+    function _deleverageFromHeap(uint256 morphoSupplyShares, address receiver)
         internal
         returns (uint256 collateralSeized, uint256 debtCanceled)
     {
         uint256 remainingShares = morphoSupplyShares;
+        IMarketController.DeleverageHeapConfig memory cfg = CONTROLLER.deleverageHeapConfig(MARKET_ID);
 
-        for (uint256 i = 0; i < MAX_DELEVERAGE_CUTS; ++i) {
+        for (uint256 i = 0; i < cfg.maxIterations; ++i) {
             uint256 remainingDebtAssets = _morphoSupplySharesToAssets(remainingShares);
             if (remainingDebtAssets == 0) return (collateralSeized, debtCanceled);
-
-            (IDeleverageCandidatesRegistry.DeleverageCut[] memory cuts, uint256 coveredDebtAssets,) =
-                DELEVERAGE_CANDIDATES_REGISTRY.previewDeleverageCuts(
-                remainingDebtAssets, 1, MAX_DELEVERAGE_SCANS_PER_CUT, MIN_DELEVERAGE_DEBT_CUT
-            );
-            if (coveredDebtAssets == 0 || cuts[0].borrower == address(0)) {
+            if (DELEVERAGE_HEAP.size() == 0) {
                 revert InsufficientDeleverageCuts(debtCanceled, debtCanceled + remainingDebtAssets);
             }
 
-            uint256 cutSupplyShares = _morphoAssetsToSupplyShares(cuts[0].debtAssetsToCancel);
+            (address top, uint256 topKey) = DELEVERAGE_HEAP.peek();
+            uint256 sliceAssets = _computeSliceAssets(top, topKey, cfg.sliceFloorAssets);
+            if (sliceAssets > remainingDebtAssets) sliceAssets = remainingDebtAssets;
+
+            uint256 cutSupplyShares = _morphoAssetsToSupplyShares(sliceAssets);
             if (cutSupplyShares == 0) revert ZeroMorphoSupplyShares();
             if (cutSupplyShares > remainingShares) cutSupplyShares = remainingShares;
 
             (uint256 cutCollateralSeized, uint256 cutDebtCanceled) =
-                MORPHO.deleverage(_marketParams, cutSupplyShares, cuts[0].borrower, address(this), receiver);
+                MORPHO.deleverage(_marketParams, cutSupplyShares, top, address(this), receiver);
             remainingShares -= cutSupplyShares;
             collateralSeized += cutCollateralSeized;
             debtCanceled += cutDebtCanceled;
 
-            emit FallbackExitCut(cuts[0].borrower, cutSupplyShares, cutCollateralSeized, cutDebtCanceled);
+            emit FallbackExitCut(top, cutSupplyShares, cutCollateralSeized, cutDebtCanceled);
         }
 
         uint256 unresolvedDebtAssets = _morphoSupplySharesToAssets(remainingShares);
         if (unresolvedDebtAssets != 0) {
-            revert InsufficientDeleverageCuts(debtCanceled, debtCanceled + unresolvedDebtAssets);
+            revert MaxIterationsExhausted();
         }
+    }
+
+    /// @dev Sizes a single cut so the root's heap key drops to (or below) the runner-up's key,
+    ///      with a configurable absolute floor on the debt amount. Returns at least `sliceFloor`.
+    ///      When the heap has no runner-up (size == 1) or the linear system has no positive
+    ///      solution (numerical edge), falls back to `sliceFloor`.
+    function _computeSliceAssets(address top, uint256 topKey, uint256 sliceFloor) internal view returns (uint256) {
+        uint256 runnerUpKey = DELEVERAGE_HEAP.rootRunnerUpKey();
+        if (runnerUpKey == 0) return type(uint256).max; // no constraint from children; cap to remainingDebt later
+        if (runnerUpKey >= topKey) return sliceFloor; // root not strictly highest after rounding; floor only
+
+        Position memory pos = MORPHO.position(MARKET_ID, top);
+        uint256 topCol = pos.collateral;
+        if (pos.borrowShares == 0 || topCol == 0) return sliceFloor;
+
+        (,, uint256 totalBorrowAssets_, uint256 totalBorrowShares_) =
+            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(MORPHO)), _marketParams);
+        if (totalBorrowAssets_ == 0 || totalBorrowShares_ == 0) return sliceFloor;
+
+        uint256 collateralPrice = IOracle(_marketParams.oracle).price();
+        if (collateralPrice == 0) return sliceFloor;
+
+        // Solve: (topKey × topCol − runnerUpKey × topCol) = d × (totalBorrowShares × 1e18 / totalBorrowAssets
+        //                                                       − runnerUpKey × 1e36 / collateralPrice)
+        // where  sharesCut = d × totalBorrowShares / totalBorrowAssets,
+        //        colCut    = d × 1e36           / collateralPrice.
+        uint256 numerator = (topKey - runnerUpKey) * topCol;
+
+        uint256 denomT1 = (totalBorrowShares_ * 1e18) / totalBorrowAssets_;
+        uint256 denomT2 = (runnerUpKey * 1e36) / collateralPrice;
+        if (denomT1 <= denomT2) return sliceFloor; // linear system inverts in extreme regimes
+        uint256 denom = denomT1 - denomT2;
+
+        uint256 d = numerator / denom;
+        return d > sliceFloor ? d : sliceFloor;
     }
 
     function _morphoSupplyAssets() internal view returns (uint256) {
