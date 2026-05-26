@@ -703,20 +703,9 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         IMarketController.MarketConfig memory mktCfg = _config(id);
 
         // Full-close allowed if remaining collateral after cut would be below min activation.
-        // Such a position can never be borrowed against again, so keeping it alive is pointless.
         uint256 remainingCol = hookData.borrowerRawCollateral - hookData.collateralSeized;
         if (remainingCol < mktCfg.minCollateralActivationAmount) {
             return;
-        }
-
-        // Slice floor: each cut must cancel at least `sliceFloorAssets` worth of debt, unless
-        // the residual debt after the cut would land at or below `dustDebtThreshold` — in
-        // which case a small cut is allowed to close the position out.
-        if (hookData.assetsToCancel < cfg.sliceFloorAssets) {
-            uint256 remaining = hookData.borrowerBorrowAssets > hookData.assetsToCancel
-                ? hookData.borrowerBorrowAssets - hookData.assetsToCancel
-                : 0;
-            if (remaining > cfg.dustDebtThreshold) revert DeleverageBelowSliceFloor();
         }
     }
 
