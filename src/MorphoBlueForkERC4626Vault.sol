@@ -200,7 +200,7 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
             }
 
             (address top, uint256 topKey) = DELEVERAGE_HEAP.peek();
-            uint256 sliceAssets = _computeSliceAssets(top, topKey, cfg.sliceFloorAssets);
+            uint256 sliceAssets = CONTROLLER.computeHeapSlice(MARKET_ID, top, topKey);
             if (sliceAssets > remainingDebtAssets) sliceAssets = remainingDebtAssets;
 
             uint256 cutSupplyShares = _morphoAssetsToSupplyShares(sliceAssets);
@@ -220,41 +220,6 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         if (unresolvedDebtAssets != 0) {
             revert MaxIterationsExhausted();
         }
-    }
-
-    /// @dev Sizes a single cut so the root's heap key drops to (or below) the runner-up's key,
-    ///      with a configurable absolute floor on the debt amount. Returns at least `sliceFloor`.
-    ///      When the heap has no runner-up (size == 1) or the linear system has no positive
-    ///      solution (numerical edge), falls back to `sliceFloor`.
-    function _computeSliceAssets(address top, uint256 topKey, uint256 sliceFloor) internal view returns (uint256) {
-        uint256 runnerUpKey = DELEVERAGE_HEAP.rootRunnerUpKey();
-        if (runnerUpKey == 0) return type(uint256).max; // no constraint from children; cap to remainingDebt later
-        if (runnerUpKey >= topKey) return sliceFloor; // root not strictly highest after rounding; floor only
-
-        Position memory pos = MORPHO.position(MARKET_ID, top);
-        uint256 topCol = pos.collateral;
-        if (pos.borrowShares == 0 || topCol == 0) return sliceFloor;
-
-        (,, uint256 totalBorrowAssets_, uint256 totalBorrowShares_) =
-            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(MORPHO)), _marketParams);
-        if (totalBorrowAssets_ == 0 || totalBorrowShares_ == 0) return sliceFloor;
-
-        uint256 collateralPrice = IOracle(_marketParams.oracle).price();
-        if (collateralPrice == 0) return sliceFloor;
-
-        // Solve: (topKey × topCol − runnerUpKey × topCol) = d × (totalBorrowShares × 1e18 / totalBorrowAssets
-        //                                                       − runnerUpKey × 1e36 / collateralPrice)
-        // where  sharesCut = d × totalBorrowShares / totalBorrowAssets,
-        //        colCut    = d × 1e36           / collateralPrice.
-        uint256 numerator = (topKey - runnerUpKey) * topCol;
-
-        uint256 denomT1 = (totalBorrowShares_ * 1e18) / totalBorrowAssets_;
-        uint256 denomT2 = (runnerUpKey * 1e36) / collateralPrice;
-        if (denomT1 <= denomT2) return sliceFloor; // linear system inverts in extreme regimes
-        uint256 denom = denomT1 - denomT2;
-
-        uint256 d = numerator / denom;
-        return d > sliceFloor ? d : sliceFloor;
     }
 
     function _morphoSupplyAssets() internal view returns (uint256) {

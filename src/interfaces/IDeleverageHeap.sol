@@ -37,6 +37,9 @@ interface IDeleverageHeap {
     ///         the slice for the current top borrower.
     function rootRunnerUpKey() external view returns (uint256);
 
+    /// @notice Returns borrower and key at a given heap-array index (0 = root).
+    function nodeAt(uint256 index) external view returns (address borrower, uint256 key);
+
     /// @notice Insert `borrower` into the heap or update its key. Computes the key as
     ///         `borrowShares × 1e18 / rawCollateral`. If `borrowShares == 0` or
     ///         `rawCollateral == 0`, removes the borrower instead.

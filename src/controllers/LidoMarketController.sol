@@ -553,17 +553,105 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         );
     }
 
-    /// @notice Preview the heap key and slice eligibility for a borrower. Intended for UIs and
-    ///         off-chain solvers. Deleverage execution re-validates inside `_validateDeleverage`.
-    function previewDeleverageBorrower(Id id, address borrower)
+    /* DELEVERAGE PREVIEW */
+
+    function eligibleBorrowers(Id id, uint256 maxCount)
         external
         view
         onlyControlledId(id)
-        returns (uint256 heapKey, bool eligible, uint256 borrowShares_, uint256 rawCollateral_)
+        returns (address[] memory borrowers, uint256[] memory keys)
     {
-        (uint256 bs, uint256 rc) = _currentPosition(id, borrower);
-        if (bs == 0 || rc == 0) return (0, false, bs, rc);
-        return ((bs * 1e18) / rc, true, bs, rc);
+        IDeleverageHeap heap = IDeleverageHeap(_storage().deleverageHeap);
+        uint256 heapSize = heap.size();
+        uint256 count = heapSize < maxCount ? heapSize : maxCount;
+        borrowers = new address[](count);
+        keys = new uint256[](count);
+        for (uint256 i; i < count; ++i) {
+            (borrowers[i], keys[i]) = heap.nodeAt(i);
+        }
+    }
+
+    function previewDeleverage(Id id, uint256 targetDebtAssets)
+        external
+        view
+        onlyControlledId(id)
+        returns (IMarketController.DeleverageCut[] memory cuts, uint256 coveredDebtAssets)
+    {
+        IMarketController.DeleverageHeapConfig memory cfg = _heapConfig(id);
+        IDeleverageHeap heap = IDeleverageHeap(_storage().deleverageHeap);
+        uint256 heapSize = heap.size();
+        if (heapSize == 0) return (cuts, 0);
+
+        uint256 maxCuts = heapSize < cfg.maxIterations ? heapSize : cfg.maxIterations;
+        cuts = new IMarketController.DeleverageCut[](maxCuts);
+        uint256 remaining = targetDebtAssets;
+
+        IMorphoStaticTyping core = IMorphoStaticTyping(_storage().lendingMarket);
+        (,, address oracle,,) = core.idToMarketParams(id);
+        uint256 price = IOracle(oracle).price();
+        uint256 cutCount;
+
+        for (uint256 i; i < maxCuts && remaining > 0; ++i) {
+            (address borrower, uint256 key) = heap.nodeAt(i);
+            (, uint256 rawCollateral) = _currentPosition(id, borrower);
+            if (rawCollateral == 0) continue;
+
+            uint256 sliceAssets = _computeHeapSlice(id, key);
+            if (sliceAssets > remaining) sliceAssets = remaining;
+
+            uint256 colSeized;
+            if (price != 0) colSeized = (sliceAssets * ORACLE_PRICE_SCALE) / price;
+
+            cuts[cutCount] = IMarketController.DeleverageCut({
+                borrower: borrower,
+                estimatedDebtAssets: sliceAssets,
+                estimatedCollateralSeized: colSeized
+            });
+            cutCount++;
+            remaining -= sliceAssets;
+            coveredDebtAssets += sliceAssets;
+        }
+
+        assembly { mstore(cuts, cutCount) }
+    }
+
+    function computeHeapSlice(Id id, address top, uint256 topKey)
+        external
+        view
+        onlyControlledId(id)
+        returns (uint256)
+    {
+        return _computeHeapSlice(id, topKey);
+    }
+
+    function _computeHeapSlice(Id id, uint256 topKey) internal view returns (uint256) {
+        IMarketController.DeleverageHeapConfig memory cfg = _heapConfig(id);
+        IDeleverageHeap heap = IDeleverageHeap(_storage().deleverageHeap);
+
+        uint256 runnerUpKey = heap.rootRunnerUpKey();
+        if (runnerUpKey == 0) return type(uint256).max;
+        if (runnerUpKey >= topKey) return uint256(cfg.sliceFloorAssets);
+
+        (address top,) = heap.peek();
+        (, uint256 topCol) = _currentPosition(id, top);
+        if (topCol == 0) return uint256(cfg.sliceFloorAssets);
+
+        uint256 totalBorrowAssets_ = _totalBorrowAssets(id);
+        uint256 totalBorrowShares_ = _totalBorrowShares(id);
+        if (totalBorrowAssets_ == 0 || totalBorrowShares_ == 0) return uint256(cfg.sliceFloorAssets);
+
+        IMorphoStaticTyping core = IMorphoStaticTyping(_storage().lendingMarket);
+        (,, address oracle,,) = core.idToMarketParams(id);
+        uint256 collateralPrice = IOracle(oracle).price();
+        if (collateralPrice == 0) return uint256(cfg.sliceFloorAssets);
+
+        uint256 numerator = (topKey - runnerUpKey) * topCol;
+        uint256 denomT1 = (totalBorrowShares_ * 1e18) / totalBorrowAssets_;
+        uint256 denomT2 = (runnerUpKey * 1e36) / collateralPrice;
+        if (denomT1 <= denomT2) return uint256(cfg.sliceFloorAssets);
+
+        uint256 d = numerator / (denomT1 - denomT2);
+        return d > uint256(cfg.sliceFloorAssets) ? d : uint256(cfg.sliceFloorAssets);
     }
 
     /* MATURITY SYNC */

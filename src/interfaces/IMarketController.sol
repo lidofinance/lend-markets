@@ -170,6 +170,21 @@ interface IMarketController {
     /// @notice Address of the deleverage candidates heap used by this controller.
     function DELEVERAGE_HEAP() external view returns (address);
 
+    struct DeleverageCut {
+        address borrower;
+        uint256 estimatedDebtAssets;
+        uint256 estimatedCollateralSeized;
+    }
+
+    function eligibleBorrowers(Id id, uint256 maxCount)
+        external view returns (address[] memory borrowers, uint256[] memory keys);
+
+    function previewDeleverage(Id id, uint256 targetDebtAssets)
+        external view returns (DeleverageCut[] memory cuts, uint256 coveredDebtAssets);
+
+    function computeHeapSlice(Id id, address top, uint256 topKey)
+        external view returns (uint256);
+
     /// @notice Strict action callback. Reverts to abort the calling action.
     /// @dev The core calls each action hook after input normalization and action-specific amount
     ///      computation, before the matching core state mutation and before any external

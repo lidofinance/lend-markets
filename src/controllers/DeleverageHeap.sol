@@ -71,6 +71,14 @@ contract DeleverageHeap is IDeleverageHeap {
         return leftKey >= rightKey ? leftKey : rightKey;
     }
 
+    /// @inheritdoc IDeleverageHeap
+    function nodeAt(uint256 index) external view returns (address borrower, uint256 key) {
+        uint256 slot = index + 1;
+        if (slot >= _nodes.length) revert EmptyHeap();
+        HeapNode memory n = _nodes[slot];
+        return (n.borrower, n.key);
+    }
+
     /* MUTATIONS */
 
     /// @inheritdoc IDeleverageHeap
