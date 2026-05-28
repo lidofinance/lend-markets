@@ -18,6 +18,7 @@ interface IDeleverageHeap {
     error Unauthorized();
     error ZeroAddress();
     error EmptyHeap();
+    error IndexOutOfBounds();
 
     event NodeUpserted(address indexed borrower, uint256 key, uint256 index);
     event NodeRemoved(address indexed borrower);

@@ -40,7 +40,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     uint128 internal constant DEFAULT_BORROW_CAP = type(uint128).max;
     uint128 internal constant DEFAULT_SLICE_FLOOR_ASSETS = 0.1 ether;
     uint32 internal constant DEFAULT_MAX_ITERATIONS = 100;
-    uint128 internal constant DEFAULT_DELEVERAGE_DUST_DEBT_THRESHOLD = 0;
+    uint256 internal constant KEY_SCALE = 1e18; // matches DeleverageHeap key scale
 
     error ZeroAddress();
     error NoCode();
@@ -197,8 +197,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     function defaultDeleverageHeapConfig() public pure returns (IMarketController.DeleverageHeapConfig memory cfg) {
         cfg = IMarketController.DeleverageHeapConfig({
             sliceFloorAssets: DEFAULT_SLICE_FLOOR_ASSETS,
-            maxIterations: DEFAULT_MAX_ITERATIONS,
-            dustDebtThreshold: DEFAULT_DELEVERAGE_DUST_DEBT_THRESHOLD
+            maxIterations: DEFAULT_MAX_ITERATIONS
         });
     }
 
@@ -295,7 +294,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
     function _validateDeleverageHeapConfig(IMarketController.DeleverageHeapConfig memory cfg) internal pure {
         if (cfg.maxIterations == 0) revert ConfigOutOfBounds();
-        // sliceFloorAssets == 0 is allowed (no floor); dustDebtThreshold == 0 disables close-out.
+        // sliceFloorAssets == 0 is allowed (no floor).
     }
 
     /* CORE HOOK DISPATCH */
@@ -571,87 +570,47 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         }
     }
 
-    function previewDeleverage(Id id, uint256 targetDebtAssets)
-        external
-        view
-        onlyControlledId(id)
-        returns (IMarketController.DeleverageCut[] memory cuts, uint256 coveredDebtAssets)
-    {
-        IMarketController.DeleverageHeapConfig memory cfg = _heapConfig(id);
-        IDeleverageHeap heap = IDeleverageHeap(_storage().deleverageHeap);
-        uint256 heapSize = heap.size();
-        if (heapSize == 0) return (cuts, 0);
-
-        uint256 maxCuts = heapSize < cfg.maxIterations ? heapSize : cfg.maxIterations;
-        cuts = new IMarketController.DeleverageCut[](maxCuts);
-        uint256 remaining = targetDebtAssets;
-
-        IMorphoStaticTyping core = IMorphoStaticTyping(_storage().lendingMarket);
-        (,, address oracle,,) = core.idToMarketParams(id);
-        uint256 price = IOracle(oracle).price();
-        uint256 cutCount;
-
-        for (uint256 i; i < maxCuts && remaining > 0; ++i) {
-            (address borrower, uint256 key) = heap.nodeAt(i);
-            (, uint256 rawCollateral) = _currentPosition(id, borrower);
-            if (rawCollateral == 0) continue;
-
-            uint256 sliceAssets = _computeHeapSlice(id, key);
-            if (sliceAssets > remaining) sliceAssets = remaining;
-
-            uint256 colSeized;
-            if (price != 0) colSeized = (sliceAssets * ORACLE_PRICE_SCALE) / price;
-
-            cuts[cutCount] = IMarketController.DeleverageCut({
-                borrower: borrower,
-                estimatedDebtAssets: sliceAssets,
-                estimatedCollateralSeized: colSeized
-            });
-            cutCount++;
-            remaining -= sliceAssets;
-            coveredDebtAssets += sliceAssets;
-        }
-
-        assembly { mstore(cuts, cutCount) }
+    /// @notice Slice size for the next cut (the heap root). Used by the vault's exit loop.
+    /// @dev Sizes the cut so the root's key drops to the runner-up's key. Returns `type(uint256).max`
+    ///      when the root has no runner-up (single borrower) — the caller caps it to remaining debt.
+    function computeHeapSlice(Id id) external view onlyControlledId(id) returns (uint256) {
+        return _computeHeapSlice(id);
     }
 
-    function computeHeapSlice(Id id, address top, uint256 topKey)
-        external
-        view
-        onlyControlledId(id)
-        returns (uint256)
-    {
-        return _computeHeapSlice(id, topKey);
-    }
-
-    function _computeHeapSlice(Id id, uint256 topKey) internal view returns (uint256) {
+    function _computeHeapSlice(Id id) internal view returns (uint256) {
         IMarketController.DeleverageHeapConfig memory cfg = _heapConfig(id);
         IDeleverageHeap heap = IDeleverageHeap(_storage().deleverageHeap);
 
+        (address top, uint256 topKey) = heap.peek();
         uint256 runnerUpKey = heap.rootRunnerUpKey();
         if (runnerUpKey == 0) return type(uint256).max;
         if (runnerUpKey >= topKey) return uint256(cfg.sliceFloorAssets);
 
-        (address top,) = heap.peek();
-        (, uint256 topCol) = _currentPosition(id, top);
-        if (topCol == 0) return uint256(cfg.sliceFloorAssets);
+        (, uint256 topCollateral) = _currentPosition(id, top);
+        if (topCollateral == 0) return uint256(cfg.sliceFloorAssets);
 
         uint256 totalBorrowAssets_ = _totalBorrowAssets(id);
         uint256 totalBorrowShares_ = _totalBorrowShares(id);
         if (totalBorrowAssets_ == 0 || totalBorrowShares_ == 0) return uint256(cfg.sliceFloorAssets);
 
-        IMorphoStaticTyping core = IMorphoStaticTyping(_storage().lendingMarket);
-        (,, address oracle,,) = core.idToMarketParams(id);
-        uint256 collateralPrice = IOracle(oracle).price();
+        uint256 collateralPrice = _collateralPrice(id);
         if (collateralPrice == 0) return uint256(cfg.sliceFloorAssets);
 
-        uint256 numerator = (topKey - runnerUpKey) * topCol;
-        uint256 denomT1 = (totalBorrowShares_ * 1e18) / totalBorrowAssets_;
-        uint256 denomT2 = (runnerUpKey * 1e36) / collateralPrice;
-        if (denomT1 <= denomT2) return uint256(cfg.sliceFloorAssets);
+        // Cut sized so the root's key drops to the runner-up's key. Both debt and collateral
+        // shrink as the cut applies, so the denominator combines the per-share debt term and the
+        // collateral-price term to convert the key gap into a loan-asset amount.
+        uint256 keyGapWeighted = (topKey - runnerUpKey) * topCollateral;
+        uint256 sharesPerAssetTerm = (totalBorrowShares_ * KEY_SCALE) / totalBorrowAssets_;
+        uint256 runnerUpPriceTerm = (runnerUpKey * ORACLE_PRICE_SCALE) / collateralPrice;
+        if (sharesPerAssetTerm <= runnerUpPriceTerm) return uint256(cfg.sliceFloorAssets);
 
-        uint256 d = numerator / (denomT1 - denomT2);
-        return d > uint256(cfg.sliceFloorAssets) ? d : uint256(cfg.sliceFloorAssets);
+        uint256 slice = keyGapWeighted / (sharesPerAssetTerm - runnerUpPriceTerm);
+        return slice > uint256(cfg.sliceFloorAssets) ? slice : uint256(cfg.sliceFloorAssets);
+    }
+
+    function _collateralPrice(Id id) internal view returns (uint256) {
+        (,, address oracle,,) = IMorphoStaticTyping(_storage().lendingMarket).idToMarketParams(id);
+        return IOracle(oracle).price();
     }
 
     /* MATURITY SYNC */

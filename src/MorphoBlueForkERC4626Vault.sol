@@ -199,8 +199,8 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
                 revert InsufficientDeleverageCuts(debtCanceled, debtCanceled + remainingDebtAssets);
             }
 
-            (address top, uint256 topKey) = DELEVERAGE_HEAP.peek();
-            uint256 sliceAssets = CONTROLLER.computeHeapSlice(MARKET_ID, top, topKey);
+            (address top,) = DELEVERAGE_HEAP.peek();
+            uint256 sliceAssets = CONTROLLER.computeHeapSlice(MARKET_ID);
             if (sliceAssets > remainingDebtAssets) sliceAssets = remainingDebtAssets;
 
             uint256 cutSupplyShares = _morphoAssetsToSupplyShares(sliceAssets);

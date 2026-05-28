@@ -6,7 +6,6 @@ import {Id} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {IDeleverageHeap} from "../interfaces/IDeleverageHeap.sol";
 
 interface IDeleverageHeapController {
-    function MARKET() external view returns (address);
     function MARKET_ID() external view returns (Id);
 }
 
@@ -74,7 +73,7 @@ contract DeleverageHeap is IDeleverageHeap {
     /// @inheritdoc IDeleverageHeap
     function nodeAt(uint256 index) external view returns (address borrower, uint256 key) {
         uint256 slot = index + 1;
-        if (slot >= _nodes.length) revert EmptyHeap();
+        if (slot >= _nodes.length) revert IndexOutOfBounds();
         HeapNode memory n = _nodes[slot];
         return (n.borrower, n.key);
     }

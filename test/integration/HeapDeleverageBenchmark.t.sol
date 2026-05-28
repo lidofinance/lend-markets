@@ -520,8 +520,7 @@ contract HeapDeleverageBenchmark is Test {
             ctx.id,
             IMarketController.DeleverageHeapConfig({
                 sliceFloorAssets: SLICE_FLOOR,
-                maxIterations: uint32(MAX_ITERATIONS),
-                dustDebtThreshold: DUST_THRESHOLD
+                maxIterations: uint32(MAX_ITERATIONS)
             })
         );
 

@@ -43,7 +43,6 @@ interface IMarketController {
     struct DeleverageHeapConfig {
         uint128 sliceFloorAssets; // Minimum loan-asset slice per cut. Avoids micro-cuts when root and runner-up are nearly tied.
         uint32 maxIterations; // Hard cap on per-call cut iterations. Bounds gas.
-        uint128 dustDebtThreshold; // Residual debt threshold that allows full close on the last viable cut.
     }
 
     /// @notice Controller's collateral classification for one borrower position.
@@ -170,20 +169,12 @@ interface IMarketController {
     /// @notice Address of the deleverage candidates heap used by this controller.
     function DELEVERAGE_HEAP() external view returns (address);
 
-    struct DeleverageCut {
-        address borrower;
-        uint256 estimatedDebtAssets;
-        uint256 estimatedCollateralSeized;
-    }
-
+    /// @notice Borrowers currently in the heap, top-down, up to `maxCount`.
     function eligibleBorrowers(Id id, uint256 maxCount)
         external view returns (address[] memory borrowers, uint256[] memory keys);
 
-    function previewDeleverage(Id id, uint256 targetDebtAssets)
-        external view returns (DeleverageCut[] memory cuts, uint256 coveredDebtAssets);
-
-    function computeHeapSlice(Id id, address top, uint256 topKey)
-        external view returns (uint256);
+    /// @notice Loan-asset slice size for the next cut (the heap root).
+    function computeHeapSlice(Id id) external view returns (uint256);
 
     /// @notice Strict action callback. Reverts to abort the calling action.
     /// @dev The core calls each action hook after input normalization and action-specific amount
