@@ -177,6 +177,9 @@ interface IMarketController {
     ///         `borrower` is address(0) if the heap is empty.
     function nextDeleverageCut(Id id) external view returns (address borrower, uint256 sliceAssets);
 
+    /// @notice True if the heap root (riskiest borrower) is bad debt (debt > collateral value).
+    function rootHasBadDebt(Id id) external view returns (bool);
+
     /// @notice Strict action callback. Reverts to abort the calling action.
     /// @dev The core calls each action hook after input normalization and action-specific amount
     ///      computation, before the matching core state mutation and before any external

@@ -204,6 +204,61 @@ contract MorphoBlueForkMainnetForkTest is Test {
         assertGt(lowBorrowSharesAfter, 0, "low-LTV borrower still has debt");
     }
 
+    /// @notice Deleverage of any borrower is blocked while the queue head (heap root) is bad debt.
+    /// @dev Direct core path, no vault — the vault is optional, so the guard lives in the controller.
+    ///      Setup: a high-LTV head (BORROWER) and a healthy tail (SECOND_BORROWER). A negative
+    ///      rebase pushes the head underwater (debt > collateral value). The head cannot be cut
+    ///      anyway (core requires _isHealthy), but cutting the healthy tail must also revert while
+    ///      the head is insolvent — the whole queue halts until bad debt is resolved out of band.
+    function testDeleverageRevertsWhileQueueHeadBadDebtWithRealLidoWstETH() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(true);
+
+        _mintWETH(ctx.market, LENDER, 20 ether);
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 20 ether, 0, LENDER, "");
+
+        uint256 headCol = _mintWstETH(ctx.market, BORROWER, 25 ether);
+        uint256 tailCol = _mintWstETH(ctx.market, SECOND_BORROWER, 25 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, headCol, BORROWER, "");
+        vm.prank(SECOND_BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, tailCol, SECOND_BORROWER, "");
+
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        // Head borrows near the LLTV ceiling; tail borrows a little. Together they drain liquidity.
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 18 ether, 0, BORROWER, BORROWER);
+        vm.prank(SECOND_BORROWER);
+        ctx.market.borrow(ctx.marketParams, 2 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
+
+        (address root,) = ctx.controller.nextDeleverageCut(ctx.id);
+        assertEq(root, BORROWER, "high-LTV borrower is the queue head");
+
+        // Negative rebase: drop the wstETH rate so the head's collateral is worth less than its
+        // debt (bad debt), while the tail stays healthy.
+        vm.mockCall(
+            WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.7e18))
+        );
+        assertTrue(ctx.controller.rootHasBadDebt(ctx.id), "head is bad debt after rebase");
+
+        // A small cut against the healthy tail passes core's eligibility/over-cap/liquidity checks,
+        // but the controller hook reverts because the queue head is bad debt.
+        (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
+        uint256 cut = lenderShares / 20;
+        vm.prank(LENDER);
+        vm.expectRevert(abi.encodeWithSignature("DeleverageRootBadDebt()"));
+        ctx.market.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
+
+        // Restore the rate; the head is solvent again; the same cut now succeeds.
+        vm.clearMockedCalls();
+        assertFalse(ctx.controller.rootHasBadDebt(ctx.id), "head solvent after restore");
+        vm.prank(LENDER);
+        ctx.market.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
+    }
+
     function _fallbackExitAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
         (uint256 supplyShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 sharesToExit = supplyShares / 5;

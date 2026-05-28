@@ -57,6 +57,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     error DeleverageIneligible();
     error DeleverageOverCap();
     error DeleverageBelowSliceFloor();
+    error DeleverageRootBadDebt();
     error AddressBlocked();
     error PositionBlocked();
     error InsufficientMaturedCollateral();
@@ -121,6 +122,14 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
     modifier onlyControlledId(Id id) {
         if (Id.unwrap(id) != Id.unwrap(_storage().controlledMarketId)) revert InvalidMarketId();
+        _;
+    }
+
+    /// @dev Blocks any deleverage while the heap root (riskiest borrower) is bad debt. Enforced in
+    ///      the controller, not the vault, because the vault is optional — a lender can call the
+    ///      core `deleverage` primitive directly, so the guard must sit on the path every cut takes.
+    modifier rejectIfRootBadDebt(Id id) {
+        if (_rootHasBadDebt(id)) revert DeleverageRootBadDebt();
         _;
     }
 
@@ -516,7 +525,10 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         if (postBorrow > maxBorrow) revert InsufficientMaturedCollateral();
     }
 
-    function _handleDeleverage(Id id, IMarketController.DeleverageHookData memory hookData) internal {
+    function _handleDeleverage(Id id, IMarketController.DeleverageHookData memory hookData)
+        internal
+        rejectIfRootBadDebt(id)
+    {
         _requireNotPaused(id);
 
         // Settle maturity before debiting the controller's collateral split.
@@ -562,6 +574,27 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         for (uint256 i; i < count; ++i) {
             (borrowers[i], keys[i]) = _heap().nodeAt(i);
         }
+    }
+
+    /// @notice True if the heap root (the riskiest borrower) is bad debt: its debt exceeds the
+    ///         value of its collateral. In this isolated single-collateral market the root has the
+    ///         highest debt/collateral ratio, so if the root is solvent no tracked position is bad
+    ///         debt. Enforced on every deleverage by `rejectIfRootBadDebt`.
+    /// @dev Covers the collateral == 0 case: zero collateral value with non-zero debt is bad debt.
+    function rootHasBadDebt(Id id) external view onlyControlledId(id) returns (bool) {
+        return _rootHasBadDebt(id);
+    }
+
+    function _rootHasBadDebt(Id id) internal view returns (bool) {
+        if (_heap().size() == 0) return false;
+        (address top,) = _heap().peek();
+        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, top);
+        if (borrowShares == 0) return false;
+        if (rawCollateral == 0) return true;
+
+        uint256 borrowAssets = borrowShares.toAssetsUp(_totalBorrowAssets(id), _totalBorrowShares(id));
+        uint256 collateralValue = rawCollateral.mulDivDown(_collateralPrice(id), ORACLE_PRICE_SCALE);
+        return borrowAssets > collateralValue;
     }
 
     /// @notice The next borrower to cut (heap root) and the loan-asset slice size for that cut.
