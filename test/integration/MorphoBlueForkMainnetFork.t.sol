@@ -4,7 +4,6 @@ pragma solidity 0.8.19;
 import {MorphoBlueFork} from "../../src/MorphoBlueFork.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {IMarketController} from "../../src/interfaces/IMarketController.sol";
-import {IDeleverageHeap} from "../../src/interfaces/IDeleverageHeap.sol";
 import {AdaptiveCurveIrm} from "@morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
@@ -33,8 +32,6 @@ interface IControllerDeleverageHeapAdmin {
     function CONFIGURATOR_ROLE() external view returns (bytes32);
 
     function grantRole(bytes32 role, address account) external;
-
-    function setDeleverageHeap(address heap) external;
 
     function setDeleverageHeapConfig(Id id, IMarketController.DeleverageHeapConfig calldata cfg) external;
 }
@@ -174,11 +171,9 @@ contract MorphoBlueForkMainnetForkTest is Test {
         vm.prank(THIRD_BORROWER);
         ctx.market.borrow(ctx.marketParams, 2 ether, 0, THIRD_BORROWER, THIRD_BORROWER);
 
-        IDeleverageHeap heap = IDeleverageHeap(IMarketController(address(ctx.controller)).DELEVERAGE_HEAP());
-
         // (1) Initial heap order: highest-LTV borrower is at the root.
-        assertEq(heap.size(), 3, "all three active borrowers tracked");
-        (address root,) = heap.peek();
+        assertEq(ctx.controller.deleverageHeapSize(ctx.id), 3, "all three active borrowers tracked");
+        (address root,) = ctx.controller.nextDeleverageCut(ctx.id);
         assertEq(root, BORROWER, "highest-LTV borrower at root");
 
         // (2) Targeted cut on the heap root reduces it but does not flip the order.
@@ -186,14 +181,14 @@ contract MorphoBlueForkMainnetForkTest is Test {
         uint256 firstCutShares = lenderShares / 6; // ~2 WETH cut
         vm.prank(LENDER);
         ctx.market.deleverage(ctx.marketParams, firstCutShares, BORROWER, LENDER, LENDER);
-        (root,) = heap.peek();
+        (root,) = ctx.controller.nextDeleverageCut(ctx.id);
         assertEq(root, BORROWER, "BORROWER still highest after small partial cut");
 
         // (3) BORROWER partially repays. The heap re-sorts and SECOND_BORROWER becomes root.
         _mintWETH(ctx.market, BORROWER, 3 ether);
         vm.prank(BORROWER);
         ctx.market.repay(ctx.marketParams, 3 ether, 0, BORROWER, "");
-        (root,) = heap.peek();
+        (root,) = ctx.controller.nextDeleverageCut(ctx.id);
         assertEq(root, SECOND_BORROWER, "heap re-sorts after BORROWER deleverages off-protocol");
 
         // (4) A cut against the new root succeeds. The cut size must exceed the idle liquidity
@@ -299,8 +294,6 @@ contract MorphoBlueForkMainnetForkTest is Test {
             _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(implementation, address(this), initData));
         IControllerDeleverageHeapAdmin admin = IControllerDeleverageHeapAdmin(proxy);
         admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
-        address heap = _deployArtifact("DeleverageHeap.sol:DeleverageHeap", abi.encode(proxy));
-        admin.setDeleverageHeap(heap);
         return (IMarketController(proxy), accessRegistry);
     }
 

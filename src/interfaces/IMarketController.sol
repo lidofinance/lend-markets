@@ -166,15 +166,16 @@ interface IMarketController {
 
     function deleverageHeapConfig(Id id) external view returns (DeleverageHeapConfig memory);
 
-    /// @notice Address of the deleverage candidates heap used by this controller.
-    function DELEVERAGE_HEAP() external view returns (address);
+    /// @notice Number of borrowers currently tracked in the deleverage heap.
+    function deleverageHeapSize(Id id) external view returns (uint256);
 
-    /// @notice Borrowers currently in the heap, top-down, up to `maxCount`.
+    /// @notice Borrowers currently in the deleverage heap, top-down, up to `maxCount`.
     function eligibleBorrowers(Id id, uint256 maxCount)
         external view returns (address[] memory borrowers, uint256[] memory keys);
 
-    /// @notice Loan-asset slice size for the next cut (the heap root).
-    function computeHeapSlice(Id id) external view returns (uint256);
+    /// @notice Next borrower to cut (heap root) and the loan-asset slice size for that cut.
+    ///         `borrower` is address(0) if the heap is empty.
+    function nextDeleverageCut(Id id) external view returns (address borrower, uint256 sliceAssets);
 
     /// @notice Strict action callback. Reverts to abort the calling action.
     /// @dev The core calls each action hook after input normalization and action-specific amount

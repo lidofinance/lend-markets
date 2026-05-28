@@ -3,7 +3,6 @@ pragma solidity 0.8.19;
 
 import {MorphoBlueFork} from "../../src/MorphoBlueFork.sol";
 import {IMarketController} from "../../src/interfaces/IMarketController.sol";
-import {IDeleverageHeap} from "../../src/interfaces/IDeleverageHeap.sol";
 import {AdaptiveCurveIrm} from "@morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
@@ -24,7 +23,6 @@ interface IWstETH {
 interface IControllerDeleverageHeapAdmin {
     function CONFIGURATOR_ROLE() external view returns (bytes32);
     function grantRole(bytes32 role, address account) external;
-    function setDeleverageHeap(address heap) external;
     function setDeleverageHeapConfig(Id id, IMarketController.DeleverageHeapConfig calldata cfg) external;
 }
 
@@ -75,7 +73,6 @@ contract HeapDeleverageBenchmark is Test {
     struct Ctx {
         MorphoBlueFork market;
         IMarketController controller;
-        IDeleverageHeap heap;
         ControllableWstEthOracle oracle;
         MarketParams marketParams;
         Id id;
@@ -220,12 +217,12 @@ contract HeapDeleverageBenchmark is Test {
         _seedBorrowers(ctx, debts, 0.7e18, total);
 
         console2.log("=== 1000Mixed(900x0.5+90x5+10x20) ===");
-        console2.log("  heap_size_before:", ctx.heap.size());
+        console2.log("  heap_size_before:", ctx.controller.deleverageHeapSize(ctx.id));
         console2.log("  total_debt:", total);
 
         DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, total / 4));
         _logDeleverageResult(res);
-        console2.log("  heap_size:", ctx.heap.size());
+        console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
     }
 
     // ── Whale + dust ───────────────────────────────────────────────
@@ -250,7 +247,7 @@ contract HeapDeleverageBenchmark is Test {
         _borrowAll(ctx, 1, n, dustDebt);
 
         console2.log("=== DustAndOneWhale100(99x0.3lowLTV+1x100whale) ===");
-        console2.log("  heap_size_before:", ctx.heap.size());
+        console2.log("  heap_size_before:", ctx.controller.deleverageHeapSize(ctx.id));
 
         DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, 75 ether));
         _logDeleverageResult(res);
@@ -258,7 +255,7 @@ contract HeapDeleverageBenchmark is Test {
         (, uint128 whaleBorrowAfter, uint128 whaleColAfter) = ctx.market.position(ctx.id, _borrowerAddr(0));
         console2.log("  whale_debt_remaining:", uint256(whaleBorrowAfter));
         console2.log("  whale_col_remaining:", uint256(whaleColAfter));
-        console2.log("  heap_size:", ctx.heap.size());
+        console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
         console2.log("  dust_positions_touched:", _countClosed(ctx, 1, n));
     }
 
@@ -274,7 +271,7 @@ contract HeapDeleverageBenchmark is Test {
         console2.log("=== 2000DustFullDrain ===");
         console2.log("  total_positions:", n);
         console2.log("  total_debt:", debtPer * n);
-        console2.log("  heap_size_before:", ctx.heap.size());
+        console2.log("  heap_size_before:", ctx.controller.deleverageHeapSize(ctx.id));
 
         uint256 totalTx;
         uint256 totalGas;
@@ -283,7 +280,7 @@ contract HeapDeleverageBenchmark is Test {
 
         while (true) {
             (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
-            if (lenderShares == 0 || ctx.heap.size() == 0) break;
+            if (lenderShares == 0 || ctx.controller.deleverageHeapSize(ctx.id) == 0) break;
             DeleverageResult memory res = _deleverageLoop(ctx, lenderShares);
             if (res.iterations == 0) break;
             totalTx++;
@@ -299,7 +296,7 @@ contract HeapDeleverageBenchmark is Test {
         console2.log("  total_iterations:", totalIter);
         console2.log("  total_debt_drained:", totalDebtDrained);
         console2.log("  total_gas:", totalGas);
-        console2.log("  positions_remaining:", ctx.heap.size());
+        console2.log("  positions_remaining:", ctx.controller.deleverageHeapSize(ctx.id));
     }
 
     // ── Runners ────────────────────────────────────────────────────
@@ -334,12 +331,12 @@ contract HeapDeleverageBenchmark is Test {
         internal
     {
         console2.log("===", label, "===");
-        console2.log("  heap_size_before:", ctx.heap.size());
+        console2.log("  heap_size_before:", ctx.controller.deleverageHeapSize(ctx.id));
         DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, debtPer * n / exitDivisor));
         console2.log("  borrowers:", n);
         _logDeleverageResult(res);
         console2.log("  positions_closed:", _countClosed(ctx, 0, n));
-        console2.log("  heap_size:", ctx.heap.size());
+        console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
     }
 
     // ── Seeding ────────────────────────────────────────────────────
@@ -418,13 +415,17 @@ contract HeapDeleverageBenchmark is Test {
         uint256 gasBefore = gasleft();
 
         for (uint256 i; i < MAX_ITERATIONS; ++i) {
-            if (remaining == 0 || ctx.heap.size() == 0) break;
+            if (remaining == 0 || ctx.controller.deleverageHeapSize(ctx.id) == 0) break;
 
-            (address top, uint256 topKey) = ctx.heap.peek();
-            (,uint128 topBorrowShares, uint128 topCol) = ctx.market.position(ctx.id, top);
+            (address top, uint256 sliceAssets) = ctx.controller.nextDeleverageCut(ctx.id);
+            if (top == address(0)) break;
+            (, uint128 topBorrowShares, uint128 topCol) = ctx.market.position(ctx.id, top);
             (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = ctx.market.market(ctx.id);
 
-            uint256 sliceAssets = _computeSlice(ctx, top, topKey);
+            // Single-borrower sentinel: size the cut to the whole position.
+            if (sliceAssets == type(uint256).max) {
+                sliceAssets = (uint256(topBorrowShares) * (uint256(totalBorrowAssets) + 1)) / (uint256(totalBorrowShares) + 1e6);
+            }
             uint256 sliceCol = sliceAssets * 1e36 / ctx.price;
 
             uint256 cutShares;
@@ -482,7 +483,7 @@ contract HeapDeleverageBenchmark is Test {
 
     function _logPositions(Ctx memory ctx, uint256 n) internal view {
         console2.log("  dust_positions:", _countDust(ctx, 0, n));
-        console2.log("  heap_size:", ctx.heap.size());
+        console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
     }
 
     // ── Deployment ─────────────────────────────────────────────────
@@ -514,8 +515,6 @@ contract HeapDeleverageBenchmark is Test {
             _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, address(this), initData));
         IControllerDeleverageHeapAdmin admin = IControllerDeleverageHeapAdmin(proxy);
         admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
-        address heapAddr = _deployArtifact("DeleverageHeap.sol:DeleverageHeap", abi.encode(proxy));
-        admin.setDeleverageHeap(heapAddr);
         admin.setDeleverageHeapConfig(
             ctx.id,
             IMarketController.DeleverageHeapConfig({
@@ -525,7 +524,6 @@ contract HeapDeleverageBenchmark is Test {
         );
 
         ctx.controller = IMarketController(proxy);
-        ctx.heap = IDeleverageHeap(heapAddr);
         ctx.market.enableIrm(address(irm));
         ctx.market.enableLltv(LLTV);
         ctx.market.createMarket(ctx.marketParams, proxy, true);
@@ -593,29 +591,6 @@ contract HeapDeleverageBenchmark is Test {
     function _assetsToSupplyShares(Ctx memory ctx, uint256 assets) internal view returns (uint256) {
         (uint128 totalSupplyAssets, uint128 totalSupplyShares,,,,) = ctx.market.market(ctx.id);
         return (assets * (uint256(totalSupplyShares) + 1e6)) / (uint256(totalSupplyAssets) + 1);
-    }
-
-    function _computeSlice(Ctx memory ctx, address top, uint256 topKey) internal view returns (uint256) {
-        uint256 runnerUpKey = ctx.heap.rootRunnerUpKey();
-        if (runnerUpKey == 0 || runnerUpKey >= topKey) return uint256(SLICE_FLOOR);
-
-        (,, uint128 topCol) = ctx.market.position(ctx.id, top);
-        if (topCol == 0) return uint256(SLICE_FLOOR);
-
-        (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = ctx.market.market(ctx.id);
-        if (totalBorrowAssets == 0 || totalBorrowShares == 0) return uint256(SLICE_FLOOR);
-
-        uint256 collateralPrice = ctx.oracle.price();
-        if (collateralPrice == 0) return uint256(SLICE_FLOOR);
-
-        uint256 numerator = (topKey - runnerUpKey) * uint256(topCol);
-        uint256 denomT1 = (uint256(totalBorrowShares) * 1e18) / uint256(totalBorrowAssets);
-        uint256 denomT2 = (runnerUpKey * 1e36) / collateralPrice;
-        if (denomT1 <= denomT2) return uint256(SLICE_FLOOR);
-
-        uint256 d = numerator / (denomT1 - denomT2);
-        d += uint256(SLICE_FLOOR);
-        return d;
     }
 
     function _mintWETH(MorphoBlueFork market, address user, uint256 amount) internal {

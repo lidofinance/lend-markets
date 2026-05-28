@@ -6,11 +6,12 @@ libs = ["lib"]
 names = true
 sizes = true
 
-# Keep compiler optimization settings aligned with the pinned Morpho Blue fork.
 # `evm_version = "paris"` is intentionally not set here because Vault V2 uses
 # transient storage and requires a Cancun-compatible EVM during integration tests.
+# optimizer_runs is tuned for deploy size, not call gas: at 999999 LidoMarketController
+# exceeds the EIP-170 24KB limit. 200 keeps it well under with negligible runtime cost.
 optimizer = true
-optimizer_runs = 999999
+optimizer_runs = 200
 via_ir = true
 bytecode_hash = "none"
 fs_permissions = [

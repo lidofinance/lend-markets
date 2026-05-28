@@ -13,7 +13,8 @@ import {UtilsLib} from "@morpho-blue/src/libraries/UtilsLib.sol";
 
 import {IMarketController} from "../interfaces/IMarketController.sol";
 import {IMarketAccessRegistry} from "../interfaces/IMarketAccessRegistry.sol";
-import {IDeleverageHeap} from "../interfaces/IDeleverageHeap.sol";
+import {DeleverageSliceLib} from "../libs/DeleverageSliceLib.sol";
+import {MaxHeapLib} from "../libs/MaxHeapLib.sol";
 
 /// @title LidoMarketController
 /// @notice Stateful market policy for Lido Lending markets.
@@ -23,6 +24,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     using MathLib for uint256;
     using SharesMathLib for uint256;
     using UtilsLib for uint256;
+    using MaxHeapLib for MaxHeapLib.Heap;
 
     bytes32 public constant CONFIGURATOR_ROLE = keccak256("CONFIGURATOR");
     bytes32 public constant RISK_STEWARD_ROLE = keccak256("RISK_STEWARD");
@@ -40,7 +42,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     uint128 internal constant DEFAULT_BORROW_CAP = type(uint128).max;
     uint128 internal constant DEFAULT_SLICE_FLOOR_ASSETS = 0.1 ether;
     uint32 internal constant DEFAULT_MAX_ITERATIONS = 100;
-    uint256 internal constant KEY_SCALE = 1e18; // matches DeleverageHeap key scale
+    uint256 internal constant KEY_SCALE = 1e18; // risk key = borrowShares × KEY_SCALE / rawCollateral
 
     error ZeroAddress();
     error NoCode();
@@ -55,13 +57,10 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     error DeleverageIneligible();
     error DeleverageOverCap();
     error DeleverageBelowSliceFloor();
-    error DeleverageHeapNotSet();
-    error DeleverageHeapAlreadySet();
     error AddressBlocked();
     error PositionBlocked();
     error InsufficientMaturedCollateral();
 
-    event DeleverageHeapSet(address indexed heap);
     event MarketFrozen(Id indexed id, bool frozen, address indexed by);
     event MarketPaused(Id indexed id, bool paused, address indexed by);
     event MarketConfigSet(Id indexed id);
@@ -86,8 +85,6 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         Id controlledMarketId;
         // Deployment-scoped registry for global address and market-position restrictions.
         address marketAccessRegistry;
-        // Required borrower candidate heap for the deleverage waterfall.
-        address deleverageHeap;
         // Per-borrower collateral classification.
         mapping(Id => mapping(address => IMarketController.CollateralState)) collateralState;
         // Controlled-market totals & gating flags.
@@ -102,6 +99,16 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         bytes32 slot = CONTROLLER_STORAGE_SLOT;
         assembly {
             s.slot := slot
+        }
+    }
+
+    /// @dev Deleverage borrower heap, in its own namespaced slot (isolated from ControllerStorage).
+    bytes32 private constant HEAP_STORAGE_SLOT = keccak256("lido.lending.deleverage-heap.storage.v1");
+
+    function _heap() private pure returns (MaxHeapLib.Heap storage h) {
+        bytes32 slot = HEAP_STORAGE_SLOT;
+        assembly {
+            h.slot := slot
         }
     }
 
@@ -139,6 +146,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         s.lendingMarket = lendingMarket_;
         s.controlledMarketId = controlledMarketId_;
         s.marketAccessRegistry = marketAccessRegistry_;
+        _heap().init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         emit Initialized(lendingMarket_, controlledMarketId_, marketAccessRegistry_, admin);
     }
@@ -155,10 +163,6 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
     function MARKET_ACCESS_REGISTRY() external view returns (address) {
         return _storage().marketAccessRegistry;
-    }
-
-    function DELEVERAGE_HEAP() external view returns (address) {
-        return _storage().deleverageHeap;
     }
 
     function collateralState(Id id, address borrower) external view returns (IMarketController.CollateralState memory) {
@@ -220,21 +224,6 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         _validateDeleverageHeapConfig(cfg);
         _storage().deleverageHeapConfig[id] = cfg;
         emit MarketConfigSet(id);
-    }
-
-    function setDeleverageHeap(address heap) external onlyRole(CONFIGURATOR_ROLE) {
-        if (heap == address(0)) revert ZeroAddress();
-        if (heap.code.length == 0) revert NoCode();
-
-        ControllerStorage storage s = _storage();
-        if (s.deleverageHeap != address(0)) revert DeleverageHeapAlreadySet();
-        if (IDeleverageHeap(heap).CONTROLLER() != address(this)) revert Unauthorized();
-        if (Id.unwrap(IDeleverageHeap(heap).MARKET_ID()) != Id.unwrap(s.controlledMarketId)) {
-            revert InvalidMarketId();
-        }
-
-        s.deleverageHeap = heap;
-        emit DeleverageHeapSet(heap);
     }
 
     function increaseCollateralActivationParams(
@@ -552,60 +541,62 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         );
     }
 
-    /* DELEVERAGE PREVIEW */
+    /* DELEVERAGE QUEUE VIEWS */
 
+    /// @notice Number of borrowers currently tracked in the deleverage heap.
+    function deleverageHeapSize(Id id) external view onlyControlledId(id) returns (uint256) {
+        return _heap().size();
+    }
+
+    /// @notice Borrowers currently in the heap, top-down, up to `maxCount`. Informational.
     function eligibleBorrowers(Id id, uint256 maxCount)
         external
         view
         onlyControlledId(id)
         returns (address[] memory borrowers, uint256[] memory keys)
     {
-        IDeleverageHeap heap = IDeleverageHeap(_storage().deleverageHeap);
-        uint256 heapSize = heap.size();
+        uint256 heapSize = _heap().size();
         uint256 count = heapSize < maxCount ? heapSize : maxCount;
         borrowers = new address[](count);
         keys = new uint256[](count);
         for (uint256 i; i < count; ++i) {
-            (borrowers[i], keys[i]) = heap.nodeAt(i);
+            (borrowers[i], keys[i]) = _heap().nodeAt(i);
         }
     }
 
-    /// @notice Slice size for the next cut (the heap root). Used by the vault's exit loop.
-    /// @dev Sizes the cut so the root's key drops to the runner-up's key. Returns `type(uint256).max`
-    ///      when the root has no runner-up (single borrower) — the caller caps it to remaining debt.
-    function computeHeapSlice(Id id) external view onlyControlledId(id) returns (uint256) {
-        return _computeHeapSlice(id);
+    /// @notice The next borrower to cut (heap root) and the loan-asset slice size for that cut.
+    ///         Used by the vault's exit loop. `borrower` is `address(0)` when the heap is empty.
+    ///         `sliceAssets` is `type(uint256).max` when the root has no runner-up (single
+    ///         borrower) — the caller caps it to the remaining exit.
+    function nextDeleverageCut(Id id)
+        external
+        view
+        onlyControlledId(id)
+        returns (address borrower, uint256 sliceAssets)
+    {
+        if (_heap().size() == 0) return (address(0), 0);
+        (borrower,) = _heap().peek();
+        sliceAssets = _computeHeapSlice(id);
     }
 
     function _computeHeapSlice(Id id) internal view returns (uint256) {
-        IMarketController.DeleverageHeapConfig memory cfg = _heapConfig(id);
-        IDeleverageHeap heap = IDeleverageHeap(_storage().deleverageHeap);
-
-        (address top, uint256 topKey) = heap.peek();
-        uint256 runnerUpKey = heap.rootRunnerUpKey();
+        (address top, uint256 topKey) = _heap().peek();
+        uint256 runnerUpKey = _heap().rootRunnerUpKey();
+        // Single borrower (no runner-up): no key constraint. Caller caps to the remaining exit.
         if (runnerUpKey == 0) return type(uint256).max;
-        if (runnerUpKey >= topKey) return uint256(cfg.sliceFloorAssets);
 
         (, uint256 topCollateral) = _currentPosition(id, top);
-        if (topCollateral == 0) return uint256(cfg.sliceFloorAssets);
+        IMarketController.DeleverageHeapConfig memory cfg = _heapConfig(id);
 
-        uint256 totalBorrowAssets_ = _totalBorrowAssets(id);
-        uint256 totalBorrowShares_ = _totalBorrowShares(id);
-        if (totalBorrowAssets_ == 0 || totalBorrowShares_ == 0) return uint256(cfg.sliceFloorAssets);
-
-        uint256 collateralPrice = _collateralPrice(id);
-        if (collateralPrice == 0) return uint256(cfg.sliceFloorAssets);
-
-        // Cut sized so the root's key drops to the runner-up's key. Both debt and collateral
-        // shrink as the cut applies, so the denominator combines the per-share debt term and the
-        // collateral-price term to convert the key gap into a loan-asset amount.
-        uint256 keyGapWeighted = (topKey - runnerUpKey) * topCollateral;
-        uint256 sharesPerAssetTerm = (totalBorrowShares_ * KEY_SCALE) / totalBorrowAssets_;
-        uint256 runnerUpPriceTerm = (runnerUpKey * ORACLE_PRICE_SCALE) / collateralPrice;
-        if (sharesPerAssetTerm <= runnerUpPriceTerm) return uint256(cfg.sliceFloorAssets);
-
-        uint256 slice = keyGapWeighted / (sharesPerAssetTerm - runnerUpPriceTerm);
-        return slice > uint256(cfg.sliceFloorAssets) ? slice : uint256(cfg.sliceFloorAssets);
+        return DeleverageSliceLib.computeSlice(
+            topKey,
+            runnerUpKey,
+            topCollateral,
+            _totalBorrowShares(id),
+            _totalBorrowAssets(id),
+            _collateralPrice(id),
+            uint256(cfg.sliceFloorAssets)
+        );
     }
 
     function _collateralPrice(Id id) internal view returns (uint256) {
@@ -761,13 +752,14 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         if (cfg.maxIterations == 0) return defaultDeleverageHeapConfig();
     }
 
+    /// @dev Re-key a borrower in the heap after any debt/collateral change. A borrower with no
+    ///      debt or no collateral is removed. Risk key = borrowShares × KEY_SCALE / rawCollateral.
     function _syncDeleverageHeap(address borrower, uint256 borrowShares, uint256 rawCollateral) internal {
-        IDeleverageHeap(_deleverageHeap()).upsert(borrower, borrowShares, rawCollateral);
-    }
-
-    function _deleverageHeap() internal view returns (address heap) {
-        heap = _storage().deleverageHeap;
-        if (heap == address(0)) revert DeleverageHeapNotSet();
+        if (borrowShares == 0 || rawCollateral == 0) {
+            _heap().remove(borrower);
+            return;
+        }
+        _heap().upsert(borrower, (borrowShares * KEY_SCALE) / rawCollateral);
     }
 
     function _currentPosition(Id id, address borrower)

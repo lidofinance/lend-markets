@@ -13,7 +13,6 @@ import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
 import {MorphoBalancesLib} from "@morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 
-import {IDeleverageHeap} from "./interfaces/IDeleverageHeap.sol";
 import {IMarketController} from "./interfaces/IMarketController.sol";
 import {IOracle} from "@morpho-blue/src/interfaces/IOracle.sol";
 
@@ -60,7 +59,6 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
     );
 
     IMorphoBlueForkVaultMorpho public immutable MORPHO;
-    IDeleverageHeap public immutable DELEVERAGE_HEAP;
     IMarketController public immutable CONTROLLER;
     Id public immutable MARKET_ID;
     IERC20 public immutable COLLATERAL_TOKEN;
@@ -71,22 +69,17 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         address morpho,
         MarketParams memory marketParams_,
         address controller,
-        address deleverageHeap,
         string memory name_,
         string memory symbol_
     )
         ERC20(name_, symbol_)
         ERC4626(IERC20(marketParams_.loanToken))
     {
-        if (
-            morpho == address(0) || controller == address(0) || deleverageHeap == address(0)
-                || marketParams_.collateralToken == address(0)
-        ) {
+        if (morpho == address(0) || controller == address(0) || marketParams_.collateralToken == address(0)) {
             revert ZeroAddress();
         }
 
         MORPHO = IMorphoBlueForkVaultMorpho(morpho);
-        DELEVERAGE_HEAP = IDeleverageHeap(deleverageHeap);
         CONTROLLER = IMarketController(controller);
         MARKET_ID = marketParams_.id();
         COLLATERAL_TOKEN = IERC20(marketParams_.collateralToken);
@@ -195,12 +188,11 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         for (uint256 i = 0; i < cfg.maxIterations; ++i) {
             uint256 remainingDebtAssets = _morphoSupplySharesToAssets(remainingShares);
             if (remainingDebtAssets == 0) return (collateralSeized, debtCanceled);
-            if (DELEVERAGE_HEAP.size() == 0) {
+
+            (address top, uint256 sliceAssets) = CONTROLLER.nextDeleverageCut(MARKET_ID);
+            if (top == address(0)) {
                 revert InsufficientDeleverageCuts(debtCanceled, debtCanceled + remainingDebtAssets);
             }
-
-            (address top,) = DELEVERAGE_HEAP.peek();
-            uint256 sliceAssets = CONTROLLER.computeHeapSlice(MARKET_ID);
             if (sliceAssets > remainingDebtAssets) sliceAssets = remainingDebtAssets;
 
             uint256 cutSupplyShares = _morphoAssetsToSupplyShares(sliceAssets);
