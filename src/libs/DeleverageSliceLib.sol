@@ -55,4 +55,30 @@ library DeleverageSliceLib {
         uint256 slice = keyGapWeighted / (sharesPerAssetTerm - targetPriceTerm);
         return slice > sliceFloor ? slice : sliceFloor;
     }
+
+    /// @dev WAD scale used for LTV.
+    uint256 internal constant WAD = 1e18;
+
+    /// @notice Loan-asset slice that brings a borrower's LTV down to a target watermark LTV.
+    /// @param debt              Borrower's current debt in loan-asset units.
+    /// @param collateralValue   Borrower's current collateral value in loan-asset units
+    ///                          (= rawCollateral × price / ORACLE_PRICE_SCALE).
+    /// @param watermarkLtv      Target post-cut LTV in WAD (e.g., 0.6e18 = 60%). Must be `< WAD`.
+    /// @return The slice size in loan-asset units.
+    /// @dev Cutting `c` at the oracle rate burns equal-value collateral, so post-cut debt is
+    ///      `debt - c` and post-cut collateral value is `collateralValue - c`. Requiring
+    ///      `(debt - c) × WAD == watermarkLtv × (collateralValue - c)` yields
+    ///        c = (debt × WAD − watermarkLtv × collateralValue) / (WAD − watermarkLtv)
+    ///      Returns 0 when the borrower's current LTV is already at or below the target.
+    function computeWatermarkSlice(uint256 debt, uint256 collateralValue, uint256 watermarkLtv)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (watermarkLtv >= WAD) return 0;
+        uint256 debtScaled = debt * WAD;
+        uint256 targetTerm = watermarkLtv * collateralValue;
+        if (debtScaled <= targetTerm) return 0;
+        return (debtScaled - targetTerm) / (WAD - watermarkLtv);
+    }
 }

@@ -566,6 +566,133 @@ contract MorphoBlueForkMainnetForkTest is Test {
         assertFalse(ctx.controller.rootHasBadDebt(ctx.id), "no bad debt left");
     }
 
+    /// @notice setBorrowerWatermark stores the borrower's target LTV; rejects ltv >= 1e18.
+    function testWatermarkSetterStoresAndRejectsOutOfRange() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+        TestMarket memory ctx = _deployMarket(true);
+
+        assertEq(ctx.controller.borrowerWatermark(ctx.id, BORROWER), 0, "default unset");
+
+        vm.prank(BORROWER);
+        ctx.controller.setBorrowerWatermark(ctx.id, 0.6e18);
+        assertEq(ctx.controller.borrowerWatermark(ctx.id, BORROWER), 0.6e18, "stored");
+
+        // Clear with 0.
+        vm.prank(BORROWER);
+        ctx.controller.setBorrowerWatermark(ctx.id, 0);
+        assertEq(ctx.controller.borrowerWatermark(ctx.id, BORROWER), 0, "cleared");
+
+        // Out-of-range rejected.
+        vm.prank(BORROWER);
+        vm.expectRevert(abi.encodeWithSignature("WatermarkOutOfRange()"));
+        ctx.controller.setBorrowerWatermark(ctx.id, 1e18);
+    }
+
+    /// @notice Path A: when the heap head has a watermark, `nextDeleverageCut`'s slice is bumped
+    ///         up to bring the borrower's LTV down to the watermark. Close runner-up key keeps the
+    ///         algorithmic slice small so the watermark dominates.
+    function testWatermarkBumpsHeapSlice() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+        TestMarket memory ctx = _deployMarket(true);
+
+        _mintWETH(ctx.market, LENDER, 40 ether);
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 40 ether, 0, LENDER, "");
+
+        uint256 hotCol = _mintWstETH(ctx.market, BORROWER, 25 ether);
+        uint256 coldCol = _mintWstETH(ctx.market, SECOND_BORROWER, 25 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, hotCol, BORROWER, "");
+        vm.prank(SECOND_BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, coldCol, SECOND_BORROWER, "");
+
+        vm.warp(block.timestamp + 2 hours + 1);
+        // Close LTVs → small key gap → small algorithmic slice.
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 18 ether, 0, BORROWER, BORROWER);
+        vm.prank(SECOND_BORROWER);
+        ctx.market.borrow(ctx.marketParams, 17 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
+
+        (, uint256 sliceBefore) = ctx.controller.nextDeleverageCut(ctx.id);
+
+        // BORROWER opts in to a 30% post-cut LTV — a deep target.
+        vm.prank(BORROWER);
+        ctx.controller.setBorrowerWatermark(ctx.id, 0.3e18);
+
+        (address rootAfter, uint256 sliceAfter) = ctx.controller.nextDeleverageCut(ctx.id);
+        assertEq(rootAfter, BORROWER, "root unchanged");
+        assertGt(sliceAfter, sliceBefore, "watermark raised the slice");
+
+        // Watermark slice closed form: c = (D*WAD - W*V) / (WAD - W), with V = col * price / 1e36.
+        uint256 colValue = hotCol * ctx.price / 1e36;
+        uint256 expected = (uint256(18 ether) * 1e18 - 0.3e18 * colValue) / (1e18 - 0.3e18);
+        assertApproxEqAbs(sliceAfter, expected, 1e15, "slice matches watermark formula");
+    }
+
+    /// @notice Path B: `deleverageByWatermark` cuts each listed borrower at their watermark slice.
+    ///         Borrowers without a watermark abort the call.
+    function testDeleverageByWatermarkRespectsListAndSlice() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+        TestMarket memory ctx = _deployMarket(true);
+
+        _mintWETH(ctx.market, LENDER, 20 ether);
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 20 ether, 0, LENDER, "");
+
+        uint256 col1 = _mintWstETH(ctx.market, BORROWER, 20 ether);
+        uint256 col2 = _mintWstETH(ctx.market, SECOND_BORROWER, 20 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col1, BORROWER, "");
+        vm.prank(SECOND_BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col2, SECOND_BORROWER, "");
+
+        vm.warp(block.timestamp + 2 hours + 1);
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 12 ether, 0, BORROWER, BORROWER);
+        vm.prank(SECOND_BORROWER);
+        ctx.market.borrow(ctx.marketParams, 6 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
+
+        // Activation: lender's exit must exceed available liquidity (20 - 18 = 2). Use full supply.
+        (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
+        address[] memory list = new address[](2);
+        list[0] = BORROWER;
+        list[1] = SECOND_BORROWER;
+
+        // No watermark on BORROWER → revert.
+        vm.prank(LENDER);
+        vm.expectRevert(bytes("borrower watermark not set"));
+        ctx.market.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
+
+        // BORROWER opts in to 40% LTV. SECOND_BORROWER still no watermark.
+        vm.prank(BORROWER);
+        ctx.controller.setBorrowerWatermark(ctx.id, 0.4e18);
+
+        vm.prank(LENDER);
+        vm.expectRevert(bytes("borrower watermark not set"));
+        ctx.market.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
+
+        // SECOND_BORROWER also opts in to 30%.
+        vm.prank(SECOND_BORROWER);
+        ctx.controller.setBorrowerWatermark(ctx.id, 0.3e18);
+
+        uint256 b1ColBefore = col1;
+        uint256 b2ColBefore = col2;
+        vm.prank(LENDER);
+        (uint256 totalSeized, uint256 totalDebtCanceled) =
+            ctx.market.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
+
+        // Each borrower cut to (close to) their watermark LTV.
+        (, uint128 b1DebtAfter, uint128 b1ColAfter) = ctx.market.position(ctx.id, BORROWER);
+        (, uint128 b2DebtAfter, uint128 b2ColAfter) = ctx.market.position(ctx.id, SECOND_BORROWER);
+        assertLt(uint256(b1ColAfter), b1ColBefore, "BORROWER collateral debited");
+        assertLt(uint256(b2ColAfter), b2ColBefore, "SECOND_BORROWER collateral debited");
+        assertGt(uint256(b1DebtAfter), 0, "BORROWER still has debt (cut, not full close)");
+        assertGt(uint256(b2DebtAfter), 0, "SECOND_BORROWER still has debt");
+        assertGt(totalSeized, 0, "collateral seized");
+        assertGt(totalDebtCanceled, 0, "debt canceled");
+        assertEq(totalSeized, totalDebtCanceled * 1e36 / ctx.price, "cuts at oracle rate, no LIF");
+    }
+
     function _fallbackExitAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
         (uint256 supplyShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 sharesToExit = supplyShares / 5;

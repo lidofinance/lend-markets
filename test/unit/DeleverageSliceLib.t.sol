@@ -114,6 +114,53 @@ contract DeleverageSliceLibTest is Test {
 
     // ── Known closed-form value ─────────────────────────────────────
 
+    // ── Watermark slice ─────────────────────────────────────────────
+
+    function test_watermarkSlice_zeroWhenLtvAtOrBelowTarget() public pure {
+        // current LTV = 0.5; target = 0.5 → no cut.
+        assertEq(DeleverageSliceLib.computeWatermarkSlice(50 ether, 100 ether, 0.5e18), 0, "ltv == target");
+        // current LTV = 0.4; target = 0.5 → no cut.
+        assertEq(DeleverageSliceLib.computeWatermarkSlice(40 ether, 100 ether, 0.5e18), 0, "ltv < target");
+    }
+
+    function test_watermarkSlice_targetAtOrAboveWadReturnsZero() public pure {
+        assertEq(DeleverageSliceLib.computeWatermarkSlice(50 ether, 100 ether, 1e18), 0, "target == WAD");
+        assertEq(DeleverageSliceLib.computeWatermarkSlice(50 ether, 100 ether, 1.5e18), 0, "target > WAD");
+    }
+
+    function test_watermarkSlice_closedFormValue() public pure {
+        // debt 80, collateralValue 100, target 50% → c = (80*1 - 0.5*100) / (1 - 0.5) = 30 / 0.5 = 60.
+        // Post-cut: debt 20, colValue 40, LTV = 0.5 ✓
+        uint256 slice = DeleverageSliceLib.computeWatermarkSlice(80 ether, 100 ether, 0.5e18);
+        assertEq(slice, 60 ether, "closed form: cut 60 to land at LTV 50%");
+    }
+
+    function testFuzz_watermarkSlice_solventPostCutLtvAtTarget(uint256 debt, uint256 colValue, uint256 targetLtv)
+        public
+        pure
+    {
+        // Only solvent (debt ≤ colValue) inputs: the lib does not promise a seizable slice for
+        // already-bad-debt positions, callers cap by collateral.
+        colValue = bound(colValue, 2, 1e30);
+        debt = bound(debt, 1, colValue);
+        targetLtv = bound(targetLtv, 1, 0.99e18);
+
+        uint256 slice = DeleverageSliceLib.computeWatermarkSlice(debt, colValue, targetLtv);
+        if (slice == 0) {
+            assertLe(debt * DeleverageSliceLib.WAD, targetLtv * colValue + DeleverageSliceLib.WAD, "no-cut bound");
+            return;
+        }
+        // Solvent inputs imply slice ≤ debt ≤ colValue.
+        assertLe(slice, debt, "slice <= debt");
+        uint256 postDebt = debt - slice;
+        uint256 postColValue = colValue - slice;
+        assertLe(
+            postDebt * DeleverageSliceLib.WAD,
+            targetLtv * postColValue + DeleverageSliceLib.WAD,
+            "post-cut LTV at/under target"
+        );
+    }
+
     function test_closedFormValue() public pure {
         // topKey=2e18, targetKey=1e18, topCollateral=100e18
         // totalBorrowShares=100e24, totalBorrowAssets=100e18 → sharesPerAssetTerm = 1e24

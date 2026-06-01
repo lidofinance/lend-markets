@@ -180,6 +180,16 @@ interface IMarketController {
     /// @notice True if the heap root (riskiest borrower) is bad debt (debt > collateral value).
     function rootHasBadDebt(Id id) external view returns (bool);
 
+    /// @notice Per-borrower personal watermark: a target post-cut LTV (WAD-scaled, 0 = unset).
+    ///         When set, the head-of-queue slice grows to bring the borrower's LTV to this target
+    ///         (max of algorithmic and watermark-derived slice), and the borrower becomes eligible
+    ///         for the lender-driven `deleverageByWatermark` path.
+    function borrowerWatermark(Id id, address borrower) external view returns (uint256);
+
+    /// @notice Borrower sets their own personal watermark (target post-cut LTV in WAD).
+    /// @dev `msg.sender` is the borrower. `ltv` must be `< 1e18`; 0 clears the watermark.
+    function setBorrowerWatermark(Id id, uint256 ltv) external;
+
     /// @notice Strict action callback. Reverts to abort the calling action.
     /// @dev The core calls each action hook after input normalization and action-specific amount
     ///      computation, before the matching core state mutation and before any external

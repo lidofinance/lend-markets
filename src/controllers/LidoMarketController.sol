@@ -61,10 +61,12 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     error AddressBlocked();
     error PositionBlocked();
     error InsufficientMaturedCollateral();
+    error WatermarkOutOfRange();
 
     event MarketFrozen(Id indexed id, bool frozen, address indexed by);
     event MarketPaused(Id indexed id, bool paused, address indexed by);
     event MarketConfigSet(Id indexed id);
+    event BorrowerWatermarkSet(Id indexed id, address indexed borrower, uint256 ltv);
     event Matured(Id indexed id, address indexed onBehalf, uint256 amount);
     event Initialized(
         address indexed lendingMarket, Id indexed id, address indexed marketAccessRegistry, address admin
@@ -94,6 +96,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         // `defaultMarketConfig`).
         mapping(Id => IMarketController.MarketConfig) marketConfig;
         mapping(Id => IMarketController.DeleverageHeapConfig) deleverageHeapConfig;
+        // Per-borrower target post-cut LTV (WAD-scaled). 0 = unset (default deleverage applies).
+        mapping(Id => mapping(address => uint256)) borrowerWatermark;
     }
 
     function _storage() private pure returns (ControllerStorage storage s) {
@@ -188,6 +192,20 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
     function deleverageHeapConfig(Id id) external view returns (IMarketController.DeleverageHeapConfig memory) {
         return _heapConfig(id);
+    }
+
+    function borrowerWatermark(Id id, address borrower) external view onlyControlledId(id) returns (uint256) {
+        return _storage().borrowerWatermark[id][borrower];
+    }
+
+    /// @notice Set the caller's personal watermark for this market. `ltv` is a target post-cut LTV
+    ///         in WAD (0.6e18 = 60%). 0 clears the watermark. Setting it makes the caller eligible
+    ///         for `deleverageByWatermark` and raises the head-of-queue slice to bring LTV to this
+    ///         target whenever the caller is the head.
+    function setBorrowerWatermark(Id id, uint256 ltv) external onlyControlledId(id) {
+        if (ltv >= DeleverageSliceLib.WAD) revert WatermarkOutOfRange();
+        _storage().borrowerWatermark[id][msg.sender] = ltv;
+        emit BorrowerWatermarkSet(id, msg.sender, ltv);
     }
 
     /* MARKET CONFIG */
@@ -615,13 +633,14 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     function _computeHeapSlice(Id id) internal view returns (uint256) {
         (address top, uint256 topKey) = _heap().peek();
         uint256 runnerUpKey = _heap().rootRunnerUpKey();
-        // Single borrower (no runner-up): no key constraint. Caller caps to the remaining exit.
+        // Single borrower (no runner-up): no key constraint and `max(uint256.max, watermark)` would
+        // remain uint256.max, so the watermark cannot raise the slice further — caller caps it.
         if (runnerUpKey == 0) return type(uint256).max;
 
-        (, uint256 topCollateral) = _currentPosition(id, top);
+        (uint256 topBorrowShares, uint256 topCollateral) = _currentPosition(id, top);
         IMarketController.DeleverageHeapConfig memory cfg = _heapConfig(id);
 
-        return DeleverageSliceLib.computeSlice(
+        uint256 algoSlice = DeleverageSliceLib.computeSlice(
             topKey,
             runnerUpKey,
             topCollateral,
@@ -630,6 +649,17 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
             _collateralPrice(id),
             uint256(cfg.sliceFloorAssets)
         );
+
+        // Path A: if the head opted into a personal watermark, raise the slice to bring its LTV
+        // down to that watermark (max of algorithmic and watermark-derived slice).
+        uint256 watermarkLtv = _storage().borrowerWatermark[id][top];
+        if (watermarkLtv == 0) return algoSlice;
+
+        uint256 price = _collateralPrice(id);
+        uint256 topDebt = topBorrowShares.toAssetsUp(_totalBorrowAssets(id), _totalBorrowShares(id));
+        uint256 topColValue = topCollateral.mulDivDown(price, DeleverageSliceLib.ORACLE_PRICE_SCALE);
+        uint256 watermarkSlice = DeleverageSliceLib.computeWatermarkSlice(topDebt, topColValue, watermarkLtv);
+        return watermarkSlice > algoSlice ? watermarkSlice : algoSlice;
     }
 
     function _collateralPrice(Id id) internal view returns (uint256) {
