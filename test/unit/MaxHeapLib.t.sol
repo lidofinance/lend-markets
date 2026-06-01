@@ -50,7 +50,8 @@ contract MaxHeapLibTest is Test {
         return address(uint160(0x1000 + i));
     }
 
-    // ── Basic invariants ────────────────────────────────────────────
+    // ── Basic invariants
+    // ────────────────────────────────────────────
 
     function test_emptyPeekReverts() public {
         vm.expectRevert(MaxHeapLib.EmptyHeap.selector);
@@ -118,7 +119,8 @@ contract MaxHeapLibTest is Test {
         assertEq(heap.rootRunnerUpKey(), 40, "higher of two children");
     }
 
-    // ── Fuzz: heap invariant + drain order ──────────────────────────
+    // ── Fuzz: heap invariant + drain order
+    // ──────────────────────────
 
     function testFuzz_drainIsNonIncreasing(uint256 n, uint256 seed) public {
         n = bound(n, 1, 60);

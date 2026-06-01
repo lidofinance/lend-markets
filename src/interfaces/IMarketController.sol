@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity >=0.8.0;
 
-import {Id} from "@morpho-blue/src/interfaces/IMorpho.sol";
+import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
 
 /// @title IMarketController
 /// @notice Optional per-market policy hooks used by the Lido Lending Morpho fork.
@@ -41,7 +41,8 @@ interface IMarketController {
     ///         the higher-keyed child, and repeats until target debt is covered, the heap is
     ///         empty, or `maxIterations` is exhausted.
     struct DeleverageHeapConfig {
-        uint128 sliceFloorAssets; // Minimum loan-asset slice per cut. Avoids micro-cuts when root and runner-up are nearly tied.
+        uint128 sliceFloorAssets; // Minimum loan-asset slice per cut. Avoids micro-cuts when root and runner-up are
+        // nearly tied.
         uint32 maxIterations; // Hard cap on per-call cut iterations. Bounds gas.
     }
 
@@ -171,7 +172,9 @@ interface IMarketController {
 
     /// @notice Borrowers currently in the deleverage heap, top-down, up to `maxCount`.
     function eligibleBorrowers(Id id, uint256 maxCount)
-        external view returns (address[] memory borrowers, uint256[] memory keys);
+        external
+        view
+        returns (address[] memory borrowers, uint256[] memory keys);
 
     /// @notice Next borrower to cut (heap root) and the loan-asset slice size for that cut.
     ///         `borrower` is address(0) if the heap is empty.
@@ -180,15 +183,36 @@ interface IMarketController {
     /// @notice True if the heap root (riskiest borrower) is bad debt (debt > collateral value).
     function rootHasBadDebt(Id id) external view returns (bool);
 
-    /// @notice Per-borrower personal watermark: a target post-cut LTV (WAD-scaled, 0 = unset).
-    ///         When set, the head-of-queue slice grows to bring the borrower's LTV to this target
-    ///         (max of algorithmic and watermark-derived slice), and the borrower becomes eligible
-    ///         for the lender-driven `deleverageByWatermark` path.
+    struct WatermarkInfo {
+        // WAD-scaled target post-cut LTV. 0 means the borrower has not opted in.
+        uint256 watermarkLtv;
+        // Loan-asset cut size that brings the borrower's LTV down to `watermarkLtv` at the live
+        // oracle price. 0 when no watermark, no debt/collateral, or current LTV already at/under
+        // the target.
+        uint256 sliceAssets;
+    }
+
+    /// @notice Borrower's personal watermark and the corresponding watermark-derived slice.
+    function watermarkInfo(Id id, address borrower) external view returns (WatermarkInfo memory);
+
+    /// @notice Convenience getter for `watermarkInfo(...).watermarkLtv` — 0 if borrower hasn't
+    ///         opted in to a personal watermark.
     function borrowerWatermark(Id id, address borrower) external view returns (uint256);
 
     /// @notice Borrower sets their own personal watermark (target post-cut LTV in WAD).
     /// @dev `msg.sender` is the borrower. `ltv` must be `< 1e18`; 0 clears the watermark.
     function setBorrowerWatermark(Id id, uint256 ltv) external;
+
+    /// @notice Lender-driven multi-cut deleverage against opted-in borrowers. The controller
+    ///         orchestrates calls to the core `deleverage` primitive; the lender must have
+    ///         authorised this controller on the core beforehand.
+    function deleverageByWatermark(
+        MarketParams calldata marketParams,
+        uint256 supplyShares,
+        address[] calldata borrowers,
+        address lender,
+        address receiver
+    ) external returns (uint256 totalCollateralSeized, uint256 totalDebtCanceled);
 
     /// @notice Strict action callback. Reverts to abort the calling action.
     /// @dev The core calls each action hook after input normalization and action-specific amount

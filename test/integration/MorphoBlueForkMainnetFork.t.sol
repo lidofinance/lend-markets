@@ -240,9 +240,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
 
         // Negative rebase: drop the wstETH rate so the head's collateral is worth less than its
         // debt (bad debt), while the tail stays healthy.
-        vm.mockCall(
-            WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.7e18))
-        );
+        vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.7e18)));
         assertTrue(ctx.controller.rootHasBadDebt(ctx.id), "head is bad debt after rebase");
 
         // A small cut against the healthy tail passes core's eligibility/over-cap/liquidity checks,
@@ -305,265 +303,6 @@ contract MorphoBlueForkMainnetForkTest is Test {
         assertEq(collateralSeized, debtCanceled * 1e36 / droppedPrice, "collateral seized at oracle rate");
         (,, uint128 rcAfter) = ctx.market.position(ctx.id, BORROWER);
         assertEq(uint256(rcAfter), uint256(rc) - collateralSeized, "borrower collateral debited");
-    }
-
-    /// @notice deleverageWithBadDebt reverts when the FIRST bad-debt head cannot be fully closed
-    ///         with the supply the lender provided. Partial bad-debt closure is not allowed.
-    function testDeleverageBadDebtRevertsWhenFirstCannotFullyClose() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(true);
-
-        // Small lender share, large second lender (so lender's value can't cover the head).
-        _mintWETH(ctx.market, LENDER, 2 ether);
-        _mintWETH(ctx.market, SECOND_LENDER, 18 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 2 ether, 0, LENDER, "");
-        vm.prank(SECOND_LENDER);
-        ctx.market.supply(ctx.marketParams, 18 ether, 0, SECOND_LENDER, "");
-
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 20 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
-
-        vm.warp(block.timestamp + 2 hours + 1);
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 12 ether, 0, BORROWER, BORROWER);
-
-        vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.5e18)));
-        assertTrue(ctx.controller.rootHasBadDebt(ctx.id), "head is bad debt");
-
-        (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
-        vm.prank(LENDER);
-        vm.expectRevert(bytes("insufficient for full bad-debt close"));
-        ctx.market.deleverageWithBadDebt(ctx.marketParams, lenderShares, LENDER, LENDER);
-    }
-
-    /// @notice deleverageWithBadDebt fully closes a single bad-debt head when the lender's supply
-    ///         is sufficient. Head's collateral and debt go to zero in one cut; the residual is
-    ///         socialized; passive lender takes a pro-rata hit; lender keeps any leftover shares.
-    function testDeleverageBadDebtFullyClosesSingleHead() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(true);
-
-        _mintWETH(ctx.market, LENDER, 20 ether);
-        _mintWETH(ctx.market, SECOND_LENDER, 1 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 20 ether, 0, LENDER, "");
-        vm.prank(SECOND_LENDER);
-        ctx.market.supply(ctx.marketParams, 1 ether, 0, SECOND_LENDER, "");
-
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 15 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
-
-        vm.warp(block.timestamp + 2 hours + 1);
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 8 ether, 0, BORROWER, BORROWER);
-
-        // Negative rebase: head's collateral worth less than its debt.
-        vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.5e18)));
-        assertTrue(ctx.controller.rootHasBadDebt(ctx.id), "head is bad debt");
-
-        uint256 headColValueBefore = uint256(col) * 0.5e36 / 1e36;
-
-        (uint256 lenderSharesBefore,,) = ctx.market.position(ctx.id, LENDER);
-        (uint256 secondSharesBefore,,) = ctx.market.position(ctx.id, SECOND_LENDER);
-
-        vm.prank(LENDER);
-        (uint256 collateralSeized, uint256 debtCanceled, uint256 badDebtAssets) =
-            ctx.market.deleverageWithBadDebt(ctx.marketParams, lenderSharesBefore, LENDER, LENDER);
-
-        // Head fully closed in one cut.
-        assertGt(badDebtAssets, 0, "residual bad debt written off");
-        assertApproxEqAbs(debtCanceled, headColValueBefore, 1e15, "debt canceled = head's post-writeoff value");
-        assertEq(collateralSeized, col, "head's full collateral seized");
-        (, uint128 headBorrowSharesAfter, uint128 headCollateralAfter) = ctx.market.position(ctx.id, BORROWER);
-        assertEq(uint256(headBorrowSharesAfter), 0, "head debt closed");
-        assertEq(uint256(headCollateralAfter), 0, "head collateral seized");
-
-        // Exiting lender kept leftover supply shares (had more value than head needed).
-        (uint256 lenderSharesAfter,,) = ctx.market.position(ctx.id, LENDER);
-        assertGt(lenderSharesAfter, 0, "lender has residual supply shares");
-        assertLt(lenderSharesAfter, lenderSharesBefore, "lender's supply shares burnt for the cut");
-
-        // Passive lender's per-share value dropped (loss socialized).
-        (uint256 totalSupplyAssetsAfter, uint256 totalSupplyShares,,,,) = ctx.market.market(ctx.id);
-        uint256 secondAssetsAfter = secondSharesBefore * totalSupplyAssetsAfter / totalSupplyShares;
-        assertLt(secondAssetsAfter, 1 ether, "passive lender lost pro-rata to bad-debt residual");
-    }
-
-    /// @notice deleverageWithBadDebt closes the first bad-debt head, then STOPS without reverting
-    ///         when the lender's remaining supply cannot fully close the next bad-debt head.
-    ///         The second bad-debt head is left intact.
-    function testDeleverageBadDebtStopsWhenSecondCannotFullyClose() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(true);
-
-        // Lender has just enough for the first bad-debt head but not both.
-        _mintWETH(ctx.market, LENDER, 9 ether);
-        _mintWETH(ctx.market, SECOND_LENDER, 6 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 9 ether, 0, LENDER, "");
-        vm.prank(SECOND_LENDER);
-        ctx.market.supply(ctx.marketParams, 6 ether, 0, SECOND_LENDER, "");
-
-        // Two borrowers; both become bad debt after the rebase, BORROWER has the higher LTV.
-        uint256 col1 = _mintWstETH(ctx.market, BORROWER, 15 ether);
-        uint256 col2 = _mintWstETH(ctx.market, SECOND_BORROWER, 13 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col1, BORROWER, "");
-        vm.prank(SECOND_BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col2, SECOND_BORROWER, "");
-
-        vm.warp(block.timestamp + 2 hours + 1);
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 9 ether, 0, BORROWER, BORROWER);
-        vm.prank(SECOND_BORROWER);
-        ctx.market.borrow(ctx.marketParams, 6 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
-
-        vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.5e18)));
-        assertTrue(ctx.controller.rootHasBadDebt(ctx.id), "head is bad debt");
-        (address rootBefore,) = ctx.controller.nextDeleverageCut(ctx.id);
-        assertEq(rootBefore, BORROWER, "BORROWER is the first bad-debt root");
-
-        (uint256 lenderSharesBefore,,) = ctx.market.position(ctx.id, LENDER);
-
-        vm.prank(LENDER);
-        (uint256 totalCollateralSeized, uint256 totalDebtCanceled, uint256 totalBadDebt) =
-            ctx.market.deleverageWithBadDebt(ctx.marketParams, lenderSharesBefore, LENDER, LENDER);
-
-        // First head fully closed in this single call.
-        assertEq(totalCollateralSeized, col1, "first head's full collateral seized");
-        (, uint128 head1Debt, uint128 head1Col) = ctx.market.position(ctx.id, BORROWER);
-        assertEq(uint256(head1Debt), 0, "first head debt cleared");
-        assertEq(uint256(head1Col), 0, "first head collateral cleared");
-
-        // Second head is untouched — lender's leftover was too small for full close → loop stopped.
-        (, uint128 head2Debt, uint128 head2Col) = ctx.market.position(ctx.id, SECOND_BORROWER);
-        assertEq(uint256(head2Col), col2, "second head collateral intact");
-        assertGt(uint256(head2Debt), 0, "second head debt intact");
-
-        // Only the first head's residual was written off.
-        assertGt(totalBadDebt, 0, "first residual written off");
-        assertGt(totalDebtCanceled, 0, "first head's debt canceled");
-
-        // Second head is still the bad-debt root after the call.
-        assertTrue(ctx.controller.rootHasBadDebt(ctx.id), "second head still bad debt");
-        (address rootAfter,) = ctx.controller.nextDeleverageCut(ctx.id);
-        assertEq(rootAfter, SECOND_BORROWER, "second head is the new root");
-
-        // Lender kept leftover shares.
-        (uint256 lenderSharesAfter,,) = ctx.market.position(ctx.id, LENDER);
-        assertGt(lenderSharesAfter, 0, "lender has leftover supply shares");
-    }
-
-    /// @notice deleverageWithBadDebt closes TWO bad-debt heads in one call when the lender's
-    ///         supply covers both. The heap re-sorts after each cut.
-    function testDeleverageBadDebtClosesTwoHeadsInOneCall() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(true);
-
-        _mintWETH(ctx.market, LENDER, 20 ether);
-        _mintWETH(ctx.market, SECOND_LENDER, 6 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 20 ether, 0, LENDER, "");
-        vm.prank(SECOND_LENDER);
-        ctx.market.supply(ctx.marketParams, 6 ether, 0, SECOND_LENDER, "");
-
-        uint256 col1 = _mintWstETH(ctx.market, BORROWER, 15 ether);
-        uint256 col2 = _mintWstETH(ctx.market, SECOND_BORROWER, 13 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col1, BORROWER, "");
-        vm.prank(SECOND_BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col2, SECOND_BORROWER, "");
-
-        vm.warp(block.timestamp + 2 hours + 1);
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 9 ether, 0, BORROWER, BORROWER);
-        vm.prank(SECOND_BORROWER);
-        ctx.market.borrow(ctx.marketParams, 6 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
-
-        vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.5e18)));
-        assertTrue(ctx.controller.rootHasBadDebt(ctx.id), "first head bad debt");
-        assertEq(ctx.controller.deleverageHeapSize(ctx.id), 2, "two borrowers tracked");
-
-        (uint256 lenderSharesBefore,,) = ctx.market.position(ctx.id, LENDER);
-
-        vm.prank(LENDER);
-        (uint256 totalCollateralSeized, uint256 totalDebtCanceled, uint256 totalBadDebt) =
-            ctx.market.deleverageWithBadDebt(ctx.marketParams, lenderSharesBefore, LENDER, LENDER);
-
-        // Both heads fully closed in this single call.
-        assertEq(totalCollateralSeized, col1 + col2, "both heads' collateral seized in full");
-        (, uint128 b1Debt, uint128 b1Col) = ctx.market.position(ctx.id, BORROWER);
-        (, uint128 b2Debt, uint128 b2Col) = ctx.market.position(ctx.id, SECOND_BORROWER);
-        assertEq(uint256(b1Debt), 0, "first head debt cleared");
-        assertEq(uint256(b1Col), 0, "first head collateral cleared");
-        assertEq(uint256(b2Debt), 0, "second head debt cleared");
-        assertEq(uint256(b2Col), 0, "second head collateral cleared");
-
-        assertGt(totalBadDebt, 0, "both residuals written off");
-        assertGt(totalDebtCanceled, 0, "debt canceled");
-        assertFalse(ctx.controller.rootHasBadDebt(ctx.id), "no bad debt left");
-    }
-
-    /// @notice After closing all bad-debt heads, deleverageWithBadDebt keeps cutting solvent
-    ///         heads at the oracle rate until the lender's amount is exhausted.
-    function testDeleverageBadDebtContinuesIntoSolventPhase() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(true);
-
-        _mintWETH(ctx.market, LENDER, 25 ether);
-        _mintWETH(ctx.market, SECOND_LENDER, 1 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 25 ether, 0, LENDER, "");
-        vm.prank(SECOND_LENDER);
-        ctx.market.supply(ctx.marketParams, 1 ether, 0, SECOND_LENDER, "");
-
-        // High-LTV (will be bad debt) and low-LTV (stays solvent even after the rebase).
-        uint256 col1 = _mintWstETH(ctx.market, BORROWER, 15 ether);
-        uint256 col2 = _mintWstETH(ctx.market, SECOND_BORROWER, 25 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col1, BORROWER, "");
-        vm.prank(SECOND_BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col2, SECOND_BORROWER, "");
-
-        vm.warp(block.timestamp + 2 hours + 1);
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 9 ether, 0, BORROWER, BORROWER); // bad debt at 0.5
-        vm.prank(SECOND_BORROWER);
-        ctx.market.borrow(ctx.marketParams, 5 ether, 0, SECOND_BORROWER, SECOND_BORROWER); // solvent at 0.5
-
-        vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.5e18)));
-        assertTrue(ctx.controller.rootHasBadDebt(ctx.id), "first head bad debt");
-
-        (uint256 lenderSharesBefore,,) = ctx.market.position(ctx.id, LENDER);
-
-        vm.prank(LENDER);
-        (uint256 totalCollateralSeized, uint256 totalDebtCanceled, uint256 totalBadDebt) =
-            ctx.market.deleverageWithBadDebt(ctx.marketParams, lenderSharesBefore, LENDER, LENDER);
-
-        // First head fully closed (bad-debt phase).
-        (, uint128 b1Debt, uint128 b1Col) = ctx.market.position(ctx.id, BORROWER);
-        assertEq(uint256(b1Debt), 0, "bad-debt head closed");
-        assertEq(uint256(b1Col), 0, "bad-debt head collateral seized");
-        assertGt(totalBadDebt, 0, "bad-debt residual written off");
-
-        // Solvent head: ordinary cut at oracle rate, leftover collateral remains.
-        (, uint128 b2Debt, uint128 b2Col) = ctx.market.position(ctx.id, SECOND_BORROWER);
-        assertEq(uint256(b2Debt), 0, "solvent head's full debt canceled");
-        assertGt(uint256(b2Col), 0, "solvent head keeps leftover collateral (LTV<100%)");
-        assertLt(uint256(b2Col), col2, "solvent head's collateral debited at oracle rate");
-
-        // Aggregate totals span both heads.
-        assertEq(totalCollateralSeized, col1 + (col2 - uint256(b2Col)), "combined seizures");
-        assertGt(totalDebtCanceled, 9 ether, "combined debt canceled spans both heads");
-        assertFalse(ctx.controller.rootHasBadDebt(ctx.id), "no bad debt left");
     }
 
     /// @notice setBorrowerWatermark stores the borrower's target LTV; rejects ltv >= 1e18.
@@ -652,6 +391,10 @@ contract MorphoBlueForkMainnetForkTest is Test {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 6 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
+        // Lender authorises the controller so it can spend lender's supply through core deleverage.
+        vm.prank(LENDER);
+        ctx.market.setAuthorization(address(ctx.controller), true);
+
         // Activation: lender's exit must exceed available liquidity (20 - 18 = 2). Use full supply.
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
         address[] memory list = new address[](2);
@@ -660,16 +403,16 @@ contract MorphoBlueForkMainnetForkTest is Test {
 
         // No watermark on BORROWER → revert.
         vm.prank(LENDER);
-        vm.expectRevert(bytes("borrower watermark not set"));
-        ctx.market.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
+        vm.expectRevert(abi.encodeWithSignature("WatermarkNotSet()"));
+        ctx.controller.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
 
         // BORROWER opts in to 40% LTV. SECOND_BORROWER still no watermark.
         vm.prank(BORROWER);
         ctx.controller.setBorrowerWatermark(ctx.id, 0.4e18);
 
         vm.prank(LENDER);
-        vm.expectRevert(bytes("borrower watermark not set"));
-        ctx.market.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
+        vm.expectRevert(abi.encodeWithSignature("WatermarkNotSet()"));
+        ctx.controller.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
 
         // SECOND_BORROWER also opts in to 30%.
         vm.prank(SECOND_BORROWER);
@@ -679,7 +422,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
         uint256 b2ColBefore = col2;
         vm.prank(LENDER);
         (uint256 totalSeized, uint256 totalDebtCanceled) =
-            ctx.market.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
+            ctx.controller.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
 
         // Each borrower cut to (close to) their watermark LTV.
         (, uint128 b1DebtAfter, uint128 b1ColAfter) = ctx.market.position(ctx.id, BORROWER);

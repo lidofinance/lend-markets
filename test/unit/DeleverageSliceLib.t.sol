@@ -22,7 +22,8 @@ contract DeleverageSliceLibTest is Test {
         );
     }
 
-    // ── Degenerate inputs return the floor ──────────────────────────
+    // ── Degenerate inputs return the floor
+    // ──────────────────────────
 
     function test_targetNotBelowTop_returnsFloor() public pure {
         uint256 f = 1 ether;
@@ -62,7 +63,8 @@ contract DeleverageSliceLibTest is Test {
         assertEq(slice, f, "inverted denominator falls back to floor");
     }
 
-    // ── Result never below the floor ────────────────────────────────
+    // ── Result never below the floor
+    // ────────────────────────────────
 
     function testFuzz_neverBelowFloor(
         uint256 topKey,
@@ -112,9 +114,11 @@ contract DeleverageSliceLibTest is Test {
         }
     }
 
-    // ── Known closed-form value ─────────────────────────────────────
+    // ── Known closed-form value
+    // ─────────────────────────────────────
 
-    // ── Watermark slice ─────────────────────────────────────────────
+    // ── Watermark slice
+    // ─────────────────────────────────────────────
 
     function test_watermarkSlice_zeroWhenLtvAtOrBelowTarget() public pure {
         // current LTV = 0.5; target = 0.5 → no cut.

@@ -86,7 +86,8 @@ contract HeapDeleverageBenchmark is Test {
         uint256 gasUsed;
     }
 
-    // ── Uniform-LTV scenarios ──────────────────────────────────────
+    // ── Uniform-LTV scenarios
+    // ──────────────────────────────────────
 
     function testScenario_AllSmallEqual() public {
         _skip();
@@ -108,7 +109,8 @@ contract HeapDeleverageBenchmark is Test {
         _runUniform("LargeExit50%(10x5)", 10, 5 ether, 0.7e18, 2);
     }
 
-    // ── Mixed-debt scenarios ───────────────────────────────────────
+    // ── Mixed-debt scenarios
+    // ───────────────────────────────────────
 
     function testScenario_MixedSmallAndLarge() public {
         _skip();
@@ -134,7 +136,8 @@ contract HeapDeleverageBenchmark is Test {
         _runScenario(_deployCtx(), "TwoEqualWhales(2x15+3x3)", debts, 0.7e18, _sum(debts) / 4);
     }
 
-    // ── Variable-LTV scenarios ─────────────────────────────────────
+    // ── Variable-LTV scenarios
+    // ─────────────────────────────────────
 
     function testScenario_GradientLTV() public {
         _skip();
@@ -165,7 +168,8 @@ contract HeapDeleverageBenchmark is Test {
         _runScenarioWithLTVs(ctx, "ClusterNearTop(5@69-71%+3@40%)", debts, ltvs, _sum(debts) / 4);
     }
 
-    // ── Serial exits ───────────────────────────────────────────────
+    // ── Serial exits
+    // ───────────────────────────────────────────────
 
     function testScenario_SerialSmallExits() public {
         _skip();
@@ -209,9 +213,15 @@ contract HeapDeleverageBenchmark is Test {
         Ctx memory ctx = _deployCtx();
         uint256 n = 1000;
         uint256[] memory debts = new uint256[](n);
-        for (uint256 i; i < 900; ++i) debts[i] = 0.5 ether;
-        for (uint256 i = 900; i < 990; ++i) debts[i] = 5 ether;
-        for (uint256 i = 990; i < n; ++i) debts[i] = 20 ether;
+        for (uint256 i; i < 900; ++i) {
+            debts[i] = 0.5 ether;
+        }
+        for (uint256 i = 900; i < 990; ++i) {
+            debts[i] = 5 ether;
+        }
+        for (uint256 i = 990; i < n; ++i) {
+            debts[i] = 20 ether;
+        }
         uint256 total = _sum(debts);
 
         _seedBorrowers(ctx, debts, 0.7e18, total);
@@ -225,7 +235,8 @@ contract HeapDeleverageBenchmark is Test {
         console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
     }
 
-    // ── Whale + dust ───────────────────────────────────────────────
+    // ── Whale + dust
+    // ───────────────────────────────────────────────
 
     function testScenario_DustAndOneWhale100() public {
         _skip();
@@ -240,7 +251,9 @@ contract HeapDeleverageBenchmark is Test {
         ctx.market.supply(ctx.marketParams, totalDebt, 0, LENDER, "");
 
         _seedOneBorrower(ctx, 0, whaleDebt, 0.7e18);
-        for (uint256 i = 1; i < n; ++i) _seedOneBorrower(ctx, i, dustDebt, 0.03e18);
+        for (uint256 i = 1; i < n; ++i) {
+            _seedOneBorrower(ctx, i, dustDebt, 0.03e18);
+        }
 
         vm.warp(block.timestamp + 2 hours + 1);
         _borrowAll(ctx, 0, 1, whaleDebt);
@@ -259,7 +272,8 @@ contract HeapDeleverageBenchmark is Test {
         console2.log("  dust_positions_touched:", _countClosed(ctx, 1, n));
     }
 
-    // ── Full drain ─────────────────────────────────────────────────
+    // ── Full drain
+    // ─────────────────────────────────────────────────
 
     function testScenario_2000DustFullDrain() public {
         _skip();
@@ -299,7 +313,8 @@ contract HeapDeleverageBenchmark is Test {
         console2.log("  positions_remaining:", ctx.controller.deleverageHeapSize(ctx.id));
     }
 
-    // ── Runners ────────────────────────────────────────────────────
+    // ── Runners
+    // ────────────────────────────────────────────────────
 
     function _runUniform(string memory label, uint256 n, uint256 debtPer, uint256 ltv, uint256 exitDivisor) internal {
         Ctx memory ctx = _deployCtx();
@@ -339,11 +354,14 @@ contract HeapDeleverageBenchmark is Test {
         console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
     }
 
-    // ── Seeding ────────────────────────────────────────────────────
+    // ── Seeding
+    // ────────────────────────────────────────────────────
 
     function _seedBorrowers(Ctx memory ctx, uint256[] memory debts, uint256 ltv, uint256 totalSupply) internal {
         uint256[] memory ltvs = new uint256[](debts.length);
-        for (uint256 i; i < debts.length; ++i) ltvs[i] = ltv;
+        for (uint256 i; i < debts.length; ++i) {
+            ltvs[i] = ltv;
+        }
         _seedBorrowersWithLTVs(ctx, debts, ltvs, totalSupply);
     }
 
@@ -354,9 +372,13 @@ contract HeapDeleverageBenchmark is Test {
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, totalSupply, 0, LENDER, "");
 
-        for (uint256 i; i < debts.length; ++i) _seedOneBorrower(ctx, i, debts[i], ltvs[i]);
+        for (uint256 i; i < debts.length; ++i) {
+            _seedOneBorrower(ctx, i, debts[i], ltvs[i]);
+        }
         vm.warp(block.timestamp + 2 hours + 1);
-        for (uint256 i; i < debts.length; ++i) _borrowOne(ctx, i, debts[i]);
+        for (uint256 i; i < debts.length; ++i) {
+            _borrowOne(ctx, i, debts[i]);
+        }
     }
 
     function _seedDustBorrowers(Ctx memory ctx, uint256 n, uint256 debtPer, uint256 targetLTV) internal {
@@ -374,7 +396,9 @@ contract HeapDeleverageBenchmark is Test {
 
         vm.warp(block.timestamp + 2 hours + 1);
 
-        for (uint256 i; i < n; ++i) _borrowOne(ctx, i, debtPer);
+        for (uint256 i; i < n; ++i) {
+            _borrowOne(ctx, i, debtPer);
+        }
 
         uint256 minCol = _collateralForDebt(debtPer, targetLTV, ctx.price);
         for (uint256 i; i < n; ++i) {
@@ -405,10 +429,13 @@ contract HeapDeleverageBenchmark is Test {
     }
 
     function _borrowAll(Ctx memory ctx, uint256 from, uint256 to, uint256 debt) internal {
-        for (uint256 i = from; i < to; ++i) _borrowOne(ctx, i, debt);
+        for (uint256 i = from; i < to; ++i) {
+            _borrowOne(ctx, i, debt);
+        }
     }
 
-    // ── Deleverage loop ────────────────────────────────────────────
+    // ── Deleverage loop
+    // ────────────────────────────────────────────
 
     function _deleverageLoop(Ctx memory ctx, uint256 exitShares) internal returns (DeleverageResult memory res) {
         uint256 remaining = exitShares;
@@ -424,7 +451,8 @@ contract HeapDeleverageBenchmark is Test {
 
             // Single-borrower sentinel: size the cut to the whole position.
             if (sliceAssets == type(uint256).max) {
-                sliceAssets = (uint256(topBorrowShares) * (uint256(totalBorrowAssets) + 1)) / (uint256(totalBorrowShares) + 1e6);
+                sliceAssets =
+                    (uint256(topBorrowShares) * (uint256(totalBorrowAssets) + 1)) / (uint256(totalBorrowShares) + 1e6);
             }
             uint256 sliceCol = sliceAssets * 1e36 / ctx.price;
 
@@ -465,7 +493,8 @@ contract HeapDeleverageBenchmark is Test {
         res.gasUsed = gasBefore - gasleft();
     }
 
-    // ── Logging ────────────────────────────────────────────────────
+    // ── Logging
+    // ────────────────────────────────────────────────────
 
     function _logResult(Ctx memory ctx, string memory label, uint256 n, DeleverageResult memory res) internal view {
         console2.log("===", label, "===");
@@ -486,7 +515,8 @@ contract HeapDeleverageBenchmark is Test {
         console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
     }
 
-    // ── Deployment ─────────────────────────────────────────────────
+    // ── Deployment
+    // ─────────────────────────────────────────────────
 
     function _deployCtx() internal returns (Ctx memory ctx) {
         if (_wstEthRate == 0) _wstEthRate = WSTETH.stEthPerToken();
@@ -509,7 +539,10 @@ contract HeapDeleverageBenchmark is Test {
         address impl = _deployArtifact("LidoMarketController.sol:LidoMarketController", "");
         bytes memory initData = abi.encodeWithSignature(
             "initialize(address,bytes32,address,address)",
-            address(ctx.market), Id.unwrap(ctx.id), accessRegistry, address(this)
+            address(ctx.market),
+            Id.unwrap(ctx.id),
+            accessRegistry,
+            address(this)
         );
         address proxy =
             _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, address(this), initData));
@@ -518,8 +551,7 @@ contract HeapDeleverageBenchmark is Test {
         admin.setDeleverageHeapConfig(
             ctx.id,
             IMarketController.DeleverageHeapConfig({
-                sliceFloorAssets: SLICE_FLOOR,
-                maxIterations: uint32(MAX_ITERATIONS)
+                sliceFloorAssets: SLICE_FLOOR, maxIterations: uint32(MAX_ITERATIONS)
             })
         );
 
@@ -529,7 +561,8 @@ contract HeapDeleverageBenchmark is Test {
         ctx.market.createMarket(ctx.marketParams, proxy, true);
     }
 
-    // ── Helpers ─────────────────────────────────────────────────────
+    // ── Helpers
+    // ─────────────────────────────────────────────────────
 
     function _skip() internal {
         vm.skip(!_hasMainnet(), "mainnet fork required");
@@ -548,12 +581,16 @@ contract HeapDeleverageBenchmark is Test {
     }
 
     function _sum(uint256[] memory arr) internal pure returns (uint256 s) {
-        for (uint256 i; i < arr.length; ++i) s += arr[i];
+        for (uint256 i; i < arr.length; ++i) {
+            s += arr[i];
+        }
     }
 
     function _uniformDebts(uint256 n, uint256 amount) internal pure returns (uint256[] memory debts) {
         debts = new uint256[](n);
-        for (uint256 i; i < n; ++i) debts[i] = amount;
+        for (uint256 i; i < n; ++i) {
+            debts[i] = amount;
+        }
     }
 
     function _buildDebts(uint256 n1, uint256 a1, uint256 n2, uint256 a2)
@@ -562,8 +599,12 @@ contract HeapDeleverageBenchmark is Test {
         returns (uint256[] memory debts)
     {
         debts = new uint256[](n1 + n2);
-        for (uint256 i; i < n1; ++i) debts[i] = a1;
-        for (uint256 i; i < n2; ++i) debts[n1 + i] = a2;
+        for (uint256 i; i < n1; ++i) {
+            debts[i] = a1;
+        }
+        for (uint256 i; i < n2; ++i) {
+            debts[n1 + i] = a2;
+        }
     }
 
     function _countClosed(Ctx memory ctx, uint256 from, uint256 to) internal view returns (uint256 count) {
@@ -580,11 +621,7 @@ contract HeapDeleverageBenchmark is Test {
         }
     }
 
-    function _collateralForDebt(uint256 debt, uint256 targetLTV, uint256 oraclePrice)
-        internal
-        pure
-        returns (uint256)
-    {
+    function _collateralForDebt(uint256 debt, uint256 targetLTV, uint256 oraclePrice) internal pure returns (uint256) {
         return (debt * 1e36) / (oraclePrice * targetLTV / 1e18);
     }
 

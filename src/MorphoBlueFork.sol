@@ -32,7 +32,6 @@ import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
 import {SafeTransferLib} from "@morpho-blue/src/libraries/SafeTransferLib.sol";
 
 import {IMarketController} from "./interfaces/IMarketController.sol";
-import {DeleverageSliceLib} from "./libs/DeleverageSliceLib.sol";
 
 /// @title MorphoBlueForkErrorsLib
 /// @notice Error strings added by the forked core, kept in this file to make the upstream diff explicit.
@@ -44,10 +43,6 @@ library MorphoBlueForkErrorsLib {
     string internal constant DELEVERAGE_INELIGIBLE = "borrower not deleverage-eligible";
     string internal constant DELEVERAGE_OVER_CAP = "deleverage over cap";
     string internal constant DELEVERAGE_REQUIRES_CONTROLLER = "deleverage requires controller";
-    string internal constant NOT_BAD_DEBT = "head not bad debt";
-    string internal constant BAD_DEBT_PARTIAL_CLOSE = "insufficient for full bad-debt close";
-    string internal constant WATERMARK_NOT_SET = "borrower watermark not set";
-    string internal constant EMPTY_BORROWERS = "empty borrowers list";
 }
 
 /// @title MorphoBlueForkEventsLib
@@ -63,8 +58,7 @@ library MorphoBlueForkEventsLib {
         address borrower,
         uint256 supplyShares,
         uint256 collateralSeized,
-        uint256 debtCanceled,
-        uint256 badDebtAssets
+        uint256 debtCanceled
     );
 }
 
@@ -571,6 +565,8 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     /// @notice Cancels borrower debt against lender supply shares when ordinary loan liquidity is insufficient.
     /// @dev Core computes the default oracle-rate collateral amount. A controller, if set, may
     ///      validate the action and update external policy state before core accounting changes.
+    ///      Single-borrower primitive: batch / watermark / heap-driven flows live in the controller
+    ///      and call into this primitive once per cut.
     function deleverage(
         MarketParams memory marketParams,
         uint256 supplyShares,
@@ -579,11 +575,21 @@ contract MorphoBlueFork is IMorphoStaticTyping {
         address receiver
     ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
         Id id = marketParams.id();
-        _validateDeleverageEntry(id, supplyShares, lender, receiver);
+        require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
+        require(deleverageEnabled[id], MorphoBlueForkErrorsLib.DELEVERAGE_DISABLED);
+        require(marketController[id] != address(0), MorphoBlueForkErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
+        require(supplyShares != 0, MorphoBlueForkErrorsLib.ZERO_SHARES);
+        require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
+        require(_isSenderAuthorized(lender), ErrorsLib.UNAUTHORIZED);
+
         _accrueInterest(marketParams, id);
 
         debtCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        require(debtCanceled > _availableLiquidity(id), MorphoBlueForkErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
+        // Liquidity gate: ordinary callers must be under stress. The controller is trusted to
+        // pre-check the aggregate amount in batch-mode flows (e.g. `deleverageByWatermark`).
+        if (msg.sender != marketController[id]) {
+            require(debtCanceled > _availableLiquidity(id), MorphoBlueForkErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
+        }
 
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
         uint256 borrowerRawCollateral = position[id][borrower].collateral;
@@ -598,400 +604,42 @@ contract MorphoBlueFork is IMorphoStaticTyping {
         require(collateralSeized != 0, MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP);
         require(collateralSeized <= borrowerRawCollateral, MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP);
 
-        uint256 borrowSharesToBurn =
-            debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        require(
-            borrowSharesToBurn <= position[id][borrower].borrowShares, MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP
-        );
+        uint256 borrowSharesToBurn = debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+        require(borrowSharesToBurn <= position[id][borrower].borrowShares, MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP);
 
-        _applyDeleverageCut(
-            marketParams,
-            id,
-            CutParams({
-                lender: lender,
-                borrower: borrower,
-                receiver: receiver,
-                supplyShares: supplyShares,
-                debtCanceled: debtCanceled,
-                borrowSharesToBurn: borrowSharesToBurn,
-                collateralSeized: collateralSeized,
-                borrowerBorrowAssets: borrowerBorrowAssets,
-                borrowerRawCollateral: borrowerRawCollateral,
-                collateralPrice: collateralPrice,
-                badDebtAssets: 0
-            })
-        );
-    }
-
-    /// @notice Heap-driven multi-cut deleverage that admits bad-debt heads. Iterates the queue
-    ///         top-down: each bad-debt head must be FULLY closed (write off the residual,
-    ///         socialize it across supply, then cancel all debt + seize all collateral); each
-    ///         solvent head is cut at the oracle rate, partial allowed. Stops when the lender's
-    ///         supplyShares are exhausted or the heap is empty.
-    ///
-    ///         The FIRST head must be bad debt (else revert), and that first close must succeed
-    ///         (else revert). A later bad-debt head the lender cannot fully close ends the loop
-    ///         without reverting — the lender keeps the leftover supplyShares.
-    /// @dev No liquidation-style bonus (LIF). The residual is socialized BEFORE the lender's
-    ///      shares convert, so the exiting lender bears their pro-rata share too.
-    function deleverageWithBadDebt(
-        MarketParams memory marketParams,
-        uint256 supplyShares,
-        address lender,
-        address receiver
-    ) external returns (
-        uint256 totalCollateralSeized,
-        uint256 totalDebtCanceled,
-        uint256 totalBadDebtAssets
-    ) {
-        Id id = marketParams.id();
-        _validateDeleverageEntry(id, supplyShares, lender, receiver);
-        _accrueInterest(marketParams, id);
-
-        IMarketController controller = IMarketController(marketController[id]);
-        require(controller.rootHasBadDebt(id), MorphoBlueForkErrorsLib.NOT_BAD_DEBT);
-
-        DeleverageLoopState memory s;
-        s.remainingShares = supplyShares;
-        s.collateralPrice = IOracle(marketParams.oracle).price();
-        s.maxIterations = controller.deleverageHeapConfig(id).maxIterations;
-        s.firstIteration = true;
-
-        for (uint256 i = 0; i < s.maxIterations; i++) {
-            if (s.remainingShares == 0) break;
-
-            (address head,) = controller.nextDeleverageCut(id);
-            if (head == address(0)) break;
-
-            bool advanced;
-            if (controller.rootHasBadDebt(id)) {
-                advanced = _closeBadDebtHead(marketParams, id, head, lender, receiver, s);
-                if (!advanced) {
-                    require(!s.firstIteration, MorphoBlueForkErrorsLib.BAD_DEBT_PARTIAL_CLOSE);
-                    break;
-                }
-            } else {
-                advanced = _cutSolventHead(marketParams, id, head, lender, receiver, s);
-                if (!advanced) break;
-            }
-            s.firstIteration = false;
-        }
-
-        totalCollateralSeized = s.totalCollateralSeized;
-        totalDebtCanceled = s.totalDebtCanceled;
-        totalBadDebtAssets = s.totalBadDebtAssets;
-    }
-
-    struct DeleverageLoopState {
-        uint256 remainingShares;
-        uint256 collateralPrice;
-        uint256 maxIterations;
-        uint256 totalCollateralSeized;
-        uint256 totalDebtCanceled;
-        uint256 totalBadDebtAssets;
-        bool firstIteration;
-    }
-
-    /// @notice Lender-driven deleverage against an explicit list of borrowers that have each opted
-    ///         in by setting a personal watermark (target post-cut LTV). For each borrower in the
-    ///         list the cut is sized to bring its LTV down to that watermark, at the oracle rate.
-    ///         The lender's `supplyShares` budget caps total cuts. Borrowers without a watermark
-    ///         abort the call.
-    /// @dev Activation condition mirrors `deleverage`: the lender's intended exit must exceed
-    ///      available liquidity (`debtCanceled > _availableLiquidity`). Each iteration still goes
-    ///      through the controller hook, so the bad-debt guard remains in effect.
-    function deleverageByWatermark(
-        MarketParams memory marketParams,
-        uint256 supplyShares,
-        address[] memory borrowers,
-        address lender,
-        address receiver
-    ) external returns (uint256 totalCollateralSeized, uint256 totalDebtCanceled) {
-        Id id = marketParams.id();
-        _validateDeleverageEntry(id, supplyShares, lender, receiver);
-        require(borrowers.length != 0, MorphoBlueForkErrorsLib.EMPTY_BORROWERS);
-        _accrueInterest(marketParams, id);
-
-        uint256 lenderTotalAssets =
-            supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        require(
-            lenderTotalAssets > _availableLiquidity(id), MorphoBlueForkErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE
-        );
-
-        uint256 collateralPrice = IOracle(marketParams.oracle).price();
-        uint256 remainingShares = supplyShares;
-        IMarketController controller = IMarketController(marketController[id]);
-
-        for (uint256 i = 0; i < borrowers.length; i++) {
-            if (remainingShares == 0) break;
-
-            address borrower = borrowers[i];
-            uint256 watermarkLtv = controller.borrowerWatermark(id, borrower);
-            require(watermarkLtv != 0, MorphoBlueForkErrorsLib.WATERMARK_NOT_SET);
-
-            (uint256 didCutAssets, uint256 sharesUsed, uint256 didSeize) =
-                _cutByWatermark(marketParams, id, borrower, lender, receiver, collateralPrice, watermarkLtv, remainingShares);
-            if (didCutAssets == 0) continue;
-
-            remainingShares -= sharesUsed;
-            totalDebtCanceled += didCutAssets;
-            totalCollateralSeized += didSeize;
-        }
-    }
-
-    /// @dev One borrower's cut sized to bring its LTV down to `watermarkLtv`, capped by the
-    ///      lender's remaining stake, the borrower's debt, and the borrower's collateral.
-    ///      Returns (0, 0) and applies no mutations when the borrower's LTV is already at/below
-    ///      the watermark or amounts round to zero.
-    function _cutByWatermark(
-        MarketParams memory marketParams,
-        Id id,
-        address borrower,
-        address lender,
-        address receiver,
-        uint256 collateralPrice,
-        uint256 watermarkLtv,
-        uint256 remainingShares
-    ) internal returns (uint256 debtCanceled, uint256 cutSupplyShares, uint256 collateralSeized) {
-        uint256 borrowerCollateral = position[id][borrower].collateral;
-        uint256 borrowerBorrowShares = position[id][borrower].borrowShares;
-        if (borrowerBorrowShares == 0 || borrowerCollateral == 0) return (0, 0, 0);
-
-        uint256 borrowerDebt =
-            borrowerBorrowShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        uint256 borrowerColValue = borrowerCollateral.mulDivDown(collateralPrice, ORACLE_PRICE_SCALE);
-        debtCanceled = DeleverageSliceLib.computeWatermarkSlice(borrowerDebt, borrowerColValue, watermarkLtv);
-        if (debtCanceled == 0) return (0, 0, 0);
-
-        // Cap by lender's remaining stake and by what the borrower can actually take.
-        uint256 lenderAssets =
-            remainingShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        if (debtCanceled > lenderAssets) debtCanceled = lenderAssets;
-        if (debtCanceled > borrowerDebt) debtCanceled = borrowerDebt;
-
-        collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
-        if (collateralSeized > borrowerCollateral) {
-            collateralSeized = borrowerCollateral;
-            debtCanceled = collateralSeized.mulDivDown(collateralPrice, ORACLE_PRICE_SCALE);
-        }
-        if (debtCanceled == 0 || collateralSeized == 0) return (0, 0, 0);
-
-        cutSupplyShares =
-            debtCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        if (cutSupplyShares > remainingShares) cutSupplyShares = remainingShares;
-        uint256 borrowSharesToBurn =
-            debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        if (borrowSharesToBurn > borrowerBorrowShares) borrowSharesToBurn = borrowerBorrowShares;
-
-        _applyDeleverageCut(
-            marketParams,
-            id,
-            CutParams({
-                lender: lender,
-                borrower: borrower,
-                receiver: receiver,
-                supplyShares: cutSupplyShares,
-                debtCanceled: debtCanceled,
-                borrowSharesToBurn: borrowSharesToBurn,
-                collateralSeized: collateralSeized,
-                borrowerBorrowAssets: borrowerDebt,
-                borrowerRawCollateral: borrowerCollateral,
-                collateralPrice: collateralPrice,
-                badDebtAssets: 0
-            })
-        );
-    }
-
-    /// @dev Tries to FULLY close a bad-debt head: write off the residual (socializing it across
-    ///      supply), then cancel all head debt + seize all collateral. Returns false (no state
-    ///      mutations) when the lender's remaining shares would not cover the post-write-off head
-    ///      value — the caller decides revert vs break.
-    function _closeBadDebtHead(
-        MarketParams memory marketParams,
-        Id id,
-        address head,
-        address lender,
-        address receiver,
-        DeleverageLoopState memory s
-    ) internal returns (bool closed) {
-        uint256 headCollateral = position[id][head].collateral;
-        uint256 headDebt = uint256(position[id][head].borrowShares)
-            .toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        uint256 headColValue = headCollateral.mulDivDown(s.collateralPrice, ORACLE_PRICE_SCALE);
-        uint256 residual = headDebt - headColValue;
-
-        // Affordability: does the lender's remaining stake (post-write-off rate) cover headColValue?
-        uint256 lenderPostAssets = s.remainingShares
-            .toAssetsDown(uint256(market[id].totalSupplyAssets) - residual, market[id].totalSupplyShares);
-        if (lenderPostAssets < headColValue) return false;
-
-        // Apply write-off (socialization).
-        uint256 badDebtShares = residual.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        if (badDebtShares > position[id][head].borrowShares) badDebtShares = position[id][head].borrowShares;
-        market[id].totalBorrowAssets -= residual.toUint128();
-        market[id].totalSupplyAssets -= residual.toUint128();
-        market[id].totalBorrowShares -= badDebtShares.toUint128();
-        position[id][head].borrowShares -= badDebtShares.toUint128();
-
-        // Full close. debtCanceled = head's post-write-off debt = headColValue (rounding aside).
-        uint256 debtCanceled = uint256(position[id][head].borrowShares)
-            .toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        uint256 cutSupplyShares =
-            debtCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        if (cutSupplyShares > s.remainingShares) cutSupplyShares = s.remainingShares;
-
-        _applyDeleverageCut(
-            marketParams,
-            id,
-            CutParams({
-                lender: lender,
-                borrower: head,
-                receiver: receiver,
-                supplyShares: cutSupplyShares,
-                debtCanceled: debtCanceled,
-                borrowSharesToBurn: position[id][head].borrowShares,
-                collateralSeized: headCollateral,
-                borrowerBorrowAssets: debtCanceled,
-                borrowerRawCollateral: headCollateral,
-                collateralPrice: s.collateralPrice,
-                badDebtAssets: residual
-            })
-        );
-
-        s.remainingShares -= cutSupplyShares;
-        s.totalCollateralSeized += headCollateral;
-        s.totalDebtCanceled += debtCanceled;
-        s.totalBadDebtAssets += residual;
-        closed = true;
-    }
-
-    /// @dev Ordinary oracle-rate cut against a solvent head. May be partial. Returns false when no
-    ///      meaningful cut can be applied (zero debt/collateral, rounding to zero) — caller breaks.
-    function _cutSolventHead(
-        MarketParams memory marketParams,
-        Id id,
-        address head,
-        address lender,
-        address receiver,
-        DeleverageLoopState memory s
-    ) internal returns (bool didCut) {
-        uint256 headCollateral = position[id][head].collateral;
-        uint256 headBorrowShares = position[id][head].borrowShares;
-        if (headBorrowShares == 0 || headCollateral == 0) return false;
-
-        uint256 headDebt = headBorrowShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        uint256 lenderAssets =
-            s.remainingShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        uint256 debtCanceled = lenderAssets < headDebt ? lenderAssets : headDebt;
-
-        uint256 collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, s.collateralPrice);
-        if (collateralSeized > headCollateral) {
-            collateralSeized = headCollateral;
-            debtCanceled = collateralSeized.mulDivDown(s.collateralPrice, ORACLE_PRICE_SCALE);
-        }
-        if (debtCanceled == 0 || collateralSeized == 0) return false;
-
-        uint256 cutSupplyShares =
-            debtCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        if (cutSupplyShares > s.remainingShares) cutSupplyShares = s.remainingShares;
-        uint256 borrowSharesToBurn =
-            debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        if (borrowSharesToBurn > headBorrowShares) borrowSharesToBurn = headBorrowShares;
-
-        _applyDeleverageCut(
-            marketParams,
-            id,
-            CutParams({
-                lender: lender,
-                borrower: head,
-                receiver: receiver,
-                supplyShares: cutSupplyShares,
-                debtCanceled: debtCanceled,
-                borrowSharesToBurn: borrowSharesToBurn,
-                collateralSeized: collateralSeized,
-                borrowerBorrowAssets: headDebt,
-                borrowerRawCollateral: headCollateral,
-                collateralPrice: s.collateralPrice,
-                badDebtAssets: 0
-            })
-        );
-
-        s.remainingShares -= cutSupplyShares;
-        s.totalCollateralSeized += collateralSeized;
-        s.totalDebtCanceled += debtCanceled;
-        didCut = true;
-    }
-
-    /// @dev Common entry-condition check for `deleverage` and `deleverageWithBadDebt`.
-    function _validateDeleverageEntry(Id id, uint256 supplyShares, address lender, address receiver) internal view {
-        require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
-        require(deleverageEnabled[id], MorphoBlueForkErrorsLib.DELEVERAGE_DISABLED);
-        require(marketController[id] != address(0), MorphoBlueForkErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
-        require(supplyShares != 0, MorphoBlueForkErrorsLib.ZERO_SHARES);
-        require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
-        require(_isSenderAuthorized(lender), ErrorsLib.UNAUTHORIZED);
-    }
-
-    struct CutParams {
-        address lender;
-        address borrower;
-        address receiver;
-        uint256 supplyShares; // lender shares to burn
-        uint256 debtCanceled; // assets to wipe from borrower's debt
-        uint256 borrowSharesToBurn; // borrower shares to burn
-        uint256 collateralSeized;
-        uint256 borrowerBorrowAssets; // pre-cut, for controller hook payload
-        uint256 borrowerRawCollateral; // pre-cut, for controller hook payload
-        uint256 collateralPrice;
-        uint256 badDebtAssets; // residual written off in this cut (0 for ordinary)
-    }
-
-    /// @dev Shared cut step: controller hook, supply/borrow/collateral mutations, event, transfer.
-    ///      Callers must have already validated amounts (over-cap, eligibility) and applied any
-    ///      prior write-off (bad-debt branch).
-    function _applyDeleverageCut(MarketParams memory marketParams, Id id, CutParams memory p) internal {
         _hook(
             id,
             IMarketController.HookEvent.Deleverage,
             abi.encode(
                 IMarketController.DeleverageHookData({
                     caller: msg.sender,
-                    lender: p.lender,
-                    borrower: p.borrower,
-                    receiver: p.receiver,
-                    assetsToCancel: p.debtCanceled,
-                    borrowerBorrowAssets: p.borrowerBorrowAssets,
-                    borrowerRawCollateral: p.borrowerRawCollateral,
-                    collateralPrice: p.collateralPrice,
-                    collateralSeized: p.collateralSeized
+                    lender: lender,
+                    borrower: borrower,
+                    receiver: receiver,
+                    assetsToCancel: debtCanceled,
+                    borrowerBorrowAssets: borrowerBorrowAssets,
+                    borrowerRawCollateral: borrowerRawCollateral,
+                    collateralPrice: collateralPrice,
+                    collateralSeized: collateralSeized
                 })
             )
         );
 
-        position[id][p.lender].supplyShares -= p.supplyShares;
-        market[id].totalSupplyShares -= p.supplyShares.toUint128();
-        market[id].totalSupplyAssets =
-            UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, p.debtCanceled).toUint128();
+        position[id][lender].supplyShares -= supplyShares;
+        market[id].totalSupplyShares -= supplyShares.toUint128();
+        market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, debtCanceled).toUint128();
 
-        position[id][p.borrower].borrowShares -= p.borrowSharesToBurn.toUint128();
-        market[id].totalBorrowShares -= p.borrowSharesToBurn.toUint128();
-        market[id].totalBorrowAssets =
-            UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, p.debtCanceled).toUint128();
+        position[id][borrower].borrowShares -= borrowSharesToBurn.toUint128();
+        market[id].totalBorrowShares -= borrowSharesToBurn.toUint128();
+        market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, debtCanceled).toUint128();
 
-        position[id][p.borrower].collateral -= p.collateralSeized.toUint128();
+        position[id][borrower].collateral -= collateralSeized.toUint128();
 
         emit MorphoBlueForkEventsLib.Deleverage(
-            id,
-            msg.sender,
-            p.lender,
-            p.borrower,
-            p.supplyShares,
-            p.collateralSeized,
-            p.debtCanceled,
-            p.badDebtAssets
+            id, msg.sender, lender, borrower, supplyShares, collateralSeized, debtCanceled
         );
 
-        IERC20(marketParams.collateralToken).safeTransfer(p.receiver, p.collateralSeized);
+        IERC20(marketParams.collateralToken).safeTransfer(receiver, collateralSeized);
     }
 
     /* FLASH LOANS */

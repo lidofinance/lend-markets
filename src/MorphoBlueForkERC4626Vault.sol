@@ -183,35 +183,45 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         returns (uint256 collateralSeized, uint256 debtCanceled)
     {
         uint256 remainingShares = morphoSupplyShares;
-        IMarketController.DeleverageHeapConfig memory cfg = CONTROLLER.deleverageHeapConfig(MARKET_ID);
+        uint256 maxIterations = CONTROLLER.deleverageHeapConfig(MARKET_ID).maxIterations;
 
-        for (uint256 i = 0; i < cfg.maxIterations; ++i) {
-            uint256 remainingDebtAssets = _morphoSupplySharesToAssets(remainingShares);
-            if (remainingDebtAssets == 0) return (collateralSeized, debtCanceled);
+        for (uint256 i = 0; i < maxIterations; ++i) {
+            if (remainingShares == 0) return (collateralSeized, debtCanceled);
 
-            (address top, uint256 sliceAssets) = CONTROLLER.nextDeleverageCut(MARKET_ID);
-            if (top == address(0)) {
-                revert InsufficientDeleverageCuts(debtCanceled, debtCanceled + remainingDebtAssets);
-            }
-            if (sliceAssets > remainingDebtAssets) sliceAssets = remainingDebtAssets;
-
-            uint256 cutSupplyShares = _morphoAssetsToSupplyShares(sliceAssets);
-            if (cutSupplyShares == 0) revert ZeroMorphoSupplyShares();
-            if (cutSupplyShares > remainingShares) cutSupplyShares = remainingShares;
-
-            (uint256 cutCollateralSeized, uint256 cutDebtCanceled) =
-                MORPHO.deleverage(_marketParams, cutSupplyShares, top, address(this), receiver);
+            (uint256 cutSupplyShares, uint256 cutCollateralSeized, uint256 cutDebtCanceled) =
+                _deleverageHeapIteration(remainingShares, receiver);
             remainingShares -= cutSupplyShares;
             collateralSeized += cutCollateralSeized;
             debtCanceled += cutDebtCanceled;
-
-            emit FallbackExitCut(top, cutSupplyShares, cutCollateralSeized, cutDebtCanceled);
         }
 
-        uint256 unresolvedDebtAssets = _morphoSupplySharesToAssets(remainingShares);
-        if (unresolvedDebtAssets != 0) {
+        if (_morphoSupplySharesToAssets(remainingShares) != 0) {
             revert MaxIterationsExhausted();
         }
+    }
+
+    /// @dev One iteration of `_deleverageFromHeap`: peeks the heap, sizes the cut, runs
+    ///      `MORPHO.deleverage`, emits the per-cut event. Reverts on insufficient slice / dust.
+    function _deleverageHeapIteration(uint256 remainingShares, address receiver)
+        internal
+        returns (uint256 cutSupplyShares, uint256 cutCollateralSeized, uint256 cutDebtCanceled)
+    {
+        uint256 remainingDebtAssets = _morphoSupplySharesToAssets(remainingShares);
+
+        (address top, uint256 sliceAssets) = CONTROLLER.nextDeleverageCut(MARKET_ID);
+        if (top == address(0)) {
+            revert InsufficientDeleverageCuts(0, remainingDebtAssets);
+        }
+        if (sliceAssets > remainingDebtAssets) sliceAssets = remainingDebtAssets;
+
+        cutSupplyShares = _morphoAssetsToSupplyShares(sliceAssets);
+        if (cutSupplyShares == 0) revert ZeroMorphoSupplyShares();
+        if (cutSupplyShares > remainingShares) cutSupplyShares = remainingShares;
+
+        (cutCollateralSeized, cutDebtCanceled) =
+            MORPHO.deleverage(_marketParams, cutSupplyShares, top, address(this), receiver);
+
+        emit FallbackExitCut(top, cutSupplyShares, cutCollateralSeized, cutDebtCanceled);
     }
 
     function _morphoSupplyAssets() internal view returns (uint256) {
