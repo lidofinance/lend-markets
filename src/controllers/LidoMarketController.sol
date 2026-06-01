@@ -28,6 +28,7 @@ interface IMorphoBlueForkDeleverage {
         address lender,
         address receiver
     ) external returns (uint256 collateralSeized, uint256 debtCanceled);
+    function isAuthorized(address authorizer, address authorized) external view returns (bool);
 }
 
 /// @title LidoMarketController
@@ -246,18 +247,50 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         emit BorrowerWatermarkSet(id, msg.sender, ltv);
     }
 
+    /// @notice Single-borrower deleverage passthrough. Core's `deleverage` is locked to the
+    ///         controller, so direct lenders and the vault call this method instead.
+    /// @dev Checks lender auth and the per-call liquidity gate here, then forwards to core.
+    function deleverage(
+        MarketParams calldata marketParams,
+        uint256 supplyShares,
+        address borrower,
+        address lender,
+        address receiver
+    ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
+        Id id = marketParams.id();
+        if (Id.unwrap(id) != Id.unwrap(_storage().controlledMarketId)) revert InvalidMarketId();
+        _requireLenderAuth(lender);
+
+        {
+            (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) = _supplyBorrowTotals(id);
+            uint256 lenderAssets = supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
+            if (lenderAssets <= _availableLiquidity(totalSupplyAssets, totalBorrowAssets)) revert LiquidityAvailable();
+        }
+
+        (collateralSeized, debtCanceled) = IMorphoBlueForkDeleverage(_storage().lendingMarket)
+            .deleverage(marketParams, supplyShares, borrower, lender, receiver);
+    }
+
+    /// @dev Lender authentication used by every controller-fronted deleverage entrypoint.
+    ///      Mirrors Morpho's `_isSenderAuthorized` semantics: `msg.sender` is either the lender
+    ///      itself or a Morpho-authorised spender (`isAuthorized[lender][msg.sender]`).
+    function _requireLenderAuth(address lender) internal view {
+        if (msg.sender == lender) return;
+        if (IMorphoBlueForkDeleverage(_storage().lendingMarket).isAuthorized(lender, msg.sender)) return;
+        revert Unauthorized();
+    }
+
     /// @notice Lender-driven deleverage against an explicit list of borrowers that have each opted
     ///         in by setting a personal watermark. Each cut is sized to bring the listed borrower's
     ///         LTV down to its watermark, at the oracle rate, capped by the lender's remaining
     ///         supply. Borrowers in the list without a watermark abort the whole call.
     ///
-    ///         The controller calls the core `deleverage` primitive once per cut. `msg.sender` is
-    ///         the lender; the lender must have authorised this controller on the core
-    ///         (`morpho.setAuthorization(controller, true)`) so the controller can spend on its
-    ///         behalf.
+    ///         Single source of truth for deleverage policy: this is the lender-auth + activation
+    ///         gate. Core's `deleverage` is locked to `msg.sender == marketController[id]`, so
+    ///         every cut goes through here.
     /// @dev Activation gate (lender's total exit must exceed available liquidity) is checked once
-    ///      here against the aggregate request — core then skips its own per-call gate for cuts
-    ///      originated by this controller.
+    ///      against the aggregate request. Lender auth: `msg.sender == lender` or `lender` set
+    ///      Morpho's `isAuthorized[lender][msg.sender]`.
     function deleverageByWatermark(
         MarketParams calldata marketParams,
         uint256 supplyShares,
@@ -268,6 +301,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         Id id = marketParams.id();
         if (Id.unwrap(id) != Id.unwrap(_storage().controlledMarketId)) revert InvalidMarketId();
         if (borrowers.length == 0) revert EmptyBorrowersList();
+        _requireLenderAuth(lender);
 
         address core = _storage().lendingMarket;
         {

@@ -16,16 +16,6 @@ import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 import {IMarketController} from "./interfaces/IMarketController.sol";
 import {IOracle} from "@morpho-blue/src/interfaces/IOracle.sol";
 
-interface IMorphoBlueForkVaultMorpho is IMorpho {
-    function deleverage(
-        MarketParams memory marketParams,
-        uint256 supplyShares,
-        address borrower,
-        address onBehalf,
-        address receiver
-    ) external returns (uint256 collateralSeized, uint256 debtCanceled);
-}
-
 /// @title MorphoBlueForkERC4626Vault
 /// @notice Single-market ERC-4626 wrapper for a Morpho Blue fork market with fallback exit support.
 contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
@@ -58,7 +48,7 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         uint256 debtCanceled
     );
 
-    IMorphoBlueForkVaultMorpho public immutable MORPHO;
+    IMorpho public immutable MORPHO;
     IMarketController public immutable CONTROLLER;
     Id public immutable MARKET_ID;
     IERC20 public immutable COLLATERAL_TOKEN;
@@ -79,7 +69,7 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
             revert ZeroAddress();
         }
 
-        MORPHO = IMorphoBlueForkVaultMorpho(morpho);
+        MORPHO = IMorpho(morpho);
         CONTROLLER = IMarketController(controller);
         MARKET_ID = marketParams_.id();
         COLLATERAL_TOKEN = IERC20(marketParams_.collateralToken);
@@ -201,7 +191,7 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
     }
 
     /// @dev One iteration of `_deleverageFromHeap`: peeks the heap, sizes the cut, runs
-    ///      `MORPHO.deleverage`, emits the per-cut event. Reverts on insufficient slice / dust.
+    ///      `CONTROLLER.deleverage`, emits the per-cut event. Reverts on insufficient slice / dust.
     function _deleverageHeapIteration(uint256 remainingShares, address receiver)
         internal
         returns (uint256 cutSupplyShares, uint256 cutCollateralSeized, uint256 cutDebtCanceled)
@@ -219,7 +209,7 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         if (cutSupplyShares > remainingShares) cutSupplyShares = remainingShares;
 
         (cutCollateralSeized, cutDebtCanceled) =
-            MORPHO.deleverage(_marketParams, cutSupplyShares, top, address(this), receiver);
+            CONTROLLER.deleverage(_marketParams, cutSupplyShares, top, address(this), receiver);
 
         emit FallbackExitCut(top, cutSupplyShares, cutCollateralSeized, cutDebtCanceled);
     }

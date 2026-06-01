@@ -203,9 +203,19 @@ interface IMarketController {
     /// @dev `msg.sender` is the borrower. `ltv` must be `< 1e18`; 0 clears the watermark.
     function setBorrowerWatermark(Id id, uint256 ltv) external;
 
+    /// @notice Single-borrower deleverage. The controller is the only legal caller of the core
+    ///         deleverage primitive, so direct lenders and the vault route through this passthrough.
+    ///         Auth: `msg.sender == lender || morpho.isAuthorized(lender, msg.sender)`.
+    function deleverage(
+        MarketParams calldata marketParams,
+        uint256 supplyShares,
+        address borrower,
+        address lender,
+        address receiver
+    ) external returns (uint256 collateralSeized, uint256 debtCanceled);
+
     /// @notice Lender-driven multi-cut deleverage against opted-in borrowers. The controller
-    ///         orchestrates calls to the core `deleverage` primitive; the lender must have
-    ///         authorised this controller on the core beforehand.
+    ///         orchestrates calls to the core `deleverage` primitive.
     function deleverageByWatermark(
         MarketParams calldata marketParams,
         uint256 supplyShares,

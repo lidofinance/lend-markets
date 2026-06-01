@@ -181,7 +181,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 firstCutShares = lenderShares / 6; // ~2 WETH cut
         vm.prank(LENDER);
-        ctx.market.deleverage(ctx.marketParams, firstCutShares, BORROWER, LENDER, LENDER);
+        ctx.controller.deleverage(ctx.marketParams, firstCutShares, BORROWER, LENDER, LENDER);
         (root,) = ctx.controller.nextDeleverageCut(ctx.id);
         assertEq(root, BORROWER, "BORROWER still highest after small partial cut");
 
@@ -193,11 +193,11 @@ contract MorphoBlueForkMainnetForkTest is Test {
         assertEq(root, SECOND_BORROWER, "heap re-sorts after BORROWER deleverages off-protocol");
 
         // (4) A cut against the new root succeeds. The cut size must exceed the idle liquidity
-        //     left by BORROWER's repay, otherwise core rejects with "ordinary liquidity available".
+        //     left by BORROWER's repay, otherwise the controller rejects with `LiquidityAvailable`.
         (uint256 lenderSharesAfterRepay,,) = ctx.market.position(ctx.id, LENDER);
         uint256 secondCutShares = lenderSharesAfterRepay / 3;
         vm.prank(LENDER);
-        ctx.market.deleverage(ctx.marketParams, secondCutShares, SECOND_BORROWER, LENDER, LENDER);
+        ctx.controller.deleverage(ctx.marketParams, secondCutShares, SECOND_BORROWER, LENDER, LENDER);
 
         // (5) THIRD_BORROWER (lowest LTV) has not been touched at any point.
         (, uint128 lowBorrowSharesAfter, uint128 lowCollateralAfter) = ctx.market.position(ctx.id, THIRD_BORROWER);
@@ -249,13 +249,13 @@ contract MorphoBlueForkMainnetForkTest is Test {
         uint256 cut = lenderShares / 20;
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("DeleverageRootBadDebt()"));
-        ctx.market.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
+        ctx.controller.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
 
         // Restore the rate; the head is solvent again; the same cut now succeeds.
         vm.clearMockedCalls();
         assertFalse(ctx.controller.rootHasBadDebt(ctx.id), "head solvent after restore");
         vm.prank(LENDER);
-        ctx.market.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
+        ctx.controller.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
     }
 
     /// @notice Deleverage works on an unhealthy-but-solvent position (LLTV < LTV < 100%).
@@ -297,7 +297,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
         uint256 cut = lenderShares / 10;
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.market.deleverage(ctx.marketParams, cut, BORROWER, LENDER, LENDER);
+            ctx.controller.deleverage(ctx.marketParams, cut, BORROWER, LENDER, LENDER);
 
         assertGt(debtCanceled, 0, "debt cancelled");
         assertEq(collateralSeized, debtCanceled * 1e36 / droppedPrice, "collateral seized at oracle rate");
@@ -391,10 +391,6 @@ contract MorphoBlueForkMainnetForkTest is Test {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 6 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        // Lender authorises the controller so it can spend lender's supply through core deleverage.
-        vm.prank(LENDER);
-        ctx.market.setAuthorization(address(ctx.controller), true);
-
         // Activation: lender's exit must exceed available liquidity (20 - 18 = 2). Use full supply.
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
         address[] memory list = new address[](2);
@@ -442,7 +438,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.market.deleverage(ctx.marketParams, sharesToExit, BORROWER, LENDER, LENDER);
+            ctx.controller.deleverage(ctx.marketParams, sharesToExit, BORROWER, LENDER, LENDER);
 
         uint256 expectedCollateralSeized = debtCanceled * 1e36 / ctx.price;
         assertEq(collateralSeized, expectedCollateralSeized, "oracle-rate collateral");

@@ -72,6 +72,16 @@ interface IMorphoBlueForkLike {
         returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral);
 }
 
+interface IControllerLike {
+    function deleverage(
+        LidoMarketParams calldata marketParams,
+        uint256 supplyShares,
+        address borrower,
+        address lender,
+        address receiver
+    ) external returns (uint256 collateralSeized, uint256 debtCanceled);
+}
+
 interface IControllerDeleverageHeapAdmin {
     function CONFIGURATOR_ROLE() external view returns (bytes32);
 
@@ -108,6 +118,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         IERC20Like loanToken;
         IERC20Like collateralToken;
         IMorphoBlueForkLike market;
+        IControllerLike controller;
         LidoMarketParams lidoParams;
         AdapterMarketParams adapterParams;
         bytes32 marketId;
@@ -156,6 +167,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         });
         ctx.marketId = AdapterId.unwrap(ctx.adapterParams.id());
         address controller = _deployController(address(ctx.market), ctx.marketId);
+        ctx.controller = IControllerLike(controller);
 
         ctx.market.enableIrm(irm);
         ctx.market.enableLltv(LLTV);
@@ -238,7 +250,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
 
         vm.prank(DIRECT_LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.market.deleverage(ctx.lidoParams, supplyShares, BORROWER, DIRECT_LENDER, DIRECT_LENDER);
+            ctx.controller.deleverage(ctx.lidoParams, supplyShares, BORROWER, DIRECT_LENDER, DIRECT_LENDER);
 
         (uint256 directSupplySharesAfterFallback,,) = ctx.market.position(ctx.marketId, DIRECT_LENDER);
         (,, uint128 borrowerRawCollateralAfter) = ctx.market.position(ctx.marketId, BORROWER);
