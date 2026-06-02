@@ -1,39 +1,32 @@
 #!/usr/bin/env bash
 # Pre-commit hook. Activate with: git config core.hooksPath .githooks
 #
-# Runs `forge fmt --check` on tracked Solidity paths. Mirrors the CI gate so
-# formatting issues are caught locally before push.
+# Runs `solhint` on staged Solidity files under src/. Skips silently when solhint
+# is not installed so users without Node don't get blocked from committing.
+#
+# Setup: npm install -g solhint@5
 
 set -euo pipefail
 
-if ! command -v forge >/dev/null 2>&1; then
-  echo "pre-commit: forge not found in PATH, skipping fmt check" >&2
+if ! command -v solhint >/dev/null 2>&1; then
+  echo "pre-commit: solhint not found in PATH, skipping (install with: npm install -g solhint@5)" >&2
   exit 0
 fi
 
-# Match the paths checked by `make fmt-check` and the AGENTS.md guidance.
-FMT_PATHS=(src/MorphoBlueFork.sol src/controllers src/interfaces src/oracle test)
-
-# Only run if any staged file falls under those paths and is a .sol file.
-STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.sol$' || true)
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^src/.*\.sol$' || true)
 if [ -z "$STAGED" ]; then
   exit 0
 fi
 
-NEEDS_CHECK=false
-for path in "${FMT_PATHS[@]}"; do
-  if echo "$STAGED" | grep -q "^${path}"; then
-    NEEDS_CHECK=true
-    break
-  fi
-done
-
-if [ "$NEEDS_CHECK" = false ]; then
+# .solhintignore already excludes vendored paths, but src/proxy/OssifiableProxy.sol matches
+# the src/ filter above and would slip through — drop it explicitly.
+STAGED=$(echo "$STAGED" | grep -v '^src/proxy/OssifiableProxy.sol' || true)
+if [ -z "$STAGED" ]; then
   exit 0
 fi
 
-if ! forge fmt --check "${FMT_PATHS[@]}"; then
-  echo
-  echo "pre-commit: forge fmt --check failed. Run 'make fmt' to fix." >&2
+if ! solhint $STAGED; then
+  echo >&2
+  echo "pre-commit: solhint reported issues. Fix them or run 'git commit --no-verify' to bypass." >&2
   exit 1
 fi
