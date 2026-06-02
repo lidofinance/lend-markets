@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Pre-commit hook. Activate with: git config core.hooksPath .githooks
+#
+# Runs `forge fmt --check` on tracked Solidity paths. Mirrors the CI gate so
+# formatting issues are caught locally before push.
+
+set -euo pipefail
+
+if ! command -v forge >/dev/null 2>&1; then
+  echo "pre-commit: forge not found in PATH, skipping fmt check" >&2
+  exit 0
+fi
+
+# Match the paths checked by `make fmt-check` and the AGENTS.md guidance.
+FMT_PATHS=(src/MorphoBlueFork.sol src/controllers src/interfaces src/oracle test)
+
+# Only run if any staged file falls under those paths and is a .sol file.
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.sol$' || true)
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+NEEDS_CHECK=false
+for path in "${FMT_PATHS[@]}"; do
+  if echo "$STAGED" | grep -q "^${path}"; then
+    NEEDS_CHECK=true
+    break
+  fi
+done
+
+if [ "$NEEDS_CHECK" = false ]; then
+  exit 0
+fi
+
+if ! forge fmt --check "${FMT_PATHS[@]}"; then
+  echo
+  echo "pre-commit: forge fmt --check failed. Run 'make fmt' to fix." >&2
+  exit 1
+fi

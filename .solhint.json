@@ -1,0 +1,15 @@
+{
+  "extends": "solhint:recommended",
+  "rules": {
+    "compiler-version": "off",
+    "func-visibility": ["error", { "ignoreConstructors": true }],
+    "no-empty-blocks": "off",
+    "reason-string": ["warn", { "maxLength": 96 }],
+    "max-line-length": ["warn", 120],
+    "not-rely-on-time": "off",
+    "no-inline-assembly": "off",
+    "private-vars-leading-underscore": "off",
+    "func-named-parameters": "off",
+    "max-states-count": "off"
+  }
+}

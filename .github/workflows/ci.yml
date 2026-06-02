@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build + fmt + lint + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/repo-setup
+
+      - name: build (with sizes)
+        run: forge build --sizes
+
+      - name: fmt check
+        run: make fmt-check
+
+      - name: lint
+        run: make lint
+
+      - name: test (unit + benchmark; fork tests auto-skip)
+        run: forge test

@@ -1,0 +1,8 @@
+{
+  "filter_paths": "lib/|test/|src/proxy/OssifiableProxy.sol",
+  "exclude_informational": true,
+  "exclude_low": true,
+  "exclude_optimization": true,
+  "exclude_dependencies": true,
+  "fail_pedantic": false
+}

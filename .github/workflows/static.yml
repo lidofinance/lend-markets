@@ -1,0 +1,59 @@
+name: static-analysis
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  slither:
+    name: slither
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          submodules: recursive
+
+      - uses: crytic/slither-action@b52cc1cbfee9ca3e8722dd5224299d16c9a6b80f # v0.4.2
+        id: slither
+        continue-on-error: true
+        with:
+          fail-on: medium
+          slither-config: slither.config.json
+          slither-args: --foundry-out-directory out
+          sarif: results.sarif
+
+      - name: upload SARIF
+        if: always() && steps.slither.outputs.sarif != ''
+        uses: github/codeql-action/upload-sarif@03e4368ac7daa2bd82b3e85262f3bf87ee112f57 # v3.36.0
+        with:
+          sarif_file: ${{ steps.slither.outputs.sarif }}
+
+      - name: fail on slither findings
+        if: steps.slither.outcome == 'failure'
+        run: exit 1
+
+  solhint:
+    name: solhint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: install solhint
+        run: npm install -g solhint@5
+
+      - name: solhint
+        run: solhint 'src/**/*.sol'

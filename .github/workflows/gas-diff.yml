@@ -1,0 +1,46 @@
+name: gas-diff
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gas-diff:
+    name: gas snapshot diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/repo-setup
+
+      # `--no-match-path` excludes the deleverage benchmark from the gas report itself
+      # (its 100M+ gas figures dwarf everything else).
+      - name: gas report
+        run: forge test --gas-report --no-match-path 'test/integration/HeapDeleverageBenchmark.t.sol' > gasreport.ansi
+
+      # `ignore` filters test contracts from the diff table the action posts as a PR comment
+      # (we only care about src/ contracts shifting).
+      - name: compare gas reports
+        uses: Rubilmax/foundry-gas-diff@60e763d02526ee3299bd04278cb178d1547b134b # v3.21
+        id: gas_diff
+        with:
+          summaryQuantile: 0.9
+          sortCriteria: avg,max
+          sortOrders: desc,desc
+          ignore: test/**/*
+
+      - name: comment with diff
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0 # v3.0.4
+        if: steps.gas_diff.outputs.markdown != ''
+        with:
+          header: gas-diff
+          message: ${{ steps.gas_diff.outputs.markdown }}
