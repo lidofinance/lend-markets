@@ -100,7 +100,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
         _assertCollateralState(ctx.controller, ctx.id, BORROWER, activatedCollateral, 0, 0);
     }
 
-    function testHappyPathControllerFallbackExitWithRealLidoWstETH() public {
+    function testHappyPathControllerDeleverageWithRealLidoWstETH() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(true);
@@ -132,7 +132,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
         _assertCollateralState(ctx.controller, ctx.id, BORROWER, borrowerCollateral, 0, 0);
         _assertCollateralState(ctx.controller, ctx.id, SECOND_BORROWER, secondBorrowerCollateral, 0, 0);
 
-        _fallbackExitAndAssert(ctx, borrowerCollateral);
+        _deleverageAndAssert(ctx, borrowerCollateral);
     }
 
     /// @notice One scenario exercising the heap-driven deleverage ordering end-to-end.
@@ -177,29 +177,28 @@ contract MorphoBlueForkMainnetForkTest is Test {
         (address root,) = ctx.controller.nextDeleverageCut(ctx.id);
         assertEq(root, BORROWER, "highest-LTV borrower at root");
 
-        // (2) Targeted cut on the heap root reduces it but does not flip the order.
-        (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
-        uint256 firstCutShares = lenderShares / 6; // ~2 WETH cut
+        // (2) First cut on the heap root, sized to the controller's allowed slice (so the new
+        //     slice-cap hook check passes). Reduces the root's key but does not flip the order.
+        uint256 firstCutShares = _sliceShares(ctx);
         vm.prank(LENDER);
-        ctx.controller.deleverage(ctx.marketParams, firstCutShares, BORROWER, LENDER, LENDER);
+        ctx.market.deleverage(ctx.marketParams, firstCutShares, BORROWER, LENDER, LENDER);
         (root,) = ctx.controller.nextDeleverageCut(ctx.id);
-        assertEq(root, BORROWER, "BORROWER still highest after small partial cut");
+        assertEq(root, BORROWER, "BORROWER still highest after first partial cut");
 
-        // (3) BORROWER partially repays. The heap re-sorts and SECOND_BORROWER becomes root.
-        _mintWETH(ctx.market, BORROWER, 3 ether);
-        vm.prank(BORROWER);
-        ctx.market.repay(ctx.marketParams, 3 ether, 0, BORROWER, "");
-        (root,) = ctx.controller.nextDeleverageCut(ctx.id);
-        assertEq(root, SECOND_BORROWER, "heap re-sorts after BORROWER deleverages off-protocol");
-
-        // (4) A cut against the new root succeeds. The cut size must exceed the idle liquidity
-        //     left by BORROWER's repay, otherwise the controller rejects with `LiquidityAvailable`.
-        (uint256 lenderSharesAfterRepay,,) = ctx.market.position(ctx.id, LENDER);
-        uint256 secondCutShares = lenderSharesAfterRepay / 3;
+        // (3) Targeting the second borrower while it isn't the heap root is rejected by the
+        //     controller hook — eligibility filter requires heap-head or personal watermark.
         vm.prank(LENDER);
-        ctx.controller.deleverage(ctx.marketParams, secondCutShares, SECOND_BORROWER, LENDER, LENDER);
+        vm.expectRevert(abi.encodeWithSignature("DeleverageBorrowerNotEligible()"));
+        ctx.market.deleverage(ctx.marketParams, firstCutShares, SECOND_BORROWER, LENDER, LENDER);
 
-        // (5) THIRD_BORROWER (lowest LTV) has not been touched at any point.
+        // (4) SECOND_BORROWER opts in to a 5% post-cut LTV — they are now eligible regardless of
+        //     heap position. The same cut now succeeds against them.
+        vm.prank(SECOND_BORROWER);
+        ctx.controller.setBorrowerWatermark(ctx.id, 0.05e18);
+        vm.prank(LENDER);
+        ctx.market.deleverage(ctx.marketParams, firstCutShares, SECOND_BORROWER, LENDER, LENDER);
+
+        // (5) THIRD_BORROWER (lowest LTV, no watermark) is never touched throughout the scenario.
         (, uint128 lowBorrowSharesAfter, uint128 lowCollateralAfter) = ctx.market.position(ctx.id, THIRD_BORROWER);
         assertEq(uint256(lowCollateralAfter), lowCol, "low-LTV borrower's collateral untouched");
         assertGt(lowBorrowSharesAfter, 0, "low-LTV borrower still has debt");
@@ -243,19 +242,19 @@ contract MorphoBlueForkMainnetForkTest is Test {
         vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.7e18)));
         assertTrue(ctx.controller.rootHasBadDebt(ctx.id), "head is bad debt after rebase");
 
-        // A small cut against the healthy tail passes core's eligibility/over-cap/liquidity checks,
-        // but the controller hook reverts because the queue head is bad debt.
+        // Even targeting the head itself (eligible) is blocked while head is bad debt: the
+        // controller's bad-debt guard fires on every deleverage path.
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 cut = lenderShares / 20;
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("DeleverageRootBadDebt()"));
-        ctx.controller.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
+        ctx.market.deleverage(ctx.marketParams, cut, BORROWER, LENDER, LENDER);
 
-        // Restore the rate; the head is solvent again; the same cut now succeeds.
+        // Restore the rate; the head is solvent again; the same cut against the head now succeeds.
         vm.clearMockedCalls();
         assertFalse(ctx.controller.rootHasBadDebt(ctx.id), "head solvent after restore");
         vm.prank(LENDER);
-        ctx.controller.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
+        ctx.market.deleverage(ctx.marketParams, cut, BORROWER, LENDER, LENDER);
     }
 
     /// @notice Deleverage works on an unhealthy-but-solvent position (LLTV < LTV < 100%).
@@ -297,7 +296,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
         uint256 cut = lenderShares / 10;
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.controller.deleverage(ctx.marketParams, cut, BORROWER, LENDER, LENDER);
+            ctx.market.deleverage(ctx.marketParams, cut, BORROWER, LENDER, LENDER);
 
         assertGt(debtCanceled, 0, "debt cancelled");
         assertEq(collateralSeized, debtCanceled * 1e36 / droppedPrice, "collateral seized at oracle rate");
@@ -368,16 +367,19 @@ contract MorphoBlueForkMainnetForkTest is Test {
         assertApproxEqAbs(sliceAfter, expected, 1e15, "slice matches watermark formula");
     }
 
-    /// @notice Path B: `deleverageByWatermark` cuts each listed borrower at their watermark slice.
-    ///         Borrowers without a watermark abort the call.
-    function testDeleverageByWatermarkRespectsListAndSlice() public {
+    /// @notice Direct EOA-lender can deleverage a non-head borrower iff that borrower has a
+    ///         personal watermark set. Without watermark the controller hook reverts with
+    ///         `DeleverageBorrowerNotEligible`.
+    function testDeleverageEligibilityViaPersonalWatermark() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
-        _mintWETH(ctx.market, LENDER, 20 ether);
+        _mintWETH(ctx.market, LENDER, 10 ether);
         vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 20 ether, 0, LENDER, "");
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
 
+        // Two borrowers, BORROWER is the heap root (higher LTV). SECOND_BORROWER is tail.
+        // Total borrow exactly drains the supply so the lender's exit must trigger deleverage.
         uint256 col1 = _mintWstETH(ctx.market, BORROWER, 20 ether);
         uint256 col2 = _mintWstETH(ctx.market, SECOND_BORROWER, 20 ether);
         vm.prank(BORROWER);
@@ -387,58 +389,45 @@ contract MorphoBlueForkMainnetForkTest is Test {
 
         vm.warp(block.timestamp + 2 hours + 1);
         vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 12 ether, 0, BORROWER, BORROWER);
+        ctx.market.borrow(ctx.marketParams, 7 ether, 0, BORROWER, BORROWER);
         vm.prank(SECOND_BORROWER);
-        ctx.market.borrow(ctx.marketParams, 6 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
+        ctx.market.borrow(ctx.marketParams, 3 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        // Activation: lender's exit must exceed available liquidity (20 - 18 = 2). Use full supply.
+        (address root,) = ctx.controller.nextDeleverageCut(ctx.id);
+        assertEq(root, BORROWER, "BORROWER is heap root");
+
+        // Cut sized at exactly the watermark slice the controller will allow once set; large
+        // enough to clear the liquidity gate (available ≈ 0).
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
-        address[] memory list = new address[](2);
-        list[0] = BORROWER;
-        list[1] = SECOND_BORROWER;
+        uint256 cut = lenderShares / 5;
 
-        // No watermark on BORROWER → revert.
+        // Targeting tail SECOND_BORROWER without a watermark → hook revert.
         vm.prank(LENDER);
-        vm.expectRevert(abi.encodeWithSignature("WatermarkNotSet()"));
-        ctx.controller.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
+        vm.expectRevert(abi.encodeWithSignature("DeleverageBorrowerNotEligible()"));
+        ctx.market.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
 
-        // BORROWER opts in to 40% LTV. SECOND_BORROWER still no watermark.
-        vm.prank(BORROWER);
-        ctx.controller.setBorrowerWatermark(ctx.id, 0.4e18);
-
-        vm.prank(LENDER);
-        vm.expectRevert(abi.encodeWithSignature("WatermarkNotSet()"));
-        ctx.controller.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
-
-        // SECOND_BORROWER also opts in to 30%.
+        // SECOND_BORROWER opts in to 5% post-cut LTV — slice is large enough for the cut.
         vm.prank(SECOND_BORROWER);
-        ctx.controller.setBorrowerWatermark(ctx.id, 0.3e18);
+        ctx.controller.setBorrowerWatermark(ctx.id, 0.05e18);
 
-        uint256 b1ColBefore = col1;
-        uint256 b2ColBefore = col2;
+        (,, uint128 colBefore) = ctx.market.position(ctx.id, SECOND_BORROWER);
         vm.prank(LENDER);
-        (uint256 totalSeized, uint256 totalDebtCanceled) =
-            ctx.controller.deleverageByWatermark(ctx.marketParams, lenderShares, list, LENDER, LENDER);
+        (uint256 collateralSeized, uint256 debtCanceled) =
+            ctx.market.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
 
-        // Each borrower cut to (close to) their watermark LTV.
-        (, uint128 b1DebtAfter, uint128 b1ColAfter) = ctx.market.position(ctx.id, BORROWER);
-        (, uint128 b2DebtAfter, uint128 b2ColAfter) = ctx.market.position(ctx.id, SECOND_BORROWER);
-        assertLt(uint256(b1ColAfter), b1ColBefore, "BORROWER collateral debited");
-        assertLt(uint256(b2ColAfter), b2ColBefore, "SECOND_BORROWER collateral debited");
-        assertGt(uint256(b1DebtAfter), 0, "BORROWER still has debt (cut, not full close)");
-        assertGt(uint256(b2DebtAfter), 0, "SECOND_BORROWER still has debt");
-        assertGt(totalSeized, 0, "collateral seized");
-        assertGt(totalDebtCanceled, 0, "debt canceled");
-        assertEq(totalSeized, totalDebtCanceled * 1e36 / ctx.price, "cuts at oracle rate, no LIF");
+        (,, uint128 colAfter) = ctx.market.position(ctx.id, SECOND_BORROWER);
+        assertEq(uint256(colAfter), uint256(colBefore) - collateralSeized, "tail collateral debited");
+        assertGt(debtCanceled, 0, "tail debt canceled");
+        assertEq(collateralSeized, debtCanceled * 1e36 / ctx.price, "oracle-rate cut");
     }
 
-    function _fallbackExitAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
+    function _deleverageAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
         (uint256 supplyShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 sharesToExit = supplyShares / 5;
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.controller.deleverage(ctx.marketParams, sharesToExit, BORROWER, LENDER, LENDER);
+            ctx.market.deleverage(ctx.marketParams, sharesToExit, BORROWER, LENDER, LENDER);
 
         uint256 expectedCollateralSeized = debtCanceled * 1e36 / ctx.price;
         assertEq(collateralSeized, expectedCollateralSeized, "oracle-rate collateral");
@@ -446,6 +435,18 @@ contract MorphoBlueForkMainnetForkTest is Test {
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "lender received real wstETH");
 
         _assertBorrowerCollateralDebited(ctx, borrowerCollateral, collateralSeized);
+    }
+
+    /// @dev Loan-asset slice the controller will allow against the current heap root, converted
+    ///      to lender supply shares using current market totals. Tests use this as a "cut at most
+    ///      the allowed amount" helper for any deleverage call targeting the heap root.
+    function _sliceShares(TestMarket memory ctx) internal view returns (uint256) {
+        (, uint256 sliceAssets) = ctx.controller.nextDeleverageCut(ctx.id);
+        (uint128 totalSupplyAssets, uint128 totalSupplyShares,,,,) = ctx.market.market(ctx.id);
+        // toSharesDown — cut at most allowedSlice; never round up past the cap.
+        return sliceAssets == type(uint256).max
+            ? type(uint256).max
+            : sliceAssets * uint256(totalSupplyShares) / uint256(totalSupplyAssets);
     }
 
     function _hasMainnetLidoContracts() internal view returns (bool) {

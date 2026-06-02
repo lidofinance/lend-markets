@@ -39,6 +39,7 @@ library MorphoBlueForkErrorsLib {
     string internal constant CONTROLLER_MISMATCH = "controller mismatch";
     string internal constant DELEVERAGE_DISABLED = "deleverage disabled";
     string internal constant ZERO_SHARES = "zero shares";
+    string internal constant DELEVERAGE_LIQUIDITY_AVAILABLE = "ordinary liquidity available";
     string internal constant DELEVERAGE_INELIGIBLE = "borrower not deleverage-eligible";
     string internal constant DELEVERAGE_OVER_CAP = "deleverage over cap";
     string internal constant DELEVERAGE_REQUIRES_CONTROLLER = "deleverage requires controller";
@@ -561,11 +562,11 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
     /* DELEVERAGE */
 
-    /// @notice Cancels borrower debt against lender supply shares. Core primitive: callable only
-    ///         by the market's controller. Lender authentication, the liquidity gate, watermark
-    ///         sizing, heap traversal and batch orchestration all live on the controller.
-    /// @dev `msg.sender` must be `marketController[id]`. Other callers (lenders, vault, EOAs)
-    ///      route through the controller.
+    /// @notice Cancels borrower debt against lender supply shares when normal withdraw liquidity is
+    ///         insufficient. Core primitive — runs standard Morpho `_isSenderAuthorized(lender)` auth
+    ///         and the liquidity-gate activation check. Eligibility (borrower must be heap head or
+    ///         have a personal watermark) and the slice cap are enforced by the controller's
+    ///         deleverage hook.
     function deleverage(
         MarketParams memory marketParams,
         uint256 supplyShares,
@@ -576,13 +577,15 @@ contract MorphoBlueFork is IMorphoStaticTyping {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(deleverageEnabled[id], MorphoBlueForkErrorsLib.DELEVERAGE_DISABLED);
-        require(msg.sender == marketController[id], ErrorsLib.UNAUTHORIZED);
+        require(marketController[id] != address(0), MorphoBlueForkErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
         require(supplyShares != 0, MorphoBlueForkErrorsLib.ZERO_SHARES);
         require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
+        require(_isSenderAuthorized(lender), ErrorsLib.UNAUTHORIZED);
 
         _accrueInterest(marketParams, id);
 
         debtCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        require(debtCanceled > _availableLiquidity(id), MorphoBlueForkErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
 
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
         uint256 borrowerRawCollateral = position[id][borrower].collateral;

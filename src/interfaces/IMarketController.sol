@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity >=0.8.0;
 
-import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
+import {Id} from "@morpho-blue/src/interfaces/IMorpho.sol";
 
 /// @title IMarketController
 /// @notice Optional per-market policy hooks used by the Lido Lending Morpho fork.
@@ -180,6 +180,12 @@ interface IMarketController {
     ///         `borrower` is address(0) if the heap is empty.
     function nextDeleverageCut(Id id) external view returns (address borrower, uint256 sliceAssets);
 
+    /// @notice Maximum slice (in loan assets) the controller's policy allows for a single
+    ///         `deleverage` call against `borrower`. Mirrors the slice cap enforced in the
+    ///         controller's deleverage hook: `max(heapSlice, watermarkSlice)`. Zero means the
+    ///         borrower is not eligible for deleverage at all.
+    function allowedSliceFor(Id id, address borrower) external view returns (uint256);
+
     /// @notice True if the heap root (riskiest borrower) is bad debt (debt > collateral value).
     function rootHasBadDebt(Id id) external view returns (bool);
 
@@ -202,27 +208,6 @@ interface IMarketController {
     /// @notice Borrower sets their own personal watermark (target post-cut LTV in WAD).
     /// @dev `msg.sender` is the borrower. `ltv` must be `< 1e18`; 0 clears the watermark.
     function setBorrowerWatermark(Id id, uint256 ltv) external;
-
-    /// @notice Single-borrower deleverage. The controller is the only legal caller of the core
-    ///         deleverage primitive, so direct lenders and the vault route through this passthrough.
-    ///         Auth: `msg.sender == lender || morpho.isAuthorized(lender, msg.sender)`.
-    function deleverage(
-        MarketParams calldata marketParams,
-        uint256 supplyShares,
-        address borrower,
-        address lender,
-        address receiver
-    ) external returns (uint256 collateralSeized, uint256 debtCanceled);
-
-    /// @notice Lender-driven multi-cut deleverage against opted-in borrowers. The controller
-    ///         orchestrates calls to the core `deleverage` primitive.
-    function deleverageByWatermark(
-        MarketParams calldata marketParams,
-        uint256 supplyShares,
-        address[] calldata borrowers,
-        address lender,
-        address receiver
-    ) external returns (uint256 totalCollateralSeized, uint256 totalDebtCanceled);
 
     /// @notice Strict action callback. Reverts to abort the calling action.
     /// @dev The core calls each action hook after input normalization and action-specific amount

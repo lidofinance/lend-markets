@@ -17,20 +17,6 @@ import {IMarketAccessRegistry} from "../interfaces/IMarketAccessRegistry.sol";
 import {DeleverageSliceLib} from "../libs/DeleverageSliceLib.sol";
 import {MaxHeapLib} from "../libs/MaxHeapLib.sol";
 
-/// @dev Local view of the lido-lending core's fork-added single-borrower `deleverage` primitive.
-///      Other entrypoints are off the controller's path; this minimal interface is all the
-///      controller needs to orchestrate `deleverageByWatermark`.
-interface IMorphoBlueForkDeleverage {
-    function deleverage(
-        MarketParams memory marketParams,
-        uint256 supplyShares,
-        address borrower,
-        address lender,
-        address receiver
-    ) external returns (uint256 collateralSeized, uint256 debtCanceled);
-    function isAuthorized(address authorizer, address authorized) external view returns (bool);
-}
-
 /// @title LidoMarketController
 /// @notice Stateful market policy for Lido Lending markets.
 /// @dev Owns Lido-specific policy state: matured collateral, dust, freeze/pause and deleverage
@@ -78,9 +64,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     error PositionBlocked();
     error InsufficientMaturedCollateral();
     error WatermarkOutOfRange();
-    error WatermarkNotSet();
-    error EmptyBorrowersList();
-    error LiquidityAvailable();
+    error DeleverageBorrowerNotEligible();
+    error DeleverageSliceExceedsAllowed();
 
     event MarketFrozen(Id indexed id, bool frozen, address indexed by);
     event MarketPaused(Id indexed id, bool paused, address indexed by);
@@ -245,149 +230,6 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         if (ltv >= DeleverageSliceLib.WAD) revert WatermarkOutOfRange();
         _storage().borrowerWatermark[id][msg.sender] = ltv;
         emit BorrowerWatermarkSet(id, msg.sender, ltv);
-    }
-
-    /// @notice Single-borrower deleverage passthrough. Core's `deleverage` is locked to the
-    ///         controller, so direct lenders and the vault call this method instead.
-    /// @dev Checks lender auth and the per-call liquidity gate here, then forwards to core.
-    function deleverage(
-        MarketParams calldata marketParams,
-        uint256 supplyShares,
-        address borrower,
-        address lender,
-        address receiver
-    ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
-        Id id = marketParams.id();
-        if (Id.unwrap(id) != Id.unwrap(_storage().controlledMarketId)) revert InvalidMarketId();
-        _requireLenderAuth(lender);
-
-        {
-            (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) = _supplyBorrowTotals(id);
-            uint256 lenderAssets = supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
-            if (lenderAssets <= _availableLiquidity(totalSupplyAssets, totalBorrowAssets)) revert LiquidityAvailable();
-        }
-
-        (collateralSeized, debtCanceled) = IMorphoBlueForkDeleverage(_storage().lendingMarket)
-            .deleverage(marketParams, supplyShares, borrower, lender, receiver);
-    }
-
-    /// @dev Lender authentication used by every controller-fronted deleverage entrypoint.
-    ///      Mirrors Morpho's `_isSenderAuthorized` semantics: `msg.sender` is either the lender
-    ///      itself or a Morpho-authorised spender (`isAuthorized[lender][msg.sender]`).
-    function _requireLenderAuth(address lender) internal view {
-        if (msg.sender == lender) return;
-        if (IMorphoBlueForkDeleverage(_storage().lendingMarket).isAuthorized(lender, msg.sender)) return;
-        revert Unauthorized();
-    }
-
-    /// @notice Lender-driven deleverage against an explicit list of borrowers that have each opted
-    ///         in by setting a personal watermark. Each cut is sized to bring the listed borrower's
-    ///         LTV down to its watermark, at the oracle rate, capped by the lender's remaining
-    ///         supply. Borrowers in the list without a watermark abort the whole call.
-    ///
-    ///         Single source of truth for deleverage policy: this is the lender-auth + activation
-    ///         gate. Core's `deleverage` is locked to `msg.sender == marketController[id]`, so
-    ///         every cut goes through here.
-    /// @dev Activation gate (lender's total exit must exceed available liquidity) is checked once
-    ///      against the aggregate request. Lender auth: `msg.sender == lender` or `lender` set
-    ///      Morpho's `isAuthorized[lender][msg.sender]`.
-    function deleverageByWatermark(
-        MarketParams calldata marketParams,
-        uint256 supplyShares,
-        address[] calldata borrowers,
-        address lender,
-        address receiver
-    ) external returns (uint256 totalCollateralSeized, uint256 totalDebtCanceled) {
-        Id id = marketParams.id();
-        if (Id.unwrap(id) != Id.unwrap(_storage().controlledMarketId)) revert InvalidMarketId();
-        if (borrowers.length == 0) revert EmptyBorrowersList();
-        _requireLenderAuth(lender);
-
-        address core = _storage().lendingMarket;
-        {
-            (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) = _supplyBorrowTotals(id);
-            uint256 lenderAssetsTotal = supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
-            if (lenderAssetsTotal <= _availableLiquidity(totalSupplyAssets, totalBorrowAssets)) {
-                revert LiquidityAvailable();
-            }
-        }
-
-        WatermarkLoopCtx memory ctx = WatermarkLoopCtx({
-            core: core,
-            marketParams: marketParams,
-            id: id,
-            lender: lender,
-            receiver: receiver,
-            remainingShares: supplyShares
-        });
-        for (uint256 i = 0; i < borrowers.length; i++) {
-            if (ctx.remainingShares == 0) break;
-            (uint256 sharesUsed, uint256 cutCol, uint256 cutDebt) = _watermarkCutBorrower(ctx, borrowers[i]);
-            if (sharesUsed == 0) continue;
-            ctx.remainingShares -= sharesUsed;
-            totalCollateralSeized += cutCol;
-            totalDebtCanceled += cutDebt;
-        }
-    }
-
-    struct WatermarkLoopCtx {
-        address core;
-        MarketParams marketParams;
-        Id id;
-        address lender;
-        address receiver;
-        uint256 remainingShares;
-    }
-
-    /// @dev One iteration of `deleverageByWatermark`: compute watermark slice, call core deleverage.
-    ///      Returns (0, 0, 0) when the borrower's LTV is already at/under the watermark.
-    function _watermarkCutBorrower(WatermarkLoopCtx memory ctx, address borrower)
-        internal
-        returns (uint256 sharesUsed, uint256 cutCol, uint256 cutDebt)
-    {
-        sharesUsed = _watermarkSliceShares(ctx.id, borrower, ctx.remainingShares);
-        if (sharesUsed == 0) return (0, 0, 0);
-        (cutCol, cutDebt) = IMorphoBlueForkDeleverage(ctx.core)
-            .deleverage(ctx.marketParams, sharesUsed, borrower, ctx.lender, ctx.receiver);
-    }
-
-    /// @dev Converts the borrower's watermark slice (assets) into a supplyShares cut size, capped
-    ///      by the lender's remaining shares. Reverts if the borrower has not opted in. Returns 0
-    ///      when the borrower's LTV is already at/under the watermark.
-    function _watermarkSliceShares(Id id, address borrower, uint256 remainingShares) internal view returns (uint256) {
-        uint256 watermarkLtv = _storage().borrowerWatermark[id][borrower];
-        if (watermarkLtv == 0) revert WatermarkNotSet();
-
-        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, borrower);
-        if (borrowShares == 0 || rawCollateral == 0) return 0;
-
-        (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets, uint256 totalBorrowShares) =
-            _supplyBorrowTotals(id);
-        uint256 debt = borrowShares.toAssetsUp(totalBorrowAssets, totalBorrowShares);
-        uint256 colValue = rawCollateral.mulDivDown(_collateralPrice(id), DeleverageSliceLib.ORACLE_PRICE_SCALE);
-        uint256 sliceAssets = DeleverageSliceLib.computeWatermarkSlice(debt, colValue, watermarkLtv);
-        if (sliceAssets == 0) return 0;
-
-        uint256 shares = sliceAssets.toSharesUp(totalSupplyAssets, totalSupplyShares);
-        return shares > remainingShares ? remainingShares : shares;
-    }
-
-    function _supplyBorrowTotals(Id id)
-        internal
-        view
-        returns (
-            uint256 totalSupplyAssets,
-            uint256 totalSupplyShares,
-            uint256 totalBorrowAssets,
-            uint256 totalBorrowShares
-        )
-    {
-        (uint128 sa, uint128 ss, uint128 ba, uint128 bs,,) = IMorphoStaticTyping(_storage().lendingMarket).market(id);
-        return (uint256(sa), uint256(ss), uint256(ba), uint256(bs));
-    }
-
-    function _availableLiquidity(uint256 totalSupplyAssets, uint256 totalBorrowAssets) internal pure returns (uint256) {
-        return totalSupplyAssets > totalBorrowAssets ? totalSupplyAssets - totalBorrowAssets : 0;
     }
 
     /* MARKET CONFIG */
@@ -806,6 +648,11 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         sliceAssets = _computeHeapSlice(id);
     }
 
+    /// @inheritdoc IMarketController
+    function allowedSliceFor(Id id, address borrower) external view onlyControlledId(id) returns (uint256) {
+        return _allowedSliceFor(id, borrower);
+    }
+
     function _computeHeapSlice(Id id) internal view returns (uint256) {
         (address top, uint256 topKey) = _heap().peek();
         uint256 runnerUpKey = _heap().rootRunnerUpKey();
@@ -976,7 +823,12 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
             revert DeleverageOverCap();
         }
 
-        IMarketController.DeleverageHeapConfig memory cfg = _heapConfig(id);
+        // Eligibility + slice cap. Borrower must be the heap root or have a personal watermark.
+        // Allowed slice is the larger of the two algorithmic sizes; the cut must not exceed it.
+        uint256 allowedSlice = _allowedSliceFor(id, hookData.borrower);
+        if (allowedSlice == 0) revert DeleverageBorrowerNotEligible();
+        if (hookData.assetsToCancel > allowedSlice) revert DeleverageSliceExceedsAllowed();
+
         IMarketController.MarketConfig memory mktCfg = _config(id);
 
         // Full-close allowed if remaining collateral after cut would be below min activation.
@@ -984,6 +836,30 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         if (remainingCol < mktCfg.minCollateralActivationAmount) {
             return;
         }
+    }
+
+    /// @dev Maximum slice (in loan assets) the controller's policy lets `borrower` be cut by in a
+    ///      single deleverage call. Zero means the borrower is not eligible for deleverage:
+    ///      they are neither the heap root nor have a personal watermark set.
+    function _allowedSliceFor(Id id, address borrower) internal view returns (uint256) {
+        uint256 heapSlice = 0;
+        if (_heap().size() > 0) {
+            (address head,) = _heap().peek();
+            if (head == borrower) heapSlice = _computeHeapSlice(id);
+        }
+
+        uint256 watermarkLtv = _storage().borrowerWatermark[id][borrower];
+        uint256 watermarkSlice = 0;
+        if (watermarkLtv != 0) {
+            (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, borrower);
+            if (borrowShares != 0 && rawCollateral != 0) {
+                uint256 debt = borrowShares.toAssetsUp(_totalBorrowAssets(id), _totalBorrowShares(id));
+                uint256 colValue = rawCollateral.mulDivDown(_collateralPrice(id), DeleverageSliceLib.ORACLE_PRICE_SCALE);
+                watermarkSlice = DeleverageSliceLib.computeWatermarkSlice(debt, colValue, watermarkLtv);
+            }
+        }
+
+        return heapSlice >= watermarkSlice ? heapSlice : watermarkSlice;
     }
 
     function _heapConfig(Id id) internal view returns (IMarketController.DeleverageHeapConfig memory cfg) {

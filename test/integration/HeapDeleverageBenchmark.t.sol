@@ -466,7 +466,7 @@ contract HeapDeleverageBenchmark is Test {
             if (cutShares > remaining) cutShares = remaining;
 
             vm.prank(LENDER);
-            try ctx.controller.deleverage(ctx.marketParams, cutShares, top, LENDER, LENDER) returns (
+            try ctx.market.deleverage(ctx.marketParams, cutShares, top, LENDER, LENDER) returns (
                 uint256 colSeized, uint256 debtCanceled
             ) {
                 remaining -= cutShares;
@@ -477,7 +477,7 @@ contract HeapDeleverageBenchmark is Test {
                 if (cutShares > remaining / 2) cutShares = remaining / 2;
                 if (cutShares == 0) break;
                 vm.prank(LENDER);
-                try ctx.controller.deleverage(ctx.marketParams, cutShares, top, LENDER, LENDER) returns (
+                try ctx.market.deleverage(ctx.marketParams, cutShares, top, LENDER, LENDER) returns (
                     uint256 colSeized, uint256 debtCanceled
                 ) {
                     remaining -= cutShares;

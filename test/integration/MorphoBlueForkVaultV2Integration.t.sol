@@ -140,7 +140,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         ctx.vault.withdraw(10 ether, USER, USER);
 
         _forceDeallocateVaultUser(ctx);
-        _fallbackExitDirectLenderAndAssert(ctx, directSupplySharesBefore);
+        _deleverageDirectLenderAndAssert(ctx, directSupplySharesBefore);
 
         (uint256 userDirectSupplySharesAfter,,) = ctx.market.position(ctx.marketId, USER);
         assertTrue(userDirectSupplySharesAfter > 0, "direct market position remains with user");
@@ -244,13 +244,13 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         ctx.vault.withdraw(10 ether, SOLVER, USER);
     }
 
-    function _fallbackExitDirectLenderAndAssert(IntegrationContext memory ctx, uint256 supplyShares) internal {
+    function _deleverageDirectLenderAndAssert(IntegrationContext memory ctx, uint256 supplyShares) internal {
         uint256 directCollateralBefore = ctx.collateralToken.balanceOf(DIRECT_LENDER);
         (,, uint128 borrowerRawCollateralBefore) = ctx.market.position(ctx.marketId, BORROWER);
 
         vm.prank(DIRECT_LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.controller.deleverage(ctx.lidoParams, supplyShares, BORROWER, DIRECT_LENDER, DIRECT_LENDER);
+            ctx.market.deleverage(ctx.lidoParams, supplyShares, BORROWER, DIRECT_LENDER, DIRECT_LENDER);
 
         (uint256 directSupplySharesAfterFallback,,) = ctx.market.position(ctx.marketId, DIRECT_LENDER);
         (,, uint128 borrowerRawCollateralAfter) = ctx.market.position(ctx.marketId, BORROWER);
