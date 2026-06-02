@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-## Project structure
+## Project Structure
 
 - `src/`: Solidity contracts for the Morpho Blue fork draft and Lido-specific extensions.
 - `src/MorphoBlueFork.sol`: the Morpho Blue fork. Keep changes narrow and easy to compare with upstream.
@@ -9,18 +9,23 @@
 - `src/oracle/`: local oracle adapters.
 - `src/libs/`: pure libraries (math, data structures). Internal — they inline into call sites.
 - `src/proxy/OssifiableProxy.sol`: imported Lido proxy source. Do not reformat it.
-- `test/unit/`: per-library, per-function unit and fuzz tests with explicit per-branch assertions.
-- `test/integration/`: end-to-end flows on a fresh test deployment; driven through shared helpers.
-- `test/regression/`: helper-driven flows against the **deployed** contracts on a live fork.
-  Coverage target is every flow on every contract — see Regression tests in Testing guidelines.
+- `test/scenario/`: end-to-end flows on **freshly deployed** core / controller / vault. May
+  run on a mainnet fork to reach real Lido stETH / wstETH contracts, but the protocol under test
+  is deployed inside the test. Driven through shared helpers; happy path first, then revert and
+  edge cases. Pure-library fuzz tests live here too.
+- `test/integration/`: same flows on a mainnet fork against the **already-deployed** protocol —
+  addresses come from `deployed-<network>.toml`. Verifies the live system still behaves correctly
+  as its state evolves.
 - `script/`: deployment scripts.
 - `deployed-<network>.toml`: registry of deployed addresses per network (TOML so the file can
   carry inline `#` comments — deploy date, governance handover, audit refs). Source of truth
-  for the regression base test; updated on every deploy/upgrade.
+  for the integration tests; updated on every deploy/upgrade.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
+- `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).
+  Read it before writing or reviewing new contracts.
 
-## Build, test, and formatting commands
+## Build, Test, And Formatting Commands
 
 - Build: `forge build --force`.
 - Test: `forge test`.
@@ -32,7 +37,7 @@
 - The mainnet RPC for fork tests comes from `MAINNET_RPC_URL` (see `.env.example`). Each developer
   uses their own endpoint; do not hardcode addresses in the repo.
 
-## Dependency policy
+## Dependency Policy
 
 - Foundry dependencies are pinned as git submodules under `lib/`.
 - Do not edit files inside `lib/` unless the task is explicitly about dependency patching.
@@ -40,7 +45,7 @@
   and `lib/<dependency>` gitlink updates together.
 - `git ls-files --stage lib/<dependency>` should show mode `160000` for submodules.
 
-## Morpho fork policy
+## Morpho Fork Policy
 
 - `src/MorphoBlueFork.sol` is a near-verbatim copy of Morpho Blue. Minimum changes only.
 - **Do not touch the core accounting**: positions, supply/borrow shares, interest accrual, market
@@ -53,33 +58,20 @@
   (`MorphoBlueForkErrorsLib`, `MorphoBlueForkEventsLib`) so the upstream diff stays visible.
 - Update `FORK_NOTES.md` when the fork point or material fork delta changes.
 
-## Solidity style
+## Solidity Style
 
-- **Compile target: `via_ir = false`.** When stack-too-deep arises, refactor: extract helpers,
-  pack arguments into memory structs, scope locals in `{ }` blocks. Do not flip on `via_ir`.
-- Core (`MorphoBlueFork.sol`) keeps upstream Morpho conventions: `require(..., "string")` reverts
-  via library constants, library blocks for fork additions.
-- New contracts (controllers, libs, vaults) prefer custom errors and explicit visibility
-  (`external` / `internal` / `private`).
-- Use struct hook payloads (e.g. `IMarketController.*HookData`) over positional
-  `abi.encode` / `abi.decode` tuples.
-- Named struct initialisation (`Foo({a: 1, b: 2})`); no positional struct literals in new code.
-- Magic numbers go in named constants; document the source (oracle scale, WAD, etc.).
-- NatSpec explains WHY (invariants, non-obvious behaviour, fork-specific deviations) — not WHAT.
-- Keep NatSpec concise; do not reference ADR numbers from contract NatSpec. Cite ADRs from `docs/`.
-- Comments focused on non-obvious behaviour, invariants, or fork-specific deviations.
-- Do not add Solhint, Slither, pre-commit, CI, or deployment tooling unless the task explicitly
-  covers repository tooling.
+See `STYLE_GUIDE.md` for naming, structure, comments, error/event placement and fork conventions.
+Read before writing or reviewing contracts.
 
 ## Specifications
 
 Every non-trivial contract gets a spec at `docs/specs/<ContractName>.md`. The spec captures what a
 reviewer needs before reading code, not what the code already says.
 
-- Sections: Purpose · State · Invariants · Externally visible
-  behaviour (one subsection per external/public function) · Threat model · Open questions ·
-  Change log.
-- Invariants are **testable**: each one maps to a unit or integration assertion in `test/`.
+- Sections: Purpose · State · Invariants · Externally Visible
+  Behaviour (one subsection per external/public function) · Threat Model · Open Questions ·
+  Change Log.
+- Invariants are **testable**: each one maps to a scenario or integration assertion in `test/`.
 - Behaviour subsections list preconditions, state mutations, events, reverts. Match the order in
   the source file.
 - Threat model lists the actors (lender, borrower, liquidator, controller admin, oracle, IRM) and
@@ -88,18 +80,23 @@ reviewer needs before reading code, not what the code already says.
   existing spec under the same commit.
 - Reference the spec from contract-level NatSpec: `@dev See docs/specs/Foo.md`.
 
-## Testing guidelines
+## Testing Guidelines
 
 ### Layout
 
-- `test/unit/<Module>.t.sol`: one file per library or single-purpose contract. Explicit
-  assertions on every branch. Include fuzz tests for pure math (`testFuzz_<invariant>`).
-- `test/integration/<Flow>.t.sol`: end-to-end flows on a fresh test deployment, driven via
-  shared helpers. Cover the happy path first, then revert and edge cases.
-- `test/regression/<Flow>.t.sol`: same flows run against **deployed contracts on a fork at
-  the latest mainnet state** (not a fresh deployment). See Regression tests below.
+Two suites, no overlap:
 
-### Helper pattern (integration and regression)
+- `test/scenario/<Flow>.t.sol` — full flows against a **freshly deployed** protocol. The test
+  deploys core / controller / vault from scratch, then drives helpers end-to-end. May still use
+  a mainnet fork to reach real Lido stETH / wstETH (no usable local mock for those), but the
+  protocol under test is constructed inside the test. Pure-library fuzz tests live alongside as
+  `testFuzz_<property>`.
+- `test/integration/<Flow>.t.sol` — same flows on a mainnet fork against the **already-deployed**
+  protocol. Addresses come from `deployed-<network>.toml`; the test treats our system as a live
+  third party and verifies it still works under current state (live positions, accrued interest,
+  real oracle prices). Run with `forge test --fork-url $MAINNET_RPC_URL`.
+
+### Helper Pattern (Scenario And Integration)
 
 Every user-visible action has a helper on the base test contract. The helper does the action and
 checks everything around it — call sites don't repeat assertion blocks. Each helper:
@@ -113,48 +110,14 @@ checks everything around it — call sites don't repeat assertion blocks. Each h
 5. Asserts state deltas match the recomputation, all expected events fired with exact args,
    token balances moved by the right amount.
 
-Integration tests compose helpers. If a test needs a one-off check that doesn't fit the helper,
-extend the helper or add a sibling — don't sprinkle ad-hoc assertions across tests.
+Tests compose helpers. If a test needs a one-off check that doesn't fit the helper, extend the
+helper or add a sibling — don't sprinkle ad-hoc assertions across tests.
 
-### Unit tests
-
-Drive the smallest possible surface (one function, one library). Explicit per-branch asserts, no
-helper indirection. Fuzz any property with a closed-form invariant (`testFuzz_<property>`).
-
-### Math recomputation
+### Math Recomputation
 
 Where contracts compute amounts (shares↔assets, slice sizing, oracle conversions, watermark LTV),
 tests re-derive the expected number from inputs using the same formula. This catches drift in
 either the contract or the test setup.
-
-### Regression tests
-
-Live in `test/regression/`. Their job: prove that the protocol still behaves correctly **as the
-deployed system evolves**. Unlike integration tests, regression tests do not deploy fresh — they
-fork mainnet at the latest block and drive the **real, deployed contracts** with whatever state
-those contracts currently hold (live positions, accrued interest, real oracle prices, real lender
-balances).
-
-Rules:
-
-- Address registry: deployed addresses live in `deployed-<network>.toml` (one file per network),
-  read by the regression base test via `vm.parseToml`. No address strings inline in tests. Each
-  entry carries `#` comments with provenance — deploy commit, audit ref, governance handover date.
-- Fork target: latest block at run time (`forge test --fork-url $MAINNET_RPC_URL`), not a pinned
-  block — the point is to follow live state.
-- Reuse the integration helpers. The helper's pre-state snapshot already handles arbitrary
-  starting state, so the same helper that powers integration tests also powers regression. No
-  helper duplication.
-- Coverage target: **every external/public function on every contract**, every documented flow,
-  every reachable revert path. The matrix is the spec's "Externally visible behaviour" section
-  cross-product with realistic actor states (matured, dust, frozen, paused, heap head, heap tail,
-  bad-debt, healthy-but-unhealthy, etc.).
-- Scenarios that mutate state (supply, borrow, deleverage, etc.) seed their own actors via
-  `deal` / impersonation so the regression run leaves the fork state as it found it
-  (`vm.snapshot` + `vm.revertTo` between independent flows).
-
-A regression test that fails on a previously-passing flow is the strongest possible signal that
-the protocol just regressed. Treat it accordingly.
 
 ### Naming
 
@@ -162,14 +125,13 @@ the protocol just regressed. Treat it accordingly.
 - `testFuzz_<property>` for fuzz.
 - `invariant_<property>` for invariant runs.
 - `testRevert_<reason>` for explicit failure-path coverage.
-- `testRegression_<flow>_<expectation>` for regression suite entries.
 
 ### Discipline
 
 - Tests land with the change. Separate "tests follow-up" PRs are not accepted for new functionality.
 - After source changes, run at least `forge build --force` and `forge test`.
 
-## Pull request notes
+## Pull Request Notes
 
 PR description includes:
 
