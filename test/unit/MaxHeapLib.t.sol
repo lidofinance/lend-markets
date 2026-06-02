@@ -109,6 +109,31 @@ contract MaxHeapLibTest is Test {
         assertEq(heap.size(), 1);
     }
 
+    /// @notice Keys above `type(uint96).max` saturate to that max. Borrowers with saturated keys
+    ///         tie at the top of the heap — order among them isn't preserved, but they all rank
+    ///         above any non-saturated borrower (the intended deleverage target order).
+    function test_keysSaturateToUint96Max() public {
+        uint256 huge1 = uint256(type(uint96).max) + 1;
+        uint256 huge2 = uint256(type(uint96).max) * 100;
+        heap.upsert(_addr(1), huge1);
+        heap.upsert(_addr(2), huge2);
+        heap.upsert(_addr(3), 50); // far below saturation
+
+        (, uint256 rootKey) = heap.peek();
+        assertEq(rootKey, type(uint96).max, "root saturated");
+
+        // Both saturated borrowers tie at the top. The non-saturated one is below.
+        heap.remove(_addr(1));
+        (address newRoot, uint256 newRootKey) = heap.peek();
+        assertEq(newRoot, _addr(2), "second saturated still on top");
+        assertEq(newRootKey, type(uint96).max);
+
+        heap.remove(_addr(2));
+        (address last, uint256 lastKey) = heap.peek();
+        assertEq(last, _addr(3), "non-saturated demoted to root only after saturated drain");
+        assertEq(lastKey, 50);
+    }
+
     function test_runnerUpKey() public {
         assertEq(heap.rootRunnerUpKey(), 0, "empty");
         heap.upsert(_addr(1), 50);

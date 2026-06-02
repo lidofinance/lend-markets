@@ -12,9 +12,18 @@ library MaxHeapLib {
     error EmptyHeap();
     error IndexOutOfBounds();
 
+    /// @dev account + key packed into a single 32-byte slot. `key` is uint96 (saturating); see
+    ///      `_saturateToKey` for the conversion from a uint256 caller-supplied value. Realistic
+    ///      `borrowShares × 1e18 / rawCollateral` keys stay well below `type(uint96).max`
+    ///      (≈ 7.9e28) under sane market constraints; pathological inputs saturate to the max,
+    ///      which ties them at the top of the heap — still the correct deleverage target order.
     struct Node {
         address account;
-        uint256 key;
+        uint96 key;
+    }
+
+    function _saturateToKey(uint256 raw) private pure returns (uint96) {
+        return raw > type(uint96).max ? type(uint96).max : uint96(raw);
     }
 
     struct Heap {
@@ -61,21 +70,23 @@ library MaxHeapLib {
     /* MUTATIONS */
 
     /// @notice Insert `account` with `key`, or re-key it if already present. Returns the final slot.
+    /// @dev `key` is saturated to `type(uint96).max` if it overflows the packed slot.
     function upsert(Heap storage self, address account, uint256 key) internal returns (uint256 finalSlot) {
+        uint96 packedKey = _saturateToKey(key);
         uint256 slot = self.slot[account];
 
         if (slot == 0) {
-            self.nodes.push(Node({account: account, key: key}));
+            self.nodes.push(Node({account: account, key: packedKey}));
             slot = self.nodes.length - 1;
             self.slot[account] = slot;
             return _siftUp(self, slot);
         }
 
-        uint256 oldKey = self.nodes[slot].key;
-        if (key == oldKey) return slot;
+        uint96 oldKey = self.nodes[slot].key;
+        if (packedKey == oldKey) return slot;
 
-        self.nodes[slot].key = key;
-        return key > oldKey ? _siftUp(self, slot) : _siftDown(self, slot);
+        self.nodes[slot].key = packedKey;
+        return packedKey > oldKey ? _siftUp(self, slot) : _siftDown(self, slot);
     }
 
     /// @notice Remove `account` from the heap. No-op if absent. Returns true if it was present.
