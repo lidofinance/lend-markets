@@ -65,6 +65,7 @@ abstract contract LidoMarketControllerTestBase is Test {
         IMarketController.MarketConfig memory cfg = _config();
         cfg.minMaturationAmount = MIN_MATURATION_AMOUNT;
         cfg.maxDelayMaturationLoad = REF;
+        cfg.maturationLoadCap = REF; // minimal cap (== reference): shortest tail
         cfg.maturationLoadDecayPerSecond = uint128(REF / MAX_DELAY);
         harness.setMarketConfig(MARKET, cfg);
     }

@@ -26,14 +26,16 @@ interface IMarketController {
         // Load-scaled adaptive delay (Spark ALM RateLimits.sol pattern).
         // The load-scaled formula is disabled when both `maturationLoadDecayPerSecond == 0` and
         // `maxDelayMaturationLoad == 0`; in that case the controller applies a conservative fixed
-        // maxDelay. When enabled, both must be non-zero (validated in `_validateConfig`). The
-        // accumulator is capped at `maxDelayMaturationLoad`: load beyond that point cannot raise the
-        // delay further (already saturated at maxDelay), so a single oversized deposit cannot pin
-        // later deposits at maxDelay for longer than the load takes to decay from the cap.
+        // maxDelay. When enabled, all three must be non-zero (validated in `_validateConfig`), and
+        // `maturationLoadCap` must be at least `maxDelayMaturationLoad` so the accumulator can reach
+        // the reference. A larger cap lets a large or sustained inflow hold the delay at maxDelay for
+        // longer: the accumulator can climb above the reference before decaying back, so the tail of
+        // elevated delay lasts until it drains from the cap.
         // When set, delay = min(maxDelay, minDelay + span * (depositSize + currentMaturationLoad) /
         // maxDelayMaturationLoad).
         uint128 maturationLoadDecayPerSecond; // Accumulator decay rate, tokens/sec.
-        uint128 maxDelayMaturationLoad; // Effective load that maps to maxDelay; also the accumulator cap.
+        uint128 maxDelayMaturationLoad; // Load at which the delay reaches maxDelay (formula reference).
+        uint128 maturationLoadCap; // Accumulator upper bound; >= maxDelayMaturationLoad. Controls tail length.
     }
 
     /// @notice Controller's collateral classification for one borrower position.

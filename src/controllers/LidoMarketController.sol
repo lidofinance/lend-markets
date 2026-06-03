@@ -33,6 +33,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     uint128 internal constant DEFAULT_MIN_MATURATION_AMOUNT = 10e18;
     uint128 internal constant DEFAULT_MATURATION_LOAD_DECAY_PER_SECOND = 0;
     uint128 internal constant DEFAULT_MAX_DELAY_MATURATION_LOAD = 0;
+    uint128 internal constant DEFAULT_MATURATION_LOAD_CAP = type(uint128).max;
     uint128 internal constant DEFAULT_SUPPLY_CAP = type(uint128).max;
     uint128 internal constant DEFAULT_BORROW_CAP = type(uint128).max;
 
@@ -169,7 +170,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
             supplyCap: DEFAULT_SUPPLY_CAP,
             borrowCap: DEFAULT_BORROW_CAP,
             maturationLoadDecayPerSecond: DEFAULT_MATURATION_LOAD_DECAY_PER_SECOND,
-            maxDelayMaturationLoad: DEFAULT_MAX_DELAY_MATURATION_LOAD
+            maxDelayMaturationLoad: DEFAULT_MAX_DELAY_MATURATION_LOAD,
+            maturationLoadCap: DEFAULT_MATURATION_LOAD_CAP
         });
     }
 
@@ -226,13 +228,12 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     }
 
     function _validateConfig(IMarketController.MarketConfig memory cfg) internal pure {
+        if (cfg.minMaturationDelay == 0) revert ConfigOutOfBounds();
         if (cfg.minMaturationDelay > cfg.maxMaturationDelay) revert ConfigOutOfBounds();
-        // Load-scaled delay is all-or-nothing: both knobs zero (disabled, fixed maxDelay) or both
-        // non-zero (enabled). The accumulator caps itself at maxDelayMaturationLoad, so there is no
-        // separate cap to validate.
-        bool loadScalingDisabled = cfg.maturationLoadDecayPerSecond == 0 && cfg.maxDelayMaturationLoad == 0;
-        bool loadScalingEnabled = cfg.maturationLoadDecayPerSecond != 0 && cfg.maxDelayMaturationLoad != 0;
-        if (!loadScalingDisabled && !loadScalingEnabled) revert ConfigOutOfBounds();
+
+        bool loadScalingEnabled = cfg.maxDelayMaturationLoad != 0;
+        if ((cfg.maturationLoadDecayPerSecond == 0) != (cfg.maxDelayMaturationLoad == 0)) revert ConfigOutOfBounds();
+        if (loadScalingEnabled && cfg.maturationLoadCap < cfg.maxDelayMaturationLoad) revert ConfigOutOfBounds();
     }
 
     /* CORE HOOK DISPATCH */
@@ -568,11 +569,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         if (cfg.maxDelayMaturationLoad == 0) return;
 
         IMarketController.ControllerMarketState storage m = _storage().marketState[id];
-        // Cap the accumulator at maxDelayMaturationLoad: load beyond that point already saturates
-        // the delay at maxDelay, so retaining more would only make a single oversized deposit pin
-        // later deposits at maxDelay for longer than the load takes to decay from this cap.
         uint256 newValue = _currentMaturationLoad(id) + added;
-        uint256 cap = uint256(cfg.maxDelayMaturationLoad);
+        uint256 cap = uint256(cfg.maturationLoadCap);
         if (newValue > cap) newValue = cap;
 
         m.maturationLoad = uint128(newValue);

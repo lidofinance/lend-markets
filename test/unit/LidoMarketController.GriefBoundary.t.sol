@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.24;
 
+import {IMarketController} from "../../src/interfaces/IMarketController.sol";
 import {LidoMarketControllerTestBase} from "../shared/LidoMarketControllerTestBase.sol";
 
 /// @dev Accepted limitation: withdrawing still-immature collateral does NOT
@@ -61,5 +62,21 @@ contract LidoMarketControllerGriefBoundaryTest is LidoMarketControllerTestBase {
         skip(5 hours); // well past the depositor's 2h maxDelay maturation
 
         assertEq(harness.exposed_computeMaturationDelay(MARKET, 0), MIN_DELAY, "residual delay must decay to minimum");
+    }
+
+    /// @dev The tail length is configurable: a larger `maturationLoadCap` lets the load climb above
+    ///      the reference, so the same large deposit holds the delay at maxDelay well past one window.
+    function test_LargeCapHoldsQueueLong() public {
+        IMarketController.MarketConfig memory cfg = _config();
+        cfg.minMaturationAmount = MIN_MATURATION_AMOUNT;
+        cfg.maxDelayMaturationLoad = REF;
+        cfg.maturationLoadCap = 10 * REF; // larger cap => longer tail
+        cfg.maturationLoadDecayPerSecond = uint128(REF / MAX_DELAY);
+        harness.setMarketConfig(MARKET, cfg);
+
+        _supplyCollateral(depositor, 10 * REF); // load climbs to 10x the reference
+
+        skip(5 hours);
+        assertEq(harness.exposed_computeMaturationDelay(MARKET, 0), MAX_DELAY, "large cap holds the queue for hours");
     }
 }
