@@ -3,11 +3,14 @@ pragma solidity >=0.8.0;
 
 /// @title MaxHeapLib
 /// @notice Generic binary max-heap over a storage struct, keyed by `(account, key)`.
-/// @dev Risk-agnostic: it only orders accounts by an externally supplied `key`. The caller owns
-///      the meaning of the key (e.g. a deleverage risk ratio). Nodes live in a 1-indexed array
-///      with a zero sentinel at index 0 so parent/child index math (`i*2`, `i*2+1`, `i/2`) works
-///      directly. A side mapping tracks each account's 1-indexed slot (0 = absent) so
-///      `upsert` / `remove` are O(log N).
+/// @dev Risk-agnostic: it only orders accounts by an externally supplied `key`. Callers in this
+///      repo derive the key as `borrowShares × 1e18 / rawCollateral` — this NatSpec is the single
+///      canonical place where the formula is documented; other contracts reference this rather
+///      than restate it.
+///
+///      Nodes live in a 1-indexed array with a zero sentinel at index 0 so parent/child index
+///      math (`i*2`, `i*2+1`, `i/2`) works directly. A side mapping tracks each account's
+///      1-indexed slot (0 = absent) so `upsert` / `remove` are O(log N).
 library MaxHeapLib {
     error EmptyHeap();
     error IndexOutOfBounds();
@@ -50,7 +53,7 @@ library MaxHeapLib {
 
     /// @notice Higher of the root's two children's keys (second-highest key in the heap), or 0 if
     ///         the root has no children.
-    function rootRunnerUpKey(Heap storage self) internal view returns (uint256) {
+    function rootChildMaxKey(Heap storage self) internal view returns (uint256) {
         uint256 len = self.nodes.length;
         if (len <= 2) return 0;
         uint256 leftKey = self.nodes[2].key;
@@ -69,9 +72,9 @@ library MaxHeapLib {
 
     /* MUTATIONS */
 
-    /// @notice Insert `account` with `key`, or re-key it if already present. Returns the final slot.
+    /// @notice Insert `account` with `key`, or re-key it if already present.
     /// @dev `key` is saturated to `type(uint96).max` if it overflows the packed slot.
-    function upsert(Heap storage self, address account, uint256 key) internal returns (uint256 finalSlot) {
+    function upsert(Heap storage self, address account, uint256 key) internal {
         uint96 packedKey = _saturateToKey(key);
         uint256 slot = self.slot[account];
 
@@ -79,14 +82,16 @@ library MaxHeapLib {
             self.nodes.push(Node({account: account, key: packedKey}));
             slot = self.nodes.length - 1;
             self.slot[account] = slot;
-            return _siftUp(self, slot);
+            _siftUp(self, slot);
+            return;
         }
 
         uint96 oldKey = self.nodes[slot].key;
-        if (packedKey == oldKey) return slot;
+        if (packedKey == oldKey) return;
 
         self.nodes[slot].key = packedKey;
-        return packedKey > oldKey ? _siftUp(self, slot) : _siftDown(self, slot);
+        if (packedKey > oldKey) _siftUp(self, slot);
+        else _siftDown(self, slot);
     }
 
     /// @notice Remove `account` from the heap. No-op if absent. Returns true if it was present.
@@ -141,11 +146,11 @@ library MaxHeapLib {
     }
 
     function _swap(Heap storage self, uint256 a, uint256 b) private {
-        Node memory tmpA = self.nodes[a];
-        Node memory tmpB = self.nodes[b];
-        self.nodes[a] = tmpB;
-        self.nodes[b] = tmpA;
-        self.slot[tmpA.account] = b;
-        self.slot[tmpB.account] = a;
+        Node memory nodeA = self.nodes[a];
+        Node memory nodeB = self.nodes[b];
+        self.nodes[a] = nodeB;
+        self.nodes[b] = nodeA;
+        self.slot[nodeA.account] = b;
+        self.slot[nodeB.account] = a;
     }
 }

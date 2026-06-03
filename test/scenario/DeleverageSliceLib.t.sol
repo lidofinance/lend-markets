@@ -165,6 +165,26 @@ contract DeleverageSliceLibTest is Test {
         );
     }
 
+    /// @notice When the heap key saturates at `type(uint96).max` (uint96-packed slot), distinct
+    ///         high-risk borrowers tie at the top: `topKey == targetKey`. `computeSlice` then
+    ///         takes the `targetKey >= topKey` fallback and returns the floor — silent slice
+    ///         degradation in the saturation regime. Documenting the behaviour so future changes
+    ///         that try to rescue saturated keys have an explicit baseline to fail against.
+    function test_keySaturation_tiedTopReturnsFloor() public pure {
+        uint256 saturatedKey = uint256(type(uint96).max);
+        uint256 floor = 1.5 ether;
+        uint256 slice = _slice(
+            saturatedKey, // topKey at uint96.max
+            saturatedKey, // childMaxKey also at uint96.max — tied
+            100 ether,
+            1e24,
+            1e18,
+            1e36,
+            floor
+        );
+        assertEq(slice, floor, "saturated tie collapses to floor");
+    }
+
     function test_closedFormValue() public pure {
         // topKey=2e18, targetKey=1e18, topCollateral=100e18
         // totalBorrowShares=100e24, totalBorrowAssets=100e18 → sharesPerAssetTerm = 1e24

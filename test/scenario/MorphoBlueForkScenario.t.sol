@@ -7,7 +7,9 @@ import {IMarketController} from "../../src/interfaces/IMarketController.sol";
 import {AdaptiveCurveIrm} from "@morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
+import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 import {Test} from "forge-std/Test.sol";
+import {IControllerAdmin} from "../utils/IControllerAdmin.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -28,15 +30,7 @@ interface IWstETH {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-interface IControllerDeleverageHeapAdmin {
-    function CONFIGURATOR_ROLE() external view returns (bytes32);
-
-    function grantRole(bytes32 role, address account) external;
-
-    function setDeleverageHeapConfig(Id id, IMarketController.DeleverageHeapConfig calldata cfg) external;
-}
-
-contract MorphoBlueForkMainnetForkTest is Test {
+contract MorphoBlueForkScenarioTest is Test {
     using MarketParamsLib for MarketParams;
 
     // Run with:
@@ -69,7 +63,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
         uint256 price;
     }
 
-    function testHappyPathControllerPromotesDustAndBorrowsAfterMaturityWithRealLidoWstETH() public {
+    function test_supplyCollateral_promotesDustAndBorrowsAfterMaturity() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(false);
@@ -100,7 +94,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
         _assertCollateralState(ctx.controller, ctx.id, BORROWER, activatedCollateral, 0, 0);
     }
 
-    function testHappyPathControllerDeleverageWithRealLidoWstETH() public {
+    function test_deleverage_happyPath() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(true);
@@ -142,7 +136,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
     ///        - the heap re-sorts after the root borrower partially repays, so a new borrower becomes root;
     ///        - a cut targeting the new root succeeds while the previous root is no longer reached;
     ///        - the lowest-LTV borrower is never touched throughout the scenario.
-    function testHeapDeleverageScenarioMultipleBorrowersWithRealLidoWstETH() public {
+    function test_deleverage_heapPicksTopBorrower() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(true);
@@ -210,7 +204,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
     ///      rebase pushes the head underwater (debt > collateral value). The head cannot be cut
     ///      anyway (core requires _isHealthy), but cutting the healthy tail must also revert while
     ///      the head is insolvent — the whole queue halts until bad debt is resolved out of band.
-    function testDeleverageRevertsWhileQueueHeadBadDebtWithRealLidoWstETH() public {
+    function testRevert_deleverage_whenHeapRootBadDebt() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(true);
@@ -262,7 +256,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
     ///      requires `_isHealthy` for deleverage; the bound is the over-cap check plus the bad-debt
     ///      guard. A negative rebase pushes the borrower above LLTV (unhealthy) while keeping their
     ///      collateral worth more than their debt (solvent), then the cut succeeds.
-    function testDeleverageWorksOnUnhealthyButSolventPositionWithRealLidoWstETH() public {
+    function test_deleverage_worksOnUnhealthyButSolventPosition() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(true);
@@ -305,20 +299,20 @@ contract MorphoBlueForkMainnetForkTest is Test {
     }
 
     /// @notice setBorrowerWatermark stores the borrower's target LTV; rejects ltv >= 1e18.
-    function testWatermarkSetterStoresAndRejectsOutOfRange() public {
+    function test_setBorrowerWatermark_storesAndRejectsOutOfRange() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
-        assertEq(ctx.controller.borrowerWatermark(ctx.id, BORROWER), 0, "default unset");
+        assertEq(ctx.controller.watermarkInfo(ctx.id, BORROWER).watermarkLtv, 0, "default unset");
 
         vm.prank(BORROWER);
         ctx.controller.setBorrowerWatermark(ctx.id, 0.6e18);
-        assertEq(ctx.controller.borrowerWatermark(ctx.id, BORROWER), 0.6e18, "stored");
+        assertEq(ctx.controller.watermarkInfo(ctx.id, BORROWER).watermarkLtv, 0.6e18, "stored");
 
         // Clear with 0.
         vm.prank(BORROWER);
         ctx.controller.setBorrowerWatermark(ctx.id, 0);
-        assertEq(ctx.controller.borrowerWatermark(ctx.id, BORROWER), 0, "cleared");
+        assertEq(ctx.controller.watermarkInfo(ctx.id, BORROWER).watermarkLtv, 0, "cleared");
 
         // Out-of-range rejected.
         vm.prank(BORROWER);
@@ -329,7 +323,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
     /// @notice Path A: when the heap head has a watermark, `nextDeleverageCut`'s slice is bumped
     ///         up to bring the borrower's LTV down to the watermark. Close runner-up key keeps the
     ///         algorithmic slice small so the watermark dominates.
-    function testWatermarkBumpsHeapSlice() public {
+    function test_watermark_bumpsHeapSlice() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
@@ -370,7 +364,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
     /// @notice Direct EOA-lender can deleverage a non-head borrower iff that borrower has a
     ///         personal watermark set. Without watermark the controller hook reverts with
     ///         `DeleverageBorrowerNotEligible`.
-    function testDeleverageEligibilityViaPersonalWatermark() public {
+    function test_deleverage_eligibleViaPersonalWatermark() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
@@ -438,15 +432,12 @@ contract MorphoBlueForkMainnetForkTest is Test {
     }
 
     /// @dev Loan-asset slice the controller will allow against the current heap root, converted
-    ///      to lender supply shares using current market totals. Tests use this as a "cut at most
-    ///      the allowed amount" helper for any deleverage call targeting the heap root.
+    ///      to lender supply shares with Morpho's virtual-offset rounding.
     function _sliceShares(TestMarket memory ctx) internal view returns (uint256) {
         (, uint256 sliceAssets) = ctx.controller.nextDeleverageCut(ctx.id);
+        if (sliceAssets == type(uint256).max) return type(uint256).max;
         (uint128 totalSupplyAssets, uint128 totalSupplyShares,,,,) = ctx.market.market(ctx.id);
-        // toSharesDown — cut at most allowedSlice; never round up past the cap.
-        return sliceAssets == type(uint256).max
-            ? type(uint256).max
-            : sliceAssets * uint256(totalSupplyShares) / uint256(totalSupplyAssets);
+        return SharesMathLib.toSharesDown(sliceAssets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
     }
 
     function _hasMainnetLidoContracts() internal view returns (bool) {
@@ -521,7 +512,7 @@ contract MorphoBlueForkMainnetForkTest is Test {
         );
         address proxy =
             _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(implementation, address(this), initData));
-        IControllerDeleverageHeapAdmin admin = IControllerDeleverageHeapAdmin(proxy);
+        IControllerAdmin admin = IControllerAdmin(proxy);
         admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
         return (IMarketController(proxy), accessRegistry);
     }

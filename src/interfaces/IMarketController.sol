@@ -35,15 +35,12 @@ interface IMarketController {
         uint128 inflowMaxAccumulator; // Cap to bound accumulator (overflow safety).
     }
 
-    /// @notice Deleverage waterfall policy. Borrowers are tracked in a max-heap keyed by
-    ///         `borrowShares × 1e18 / rawCollateral` (see `DeleverageHeap`). The iteration
-    ///         peeks the root, computes a slice that brings the root's key down to (or below)
-    ///         the higher-keyed child, and repeats until target debt is covered, the heap is
-    ///         empty, or `maxIterations` is exhausted.
-    struct DeleverageHeapConfig {
-        uint128 sliceFloorAssets; // Minimum loan-asset slice per cut. Avoids micro-cuts when root and runner-up are
-        // nearly tied.
-        uint32 maxIterations; // Hard cap on per-call cut iterations. Bounds gas.
+    /// @notice Deleverage waterfall policy. See `MaxHeapLib` for the heap key formula.
+    /// @dev `maxIterations` is the vault-side loop bound (consumed by
+    ///      `MorphoBlueForkERC4626Vault._deleverageFromHeap`), not by the controller itself.
+    struct DeleverageConfig {
+        uint128 sliceFloorAssets; // Minimum loan-asset slice per cut.
+        uint32 maxIterations; // Per-call iteration cap consumed by the vault loop.
     }
 
     /// @notice Controller's collateral classification for one borrower position.
@@ -170,28 +167,35 @@ interface IMarketController {
 
     function marketConfig(Id id) external view returns (MarketConfig memory);
 
-    function deleverageHeapConfig(Id id) external view returns (DeleverageHeapConfig memory);
+    function deleverageConfig(Id id) external view returns (DeleverageConfig memory);
 
     /// @notice Number of borrowers currently tracked in the deleverage heap.
     function deleverageHeapSize(Id id) external view returns (uint256);
 
-    /// @notice Borrowers currently in the deleverage heap, top-down, up to `maxCount`.
+    /// @notice Borrowers currently in the deleverage heap, in approximate top-down order (heap
+    ///         array layout — not a strict sort), up to `maxCount`.
     function eligibleBorrowers(Id id, uint256 maxCount)
         external
         view
         returns (address[] memory borrowers, uint256[] memory keys);
 
-    /// @notice Next borrower to cut (heap root) and the loan-asset slice size for that cut.
-    ///         `borrower` is address(0) if the heap is empty.
+    /// @notice Next borrower to cut and the loan-asset slice for that cut.
+    /// @dev Heap-eligible borrower == the current heap root (the highest-key entry). Callers
+    ///      MUST NOT assume top-N semantics. `borrower` is address(0) when the heap is empty;
+    ///      `sliceAssets` is `type(uint256).max` when there is exactly one borrower in the heap
+    ///      (no runner-up to bound the cut against).
     function nextDeleverageCut(Id id) external view returns (address borrower, uint256 sliceAssets);
 
     /// @notice Maximum slice (in loan assets) the controller's policy allows for a single
     ///         `deleverage` call against `borrower`. Mirrors the slice cap enforced in the
     ///         controller's deleverage hook: `max(heapSlice, watermarkSlice)`. Zero means the
-    ///         borrower is not eligible for deleverage at all.
+    ///         borrower is not eligible for deleverage at all (not the heap root and no
+    ///         personal watermark).
     function allowedSliceFor(Id id, address borrower) external view returns (uint256);
 
     /// @notice True if the heap root (riskiest borrower) is bad debt (debt > collateral value).
+    /// @dev Computes against accrued totals via `MorphoBalancesLib.expectedMarketBalances`, so the
+    ///      answer is up-to-date even when called without a prior `accrueInterest` in the same tx.
     function rootHasBadDebt(Id id) external view returns (bool);
 
     struct WatermarkInfo {
@@ -205,10 +209,6 @@ interface IMarketController {
 
     /// @notice Borrower's personal watermark and the corresponding watermark-derived slice.
     function watermarkInfo(Id id, address borrower) external view returns (WatermarkInfo memory);
-
-    /// @notice Convenience getter for `watermarkInfo(...).watermarkLtv` — 0 if borrower hasn't
-    ///         opted in to a personal watermark.
-    function borrowerWatermark(Id id, address borrower) external view returns (uint256);
 
     /// @notice Borrower sets their own personal watermark (target post-cut LTV in WAD).
     /// @dev `msg.sender` is the borrower. `ltv` must be `< 1e18`; 0 clears the watermark.

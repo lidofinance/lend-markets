@@ -9,6 +9,7 @@ import {
 } from "@vault-v2/lib/morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
 import {Test} from "forge-std/Test.sol";
+import {IControllerAdmin} from "../utils/IControllerAdmin.sol";
 
 struct LidoMarketParams {
     address loanToken;
@@ -82,13 +83,7 @@ interface IControllerLike {
     ) external returns (uint256 collateralSeized, uint256 debtCanceled);
 }
 
-interface IControllerDeleverageHeapAdmin {
-    function CONFIGURATOR_ROLE() external view returns (bytes32);
-
-    function grantRole(bytes32 role, address account) external;
-}
-
-contract MorphoBlueForkVaultV2IntegrationTest is Test {
+contract MetaMorphoV2IntegrationTest is Test {
     using AdapterMarketParamsLib for AdapterMarketParams;
 
     address internal constant CURATOR = address(0x1001);
@@ -126,7 +121,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         MorphoMarketV1AdapterV2 adapter;
     }
 
-    function testVaultV2CanAllocateIntoLidoForkAndForceDeallocateIntoDirectMarketPosition() public {
+    function test_metaMorphoV2_allocatesIntoForkAndForceDeallocates() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         IntegrationContext memory ctx = _setupIntegrationContext();
@@ -309,7 +304,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         );
         address proxy =
             _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(implementation, address(this), initData));
-        IControllerDeleverageHeapAdmin admin = IControllerDeleverageHeapAdmin(proxy);
+        IControllerAdmin admin = IControllerAdmin(proxy);
         admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
         return proxy;
     }

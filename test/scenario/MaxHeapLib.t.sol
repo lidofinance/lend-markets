@@ -30,8 +30,8 @@ contract HeapHarness {
         return _heap.peek();
     }
 
-    function rootRunnerUpKey() external view returns (uint256) {
-        return _heap.rootRunnerUpKey();
+    function rootChildMaxKey() external view returns (uint256) {
+        return _heap.rootChildMaxKey();
     }
 
     function nodeAt(uint256 i) external view returns (address, uint256) {
@@ -134,14 +134,14 @@ contract MaxHeapLibTest is Test {
         assertEq(lastKey, 50);
     }
 
-    function test_runnerUpKey() public {
-        assertEq(heap.rootRunnerUpKey(), 0, "empty");
+    function test_childMaxKey() public {
+        assertEq(heap.rootChildMaxKey(), 0, "empty");
         heap.upsert(_addr(1), 50);
-        assertEq(heap.rootRunnerUpKey(), 0, "single borrower gives 0");
+        assertEq(heap.rootChildMaxKey(), 0, "single borrower gives 0");
         heap.upsert(_addr(2), 30);
-        assertEq(heap.rootRunnerUpKey(), 30, "one child");
+        assertEq(heap.rootChildMaxKey(), 30, "one child");
         heap.upsert(_addr(3), 40);
-        assertEq(heap.rootRunnerUpKey(), 40, "higher of two children");
+        assertEq(heap.rootChildMaxKey(), 40, "higher of two children");
     }
 
     // ── Fuzz: heap invariant + drain order

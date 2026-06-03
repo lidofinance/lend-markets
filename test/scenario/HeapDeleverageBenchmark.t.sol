@@ -6,7 +6,10 @@ import {IMarketController} from "../../src/interfaces/IMarketController.sol";
 import {AdaptiveCurveIrm} from "@morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
+import {ORACLE_PRICE_SCALE} from "@morpho-blue/src/libraries/ConstantsLib.sol";
+import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
+import {IControllerAdmin} from "../utils/IControllerAdmin.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -18,12 +21,6 @@ interface IWstETH {
     function approve(address spender, uint256 amount) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
     function stEthPerToken() external view returns (uint256);
-}
-
-interface IControllerDeleverageHeapAdmin {
-    function CONFIGURATOR_ROLE() external view returns (bytes32);
-    function grantRole(bytes32 role, address account) external;
-    function setDeleverageHeapConfig(Id id, IMarketController.DeleverageHeapConfig calldata cfg) external;
 }
 
 interface IOracle {
@@ -89,22 +86,22 @@ contract HeapDeleverageBenchmark is Test {
     // ── Uniform-LTV scenarios
     // ──────────────────────────────────────
 
-    function testScenario_AllSmallEqual() public {
+    function test_AllSmallEqual() public {
         _skip();
         _runUniform("AllSmallEqual(20x0.5)", 20, 0.5 ether, 0.7e18, 4);
     }
 
-    function testScenario_AllLargeEqual() public {
+    function test_AllLargeEqual() public {
         _skip();
         _runUniform("AllLargeEqual(5x10)", 5, 10 ether, 0.7e18, 4);
     }
 
-    function testScenario_SmallExitLargePool() public {
+    function test_SmallExitLargePool() public {
         _skip();
         _runUniform("SmallExit1%(10x5)", 10, 5 ether, 0.7e18, 100);
     }
 
-    function testScenario_LargeExit50Pct() public {
+    function test_LargeExit50Pct() public {
         _skip();
         _runUniform("LargeExit50%(10x5)", 10, 5 ether, 0.7e18, 2);
     }
@@ -112,25 +109,25 @@ contract HeapDeleverageBenchmark is Test {
     // ── Mixed-debt scenarios
     // ───────────────────────────────────────
 
-    function testScenario_MixedSmallAndLarge() public {
+    function test_MixedSmallAndLarge() public {
         _skip();
         uint256[] memory debts = _buildDebts(10, 0.5 ether, 3, 10 ether);
         _runScenario(_deployCtx(), "Mixed(10x0.5+3x10)", debts, 0.7e18, _sum(debts) / 4);
     }
 
-    function testScenario_DustTailThenWhale() public {
+    function test_DustTailThenWhale() public {
         _skip();
         uint256[] memory debts = _buildDebts(10, 0.1 ether, 1, 40 ether);
         _runScenario(_deployCtx(), "DustTailThenWhale(10x0.1+1x40)", debts, 0.7e18, _sum(debts) / 4);
     }
 
-    function testScenario_WhaleThenDustTail() public {
+    function test_WhaleThenDustTail() public {
         _skip();
         uint256[] memory debts = _buildDebts(1, 40 ether, 10, 0.1 ether);
         _runScenario(_deployCtx(), "WhaleThenDustTail(1x40+10x0.1)", debts, 0.7e18, _sum(debts) / 4);
     }
 
-    function testScenario_TwoEqualWhalesAtTop() public {
+    function test_TwoEqualWhalesAtTop() public {
         _skip();
         uint256[] memory debts = _buildDebts(2, 15 ether, 3, 3 ether);
         _runScenario(_deployCtx(), "TwoEqualWhales(2x15+3x3)", debts, 0.7e18, _sum(debts) / 4);
@@ -139,7 +136,7 @@ contract HeapDeleverageBenchmark is Test {
     // ── Variable-LTV scenarios
     // ─────────────────────────────────────
 
-    function testScenario_GradientLTV() public {
+    function test_GradientLTV() public {
         _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 10;
@@ -152,7 +149,7 @@ contract HeapDeleverageBenchmark is Test {
         _runScenarioWithLTVs(ctx, "GradientLTV(10x3,LTV30-72%)", debts, ltvs, _sum(debts) / 4);
     }
 
-    function testScenario_ClusterNearTop() public {
+    function test_ClusterNearTop() public {
         _skip();
         Ctx memory ctx = _deployCtx();
         uint256[] memory debts = new uint256[](8);
@@ -171,7 +168,7 @@ contract HeapDeleverageBenchmark is Test {
     // ── Serial exits
     // ───────────────────────────────────────────────
 
-    function testScenario_SerialSmallExits() public {
+    function test_SerialSmallExits() public {
         _skip();
         Ctx memory ctx = _deployCtx();
         uint256[] memory debts = _uniformDebts(10, 5 ether);
@@ -194,21 +191,21 @@ contract HeapDeleverageBenchmark is Test {
 
     // ── Dust scenarios (withdraw to high LTV) ──────────────────────
 
-    function testScenario_100DustPositions() public {
+    function test_100DustPositions() public {
         _skip();
         Ctx memory ctx = _deployCtx();
         _seedDustBorrowers(ctx, 100, 0.3 ether, 0.78e18);
         _runDustScenario(ctx, "100DustPositions(100x0.3@~78%LTV)", 100, 0.3 ether, 4);
     }
 
-    function testScenario_1000DustPositions() public {
+    function test_1000DustPositions() public {
         _skip();
         Ctx memory ctx = _deployCtx();
         _seedDustBorrowers(ctx, 1000, 0.3 ether, 0.78e18);
         _runDustScenario(ctx, "1000DustPositions(1000x0.3@~78%LTV)", 1000, 0.3 ether, 4);
     }
 
-    function testScenario_1000MixedPositions() public {
+    function test_1000MixedPositions() public {
         _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 1000;
@@ -238,7 +235,7 @@ contract HeapDeleverageBenchmark is Test {
     // ── Whale + dust
     // ───────────────────────────────────────────────
 
-    function testScenario_DustAndOneWhale100() public {
+    function test_DustAndOneWhale100() public {
         _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 100;
@@ -275,7 +272,7 @@ contract HeapDeleverageBenchmark is Test {
     // ── Full drain
     // ─────────────────────────────────────────────────
 
-    function testScenario_2000DustFullDrain() public {
+    function test_2000DustFullDrain() public {
         _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 2000;
@@ -451,16 +448,17 @@ contract HeapDeleverageBenchmark is Test {
 
             // Single-borrower sentinel: size the cut to the whole position.
             if (sliceAssets == type(uint256).max) {
-                sliceAssets =
-                    (uint256(topBorrowShares) * (uint256(totalBorrowAssets) + 1)) / (uint256(totalBorrowShares) + 1e6);
+                sliceAssets = (uint256(topBorrowShares) * (uint256(totalBorrowAssets) + 1))
+                    / (uint256(totalBorrowShares) + SharesMathLib.VIRTUAL_SHARES);
             }
-            uint256 sliceCol = sliceAssets * 1e36 / ctx.price;
+            uint256 sliceCol = sliceAssets * ORACLE_PRICE_SCALE / ctx.price;
 
             uint256 cutShares;
             if (uint256(topCol) - _min(sliceCol, uint256(topCol)) < MIN_COLLATERAL_ACTIVATION) {
                 cutShares = uint256(topBorrowShares);
             } else {
-                cutShares = (sliceAssets * (uint256(totalBorrowShares) + 1e6)) / (uint256(totalBorrowAssets) + 1);
+                cutShares = (sliceAssets * (uint256(totalBorrowShares) + SharesMathLib.VIRTUAL_SHARES))
+                    / (uint256(totalBorrowAssets) + 1);
                 if (cutShares == 0) cutShares = 1;
             }
             if (cutShares > remaining) cutShares = remaining;
@@ -546,11 +544,11 @@ contract HeapDeleverageBenchmark is Test {
         );
         address proxy =
             _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, address(this), initData));
-        IControllerDeleverageHeapAdmin admin = IControllerDeleverageHeapAdmin(proxy);
+        IControllerAdmin admin = IControllerAdmin(proxy);
         admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
-        admin.setDeleverageHeapConfig(
+        admin.setDeleverageConfig(
             ctx.id,
-            IMarketController.DeleverageHeapConfig({
+            IMarketController.DeleverageConfig({
                 sliceFloorAssets: SLICE_FLOOR, maxIterations: uint32(MAX_ITERATIONS)
             })
         );
@@ -622,12 +620,12 @@ contract HeapDeleverageBenchmark is Test {
     }
 
     function _collateralForDebt(uint256 debt, uint256 targetLTV, uint256 oraclePrice) internal pure returns (uint256) {
-        return (debt * 1e36) / (oraclePrice * targetLTV / 1e18);
+        return (debt * ORACLE_PRICE_SCALE) / (oraclePrice * targetLTV / 1e18);
     }
 
     function _assetsToSupplyShares(Ctx memory ctx, uint256 assets) internal view returns (uint256) {
         (uint128 totalSupplyAssets, uint128 totalSupplyShares,,,,) = ctx.market.market(ctx.id);
-        return (assets * (uint256(totalSupplyShares) + 1e6)) / (uint256(totalSupplyAssets) + 1);
+        return SharesMathLib.toSharesDown(assets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
     }
 
     function _mintWETH(MorphoBlueFork market, address user, uint256 amount) internal {
