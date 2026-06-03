@@ -38,6 +38,17 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
     error ZeroAddress();
     error ZeroMorphoSupplyShares();
 
+    // Packed payload for `Deleverage` to avoid stack-too-deep on the emit site under
+    // via_ir=false. Indexed fields stay as direct args.
+    struct DeleverageLog {
+        uint256 sharesRequested;
+        uint256 sharesBurned;
+        uint256 loanAssets;
+        uint256 morphoSupplyShares;
+        uint256 collateralSeized;
+        uint256 debtCanceled;
+    }
+
     event Deleverage(
         address indexed caller,
         address indexed owner,
@@ -144,22 +155,24 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         if (shares == 0) revert ZeroShares();
         if (receiver == address(0)) revert ZeroAddress();
 
-        (uint256 loanAssetsTarget, uint256 morphoSupplyTarget) = previewDeleverage(shares);
-        if (morphoSupplyTarget == 0) revert ZeroMorphoSupplyShares();
-
         uint256 morphoSupplyConsumed;
-        (collateralSeized, debtCanceled, morphoSupplyConsumed) = borrowers.length == 0
-            ? _deleverageFromHeap(morphoSupplyTarget, receiver)
-            : _deleverageFromList(morphoSupplyTarget, borrowers, receiver);
+        {
+            (uint256 loanAssetsTarget, uint256 morphoSupplyTarget) = previewDeleverage(shares);
+            if (morphoSupplyTarget == 0) revert ZeroMorphoSupplyShares();
 
-        // Pro-rate burn + idle loan-asset payout to actually-consumed morpho supply shares.
-        // `Math.mulDiv` rounds down so we never over-burn.
-        sharesBurned = morphoSupplyConsumed == morphoSupplyTarget
-            ? shares
-            : Math.mulDiv(shares, morphoSupplyConsumed, morphoSupplyTarget);
-        loanAssets = morphoSupplyConsumed == morphoSupplyTarget
-            ? loanAssetsTarget
-            : Math.mulDiv(loanAssetsTarget, morphoSupplyConsumed, morphoSupplyTarget);
+            (collateralSeized, debtCanceled, morphoSupplyConsumed) = borrowers.length == 0
+                ? _deleverageFromHeap(morphoSupplyTarget, receiver)
+                : _deleverageFromList(morphoSupplyTarget, borrowers, receiver);
+
+            // Pro-rate burn + idle loan-asset payout to actually-consumed morpho supply shares.
+            // `Math.mulDiv` rounds down so we never over-burn.
+            sharesBurned = morphoSupplyConsumed == morphoSupplyTarget
+                ? shares
+                : Math.mulDiv(shares, morphoSupplyConsumed, morphoSupplyTarget);
+            loanAssets = morphoSupplyConsumed == morphoSupplyTarget
+                ? loanAssetsTarget
+                : Math.mulDiv(loanAssetsTarget, morphoSupplyConsumed, morphoSupplyTarget);
+        }
 
         address caller = _msgSender();
         if (sharesBurned != 0) {
@@ -169,8 +182,27 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
 
         if (loanAssets != 0) IERC20(asset()).safeTransfer(receiver, loanAssets);
 
+        DeleverageLog memory log;
+        log.sharesRequested = shares;
+        log.sharesBurned = sharesBurned;
+        log.loanAssets = loanAssets;
+        log.morphoSupplyShares = morphoSupplyConsumed;
+        log.collateralSeized = collateralSeized;
+        log.debtCanceled = debtCanceled;
+        _emitDeleverage(caller, owner, receiver, log);
+    }
+
+    function _emitDeleverage(address caller, address owner, address receiver, DeleverageLog memory log) internal {
         emit Deleverage(
-            caller, owner, receiver, shares, sharesBurned, loanAssets, morphoSupplyConsumed, collateralSeized, debtCanceled
+            caller,
+            owner,
+            receiver,
+            log.sharesRequested,
+            log.sharesBurned,
+            log.loanAssets,
+            log.morphoSupplyShares,
+            log.collateralSeized,
+            log.debtCanceled
         );
     }
 
@@ -239,12 +271,15 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         for (uint256 i = 0; i < borrowers.length; ++i) {
             if (remainingShares == 0) break;
 
-            uint256 sliceAssets = CONTROLLER.allowedSliceFor(MARKET_ID, borrowers[i]);
-            uint256 remainingDebtAssets = _morphoSupplySharesToAssets(remainingShares);
-            if (sliceAssets > remainingDebtAssets) sliceAssets = remainingDebtAssets;
+            uint256 cutSupplyShares;
+            {
+                uint256 sliceAssets = CONTROLLER.allowedSliceFor(MARKET_ID, borrowers[i]);
+                uint256 remainingDebtAssets = _morphoSupplySharesToAssets(remainingShares);
+                if (sliceAssets > remainingDebtAssets) sliceAssets = remainingDebtAssets;
 
-            uint256 cutSupplyShares = _morphoAssetsToSupplyShares(sliceAssets);
-            if (cutSupplyShares > remainingShares) cutSupplyShares = remainingShares;
+                cutSupplyShares = _morphoAssetsToSupplyShares(sliceAssets);
+                if (cutSupplyShares > remainingShares) cutSupplyShares = remainingShares;
+            }
 
             (uint256 cutCollateralSeized, uint256 cutDebtCanceled) = IMorphoBlueForkDeleverage(address(MORPHO))
                 .deleverage(_marketParams, cutSupplyShares, borrowers[i], address(this), receiver);
