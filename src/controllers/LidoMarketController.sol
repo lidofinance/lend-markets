@@ -6,7 +6,7 @@ import {IOracle} from "@morpho-blue/src/interfaces/IOracle.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
-import "@morpho-blue/src/libraries/ConstantsLib.sol";
+import {ORACLE_PRICE_SCALE} from "@morpho-blue/src/libraries/ConstantsLib.sol";
 import {MathLib, WAD} from "@morpho-blue/src/libraries/MathLib.sol";
 import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 import {UtilsLib} from "@morpho-blue/src/libraries/UtilsLib.sol";
