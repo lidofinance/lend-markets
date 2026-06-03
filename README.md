@@ -38,6 +38,38 @@ Format Solidity:
 forge fmt src/MorphoBlueFork.sol src/controllers src/interfaces src/oracle test
 ```
 
+## Repository Tooling
+
+Most everyday commands are wrapped in a `Makefile`:
+
+```sh
+make help            # list available targets
+make build           # forge build
+make test            # forge test (unit + benchmark; fork tests auto-skip without RPC)
+make fork-test       # forge test --fork-url $MAINNET_RPC_URL (copy .env.example to .env first)
+make fmt-check       # forge fmt --check on tracked paths (CI gate)
+make lint            # forge lint
+make coverage        # forge coverage --ir-minimum --report summary
+make slither         # static analysis (requires `slither` in PATH)
+make solhint         # stylistic/security checks (requires `solhint` in PATH)
+make ci              # everything CI runs on PRs: build + fmt-check + lint + test
+```
+
+Environment variables are documented in `.env.example`; copy it to `.env` and fill in
+`MAINNET_RPC_URL` to enable fork tests locally.
+
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); locally
+`forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`:
+`ci.yml` (build/fmt/lint/test on every PR), `fork-test.yml` (mainnet-fork integration with
+`MAINNET_RPC_URL` secret), `static.yml` (Slither + Solhint), `coverage.yml`,
+`gas-diff.yml` (gas snapshot diff posted as PR comment), and `fuzz.yml` (deep fuzz on nightly cron).
+
+To run the local pre-commit fmt check, point Git at the bundled hook:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 ## Source Layout
 
 ```text

@@ -1,0 +1,31 @@
+name: fuzz
+
+# Heavy fuzz/invariant suite. Runs nightly and on-demand.
+# Kept off the PR path because high run counts slow down feedback.
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    name: deep fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/repo-setup
+
+      - name: deep fuzz (10000 runs)
+        env:
+          FOUNDRY_FUZZ_RUNS: '10000'
+        run: forge test --match-test 'testFuzz_'
+
+      - name: invariant (longer than default)
+        env:
+          FOUNDRY_INVARIANT_RUNS: '4096'
+          FOUNDRY_INVARIANT_DEPTH: '64'
+        run: forge test --match-test 'invariant_'
