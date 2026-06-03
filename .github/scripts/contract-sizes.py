@@ -5,12 +5,16 @@ Build a markdown contract-size report (and diff) from `forge build --sizes --jso
 Inputs:
     --head <file>   Required. Forge sizes JSON for PR head (or current revision).
     --base <file>   Optional. Forge sizes JSON for base branch. Enables the diff column.
-    --min-size <n>  Filter out contracts whose runtime size is below n bytes in both base and
-                    head AND that have zero delta. Default 200. Drops near-empty library stubs
-                    (~45 bytes) while keeping real contracts visible.
-    --warn-margin   Bytes. Print a warning line for any contract whose runtime margin to
-                    EIP-170 (24576) is below this. Default 5120 (~5 KB).
-    --output <file> Write the markdown report here. Defaults to stdout.
+    --min-size <n>      Filter out contracts whose runtime size is below n bytes in both base
+                        and head AND that have zero delta. Default 200. Drops near-empty library
+                        stubs (~45 bytes) while keeping real contracts visible.
+    --warn-margin <n>   Bytes. Print a warning line for any contract whose runtime margin to
+                        EIP-170 (24576) is below this. Default 5120 (~5 KB). Size-critical
+                        contracts surface here regardless of whether they changed.
+    --top <n>           Cap the table at this many rows of changed contracts, sorted by
+                        |Δ runtime|. Default 10. Without --base, lists the top N by runtime
+                        size instead.
+    --output <file>     Write the markdown report here. Defaults to stdout.
 
 `forge build --sizes --json` emits the size object as the first line on stdout, followed by
 per-contract diagnostic JSON lines. We pick the first line whose top-level value has a
@@ -92,6 +96,7 @@ def render(
     base: dict[str, Size] | None,
     min_size: int,
     warn_margin: int,
+    top: int,
 ) -> str:
     names = set(head)
     if base is not None:
@@ -113,29 +118,44 @@ def render(
         margin = EIP_170 - h_rt if h else None
         rows.append((name, h_rt, h_in, b_rt, b_in, d_rt, d_in, margin))
 
-    # Sort: changed first by |Δ runtime| desc, unchanged after by runtime size desc.
-    rows.sort(key=lambda r: (-abs(r[5]), -r[1]))
+    # Table is changes-only — top N by |Δ runtime|. Size-critical contracts surface through
+    # the Warning / Error footers below regardless of whether they changed.
+    if base is not None:
+        changed = sorted(
+            (r for r in rows if r[5] != 0 or r[6] != 0),
+            key=lambda r: (-abs(r[5]), -r[1]),
+        )
+    else:
+        changed = sorted(rows, key=lambda r: -r[1])
+    visible = changed[:top]
+    hidden = len(changed) - len(visible)
 
     out = []
-    if base is not None:
-        out.append("| Contract | runtime | Δ runtime | init | Δ init | EIP-170 margin |")
-        out.append("|---|---:|---:|---:|---:|---:|")
-        for name, h_rt, h_in, b_rt, b_in, d_rt, d_in, margin in rows:
-            margin_str = fmt_int(margin) if margin is not None else "—"
-            if h_rt == 0 and base is not None and b_rt > 0:
-                margin_str = "removed"
-            out.append(
-                f"| {name} | {fmt_int(h_rt)} | {fmt_delta(d_rt)} | "
-                f"{fmt_int(h_in)} | {fmt_delta(d_in)} | {margin_str} |"
-            )
-    else:
-        out.append("| Contract | runtime | init | EIP-170 margin |")
-        out.append("|---|---:|---:|---:|")
-        for name, h_rt, h_in, _, _, _, _, margin in rows:
-            margin_str = fmt_int(margin) if margin is not None else "—"
-            out.append(
-                f"| {name} | {fmt_int(h_rt)} | {fmt_int(h_in)} | {margin_str} |"
-            )
+    if visible:
+        if base is not None:
+            out.append("| Contract | runtime | Δ runtime | init | Δ init | EIP-170 margin |")
+            out.append("|---|---:|---:|---:|---:|---:|")
+            for name, h_rt, h_in, b_rt, b_in, d_rt, d_in, margin in visible:
+                margin_str = fmt_int(margin) if margin is not None else "—"
+                if h_rt == 0 and base is not None and b_rt > 0:
+                    margin_str = "removed"
+                out.append(
+                    f"| {name} | {fmt_int(h_rt)} | {fmt_delta(d_rt)} | "
+                    f"{fmt_int(h_in)} | {fmt_delta(d_in)} | {margin_str} |"
+                )
+        else:
+            out.append("| Contract | runtime | init | EIP-170 margin |")
+            out.append("|---|---:|---:|---:|")
+            for name, h_rt, h_in, _, _, _, _, margin in visible:
+                margin_str = fmt_int(margin) if margin is not None else "—"
+                out.append(
+                    f"| {name} | {fmt_int(h_rt)} | {fmt_int(h_in)} | {margin_str} |"
+                )
+        if hidden > 0:
+            out.append("")
+            out.append(f"<sub>{hidden} more changed contract(s) hidden.</sub>")
+    elif base is not None:
+        out.append("No size changes.")
 
     warnings = [
         (name, margin)
@@ -168,6 +188,7 @@ def main() -> int:
     p.add_argument("--base", type=Path)
     p.add_argument("--min-size", type=int, default=200)
     p.add_argument("--warn-margin", type=int, default=5120)
+    p.add_argument("--top", type=int, default=10)
     p.add_argument("--output", type=Path)
     p.add_argument("--fail-on-oversize", action="store_true", help="Exit non-zero if any contract exceeds EIP-170.")
     args = p.parse_args()
@@ -175,7 +196,7 @@ def main() -> int:
     head = load_sizes(args.head)
     base = load_sizes(args.base) if args.base and args.base.exists() else None
 
-    report = render(head, base, args.min_size, args.warn_margin)
+    report = render(head, base, args.min_size, args.warn_margin, args.top)
 
     if args.output:
         args.output.write_text(report)
