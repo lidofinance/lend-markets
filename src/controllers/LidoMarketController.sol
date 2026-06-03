@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.28;
+pragma solidity ^0.8.20;
 
 import {Id, IMorpho, IMorphoStaticTyping, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {IOracle} from "@morpho-blue/src/interfaces/IOracle.sol";
@@ -34,11 +34,10 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
     uint64 internal constant DEFAULT_MIN_DELAY = 10 minutes;
     uint64 internal constant DEFAULT_MAX_DELAY = 2 hours;
-    uint128 internal constant DEFAULT_MIN_COLLATERAL_ACTIVATION_AMOUNT = 10e18;
-    uint128 internal constant DEFAULT_RATE_PER_HOUR = type(uint128).max;
-    uint128 internal constant DEFAULT_INFLOW_DECAY_PER_SECOND = 0;
-    uint128 internal constant DEFAULT_INFLOW_REFERENCE_SIZE = 0;
-    uint128 internal constant DEFAULT_INFLOW_MAX_ACCUMULATOR = type(uint128).max;
+    uint128 internal constant DEFAULT_MIN_MATURATION_AMOUNT = 10e18;
+    uint128 internal constant DEFAULT_MATURATION_LOAD_DECAY_PER_SECOND = 0;
+    uint128 internal constant DEFAULT_MAX_DELAY_MATURATION_LOAD = 0;
+    uint128 internal constant DEFAULT_MATURATION_LOAD_CAP = type(uint128).max;
     uint128 internal constant DEFAULT_SUPPLY_CAP = type(uint128).max;
     uint128 internal constant DEFAULT_BORROW_CAP = type(uint128).max;
     uint128 internal constant DEFAULT_SLICE_FLOOR_ASSETS = 0.1 ether;
@@ -52,6 +51,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     error MarketIsFrozen();
     error MarketIsPaused();
     error BelowMinDeposit();
+    error BelowMinFallback();
     error SupplyCapExceeded();
     error BorrowCapExceeded();
     error DeleverageIneligible();
@@ -232,14 +232,14 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         cfg = IMarketController.MarketConfig({
             minMaturationDelay: DEFAULT_MIN_DELAY,
             maxMaturationDelay: DEFAULT_MAX_DELAY,
-            minCollateralActivationAmount: DEFAULT_MIN_COLLATERAL_ACTIVATION_AMOUNT,
-            maturationRatePerHour: DEFAULT_RATE_PER_HOUR,
+            minMaturationAmount: DEFAULT_MIN_MATURATION_AMOUNT,
+            fallbackMinRequest: 0,
             lenderMinDeposit: 0,
             supplyCap: DEFAULT_SUPPLY_CAP,
             borrowCap: DEFAULT_BORROW_CAP,
-            inflowDecayPerSecond: DEFAULT_INFLOW_DECAY_PER_SECOND,
-            inflowReferenceSize: DEFAULT_INFLOW_REFERENCE_SIZE,
-            inflowMaxAccumulator: DEFAULT_INFLOW_MAX_ACCUMULATOR
+            maturationLoadDecayPerSecond: DEFAULT_MATURATION_LOAD_DECAY_PER_SECOND,
+            maxDelayMaturationLoad: DEFAULT_MAX_DELAY_MATURATION_LOAD,
+            maturationLoadCap: DEFAULT_MATURATION_LOAD_CAP
         });
     }
 
@@ -270,16 +270,16 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         emit MarketConfigSet(id);
     }
 
-    function increaseCollateralActivationParams(
-        Id id,
-        uint64 newMinMaturationDelay,
-        uint128 newMinCollateralActivationAmount
-    ) external onlyRole(RISK_STEWARD_ROLE) onlyControlledId(id) {
+    function increaseMaturationParams(Id id, uint64 newMinMaturationDelay, uint128 newMinMaturationAmount)
+        external
+        onlyRole(RISK_STEWARD_ROLE)
+        onlyControlledId(id)
+    {
         IMarketController.MarketConfig memory cfg = _config(id);
         if (newMinMaturationDelay < cfg.minMaturationDelay) revert ConfigOutOfBounds();
-        if (newMinCollateralActivationAmount < cfg.minCollateralActivationAmount) revert ConfigOutOfBounds();
+        if (newMinMaturationAmount < cfg.minMaturationAmount) revert ConfigOutOfBounds();
         cfg.minMaturationDelay = newMinMaturationDelay;
-        cfg.minCollateralActivationAmount = newMinCollateralActivationAmount;
+        cfg.minMaturationAmount = newMinMaturationAmount;
         _validateConfig(cfg);
         _storage().marketConfig[id] = cfg;
         _storage().marketState[id].configured = true;
@@ -312,17 +312,12 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     }
 
     function _validateConfig(IMarketController.MarketConfig memory cfg) internal pure {
+        if (cfg.minMaturationDelay == 0) revert ConfigOutOfBounds();
         if (cfg.minMaturationDelay > cfg.maxMaturationDelay) revert ConfigOutOfBounds();
-        bool inflowDisabled = cfg.inflowDecayPerSecond == 0 && cfg.inflowReferenceSize == 0;
-        bool inflowEnabled =
-            cfg.inflowDecayPerSecond != 0 && cfg.inflowReferenceSize != 0 && cfg.inflowMaxAccumulator != 0;
-        if (!inflowDisabled && !inflowEnabled) revert ConfigOutOfBounds();
-        // When window-based delay is enabled, the cap must allow the accumulator to actually
-        // reach the reference. Otherwise the formula's ratio would saturate below 1 and never
-        // produce maxDelay even for full-load bursts.
-        if (inflowEnabled) {
-            if (cfg.inflowMaxAccumulator < cfg.inflowReferenceSize) revert ConfigOutOfBounds();
-        }
+
+        bool loadScalingEnabled = cfg.maxDelayMaturationLoad != 0;
+        if ((cfg.maturationLoadDecayPerSecond == 0) != (cfg.maxDelayMaturationLoad == 0)) revert ConfigOutOfBounds();
+        if (loadScalingEnabled && cfg.maturationLoadCap < cfg.maxDelayMaturationLoad) revert ConfigOutOfBounds();
     }
 
     function _validateDeleverageConfig(IMarketController.DeleverageConfig memory cfg) internal pure {
@@ -393,7 +388,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
                 revert BorrowCapExceeded();
             }
         }
-        _syncMaturity(id, hookData.onBehalf);
+        _syncMaturation(id, hookData.onBehalf);
 
         // Stricter Lido constraint: borrow capacity uses matured collateral only. The core's
         // standard health check uses raw collateral; this hook adds the matured-only ceiling
@@ -427,32 +422,29 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         // matching raw collateral increment. A later revert rolls both updates back.
         // Settle any already-eligible pending lot before applying this deposit, so we never delay
         // an already-matured pending lot by mutating its timer.
-        _syncMaturity(id, hookData.onBehalf);
+        _syncMaturation(id, hookData.onBehalf);
 
         IMarketController.CollateralState storage p = _storage().collateralState[id][hookData.onBehalf];
         IMarketController.ControllerMarketState storage m = _storage().marketState[id];
         IMarketController.MarketConfig memory cfg = _config(id);
 
-        // Auto-promotion: once accumulated dust + the new deposit reaches the minimum activation
-        // amount, fold dust into activating. This is intentionally caller-agnostic so vaults,
+        // Auto-promotion: once accumulated dust + the new deposit reaches the minimum maturation
+        // amount, fold dust into maturing. This is intentionally caller-agnostic so vaults,
         // wrappers, and delegated flows can batch dust into borrowable collateral once the
         // economic threshold is crossed.
         uint128 dustPromoted = 0;
-        if (
-            p.dustCollateral > 0
-                && uint256(p.dustCollateral) + hookData.assets >= uint256(cfg.minCollateralActivationAmount)
-        ) {
+        if (p.dustCollateral > 0 && uint256(p.dustCollateral) + hookData.assets >= uint256(cfg.minMaturationAmount)) {
             dustPromoted = p.dustCollateral;
             m.totalDustCollateral -= dustPromoted;
             p.dustCollateral = 0;
         }
 
-        uint256 toActivate = uint256(dustPromoted) + hookData.assets;
+        uint256 maturingAmount = uint256(dustPromoted) + hookData.assets;
 
-        if (toActivate >= uint256(cfg.minCollateralActivationAmount)) {
-            uint128 added = toActivate.toUint128();
-            p.activatingCollateral += added;
-            m.totalActivatingCollateral += added;
+        if (maturingAmount >= uint256(cfg.minMaturationAmount)) {
+            uint128 added = maturingAmount.toUint128();
+            p.maturingCollateral += added;
+            m.totalMaturingCollateral += added;
 
             // Timer policy: take the maximum of (existing pending unlock) and (new deposit's
             // unlock as if started now). Comparing absolute unlocks — not raw delays — prevents
@@ -467,14 +459,14 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
                 p.pendingMaturationDelay = delay;
             }
 
-            // Bump inflow on the full activated lot (new deposit + any promoted dust). Earlier
-            // dust deposits were not booked against the accumulator because they were not yet
-            // borrowable; activation is the moment they begin contributing to risk capacity, so
-            // they must be charged here. Otherwise split-deposit sequences would bypass the
-            // window-based throttle.
-            _bumpInflow(id, toActivate);
+            // Add maturation load for the full lot entering maturation (new deposit + any promoted
+            // dust). Earlier dust deposits were not booked against the load because they were not
+            // yet borrowable; entering maturation is the moment they begin contributing to risk
+            // capacity, so they must be charged here. Otherwise split-deposit sequences would
+            // bypass the load-scaled delay.
+            _increaseMaturationLoad(id, maturingAmount);
         } else {
-            // Sub-minimum: deposited and withdrawable, but does not enter activation pipeline.
+            // Sub-minimum: deposited and withdrawable, but does not enter the maturation pipeline.
             uint128 addedDust = hookData.assets.toUint128();
             p.dustCollateral += addedDust;
             m.totalDustCollateral += addedDust;
@@ -491,18 +483,18 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
             revert MarketIsFrozen();
         }
         // Settle maturity so health check reads up-to-date matured collateral.
-        _syncMaturity(id, hookData.onBehalf);
+        _syncMaturation(id, hookData.onBehalf);
 
         // If borrower carries debt, enforce the matured-only ceiling against the post-withdraw
-        // state. We simulate the consume order (dust → activating → matured) used by
-        // `_consumeCollateralByPriority` so the matured projection matches the actual seizure path.
+        // state. We simulate the consume order (dust → maturing → matured) used by
+        // `_consumeNonFallback` so the matured projection matches the actual seizure path.
         if (hookData.borrowerBorrowShares != 0) {
             IMarketController.CollateralState storage p = _storage().collateralState[id][hookData.onBehalf];
             uint256 remaining = hookData.assets;
             uint256 fromDust = remaining < p.dustCollateral ? remaining : p.dustCollateral;
             remaining -= fromDust;
-            uint256 fromActivating = remaining < p.activatingCollateral ? remaining : p.activatingCollateral;
-            remaining -= fromActivating;
+            uint256 fromMaturing = remaining < p.maturingCollateral ? remaining : p.maturingCollateral;
+            remaining -= fromMaturing;
             uint256 fromMatured = remaining;
             if (fromMatured > p.maturedCollateral) revert InsufficientMaturedCollateral();
             uint256 maturedAfter = uint256(p.maturedCollateral) - fromMatured;
@@ -511,23 +503,31 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
         // Keep controller buckets synchronized before the core applies the matching raw collateral
         // decrement. A later revert rolls both updates back.
-        _consumeCollateralByPriority(id, hookData.onBehalf, hookData.assets);
+        _consumeNonFallback(id, hookData.onBehalf, hookData.assets);
 
         (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.onBehalf);
-        _syncDeleverageHeap(hookData.onBehalf, currentBorrowShares, currentRawCollateral - hookData.assets);
+        _syncDeleverageHeap(
+            hookData.onBehalf,
+            currentBorrowShares,
+            currentRawCollateral > hookData.assets ? currentRawCollateral - hookData.assets : 0
+        );
     }
 
     function _handleLiquidate(Id id, IMarketController.LiquidateHookData memory hookData) internal {
         _requireNotPaused(id);
         (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.borrower);
-        // Liquidator's seizure already known here. Debit controller's split (dust → activating →
+        // Liquidator's seizure already known here. Debit controller's split (dust → maturing →
         // matured) before core decrements raw `position.collateral`. Both decrements are in the
         // same tx, so a revert anywhere rolls them back together.
-        if (hookData.seizedAssets > 0) _consumeCollateralByPriority(id, hookData.borrower, hookData.seizedAssets);
+        if (hookData.seizedAssets > 0) _consumeNonFallback(id, hookData.borrower, hookData.seizedAssets);
 
         uint256 projectedBorrowShares =
             currentBorrowShares > hookData.repaidShares ? currentBorrowShares - hookData.repaidShares : 0;
-        _syncDeleverageHeap(hookData.borrower, projectedBorrowShares, currentRawCollateral - hookData.seizedAssets);
+        _syncDeleverageHeap(
+            hookData.borrower,
+            projectedBorrowShares,
+            currentRawCollateral > hookData.seizedAssets ? currentRawCollateral - hookData.seizedAssets : 0
+        );
     }
 
     /// @dev Stricter Lido check: matured collateral must cover existing debt + any incoming
@@ -564,7 +564,10 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         rejectIfRootBadDebt(id)
     {
         _requireNotPaused(id);
-        _syncMaturity(id, hookData.borrower);
+        IMarketController.MarketConfig memory cfg = _config(id);
+        if (hookData.assetsToCancel < cfg.fallbackMinRequest) revert BelowMinFallback();
+
+        _syncMaturation(id, hookData.borrower);
 
         // Refetch from core rather than trusting hookData fields beyond the borrower identity and
         // requested cut size. Payload is preserved for forward compatibility with alternative
@@ -580,13 +583,17 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
         uint256 collateralSeized = hookData.assetsToCancel.mulDivDown(DeleverageSliceLib.ORACLE_PRICE_SCALE, price);
         if (collateralSeized > 0) {
-            _consumeCollateralByPriority(id, hookData.borrower, collateralSeized);
+            _consumeNonFallback(id, hookData.borrower, collateralSeized);
         }
 
         // Heap key uses borrowShares, so sync to the post-cut shares.
         uint256 sharesToBurn = hookData.assetsToCancel.toSharesUp(totalBorrowAssets, totalBorrowShares);
         uint256 projectedBorrowShares = currentBorrowShares > sharesToBurn ? currentBorrowShares - sharesToBurn : 0;
-        _syncDeleverageHeap(hookData.borrower, projectedBorrowShares, currentRawCollateral - collateralSeized);
+        _syncDeleverageHeap(
+            hookData.borrower,
+            projectedBorrowShares,
+            currentRawCollateral > collateralSeized ? currentRawCollateral - collateralSeized : 0
+        );
     }
 
     /* DELEVERAGE QUEUE VIEWS */
@@ -697,121 +704,104 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
     /* MATURITY SYNC */
 
-    /// @notice Off-chain preview of borrower's maturity state without mutating storage.
-    ///         Useful for UI / monitoring; does not represent guaranteed outcome —
-    ///         actual sync depends on rate-limit budget at the time of next mutating action.
-    function previewMaturity(Id id, address borrower)
+    /// @notice Off-chain preview of borrower's maturation state without mutating storage.
+    ///         Useful for UI / monitoring. `readyToSettle` reflects whether the next mutating action
+    ///         will mature the maturing lot in full (timer elapsed and borrower not blocked).
+    function previewMaturation(Id id, address borrower)
         external
         view
-        returns (uint256 storedMatured, uint256 activating, uint256 dust, bool readyToSettle)
+        returns (uint256 storedMatured, uint256 maturing, uint256 dust, bool readyToSettle)
     {
         IMarketController.CollateralState storage p = _storage().collateralState[id][borrower];
         storedMatured = uint256(p.maturedCollateral);
-        activating = uint256(p.activatingCollateral);
+        maturing = uint256(p.maturingCollateral);
         dust = uint256(p.dustCollateral);
+        IMarketController.ControllerMarketState storage m = _storage().marketState[id];
         readyToSettle = p.pendingMaturationStart != 0
             && block.timestamp >= uint256(p.pendingMaturationStart) + p.pendingMaturationDelay
-            && !_isBlocked(id, borrower);
+            && !_isBlocked(id, borrower) && !m.isFrozen && !m.isPaused;
     }
 
-    /// @dev Internal invariant sync. Settles eligible activating collateral to matured state,
-    ///      respecting per-position timer, address/maturation blocks, and global rate-limit
-    ///      budget. Blocks can delay activation, but cannot accelerate it beyond the timer.
-    ///      Called from every action whose accounting depends on up-to-date matured/activating
+    /// @dev Internal invariant sync. Settles eligible maturing collateral to matured state,
+    ///      respecting the per-position timer, address/maturation blocks, and market freeze/pause.
+    ///      Blocks and freeze/pause can delay maturation, but cannot accelerate it beyond the timer.
+    ///      Called from every action whose accounting depends on up-to-date matured/maturing
     ///      classification: borrow, withdrawCollateral, deleverage, supplyCollateral.
-    function _syncMaturity(Id id, address borrower) internal {
+    function _syncMaturation(Id id, address borrower) internal {
         IMarketController.CollateralState storage p = _storage().collateralState[id][borrower];
         if (p.pendingMaturationStart == 0) return;
         if (block.timestamp < uint256(p.pendingMaturationStart) + p.pendingMaturationDelay) return;
 
-        // Blocked addresses or market positions stay pending; blocks can delay activation but do
+        // Blocked addresses or market positions stay pending; blocks can delay maturation but do
         // not seize or withdraw collateral.
         if (_isBlocked(id, borrower)) return;
 
-        uint128 toMature = p.activatingCollateral;
+        // Freeze and pause suspend maturation: an elapsed lot stays maturing until the market
+        // resumes. The timer keeps running (deferral, not extension), so it matures on the next
+        // sync after resume. This halts new borrow capacity without seizing collateral.
+        IMarketController.ControllerMarketState storage m = _storage().marketState[id];
+        if (m.isFrozen || m.isPaused) return;
+
+        uint128 toMature = p.maturingCollateral;
         if (toMature == 0) {
             p.pendingMaturationStart = 0;
             p.pendingMaturationDelay = 0;
             return;
         }
 
-        uint128 budget = _refillMaturationBudget(id);
-        if (toMature > budget) toMature = budget;
-        if (toMature == 0) return;
-
-        IMarketController.ControllerMarketState storage m = _storage().marketState[id];
-        p.activatingCollateral -= toMature;
+        // The maturation delay is the only throttle: once it has elapsed the whole lot matures at
+        // once. There is no separate maturation rate cap to fragment or starve the transition.
+        p.maturingCollateral = 0;
         p.maturedCollateral += toMature;
-        m.totalActivatingCollateral -= toMature;
+        m.totalMaturingCollateral -= toMature;
         m.totalMaturedCollateral += toMature;
-        m.maturationBudgetUsed += toMature;
 
-        if (p.activatingCollateral == 0) {
-            p.pendingMaturationStart = 0;
-            p.pendingMaturationDelay = 0;
-        }
+        p.pendingMaturationStart = 0;
+        p.pendingMaturationDelay = 0;
 
         emit Matured(id, borrower, toMature);
     }
 
-    function _refillMaturationBudget(Id id) internal returns (uint128) {
-        IMarketController.ControllerMarketState storage m = _storage().marketState[id];
-        if (block.timestamp >= uint256(m.maturationBudgetWindowStart) + 1 hours) {
-            m.maturationBudgetWindowStart = uint64(block.timestamp);
-            m.maturationBudgetUsed = 0;
-        }
-        uint128 cap = _config(id).maturationRatePerHour;
-        if (m.maturationBudgetUsed >= cap) return 0;
-        return cap - m.maturationBudgetUsed;
-    }
-
     function _computeMaturationDelay(Id id, uint256 depositSize) internal view returns (uint64) {
         IMarketController.MarketConfig memory cfg = _config(id);
+
+        // Leaky-bucket disabled (unconfigured market): conservative fixed maxDelay. The delay never
+        // depends on live market state, so it cannot be scaled down by a large matured base.
+        if (cfg.maxDelayMaturationLoad == 0) return cfg.maxMaturationDelay;
+
+        // Load-scaled adaptive formula (Spark ALM-style leaky bucket).
         uint256 span = uint256(cfg.maxMaturationDelay - cfg.minMaturationDelay);
-
-        if (cfg.inflowReferenceSize == 0) {
-            // Legacy size-based formula.
-            uint256 base = uint256(_storage().marketState[id].totalMaturedCollateral);
-            if (base == 0) return cfg.maxMaturationDelay;
-            uint256 ratioWadLegacy = depositSize.wDivDown(base);
-            if (ratioWadLegacy >= WAD) return cfg.maxMaturationDelay;
-            return uint64(uint256(cfg.minMaturationDelay) + (span * ratioWadLegacy) / WAD);
-        }
-
-        // Window-based adaptive formula (Spark ALM-style leaky bucket).
-        uint256 effectiveLoad = _currentInflow(id) + depositSize;
-        uint256 ratioWad = effectiveLoad.wDivDown(uint256(cfg.inflowReferenceSize));
+        uint256 effectiveLoad = _currentMaturationLoad(id) + depositSize;
+        uint256 ratioWad = effectiveLoad.wDivDown(uint256(cfg.maxDelayMaturationLoad));
         if (ratioWad >= WAD) return cfg.maxMaturationDelay;
         return uint64(uint256(cfg.minMaturationDelay) + (span * ratioWad) / WAD);
     }
 
-    function _currentInflow(Id id) internal view returns (uint256) {
+    function _currentMaturationLoad(Id id) internal view returns (uint256) {
         IMarketController.ControllerMarketState storage m = _storage().marketState[id];
-        if (m.inflowAccumulator == 0) return 0;
+        if (m.maturationLoad == 0) return 0;
         IMarketController.MarketConfig memory cfg = _config(id);
-        if (cfg.inflowDecayPerSecond == 0) return uint256(m.inflowAccumulator);
 
-        uint256 elapsed = block.timestamp - uint256(m.inflowLastUpdate);
+        uint256 elapsed = block.timestamp - uint256(m.maturationLoadUpdatedAt);
         uint256 decay;
         unchecked {
-            decay = uint256(cfg.inflowDecayPerSecond) * elapsed;
+            decay = uint256(cfg.maturationLoadDecayPerSecond) * elapsed;
         }
-        if (decay >= m.inflowAccumulator) return 0;
-        return uint256(m.inflowAccumulator) - decay;
+        if (decay >= m.maturationLoad) return 0;
+        return uint256(m.maturationLoad) - decay;
     }
 
-    function _bumpInflow(Id id, uint256 added) internal {
+    function _increaseMaturationLoad(Id id, uint256 added) internal {
         IMarketController.MarketConfig memory cfg = _config(id);
-        if (cfg.inflowReferenceSize == 0) return;
+        if (cfg.maxDelayMaturationLoad == 0) return;
 
         IMarketController.ControllerMarketState storage m = _storage().marketState[id];
-        uint256 current = _currentInflow(id);
-        uint256 newValue = current + added;
-        uint256 cap = uint256(cfg.inflowMaxAccumulator);
+        uint256 newValue = _currentMaturationLoad(id) + added;
+        uint256 cap = uint256(cfg.maturationLoadCap);
         if (newValue > cap) newValue = cap;
 
-        m.inflowAccumulator = uint128(newValue);
-        m.inflowLastUpdate = uint64(block.timestamp);
+        m.maturationLoad = uint128(newValue);
+        m.maturationLoadUpdatedAt = uint64(block.timestamp);
     }
 
     /* INTERNAL ACCOUNTING */
@@ -912,7 +902,10 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         return (uint256(borrowAssets), uint256(borrowShares));
     }
 
-    function _consumeCollateralByPriority(Id id, address borrower, uint256 amount) internal {
+    /// @dev Non-fallback debit path (user withdrawal, liquidation, deleverage): consumes dust then
+    ///      maturing then matured. Immature collateral is withdrawable, so user withdrawals,
+    ///      seizures, and deleverage cuts share the same consume order.
+    function _consumeNonFallback(Id id, address borrower, uint256 amount) internal {
         IMarketController.CollateralState storage p = _storage().collateralState[id][borrower];
         IMarketController.ControllerMarketState storage m = _storage().marketState[id];
         uint128 remaining = amount.toUint128();
@@ -924,11 +917,11 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
             remaining -= fromDust;
         }
 
-        uint128 fromActivating = remaining < p.activatingCollateral ? remaining : p.activatingCollateral;
-        if (fromActivating != 0) {
-            p.activatingCollateral -= fromActivating;
-            m.totalActivatingCollateral -= fromActivating;
-            remaining -= fromActivating;
+        uint128 fromMaturing = remaining < p.maturingCollateral ? remaining : p.maturingCollateral;
+        if (fromMaturing != 0) {
+            p.maturingCollateral -= fromMaturing;
+            m.totalMaturingCollateral -= fromMaturing;
+            remaining -= fromMaturing;
         }
 
         if (remaining != 0) {
@@ -937,7 +930,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
             m.totalMaturedCollateral -= remaining;
         }
 
-        if (p.activatingCollateral == 0) {
+        if (p.maturingCollateral == 0) {
             p.pendingMaturationStart = 0;
             p.pendingMaturationDelay = 0;
         }

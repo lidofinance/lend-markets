@@ -536,7 +536,7 @@ contract MorphoBlueForkScenarioTest is Test {
     ) internal view {
         IMarketController.CollateralState memory state = controller.collateralState(id, borrower);
         assertEq(uint256(state.maturedCollateral), matured, "matured collateral");
-        assertEq(uint256(state.activatingCollateral), activating, "activating collateral");
+        assertEq(uint256(state.maturingCollateral), activating, "maturing collateral");
         assertEq(uint256(state.dustCollateral), dust, "dust collateral");
     }
 }
