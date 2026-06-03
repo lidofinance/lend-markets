@@ -166,10 +166,10 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
 
             // Pro-rate burn + idle loan-asset payout to actually-consumed morpho supply shares.
             // `Math.mulDiv` rounds down so we never over-burn.
-            sharesBurned = morphoSupplyConsumed == morphoSupplyTarget
+            sharesBurned = morphoSupplyConsumed >= morphoSupplyTarget
                 ? shares
                 : Math.mulDiv(shares, morphoSupplyConsumed, morphoSupplyTarget);
-            loanAssets = morphoSupplyConsumed == morphoSupplyTarget
+            loanAssets = morphoSupplyConsumed >= morphoSupplyTarget
                 ? loanAssetsTarget
                 : Math.mulDiv(loanAssetsTarget, morphoSupplyConsumed, morphoSupplyTarget);
         }
@@ -182,6 +182,7 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
 
         if (loanAssets != 0) IERC20(asset()).safeTransfer(receiver, loanAssets);
 
+        // slither-disable-next-line uninitialized-local
         DeleverageLog memory log;
         log.sharesRequested = shares;
         log.sharesBurned = sharesBurned;
