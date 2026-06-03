@@ -16,6 +16,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -62,6 +63,20 @@ jobs:
             echo
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: render slither summary
+        if: always() && github.event_name == 'pull_request'
+        run: python3 .github/scripts/slither-summary.py --log slither.log --output slither-comment.md
+
+      - name: post sticky comment
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          .github/scripts/sticky-comment.sh \
+            "${{ github.event.pull_request.number }}" \
+            '<!-- slither:do-not-edit -->' \
+            slither-comment.md
 
       - name: fail on slither findings
         if: steps.slither.outcome == 'failure'
