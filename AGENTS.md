@@ -24,6 +24,10 @@
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).
   Read it before writing or reviewing new contracts.
+- `CLAUDE.md`: thin pointer (`@AGENTS.md`) so Claude Code picks up the same guidelines as Codex
+  (which reads `AGENTS.md` natively). `AGENTS.md` is the source of truth — update it, not the
+  pointer. Add similar stubs for other agents (Cursor, Copilot, Cline, ...) when those tools are
+  actually used on the project.
 
 ## Build, Test, And Formatting Commands
 
