@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity ^0.8.20;
+pragma solidity 0.8.24;
 
-import {Id, IMorpho, IMorphoStaticTyping, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
+import {Id, IMorphoStaticTyping} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {IOracle} from "@morpho-blue/src/interfaces/IOracle.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -10,7 +10,6 @@ import "@morpho-blue/src/libraries/ConstantsLib.sol";
 import {MathLib, WAD} from "@morpho-blue/src/libraries/MathLib.sol";
 import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 import {UtilsLib} from "@morpho-blue/src/libraries/UtilsLib.sol";
-import {MorphoBalancesLib} from "@morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol";
 
 import {IMarketController} from "../interfaces/IMarketController.sol";
 import {IMarketAccessRegistry} from "../interfaces/IMarketAccessRegistry.sol";
@@ -628,6 +627,11 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
         return _rootHasBadDebt(id);
     }
 
+    /// @dev Reads stored `market[id]` totals directly. On the production path the deleverage hook
+    ///      runs after core's `_accrueInterest`, so stored == accrued. Off-chain callers (monitors,
+    ///      dashboards) see a drift bounded by interest accumulated since the last accrual; they
+    ///      can pre-call `accrueInterest` or simulate via `MorphoBalancesLib` themselves if they
+    ///      need sub-block precision.
     function _rootHasBadDebt(Id id) internal view returns (bool) {
         if (_heap().size() == 0) return false;
         (address top,) = _heap().peek();
