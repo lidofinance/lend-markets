@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build + lint + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/repo-setup
+
+      - name: build (with sizes)
+        run: forge build --sizes
+
+      - name: lint
+        run: make lint
+
+      # CI requires a mainnet fork. Tests use real Lido contracts and must not silently skip;
+      # if MAINNET_RPC_URL is missing, fail loudly so the operator knows to configure it.
+      - name: test
+        env:
+          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+        run: |
+          test -n "$MAINNET_RPC_URL" || { echo "::error::MAINNET_RPC_URL secret required"; exit 1; }
+          forge test --fork-url "$MAINNET_RPC_URL"

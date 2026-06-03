@@ -84,6 +84,7 @@ interface IMarketController {
         SupplyCollateral,
         WithdrawCollateral,
         Liquidate,
+        AccrueInterest,
         Deleverage
     }
 
@@ -148,6 +149,10 @@ interface IMarketController {
         uint256 borrowerRawCollateral;
         uint256 collateralPrice;
         uint256 collateralSeized;
+    }
+
+    struct AccrueInterestHookData {
+        address caller;
     }
 
     /// @notice Lido lending core contract this controller accepts hooks from.
@@ -222,6 +227,7 @@ interface IMarketController {
     ///        - SupplyCollateral: abi.encode(SupplyCollateralHookData)
     ///        - WithdrawCollateral: abi.encode(WithdrawCollateralHookData)
     ///        - Liquidate: abi.encode(LiquidateHookData)
+    ///        - AccrueInterest: abi.encode(AccrueInterestHookData)
     ///        - Deleverage: abi.encode(DeleverageHookData)
     function on(Id id, HookEvent e, bytes calldata data) external;
 }

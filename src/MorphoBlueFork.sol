@@ -161,6 +161,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     }
 
     /// @inheritdoc IMorphoBase
+    // slither-disable-next-line reentrancy-no-eth
     function setFee(MarketParams memory marketParams, uint256 newFee) external onlyOwner {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
@@ -239,6 +240,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     /* SUPPLY MANAGEMENT */
 
     /// @inheritdoc IMorphoBase
+    // slither-disable-next-line reentrancy-no-eth
     function supply(
         MarketParams memory marketParams,
         uint256 assets,
@@ -280,6 +282,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     }
 
     /// @inheritdoc IMorphoBase
+    // slither-disable-next-line reentrancy-no-eth
     function withdraw(
         MarketParams memory marketParams,
         uint256 assets,
@@ -325,6 +328,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     /* BORROW MANAGEMENT */
 
     /// @inheritdoc IMorphoBase
+    // slither-disable-next-line reentrancy-no-eth
     function borrow(
         MarketParams memory marketParams,
         uint256 assets,
@@ -369,6 +373,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     }
 
     /// @inheritdoc IMorphoBase
+    // slither-disable-next-line reentrancy-no-eth
     function repay(
         MarketParams memory marketParams,
         uint256 assets,
@@ -440,6 +445,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     }
 
     /// @inheritdoc IMorphoBase
+    // slither-disable-next-line reentrancy-no-eth
     function withdrawCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, address receiver)
         external
     {
@@ -477,6 +483,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     /* LIQUIDATION */
 
     /// @inheritdoc IMorphoBase
+    // slither-disable-next-line reentrancy-no-eth
     function liquidate(
         MarketParams memory marketParams,
         address borrower,
@@ -531,7 +538,9 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
         position[id][borrower].collateral -= seizedAssets.toUint128();
 
+        // slither-disable-next-line uninitialized-local
         uint256 badDebtShares;
+        // slither-disable-next-line uninitialized-local
         uint256 badDebtAssets;
         if (position[id][borrower].collateral == 0) {
             badDebtShares = position[id][borrower].borrowShares;
@@ -567,6 +576,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     ///         and the liquidity-gate activation check. Eligibility (borrower must be heap head or
     ///         have a personal watermark) and the slice cap are enforced by the controller's
     ///         deleverage hook.
+    // slither-disable-next-line reentrancy-no-eth
     function deleverage(
         MarketParams memory marketParams,
         uint256 supplyShares,
@@ -693,17 +703,26 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     /* INTEREST MANAGEMENT */
 
     /// @inheritdoc IMorphoBase
+    // slither-disable-next-line reentrancy-no-eth
     function accrueInterest(MarketParams memory marketParams) external {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
+
+        _hook(
+            id,
+            IMarketController.HookEvent.AccrueInterest,
+            abi.encode(IMarketController.AccrueInterestHookData({caller: msg.sender}))
+        );
 
         _accrueInterest(marketParams, id);
     }
 
     /// @dev Accrues interest for the given market `marketParams`.
     /// @dev Assumes that the inputs `marketParams` and `id` match.
+    // slither-disable-next-line reentrancy-no-eth
     function _accrueInterest(MarketParams memory marketParams, Id id) internal {
         uint256 elapsed = block.timestamp - market[id].lastUpdate;
+        // slither-disable-next-line incorrect-equality
         if (elapsed == 0) return;
 
         if (marketParams.irm != address(0)) {
@@ -712,6 +731,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
             market[id].totalBorrowAssets += interest.toUint128();
             market[id].totalSupplyAssets += interest.toUint128();
 
+            // slither-disable-next-line uninitialized-local
             uint256 feeShares;
             if (market[id].fee != 0) {
                 uint256 feeAmount = interest.wMulDown(market[id].fee);

@@ -357,6 +357,8 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
             _handleWithdrawCollateral(id, abi.decode(data, (IMarketController.WithdrawCollateralHookData)));
         } else if (e == IMarketController.HookEvent.Liquidate) {
             _handleLiquidate(id, abi.decode(data, (IMarketController.LiquidateHookData)));
+        } else if (e == IMarketController.HookEvent.AccrueInterest) {
+            _handleAccrueInterest(id);
         } else if (e == IMarketController.HookEvent.Deleverage) {
             _handleDeleverage(id, abi.decode(data, (IMarketController.DeleverageHookData)));
         } else {
@@ -366,10 +368,7 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
     function _handleSupply(Id id, IMarketController.SupplyHookData memory hookData) internal view {
         _requireNotPaused(id);
-        // Blocks apply to both caller and onBehalf — blocked actors must not fund even a clean
-        // lender account.
-        _requireNotBlocked(id, hookData.caller);
-        _requireNotBlocked(id, hookData.onBehalf);
+        if (_storage().marketState[id].isFrozen) revert MarketIsFrozen();
         IMarketController.MarketConfig memory cfg = _config(id);
         if (hookData.assets > 0 && hookData.assets < cfg.lenderMinDeposit) {
             revert BelowMinDeposit();
@@ -688,6 +687,10 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
     function _collateralPrice(Id id) internal view returns (uint256) {
         (,, address oracle,,) = IMorphoStaticTyping(_storage().lendingMarket).idToMarketParams(id);
         return IOracle(oracle).price();
+    }
+
+    function _handleAccrueInterest(Id id) internal view {
+        _requireNotPaused(id);
     }
 
     /* MATURITY SYNC */
