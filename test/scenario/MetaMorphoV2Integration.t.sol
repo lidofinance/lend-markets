@@ -297,8 +297,8 @@ contract MetaMorphoV2IntegrationTest is Test {
 
     function _deployController(address market, bytes32 marketId) internal returns (address) {
         address accessRegistry =
-            _deployArtifact("MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
-        address implementation = _deployArtifact("LidoMarketController.sol:LidoMarketController", "");
+            _deployArtifact("src/controllers/MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
+        address implementation = _deployArtifact("src/controllers/LidoMarketController.sol:LidoMarketController", "");
         bytes memory initData = abi.encodeWithSignature(
             "initialize(address,bytes32,address,address)", market, marketId, accessRegistry, address(this)
         );

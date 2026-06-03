@@ -25,8 +25,10 @@ import re
 import sys
 from pathlib import Path
 
+# forge snapshot --diff prefixes each test line with one of `↑` (gas up), `↓` (down), or
+# `━` (unchanged). Match all three so the delta tally lines up with the trailing TOTALS row.
 ROW_RE = re.compile(
-    r"^━\s+(?P<test>.+?)\s+\(gas:\s+(?P<base>\d+)\s+→\s+(?P<head>\d+)\s+\|\s+(?P<delta>[+\-]?\d+)\s+(?P<pct>[+\-]?[\d.]+|NaN)%?\)"
+    r"^[↑↓━]\s+(?P<test>.+?)\s+\(gas:\s+(?P<base>\d+)\s+→\s+(?P<head>\d+)\s+\|\s+(?P<delta>[+\-]?\d+)\s+(?P<pct>[+\-]?[\d.]+|NaN)%?\)"
 )
 TOTALS_RE = re.compile(r"^(Total tests:.*|Overall gas change:.*)$")
 

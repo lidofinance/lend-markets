@@ -505,8 +505,8 @@ contract MorphoBlueForkScenarioTest is Test {
 
     function _deployController(MorphoBlueFork core, Id id) internal returns (IMarketController, address) {
         address accessRegistry =
-            _deployArtifact("MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
-        address implementation = _deployArtifact("LidoMarketController.sol:LidoMarketController", "");
+            _deployArtifact("src/controllers/MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
+        address implementation = _deployArtifact("src/controllers/LidoMarketController.sol:LidoMarketController", "");
         bytes memory initData = abi.encodeWithSignature(
             "initialize(address,bytes32,address,address)", address(core), Id.unwrap(id), accessRegistry, address(this)
         );

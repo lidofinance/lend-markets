@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity ^0.8.20;
+pragma solidity 0.8.24;
 
 import {Id} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";

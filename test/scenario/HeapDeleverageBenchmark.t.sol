@@ -533,8 +533,8 @@ contract HeapDeleverageBenchmark is Test {
         ctx.price = ctx.oracle.price();
 
         address accessRegistry =
-            _deployArtifact("MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
-        address impl = _deployArtifact("LidoMarketController.sol:LidoMarketController", "");
+            _deployArtifact("src/controllers/MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
+        address impl = _deployArtifact("src/controllers/LidoMarketController.sol:LidoMarketController", "");
         bytes memory initData = abi.encodeWithSignature(
             "initialize(address,bytes32,address,address)",
             address(ctx.market),
