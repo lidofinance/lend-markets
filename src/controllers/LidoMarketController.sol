@@ -356,7 +356,6 @@ contract LidoMarketController is Initializable, AccessControlUpgradeable, IMarke
 
     function _handleSupply(Id id, IMarketController.SupplyHookData memory hookData) internal view {
         _requireNotPaused(id);
-        if (_storage().marketState[id].isFrozen) revert MarketIsFrozen();
         IMarketController.MarketConfig memory cfg = _config(id);
         if (hookData.assets > 0 && hookData.assets < cfg.lenderMinDeposit) {
             revert BelowMinDeposit();

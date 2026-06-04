@@ -39,6 +39,17 @@ contract LidoMarketControllerPreviewAndGuardsTest is LidoMarketControllerTestBas
         assertEq(harness.exposed_computeMaturationDelay(MARKET, 0), MAX_DELAY, "load bumped during freeze");
     }
 
+    function test_FreezeAllowsLenderSupply() public {
+        harness.freeze(MARKET);
+        harness.exposed_handleSupply(MARKET, user, user, 0);
+    }
+
+    function test_PauseBlocksLenderSupply() public {
+        harness.pauseMarket(MARKET);
+        vm.expectRevert(LidoMarketController.MarketIsPaused.selector);
+        harness.exposed_handleSupply(MARKET, user, user, 0);
+    }
+
     // Pause is a full stop: even a zero-debt matured withdrawal reverts.
     function test_PauseBlocksWithdrawEntirely() public {
         _supplyCollateral(user, 100e18);
