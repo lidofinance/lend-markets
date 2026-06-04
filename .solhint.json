@@ -10,6 +10,8 @@
     "no-inline-assembly": "off",
     "private-vars-leading-underscore": "off",
     "func-named-parameters": "off",
-    "max-states-count": "off"
+    "max-states-count": "off",
+    "import-path-check": "off",
+    "no-unused-import": "warn"
   }
 }

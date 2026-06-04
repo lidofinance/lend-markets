@@ -30,8 +30,21 @@ abstract contract LidoMarketControllerTestBase is Test {
 
     function setUp() public virtual {
         // Non-empty code so the controller's NoCode check passes during initialize. The body is a
-        // bare revert; unit tests never call into it.
+        // bare revert.
         vm.etch(LENDING_MARKET, hex"60006000fd");
+        // Hook handlers (supplyCollateral, borrow, ...) call back into the core via
+        // `_currentPosition` / `_totalBorrowTotals` to sync the deleverage heap. Mock the two
+        // surfaces with zeros — unit tests don't exercise heap state.
+        vm.mockCall(
+            LENDING_MARKET,
+            abi.encodeWithSignature("position(bytes32,address)"),
+            abi.encode(uint256(0), uint128(0), uint128(0))
+        );
+        vm.mockCall(
+            LENDING_MARKET,
+            abi.encodeWithSignature("market(bytes32)"),
+            abi.encode(uint128(0), uint128(0), uint128(0), uint128(0), uint128(0), uint128(0))
+        );
 
         registry = new MarketAccessRegistry(address(this));
         registry.grantRole(registry.OPERATOR_ROLE(), address(this));

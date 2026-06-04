@@ -9,6 +9,7 @@ import {
 } from "@vault-v2/lib/morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
 import {Test} from "forge-std/Test.sol";
+import {IControllerAdmin} from "../utils/IControllerAdmin.sol";
 
 struct LidoMarketParams {
     address loanToken;
@@ -38,7 +39,7 @@ interface IWstETH is IERC20Like {
 interface IMorphoBlueForkLike {
     function enableIrm(address irm) external;
     function enableLltv(uint256 lltv) external;
-    function createMarket(LidoMarketParams memory marketParams, address controller, bool fallbackEnabled) external;
+    function createMarket(LidoMarketParams memory marketParams, address controller, bool deleverageEnabled) external;
     function supply(
         LidoMarketParams memory marketParams,
         uint256 assets,
@@ -59,7 +60,7 @@ interface IMorphoBlueForkLike {
         address onBehalf,
         address receiver
     ) external returns (uint256, uint256);
-    function fallbackExit(
+    function deleverage(
         LidoMarketParams memory marketParams,
         uint256 supplyShares,
         address borrower,
@@ -72,7 +73,17 @@ interface IMorphoBlueForkLike {
         returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral);
 }
 
-contract MorphoBlueForkVaultV2IntegrationTest is Test {
+interface IControllerLike {
+    function deleverage(
+        LidoMarketParams calldata marketParams,
+        uint256 supplyShares,
+        address borrower,
+        address lender,
+        address receiver
+    ) external returns (uint256 collateralSeized, uint256 debtCanceled);
+}
+
+contract MetaMorphoV2IntegrationTest is Test {
     using AdapterMarketParamsLib for AdapterMarketParams;
 
     address internal constant CURATOR = address(0x1001);
@@ -102,6 +113,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         IERC20Like loanToken;
         IERC20Like collateralToken;
         IMorphoBlueForkLike market;
+        IControllerLike controller;
         LidoMarketParams lidoParams;
         AdapterMarketParams adapterParams;
         bytes32 marketId;
@@ -109,7 +121,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         MorphoMarketV1AdapterV2 adapter;
     }
 
-    function testVaultV2CanAllocateIntoLidoForkAndForceDeallocateIntoDirectMarketPosition() public {
+    function test_metaMorphoV2_allocatesIntoForkAndForceDeallocates() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         IntegrationContext memory ctx = _setupIntegrationContext();
@@ -123,7 +135,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         ctx.vault.withdraw(10 ether, USER, USER);
 
         _forceDeallocateVaultUser(ctx);
-        _fallbackExitDirectLenderAndAssert(ctx, directSupplySharesBefore);
+        _deleverageDirectLenderAndAssert(ctx, directSupplySharesBefore);
 
         (uint256 userDirectSupplySharesAfter,,) = ctx.market.position(ctx.marketId, USER);
         assertTrue(userDirectSupplySharesAfter > 0, "direct market position remains with user");
@@ -150,6 +162,7 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         });
         ctx.marketId = AdapterId.unwrap(ctx.adapterParams.id());
         address controller = _deployController(address(ctx.market), ctx.marketId);
+        ctx.controller = IControllerLike(controller);
 
         ctx.market.enableIrm(irm);
         ctx.market.enableLltv(LLTV);
@@ -226,13 +239,13 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
         ctx.vault.withdraw(10 ether, SOLVER, USER);
     }
 
-    function _fallbackExitDirectLenderAndAssert(IntegrationContext memory ctx, uint256 supplyShares) internal {
+    function _deleverageDirectLenderAndAssert(IntegrationContext memory ctx, uint256 supplyShares) internal {
         uint256 directCollateralBefore = ctx.collateralToken.balanceOf(DIRECT_LENDER);
         (,, uint128 borrowerRawCollateralBefore) = ctx.market.position(ctx.marketId, BORROWER);
 
         vm.prank(DIRECT_LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.market.fallbackExit(ctx.lidoParams, supplyShares, BORROWER, DIRECT_LENDER, DIRECT_LENDER);
+            ctx.market.deleverage(ctx.lidoParams, supplyShares, BORROWER, DIRECT_LENDER, DIRECT_LENDER);
 
         (uint256 directSupplySharesAfterFallback,,) = ctx.market.position(ctx.marketId, DIRECT_LENDER);
         (,, uint128 borrowerRawCollateralAfter) = ctx.market.position(ctx.marketId, BORROWER);
@@ -284,13 +297,16 @@ contract MorphoBlueForkVaultV2IntegrationTest is Test {
 
     function _deployController(address market, bytes32 marketId) internal returns (address) {
         address accessRegistry =
-            _deployArtifact("MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
-        address implementation = _deployArtifact("LidoMarketController.sol:LidoMarketController", "");
+            _deployArtifact("src/controllers/MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
+        address implementation = _deployArtifact("src/controllers/LidoMarketController.sol:LidoMarketController", "");
         bytes memory initData = abi.encodeWithSignature(
             "initialize(address,bytes32,address,address)", market, marketId, accessRegistry, address(this)
         );
-        return
+        address proxy =
             _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(implementation, address(this), initData));
+        IControllerAdmin admin = IControllerAdmin(proxy);
+        admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
+        return proxy;
     }
 
     function _deployArtifact(string memory artifact, bytes memory args) internal returns (address deployed) {

@@ -38,6 +38,14 @@ interface IMarketController {
         uint128 maturationLoadCap; // Accumulator upper bound; >= maxDelayMaturationLoad. Controls tail length.
     }
 
+    /// @notice Deleverage waterfall policy. See `MaxHeapLib` for the heap key formula.
+    /// @dev `maxIterations` is the vault-side loop bound (consumed by
+    ///      `MorphoBlueForkERC4626Vault._deleverageFromHeap`), not by the controller itself.
+    struct DeleverageConfig {
+        uint128 sliceFloorAssets; // Minimum loan-asset slice per cut.
+        uint32 maxIterations; // Per-call iteration cap consumed by the vault loop.
+    }
+
     /// @notice Controller's collateral classification for one borrower position.
     struct CollateralState {
         uint128 maturedCollateral; // Counts for borrow capacity.
@@ -74,8 +82,8 @@ interface IMarketController {
         SupplyCollateral,
         WithdrawCollateral,
         Liquidate,
-        FallbackExit,
-        AccrueInterest
+        AccrueInterest,
+        Deleverage
     }
 
     struct SupplyHookData {
@@ -129,7 +137,7 @@ interface IMarketController {
         uint256 repaidShares;
     }
 
-    struct FallbackExitHookData {
+    struct DeleverageHookData {
         address caller;
         address lender;
         address borrower;
@@ -160,6 +168,53 @@ interface IMarketController {
 
     function marketConfig(Id id) external view returns (MarketConfig memory);
 
+    function deleverageConfig(Id id) external view returns (DeleverageConfig memory);
+
+    /// @notice Number of borrowers currently tracked in the deleverage heap.
+    function deleverageHeapSize(Id id) external view returns (uint256);
+
+    /// @notice Borrowers currently in the deleverage heap, in approximate top-down order (heap
+    ///         array layout — not a strict sort), up to `maxCount`.
+    function eligibleBorrowers(Id id, uint256 maxCount)
+        external
+        view
+        returns (address[] memory borrowers, uint256[] memory keys);
+
+    /// @notice Next borrower to cut and the loan-asset slice for that cut.
+    /// @dev Heap-eligible borrower == the current heap root (the highest-key entry). Callers
+    ///      MUST NOT assume top-N semantics. `borrower` is address(0) when the heap is empty;
+    ///      `sliceAssets` is `type(uint256).max` when there is exactly one borrower in the heap
+    ///      (no runner-up to bound the cut against).
+    function nextDeleverageCut(Id id) external view returns (address borrower, uint256 sliceAssets);
+
+    /// @notice Maximum slice (in loan assets) the controller's policy allows for a single
+    ///         `deleverage` call against `borrower`. Mirrors the slice cap enforced in the
+    ///         controller's deleverage hook: `max(heapSlice, watermarkSlice)`. Zero means the
+    ///         borrower is not eligible for deleverage at all (not the heap root and no
+    ///         personal watermark).
+    function allowedSliceFor(Id id, address borrower) external view returns (uint256);
+
+    /// @notice True if the heap root (riskiest borrower) is bad debt (debt > collateral value).
+    /// @dev Computes against accrued totals via `MorphoBalancesLib.expectedMarketBalances`, so the
+    ///      answer is up-to-date even when called without a prior `accrueInterest` in the same tx.
+    function rootHasBadDebt(Id id) external view returns (bool);
+
+    struct WatermarkInfo {
+        // WAD-scaled target post-cut LTV. 0 means the borrower has not opted in.
+        uint256 watermarkLtv;
+        // Loan-asset cut size that brings the borrower's LTV down to `watermarkLtv` at the live
+        // oracle price. 0 when no watermark, no debt/collateral, or current LTV already at/under
+        // the target.
+        uint256 sliceAssets;
+    }
+
+    /// @notice Borrower's personal watermark and the corresponding watermark-derived slice.
+    function watermarkInfo(Id id, address borrower) external view returns (WatermarkInfo memory);
+
+    /// @notice Borrower sets their own personal watermark (target post-cut LTV in WAD).
+    /// @dev `msg.sender` is the borrower. `ltv` must be `< 1e18`; 0 clears the watermark.
+    function setBorrowerWatermark(Id id, uint256 ltv) external;
+
     /// @notice Strict action callback. Reverts to abort the calling action.
     /// @dev The core calls each action hook after input normalization and action-specific amount
     ///      computation, before the matching core state mutation and before any external
@@ -173,7 +228,7 @@ interface IMarketController {
     ///        - SupplyCollateral: abi.encode(SupplyCollateralHookData)
     ///        - WithdrawCollateral: abi.encode(WithdrawCollateralHookData)
     ///        - Liquidate: abi.encode(LiquidateHookData)
-    ///        - FallbackExit: abi.encode(FallbackExitHookData)
     ///        - AccrueInterest: abi.encode(AccrueInterestHookData)
+    ///        - Deleverage: abi.encode(DeleverageHookData)
     function on(Id id, HookEvent e, bytes calldata data) external;
 }

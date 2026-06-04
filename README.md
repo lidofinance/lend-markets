@@ -95,7 +95,7 @@ src/
 - preserves upstream `MarketParams`, `Position`, `Market`, and market id derivation;
 - preserves standard Morpho action signatures where possible;
 - binds an optional controller once at market creation;
-- binds `fallbackExit` availability once at market creation;
+- binds `deleverage` availability once at market creation;
 - calls controller hooks for controller-enabled markets.
 
 `LidoMarketController` owns Lido policy:
