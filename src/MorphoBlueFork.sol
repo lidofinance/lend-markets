@@ -43,6 +43,7 @@ library MorphoBlueForkErrorsLib {
     string internal constant DELEVERAGE_INELIGIBLE = "borrower not deleverage-eligible";
     string internal constant DELEVERAGE_OVER_CAP = "deleverage over cap";
     string internal constant DELEVERAGE_REQUIRES_CONTROLLER = "deleverage requires controller";
+    string internal constant ALREADY_INITIALIZED = "already initialized";
 }
 
 /// @title MorphoBlueForkEventsLib
@@ -77,11 +78,6 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     using SafeTransferLib for IERC20;
     using MarketParamsLib for MarketParams;
 
-    /* IMMUTABLES */
-
-    /// @inheritdoc IMorphoBase
-    bytes32 public immutable DOMAIN_SEPARATOR;
-
     /* STORAGE */
 
     /// @inheritdoc IMorphoBase
@@ -110,11 +106,41 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     /// @notice Per-market opt-in for the Lido `deleverage` extension. Set only at market creation.
     mapping(Id => bool) public deleverageEnabled;
 
-    /* CONSTRUCTOR */
+    /// @inheritdoc IMorphoBase
+    /// @dev Stored (not immutable) because the contract lives behind `OssifiableProxy`. Set once
+    ///      from `initialize` using the proxy's `address(this)` so EIP-712 signatures resolve to
+    ///      the proxy and not the implementation.
+    bytes32 public DOMAIN_SEPARATOR;
 
+    /* INITIALIZER */
+
+    /// @dev One-shot initializer flag at a namespaced storage slot so it doesn't occupy a slot in
+    ///      the main linear layout. Slot value of `1` means the contract has been initialized.
+    ///      Impl is petrified by writing `1` in the constructor — production callers reach
+    ///      `initialize` only via `OssifiableProxy`, whose own slot is still `0` at deploy time.
+    bytes32 internal constant INITIALIZED_POSITION = keccak256("lido.lending.morpho-fork.initialized");
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        bytes32 slot = INITIALIZED_POSITION;
+        assembly {
+            sstore(slot, 1)
+        }
+    }
+
+    /// @notice One-shot initializer. Called by the proxy at deploy time.
     /// @param newOwner The new owner of the contract.
-    constructor(address newOwner) {
+    function initialize(address newOwner) external {
+        bytes32 slot = INITIALIZED_POSITION;
+        uint256 cur;
+        assembly {
+            cur := sload(slot)
+        }
+        require(cur == 0, MorphoBlueForkErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
+        assembly {
+            sstore(slot, 1)
+        }
 
         DOMAIN_SEPARATOR = keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
         owner = newOwner;

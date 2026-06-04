@@ -3,13 +3,14 @@ pragma solidity 0.8.19;
 
 import {MorphoBlueFork} from "../../src/MorphoBlueFork.sol";
 import {IMarketController} from "../../src/interfaces/IMarketController.sol";
-import {AdaptiveCurveIrm} from "@morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
 import {ORACLE_PRICE_SCALE} from "@morpho-blue/src/libraries/ConstantsLib.sol";
 import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
+
 import {IControllerAdmin} from "../utils/IControllerAdmin.sol";
+import {MorphoForkDeployer} from "../../script/lib/MorphoForkDeployer.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -49,7 +50,7 @@ contract ControllableWstEthOracle is IOracle {
     }
 }
 
-contract HeapDeleverageBenchmark is Test {
+contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
     using MarketParamsLib for MarketParams;
 
     address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
@@ -518,33 +519,26 @@ contract HeapDeleverageBenchmark is Test {
 
     function _deployCtx() internal returns (Ctx memory ctx) {
         if (_wstEthRate == 0) _wstEthRate = WSTETH.stEthPerToken();
-        ctx.market = new MorphoBlueFork(address(this));
-        ctx.oracle = new ControllableWstEthOracle(WSTETH_ADDRESS);
-        AdaptiveCurveIrm irm = new AdaptiveCurveIrm(address(ctx.market));
 
-        ctx.marketParams = MarketParams({
-            loanToken: WETH_ADDRESS,
-            collateralToken: WSTETH_ADDRESS,
-            oracle: address(ctx.oracle),
-            irm: address(irm),
-            lltv: LLTV
-        });
-        ctx.id = ctx.marketParams.id();
+        Deployed memory d = _deployForkStack(
+            DeployConfig({
+                admin: address(this),
+                loanToken: WETH_ADDRESS,
+                collateralToken: WSTETH_ADDRESS,
+                oracleSource: WSTETH_ADDRESS,
+                lltv: LLTV,
+                fallbackEnabled: true
+            })
+        );
+
+        ctx.market = MorphoBlueFork(d.core);
+        ctx.oracle = ControllableWstEthOracle(d.oracle);
+        ctx.controller = IMarketController(d.controllerProxy);
+        ctx.marketParams = d.params;
+        ctx.id = d.marketId;
         ctx.price = ctx.oracle.price();
 
-        address accessRegistry =
-            _deployArtifact("src/controllers/MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
-        address impl = _deployArtifact("src/controllers/LidoMarketController.sol:LidoMarketController", "");
-        bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,bytes32,address,address)",
-            address(ctx.market),
-            Id.unwrap(ctx.id),
-            accessRegistry,
-            address(this)
-        );
-        address proxy =
-            _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, address(this), initData));
-        IControllerAdmin admin = IControllerAdmin(proxy);
+        IControllerAdmin admin = IControllerAdmin(d.controllerProxy);
         admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
         admin.setDeleverageConfig(
             ctx.id,
@@ -552,11 +546,12 @@ contract HeapDeleverageBenchmark is Test {
                 sliceFloorAssets: SLICE_FLOOR, maxIterations: uint32(MAX_ITERATIONS)
             })
         );
+    }
 
-        ctx.controller = IMarketController(proxy);
-        ctx.market.enableIrm(address(irm));
-        ctx.market.enableLltv(LLTV);
-        ctx.market.createMarket(ctx.marketParams, proxy, true);
+    /// @dev Override the default `WstEthRateOracle` with a per-test controllable oracle so
+    ///      benchmark scenarios can pin a known price (off the live wstETH rate).
+    function _deployOracle(address oracleSource) internal override returns (address) {
+        return address(new ControllableWstEthOracle(oracleSource));
     }
 
     // ── Helpers
@@ -645,12 +640,4 @@ contract HeapDeleverageBenchmark is Test {
         return wstETHAmount;
     }
 
-    function _deployArtifact(string memory artifact, bytes memory args) internal returns (address deployed) {
-        bytes memory bytecode = vm.getCode(artifact);
-        bytes memory creationCode = bytes.concat(bytecode, args);
-        assembly ("memory-safe") {
-            deployed := create(0, add(creationCode, 0x20), mload(creationCode))
-        }
-        require(deployed != address(0) && deployed.code.length != 0, "artifact deploy failed");
-    }
 }

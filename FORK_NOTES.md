@@ -22,6 +22,16 @@ Main changes in `MorphoBlueFork.sol`:
 - Adds `deleverage` as the core settlement primitive for fallback exit workflows.
 - Keeps plain `createMarket(MarketParams)` for zero-controller markets with fallback disabled.
 - Keeps Morpho-compatible market params, position shape, market shape, and market id derivation.
+- **Upgradeable behind `OssifiableProxy`.** `DOMAIN_SEPARATOR` moved from `immutable` to storage so
+  it reflects the proxy address (immutable would freeze the impl's address into bytecode and break
+  EIP-712 isolation). The constructor petrifies the impl by writing `1` to a namespaced
+  initializer slot (`keccak256("lido.lending.morpho-fork.initialized")`); the proxy's own slot
+  starts at `0`, so the first call to `initialize(address newOwner)` through the proxy seeds
+  `DOMAIN_SEPARATOR`, `owner`, and emits `SetOwner` exactly once. The initializer flag lives in
+  the namespaced slot so it doesn't occupy a slot in the main linear layout. Original Morpho
+  storage slots stay in place; the two fork-added mappings (`marketController`,
+  `deleverageEnabled`) precede the new `DOMAIN_SEPARATOR`. New fields must be appended to keep
+  upgrades layout-safe.
 
 Non-core contracts such as controllers, registries, oracle adapters, proxy helpers, and tests are
 not Morpho Blue core forks.
