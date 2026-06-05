@@ -16,6 +16,12 @@ contract LidoMarketControllerHarness is LidoMarketController {
         _syncMaturation(id, borrower);
     }
 
+    function exposed_handleSupply(Id id, address caller, address onBehalf, uint256 assets) external view {
+        _handleSupply(
+            id, IMarketController.SupplyHookData({caller: caller, onBehalf: onBehalf, assets: assets, shares: 0})
+        );
+    }
+
     function exposed_handleSupplyCollateral(Id id, address caller, address onBehalf, uint256 assets) external {
         _handleSupplyCollateral(
             id, IMarketController.SupplyCollateralHookData({caller: caller, onBehalf: onBehalf, assets: assets})
