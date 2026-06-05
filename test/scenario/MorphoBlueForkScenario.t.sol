@@ -4,12 +4,19 @@ pragma solidity 0.8.19;
 import {MorphoBlueFork} from "../../src/MorphoBlueFork.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {IMarketController} from "../../src/interfaces/IMarketController.sol";
-import {AdaptiveCurveIrm} from "@morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
 import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 import {Test} from "forge-std/Test.sol";
+
 import {IControllerAdmin} from "../utils/IControllerAdmin.sol";
+import {MorphoForkDeployer} from "../../script/lib/MorphoForkDeployer.sol";
+
+// Compile-trigger so Forge emits the `AdaptiveCurveIrm` artifact under `out/`. `MorphoForkDeployer`
+// deploys the IRM via `vm.getCode` (string lookup) and can't import it directly because the
+// deployer compiles under multiple Solc versions while `AdaptiveCurveIrm.sol` is pinned to 0.8.19.
+// solhint-disable-next-line no-unused-import
+import {AdaptiveCurveIrm} from "@morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -30,7 +37,7 @@ interface IWstETH {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-contract MorphoBlueForkScenarioTest is Test {
+contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
     using MarketParamsLib for MarketParams;
 
     // Run with:
@@ -460,24 +467,25 @@ contract MorphoBlueForkScenarioTest is Test {
     }
 
     function _deployMarket(bool deleverageEnabled) internal returns (TestMarket memory ctx) {
-        ctx.market = new MorphoBlueFork(address(this));
-        WstEthRateOracle oracle = new WstEthRateOracle(WSTETH_ADDRESS);
-        AdaptiveCurveIrm irm = new AdaptiveCurveIrm(address(ctx.market));
+        Deployed memory d = _deployForkStack(
+            DeployConfig({
+                admin: address(this),
+                loanToken: WETH_ADDRESS,
+                collateralToken: WSTETH_ADDRESS,
+                oracleSource: WSTETH_ADDRESS,
+                lltv: LLTV,
+                fallbackEnabled: deleverageEnabled
+            })
+        );
+        ctx.market = MorphoBlueFork(d.core);
+        ctx.controller = IMarketController(d.controllerProxy);
+        ctx.accessRegistry = d.accessRegistry;
+        ctx.marketParams = d.params;
+        ctx.id = d.marketId;
+        ctx.price = WstEthRateOracle(d.oracle).price();
 
-        ctx.marketParams = MarketParams({
-            loanToken: WETH_ADDRESS,
-            collateralToken: WSTETH_ADDRESS,
-            oracle: address(oracle),
-            irm: address(irm),
-            lltv: LLTV
-        });
-        ctx.id = ctx.marketParams.id();
-        ctx.price = oracle.price();
-        (ctx.controller, ctx.accessRegistry) = _deployController(ctx.market, ctx.id);
-
-        ctx.market.enableIrm(address(irm));
-        ctx.market.enableLltv(LLTV);
-        ctx.market.createMarket(ctx.marketParams, address(ctx.controller), deleverageEnabled);
+        IControllerAdmin admin = IControllerAdmin(d.controllerProxy);
+        admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
     }
 
     function _mintWETH(MorphoBlueFork market, address user, uint256 amount) internal {
@@ -501,29 +509,6 @@ contract MorphoBlueForkScenarioTest is Test {
         vm.prank(user);
         WSTETH.approve(address(market), type(uint256).max);
         return wstETHAmount;
-    }
-
-    function _deployController(MorphoBlueFork core, Id id) internal returns (IMarketController, address) {
-        address accessRegistry =
-            _deployArtifact("src/controllers/MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
-        address implementation = _deployArtifact("src/controllers/LidoMarketController.sol:LidoMarketController", "");
-        bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,bytes32,address,address)", address(core), Id.unwrap(id), accessRegistry, address(this)
-        );
-        address proxy =
-            _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(implementation, address(this), initData));
-        IControllerAdmin admin = IControllerAdmin(proxy);
-        admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
-        return (IMarketController(proxy), accessRegistry);
-    }
-
-    function _deployArtifact(string memory artifact, bytes memory args) internal returns (address deployed) {
-        bytes memory bytecode = vm.getCode(artifact);
-        bytes memory creationCode = bytes.concat(bytecode, args);
-        assembly ("memory-safe") {
-            deployed := create(0, add(creationCode, 0x20), mload(creationCode))
-        }
-        require(deployed != address(0) && deployed.code.length != 0, "artifact deploy failed");
     }
 
     function _assertCollateralState(

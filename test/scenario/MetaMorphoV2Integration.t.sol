@@ -9,7 +9,7 @@ import {
 } from "@vault-v2/lib/morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
 import {Test} from "forge-std/Test.sol";
-import {IControllerAdmin} from "../utils/IControllerAdmin.sol";
+import {MorphoForkDeployer} from "../../script/lib/MorphoForkDeployer.sol";
 
 struct LidoMarketParams {
     address loanToken;
@@ -83,7 +83,7 @@ interface IControllerLike {
     ) external returns (uint256 collateralSeized, uint256 debtCanceled);
 }
 
-contract MetaMorphoV2IntegrationTest is Test {
+contract MetaMorphoV2IntegrationTest is Test, MorphoForkDeployer {
     using AdapterMarketParamsLib for AdapterMarketParams;
 
     address internal constant CURATOR = address(0x1001);
@@ -146,30 +146,30 @@ contract MetaMorphoV2IntegrationTest is Test {
     function _setupIntegrationContext() internal returns (IntegrationContext memory ctx) {
         ctx.loanToken = IERC20Like(WETH_ADDRESS);
         ctx.collateralToken = IERC20Like(WSTETH_ADDRESS);
-        address oracle = _deployArtifact("WstEthRateOracle.sol:WstEthRateOracle", abi.encode(WSTETH_ADDRESS));
 
-        ctx.market = _deployMorphoBlueFork();
-        address irm = _deployArtifact(
-            "lib/morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm",
-            abi.encode(address(ctx.market))
+        Deployed memory d = _deployForkStack(
+            DeployConfig({
+                admin: address(this),
+                loanToken: WETH_ADDRESS,
+                collateralToken: WSTETH_ADDRESS,
+                oracleSource: WSTETH_ADDRESS,
+                lltv: LLTV,
+                fallbackEnabled: true
+            })
         );
 
+        ctx.market = IMorphoBlueForkLike(d.core);
+        ctx.controller = IControllerLike(d.controllerProxy);
         ctx.lidoParams = LidoMarketParams({
-            loanToken: WETH_ADDRESS, collateralToken: WSTETH_ADDRESS, oracle: oracle, irm: irm, lltv: LLTV
+            loanToken: WETH_ADDRESS, collateralToken: WSTETH_ADDRESS, oracle: d.oracle, irm: d.irm, lltv: LLTV
         });
         ctx.adapterParams = AdapterMarketParams({
-            loanToken: WETH_ADDRESS, collateralToken: WSTETH_ADDRESS, oracle: oracle, irm: irm, lltv: LLTV
+            loanToken: WETH_ADDRESS, collateralToken: WSTETH_ADDRESS, oracle: d.oracle, irm: d.irm, lltv: LLTV
         });
         ctx.marketId = AdapterId.unwrap(ctx.adapterParams.id());
-        address controller = _deployController(address(ctx.market), ctx.marketId);
-        ctx.controller = IControllerLike(controller);
-
-        ctx.market.enableIrm(irm);
-        ctx.market.enableLltv(LLTV);
-        ctx.market.createMarket(ctx.lidoParams, controller, true);
 
         ctx.vault = new VaultV2(address(this), address(ctx.loanToken));
-        ctx.adapter = new MorphoMarketV1AdapterV2(address(ctx.vault), address(ctx.market), irm);
+        ctx.adapter = new MorphoMarketV1AdapterV2(address(ctx.vault), address(ctx.market), d.irm);
         _configureVault(ctx.vault, ctx.adapter, ctx.adapterParams);
     }
 
@@ -290,33 +290,6 @@ contract MetaMorphoV2IntegrationTest is Test {
         return WSTETH.balanceOf(user) - wstETHBefore;
     }
 
-    function _deployMorphoBlueFork() internal returns (IMorphoBlueForkLike) {
-        address deployed = _deployArtifact("MorphoBlueFork.sol:MorphoBlueFork", abi.encode(address(this)));
-        return IMorphoBlueForkLike(deployed);
-    }
-
-    function _deployController(address market, bytes32 marketId) internal returns (address) {
-        address accessRegistry =
-            _deployArtifact("src/controllers/MarketAccessRegistry.sol:MarketAccessRegistry", abi.encode(address(this)));
-        address implementation = _deployArtifact("src/controllers/LidoMarketController.sol:LidoMarketController", "");
-        bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,bytes32,address,address)", market, marketId, accessRegistry, address(this)
-        );
-        address proxy =
-            _deployArtifact("OssifiableProxy.sol:OssifiableProxy", abi.encode(implementation, address(this), initData));
-        IControllerAdmin admin = IControllerAdmin(proxy);
-        admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
-        return proxy;
-    }
-
-    function _deployArtifact(string memory artifact, bytes memory args) internal returns (address deployed) {
-        bytes memory bytecode = vm.getCode(artifact);
-        bytes memory creationCode = bytes.concat(bytecode, args);
-        assembly ("memory-safe") {
-            deployed := create(0, add(creationCode, 0x20), mload(creationCode))
-        }
-        require(deployed != address(0) && deployed.code.length != 0, "artifact deploy failed");
-    }
 
     function _configureVault(VaultV2 vault, MorphoMarketV1AdapterV2 adapter, AdapterMarketParams memory marketParams)
         internal

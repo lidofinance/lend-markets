@@ -22,6 +22,14 @@ Main changes in `MorphoBlueFork.sol`:
 - Adds `deleverage` as the core settlement primitive for fallback exit workflows.
 - Keeps plain `createMarket(MarketParams)` for zero-controller markets with fallback disabled.
 - Keeps Morpho-compatible market params, position shape, market shape, and market id derivation.
+- **Upgradeable behind `OssifiableProxy`.** `DOMAIN_SEPARATOR` is reshaped from `immutable` to a
+  `view` function that recomputes from `address(this)`, so under delegatecall it returns the
+  proxy address (the upstream `immutable` would bake the impl address into bytecode and break
+  EIP-712 isolation). A `bool _initialized` flag is appended to linear storage; the impl
+  constructor sets it to `true` (petrification), proxies start at `false` and flip on the first
+  `initialize(address newOwner)` call. The two fork-added mappings (`marketController`,
+  `deleverageEnabled`) precede `_initialized`. New fields must be appended to keep upgrades
+  layout-safe.
 
 Non-core contracts such as controllers, registries, oracle adapters, proxy helpers, and tests are
 not Morpho Blue core forks.

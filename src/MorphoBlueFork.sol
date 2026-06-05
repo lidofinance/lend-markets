@@ -43,6 +43,7 @@ library MorphoBlueForkErrorsLib {
     string internal constant DELEVERAGE_INELIGIBLE = "borrower not deleverage-eligible";
     string internal constant DELEVERAGE_OVER_CAP = "deleverage over cap";
     string internal constant DELEVERAGE_REQUIRES_CONTROLLER = "deleverage requires controller";
+    string internal constant ALREADY_INITIALIZED = "already initialized";
 }
 
 /// @title MorphoBlueForkEventsLib
@@ -77,11 +78,6 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     using SafeTransferLib for IERC20;
     using MarketParamsLib for MarketParams;
 
-    /* IMMUTABLES */
-
-    /// @inheritdoc IMorphoBase
-    bytes32 public immutable DOMAIN_SEPARATOR;
-
     /* STORAGE */
 
     /// @inheritdoc IMorphoBase
@@ -110,15 +106,31 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     /// @notice Per-market opt-in for the Lido `deleverage` extension. Set only at market creation.
     mapping(Id => bool) public deleverageEnabled;
 
-    /* CONSTRUCTOR */
+    /// @inheritdoc IMorphoBase
+    /// @dev Computed from `address(this)` at call time so it resolves to the proxy address under
+    ///      delegatecall, instead of being baked into the impl's bytecode like the upstream
+    ///      immutable would be.
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
+    }
 
+    /* INITIALIZER */
+
+    /// @dev One-shot initializer flag. Petrified to `true` by the impl constructor; proxies start
+    ///      at `false` and flip on the first `initialize` call.
+    bool internal _initialized;
+
+    constructor() {
+        _initialized = true;
+    }
+
+    /// @notice One-shot initializer. Called by the proxy at deploy time.
     /// @param newOwner The new owner of the contract.
-    constructor(address newOwner) {
+    function initialize(address newOwner) external {
+        require(!_initialized, MorphoBlueForkErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
-
-        DOMAIN_SEPARATOR = keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
+        _initialized = true;
         owner = newOwner;
-
         emit EventsLib.SetOwner(newOwner);
     }
 
@@ -681,7 +693,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
         require(authorization.nonce == nonce[authorization.authorizer]++, ErrorsLib.INVALID_NONCE);
 
         bytes32 hashStruct = keccak256(abi.encode(AUTHORIZATION_TYPEHASH, authorization));
-        bytes32 digest = keccak256(bytes.concat("\x19\x01", DOMAIN_SEPARATOR, hashStruct));
+        bytes32 digest = keccak256(bytes.concat("\x19\x01", DOMAIN_SEPARATOR(), hashStruct));
         address signatory = ecrecover(digest, signature.v, signature.r, signature.s);
 
         require(signatory != address(0) && authorization.authorizer == signatory, ErrorsLib.INVALID_SIGNATURE);

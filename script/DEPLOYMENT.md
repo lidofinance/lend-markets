@@ -1,6 +1,6 @@
 # Deployment runbook
 
-The deploy script `DeployFork.s.sol` is a starting point for a
+The deploy script `DeployMarket.s.sol` is a starting point for a
 wstETH/WETH lending market on the Morpho Blue fork; tune it before any real broadcast.
 
 ## What gets deployed
@@ -26,7 +26,7 @@ wstETH/WETH lending market on the Morpho Blue fork; tune it before any real broa
 ## Dry run (against a fork)
 
 ```sh
-forge script script/DeployFork.s.sol \
+forge script script/DeployMarket.s.sol \
   --fork-url "$MAINNET_RPC_URL" \
   --sender "$DEPLOYER" \
   -vvv
@@ -37,7 +37,7 @@ This simulates the broadcast without sending transactions. Read the logged addre
 ## Broadcast
 
 ```sh
-forge script script/DeployFork.s.sol \
+forge script script/DeployMarket.s.sol \
   --rpc-url "$RPC_URL" \
   --broadcast \
   --private-key "$PK" \
@@ -46,7 +46,7 @@ forge script script/DeployFork.s.sol \
 ```
 
 `--verify` works on supported networks; otherwise verify manually using the per-contract
-constructor args printed in `broadcast/DeployFork.s.sol/<chain>/run-latest.json`.
+constructor args printed in `broadcast/DeployMarket.s.sol/<chain>/run-latest.json`.
 
 ## Post-deploy checklist
 
