@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {DeleverageSliceLib} from "../../src/libs/DeleverageSliceLib.sol";
+import {DeleverageQueue} from "../../src/libs/DeleverageQueue.sol";
 
-contract DeleverageSliceLibTest is Test {
+/// @notice Fuzz/unit coverage for the pure slice math now folded into `DeleverageQueue`
+///         (`computeSlice` / `computeWatermarkSlice`).
+contract DeleverageQueueSliceTest is Test {
     uint256 internal constant KEY_SCALE = 1e18;
     uint256 internal constant ORACLE_PRICE_SCALE = 1e36;
 
@@ -17,9 +19,14 @@ contract DeleverageSliceLibTest is Test {
         uint256 collateralPrice,
         uint256 sliceFloor
     ) internal pure returns (uint256) {
-        return DeleverageSliceLib.computeSlice(
-            topKey, targetKey, topCollateral, totalBorrowShares, totalBorrowAssets, collateralPrice, sliceFloor
-        );
+        DeleverageQueue.MarketView memory marketView = DeleverageQueue.MarketView({
+            borrowShares: 0,
+            rawCollateral: topCollateral,
+            totalBorrowAssets: totalBorrowAssets,
+            totalBorrowShares: totalBorrowShares,
+            price: collateralPrice
+        });
+        return DeleverageQueue.computeSlice(marketView, topKey, targetKey, sliceFloor);
     }
 
     // ── Degenerate inputs return the floor
@@ -122,20 +129,20 @@ contract DeleverageSliceLibTest is Test {
 
     function test_watermarkSlice_zeroWhenLtvAtOrBelowTarget() public pure {
         // current LTV = 0.5; target = 0.5 → no cut.
-        assertEq(DeleverageSliceLib.computeWatermarkSlice(50 ether, 100 ether, 0.5e18), 0, "ltv == target");
+        assertEq(DeleverageQueue.computeWatermarkSlice(50 ether, 100 ether, 0.5e18), 0, "ltv == target");
         // current LTV = 0.4; target = 0.5 → no cut.
-        assertEq(DeleverageSliceLib.computeWatermarkSlice(40 ether, 100 ether, 0.5e18), 0, "ltv < target");
+        assertEq(DeleverageQueue.computeWatermarkSlice(40 ether, 100 ether, 0.5e18), 0, "ltv < target");
     }
 
     function test_watermarkSlice_targetAtOrAboveWadReturnsZero() public pure {
-        assertEq(DeleverageSliceLib.computeWatermarkSlice(50 ether, 100 ether, 1e18), 0, "target == WAD");
-        assertEq(DeleverageSliceLib.computeWatermarkSlice(50 ether, 100 ether, 1.5e18), 0, "target > WAD");
+        assertEq(DeleverageQueue.computeWatermarkSlice(50 ether, 100 ether, 1e18), 0, "target == WAD");
+        assertEq(DeleverageQueue.computeWatermarkSlice(50 ether, 100 ether, 1.5e18), 0, "target > WAD");
     }
 
     function test_watermarkSlice_closedFormValue() public pure {
         // debt 80, collateralValue 100, target 50% → c = (80*1 - 0.5*100) / (1 - 0.5) = 30 / 0.5 = 60.
         // Post-cut: debt 20, colValue 40, LTV = 0.5 ✓
-        uint256 slice = DeleverageSliceLib.computeWatermarkSlice(80 ether, 100 ether, 0.5e18);
+        uint256 slice = DeleverageQueue.computeWatermarkSlice(80 ether, 100 ether, 0.5e18);
         assertEq(slice, 60 ether, "closed form: cut 60 to land at LTV 50%");
     }
 
@@ -149,9 +156,9 @@ contract DeleverageSliceLibTest is Test {
         debt = bound(debt, 1, colValue);
         targetLtv = bound(targetLtv, 1, 0.99e18);
 
-        uint256 slice = DeleverageSliceLib.computeWatermarkSlice(debt, colValue, targetLtv);
+        uint256 slice = DeleverageQueue.computeWatermarkSlice(debt, colValue, targetLtv);
         if (slice == 0) {
-            assertLe(debt * DeleverageSliceLib.WAD, targetLtv * colValue + DeleverageSliceLib.WAD, "no-cut bound");
+            assertLe(debt * DeleverageQueue.WAD, targetLtv * colValue + DeleverageQueue.WAD, "no-cut bound");
             return;
         }
         // Solvent inputs imply slice ≤ debt ≤ colValue.
@@ -159,8 +166,8 @@ contract DeleverageSliceLibTest is Test {
         uint256 postDebt = debt - slice;
         uint256 postColValue = colValue - slice;
         assertLe(
-            postDebt * DeleverageSliceLib.WAD,
-            targetLtv * postColValue + DeleverageSliceLib.WAD,
+            postDebt * DeleverageQueue.WAD,
+            targetLtv * postColValue + DeleverageQueue.WAD,
             "post-cut LTV at/under target"
         );
     }

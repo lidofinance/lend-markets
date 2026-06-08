@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.19;
 
-import {MorphoBlueFork} from "../../src/MorphoBlueFork.sol";
+import {LidoBlue} from "../../src/LidoBlue.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
-import {IMarketController} from "../../src/interfaces/IMarketController.sol";
 import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
 import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 import {Test} from "forge-std/Test.sol";
 
-import {IControllerAdmin} from "../utils/IControllerAdmin.sol";
-import {MorphoForkDeployer} from "../../script/lib/MorphoForkDeployer.sol";
+import {IWethWstEthController} from "../utils/IWethWstEthController.sol";
+import {LidoBlueDeployer} from "../../script/lib/LidoBlueDeployer.sol";
 
-// Compile-trigger so Forge emits the `AdaptiveCurveIrm` artifact under `out/`. `MorphoForkDeployer`
+// Compile-trigger so Forge emits the `AdaptiveCurveIrm` artifact under `out/`. `LidoBlueDeployer`
 // deploys the IRM via `vm.getCode` (string lookup) and can't import it directly because the
 // deployer compiles under multiple Solc versions while `AdaptiveCurveIrm.sol` is pinned to 0.8.19.
 // solhint-disable-next-line no-unused-import
@@ -37,12 +36,25 @@ interface IWstETH {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
-    using MarketParamsLib for MarketParams;
+/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) a suspect in tests.
+interface IRegistryLike {
+    function flag(Id market, address suspect) external;
+}
 
-    // Run with:
-    // forge test --match-path test/integration/MorphoBlueForkMainnetFork.t.sol \
-    //   --fork-url "$MAINNET_RPC_URL"
+/// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
+///      controller's same-tx flash-undo fires. Holds the collateral and is its own onBehalf/receiver.
+contract FlashRoundTrip {
+    function run(LidoBlue market, MarketParams calldata params, uint256 amount) external {
+        market.supplyCollateral(params, amount, address(this), "");
+        market.withdrawCollateral(params, amount, address(this), address(this));
+    }
+}
+
+/// @notice End-to-end scenario over a freshly deployed LidoBlue + WethWstEthController stack on a
+///         mainnet fork (real Lido stETH/wstETH). Drives supply/borrow/maturation and the deleverage
+///         queue (heap ordering, watermark, bad-debt guard) through the controller's hooks.
+contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
+    using MarketParamsLib for MarketParams;
 
     address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address internal constant STETH_ADDRESS = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
@@ -57,14 +69,13 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
     address internal constant SECOND_BORROWER = address(0x3000);
     address internal constant DONOR = address(0x4000);
     address internal constant THIRD_BORROWER = address(0x5000);
-    address internal constant SECOND_LENDER = address(0x6000);
 
     uint256 internal constant LLTV = 0.8e18;
 
     struct TestMarket {
-        MorphoBlueFork market;
-        IMarketController controller;
-        address accessRegistry;
+        LidoBlue market;
+        IWethWstEthController controller;
+        address suspectsRegistry;
         MarketParams marketParams;
         Id id;
         uint256 price;
@@ -85,11 +96,11 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
 
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, borrowerDust, BORROWER, "");
-        _assertCollateralState(ctx.controller, ctx.id, BORROWER, 0, 0, borrowerDust);
+        _assertCollateralState(ctx.controller, BORROWER, 0, 0, borrowerDust);
 
         vm.prank(DONOR);
         ctx.market.supplyCollateral(ctx.marketParams, donorTopUp, BORROWER, "");
-        _assertCollateralState(ctx.controller, ctx.id, BORROWER, 0, activatedCollateral, 0);
+        _assertCollateralState(ctx.controller, BORROWER, 0, activatedCollateral, 0);
 
         vm.warp(block.timestamp + 2 hours + 1);
 
@@ -98,7 +109,7 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
 
         assertEq(borrowedAssets, 3 ether, "borrowed after maturity");
         assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrower received real WETH");
-        _assertCollateralState(ctx.controller, ctx.id, BORROWER, activatedCollateral, 0, 0);
+        _assertCollateralState(ctx.controller, BORROWER, activatedCollateral, 0, 0);
     }
 
     function test_deleverage_happyPath() public {
@@ -130,18 +141,17 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, secondBorrowerDebt, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        _assertCollateralState(ctx.controller, ctx.id, BORROWER, borrowerCollateral, 0, 0);
-        _assertCollateralState(ctx.controller, ctx.id, SECOND_BORROWER, secondBorrowerCollateral, 0, 0);
+        _assertCollateralState(ctx.controller, BORROWER, borrowerCollateral, 0, 0);
+        _assertCollateralState(ctx.controller, SECOND_BORROWER, secondBorrowerCollateral, 0, 0);
 
         _deleverageAndAssert(ctx, borrowerCollateral);
     }
 
     /// @notice One scenario exercising the heap-driven deleverage ordering end-to-end.
     /// @dev Covers, in order:
-    ///        - three borrowers at different risk levels; heap root tracks the highest-LTV one;
-    ///        - a cut targeting the heap root reduces it but does not flip the order;
-    ///        - the heap re-sorts after the root borrower partially repays, so a new borrower becomes root;
-    ///        - a cut targeting the new root succeeds while the previous root is no longer reached;
+    ///        - three borrowers at different risk levels; queue root tracks the highest-LTV one;
+    ///        - a cut targeting the root reduces it but does not flip the order;
+    ///        - the root opts another borrower in via watermark, so a non-root cut succeeds;
     ///        - the lowest-LTV borrower is never touched throughout the scenario.
     function test_deleverage_heapPicksTopBorrower() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
@@ -173,29 +183,29 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         vm.prank(THIRD_BORROWER);
         ctx.market.borrow(ctx.marketParams, 2 ether, 0, THIRD_BORROWER, THIRD_BORROWER);
 
-        // (1) Initial heap order: highest-LTV borrower is at the root.
-        assertEq(ctx.controller.deleverageHeapSize(ctx.id), 3, "all three active borrowers tracked");
-        (address root,) = ctx.controller.nextDeleverageCut(ctx.id);
+        // (1) Initial queue order: highest-LTV borrower is at the root.
+        assertEq(ctx.controller.deleverageQueueSize(), 3, "all three active borrowers tracked");
+        (address root,) = ctx.controller.nextDeleverageCut();
         assertEq(root, BORROWER, "highest-LTV borrower at root");
 
-        // (2) First cut on the heap root, sized to the controller's allowed slice (so the new
-        //     slice-cap hook check passes). Reduces the root's key but does not flip the order.
+        // (2) First cut on the root, sized to the controller's allowed slice (so the slice-cap hook
+        //     check passes). Reduces the root's key but does not flip the order.
         uint256 firstCutShares = _sliceShares(ctx);
         vm.prank(LENDER);
         ctx.market.deleverage(ctx.marketParams, firstCutShares, BORROWER, LENDER, LENDER);
-        (root,) = ctx.controller.nextDeleverageCut(ctx.id);
+        (root,) = ctx.controller.nextDeleverageCut();
         assertEq(root, BORROWER, "BORROWER still highest after first partial cut");
 
-        // (3) Targeting the second borrower while it isn't the heap root is rejected by the
-        //     controller hook — eligibility filter requires heap-head or personal watermark.
+        // (3) Targeting the second borrower while it isn't the queue root is rejected by the
+        //     controller hook — eligibility filter requires queue-head or personal watermark.
         vm.prank(LENDER);
-        vm.expectRevert(abi.encodeWithSignature("DeleverageBorrowerNotEligible()"));
+        vm.expectRevert(abi.encodeWithSignature("DeleverageIneligible()"));
         ctx.market.deleverage(ctx.marketParams, firstCutShares, SECOND_BORROWER, LENDER, LENDER);
 
         // (4) SECOND_BORROWER opts in to a 5% post-cut LTV — they are now eligible regardless of
-        //     heap position. The same cut now succeeds against them.
+        //     queue position. The same cut now succeeds against them.
         vm.prank(SECOND_BORROWER);
-        ctx.controller.setBorrowerWatermark(ctx.id, 0.05e18);
+        ctx.controller.setBorrowerWatermark(0.05e18);
         vm.prank(LENDER);
         ctx.market.deleverage(ctx.marketParams, firstCutShares, SECOND_BORROWER, LENDER, LENDER);
 
@@ -205,12 +215,10 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         assertGt(lowBorrowSharesAfter, 0, "low-LTV borrower still has debt");
     }
 
-    /// @notice Deleverage of any borrower is blocked while the queue head (heap root) is bad debt.
-    /// @dev Direct core path, no vault — the vault is optional, so the guard lives in the controller.
-    ///      Setup: a high-LTV head (BORROWER) and a healthy tail (SECOND_BORROWER). A negative
-    ///      rebase pushes the head underwater (debt > collateral value). The head cannot be cut
-    ///      anyway (core requires _isHealthy), but cutting the healthy tail must also revert while
-    ///      the head is insolvent — the whole queue halts until bad debt is resolved out of band.
+    /// @notice Deleverage of any borrower is blocked while the queue root is bad debt.
+    /// @dev Setup: a high-LTV root (BORROWER) and a healthy tail (SECOND_BORROWER). A negative rebase
+    ///      pushes the root underwater (debt > collateral value). Cutting the healthy tail must also
+    ///      revert while the root is insolvent — the whole queue halts until bad debt is resolved.
     function testRevert_deleverage_whenHeapRootBadDebt() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
@@ -235,16 +243,16 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 2 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address root,) = ctx.controller.nextDeleverageCut(ctx.id);
+        (address root,) = ctx.controller.nextDeleverageCut();
         assertEq(root, BORROWER, "high-LTV borrower is the queue head");
 
         // Negative rebase: drop the wstETH rate so the head's collateral is worth less than its
         // debt (bad debt), while the tail stays healthy.
         vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.7e18)));
-        assertTrue(ctx.controller.rootHasBadDebt(ctx.id), "head is bad debt after rebase");
+        assertTrue(ctx.controller.rootHasBadDebt(), "head is bad debt after rebase");
 
-        // Even targeting the head itself (eligible) is blocked while head is bad debt: the
-        // controller's bad-debt guard fires on every deleverage path.
+        // Even targeting the head itself is blocked while head is bad debt: the controller's bad-debt
+        // guard fires on every deleverage path.
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 cut = lenderShares / 20;
         vm.prank(LENDER);
@@ -253,16 +261,15 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
 
         // Restore the rate; the head is solvent again; the same cut against the head now succeeds.
         vm.clearMockedCalls();
-        assertFalse(ctx.controller.rootHasBadDebt(ctx.id), "head solvent after restore");
+        assertFalse(ctx.controller.rootHasBadDebt(), "head solvent after restore");
         vm.prank(LENDER);
         ctx.market.deleverage(ctx.marketParams, cut, BORROWER, LENDER, LENDER);
     }
 
     /// @notice Deleverage works on an unhealthy-but-solvent position (LLTV < LTV < 100%).
-    /// @dev Soft-liquidation must reach risky positions, not just healthy ones. The core no longer
-    ///      requires `_isHealthy` for deleverage; the bound is the over-cap check plus the bad-debt
-    ///      guard. A negative rebase pushes the borrower above LLTV (unhealthy) while keeping their
-    ///      collateral worth more than their debt (solvent), then the cut succeeds.
+    /// @dev Soft-liquidation must reach risky positions, not just healthy ones. The bound is the
+    ///      over-cap check plus the bad-debt guard. A negative rebase pushes the borrower above LLTV
+    ///      (unhealthy) while keeping their collateral worth more than their debt (solvent).
     function test_deleverage_worksOnUnhealthyButSolventPosition() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
@@ -290,9 +297,9 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         (,, uint128 rc) = ctx.market.position(ctx.id, BORROWER);
         assertGt(borrowAmount, _maxBorrow(uint256(rc), droppedPrice), "position is unhealthy (LTV > LLTV)");
         assertGt(uint256(rc) * droppedPrice / 1e36, borrowAmount, "position is solvent (collateral value > debt)");
-        assertFalse(ctx.controller.rootHasBadDebt(ctx.id), "head is not bad debt");
+        assertFalse(ctx.controller.rootHasBadDebt(), "head is not bad debt");
 
-        // The cut succeeds even though the borrower is unhealthy — previously blocked by `_isHealthy`.
+        // The cut succeeds even though the borrower is unhealthy.
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 cut = lenderShares / 10;
         vm.prank(LENDER);
@@ -310,26 +317,29 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
-        assertEq(ctx.controller.watermarkInfo(ctx.id, BORROWER).watermarkLtv, 0, "default unset");
+        (uint256 wm0,) = ctx.controller.watermarkInfo(BORROWER);
+        assertEq(wm0, 0, "default unset");
 
         vm.prank(BORROWER);
-        ctx.controller.setBorrowerWatermark(ctx.id, 0.6e18);
-        assertEq(ctx.controller.watermarkInfo(ctx.id, BORROWER).watermarkLtv, 0.6e18, "stored");
+        ctx.controller.setBorrowerWatermark(0.6e18);
+        (uint256 wm1,) = ctx.controller.watermarkInfo(BORROWER);
+        assertEq(wm1, 0.6e18, "stored");
 
         // Clear with 0.
         vm.prank(BORROWER);
-        ctx.controller.setBorrowerWatermark(ctx.id, 0);
-        assertEq(ctx.controller.watermarkInfo(ctx.id, BORROWER).watermarkLtv, 0, "cleared");
+        ctx.controller.setBorrowerWatermark(0);
+        (uint256 wm2,) = ctx.controller.watermarkInfo(BORROWER);
+        assertEq(wm2, 0, "cleared");
 
         // Out-of-range rejected.
         vm.prank(BORROWER);
         vm.expectRevert(abi.encodeWithSignature("WatermarkOutOfRange()"));
-        ctx.controller.setBorrowerWatermark(ctx.id, 1e18);
+        ctx.controller.setBorrowerWatermark(1e18);
     }
 
-    /// @notice Path A: when the heap head has a watermark, `nextDeleverageCut`'s slice is bumped
-    ///         up to bring the borrower's LTV down to the watermark. Close runner-up key keeps the
-    ///         algorithmic slice small so the watermark dominates.
+    /// @notice When the queue root has a watermark, `nextDeleverageCut`'s slice is bumped up to bring
+    ///         the borrower's LTV down to the watermark. Close runner-up key keeps the algorithmic
+    ///         slice small so the watermark dominates.
     function test_watermark_bumpsHeapSlice() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
@@ -352,13 +362,13 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 17 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (, uint256 sliceBefore) = ctx.controller.nextDeleverageCut(ctx.id);
+        (, uint256 sliceBefore) = ctx.controller.nextDeleverageCut();
 
         // BORROWER opts in to a 30% post-cut LTV — a deep target.
         vm.prank(BORROWER);
-        ctx.controller.setBorrowerWatermark(ctx.id, 0.3e18);
+        ctx.controller.setBorrowerWatermark(0.3e18);
 
-        (address rootAfter, uint256 sliceAfter) = ctx.controller.nextDeleverageCut(ctx.id);
+        (address rootAfter, uint256 sliceAfter) = ctx.controller.nextDeleverageCut();
         assertEq(rootAfter, BORROWER, "root unchanged");
         assertGt(sliceAfter, sliceBefore, "watermark raised the slice");
 
@@ -368,9 +378,8 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         assertApproxEqAbs(sliceAfter, expected, 1e15, "slice matches watermark formula");
     }
 
-    /// @notice Direct EOA-lender can deleverage a non-head borrower iff that borrower has a
-    ///         personal watermark set. Without watermark the controller hook reverts with
-    ///         `DeleverageBorrowerNotEligible`.
+    /// @notice Direct EOA-lender can deleverage a non-root borrower iff that borrower has a personal
+    ///         watermark set. Without watermark the controller hook reverts with `DeleverageIneligible`.
     function test_deleverage_eligibleViaPersonalWatermark() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
@@ -379,8 +388,8 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
 
-        // Two borrowers, BORROWER is the heap root (higher LTV). SECOND_BORROWER is tail.
-        // Total borrow exactly drains the supply so the lender's exit must trigger deleverage.
+        // Two borrowers, BORROWER is the queue root (higher LTV). SECOND_BORROWER is tail. Total
+        // borrow drains the supply so the lender's exit must trigger deleverage.
         uint256 col1 = _mintWstETH(ctx.market, BORROWER, 20 ether);
         uint256 col2 = _mintWstETH(ctx.market, SECOND_BORROWER, 20 ether);
         vm.prank(BORROWER);
@@ -394,22 +403,20 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 3 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address root,) = ctx.controller.nextDeleverageCut(ctx.id);
-        assertEq(root, BORROWER, "BORROWER is heap root");
+        (address root,) = ctx.controller.nextDeleverageCut();
+        assertEq(root, BORROWER, "BORROWER is queue root");
 
-        // Cut sized at exactly the watermark slice the controller will allow once set; large
-        // enough to clear the liquidity gate (available ≈ 0).
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 cut = lenderShares / 5;
 
         // Targeting tail SECOND_BORROWER without a watermark → hook revert.
         vm.prank(LENDER);
-        vm.expectRevert(abi.encodeWithSignature("DeleverageBorrowerNotEligible()"));
+        vm.expectRevert(abi.encodeWithSignature("DeleverageIneligible()"));
         ctx.market.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
 
         // SECOND_BORROWER opts in to 5% post-cut LTV — slice is large enough for the cut.
         vm.prank(SECOND_BORROWER);
-        ctx.controller.setBorrowerWatermark(ctx.id, 0.05e18);
+        ctx.controller.setBorrowerWatermark(0.05e18);
 
         (,, uint128 colBefore) = ctx.market.position(ctx.id, SECOND_BORROWER);
         vm.prank(LENDER);
@@ -420,6 +427,89 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         assertEq(uint256(colAfter), uint256(colBefore) - collateralSeized, "tail collateral debited");
         assertGt(debtCanceled, 0, "tail debt canceled");
         assertEq(collateralSeized, debtCanceled * 1e36 / ctx.price, "oracle-rate cut");
+    }
+
+    /// @notice A banned borrower's collateral never settles into `active`, and its borrow is hard-blocked.
+    ///         Exercises the suspicion path: `suspicion == 100` -> NEVER_DELAY unlock + the borrow ban.
+    function test_suspicion_bannedCollateralNeverMaturesAndBorrowBlocked() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+        TestMarket memory ctx = _deployMarket(false);
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 20 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+        _assertCollateralState(ctx.controller, BORROWER, 0, col, 0);
+
+        // Ban BORROWER: one flag reaches quorum 1, which latches the ban. The test contract is the
+        // registry's sole guardian (set in `_deployMarket`).
+        IRegistryLike(ctx.suspectsRegistry).flag(ctx.id, BORROWER);
+
+        // Warp far past any normal activation delay — a banned address never settles.
+        vm.warp(block.timestamp + 30 days);
+        IWethWstEthController.PositionView memory pv = ctx.controller.positionOf(BORROWER);
+        assertEq(pv.suspicion, 100, "banned -> suspicion 100");
+        assertFalse(pv.readyToSettle, "banned never ready to settle");
+        _assertCollateralState(ctx.controller, BORROWER, 0, col, 0); // still activating, never active
+
+        // No active collateral + banned -> borrow reverts.
+        vm.prank(BORROWER);
+        vm.expectRevert();
+        ctx.market.borrow(ctx.marketParams, 1 ether, 0, BORROWER, BORROWER);
+    }
+
+    /// @notice The activation delay is load-scaled (a larger inflow charges more leaky-bucket load and
+    ///         earns a longer delay) and is enforced (collateral does not settle before its unlock).
+    function test_maturation_delayScalesWithLoadAndIsEnforced() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+        TestMarket memory ctx = _deployMarket(false);
+
+        uint256 smallCol = _mintWstETH(ctx.market, BORROWER, 30 ether);
+        uint256 bigCol = _mintWstETH(ctx.market, SECOND_BORROWER, 1000 ether);
+
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, smallCol, BORROWER, "");
+        uint256 smallUnlock = ctx.controller.positionOf(BORROWER).unlockAt;
+
+        vm.prank(SECOND_BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, bigCol, SECOND_BORROWER, "");
+        uint256 bigUnlock = ctx.controller.positionOf(SECOND_BORROWER).unlockAt;
+
+        // The bigger inflow piled more onto the load accumulator -> strictly longer delay.
+        assertGt(bigUnlock, smallUnlock, "bigger inflow -> longer activation delay");
+        // The small lot activated (not dust) and, in a near-empty market, matures fast (under the 2h cap).
+        assertGt(smallUnlock, block.timestamp, "small deposit activated (not dust)");
+        assertLt(smallUnlock - block.timestamp, 2 hours, "small deposit ~ minimum delay");
+
+        // The delay is enforced: not ready before its unlock, ready at it.
+        assertFalse(ctx.controller.positionOf(BORROWER).readyToSettle, "not ready before unlock");
+        vm.warp(smallUnlock);
+        assertTrue(ctx.controller.positionOf(BORROWER).readyToSettle, "ready at unlock");
+    }
+
+    /// @notice A same-tx supplyCollateral -> withdrawCollateral round-trip is load-neutral: the deposit's
+    ///         load charge is reversed on the same-tx withdrawal, so a flash loan cannot pump the load.
+    function test_flashUndo_sameTxRoundTripIsLoadNeutral() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+        TestMarket memory ctx = _deployMarket(false);
+
+        // Seed real load with a committed deposit so `currentLoad()` is observably non-zero.
+        uint256 seed = _mintWstETH(ctx.market, BORROWER, 30 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, seed, BORROWER, "");
+        uint256 loadBefore = ctx.controller.currentLoad();
+        assertGt(loadBefore, 0, "seed deposit charged load");
+
+        // Flash actor supplies and withdraws the same collateral in ONE transaction.
+        FlashRoundTrip flasher = new FlashRoundTrip();
+        uint256 amount = _mintWstETH(ctx.market, address(flasher), 50 ether);
+        flasher.run(ctx.market, ctx.marketParams, amount);
+
+        // No time passed, so no decay: the round-trip must leave the load exactly where it was.
+        assertEq(ctx.controller.currentLoad(), loadBefore, "same-tx round-trip is load-neutral");
     }
 
     function _deleverageAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
@@ -438,10 +528,10 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         _assertBorrowerCollateralDebited(ctx, borrowerCollateral, collateralSeized);
     }
 
-    /// @dev Loan-asset slice the controller will allow against the current heap root, converted
-    ///      to lender supply shares with Morpho's virtual-offset rounding.
+    /// @dev Loan-asset slice the controller will allow against the current queue root, converted to
+    ///      lender supply shares with Morpho's virtual-offset rounding.
     function _sliceShares(TestMarket memory ctx) internal view returns (uint256) {
-        (, uint256 sliceAssets) = ctx.controller.nextDeleverageCut(ctx.id);
+        (, uint256 sliceAssets) = ctx.controller.nextDeleverageCut();
         if (sliceAssets == type(uint256).max) return type(uint256).max;
         (uint128 totalSupplyAssets, uint128 totalSupplyShares,,,,) = ctx.market.market(ctx.id);
         return SharesMathLib.toSharesDown(sliceAssets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
@@ -463,10 +553,13 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
     ) internal view {
         (,, uint128 borrowerRawCollateral) = ctx.market.position(ctx.id, BORROWER);
         assertEq(uint256(borrowerRawCollateral), initialCollateral - collateralSeized, "raw collateral debited");
-        _assertCollateralState(ctx.controller, ctx.id, BORROWER, initialCollateral - collateralSeized, 0, 0);
+        _assertCollateralState(ctx.controller, BORROWER, initialCollateral - collateralSeized, 0, 0);
     }
 
     function _deployMarket(bool deleverageEnabled) internal returns (TestMarket memory ctx) {
+        address[] memory guardians = new address[](1);
+        guardians[0] = address(this);
+
         Deployed memory d = _deployForkStack(
             DeployConfig({
                 admin: address(this),
@@ -474,21 +567,34 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
                 collateralToken: WSTETH_ADDRESS,
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
-                fallbackEnabled: deleverageEnabled
+                deleverageEnabled: deleverageEnabled,
+                activation: ActivationConfig({
+                    minActivationDelay: 10 minutes,
+                    maxActivationDelay: 2 hours,
+                    maxSuspicionDelay: 2 hours,
+                    maxDecayDuration: 4 hours,
+                    maxDelayLoad: 10_000 ether,
+                    minActivationAmount: 10 ether,
+                    minDecayAmount: 1_000 ether
+                }),
+                guardians: guardians,
+                quorum: 1,
+                vaultName: "Lido wstETH/WETH Vault",
+                vaultSymbol: "lidoWSTETH-WETH"
             })
         );
-        ctx.market = MorphoBlueFork(d.core);
-        ctx.controller = IMarketController(d.controllerProxy);
-        ctx.accessRegistry = d.accessRegistry;
+
+        ctx.market = LidoBlue(d.core);
+        ctx.controller = IWethWstEthController(d.controllerProxy);
+        ctx.suspectsRegistry = d.suspectsRegistry;
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
         ctx.price = WstEthRateOracle(d.oracle).price();
 
-        IControllerAdmin admin = IControllerAdmin(d.controllerProxy);
-        admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
+        ctx.controller.grantRole(ctx.controller.CONFIGURATOR_ROLE(), address(this));
     }
 
-    function _mintWETH(MorphoBlueFork market, address user, uint256 amount) internal {
+    function _mintWETH(LidoBlue market, address user, uint256 amount) internal {
         vm.deal(user, amount);
         vm.prank(user);
         WETH.deposit{value: amount}();
@@ -496,7 +602,7 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
         WETH.approve(address(market), type(uint256).max);
     }
 
-    function _mintWstETH(MorphoBlueFork market, address user, uint256 ethAmount) internal returns (uint256) {
+    function _mintWstETH(LidoBlue market, address user, uint256 ethAmount) internal returns (uint256) {
         vm.deal(user, ethAmount);
         vm.prank(user);
         STETH.submit{value: ethAmount}(address(0));
@@ -512,16 +618,15 @@ contract MorphoBlueForkScenarioTest is Test, MorphoForkDeployer {
     }
 
     function _assertCollateralState(
-        IMarketController controller,
-        Id id,
+        IWethWstEthController controller,
         address borrower,
         uint256 matured,
         uint256 activating,
         uint256 dust
     ) internal view {
-        IMarketController.CollateralState memory state = controller.collateralState(id, borrower);
-        assertEq(uint256(state.maturedCollateral), matured, "matured collateral");
-        assertEq(uint256(state.maturingCollateral), activating, "maturing collateral");
-        assertEq(uint256(state.dustCollateral), dust, "dust collateral");
+        IWethWstEthController.PositionView memory pv = controller.positionOf(borrower);
+        assertEq(pv.active, matured, "matured (active) collateral");
+        assertEq(pv.activating, activating, "maturing (activating) collateral");
+        assertEq(pv.dust, dust, "dust collateral");
     }
 }

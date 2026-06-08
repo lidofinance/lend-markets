@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.19;
 
-import {MorphoBlueFork} from "../../src/MorphoBlueFork.sol";
-import {IMarketController} from "../../src/interfaces/IMarketController.sol";
+import {LidoBlue} from "../../src/LidoBlue.sol";
 import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
 import {ORACLE_PRICE_SCALE} from "@morpho-blue/src/libraries/ConstantsLib.sol";
 import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
 
-import {IControllerAdmin} from "../utils/IControllerAdmin.sol";
-import {MorphoForkDeployer} from "../../script/lib/MorphoForkDeployer.sol";
+import {IWethWstEthController} from "../utils/IWethWstEthController.sol";
+import {LidoBlueDeployer} from "../../script/lib/LidoBlueDeployer.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -50,7 +49,7 @@ contract ControllableWstEthOracle is IOracle {
     }
 }
 
-contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
+contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
     using MarketParamsLib for MarketParams;
 
     address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
@@ -69,8 +68,8 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
     uint256 internal _wstEthRate;
 
     struct Ctx {
-        MorphoBlueFork market;
-        IMarketController controller;
+        LidoBlue market;
+        IWethWstEthController controller;
         ControllableWstEthOracle oracle;
         MarketParams marketParams;
         Id id;
@@ -225,12 +224,12 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
         _seedBorrowers(ctx, debts, 0.7e18, total);
 
         console2.log("=== 1000Mixed(900x0.5+90x5+10x20) ===");
-        console2.log("  heap_size_before:", ctx.controller.deleverageHeapSize(ctx.id));
+        console2.log("  heap_size_before:", ctx.controller.deleverageQueueSize());
         console2.log("  total_debt:", total);
 
         DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, total / 4));
         _logDeleverageResult(res);
-        console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
+        console2.log("  heap_size:", ctx.controller.deleverageQueueSize());
     }
 
     // ── Whale + dust
@@ -258,7 +257,7 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
         _borrowAll(ctx, 1, n, dustDebt);
 
         console2.log("=== DustAndOneWhale100(99x0.3lowLTV+1x100whale) ===");
-        console2.log("  heap_size_before:", ctx.controller.deleverageHeapSize(ctx.id));
+        console2.log("  heap_size_before:", ctx.controller.deleverageQueueSize());
 
         DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, 75 ether));
         _logDeleverageResult(res);
@@ -266,7 +265,7 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
         (, uint128 whaleBorrowAfter, uint128 whaleColAfter) = ctx.market.position(ctx.id, _borrowerAddr(0));
         console2.log("  whale_debt_remaining:", uint256(whaleBorrowAfter));
         console2.log("  whale_col_remaining:", uint256(whaleColAfter));
-        console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
+        console2.log("  heap_size:", ctx.controller.deleverageQueueSize());
         console2.log("  dust_positions_touched:", _countClosed(ctx, 1, n));
     }
 
@@ -283,7 +282,7 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
         console2.log("=== 2000DustFullDrain ===");
         console2.log("  total_positions:", n);
         console2.log("  total_debt:", debtPer * n);
-        console2.log("  heap_size_before:", ctx.controller.deleverageHeapSize(ctx.id));
+        console2.log("  heap_size_before:", ctx.controller.deleverageQueueSize());
 
         uint256 totalTx;
         uint256 totalGas;
@@ -292,7 +291,7 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
 
         while (true) {
             (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
-            if (lenderShares == 0 || ctx.controller.deleverageHeapSize(ctx.id) == 0) break;
+            if (lenderShares == 0 || ctx.controller.deleverageQueueSize() == 0) break;
             DeleverageResult memory res = _deleverageLoop(ctx, lenderShares);
             if (res.iterations == 0) break;
             totalTx++;
@@ -308,7 +307,7 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
         console2.log("  total_iterations:", totalIter);
         console2.log("  total_debt_drained:", totalDebtDrained);
         console2.log("  total_gas:", totalGas);
-        console2.log("  positions_remaining:", ctx.controller.deleverageHeapSize(ctx.id));
+        console2.log("  positions_remaining:", ctx.controller.deleverageQueueSize());
     }
 
     // ── Runners
@@ -344,12 +343,12 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
         internal
     {
         console2.log("===", label, "===");
-        console2.log("  heap_size_before:", ctx.controller.deleverageHeapSize(ctx.id));
+        console2.log("  heap_size_before:", ctx.controller.deleverageQueueSize());
         DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, debtPer * n / exitDivisor));
         console2.log("  borrowers:", n);
         _logDeleverageResult(res);
         console2.log("  positions_closed:", _countClosed(ctx, 0, n));
-        console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
+        console2.log("  heap_size:", ctx.controller.deleverageQueueSize());
     }
 
     // ── Seeding
@@ -440,9 +439,9 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
         uint256 gasBefore = gasleft();
 
         for (uint256 i; i < MAX_ITERATIONS; ++i) {
-            if (remaining == 0 || ctx.controller.deleverageHeapSize(ctx.id) == 0) break;
+            if (remaining == 0 || ctx.controller.deleverageQueueSize() == 0) break;
 
-            (address top, uint256 sliceAssets) = ctx.controller.nextDeleverageCut(ctx.id);
+            (address top, uint256 sliceAssets) = ctx.controller.nextDeleverageCut();
             if (top == address(0)) break;
             (, uint128 topBorrowShares, uint128 topCol) = ctx.market.position(ctx.id, top);
             (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = ctx.market.market(ctx.id);
@@ -511,7 +510,7 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
 
     function _logPositions(Ctx memory ctx, uint256 n) internal view {
         console2.log("  dust_positions:", _countDust(ctx, 0, n));
-        console2.log("  heap_size:", ctx.controller.deleverageHeapSize(ctx.id));
+        console2.log("  heap_size:", ctx.controller.deleverageQueueSize());
     }
 
     // ── Deployment
@@ -520,6 +519,9 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
     function _deployCtx() internal returns (Ctx memory ctx) {
         if (_wstEthRate == 0) _wstEthRate = WSTETH.stEthPerToken();
 
+        address[] memory guardians = new address[](1);
+        guardians[0] = address(this);
+
         Deployed memory d = _deployForkStack(
             DeployConfig({
                 admin: address(this),
@@ -527,25 +529,32 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
                 collateralToken: WSTETH_ADDRESS,
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
-                fallbackEnabled: true
+                deleverageEnabled: true,
+                activation: ActivationConfig({
+                    minActivationDelay: 10 minutes,
+                    maxActivationDelay: 2 hours,
+                    maxSuspicionDelay: 2 hours,
+                    maxDecayDuration: 4 hours,
+                    maxDelayLoad: 10_000 ether,
+                    minActivationAmount: uint128(MIN_COLLATERAL_ACTIVATION),
+                    minDecayAmount: 1_000 ether
+                }),
+                guardians: guardians,
+                quorum: 1,
+                vaultName: "Lido wstETH/WETH Vault",
+                vaultSymbol: "lidoWSTETH-WETH"
             })
         );
 
-        ctx.market = MorphoBlueFork(d.core);
+        ctx.market = LidoBlue(d.core);
         ctx.oracle = ControllableWstEthOracle(d.oracle);
-        ctx.controller = IMarketController(d.controllerProxy);
+        ctx.controller = IWethWstEthController(d.controllerProxy);
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
         ctx.price = ctx.oracle.price();
 
-        IControllerAdmin admin = IControllerAdmin(d.controllerProxy);
-        admin.grantRole(admin.CONFIGURATOR_ROLE(), address(this));
-        admin.setDeleverageConfig(
-            ctx.id,
-            IMarketController.DeleverageConfig({
-                sliceFloorAssets: SLICE_FLOOR, maxIterations: uint32(MAX_ITERATIONS)
-            })
-        );
+        ctx.controller.grantRole(ctx.controller.CONFIGURATOR_ROLE(), address(this));
+        ctx.controller.setSliceFloor(SLICE_FLOOR);
     }
 
     /// @dev Override the default `WstEthRateOracle` with a per-test controllable oracle so
@@ -623,7 +632,7 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
         return SharesMathLib.toSharesDown(assets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
     }
 
-    function _mintWETH(MorphoBlueFork market, address user, uint256 amount) internal {
+    function _mintWETH(LidoBlue market, address user, uint256 amount) internal {
         vm.deal(user, amount);
         vm.prank(user);
         WETH.deposit{value: amount}();
@@ -631,7 +640,7 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
         WETH.approve(address(market), type(uint256).max);
     }
 
-    function _mintWstETH(MorphoBlueFork market, address user, uint256 ethAmount) internal returns (uint256) {
+    function _mintWstETH(LidoBlue market, address user, uint256 ethAmount) internal returns (uint256) {
         uint256 wstETHAmount = (ethAmount * 1e18) / _wstEthRate;
         bytes32 balSlot = keccak256(abi.encode(user, uint256(0)));
         vm.store(WSTETH_ADDRESS, balSlot, bytes32(wstETHAmount));
@@ -639,5 +648,4 @@ contract HeapDeleverageBenchmark is Test, MorphoForkDeployer {
         vm.store(WSTETH_ADDRESS, allowSlot, bytes32(type(uint256).max));
         return wstETHAmount;
     }
-
 }

@@ -4,7 +4,8 @@
 
 - `src/`: Solidity contracts for the Morpho Blue fork draft and Lido-specific extensions.
 - `src/MorphoBlueFork.sol`: the Morpho Blue fork. Keep changes narrow and easy to compare with upstream.
-- `src/controllers/`: controller and access-registry contracts. All Lido-specific extension logic lives here.
+- `src/controllers/`: the Lido-specific market controller and its hook policy.
+- `src/SuspectsRegistry.sol`: suspects / access registry (one per project).
 - `src/interfaces/`: local interfaces and hook payload structs.
 - `src/oracle/`: local oracle adapters.
 - `src/libs/`: pure libraries (math, data structures). Internal — they inline into call sites.

@@ -9,7 +9,7 @@ import {
 } from "@vault-v2/lib/morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
 import {Test} from "forge-std/Test.sol";
-import {MorphoForkDeployer} from "../../script/lib/MorphoForkDeployer.sol";
+import {LidoBlueDeployer} from "../../script/lib/LidoBlueDeployer.sol";
 
 struct LidoMarketParams {
     address loanToken;
@@ -36,7 +36,7 @@ interface IWstETH is IERC20Like {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-interface IMorphoBlueForkLike {
+interface ILidoBlueLike {
     function enableIrm(address irm) external;
     function enableLltv(uint256 lltv) external;
     function createMarket(LidoMarketParams memory marketParams, address controller, bool deleverageEnabled) external;
@@ -83,7 +83,7 @@ interface IControllerLike {
     ) external returns (uint256 collateralSeized, uint256 debtCanceled);
 }
 
-contract MetaMorphoV2IntegrationTest is Test, MorphoForkDeployer {
+contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
     using AdapterMarketParamsLib for AdapterMarketParams;
 
     address internal constant CURATOR = address(0x1001);
@@ -112,7 +112,7 @@ contract MetaMorphoV2IntegrationTest is Test, MorphoForkDeployer {
     struct IntegrationContext {
         IERC20Like loanToken;
         IERC20Like collateralToken;
-        IMorphoBlueForkLike market;
+        ILidoBlueLike market;
         IControllerLike controller;
         LidoMarketParams lidoParams;
         AdapterMarketParams adapterParams;
@@ -147,6 +147,9 @@ contract MetaMorphoV2IntegrationTest is Test, MorphoForkDeployer {
         ctx.loanToken = IERC20Like(WETH_ADDRESS);
         ctx.collateralToken = IERC20Like(WSTETH_ADDRESS);
 
+        address[] memory guardians = new address[](1);
+        guardians[0] = address(this);
+
         Deployed memory d = _deployForkStack(
             DeployConfig({
                 admin: address(this),
@@ -154,11 +157,24 @@ contract MetaMorphoV2IntegrationTest is Test, MorphoForkDeployer {
                 collateralToken: WSTETH_ADDRESS,
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
-                fallbackEnabled: true
+                deleverageEnabled: true,
+                activation: ActivationConfig({
+                    minActivationDelay: 10 minutes,
+                    maxActivationDelay: 2 hours,
+                    maxSuspicionDelay: 2 hours,
+                    maxDecayDuration: 4 hours,
+                    maxDelayLoad: 10_000 ether,
+                    minActivationAmount: 10 ether,
+                    minDecayAmount: 1_000 ether
+                }),
+                guardians: guardians,
+                quorum: 1,
+                vaultName: "Lido wstETH/WETH Vault",
+                vaultSymbol: "lidoWSTETH-WETH"
             })
         );
 
-        ctx.market = IMorphoBlueForkLike(d.core);
+        ctx.market = ILidoBlueLike(d.core);
         ctx.controller = IControllerLike(d.controllerProxy);
         ctx.lidoParams = LidoMarketParams({
             loanToken: WETH_ADDRESS, collateralToken: WSTETH_ADDRESS, oracle: d.oracle, irm: d.irm, lltv: LLTV
@@ -289,7 +305,6 @@ contract MetaMorphoV2IntegrationTest is Test, MorphoForkDeployer {
         WSTETH.wrap(stETHAmount);
         return WSTETH.balanceOf(user) - wstETHBefore;
     }
-
 
     function _configureVault(VaultV2 vault, MorphoMarketV1AdapterV2 adapter, AdapterMarketParams memory marketParams)
         internal
