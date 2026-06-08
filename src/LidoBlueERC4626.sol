@@ -13,12 +13,12 @@ import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
 import {MorphoBalancesLib} from "@morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 
-import {IMarketController} from "./interfaces/IMarketController.sol";
-import {IMorphoBlueForkDeleverage} from "./interfaces/IMorphoBlueForkDeleverage.sol";
+import {ILidoBlueMarketController} from "./interfaces/ILidoBlueMarketController.sol";
+import {ILidoBlue} from "./interfaces/ILidoBlue.sol";
 
-/// @title MorphoBlueForkERC4626Vault
+/// @title LidoBlueERC4626
 /// @notice Single-market ERC-4626 wrapper for a Morpho Blue fork market with deleverage exit support.
-contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
+contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
     using MarketParamsLib for MarketParams;
     using SafeERC20 for IERC20;
     using SharesMathLib for uint256;
@@ -27,9 +27,9 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
     error ZeroAddress();
     error ZeroMorphoSupplyShares();
 
-    // Packed payload for `Deleverage` to avoid stack-too-deep on the emit site under
+    // Packed payload for `FallbackExit` to avoid stack-too-deep on the emit site under
     // via_ir=false. Indexed fields stay as direct args.
-    struct DeleverageLog {
+    struct FallbackExitLog {
         uint256 sharesRequested;
         uint256 sharesBurned;
         uint256 loanAssets;
@@ -38,7 +38,7 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         uint256 debtCanceled;
     }
 
-    event Deleverage(
+    event FallbackExit(
         address indexed caller,
         address indexed owner,
         address indexed receiver,
@@ -51,15 +51,15 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
     );
 
     event DeleverageCut(
-        address indexed borrower,
-        uint256 morphoSupplyShares,
-        uint256 collateralSeized,
-        uint256 debtCanceled
+        address indexed borrower, uint256 morphoSupplyShares, uint256 collateralSeized, uint256 debtCanceled
     );
 
     IMorpho public immutable MORPHO;
-    IMarketController public immutable CONTROLLER;
+    ILidoBlueMarketController public immutable CONTROLLER;
     Id public immutable MARKET_ID;
+
+    /// @dev Per-call cut bound for the fallback-exit loop (gas safety). Was a controller config field.
+    uint256 internal constant MAX_DELEVERAGE_ITERATIONS = 100;
 
     MarketParams internal _marketParams;
 
@@ -69,16 +69,13 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         address controller,
         string memory name_,
         string memory symbol_
-    )
-        ERC20(name_, symbol_)
-        ERC4626(IERC20(marketParams_.loanToken))
-    {
+    ) ERC20(name_, symbol_) ERC4626(IERC20(marketParams_.loanToken)) {
         if (morpho == address(0) || controller == address(0) || marketParams_.collateralToken == address(0)) {
             revert ZeroAddress();
         }
 
         MORPHO = IMorpho(morpho);
-        CONTROLLER = IMarketController(controller);
+        CONTROLLER = ILidoBlueMarketController(controller);
         MARKET_ID = marketParams_.id();
         _marketParams = marketParams_;
 
@@ -122,63 +119,101 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         return Math.min(ownerShares, convertToShares(liquidAssets));
     }
 
-    /// @notice Best-effort deleverage exit. Burns up to `shares` vault shares; whatever fraction
-    ///         of the target is actually serviced is burned (matching slice of idle loan assets
-    ///         paid out). No revert on shortfall.
-    /// @dev Empty `borrowers` walks the controller's heap (head first). Non-empty iterates the
-    ///      list, using `controller.allowedSliceFor` per borrower.
-    ///
-    ///      Reverts `ZeroMorphoSupplyShares` when no Morpho position exists to deleverage against
-    ///      (precondition failure — distinct from a shortfall mid-loop, which silently returns
-    ///      the consumed fraction).
-    ///
+    /// @dev Shared plan for one exit: the preview target + live market totals, bundled to keep the
+    ///      `_beginExit` / `_finishExit` signatures narrow under via_ir=false.
+    struct ExitPlan {
+        uint256 shares;
+        address owner;
+        address receiver;
+        uint256 loanAssetsTarget;
+        uint256 morphoSupplyTarget;
+        uint256 totalSupplyAssets;
+        uint256 totalSupplyShares;
+    }
+
+    /// @notice Automatic fallback exit. Walks the controller's risk queue (head first) and deleverages
+    ///         borrowers until up to `shares` worth of the owner's position is freed — the caller does
+    ///         not pick the positions. Best-effort: whatever fraction is serviced is burned (matching
+    ///         slice of idle loan assets paid out), no revert on shortfall.
+    /// @dev Reverts `ZeroMorphoSupplyShares` when there is no Morpho position to deleverage against.
     ///      `loanAssets` rounds down via `Math.mulDiv`; the dust accrues to remaining shareholders.
     ///      Collateral is transferred directly by Morpho to `receiver`; the vault does not custody it.
+    function fallbackExit(uint256 shares, address receiver, address owner)
+        external
+        nonReentrant
+        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
+    {
+        ExitPlan memory plan = _beginExit(shares, receiver, owner);
+        uint256 morphoSupplyConsumed;
+        (collateralSeized, debtCanceled, morphoSupplyConsumed) =
+            _deleverageFromHeap(plan.morphoSupplyTarget, receiver, plan.totalSupplyAssets, plan.totalSupplyShares);
+        (sharesBurned, loanAssets) = _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
+    }
+
+    /// @notice Targeted exit. Same effect as `fallbackExit`, but the caller supplies the exact
+    ///         `borrowers` to deleverage (in order), using `controller.allowedSliceFor` per borrower
+    ///         instead of the risk queue. Best-effort, no revert on shortfall.
     function deleverage(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
         nonReentrant
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
     {
+        ExitPlan memory plan = _beginExit(shares, receiver, owner);
+        uint256 morphoSupplyConsumed;
+        (collateralSeized, debtCanceled, morphoSupplyConsumed) = _deleverageFromList(
+            plan.morphoSupplyTarget, borrowers, receiver, plan.totalSupplyAssets, plan.totalSupplyShares
+        );
+        (sharesBurned, loanAssets) = _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
+    }
+
+    /// @dev Common exit preamble: validate, pull allowance, preview the target, snapshot market totals.
+    function _beginExit(uint256 shares, address receiver, address owner) private returns (ExitPlan memory plan) {
         if (shares == 0) revert ZeroShares();
         if (receiver == address(0)) revert ZeroAddress();
 
         address caller = _msgSender();
         if (caller != owner) _spendAllowance(owner, caller, shares);
 
-        uint256 morphoSupplyConsumed;
-        {
-            (uint256 loanAssetsTarget, uint256 morphoSupplyTarget) = previewDeleverage(shares);
-            if (morphoSupplyTarget == 0) revert ZeroMorphoSupplyShares();
+        (plan.loanAssetsTarget, plan.morphoSupplyTarget) = previewFallbackExit(shares);
+        if (plan.morphoSupplyTarget == 0) revert ZeroMorphoSupplyShares();
+        (plan.totalSupplyAssets, plan.totalSupplyShares) = _marketSupplyTotals();
 
-            (uint256 totalSupplyAssets, uint256 totalSupplyShares) = _marketSupplyTotals();
-            (collateralSeized, debtCanceled, morphoSupplyConsumed) = borrowers.length == 0
-                ? _deleverageFromHeap(morphoSupplyTarget, receiver, totalSupplyAssets, totalSupplyShares)
-                : _deleverageFromList(morphoSupplyTarget, borrowers, receiver, totalSupplyAssets, totalSupplyShares);
+        plan.shares = shares;
+        plan.owner = owner;
+        plan.receiver = receiver;
+    }
 
-            sharesBurned = morphoSupplyConsumed >= morphoSupplyTarget
-                ? shares
-                : Math.mulDiv(shares, morphoSupplyConsumed, morphoSupplyTarget);
-            loanAssets = morphoSupplyConsumed >= morphoSupplyTarget
-                ? loanAssetsTarget
-                : Math.mulDiv(loanAssetsTarget, morphoSupplyConsumed, morphoSupplyTarget);
-        }
+    /// @dev Common exit settlement: pro-rate the burn/payout to what was actually serviced, burn,
+    ///      transfer the loan-asset slice, and emit the summary.
+    function _finishExit(
+        ExitPlan memory plan,
+        uint256 morphoSupplyConsumed,
+        uint256 collateralSeized,
+        uint256 debtCanceled
+    ) private returns (uint256 sharesBurned, uint256 loanAssets) {
+        sharesBurned = morphoSupplyConsumed >= plan.morphoSupplyTarget
+            ? plan.shares
+            : Math.mulDiv(plan.shares, morphoSupplyConsumed, plan.morphoSupplyTarget);
+        loanAssets = morphoSupplyConsumed >= plan.morphoSupplyTarget
+            ? plan.loanAssetsTarget
+            : Math.mulDiv(plan.loanAssetsTarget, morphoSupplyConsumed, plan.morphoSupplyTarget);
 
-        if (sharesBurned != 0) _burn(owner, sharesBurned);
-        if (loanAssets != 0) IERC20(asset()).safeTransfer(receiver, loanAssets);
+        if (sharesBurned != 0) _burn(plan.owner, sharesBurned);
+        if (loanAssets != 0) IERC20(asset()).safeTransfer(plan.receiver, loanAssets);
 
         // slither-disable-next-line uninitialized-local
-        DeleverageLog memory log;
-        log.sharesRequested = shares;
+        FallbackExitLog memory log;
+        log.sharesRequested = plan.shares;
         log.sharesBurned = sharesBurned;
         log.loanAssets = loanAssets;
         log.morphoSupplyShares = morphoSupplyConsumed;
         log.collateralSeized = collateralSeized;
         log.debtCanceled = debtCanceled;
-        _emitDeleverage(caller, owner, receiver, log);
+        _emitFallbackExit(_msgSender(), plan.owner, plan.receiver, log);
     }
 
-    function _emitDeleverage(address caller, address owner, address receiver, DeleverageLog memory log) internal {
-        emit Deleverage(
+    function _emitFallbackExit(address caller, address owner, address receiver, FallbackExitLog memory log) internal {
+        emit FallbackExit(
             caller,
             owner,
             receiver,
@@ -191,11 +226,11 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         );
     }
 
-    /// @notice Returns the loan assets and Morpho supply shares consumed by `deleverage(shares, ...)`.
+    /// @notice Returns the loan assets and Morpho supply shares consumed by `fallbackExit(shares, ...)`.
     /// @dev `view`, but result tracks the current block's accrued totals. If blocks pass between
-    ///      this call and the matching `deleverage` transaction the numbers may shift slightly;
+    ///      this call and the matching `fallbackExit` transaction the numbers may shift slightly;
     ///      the on-chain pro-rate is recomputed at execution time so the actual burn matches live state.
-    function previewDeleverage(uint256 shares) public view returns (uint256 loanAssets, uint256 morphoSupplyShares) {
+    function previewFallbackExit(uint256 shares) public view returns (uint256 loanAssets, uint256 morphoSupplyShares) {
         uint256 totalSupply_ = totalSupply();
         if (shares == 0 || totalSupply_ == 0) return (0, 0);
 
@@ -236,17 +271,15 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         uint256 totalSupplyShares
     ) internal returns (uint256 collateralSeized, uint256 debtCanceled, uint256 sharesConsumed) {
         uint256 remainingShares = morphoSupplyShares;
-        uint256 maxIterations = CONTROLLER.deleverageConfig(MARKET_ID).maxIterations;
+        uint256 maxIterations = MAX_DELEVERAGE_ITERATIONS;
         CutContext memory ctx = CutContext({
-            receiver: receiver,
-            totalSupplyAssets: totalSupplyAssets,
-            totalSupplyShares: totalSupplyShares
+            receiver: receiver, totalSupplyAssets: totalSupplyAssets, totalSupplyShares: totalSupplyShares
         });
 
         for (uint256 i = 0; i < maxIterations; ++i) {
             if (remainingShares == 0) break;
 
-            (address top, uint256 sliceAssets) = CONTROLLER.nextDeleverageCut(MARKET_ID);
+            (address top, uint256 sliceAssets) = CONTROLLER.nextDeleverageCut();
             if (top == address(0)) break;
 
             (uint256 iterSupplyShares, uint256 iterCollateralSeized, uint256 iterDebtCanceled) =
@@ -270,15 +303,13 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
     ) internal returns (uint256 collateralSeized, uint256 debtCanceled, uint256 sharesConsumed) {
         uint256 remainingShares = morphoSupplyShares;
         CutContext memory ctx = CutContext({
-            receiver: receiver,
-            totalSupplyAssets: totalSupplyAssets,
-            totalSupplyShares: totalSupplyShares
+            receiver: receiver, totalSupplyAssets: totalSupplyAssets, totalSupplyShares: totalSupplyShares
         });
 
         for (uint256 i = 0; i < borrowers.length; ++i) {
             if (remainingShares == 0) break;
 
-            uint256 sliceAssets = CONTROLLER.allowedSliceFor(MARKET_ID, borrowers[i]);
+            uint256 sliceAssets = CONTROLLER.allowedSliceFor(borrowers[i]);
             (uint256 iterSupplyShares, uint256 iterCollateralSeized, uint256 iterDebtCanceled) =
                 _executeCut(borrowers[i], sliceAssets, remainingShares, ctx);
             if (iterSupplyShares == 0) continue;
@@ -307,7 +338,7 @@ contract MorphoBlueForkERC4626Vault is ERC4626, ReentrancyGuard {
         if (iterSupplyShares == 0) return (0, 0, 0);
         if (iterSupplyShares > remainingShares) iterSupplyShares = remainingShares;
 
-        (iterCollateralSeized, iterDebtCanceled) = IMorphoBlueForkDeleverage(address(MORPHO))
+        (iterCollateralSeized, iterDebtCanceled) = ILidoBlue(address(MORPHO))
             .deleverage(_marketParams, iterSupplyShares, borrower, address(this), ctx.receiver);
 
         emit DeleverageCut(borrower, iterSupplyShares, iterCollateralSeized, iterDebtCanceled);

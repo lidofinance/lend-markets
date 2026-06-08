@@ -31,11 +31,12 @@ import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
 import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
 import {SafeTransferLib} from "@morpho-blue/src/libraries/SafeTransferLib.sol";
 
-import {IMarketController} from "./interfaces/IMarketController.sol";
+import {ILidoBlueMarketController} from "./interfaces/ILidoBlueMarketController.sol";
+import {ILidoBlue} from "./interfaces/ILidoBlue.sol";
 
-/// @title MorphoBlueForkErrorsLib
+/// @title LidoBlueErrorsLib
 /// @notice Error strings added by the forked core, kept in this file to make the upstream diff explicit.
-library MorphoBlueForkErrorsLib {
+library LidoBlueErrorsLib {
     string internal constant CONTROLLER_MISMATCH = "controller mismatch";
     string internal constant DELEVERAGE_DISABLED = "deleverage disabled";
     string internal constant ZERO_SHARES = "zero shares";
@@ -46,16 +47,16 @@ library MorphoBlueForkErrorsLib {
     string internal constant ALREADY_INITIALIZED = "already initialized";
 }
 
-/// @title MorphoBlueForkEventsLib
+/// @title LidoBlueEventsLib
 /// @notice Events added by the forked core, kept in this file to make the upstream diff explicit.
-library MorphoBlueForkEventsLib {
+library LidoBlueEventsLib {
     event MarketControllerSet(Id indexed id, address controller);
     event DeleverageEnabled(Id indexed id);
 
     event Deleverage(
         Id indexed id,
         address indexed caller,
-        address indexed lender,
+        address indexed onBehalf,
         address borrower,
         uint256 supplyShares,
         uint256 collateralSeized,
@@ -63,14 +64,14 @@ library MorphoBlueForkEventsLib {
     );
 }
 
-/// @title MorphoBlueFork
+/// @title LidoBlue
 /// @author Lido Lending contributors. Forked from Morpho Blue by Morpho Labs.
 /// @notice Working-name Morpho Blue fork core with optional per-market controllers.
 /// @dev `Position`, `Market`, `MarketParams`, and market id derivation stay upstream-shaped.
 ///      Optional controllers can enforce additional policy through action hooks. The
 ///      `deleverage` extension is core functionality: with no controller it uses the
 ///      core default rules, and with a controller it can be restricted further by market policy.
-contract MorphoBlueFork is IMorphoStaticTyping {
+contract LidoBlue is ILidoBlue {
     using MathLib for uint128;
     using MathLib for uint256;
     using UtilsLib for uint256;
@@ -127,7 +128,7 @@ contract MorphoBlueFork is IMorphoStaticTyping {
     /// @notice One-shot initializer. Called by the proxy at deploy time.
     /// @param newOwner The new owner of the contract.
     function initialize(address newOwner) external {
-        require(!_initialized, MorphoBlueForkErrorsLib.ALREADY_INITIALIZED);
+        require(!_initialized, LidoBlueErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
         _initialized = true;
         owner = newOwner;
@@ -229,18 +230,15 @@ contract MorphoBlueFork is IMorphoStaticTyping {
         idToMarketParams[id] = marketParams;
         if (controller != address(0)) {
             require(controller.code.length > 0, ErrorsLib.NO_CODE);
-            IMarketController controllerContract = IMarketController(controller);
-            require(controllerContract.MARKET() == address(this), MorphoBlueForkErrorsLib.CONTROLLER_MISMATCH);
-            require(
-                Id.unwrap(controllerContract.MARKET_ID()) == Id.unwrap(id), MorphoBlueForkErrorsLib.CONTROLLER_MISMATCH
-            );
+            ILidoBlueMarketController controllerContract = ILidoBlueMarketController(controller);
+            require(Id.unwrap(controllerContract.MARKET_ID()) == Id.unwrap(id), LidoBlueErrorsLib.CONTROLLER_MISMATCH);
             marketController[id] = controller;
-            emit MorphoBlueForkEventsLib.MarketControllerSet(id, controller);
+            emit LidoBlueEventsLib.MarketControllerSet(id, controller);
         }
         if (deleverageEnabled_) {
-            require(controller != address(0), MorphoBlueForkErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
+            require(controller != address(0), LidoBlueErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
             deleverageEnabled[id] = true;
-            emit MorphoBlueForkEventsLib.DeleverageEnabled(id);
+            emit LidoBlueEventsLib.DeleverageEnabled(id);
         }
 
         emit EventsLib.CreateMarket(id, marketParams);
@@ -272,9 +270,9 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
         _hook(
             id,
-            IMarketController.HookEvent.Supply,
+            ILidoBlueMarketController.HookEvent.Supply,
             abi.encode(
-                IMarketController.SupplyHookData({
+                ILidoBlueMarketController.SupplyHookData({
                     caller: msg.sender, onBehalf: onBehalf, assets: assets, shares: shares
                 })
             )
@@ -316,9 +314,9 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
         _hook(
             id,
-            IMarketController.HookEvent.Withdraw,
+            ILidoBlueMarketController.HookEvent.Withdraw,
             abi.encode(
-                IMarketController.WithdrawHookData({
+                ILidoBlueMarketController.WithdrawHookData({
                     caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets, shares: shares
                 })
             )
@@ -362,9 +360,9 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
         _hook(
             id,
-            IMarketController.HookEvent.Borrow,
+            ILidoBlueMarketController.HookEvent.Borrow,
             abi.encode(
-                IMarketController.BorrowHookData({
+                ILidoBlueMarketController.BorrowHookData({
                     caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets, shares: shares
                 })
             )
@@ -405,9 +403,9 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
         _hook(
             id,
-            IMarketController.HookEvent.Repay,
+            ILidoBlueMarketController.HookEvent.Repay,
             abi.encode(
-                IMarketController.RepayHookData({
+                ILidoBlueMarketController.RepayHookData({
                     caller: msg.sender, onBehalf: onBehalf, assets: assets, shares: shares
                 })
             )
@@ -442,9 +440,11 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
         _hook(
             id,
-            IMarketController.HookEvent.SupplyCollateral,
+            ILidoBlueMarketController.HookEvent.SupplyCollateral,
             abi.encode(
-                IMarketController.SupplyCollateralHookData({caller: msg.sender, onBehalf: onBehalf, assets: assets})
+                ILidoBlueMarketController.SupplyCollateralHookData({
+                    caller: msg.sender, onBehalf: onBehalf, assets: assets
+                })
             )
         );
         position[id][onBehalf].collateral += assets.toUint128();
@@ -472,14 +472,10 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
         _hook(
             id,
-            IMarketController.HookEvent.WithdrawCollateral,
+            ILidoBlueMarketController.HookEvent.WithdrawCollateral,
             abi.encode(
-                IMarketController.WithdrawCollateralHookData({
-                    caller: msg.sender,
-                    onBehalf: onBehalf,
-                    receiver: receiver,
-                    assets: assets,
-                    borrowerBorrowShares: position[id][onBehalf].borrowShares
+                ILidoBlueMarketController.WithdrawCollateralHookData({
+                    caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets
                 })
             )
         );
@@ -536,9 +532,9 @@ contract MorphoBlueFork is IMorphoStaticTyping {
         // Either input path reaches this point with both values populated.
         _hook(
             id,
-            IMarketController.HookEvent.Liquidate,
+            ILidoBlueMarketController.HookEvent.Liquidate,
             abi.encode(
-                IMarketController.LiquidateHookData({
+                ILidoBlueMarketController.LiquidateHookData({
                     caller: msg.sender, borrower: borrower, seizedAssets: seizedAssets, repaidShares: repaidShares
                 })
             )
@@ -583,67 +579,62 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
     /* DELEVERAGE */
 
-    /// @notice Cancels borrower debt against lender supply shares when normal withdraw liquidity is
-    ///         insufficient. Core primitive — runs standard Morpho `_isSenderAuthorized(lender)` auth
-    ///         and the liquidity-gate activation check. Eligibility (borrower must be heap head or
-    ///         have a personal watermark) and the slice cap are enforced by the controller's
-    ///         deleverage hook.
+    /// @notice Cancels borrower debt against a lender's supply shares when normal withdraw liquidity is
+    ///         insufficient. Core primitive — runs standard Morpho `_isSenderAuthorized(onBehalf)` auth
+    ///         (the exiting lender is the supply-side `onBehalf`) and the liquidity-gate activation check.
+    ///         Eligibility (borrower must be heap head or have a personal watermark) and the slice cap
+    ///         are enforced by the controller's deleverage hook.
     // slither-disable-next-line reentrancy-no-eth
     function deleverage(
         MarketParams memory marketParams,
         uint256 supplyShares,
         address borrower,
-        address lender,
+        address onBehalf,
         address receiver
     ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
-        require(deleverageEnabled[id], MorphoBlueForkErrorsLib.DELEVERAGE_DISABLED);
-        require(marketController[id] != address(0), MorphoBlueForkErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
-        require(supplyShares != 0, MorphoBlueForkErrorsLib.ZERO_SHARES);
+        require(deleverageEnabled[id], LidoBlueErrorsLib.DELEVERAGE_DISABLED);
+        require(marketController[id] != address(0), LidoBlueErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
+        require(supplyShares != 0, LidoBlueErrorsLib.ZERO_SHARES);
         require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
-        require(_isSenderAuthorized(lender), ErrorsLib.UNAUTHORIZED);
+        require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
 
         _accrueInterest(marketParams, id);
 
         debtCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        require(debtCanceled > _availableLiquidity(id), MorphoBlueForkErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
+        require(debtCanceled > _availableLiquidity(id), LidoBlueErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
 
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
         uint256 borrowerRawCollateral = position[id][borrower].collateral;
-        uint256 borrowerBorrowAssets = uint256(position[id][borrower].borrowShares)
-            .toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        require(borrowerBorrowAssets != 0, MorphoBlueForkErrorsLib.DELEVERAGE_INELIGIBLE);
+        require(position[id][borrower].borrowShares != 0, LidoBlueErrorsLib.DELEVERAGE_INELIGIBLE);
         // No health check: deleverage is soft-liquidation and must reach unhealthy-but-solvent
         // positions (LLTV < LTV < 100%). The over-cap check below bounds each cut to the
         // borrower's collateral, and the controller blocks bad-debt heads (LTV > 100%).
 
         collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
-        require(collateralSeized != 0, MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP);
-        require(collateralSeized <= borrowerRawCollateral, MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP);
+        require(collateralSeized != 0, LidoBlueErrorsLib.DELEVERAGE_OVER_CAP);
+        require(collateralSeized <= borrowerRawCollateral, LidoBlueErrorsLib.DELEVERAGE_OVER_CAP);
 
         uint256 borrowSharesToBurn = debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        require(borrowSharesToBurn <= position[id][borrower].borrowShares, MorphoBlueForkErrorsLib.DELEVERAGE_OVER_CAP);
+        require(borrowSharesToBurn <= position[id][borrower].borrowShares, LidoBlueErrorsLib.DELEVERAGE_OVER_CAP);
 
         _hook(
             id,
-            IMarketController.HookEvent.Deleverage,
+            ILidoBlueMarketController.HookEvent.Deleverage,
             abi.encode(
-                IMarketController.DeleverageHookData({
+                ILidoBlueMarketController.DeleverageHookData({
                     caller: msg.sender,
-                    lender: lender,
+                    onBehalf: onBehalf,
                     borrower: borrower,
                     receiver: receiver,
                     assetsToCancel: debtCanceled,
-                    borrowerBorrowAssets: borrowerBorrowAssets,
-                    borrowerRawCollateral: borrowerRawCollateral,
-                    collateralPrice: collateralPrice,
                     collateralSeized: collateralSeized
                 })
             )
         );
 
-        position[id][lender].supplyShares -= supplyShares;
+        position[id][onBehalf].supplyShares -= supplyShares;
         market[id].totalSupplyShares -= supplyShares.toUint128();
         market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, debtCanceled).toUint128();
 
@@ -653,8 +644,8 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
         position[id][borrower].collateral -= collateralSeized.toUint128();
 
-        emit MorphoBlueForkEventsLib.Deleverage(
-            id, msg.sender, lender, borrower, supplyShares, collateralSeized, debtCanceled
+        emit LidoBlueEventsLib.Deleverage(
+            id, msg.sender, onBehalf, borrower, supplyShares, collateralSeized, debtCanceled
         );
 
         IERC20(marketParams.collateralToken).safeTransfer(receiver, collateralSeized);
@@ -722,8 +713,8 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
         _hook(
             id,
-            IMarketController.HookEvent.AccrueInterest,
-            abi.encode(IMarketController.AccrueInterestHookData({caller: msg.sender}))
+            ILidoBlueMarketController.HookEvent.AccrueInterest,
+            abi.encode(ILidoBlueMarketController.AccrueInterestHookData({caller: msg.sender}))
         );
 
         _accrueInterest(marketParams, id);
@@ -795,9 +786,9 @@ contract MorphoBlueFork is IMorphoStaticTyping {
 
     /// @dev Single strict-callback dispatch into the controller. ABI-encoded payloads keep the
     ///      core fork surface minimal; the controller decodes per-event in its `on()` handler.
-    function _hook(Id id, IMarketController.HookEvent e, bytes memory data) internal {
+    function _hook(Id id, ILidoBlueMarketController.HookEvent e, bytes memory data) internal {
         address controller = marketController[id];
-        if (controller != address(0)) IMarketController(controller).on(id, e, data);
+        if (controller != address(0)) ILidoBlueMarketController(controller).on(id, e, data);
     }
 
     function _availableLiquidity(Id id) internal view returns (uint256) {

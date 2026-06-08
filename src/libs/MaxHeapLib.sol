@@ -9,7 +9,7 @@ pragma solidity >=0.8.0;
 ///      than restate it.
 ///
 ///      Nodes live in a 1-indexed array with a zero sentinel at index 0 so parent/child index
-///      math (`i*2`, `i*2+1`, `i/2`) works directly. A side mapping tracks each account's
+///      math (`idx*2`, `idx*2+1`, `idx/2`) works directly. A side mapping tracks each account's
 ///      1-indexed slot (0 = absent) so `upsert` / `remove` are O(log N).
 library MaxHeapLib {
     error EmptyHeap();
@@ -66,8 +66,8 @@ library MaxHeapLib {
     function nodeAt(Heap storage self, uint256 index) internal view returns (address account, uint256 key) {
         uint256 idx = index + 1;
         if (idx >= self.nodes.length) revert IndexOutOfBounds();
-        Node storage n = self.nodes[idx];
-        return (n.account, n.key);
+        Node storage node = self.nodes[idx];
+        return (node.account, node.key);
     }
 
     /* MUTATIONS */
@@ -119,38 +119,38 @@ library MaxHeapLib {
 
     /* INTERNAL */
 
-    function _siftUp(Heap storage self, uint256 i) private returns (uint256) {
-        while (i > 1) {
-            uint256 parent = i >> 1;
-            if (self.nodes[i].key <= self.nodes[parent].key) break;
-            _swap(self, i, parent);
-            i = parent;
+    function _siftUp(Heap storage self, uint256 idx) private returns (uint256) {
+        while (idx > 1) {
+            uint256 parent = idx >> 1;
+            if (self.nodes[idx].key <= self.nodes[parent].key) break;
+            _swap(self, idx, parent);
+            idx = parent;
         }
-        return i;
+        return idx;
     }
 
-    function _siftDown(Heap storage self, uint256 i) private returns (uint256) {
+    function _siftDown(Heap storage self, uint256 idx) private returns (uint256) {
         uint256 len = self.nodes.length;
         while (true) {
-            uint256 left = i << 1;
+            uint256 left = idx << 1;
             if (left >= len) break;
             uint256 right = left + 1;
-            uint256 largest = i;
+            uint256 largest = idx;
             if (self.nodes[left].key > self.nodes[largest].key) largest = left;
             if (right < len && self.nodes[right].key > self.nodes[largest].key) largest = right;
-            if (largest == i) break;
-            _swap(self, i, largest);
-            i = largest;
+            if (largest == idx) break;
+            _swap(self, idx, largest);
+            idx = largest;
         }
-        return i;
+        return idx;
     }
 
-    function _swap(Heap storage self, uint256 a, uint256 b) private {
-        Node memory nodeA = self.nodes[a];
-        Node memory nodeB = self.nodes[b];
-        self.nodes[a] = nodeB;
-        self.nodes[b] = nodeA;
-        self.slot[nodeA.account] = b;
-        self.slot[nodeB.account] = a;
+    function _swap(Heap storage self, uint256 indexA, uint256 indexB) private {
+        Node memory nodeA = self.nodes[indexA];
+        Node memory nodeB = self.nodes[indexB];
+        self.nodes[indexA] = nodeB;
+        self.nodes[indexB] = nodeA;
+        self.slot[nodeA.account] = indexB;
+        self.slot[nodeB.account] = indexA;
     }
 }
