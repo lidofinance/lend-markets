@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.19;
 
-import {IOracle} from "@morpho-blue/src/interfaces/IOracle.sol";
+import {IOracle} from "@lido-blue/src/interfaces/IOracle.sol";
 
 interface IWstETH {
     /// @notice Amount of stETH backing 1 wstETH, scaled by 1e18.

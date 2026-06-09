@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.24;
 
-import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
-import {MathLib} from "@morpho-blue/src/libraries/MathLib.sol";
+import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
+import {MathLib} from "@lido-blue/src/libraries/MathLib.sol";
 import {MaxHeapLib} from "./MaxHeapLib.sol";
 
 /// @title DeleverageQueue

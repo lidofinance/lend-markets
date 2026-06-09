@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.24;
 
-import {Id, IMorphoStaticTyping} from "@morpho-blue/src/interfaces/IMorpho.sol";
-import {IOracle} from "@morpho-blue/src/interfaces/IOracle.sol";
-import {MathLib} from "@morpho-blue/src/libraries/MathLib.sol";
-import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
-import {ORACLE_PRICE_SCALE} from "@morpho-blue/src/libraries/ConstantsLib.sol";
+import {Id, IMorphoStaticTyping} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {IOracle} from "@lido-blue/src/interfaces/IOracle.sol";
+import {MathLib} from "@lido-blue/src/libraries/MathLib.sol";
+import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-blue/src/libraries/ConstantsLib.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
 import {ISuspectsRegistry} from "../interfaces/ISuspectsRegistry.sol";
-import {ILidoBlueMarketController} from "../interfaces/ILidoBlueMarketController.sol";
+import {ILidoBlueMarketController} from "@lido-blue/src/interfaces/ILidoBlueMarketController.sol";
 import {ActivationLib} from "../libs/ActivationLib.sol";
 import {DeleverageQueue} from "../libs/DeleverageQueue.sol";
 

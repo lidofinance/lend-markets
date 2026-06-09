@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.19;
 
-import {LidoBlue} from "../../src/LidoBlue.sol";
-import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
-import {ORACLE_PRICE_SCALE} from "@morpho-blue/src/libraries/ConstantsLib.sol";
-import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
+import {LidoBlue} from "@lido-blue/src/LidoBlue.sol";
+import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-blue/src/libraries/ConstantsLib.sol";
+import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
 
 import {IWethWstEthController} from "../utils/IWethWstEthController.sol";

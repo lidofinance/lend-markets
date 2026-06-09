@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.24;
 
-import {MathLib, WAD} from "@morpho-blue/src/libraries/MathLib.sol";
-import {UtilsLib} from "@morpho-blue/src/libraries/UtilsLib.sol";
+import {MathLib, WAD} from "@lido-blue/src/libraries/MathLib.sol";
+import {UtilsLib} from "@lido-blue/src/libraries/UtilsLib.sol";
 
 /// @title ActivationLib
 /// @author Lido Lending contributors.

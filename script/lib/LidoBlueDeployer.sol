@@ -6,10 +6,10 @@ pragma solidity >=0.8.19;
 
 import {Vm} from "forge-std/Vm.sol";
 
-import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
+import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
 
-import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
+import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
 
 /// @title LidoBlueDeployer
 /// @notice Shared deploy steps for a Lido Lending market: core, suspects registry, oracle, IRM,
@@ -89,7 +89,7 @@ abstract contract LidoBlueDeployer {
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so
     ///      `admin` becomes the core's owner.
     function _deployCore(address admin) internal virtual returns (address) {
-        address impl = _deployArtifact("src/LidoBlue.sol:LidoBlue", "");
+        address impl = _deployArtifact("lib/lido-blue/src/LidoBlue.sol:LidoBlue", "");
         bytes memory initData = abi.encodeWithSignature("initialize(address)", admin);
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }

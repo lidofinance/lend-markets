@@ -8,13 +8,13 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {Id, IMorpho, MarketParams, Position} from "@morpho-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
-import {MorphoBalancesLib} from "@morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol";
-import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
+import {Id, IMorpho, MarketParams, Position} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
+import {MorphoBalancesLib} from "@lido-blue/src/libraries/periphery/MorphoBalancesLib.sol";
+import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
 
-import {ILidoBlueMarketController} from "./interfaces/ILidoBlueMarketController.sol";
-import {ILidoBlue} from "./interfaces/ILidoBlue.sol";
+import {ILidoBlueMarketController} from "@lido-blue/src/interfaces/ILidoBlueMarketController.sol";
+import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
 
 /// @title LidoBlueERC4626
 /// @notice Single-market ERC-4626 wrapper for a Morpho Blue fork market with deleverage exit support.

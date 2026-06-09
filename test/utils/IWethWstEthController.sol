@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity >=0.8.0;
 
-import {ILidoBlueMarketController} from "../../src/interfaces/ILidoBlueMarketController.sol";
+import {ILidoBlueMarketController} from "@lido-blue/src/interfaces/ILidoBlueMarketController.sol";
 
 /// @notice Test-only typed view of `WethWstEthController`. The controller compiles under 0.8.24; the
 ///         0.8.19 scenario tests drive it through this floating-pragma interface so they don't import
