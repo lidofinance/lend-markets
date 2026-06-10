@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {DeleverageQueue} from "../../src/libs/DeleverageQueue.sol";
@@ -16,8 +16,7 @@ contract DeleverageQueueSliceTest is Test {
         uint256 topCollateral,
         uint256 totalBorrowShares,
         uint256 totalBorrowAssets,
-        uint256 collateralPrice,
-        uint256 sliceFloor
+        uint256 collateralPrice
     ) internal pure returns (uint256) {
         DeleverageQueue.MarketView memory marketView = DeleverageQueue.MarketView({
             borrowShares: 0,
@@ -26,73 +25,42 @@ contract DeleverageQueueSliceTest is Test {
             totalBorrowShares: totalBorrowShares,
             price: collateralPrice
         });
-        return DeleverageQueue.computeSlice(marketView, topKey, targetKey, sliceFloor);
+        return DeleverageQueue.computeSlice(marketView, topKey, targetKey);
     }
 
-    // ── Degenerate inputs return the floor
+    // ── Degenerate inputs return zero
     // ──────────────────────────
 
-    function test_targetNotBelowTop_returnsFloor() public pure {
-        uint256 f = 1 ether;
-        assertEq(_slice(100, 100, 1e18, 1e24, 1e18, 1e36, f), f, "target == top");
-        assertEq(_slice(100, 150, 1e18, 1e24, 1e18, 1e36, f), f, "target > top");
+    function test_targetNotBelowTop_returnsZero() public pure {
+        assertEq(_slice(100, 100, 1e18, 1e24, 1e18, 1e36), 0, "target == top");
+        assertEq(_slice(100, 150, 1e18, 1e24, 1e18, 1e36), 0, "target > top");
     }
 
-    function test_zeroCollateral_returnsFloor() public pure {
-        uint256 f = 1 ether;
-        assertEq(_slice(200, 100, 0, 1e24, 1e18, 1e36, f), f);
+    function test_zeroCollateral_returnsZero() public pure {
+        assertEq(_slice(200, 100, 0, 1e24, 1e18, 1e36), 0);
     }
 
-    function test_zeroTotals_returnsFloor() public pure {
-        uint256 f = 1 ether;
-        assertEq(_slice(200, 100, 1e18, 0, 1e18, 1e36, f), f, "zero shares");
-        assertEq(_slice(200, 100, 1e18, 1e24, 0, 1e36, f), f, "zero assets");
+    function test_zeroTotals_returnsZero() public pure {
+        assertEq(_slice(200, 100, 1e18, 0, 1e18, 1e36), 0, "zero shares");
+        assertEq(_slice(200, 100, 1e18, 1e24, 0, 1e36), 0, "zero assets");
     }
 
-    function test_zeroPrice_returnsFloor() public pure {
-        uint256 f = 1 ether;
-        assertEq(_slice(200, 100, 1e18, 1e24, 1e18, 0, f), f);
+    function test_zeroPrice_returnsZero() public pure {
+        assertEq(_slice(200, 100, 1e18, 1e24, 1e18, 0), 0);
     }
 
-    function test_denominatorInversion_returnsFloor() public pure {
-        // sharesPerAssetTerm <= targetPriceTerm: pick a tiny totalBorrowShares/assets ratio and a
-        // large targetKey/price ratio so the denominator goes non-positive.
-        uint256 f = 1 ether;
+    function test_denominatorInversion_returnsZero() public pure {
+        // sharesPerAssetTerm <= targetPriceTerm: tiny totalBorrowShares/assets ratio and a large
+        // targetKey/price ratio drive the denominator non-positive.
         uint256 slice = _slice(
             2e18, // topKey
             1e18, // targetKey
             100e18, // topCollateral
             1, // totalBorrowShares (tiny → sharesPerAssetTerm ~ 0)
             1e30, // totalBorrowAssets (huge)
-            1, // collateralPrice (tiny → targetPriceTerm huge)
-            f
+            1 // collateralPrice (tiny → targetPriceTerm huge)
         );
-        assertEq(slice, f, "inverted denominator falls back to floor");
-    }
-
-    // ── Result never below the floor
-    // ────────────────────────────────
-
-    function testFuzz_neverBelowFloor(
-        uint256 topKey,
-        uint256 targetKey,
-        uint256 topCollateral,
-        uint256 totalBorrowShares,
-        uint256 totalBorrowAssets,
-        uint256 collateralPrice,
-        uint256 sliceFloor
-    ) public pure {
-        topKey = bound(topKey, 1, 1e24);
-        targetKey = bound(targetKey, 0, 1e24);
-        topCollateral = bound(topCollateral, 0, 1e30);
-        totalBorrowShares = bound(totalBorrowShares, 0, 1e36);
-        totalBorrowAssets = bound(totalBorrowAssets, 0, 1e30);
-        collateralPrice = bound(collateralPrice, 0, 1e40);
-        sliceFloor = bound(sliceFloor, 0, 100 ether);
-
-        uint256 slice =
-            _slice(topKey, targetKey, topCollateral, totalBorrowShares, totalBorrowAssets, collateralPrice, sliceFloor);
-        assertGe(slice, sliceFloor, "slice >= floor always");
+        assertEq(slice, 0, "inverted denominator returns zero");
     }
 
     // ── Monotonicity: a larger key gap yields a larger-or-equal slice ──
@@ -107,16 +75,13 @@ contract DeleverageQueueSliceTest is Test {
         uint256 totalBorrowShares = 100e24;
         uint256 totalBorrowAssets = 100e18;
         uint256 collateralPrice = 1.2e36;
-        uint256 floor = 0;
 
-        uint256 sliceA =
-            _slice(topKey, targetA, topCollateral, totalBorrowShares, totalBorrowAssets, collateralPrice, floor);
-        uint256 sliceB =
-            _slice(topKey, targetB, topCollateral, totalBorrowShares, totalBorrowAssets, collateralPrice, floor);
+        uint256 sliceA = _slice(topKey, targetA, topCollateral, totalBorrowShares, totalBorrowAssets, collateralPrice);
+        uint256 sliceB = _slice(topKey, targetB, topCollateral, totalBorrowShares, totalBorrowAssets, collateralPrice);
 
         // Bigger gap (targetB lower) should not produce a smaller slice. Both must be valid
         // (denominator positive) for the comparison to hold.
-        if (sliceA > floor && sliceB > floor) {
+        if (sliceA > 0 && sliceB > 0) {
             assertGe(sliceB, sliceA, "larger gap => slice not smaller");
         }
     }
@@ -173,23 +138,21 @@ contract DeleverageQueueSliceTest is Test {
     }
 
     /// @notice When the heap key saturates at `type(uint96).max` (uint96-packed slot), distinct
-    ///         high-risk borrowers tie at the top: `topKey == targetKey`. `computeSlice` then
-    ///         takes the `targetKey >= topKey` fallback and returns the floor — silent slice
-    ///         degradation in the saturation regime. Documenting the behaviour so future changes
-    ///         that try to rescue saturated keys have an explicit baseline to fail against.
-    function test_keySaturation_tiedTopReturnsFloor() public pure {
+    ///         high-risk borrowers tie at the top: `topKey == targetKey`. `computeSlice` then takes
+    ///         the `targetKey >= topKey` fallback and returns 0 — silent slice degradation in the
+    ///         saturation regime. `heapSlice` (the operational caller) clamps to `sliceFloorAssets`,
+    ///         which is what salvages forward progress in this corner.
+    function test_keySaturation_tiedTopReturnsZero() public pure {
         uint256 saturatedKey = uint256(type(uint96).max);
-        uint256 floor = 1.5 ether;
         uint256 slice = _slice(
             saturatedKey, // topKey at uint96.max
             saturatedKey, // childMaxKey also at uint96.max — tied
             100 ether,
             1e24,
             1e18,
-            1e36,
-            floor
+            1e36
         );
-        assertEq(slice, floor, "saturated tie collapses to floor");
+        assertEq(slice, 0, "saturated tie collapses to zero (heapSlice then clamps to floor)");
     }
 
     function test_closedFormValue() public pure {
@@ -202,7 +165,7 @@ contract DeleverageQueueSliceTest is Test {
         uint256 numerator = uint256(1e18) * 100e18;
         uint256 denominator = uint256(1e24) - 1e18;
         uint256 expected = numerator / denominator;
-        uint256 slice = _slice(2e18, 1e18, 100e18, 100e24, 100e18, 1e36, 0);
+        uint256 slice = _slice(2e18, 1e18, 100e18, 100e24, 100e18, 1e36);
         assertEq(slice, expected, "closed form matches");
     }
 }

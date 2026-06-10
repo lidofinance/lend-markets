@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.28;
+pragma solidity 0.8.35;
 
-import {VaultV2} from "@vault-v2/src/VaultV2.sol";
-import {MorphoMarketV1AdapterV2} from "@vault-v2/src/adapters/MorphoMarketV1AdapterV2.sol";
+import {IVaultV2} from "@vault-v2/src/interfaces/IVaultV2.sol";
+import {IMorphoMarketV1AdapterLike} from "../utils/IMorphoMarketV1AdapterLike.sol";
 import {
     Id as AdapterId,
     MarketParams as AdapterMarketParams
@@ -94,10 +94,6 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
     address internal constant DIRECT_LENDER = address(0x1006);
     address internal constant LOW_LTV_BORROWER = address(0x1007);
 
-    // Run with:
-    // forge test --match-path test/integration/MorphoBlueForkVaultV2Integration.t.sol \
-    //   --fork-url "$MAINNET_RPC_URL"
-
     address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address internal constant STETH_ADDRESS = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
     address internal constant WSTETH_ADDRESS = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
@@ -117,8 +113,8 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
         LidoMarketParams lidoParams;
         AdapterMarketParams adapterParams;
         bytes32 marketId;
-        VaultV2 vault;
-        MorphoMarketV1AdapterV2 adapter;
+        IVaultV2 vault;
+        IMorphoMarketV1AdapterLike adapter;
     }
 
     function test_metaMorphoV2_allocatesIntoForkAndForceDeallocates() public {
@@ -184,8 +180,15 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
         });
         ctx.marketId = AdapterId.unwrap(ctx.adapterParams.id());
 
-        ctx.vault = new VaultV2(address(this), address(ctx.loanToken));
-        ctx.adapter = new MorphoMarketV1AdapterV2(address(ctx.vault), address(ctx.market), d.irm);
+        ctx.vault = IVaultV2(
+            _deployArtifact("lib/vault-v2/src/VaultV2.sol:VaultV2", abi.encode(address(this), address(ctx.loanToken)))
+        );
+        ctx.adapter = IMorphoMarketV1AdapterLike(
+            _deployArtifact(
+                "lib/vault-v2/src/adapters/MorphoMarketV1AdapterV2.sol:MorphoMarketV1AdapterV2",
+                abi.encode(address(ctx.vault), address(ctx.market), d.irm)
+            )
+        );
         _configureVault(ctx.vault, ctx.adapter, ctx.adapterParams);
     }
 
@@ -306,9 +309,11 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
         return WSTETH.balanceOf(user) - wstETHBefore;
     }
 
-    function _configureVault(VaultV2 vault, MorphoMarketV1AdapterV2 adapter, AdapterMarketParams memory marketParams)
-        internal
-    {
+    function _configureVault(
+        IVaultV2 vault,
+        IMorphoMarketV1AdapterLike adapter,
+        AdapterMarketParams memory marketParams
+    ) internal {
         vault.setCurator(CURATOR);
 
         _executeTimelocked(vault, abi.encodeCall(vault.setIsAllocator, (ALLOCATOR, true)));
@@ -319,12 +324,12 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
         _enableCap(vault, abi.encode("this/marketParams", address(adapter), marketParams));
     }
 
-    function _enableCap(VaultV2 vault, bytes memory idData) internal {
+    function _enableCap(IVaultV2 vault, bytes memory idData) internal {
         _executeTimelocked(vault, abi.encodeCall(vault.increaseAbsoluteCap, (idData, type(uint128).max)));
         _executeTimelocked(vault, abi.encodeCall(vault.increaseRelativeCap, (idData, WAD)));
     }
 
-    function _executeTimelocked(VaultV2 vault, bytes memory data) internal {
+    function _executeTimelocked(IVaultV2 vault, bytes memory data) internal {
         vm.prank(CURATOR);
         vault.submit(data);
         (bool success, bytes memory returnData) = address(vault).call(data);

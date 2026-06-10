@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
 import {MathLib, WAD} from "@lido-blue/src/libraries/MathLib.sol";
 import {UtilsLib} from "@lido-blue/src/libraries/UtilsLib.sol";

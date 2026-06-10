@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Lido <info@lido.fi>
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
 import {StorageSlot} from "@openzeppelin/contracts/utils/StorageSlot.sol";
 
@@ -12,14 +12,11 @@ import {StorageSlot} from "@openzeppelin/contracts/utils/StorageSlot.sol";
 abstract contract PausableUntil {
     using StorageSlot for bytes32;
 
-    /// Contract resume/pause control storage slot
     bytes32 internal constant RESUME_SINCE_TIMESTAMP_POSITION = keccak256("lido.PausableUntil.resumeSinceTimestamp");
     /// Special value for the infinite pause
     uint256 public constant PAUSE_INFINITELY = type(uint256).max;
 
-    /// @notice Emitted when paused by the `pauseFor` or `pauseUntil` call
     event Paused(uint256 duration);
-    /// @notice Emitted when resumed by the `resume` call
     event Resumed();
 
     error ZeroPauseDuration();
@@ -27,13 +24,11 @@ abstract contract PausableUntil {
     error ResumedExpected();
     error PauseUntilMustBeInFuture();
 
-    /// @notice Reverts if paused
     modifier whenResumed() {
         _checkResumed();
         _;
     }
 
-    /// @notice Returns whether the contract is paused
     function isPaused() public view returns (bool) {
         return block.timestamp < RESUME_SINCE_TIMESTAMP_POSITION.getUint256Slot().value;
     }

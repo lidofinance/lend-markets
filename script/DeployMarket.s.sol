@@ -1,18 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Matches the core's 0.8.19 pin so the LidoBlue import below shares its compilation unit; the script
-// itself only orchestrates deploys, so its compiler version does not affect deployed bytecode.
-pragma solidity >=0.8.19;
+pragma solidity 0.8.35;
 
 import {Script, console2} from "forge-std/Script.sol";
 
 import {Id} from "@lido-blue/src/interfaces/IMorpho.sol";
 
 import {LidoBlueDeployer} from "./lib/LidoBlueDeployer.sol";
-
-// The core lives in lib/lido-blue and is deployed via vm.getCode, which needs its artifact in out/.
-// forge script compiles src+script (not test), so import the concrete type here to force that artifact
-// to build. Unused by name on purpose.
-import {LidoBlue} from "@lido-blue/src/LidoBlue.sol";
 
 /// @notice Deploy script for a wstETH/WETH lending market on the lido-lending fork. Delegates the
 ///         actual deploy steps to `LidoBlueDeployer` so tests can reuse the same logic.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.35;
 
-import {LidoBlue} from "@lido-blue/src/LidoBlue.sol";
+import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
 import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-blue/src/libraries/ConstantsLib.sol";
@@ -68,7 +68,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
     uint256 internal _wstEthRate;
 
     struct Ctx {
-        LidoBlue market;
+        ILidoBlue market;
         IWethWstEthController controller;
         ControllableWstEthOracle oracle;
         MarketParams marketParams;
@@ -546,7 +546,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
             })
         );
 
-        ctx.market = LidoBlue(d.core);
+        ctx.market = ILidoBlue(d.core);
         ctx.oracle = ControllableWstEthOracle(d.oracle);
         ctx.controller = IWethWstEthController(d.controllerProxy);
         ctx.marketParams = d.params;
@@ -632,7 +632,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         return SharesMathLib.toSharesDown(assets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
     }
 
-    function _mintWETH(LidoBlue market, address user, uint256 amount) internal {
+    function _mintWETH(ILidoBlue market, address user, uint256 amount) internal {
         vm.deal(user, amount);
         vm.prank(user);
         WETH.deposit{value: amount}();
@@ -640,7 +640,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         WETH.approve(address(market), type(uint256).max);
     }
 
-    function _mintWstETH(LidoBlue market, address user, uint256 ethAmount) internal returns (uint256) {
+    function _mintWstETH(ILidoBlue market, address user, uint256 ethAmount) internal returns (uint256) {
         uint256 wstETHAmount = (ethAmount * 1e18) / _wstEthRate;
         bytes32 balSlot = keccak256(abi.encode(user, uint256(0)));
         vm.store(WSTETH_ADDRESS, balSlot, bytes32(wstETHAmount));

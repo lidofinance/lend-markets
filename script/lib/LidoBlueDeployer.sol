@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Permissive pragma so the deploy script (0.8.24) and the scenario/integration tests can all inherit.
-// All deploys go through `vm.getCode`, so this stays solc-agnostic and never imports the deployed
-// contracts (which span 0.8.19 core / 0.8.24 controller).
-pragma solidity >=0.8.19;
+pragma solidity 0.8.35;
 
 import {Vm} from "forge-std/Vm.sol";
 
@@ -10,6 +7,7 @@ import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
 
 import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
+import {AdaptiveCurveIrm} from "../../src/irm/AdaptiveCurveIrm.sol";
 
 /// @title LidoBlueDeployer
 /// @notice Shared deploy steps for a Lido Lending market: core, suspects registry, oracle, IRM,
@@ -83,7 +81,7 @@ abstract contract LidoBlueDeployer {
         ILidoBlue(d.core).enableLltv(cfg.lltv);
         ILidoBlue(d.core).createMarket(d.params, d.controllerProxy, cfg.deleverageEnabled);
 
-        d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.vaultName, cfg.vaultSymbol);
+        d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
     }
 
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so
@@ -111,10 +109,25 @@ abstract contract LidoBlueDeployer {
         return _deployArtifact("src/oracle/WstEthRateOracle.sol:WstEthRateOracle", abi.encode(oracleSource));
     }
 
+    /// @dev IRM impl + `OssifiableProxy`. Defaults match upstream `morpho-blue-irm` `ConstantsLib`;
+    ///      override `_defaultIrmCurveParams` to pin a different curve per market.
     function _deployIrm(address core) internal virtual returns (address) {
-        return _deployArtifact(
-            "lib/morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core)
-        );
+        AdaptiveCurveIrm.CurveParams memory params = _defaultIrmCurveParams();
+        address impl = _deployArtifact("src/irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core, params));
+        return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, core, ""));
+    }
+
+    /// @dev Curve defaults inherited from upstream `morpho-blue-irm` `ConstantsLib`. Override to
+    ///      customise per-market.
+    function _defaultIrmCurveParams() internal pure virtual returns (AdaptiveCurveIrm.CurveParams memory) {
+        return AdaptiveCurveIrm.CurveParams({
+            curveSteepness: 4 ether,
+            adjustmentSpeed: 50 ether / int256(365 days),
+            targetUtilization: 0.9 ether,
+            initialRateAtTarget: 0.04 ether / int256(365 days),
+            minRateAtTarget: 0.001 ether / int256(365 days),
+            maxRateAtTarget: 2 ether / int256(365 days)
+        });
     }
 
     /// @dev Controller behind a proxy. The impl bakes `(lidoBlue, marketId)` into immutables at deploy,
@@ -138,17 +151,26 @@ abstract contract LidoBlueDeployer {
         proxy = _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
-    /// @dev Single-market ERC-4626 wrapper over the core market, reading the controller's deleverage view.
+    /// @dev Single-market ERC-4626 wrapper behind `OssifiableProxy`. Impl is empty-constructor;
+    ///      `initialize` runs through the proxy. The proxy admin is the controller's admin (`admin`).
     function _deployVault(
         address core,
         MarketParams memory params,
         address controller,
+        address admin,
         string memory name_,
         string memory symbol_
     ) internal virtual returns (address) {
-        return _deployArtifact(
-            "src/LidoBlueERC4626.sol:LidoBlueERC4626", abi.encode(core, params, controller, name_, symbol_)
+        address impl = _deployArtifact("src/LidoBlueERC4626.sol:LidoBlueERC4626", "");
+        bytes memory initData = abi.encodeWithSignature(
+            "initialize(address,(address,address,address,address,uint256),address,string,string)",
+            core,
+            params,
+            controller,
+            name_,
+            symbol_
         );
+        return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
     /// @dev Deploys an artifact by full path so multi-version compilation in this repo doesn't ambiguify
