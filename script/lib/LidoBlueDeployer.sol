@@ -7,7 +7,6 @@ import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
 
 import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
-import {AdaptiveCurveIrm} from "../../src/irm/AdaptiveCurveIrm.sol";
 
 /// @title LidoBlueDeployer
 /// @notice Shared deploy steps for a Lido Lending market: core, suspects registry, oracle, IRM,
@@ -67,7 +66,7 @@ abstract contract LidoBlueDeployer {
         d.core = _deployCore(cfg.admin);
         d.suspectsRegistry = _deploySuspectsRegistry(cfg.admin, cfg.guardians, cfg.quorum);
         d.oracle = _deployOracle(cfg.oracleSource);
-        d.irm = _deployIrm(d.core, cfg.admin);
+        d.irm = _deployIrm(d.core);
 
         d.params = MarketParams({
             loanToken: cfg.loanToken, collateralToken: cfg.collateralToken, oracle: d.oracle, irm: d.irm, lltv: cfg.lltv
@@ -109,25 +108,10 @@ abstract contract LidoBlueDeployer {
         return _deployArtifact("src/oracle/WstEthRateOracle.sol:WstEthRateOracle", abi.encode(oracleSource));
     }
 
-    /// @dev IRM impl + `OssifiableProxy`. Defaults match upstream `morpho-blue-irm` `ConstantsLib`;
-    ///      override `_defaultIrmCurveParams` to pin a different curve per market.
-    function _deployIrm(address core, address admin) internal virtual returns (address) {
-        AdaptiveCurveIrm.CurveParams memory params = _defaultIrmCurveParams();
-        address impl = _deployArtifact("src/irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core, params));
-        return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, ""));
-    }
-
-    /// @dev Curve defaults inherited from upstream `morpho-blue-irm` `ConstantsLib`. Override to
-    ///      customise per-market.
-    function _defaultIrmCurveParams() internal pure virtual returns (AdaptiveCurveIrm.CurveParams memory) {
-        return AdaptiveCurveIrm.CurveParams({
-            curveSteepness: 4 ether,
-            adjustmentSpeed: 50 ether / int256(365 days),
-            targetUtilization: 0.9 ether,
-            initialRateAtTarget: 0.04 ether / int256(365 days),
-            minRateAtTarget: 0.001 ether / int256(365 days),
-            maxRateAtTarget: 2 ether / int256(365 days)
-        });
+    function _deployIrm(address core) internal virtual returns (address) {
+        return _deployArtifact(
+            "lib/lido-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core)
+        );
     }
 
     /// @dev Controller behind a proxy. The impl bakes `(lidoBlue, marketId)` into immutables at deploy,
