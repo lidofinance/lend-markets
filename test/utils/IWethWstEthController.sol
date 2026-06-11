@@ -3,11 +3,10 @@ pragma solidity 0.8.35;
 
 import {ILidoBlueMarketController} from "@lido-blue/src/interfaces/ILidoBlueMarketController.sol";
 
-/// @notice Test-only typed view of `WethWstEthController`. The controller compiles under 0.8.24; the
-///         0.8.19 scenario tests drive it through this floating-pragma interface so they don't import
-///         the controller directly. Inherits the controller's canonical interface (`nextDeleverageCut`,
-///         `allowedSliceFor`, hooks) and adds the admin + dashboard surface the tests need.
-///         `PositionView` mirrors the controller's struct field-for-field so `positionOf` decodes.
+/// @notice Test-only typed view of `WethWstEthController`. Inherits the controller's canonical
+///         interface (`nextDeleverageCut`, `allowedSliceFor`, hooks) and adds the admin + dashboard
+///         surface the tests need. `PositionView` and `SlicePolicy` mirror the controller's structs
+///         field-for-field so calls decode.
 interface IWethWstEthController is ILidoBlueMarketController {
     struct PositionView {
         uint256 rawCollateral;
@@ -23,6 +22,12 @@ interface IWethWstEthController is ILidoBlueMarketController {
         uint256 allowedSlice;
     }
 
+    struct SlicePolicy {
+        uint16 overshootBps;
+        uint96 sliceFloorAssets;
+        uint96 fallbackMinRequest;
+    }
+
     // AccessControl
     function CONFIGURATOR_ROLE() external view returns (bytes32);
     function RISK_STEWARD_ROLE() external view returns (bytes32);
@@ -30,8 +35,8 @@ interface IWethWstEthController is ILidoBlueMarketController {
     function grantRole(bytes32 role, address account) external;
 
     // Policy mutations (single-market: no id)
-    function setSliceFloor(uint128 sliceFloorAssets) external;
-    function setFallbackMinRequest(uint128 fallbackMinRequest) external;
+    function setSlicePolicy(SlicePolicy calldata policy) external;
+    function slicePolicy() external view returns (SlicePolicy memory);
     function setActivatingHold(uint128 activatingHold) external;
     function setBorrowerWatermark(uint256 ltv) external;
     function freeze() external;

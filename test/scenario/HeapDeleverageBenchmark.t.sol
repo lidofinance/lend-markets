@@ -62,7 +62,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
     address internal constant LENDER = address(0x9000);
 
     uint256 internal constant MAX_ITERATIONS = 150;
-    uint128 internal constant SLICE_FLOOR = 1 ether;
+    uint96 internal constant SLICE_FLOOR = 1 ether;
     uint128 internal constant DUST_THRESHOLD = 0.005 ether;
     uint256 internal constant MIN_COLLATERAL_ACTIVATION = 10e18;
     uint256 internal _wstEthRate;
@@ -163,6 +163,21 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
             ltvs[i] = 0.4e18;
         }
         _runScenarioWithLTVs(ctx, "ClusterNearTop(5@69-71%+3@40%)", debts, ltvs, _sum(debts) / 4);
+    }
+
+    /// @notice Worst case for the heap walk: many large positions packed into a 2% LTV band, so
+    ///         every cut barely re-orders the queue and the exit has to rotate through all of them.
+    function test_ManyLargeCloseLTV() public {
+        _skip();
+        Ctx memory ctx = _deployCtx();
+        uint256 n = 20;
+        uint256[] memory debts = new uint256[](n);
+        uint256[] memory ltvs = new uint256[](n);
+        for (uint256 i; i < n; ++i) {
+            debts[i] = 50 ether;
+            ltvs[i] = 0.74e18 + (i * 0.001e18); // 74.0% .. 75.9%
+        }
+        _runScenarioWithLTVs(ctx, "ManyLargeCloseLTV(20x50@74-76%)", debts, ltvs, _sum(debts) / 2);
     }
 
     // ── Serial exits
@@ -539,6 +554,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
                     minActivationAmount: uint128(MIN_COLLATERAL_ACTIVATION),
                     minDecayAmount: 1_000 ether
                 }),
+                slicePolicy: SlicePolicyConfig({overshootBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
                 guardians: guardians,
                 quorum: 1,
                 vaultName: "Lido wstETH/WETH Vault",
@@ -554,7 +570,12 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         ctx.price = ctx.oracle.price();
 
         ctx.controller.grantRole(ctx.controller.CONFIGURATOR_ROLE(), address(this));
-        ctx.controller.setSliceFloor(SLICE_FLOOR);
+        ctx.controller
+            .setSlicePolicy(
+                IWethWstEthController.SlicePolicy({
+                    overshootBps: 100, sliceFloorAssets: SLICE_FLOOR, fallbackMinRequest: 0
+                })
+            );
     }
 
     /// @dev Override the default `WstEthRateOracle` with a per-test controllable oracle so

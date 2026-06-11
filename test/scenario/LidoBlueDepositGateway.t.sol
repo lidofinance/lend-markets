@@ -70,6 +70,7 @@ contract LidoBlueDepositGatewayTest is Test, LidoBlueDeployer {
                     minActivationAmount: 10 ether,
                     minDecayAmount: 1_000 ether
                 }),
+                slicePolicy: SlicePolicyConfig({overshootBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
                 guardians: guardians,
                 quorum: 1,
                 vaultName: "Lido wstETH/WETH Vault",

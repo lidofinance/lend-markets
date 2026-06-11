@@ -14,6 +14,13 @@ import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
 
 import {ILidoBlueMarketController} from "@lido-blue/src/interfaces/ILidoBlueMarketController.sol";
 import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
+import {DeleverageQueueLib} from "./libs/DeleverageQueueLib.sol";
+
+/// @dev Slice-policy surface of the controller the vault sizes its loop against; not part of the
+///      core hook interface.
+interface ISlicePolicyView {
+    function slicePolicy() external view returns (DeleverageQueueLib.SlicePolicy memory);
+}
 
 /// @title LidoBlueERC4626
 /// @notice Single-market ERC-4626 wrapper for a Morpho Blue fork market with deleverage exit support.
@@ -60,8 +67,8 @@ contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626
         address indexed borrower, uint256 morphoSupplyShares, uint256 collateralSeized, uint256 debtCanceled
     );
 
-    /// @dev Per-call cut bound for the fallback-exit loop (gas safety). Was a controller config field.
-    uint256 internal constant MAX_DELEVERAGE_ITERATIONS = 100;
+    /// @dev Per-call cut bound for the fallback-exit loop (gas safety).
+    uint256 internal constant MAX_DELEVERAGE_ITERATIONS = 150;
 
     IMorpho public MORPHO;
     ILidoBlueMarketController public CONTROLLER;
@@ -257,6 +264,7 @@ contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626
         address receiver;
         uint256 totalSupplyAssets;
         uint256 totalSupplyShares;
+        uint256 minCutAssets;
     }
 
     function _deleverageFromHeap(
@@ -268,7 +276,10 @@ contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626
         uint256 remainingShares = morphoSupplyShares;
         uint256 maxIterations = MAX_DELEVERAGE_ITERATIONS;
         CutContext memory ctx = CutContext({
-            receiver: receiver, totalSupplyAssets: totalSupplyAssets, totalSupplyShares: totalSupplyShares
+            receiver: receiver,
+            totalSupplyAssets: totalSupplyAssets,
+            totalSupplyShares: totalSupplyShares,
+            minCutAssets: ISlicePolicyView(address(CONTROLLER)).slicePolicy().fallbackMinRequest
         });
 
         for (uint256 i = 0; i < maxIterations; ++i) {
@@ -298,7 +309,10 @@ contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626
     ) internal returns (uint256 collateralSeized, uint256 debtCanceled, uint256 sharesConsumed) {
         uint256 remainingShares = morphoSupplyShares;
         CutContext memory ctx = CutContext({
-            receiver: receiver, totalSupplyAssets: totalSupplyAssets, totalSupplyShares: totalSupplyShares
+            receiver: receiver,
+            totalSupplyAssets: totalSupplyAssets,
+            totalSupplyShares: totalSupplyShares,
+            minCutAssets: ISlicePolicyView(address(CONTROLLER)).slicePolicy().fallbackMinRequest
         });
 
         for (uint256 i = 0; i < borrowers.length; ++i) {
@@ -317,17 +331,17 @@ contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626
         sharesConsumed = morphoSupplyShares - remainingShares;
     }
 
-    /// @dev One cut. Clamps `sliceAssets` to remaining debt, converts to shares, calls the core
+    /// @dev One cut. Sizes the cut via `DeleverageQueueLib.effectiveCut` (clamp to the remaining
+    ///      exit, drop dust tails the policy would reject), converts to shares, calls the core
     ///      single-borrower primitive, emits `DeleverageCut`. Zero `iterSupplyShares` means the
     ///      caller should stop / skip.
     function _executeCut(address borrower, uint256 sliceAssets, uint256 remainingShares, CutContext memory ctx)
         internal
         returns (uint256 iterSupplyShares, uint256 iterCollateralSeized, uint256 iterDebtCanceled)
     {
+        uint256 remainingExitAssets = remainingShares.toAssetsDown(ctx.totalSupplyAssets, ctx.totalSupplyShares);
+        sliceAssets = DeleverageQueueLib.effectiveCut(sliceAssets, remainingExitAssets, ctx.minCutAssets);
         if (sliceAssets == 0) return (0, 0, 0);
-
-        uint256 remainingDebtAssets = remainingShares.toAssetsDown(ctx.totalSupplyAssets, ctx.totalSupplyShares);
-        if (sliceAssets > remainingDebtAssets) sliceAssets = remainingDebtAssets;
 
         iterSupplyShares = sliceAssets.toSharesDown(ctx.totalSupplyAssets, ctx.totalSupplyShares);
         if (iterSupplyShares == 0) return (0, 0, 0);

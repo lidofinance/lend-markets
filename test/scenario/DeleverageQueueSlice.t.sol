@@ -20,8 +20,8 @@ contract QueueHarness {
         $.sync(borrower, borrowShares, rawCollateral);
     }
 
-    function setSliceFloor(uint128 floor) external {
-        $.setSliceFloor(floor);
+    function setSlicePolicy(DeleverageQueueLib.SlicePolicy memory policy) external {
+        $.setSlicePolicy(policy);
     }
 
     function heapSlice(address borrower, DeleverageQueueLib.MarketView memory marketView)
@@ -32,12 +32,12 @@ contract QueueHarness {
         return $.heapSlice(borrower, marketView);
     }
 
-    function allowedSlice(address borrower, DeleverageQueueLib.MarketView memory marketView)
-        external
-        view
-        returns (uint256)
-    {
-        return $.allowedSlice(borrower, marketView);
+    function allowedSlice(
+        address borrower,
+        DeleverageQueueLib.MarketView memory marketView,
+        uint256 minRemainingCollateral
+    ) external view returns (uint256) {
+        return $.allowedSlice(borrower, marketView, minRemainingCollateral);
     }
 }
 
@@ -222,9 +222,12 @@ contract DeleverageQueueSliceTest is Test {
         });
     }
 
-    /// @notice heapSlice = closed-form + overshoot, overshoot = max(debt / 100, sliceFloorAssets).
+    /// @notice heapSlice = closed-form + overshoot, overshoot = max(debt * bps / 10000, sliceFloorAssets).
     function test_heapSlice_addsOvershootOnTopOfClosedForm() public {
         QueueHarness h = new QueueHarness();
+        h.setSlicePolicy(
+            DeleverageQueueLib.SlicePolicy({overshootBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
+        );
         h.sync(ROOT, 20e24, 1e25); // key = 2e18
         h.sync(RUNNER_UP, 10e24, 1e25); // key = 1e18
 
@@ -234,12 +237,14 @@ contract DeleverageQueueSliceTest is Test {
         uint256 closedForm = DeleverageQueueLib.computeSlice(mv, 2e18, 1e18);
         assertGt(closedForm, 0, "closed form positive for this setup");
 
-        // floor below debt/100: overshoot = debt/100
-        assertEq(h.heapSlice(ROOT, mv), closedForm + debt / 100, "overshoot = debt/100 when floor smaller");
+        // floor below debt * bps: overshoot = debt * bps / 10000
+        assertEq(h.heapSlice(ROOT, mv), closedForm + debt / 100, "overshoot = 1% of debt when floor smaller");
 
-        // floor above debt/100: overshoot = floor
-        uint128 bigFloor = uint128(debt / 100 + 1 ether);
-        h.setSliceFloor(bigFloor);
+        // floor above debt * bps: overshoot = floor
+        uint96 bigFloor = uint96(debt / 100 + 1 ether);
+        h.setSlicePolicy(
+            DeleverageQueueLib.SlicePolicy({overshootBps: 100, sliceFloorAssets: bigFloor, fallbackMinRequest: 0})
+        );
         assertEq(h.heapSlice(ROOT, mv), closedForm + bigFloor, "overshoot = floor when floor larger");
     }
 
@@ -263,6 +268,9 @@ contract DeleverageQueueSliceTest is Test {
     ///         non-zero so the queue can make forward progress.
     function test_heapSlice_overshootSalvagesSaturatedTie() public {
         QueueHarness h = new QueueHarness();
+        h.setSlicePolicy(
+            DeleverageQueueLib.SlicePolicy({overshootBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
+        );
         uint256 hugeShares = uint256(type(uint96).max) * 2e18; // saturates the uint96 key
         h.sync(ROOT, hugeShares, 1e18);
         h.sync(RUNNER_UP, hugeShares, 1e18);
@@ -270,5 +278,27 @@ contract DeleverageQueueSliceTest is Test {
         DeleverageQueueLib.MarketView memory mv = _marketView(20e24, 10e18);
         uint256 debt = SharesMathLib.toAssetsUp(20e24, 100e18, 100e24);
         assertEq(h.heapSlice(ROOT, mv), debt / 100, "tied keys: slice is pure overshoot");
+    }
+
+    /// @notice Dust extension: when the allowed slice would leave the borrower's collateral below the
+    ///         supplied minimum, the bound lifts to the full debt so the position closes in one cut.
+    function test_allowedSlice_dustExtensionLiftsToFullDebt() public {
+        QueueHarness h = new QueueHarness();
+        h.setSlicePolicy(
+            DeleverageQueueLib.SlicePolicy({overshootBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
+        );
+        h.sync(ROOT, 20e24, 1e25);
+        h.sync(RUNNER_UP, 10e24, 1e25);
+
+        DeleverageQueueLib.MarketView memory mv = _marketView(20e24, 1e25);
+        uint256 plainSlice = h.allowedSlice(ROOT, mv, 0);
+        uint256 fullDebt = SharesMathLib.toAssetsUp(20e24, 100e18, 100e24);
+        assertLt(plainSlice, fullDebt, "policy slice is partial without the extension");
+
+        // post-cut collateral = raw - slice * SCALE / price; pick a minimum above it to trigger.
+        uint256 seized = plainSlice * 1e36 / 1e36;
+        uint256 remaining = 1e25 - seized;
+        assertEq(h.allowedSlice(ROOT, mv, remaining + 1), fullDebt, "extension lifts the bound to full debt");
+        assertEq(h.allowedSlice(ROOT, mv, remaining), plainSlice, "no extension at the exact boundary");
     }
 }

@@ -8,6 +8,14 @@ import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
 
 import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
 
+/// @dev Minimal configurator surface of the controller used to seed the deploy-time policy.
+///      `LidoBlueDeployer.SlicePolicyConfig` mirrors the controller's struct, so the call ABI matches.
+interface IControllerConfigurator {
+    function CONFIGURATOR_ROLE() external view returns (bytes32);
+    function grantRole(bytes32 role, address account) external;
+    function setSlicePolicy(LidoBlueDeployer.SlicePolicyConfig calldata policy) external;
+}
+
 /// @title LidoBlueDeployer
 /// @notice Shared deploy steps for a Lido Lending market: core, suspects registry, oracle, IRM,
 ///         controller (behind a proxy), the market, and the ERC-4626 vault.
@@ -18,6 +26,14 @@ abstract contract LidoBlueDeployer {
 
     /// @dev forge-std cheatcode singleton, inlined so this contract need not inherit `Test` / `Script`.
     Vm internal constant _vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+
+    /// @dev Mirror of `DeleverageQueueLib.SlicePolicy` (same field order/types); see `ActivationConfig`
+    ///      for why the deployer mirrors instead of importing.
+    struct SlicePolicyConfig {
+        uint16 overshootBps;
+        uint96 sliceFloorAssets;
+        uint96 fallbackMinRequest;
+    }
 
     /// @dev Mirror of `ActivationLib.Config` (same field order/types) so the controller initializer can
     ///      be abi-encoded without coupling the deployer to the controller's libraries. Field order must
@@ -54,6 +70,7 @@ abstract contract LidoBlueDeployer {
         uint256 lltv;
         bool deleverageEnabled;
         ActivationConfig activation;
+        SlicePolicyConfig slicePolicy;
         // Suspects registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
         // `1 <= quorum <= guardians.length`; swap in the real guardian set post-deploy.
         address[] guardians;
@@ -82,6 +99,13 @@ abstract contract LidoBlueDeployer {
         ILidoBlue(d.core).createMarket(d.params, d.controllerProxy, cfg.deleverageEnabled);
 
         d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
+
+        // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the controller initializer;
+        // grant it CONFIGURATOR_ROLE (a placeholder, rotated to the EasyTrack factory post-deploy)
+        // so it can set the policy now and tune it later.
+        IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
+        controller.grantRole(controller.CONFIGURATOR_ROLE(), cfg.admin);
+        controller.setSlicePolicy(cfg.slicePolicy);
     }
 
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so

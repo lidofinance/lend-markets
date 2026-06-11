@@ -50,6 +50,12 @@ contract DeployMarket is Script, LidoBlueDeployer {
                     minActivationAmount: 10 ether,
                     minDecayAmount: 1_000 ether
                 }),
+                // DRAFT slice policy — governance values, tune before any real deploy.
+                slicePolicy: SlicePolicyConfig({
+                    overshootBps: 100, // 1% of the root's debt on top of the closed-form slice
+                    sliceFloorAssets: 10 ether,
+                    fallbackMinRequest: 1 ether
+                }),
                 guardians: guardians,
                 quorum: 1,
                 vaultName: "Lido wstETH/WETH Vault",

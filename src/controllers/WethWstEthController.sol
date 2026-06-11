@@ -68,8 +68,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     error DeleverageBelowMin();
 
     event ConfigSet(ActivationLib.Config config);
-    event SliceFloorSet(uint128 sliceFloorAssets);
-    event FallbackMinRequestSet(uint128 fallbackMinRequest);
+    event SlicePolicySet(uint16 overshootBps, uint96 sliceFloorAssets, uint96 fallbackMinRequest);
     event FrozenSet(bool frozen, address indexed account);
     event ActivatingHoldSet(uint128 activatingHold);
 
@@ -108,7 +107,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     }
 
     /// @notice Update the governance-tunable activation parameters. Risk-increasing path: the role is
-    ///         meant to be held by the EasyTrack factory (ADR 016), which adds the objection window.
+    ///         meant to be held by the EasyTrack factory, which adds the objection window.
     function setConfig(ActivationLib.Config calldata cfg) external onlyRole(CONFIGURATOR_ROLE) {
         _applyConfig(cfg);
     }
@@ -127,17 +126,16 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         _applyConfig(cfg);
     }
 
-    /// @notice Set the minimum heap-safety overshoot added to each deleverage cut. Overshoot is
-    ///         `max(debt / 100, sliceFloorAssets)` and stacks on top of the closed-form slice.
-    function setSliceFloor(uint128 sliceFloorAssets) external onlyRole(CONFIGURATOR_ROLE) {
-        _deleverage.setSliceFloor(sliceFloorAssets);
-        emit SliceFloorSet(sliceFloorAssets);
+    /// @notice Set the deleverage slice policy in one shot — the knobs tune the same cut and move
+    ///         together. Overshoot per cut is `max(debt * overshootBps / 10000, sliceFloorAssets)` on
+    ///         top of the closed-form slice; `fallbackMinRequest` floors one call's total.
+    function setSlicePolicy(DeleverageQueueLib.SlicePolicy calldata policy) external onlyRole(CONFIGURATOR_ROLE) {
+        _deleverage.setSlicePolicy(policy);
+        emit SlicePolicySet(policy.overshootBps, policy.sliceFloorAssets, policy.fallbackMinRequest);
     }
 
-    /// @notice Set the minimum loan assets one deleverage (fallback) call may cancel (anti dust-spam).
-    function setFallbackMinRequest(uint128 fallbackMinRequest) external onlyRole(CONFIGURATOR_ROLE) {
-        _deleverage.setFallbackMinRequest(fallbackMinRequest);
-        emit FallbackMinRequestSet(fallbackMinRequest);
+    function slicePolicy() external view returns (DeleverageQueueLib.SlicePolicy memory) {
+        return _deleverage.policy;
     }
 
     /// @notice Committee lever (Sybil protection): hold up to `activatingHold` of each position's
@@ -238,16 +236,15 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     ///         is empty; `sliceAssets` is type(uint256).max for a lone borrower (caller caps it to the
     ///         remaining exit).
     function nextDeleverageCut() external view override returns (address borrower, uint256 sliceAssets) {
-        DeleverageQueueLib.State storage queue = _deleverage;
-        borrower = queue.peekRoot();
+        borrower = _deleverage.peekRoot();
         if (borrower == address(0)) return (address(0), 0);
-        sliceAssets = queue.allowedSlice(borrower, _marketView(MARKET_ID, borrower));
+        sliceAssets = _allowedSlice(borrower, _marketView(MARKET_ID, borrower));
     }
 
     /// @notice Maximum loan-asset slice the policy allows for a single deleverage cut against
     ///         `borrower` (max of heap slice and watermark slice). Zero means ineligible.
     function allowedSliceFor(address borrower) external view override returns (uint256) {
-        return _deleverage.allowedSlice(borrower, _marketView(MARKET_ID, borrower));
+        return _allowedSlice(borrower, _marketView(MARKET_ID, borrower));
     }
 
     /// @notice Borrowers currently in the queue (approximate top-down order) and their risk keys.
@@ -283,7 +280,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         positionView.debtAssets = _debtAssets(MARKET_ID, borrower);
         positionView.watermarkLtv = _deleverage.watermarkOf(borrower);
         positionView.isQueueRoot = _deleverage.peekRoot() == borrower;
-        positionView.allowedSlice = _deleverage.allowedSlice(borrower, _marketView(MARKET_ID, borrower));
+        positionView.allowedSlice = _allowedSlice(borrower, _marketView(MARKET_ID, borrower));
     }
 
     // ---
@@ -367,7 +364,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     function _handleDeleverage(Id id, DeleverageHookData memory hookData) internal {
         address borrower = hookData.borrower;
 
-        if (hookData.assetsToCancel < _deleverage.fallbackMinRequest) revert DeleverageBelowMin();
+        if (hookData.assetsToCancel < _deleverage.policy.fallbackMinRequest) revert DeleverageBelowMin();
 
         // Borrower market view, re-read from core (payload stays minimal). The core already bounded the
         // cut (seize <= raw, shares <= debt); the controller adds only its policy layer.
@@ -387,7 +384,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
 
         // eligibility + cut bound: only the queue root or a watermarked borrower may be cut, capped at the
         // policy slice. A lone root's slice is unbounded here; the payload sanity checks below cap it.
-        uint256 allowed = _deleverage.allowedSlice(borrower, marketView);
+        uint256 allowed = _allowedSlice(borrower, marketView);
         if (allowed == 0) revert DeleverageIneligible();
         if (hookData.assetsToCancel > allowed) revert DeleverageExceedsAllowed();
 
@@ -412,6 +409,16 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     // ---
     // Internal Helpers
     // ---
+
+    /// @dev Single source for the hook cap and the sizing views: the queue's policy slice with the
+    ///      dust extension, fed the activation minimum as the dust threshold.
+    function _allowedSlice(address borrower, DeleverageQueueLib.MarketView memory marketView)
+        internal
+        view
+        returns (uint256)
+    {
+        return _deleverage.allowedSlice(borrower, marketView, _activation.config.minActivationAmount);
+    }
 
     function _applyConfig(ActivationLib.Config memory cfg) internal {
         _activation.setConfig(cfg);
