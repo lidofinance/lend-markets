@@ -67,7 +67,7 @@ abstract contract LidoBlueDeployer {
         d.core = _deployCore(cfg.admin);
         d.suspectsRegistry = _deploySuspectsRegistry(cfg.admin, cfg.guardians, cfg.quorum);
         d.oracle = _deployOracle(cfg.oracleSource);
-        d.irm = _deployIrm(d.core);
+        d.irm = _deployIrm(d.core, cfg.admin);
 
         d.params = MarketParams({
             loanToken: cfg.loanToken, collateralToken: cfg.collateralToken, oracle: d.oracle, irm: d.irm, lltv: cfg.lltv
@@ -111,10 +111,10 @@ abstract contract LidoBlueDeployer {
 
     /// @dev IRM impl + `OssifiableProxy`. Defaults match upstream `morpho-blue-irm` `ConstantsLib`;
     ///      override `_defaultIrmCurveParams` to pin a different curve per market.
-    function _deployIrm(address core) internal virtual returns (address) {
+    function _deployIrm(address core, address admin) internal virtual returns (address) {
         AdaptiveCurveIrm.CurveParams memory params = _defaultIrmCurveParams();
         address impl = _deployArtifact("src/irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core, params));
-        return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, core, ""));
+        return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, ""));
     }
 
     /// @dev Curve defaults inherited from upstream `morpho-blue-irm` `ConstantsLib`. Override to

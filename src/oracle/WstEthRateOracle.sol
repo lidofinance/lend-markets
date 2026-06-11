@@ -23,10 +23,10 @@ interface IWstETH {
 contract WstEthRateOracle is IOracle {
     IWstETH public immutable WSTETH;
 
-    error BadInput();
+    error ZeroAddress();
 
     constructor(address wstETH_) {
-        if (wstETH_ == address(0)) revert BadInput();
+        if (wstETH_ == address(0)) revert ZeroAddress();
         WSTETH = IWstETH(wstETH_);
     }
 

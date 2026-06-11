@@ -12,7 +12,7 @@ import {PausableUntil} from "../utils/PausableUntil.sol";
 import {ISuspectsRegistry} from "../interfaces/ISuspectsRegistry.sol";
 import {ILidoBlueMarketController} from "@lido-blue/src/interfaces/ILidoBlueMarketController.sol";
 import {ActivationLib} from "../libs/ActivationLib.sol";
-import {DeleverageQueue} from "../libs/DeleverageQueue.sol";
+import {DeleverageQueueLib} from "../libs/DeleverageQueueLib.sol";
 
 /// @notice One-read borrower snapshot for off-chain dashboards: collateral split, activation timer,
 ///         suspicion, debt, personal watermark, and live deleverage exposure.
@@ -32,8 +32,7 @@ struct PositionView {
 
 /// @notice Lido-policy controller for the wstETH/ETH market: collateral activation, freeze and pause,
 ///         suspect gating, and the deleverage queue. All hook policy enters through `on`.
-// keccak256(abi.encode(uint256(keccak256("lido.lending.storage.WethWstEthController")) - 1)) & ~bytes32(uint256(0xff))
-contract WethWstEthController layout at 0x3d7e063b4aa636c7439621407f583888f9ad73347bd5cee7c48b7b5a5d5f4d00
+contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEthController")
     is
     ILidoBlueMarketController,
     Initializable,
@@ -43,7 +42,7 @@ contract WethWstEthController layout at 0x3d7e063b4aa636c7439621407f583888f9ad73
     using MathLib for uint256;
     using SharesMathLib for uint256;
     using ActivationLib for ActivationLib.State;
-    using DeleverageQueue for DeleverageQueue.State;
+    using DeleverageQueueLib for DeleverageQueueLib.State;
 
     bytes32 public constant CONFIGURATOR_ROLE = keccak256("CONFIGURATOR_ROLE");
     bytes32 public constant RISK_STEWARD_ROLE = keccak256("RISK_STEWARD_ROLE");
@@ -79,7 +78,7 @@ contract WethWstEthController layout at 0x3d7e063b4aa636c7439621407f583888f9ad73
     /// @dev Config + load accumulator + per-borrower activation pipeline.
     ActivationLib.State private _activation;
     /// @dev Risk queue + watermarks + slice policy.
-    DeleverageQueue.State private _deleverage;
+    DeleverageQueueLib.State private _deleverage;
     /// @dev Committee Sybil hold (0 = off); see `setActivatingHold`.
     uint128 private _activatingHold;
 
@@ -239,7 +238,7 @@ contract WethWstEthController layout at 0x3d7e063b4aa636c7439621407f583888f9ad73
     ///         is empty; `sliceAssets` is type(uint256).max for a lone borrower (caller caps it to the
     ///         remaining exit).
     function nextDeleverageCut() external view override returns (address borrower, uint256 sliceAssets) {
-        DeleverageQueue.State storage queue = _deleverage;
+        DeleverageQueueLib.State storage queue = _deleverage;
         borrower = queue.peekRoot();
         if (borrower == address(0)) return (address(0), 0);
         sliceAssets = queue.allowedSlice(borrower, _marketView(MARKET_ID, borrower));
@@ -262,7 +261,7 @@ contract WethWstEthController layout at 0x3d7e063b4aa636c7439621407f583888f9ad73
 
     /// @notice Borrower's personal watermark LTV and the corresponding watermark-derived slice.
     function watermarkInfo(address borrower) external view returns (uint256 watermarkLtv, uint256 sliceAssets) {
-        DeleverageQueue.State storage queue = _deleverage;
+        DeleverageQueueLib.State storage queue = _deleverage;
         watermarkLtv = queue.watermarkOf(borrower);
         if (watermarkLtv == 0) return (0, 0);
         sliceAssets = queue.watermarkSlice(borrower, _marketView(MARKET_ID, borrower));
@@ -372,7 +371,7 @@ contract WethWstEthController layout at 0x3d7e063b4aa636c7439621407f583888f9ad73
 
         // Borrower market view, re-read from core (payload stays minimal). The core already bounded the
         // cut (seize <= raw, shares <= debt); the controller adds only its policy layer.
-        DeleverageQueue.MarketView memory marketView = _marketView(id, borrower);
+        DeleverageQueueLib.MarketView memory marketView = _marketView(id, borrower);
 
         // bad-debt gate on the queue root; reuse the payload when the root is the target, else read the root
         address root = _deleverage.peekRoot();
@@ -457,7 +456,11 @@ contract WethWstEthController layout at 0x3d7e063b4aa636c7439621407f583888f9ad73
         return debt > collateralValue;
     }
 
-    function _marketView(Id id, address borrower) internal view returns (DeleverageQueue.MarketView memory marketView) {
+    function _marketView(Id id, address borrower)
+        internal
+        view
+        returns (DeleverageQueueLib.MarketView memory marketView)
+    {
         marketView.price = _collateralPrice(id);
         (marketView.borrowShares, marketView.rawCollateral) = _currentPosition(id, borrower);
         (marketView.totalBorrowAssets, marketView.totalBorrowShares) = _totalBorrowTotals(id);

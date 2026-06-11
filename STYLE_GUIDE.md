@@ -38,6 +38,17 @@ Inside a contract, order top to bottom:
 10. Internal functions.
 11. Private functions.
 
+## Namespaced Storage (Upgradeable Contracts)
+
+Upgradeable contracts (everything deployed behind `OssifiableProxy`) declare their storage with
+the builtin `layout at erc7201("lido.lending.storage.<ContractName>")` clause on the contract
+header and plain state variables in the body. Do not hand-roll the ERC-7201 slot constant +
+assembly `_storage()` accessor — the compiler computes the same base slot and enforces the layout.
+Placement of the clause within the header is whatever `forge fmt` produces; don't fight the
+formatter. New fields are appended at the end of the variable list, never inserted, so upgrades
+stay layout-safe. Inherited OZ-upgradeable bases keep their own namespaces and are unaffected by
+the contract's `layout at`.
+
 ## Naming
 
 - **Contracts**: `PascalCase`. Match the file name.

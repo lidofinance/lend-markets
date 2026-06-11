@@ -32,8 +32,7 @@ import {ISuspectsRegistry} from "./interfaces/ISuspectsRegistry.sol";
 ///      plain enumerable set, not a role.
 ///
 ///      Events and errors are declared in {ISuspectsRegistry}.
-// keccak256(abi.encode(uint256(keccak256("lido.lending.storage.SuspectsRegistry")) - 1)) & ~bytes32(uint256(0xff))
-contract SuspectsRegistry layout at 0x437134bf96410e56e26a244149733cd9dcff6ef3a37fad753cbaca88616ce400
+contract SuspectsRegistry layout at erc7201("lido.lending.storage.SuspectsRegistry")
     is
     Initializable,
     AccessControlEnumerableUpgradeable,
@@ -42,7 +41,7 @@ contract SuspectsRegistry layout at 0x437134bf96410e56e26a244149733cd9dcff6ef3a3
     using EnumerableSet for EnumerableSet.AddressSet;
 
     /// @notice May ban or unban any suspect single-handedly. Hold with a multisig / governance.
-    bytes32 public constant OVERRIDE_ROLE = keccak256("OVERRIDE");
+    bytes32 public constant OVERRIDE_ROLE = keccak256("OVERRIDE_ROLE");
 
     /// @notice Sentinel market whose flags apply to every market.
     Id public constant EVERY_MARKET = Id.wrap(bytes32(0));
@@ -66,6 +65,11 @@ contract SuspectsRegistry layout at 0x437134bf96410e56e26a244149733cd9dcff6ef3a3
     /// @dev Flags that take suspicion to `SUSPICION_SCALE` and latch a ban.
     uint256 private _quorum;
     mapping(Id market => MarketSuspects) private _markets;
+
+    modifier onlyGuardian() {
+        if (!_guardians.contains(msg.sender)) revert NotGuardian();
+        _;
+    }
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -118,7 +122,7 @@ contract SuspectsRegistry layout at 0x437134bf96410e56e26a244149733cd9dcff6ef3a3
     }
 
     /// @inheritdoc ISuspectsRegistry
-    function isGuardian(address account) public view override returns (bool) {
+    function isGuardian(address account) external view override returns (bool) {
         return _guardians.contains(account);
     }
 
@@ -133,11 +137,6 @@ contract SuspectsRegistry layout at 0x437134bf96410e56e26a244149733cd9dcff6ef3a3
     }
 
     /* FLAGGING (guardians) */
-
-    modifier onlyGuardian() {
-        if (!_guardians.contains(msg.sender)) revert NotGuardian();
-        _;
-    }
 
     /// @inheritdoc ISuspectsRegistry
     function flag(Id market, address suspect) external override onlyGuardian {
@@ -199,7 +198,7 @@ contract SuspectsRegistry layout at 0x437134bf96410e56e26a244149733cd9dcff6ef3a3
     /// @dev Controller use: `maturationDelay = base + suspicion * base / SUSPICION_SCALE`. A ban pins
     ///      this at SUSPICION_SCALE (the latch survives flag retraction), so the controller reads
     ///      suspicion alone.
-    function suspicion(Id market, address suspect) public view override returns (uint256) {
+    function suspicion(Id market, address suspect) external view override returns (uint256) {
         if (isBanned(market, suspect)) return SUSPICION_SCALE;
         uint256 local = _suspicion(market, suspect);
         uint256 global = _suspicion(EVERY_MARKET, suspect);

@@ -2,7 +2,6 @@
 pragma solidity 0.8.35;
 
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
-import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -21,9 +20,10 @@ import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
 /// @dev    Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer
 ///         callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`). Adding a market with
 ///         a callback-bearing loan or collateral token invalidates the reentrancy analysis here.
-// keccak256(abi.encode(uint256(keccak256("lido.lending.storage.LidoBlueERC4626")) - 1)) & ~bytes32(uint256(0xff))
-contract LidoBlueERC4626 is Initializable, ERC4626Upgradeable
-    layout at 0xd83a51e2726829aa31c57bcbf13a269e898a4c367bd7b24e119ad18390ee9b00
+contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626")
+    is
+    Initializable,
+    ERC4626Upgradeable
 {
     using MarketParamsLib for MarketParams;
     using SafeERC20 for IERC20;
@@ -97,22 +97,6 @@ contract LidoBlueERC4626 is Initializable, ERC4626Upgradeable
 
     function marketParams() external view returns (MarketParams memory) {
         return _marketParams;
-    }
-
-    function deposit(uint256 assets, address receiver) public override returns (uint256) {
-        return super.deposit(assets, receiver);
-    }
-
-    function mint(uint256 shares, address receiver) public override returns (uint256) {
-        return super.mint(shares, receiver);
-    }
-
-    function withdraw(uint256 assets, address receiver, address owner) public override returns (uint256) {
-        return super.withdraw(assets, receiver, owner);
-    }
-
-    function redeem(uint256 shares, address receiver, address owner) public override returns (uint256) {
-        return super.redeem(shares, receiver, owner);
     }
 
     function totalAssets() public view override returns (uint256) {

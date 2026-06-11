@@ -2,10 +2,11 @@
 pragma solidity 0.8.35;
 
 import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
-import {MathLib} from "@lido-blue/src/libraries/MathLib.sol";
+import {MathLib, WAD} from "@lido-blue/src/libraries/MathLib.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-blue/src/libraries/ConstantsLib.sol";
 import {MaxHeapLib} from "./MaxHeapLib.sol";
 
-/// @title DeleverageQueue
+/// @title DeleverageQueueLib
 /// @author Lido Lending contributors.
 /// @notice Risk-ordered queue of borrowers for the deleverage waterfall, with per-borrower watermark
 ///         opt-in and the slice-sizing policy. Wraps a max-heap keyed by
@@ -15,16 +16,13 @@ import {MaxHeapLib} from "./MaxHeapLib.sol";
 /// @dev Self-contained module: the caller embeds `State`, forwards mutations, and supplies a
 ///      `MarketView` (live core/oracle snapshot) for the slice math. The lib makes no external calls;
 ///      the slice arithmetic (`computeSlice` / `computeWatermarkSlice`) is pure and fuzz-testable.
-library DeleverageQueue {
+library DeleverageQueueLib {
     using MaxHeapLib for MaxHeapLib.Heap;
     using SharesMathLib for uint256;
     using MathLib for uint256;
 
     /// @dev Heap key scale: key = borrowShares × KEY_SCALE / rawCollateral.
     uint256 internal constant KEY_SCALE = 1e18;
-    /// @dev Morpho oracle price scale (collateral price quoted in loan asset, 1e36).
-    uint256 internal constant ORACLE_PRICE_SCALE = 1e36;
-    uint256 internal constant WAD = 1e18;
 
     error WatermarkOutOfRange();
 
