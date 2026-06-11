@@ -73,16 +73,6 @@ interface ILidoBlueLike {
         returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral);
 }
 
-interface IControllerLike {
-    function deleverage(
-        LidoMarketParams calldata marketParams,
-        uint256 supplyShares,
-        address borrower,
-        address lender,
-        address receiver
-    ) external returns (uint256 collateralSeized, uint256 debtCanceled);
-}
-
 contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
     using AdapterMarketParamsLib for AdapterMarketParams;
 
@@ -109,7 +99,6 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
         IERC20Like loanToken;
         IERC20Like collateralToken;
         ILidoBlueLike market;
-        IControllerLike controller;
         LidoMarketParams lidoParams;
         AdapterMarketParams adapterParams;
         bytes32 marketId;
@@ -172,7 +161,6 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
         );
 
         ctx.market = ILidoBlueLike(d.core);
-        ctx.controller = IControllerLike(d.controllerProxy);
         ctx.lidoParams = LidoMarketParams({
             loanToken: WETH_ADDRESS, collateralToken: WSTETH_ADDRESS, oracle: d.oracle, irm: d.irm, lltv: LLTV
         });
