@@ -33,6 +33,7 @@ contract LidoBlueDepositGateway {
 
     error ZeroAmount();
     error ZeroAddress();
+    error ZeroShares();
     error VaultAssetMismatch();
 
     event SuppliedCollateralWithStETH(
@@ -78,10 +79,7 @@ contract LidoBlueDepositGateway {
 
     /// @notice Pull stETH from the caller, wrap it to wstETH and post it as collateral for `onBehalf`.
     /// @return wstEthAmount wstETH supplied as collateral.
-    function supplyCollateralWithStETH(uint256 stEthAmount, address onBehalf)
-        external
-        returns (uint256 wstEthAmount)
-    {
+    function supplyCollateralWithStETH(uint256 stEthAmount, address onBehalf) external returns (uint256 wstEthAmount) {
         if (stEthAmount == 0) revert ZeroAmount();
         if (onBehalf == address(0)) revert ZeroAddress();
 
@@ -111,10 +109,7 @@ contract LidoBlueDepositGateway {
 
     /// @notice Pull WETH from the caller and supply it for `onBehalf`.
     /// @return assets WETH supplied. @return shares Supply shares credited to `onBehalf`.
-    function supplyWithWETH(uint256 wethAmount, address onBehalf)
-        external
-        returns (uint256 assets, uint256 shares)
-    {
+    function supplyWithWETH(uint256 wethAmount, address onBehalf) external returns (uint256 assets, uint256 shares) {
         if (wethAmount == 0) revert ZeroAmount();
         if (onBehalf == address(0)) revert ZeroAddress();
 
@@ -132,6 +127,7 @@ contract LidoBlueDepositGateway {
 
         WETH.deposit{value: msg.value}();
         shares = VAULT.deposit(msg.value, receiver);
+        if (shares == 0) revert ZeroShares();
 
         emit DepositedETHToVault(msg.sender, receiver, msg.value, shares);
     }

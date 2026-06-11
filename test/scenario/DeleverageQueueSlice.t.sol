@@ -3,7 +3,43 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {DeleverageQueueLib} from "../../src/libs/DeleverageQueueLib.sol";
+import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
 import {WAD} from "@lido-blue/src/libraries/MathLib.sol";
+
+/// @dev Storage harness so the queue-bound views (`heapSlice` / `allowedSlice`) can be exercised.
+contract QueueHarness {
+    using DeleverageQueueLib for DeleverageQueueLib.State;
+
+    DeleverageQueueLib.State internal $;
+
+    constructor() {
+        $.init();
+    }
+
+    function sync(address borrower, uint256 borrowShares, uint256 rawCollateral) external {
+        $.sync(borrower, borrowShares, rawCollateral);
+    }
+
+    function setSliceFloor(uint128 floor) external {
+        $.setSliceFloor(floor);
+    }
+
+    function heapSlice(address borrower, DeleverageQueueLib.MarketView memory marketView)
+        external
+        view
+        returns (uint256)
+    {
+        return $.heapSlice(borrower, marketView);
+    }
+
+    function allowedSlice(address borrower, DeleverageQueueLib.MarketView memory marketView)
+        external
+        view
+        returns (uint256)
+    {
+        return $.allowedSlice(borrower, marketView);
+    }
+}
 
 /// @notice Fuzz/unit coverage for the pure slice math now folded into `DeleverageQueueLib`
 ///         (`computeSlice` / `computeWatermarkSlice`).
@@ -137,8 +173,8 @@ contract DeleverageQueueSliceTest is Test {
     /// @notice When the heap key saturates at `type(uint96).max` (uint96-packed slot), distinct
     ///         high-risk borrowers tie at the top: `topKey == targetKey`. `computeSlice` then takes
     ///         the `targetKey >= topKey` fallback and returns 0 — silent slice degradation in the
-    ///         saturation regime. `heapSlice` (the operational caller) clamps to `sliceFloorAssets`,
-    ///         which is what salvages forward progress in this corner.
+    ///         saturation regime. `heapSlice` (the operational caller) still adds the overshoot
+    ///         `max(debt / 100, sliceFloorAssets)`, which is what keeps the queue moving here.
     function test_keySaturation_tiedTopReturnsZero() public pure {
         uint256 saturatedKey = uint256(type(uint96).max);
         uint256 slice = _slice(
@@ -149,7 +185,7 @@ contract DeleverageQueueSliceTest is Test {
             1e18,
             1e36
         );
-        assertEq(slice, 0, "saturated tie collapses to zero (heapSlice then clamps to floor)");
+        assertEq(slice, 0, "saturated tie collapses to zero (overshoot still applies in heapSlice)");
     }
 
     function test_closedFormValue() public pure {
@@ -164,5 +200,75 @@ contract DeleverageQueueSliceTest is Test {
         uint256 expected = numerator / denominator;
         uint256 slice = _slice(2e18, 1e18, 100e18, 100e24, 100e18, 1e36);
         assertEq(slice, expected, "closed form matches");
+    }
+
+    // ── heapSlice / allowedSlice (storage-bound, via harness)
+    // ─────────────────────────
+
+    address internal constant ROOT = address(0xA1);
+    address internal constant RUNNER_UP = address(0xA2);
+
+    function _marketView(uint256 borrowShares, uint256 rawCollateral)
+        internal
+        pure
+        returns (DeleverageQueueLib.MarketView memory)
+    {
+        return DeleverageQueueLib.MarketView({
+            borrowShares: borrowShares,
+            rawCollateral: rawCollateral,
+            totalBorrowAssets: 100e18,
+            totalBorrowShares: 100e24,
+            price: 1e36
+        });
+    }
+
+    /// @notice heapSlice = closed-form + overshoot, overshoot = max(debt / 100, sliceFloorAssets).
+    function test_heapSlice_addsOvershootOnTopOfClosedForm() public {
+        QueueHarness h = new QueueHarness();
+        h.sync(ROOT, 20e24, 1e25); // key = 2e18
+        h.sync(RUNNER_UP, 10e24, 1e25); // key = 1e18
+
+        DeleverageQueueLib.MarketView memory mv = _marketView(20e24, 1e25);
+        uint256 debt = SharesMathLib.toAssetsDown(20e24, 100e18, 100e24);
+
+        uint256 closedForm = DeleverageQueueLib.computeSlice(mv, 2e18, 1e18);
+        assertGt(closedForm, 0, "closed form positive for this setup");
+
+        // floor below debt/100: overshoot = debt/100
+        assertEq(h.heapSlice(ROOT, mv), closedForm + debt / 100, "overshoot = debt/100 when floor smaller");
+
+        // floor above debt/100: overshoot = floor
+        uint128 bigFloor = uint128(debt / 100 + 1 ether);
+        h.setSliceFloor(bigFloor);
+        assertEq(h.heapSlice(ROOT, mv), closedForm + bigFloor, "overshoot = floor when floor larger");
+    }
+
+    function test_heapSlice_zeroForNonRoot_andMaxForLoneRoot() public {
+        QueueHarness h = new QueueHarness();
+        h.sync(ROOT, 20e24, 10e18);
+        h.sync(RUNNER_UP, 10e24, 10e18);
+
+        DeleverageQueueLib.MarketView memory mv = _marketView(10e24, 10e18);
+        assertEq(h.heapSlice(RUNNER_UP, mv), 0, "non-root gets no heap slice");
+
+        h.sync(RUNNER_UP, 0, 0); // drop the runner-up
+        assertEq(
+            h.heapSlice(ROOT, _marketView(20e24, 10e18)),
+            type(uint256).max,
+            "lone root unbounded (caller caps to remaining exit)"
+        );
+    }
+
+    /// @notice Saturated key tie: computeSlice contributes 0, the overshoot alone keeps the cut
+    ///         non-zero so the queue can make forward progress.
+    function test_heapSlice_overshootSalvagesSaturatedTie() public {
+        QueueHarness h = new QueueHarness();
+        uint256 hugeShares = uint256(type(uint96).max) * 2e18; // saturates the uint96 key
+        h.sync(ROOT, hugeShares, 1e18);
+        h.sync(RUNNER_UP, hugeShares, 1e18);
+
+        DeleverageQueueLib.MarketView memory mv = _marketView(20e24, 10e18);
+        uint256 debt = SharesMathLib.toAssetsDown(20e24, 100e18, 100e24);
+        assertEq(h.heapSlice(ROOT, mv), debt / 100, "tied keys: slice is pure overshoot");
     }
 }
