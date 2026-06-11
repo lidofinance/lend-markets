@@ -170,7 +170,7 @@ contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626
         (sharesBurned, loanAssets) = _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
     }
 
-    /// @dev Common exit preamble: validate, pull allowance, preview the target, snapshot market totals.
+    /// @dev Common exit preamble: validate, pull allowance, size the target, snapshot market totals.
     function _beginExit(uint256 shares, address receiver, address owner) private returns (ExitPlan memory plan) {
         if (shares == 0) revert ZeroShares();
         if (receiver == address(0)) revert ZeroAddress();
@@ -178,7 +178,7 @@ contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626
         address caller = _msgSender();
         if (caller != owner) _spendAllowance(owner, caller, shares);
 
-        (, plan.morphoSupplyTarget) = previewFallbackExit(shares);
+        plan.morphoSupplyTarget = Math.mulDiv(_morphoSupplyShares(), shares, totalSupply());
         if (plan.morphoSupplyTarget == 0) revert ZeroMorphoSupplyShares();
         (plan.totalSupplyAssets, plan.totalSupplyShares) = _marketSupplyTotals();
 
@@ -232,7 +232,11 @@ contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626
     /// @dev `view`, but result tracks the current block's accrued totals. If blocks pass between
     ///      this call and the matching `fallbackExit` transaction the numbers may shift slightly;
     ///      the on-chain pro-rate is recomputed at execution time so the actual burn matches live state.
-    function previewFallbackExit(uint256 shares) public view returns (uint256 loanAssets, uint256 morphoSupplyShares) {
+    function previewFallbackExit(uint256 shares)
+        external
+        view
+        returns (uint256 loanAssets, uint256 morphoSupplyShares)
+    {
         uint256 totalSupply_ = totalSupply();
         if (shares == 0 || totalSupply_ == 0) return (0, 0);
 

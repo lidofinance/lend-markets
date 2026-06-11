@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {Id, IMorphoStaticTyping} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {Id, IMorpho, IMorphoStaticTyping, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {MorphoBalancesLib} from "@lido-blue/src/libraries/periphery/MorphoBalancesLib.sol";
 import {IOracle} from "@lido-blue/src/interfaces/IOracle.sol";
 import {MathLib} from "@lido-blue/src/libraries/MathLib.sol";
 import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
@@ -482,9 +483,22 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         return (bs, rc);
     }
 
+    /// @dev Borrow totals with pending interest simulated, so view-driven slice sizing matches the
+    ///      hook-time numbers (the core accrues before invoking hooks; with nothing pending this
+    ///      reduces to the raw market read).
     function _totalBorrowTotals(Id id) internal view returns (uint256 totalBorrowAssets, uint256 totalBorrowShares) {
-        (,, uint128 ba, uint128 bs,,) = LIDO_BLUE.market(id);
-        return (ba, bs);
+        (,, totalBorrowAssets, totalBorrowShares) =
+            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(LIDO_BLUE)), _marketParamsOf(id));
+    }
+
+    function _marketParamsOf(Id id) internal view returns (MarketParams memory marketParams) {
+        (
+            marketParams.loanToken,
+            marketParams.collateralToken,
+            marketParams.oracle,
+            marketParams.irm,
+            marketParams.lltv
+        ) = LIDO_BLUE.idToMarketParams(id);
     }
 
     function _collateralPrice(Id id) internal view returns (uint256) {
