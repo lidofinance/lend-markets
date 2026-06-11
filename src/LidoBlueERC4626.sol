@@ -80,7 +80,10 @@ contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626
         string memory name_,
         string memory symbol_
     ) external initializer {
-        if (morpho == address(0) || controller == address(0) || marketParams_.collateralToken == address(0)) {
+        if (
+            morpho == address(0) || controller == address(0) || marketParams_.loanToken == address(0)
+                || marketParams_.collateralToken == address(0)
+        ) {
             revert ZeroAddress();
         }
 

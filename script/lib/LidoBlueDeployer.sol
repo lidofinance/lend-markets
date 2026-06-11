@@ -20,7 +20,8 @@ abstract contract LidoBlueDeployer {
     Vm internal constant _vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
     /// @dev Mirror of `ActivationLib.Config` (same field order/types) so the controller initializer can
-    ///      be abi-encoded without importing the 0.8.24 library into this solc-agnostic deployer.
+    ///      be abi-encoded without coupling the deployer to the controller's libraries. Field order must
+    ///      match the hardcoded tuple in `_deployController`'s `encodeWithSignature`.
     struct ActivationConfig {
         uint64 minActivationDelay;
         uint64 maxActivationDelay;

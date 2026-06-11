@@ -229,7 +229,7 @@ contract DeleverageQueueSliceTest is Test {
         h.sync(RUNNER_UP, 10e24, 1e25); // key = 1e18
 
         DeleverageQueueLib.MarketView memory mv = _marketView(20e24, 1e25);
-        uint256 debt = SharesMathLib.toAssetsDown(20e24, 100e18, 100e24);
+        uint256 debt = SharesMathLib.toAssetsUp(20e24, 100e18, 100e24);
 
         uint256 closedForm = DeleverageQueueLib.computeSlice(mv, 2e18, 1e18);
         assertGt(closedForm, 0, "closed form positive for this setup");
@@ -268,7 +268,7 @@ contract DeleverageQueueSliceTest is Test {
         h.sync(RUNNER_UP, hugeShares, 1e18);
 
         DeleverageQueueLib.MarketView memory mv = _marketView(20e24, 10e18);
-        uint256 debt = SharesMathLib.toAssetsDown(20e24, 100e18, 100e24);
+        uint256 debt = SharesMathLib.toAssetsUp(20e24, 100e18, 100e24);
         assertEq(h.heapSlice(ROOT, mv), debt / 100, "tied keys: slice is pure overshoot");
     }
 }

@@ -136,7 +136,7 @@ library DeleverageQueueLib {
         uint256 slice = computeSlice(marketView, topKey, childMaxKey);
         // Heap-safety overshoot pushes the post-cut root key strictly below the runner-up,
         // immune to integer rounding in `LidoBlue.deleverage`'s `collateralSeized = mulDivDown(...)`.
-        uint256 debt = marketView.borrowShares.toAssetsDown(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+        uint256 debt = marketView.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
         uint256 overshoot = debt / 100;
         if (overshoot < $.sliceFloorAssets) overshoot = $.sliceFloorAssets;
         return slice + overshoot;

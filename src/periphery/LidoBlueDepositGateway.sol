@@ -27,7 +27,8 @@ interface ILidoBlueVault is IERC20 {
 ///         lives here so the core stays WETH/wstETH-only.
 /// @dev Entry-only: every zap adds value to `onBehalf` / `receiver`, so none of them needs a core
 ///      authorization — a token approval to this gateway is enough. Holds no funds between
-///      transactions.
+///      transactions, which is also what makes the unlimited constructor approvals to the core and
+///      the vault safe: there is never a balance for them to spend outside a zap.
 contract LidoBlueDepositGateway {
     using SafeERC20 for IERC20;
 
