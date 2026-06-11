@@ -44,8 +44,8 @@ library DeleverageQueueLib {
     ///         (~7.9e28 base units) the configurable floors saturate low — the policy weakens but
     ///         nothing reverts or loses accounting.
     struct SlicePolicy {
-        // Relative part of the heap-safety overshoot: overshoot = debt * overshootBps / BPS.
-        uint16 overshootBps;
+        // Relative part of the heap-safety overshoot: overshoot = debt * sliceFloorBps / BPS.
+        uint16 sliceFloorBps;
         // Absolute lower bound of the overshoot, also the minimum meaningful cut size.
         uint96 sliceFloorAssets;
         // Minimum loan assets one deleverage call may cancel (anti dust-spam, 0 = no floor).
@@ -60,7 +60,7 @@ library DeleverageQueueLib {
 
     uint256 internal constant BPS = 10_000;
 
-    error OvershootOutOfRange();
+    error SliceFloorOutOfRange();
 
     /// @notice Push the heap's zero sentinel. Call once before any other operation.
     function init(State storage $) internal {
@@ -78,7 +78,7 @@ library DeleverageQueueLib {
     }
 
     function setSlicePolicy(State storage $, SlicePolicy memory policy) internal {
-        if (policy.overshootBps > BPS) revert OvershootOutOfRange();
+        if (policy.sliceFloorBps > BPS) revert SliceFloorOutOfRange();
         $.policy = policy;
     }
 
@@ -162,7 +162,7 @@ library DeleverageQueueLib {
         // Heap-safety overshoot pushes the post-cut root key strictly below the runner-up,
         // immune to integer rounding in `LidoBlue.deleverage`'s `collateralSeized = mulDivDown(...)`.
         uint256 debt = marketView.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
-        uint256 overshoot = debt * $.policy.overshootBps / BPS;
+        uint256 overshoot = debt * $.policy.sliceFloorBps / BPS;
         if (overshoot < $.policy.sliceFloorAssets) overshoot = $.policy.sliceFloorAssets;
         return slice + overshoot;
     }

@@ -69,7 +69,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     error DeleverageBelowMin();
 
     event ConfigSet(ActivationLib.Config config);
-    event SlicePolicySet(uint16 overshootBps, uint96 sliceFloorAssets, uint96 fallbackMinRequest);
+    event SlicePolicySet(uint16 sliceFloorBps, uint96 sliceFloorAssets, uint96 fallbackMinRequest);
     event FrozenSet(bool frozen, address indexed account);
     event ActivatingHoldSet(uint128 activatingHold);
 
@@ -128,11 +128,11 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     }
 
     /// @notice Set the deleverage slice policy in one shot — the knobs tune the same cut and move
-    ///         together. Overshoot per cut is `max(debt * overshootBps / 10000, sliceFloorAssets)` on
+    ///         together. Overshoot per cut is `max(debt * sliceFloorBps / 10000, sliceFloorAssets)` on
     ///         top of the closed-form slice; `fallbackMinRequest` floors one call's total.
     function setSlicePolicy(DeleverageQueueLib.SlicePolicy calldata policy) external onlyRole(CONFIGURATOR_ROLE) {
         _deleverage.setSlicePolicy(policy);
-        emit SlicePolicySet(policy.overshootBps, policy.sliceFloorAssets, policy.fallbackMinRequest);
+        emit SlicePolicySet(policy.sliceFloorBps, policy.sliceFloorAssets, policy.fallbackMinRequest);
     }
 
     function slicePolicy() external view returns (DeleverageQueueLib.SlicePolicy memory) {

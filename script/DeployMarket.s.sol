@@ -52,7 +52,7 @@ contract DeployMarket is Script, LidoBlueDeployer {
                 }),
                 // DRAFT slice policy — governance values, tune before any real deploy.
                 slicePolicy: SlicePolicyConfig({
-                    overshootBps: 100, // 1% of the root's debt on top of the closed-form slice
+                    sliceFloorBps: 100, // 1% of the root's debt on top of the closed-form slice
                     sliceFloorAssets: 10 ether,
                     fallbackMinRequest: 1 ether
                 }),

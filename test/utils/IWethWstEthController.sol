@@ -23,7 +23,7 @@ interface IWethWstEthController is ILidoBlueMarketController {
     }
 
     struct SlicePolicy {
-        uint16 overshootBps;
+        uint16 sliceFloorBps;
         uint96 sliceFloorAssets;
         uint96 fallbackMinRequest;
     }

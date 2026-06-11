@@ -554,7 +554,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
                     minActivationAmount: uint128(MIN_COLLATERAL_ACTIVATION),
                     minDecayAmount: 1_000 ether
                 }),
-                slicePolicy: SlicePolicyConfig({overshootBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
+                slicePolicy: SlicePolicyConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
                 guardians: guardians,
                 quorum: 1,
                 vaultName: "Lido wstETH/WETH Vault",
@@ -573,7 +573,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         ctx.controller
             .setSlicePolicy(
                 IWethWstEthController.SlicePolicy({
-                    overshootBps: 100, sliceFloorAssets: SLICE_FLOOR, fallbackMinRequest: 0
+                    sliceFloorBps: 100, sliceFloorAssets: SLICE_FLOOR, fallbackMinRequest: 0
                 })
             );
     }

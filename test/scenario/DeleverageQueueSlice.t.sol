@@ -226,7 +226,7 @@ contract DeleverageQueueSliceTest is Test {
     function test_heapSlice_addsOvershootOnTopOfClosedForm() public {
         QueueHarness h = new QueueHarness();
         h.setSlicePolicy(
-            DeleverageQueueLib.SlicePolicy({overshootBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
+            DeleverageQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
         );
         h.sync(ROOT, 20e24, 1e25); // key = 2e18
         h.sync(RUNNER_UP, 10e24, 1e25); // key = 1e18
@@ -243,7 +243,7 @@ contract DeleverageQueueSliceTest is Test {
         // floor above debt * bps: overshoot = floor
         uint96 bigFloor = uint96(debt / 100 + 1 ether);
         h.setSlicePolicy(
-            DeleverageQueueLib.SlicePolicy({overshootBps: 100, sliceFloorAssets: bigFloor, fallbackMinRequest: 0})
+            DeleverageQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: bigFloor, fallbackMinRequest: 0})
         );
         assertEq(h.heapSlice(ROOT, mv), closedForm + bigFloor, "overshoot = floor when floor larger");
     }
@@ -269,7 +269,7 @@ contract DeleverageQueueSliceTest is Test {
     function test_heapSlice_overshootSalvagesSaturatedTie() public {
         QueueHarness h = new QueueHarness();
         h.setSlicePolicy(
-            DeleverageQueueLib.SlicePolicy({overshootBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
+            DeleverageQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
         );
         uint256 hugeShares = uint256(type(uint96).max) * 2e18; // saturates the uint96 key
         h.sync(ROOT, hugeShares, 1e18);
@@ -285,7 +285,7 @@ contract DeleverageQueueSliceTest is Test {
     function test_allowedSlice_dustExtensionLiftsToFullDebt() public {
         QueueHarness h = new QueueHarness();
         h.setSlicePolicy(
-            DeleverageQueueLib.SlicePolicy({overshootBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
+            DeleverageQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
         );
         h.sync(ROOT, 20e24, 1e25);
         h.sync(RUNNER_UP, 10e24, 1e25);

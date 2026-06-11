@@ -30,7 +30,7 @@ abstract contract LidoBlueDeployer {
     /// @dev Mirror of `DeleverageQueueLib.SlicePolicy` (same field order/types); see `ActivationConfig`
     ///      for why the deployer mirrors instead of importing.
     struct SlicePolicyConfig {
-        uint16 overshootBps;
+        uint16 sliceFloorBps;
         uint96 sliceFloorAssets;
         uint96 fallbackMinRequest;
     }
