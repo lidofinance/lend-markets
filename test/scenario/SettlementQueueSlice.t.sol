@@ -2,15 +2,15 @@
 pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
-import {DeleverageQueueLib} from "../../src/libs/DeleverageQueueLib.sol";
-import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
-import {WAD} from "@lido-blue/src/libraries/MathLib.sol";
+import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
 
 /// @dev Storage harness so the queue-bound views (`heapSlice` / `allowedSlice`) can be exercised.
 contract QueueHarness {
-    using DeleverageQueueLib for DeleverageQueueLib.State;
+    using SettlementQueueLib for SettlementQueueLib.State;
 
-    DeleverageQueueLib.State internal $;
+    SettlementQueueLib.State internal $;
 
     constructor() {
         $.init();
@@ -20,11 +20,11 @@ contract QueueHarness {
         $.sync(borrower, borrowShares, rawCollateral);
     }
 
-    function setSlicePolicy(DeleverageQueueLib.SlicePolicy memory policy) external {
+    function setSlicePolicy(SettlementQueueLib.SlicePolicy memory policy) external {
         $.setSlicePolicy(policy);
     }
 
-    function heapSlice(address borrower, DeleverageQueueLib.MarketView memory marketView)
+    function heapSlice(address borrower, SettlementQueueLib.MarketView memory marketView)
         external
         view
         returns (uint256)
@@ -34,16 +34,16 @@ contract QueueHarness {
 
     function allowedSlice(
         address borrower,
-        DeleverageQueueLib.MarketView memory marketView,
+        SettlementQueueLib.MarketView memory marketView,
         uint256 minRemainingCollateral
     ) external view returns (uint256) {
         return $.allowedSlice(borrower, marketView, minRemainingCollateral);
     }
 }
 
-/// @notice Fuzz/unit coverage for the pure slice math now folded into `DeleverageQueueLib`
+/// @notice Fuzz/unit coverage for the pure slice math now folded into `SettlementQueueLib`
 ///         (`computeSlice` / `computeWatermarkSlice`).
-contract DeleverageQueueSliceTest is Test {
+contract SettlementQueueSliceTest is Test {
     uint256 internal constant KEY_SCALE = 1e18;
     uint256 internal constant ORACLE_PRICE_SCALE = 1e36;
 
@@ -55,14 +55,14 @@ contract DeleverageQueueSliceTest is Test {
         uint256 totalBorrowAssets,
         uint256 collateralPrice
     ) internal pure returns (uint256) {
-        DeleverageQueueLib.MarketView memory marketView = DeleverageQueueLib.MarketView({
+        SettlementQueueLib.MarketView memory marketView = SettlementQueueLib.MarketView({
             borrowShares: 0,
             rawCollateral: topCollateral,
             totalBorrowAssets: totalBorrowAssets,
             totalBorrowShares: totalBorrowShares,
             price: collateralPrice
         });
-        return DeleverageQueueLib.computeSlice(marketView, topKey, targetKey);
+        return SettlementQueueLib.computeSlice(marketView, topKey, targetKey);
     }
 
     // ── Degenerate inputs return zero
@@ -131,20 +131,20 @@ contract DeleverageQueueSliceTest is Test {
 
     function test_watermarkSlice_zeroWhenLtvAtOrBelowTarget() public pure {
         // current LTV = 0.5; target = 0.5 → no cut.
-        assertEq(DeleverageQueueLib.computeWatermarkSlice(50 ether, 100 ether, 0.5e18), 0, "ltv == target");
+        assertEq(SettlementQueueLib.computeWatermarkSlice(50 ether, 100 ether, 0.5e18), 0, "ltv == target");
         // current LTV = 0.4; target = 0.5 → no cut.
-        assertEq(DeleverageQueueLib.computeWatermarkSlice(40 ether, 100 ether, 0.5e18), 0, "ltv < target");
+        assertEq(SettlementQueueLib.computeWatermarkSlice(40 ether, 100 ether, 0.5e18), 0, "ltv < target");
     }
 
     function test_watermarkSlice_targetAtOrAboveWadReturnsZero() public pure {
-        assertEq(DeleverageQueueLib.computeWatermarkSlice(50 ether, 100 ether, 1e18), 0, "target == WAD");
-        assertEq(DeleverageQueueLib.computeWatermarkSlice(50 ether, 100 ether, 1.5e18), 0, "target > WAD");
+        assertEq(SettlementQueueLib.computeWatermarkSlice(50 ether, 100 ether, 1e18), 0, "target == WAD");
+        assertEq(SettlementQueueLib.computeWatermarkSlice(50 ether, 100 ether, 1.5e18), 0, "target > WAD");
     }
 
     function test_watermarkSlice_closedFormValue() public pure {
         // debt 80, collateralValue 100, target 50% → c = (80*1 - 0.5*100) / (1 - 0.5) = 30 / 0.5 = 60.
         // Post-cut: debt 20, colValue 40, LTV = 0.5 ✓
-        uint256 slice = DeleverageQueueLib.computeWatermarkSlice(80 ether, 100 ether, 0.5e18);
+        uint256 slice = SettlementQueueLib.computeWatermarkSlice(80 ether, 100 ether, 0.5e18);
         assertEq(slice, 60 ether, "closed form: cut 60 to land at LTV 50%");
     }
 
@@ -158,7 +158,7 @@ contract DeleverageQueueSliceTest is Test {
         debt = bound(debt, 1, colValue);
         targetLtv = bound(targetLtv, 1, 0.99e18);
 
-        uint256 slice = DeleverageQueueLib.computeWatermarkSlice(debt, colValue, targetLtv);
+        uint256 slice = SettlementQueueLib.computeWatermarkSlice(debt, colValue, targetLtv);
         if (slice == 0) {
             assertLe(debt * WAD, targetLtv * colValue + WAD, "no-cut bound");
             return;
@@ -211,9 +211,9 @@ contract DeleverageQueueSliceTest is Test {
     function _marketView(uint256 borrowShares, uint256 rawCollateral)
         internal
         pure
-        returns (DeleverageQueueLib.MarketView memory)
+        returns (SettlementQueueLib.MarketView memory)
     {
-        return DeleverageQueueLib.MarketView({
+        return SettlementQueueLib.MarketView({
             borrowShares: borrowShares,
             rawCollateral: rawCollateral,
             totalBorrowAssets: 100e18,
@@ -226,15 +226,15 @@ contract DeleverageQueueSliceTest is Test {
     function test_heapSlice_addsOvershootOnTopOfClosedForm() public {
         QueueHarness h = new QueueHarness();
         h.setSlicePolicy(
-            DeleverageQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
+            SettlementQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
         );
         h.sync(ROOT, 20e24, 1e25); // key = 2e18
         h.sync(RUNNER_UP, 10e24, 1e25); // key = 1e18
 
-        DeleverageQueueLib.MarketView memory mv = _marketView(20e24, 1e25);
+        SettlementQueueLib.MarketView memory mv = _marketView(20e24, 1e25);
         uint256 debt = SharesMathLib.toAssetsUp(20e24, 100e18, 100e24);
 
-        uint256 closedForm = DeleverageQueueLib.computeSlice(mv, 2e18, 1e18);
+        uint256 closedForm = SettlementQueueLib.computeSlice(mv, 2e18, 1e18);
         assertGt(closedForm, 0, "closed form positive for this setup");
 
         // floor below debt * bps: overshoot = debt * bps / 10000
@@ -243,7 +243,7 @@ contract DeleverageQueueSliceTest is Test {
         // floor above debt * bps: overshoot = floor
         uint96 bigFloor = uint96(debt / 100 + 1 ether);
         h.setSlicePolicy(
-            DeleverageQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: bigFloor, fallbackMinRequest: 0})
+            SettlementQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: bigFloor, fallbackMinRequest: 0})
         );
         assertEq(h.heapSlice(ROOT, mv), closedForm + bigFloor, "overshoot = floor when floor larger");
     }
@@ -253,7 +253,7 @@ contract DeleverageQueueSliceTest is Test {
         h.sync(ROOT, 20e24, 10e18);
         h.sync(RUNNER_UP, 10e24, 10e18);
 
-        DeleverageQueueLib.MarketView memory mv = _marketView(10e24, 10e18);
+        SettlementQueueLib.MarketView memory mv = _marketView(10e24, 10e18);
         assertEq(h.heapSlice(RUNNER_UP, mv), 0, "non-root gets no heap slice");
 
         h.sync(RUNNER_UP, 0, 0); // drop the runner-up
@@ -269,13 +269,13 @@ contract DeleverageQueueSliceTest is Test {
     function test_heapSlice_overshootSalvagesSaturatedTie() public {
         QueueHarness h = new QueueHarness();
         h.setSlicePolicy(
-            DeleverageQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
+            SettlementQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
         );
         uint256 hugeShares = uint256(type(uint96).max) * 2e18; // saturates the uint96 key
         h.sync(ROOT, hugeShares, 1e18);
         h.sync(RUNNER_UP, hugeShares, 1e18);
 
-        DeleverageQueueLib.MarketView memory mv = _marketView(20e24, 10e18);
+        SettlementQueueLib.MarketView memory mv = _marketView(20e24, 10e18);
         uint256 debt = SharesMathLib.toAssetsUp(20e24, 100e18, 100e24);
         assertEq(h.heapSlice(ROOT, mv), debt / 100, "tied keys: slice is pure overshoot");
     }
@@ -285,12 +285,12 @@ contract DeleverageQueueSliceTest is Test {
     function test_allowedSlice_dustExtensionLiftsToFullDebt() public {
         QueueHarness h = new QueueHarness();
         h.setSlicePolicy(
-            DeleverageQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
+            SettlementQueueLib.SlicePolicy({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0})
         );
         h.sync(ROOT, 20e24, 1e25);
         h.sync(RUNNER_UP, 10e24, 1e25);
 
-        DeleverageQueueLib.MarketView memory mv = _marketView(20e24, 1e25);
+        SettlementQueueLib.MarketView memory mv = _marketView(20e24, 1e25);
         uint256 plainSlice = h.allowedSlice(ROOT, mv, 0);
         uint256 fullDebt = SharesMathLib.toAssetsUp(20e24, 100e18, 100e24);
         assertLt(plainSlice, fullDebt, "policy slice is partial without the extension");

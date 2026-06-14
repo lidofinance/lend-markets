@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {Id} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {
     AccessControlEnumerableUpgradeable

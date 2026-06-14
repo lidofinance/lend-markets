@@ -111,7 +111,7 @@ contract MaxHeapLibTest is Test {
 
     /// @notice Keys above `type(uint96).max` saturate to that max. Borrowers with saturated keys
     ///         tie at the top of the heap — order among them isn't preserved, but they all rank
-    ///         above any non-saturated borrower (the intended deleverage target order).
+    ///         above any non-saturated borrower (the intended settle target order).
     function test_keysSaturateToUint96Max() public {
         uint256 huge1 = uint256(type(uint96).max) + 1;
         uint256 huge2 = uint256(type(uint96).max) * 100;

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
-import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
-import {ORACLE_PRICE_SCALE} from "@lido-blue/src/libraries/ConstantsLib.sol";
-import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
+import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
 
 import {IWethWstEthController} from "../utils/IWethWstEthController.sol";
-import {LidoBlueDeployer} from "../../script/lib/LidoBlueDeployer.sol";
+import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -49,7 +49,7 @@ contract ControllableWstEthOracle is IOracle {
     }
 }
 
-contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
+contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     using MarketParamsLib for MarketParams;
 
     address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
@@ -68,7 +68,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
     uint256 internal _wstEthRate;
 
     struct Ctx {
-        ILidoBlue market;
+        ILidoLend market;
         IWethWstEthController controller;
         ControllableWstEthOracle oracle;
         MarketParams marketParams;
@@ -76,7 +76,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         uint256 price;
     }
 
-    struct DeleverageResult {
+    struct SettlementResult {
         uint256 totalCollateralSeized;
         uint256 totalDebtCanceled;
         uint256 iterations;
@@ -197,7 +197,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
             uint256 roundShares = _assetsToSupplyShares(ctx, total / 10);
             if (roundShares > lenderShares) roundShares = lenderShares;
             if (roundShares == 0) break;
-            DeleverageResult memory res = _deleverageLoop(ctx, roundShares);
+            SettlementResult memory res = _settleLoop(ctx, roundShares);
             console2.log("  round", round, "iter", res.iterations);
             console2.log("    debt_canceled", res.totalDebtCanceled, "gas", res.gasUsed);
         }
@@ -239,12 +239,12 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         _seedBorrowers(ctx, debts, 0.7e18, total);
 
         console2.log("=== 1000Mixed(900x0.5+90x5+10x20) ===");
-        console2.log("  heap_size_before:", ctx.controller.deleverageQueueSize());
+        console2.log("  heap_size_before:", ctx.controller.settlementQueueSize());
         console2.log("  total_debt:", total);
 
-        DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, total / 4));
-        _logDeleverageResult(res);
-        console2.log("  heap_size:", ctx.controller.deleverageQueueSize());
+        SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, total / 4));
+        _logSettlementResult(res);
+        console2.log("  heap_size:", ctx.controller.settlementQueueSize());
     }
 
     // ── Whale + dust
@@ -272,15 +272,15 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         _borrowAll(ctx, 1, n, dustDebt);
 
         console2.log("=== DustAndOneWhale100(99x0.3lowLTV+1x100whale) ===");
-        console2.log("  heap_size_before:", ctx.controller.deleverageQueueSize());
+        console2.log("  heap_size_before:", ctx.controller.settlementQueueSize());
 
-        DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, 75 ether));
-        _logDeleverageResult(res);
+        SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, 75 ether));
+        _logSettlementResult(res);
 
         (, uint128 whaleBorrowAfter, uint128 whaleColAfter) = ctx.market.position(ctx.id, _borrowerAddr(0));
         console2.log("  whale_debt_remaining:", uint256(whaleBorrowAfter));
         console2.log("  whale_col_remaining:", uint256(whaleColAfter));
-        console2.log("  heap_size:", ctx.controller.deleverageQueueSize());
+        console2.log("  heap_size:", ctx.controller.settlementQueueSize());
         console2.log("  dust_positions_touched:", _countClosed(ctx, 1, n));
     }
 
@@ -297,7 +297,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         console2.log("=== 2000DustFullDrain ===");
         console2.log("  total_positions:", n);
         console2.log("  total_debt:", debtPer * n);
-        console2.log("  heap_size_before:", ctx.controller.deleverageQueueSize());
+        console2.log("  heap_size_before:", ctx.controller.settlementQueueSize());
 
         uint256 totalTx;
         uint256 totalGas;
@@ -306,8 +306,8 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
 
         while (true) {
             (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
-            if (lenderShares == 0 || ctx.controller.deleverageQueueSize() == 0) break;
-            DeleverageResult memory res = _deleverageLoop(ctx, lenderShares);
+            if (lenderShares == 0 || ctx.controller.settlementQueueSize() == 0) break;
+            SettlementResult memory res = _settleLoop(ctx, lenderShares);
             if (res.iterations == 0) break;
             totalTx++;
             totalGas += res.gasUsed;
@@ -322,7 +322,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         console2.log("  total_iterations:", totalIter);
         console2.log("  total_debt_drained:", totalDebtDrained);
         console2.log("  total_gas:", totalGas);
-        console2.log("  positions_remaining:", ctx.controller.deleverageQueueSize());
+        console2.log("  positions_remaining:", ctx.controller.settlementQueueSize());
     }
 
     // ── Runners
@@ -338,7 +338,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         internal
     {
         _seedBorrowers(ctx, debts, ltv, _sum(debts));
-        DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, exitAssets));
+        SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, exitAssets));
         _logResult(ctx, label, debts.length, res);
     }
 
@@ -350,7 +350,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         uint256 exitAssets
     ) internal {
         _seedBorrowersWithLTVs(ctx, debts, ltvs, _sum(debts));
-        DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, exitAssets));
+        SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, exitAssets));
         _logResult(ctx, label, debts.length, res);
     }
 
@@ -358,12 +358,12 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         internal
     {
         console2.log("===", label, "===");
-        console2.log("  heap_size_before:", ctx.controller.deleverageQueueSize());
-        DeleverageResult memory res = _deleverageLoop(ctx, _assetsToSupplyShares(ctx, debtPer * n / exitDivisor));
+        console2.log("  heap_size_before:", ctx.controller.settlementQueueSize());
+        SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, debtPer * n / exitDivisor));
         console2.log("  borrowers:", n);
-        _logDeleverageResult(res);
+        _logSettlementResult(res);
         console2.log("  positions_closed:", _countClosed(ctx, 0, n));
-        console2.log("  heap_size:", ctx.controller.deleverageQueueSize());
+        console2.log("  heap_size:", ctx.controller.settlementQueueSize());
     }
 
     // ── Seeding
@@ -446,17 +446,17 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         }
     }
 
-    // ── Deleverage loop
+    // ── Settle loop
     // ────────────────────────────────────────────
 
-    function _deleverageLoop(Ctx memory ctx, uint256 exitShares) internal returns (DeleverageResult memory res) {
+    function _settleLoop(Ctx memory ctx, uint256 exitShares) internal returns (SettlementResult memory res) {
         uint256 remaining = exitShares;
         uint256 gasBefore = gasleft();
 
         for (uint256 i; i < MAX_ITERATIONS; ++i) {
-            if (remaining == 0 || ctx.controller.deleverageQueueSize() == 0) break;
+            if (remaining == 0 || ctx.controller.settlementQueueSize() == 0) break;
 
-            (address top, uint256 sliceAssets) = ctx.controller.nextDeleverageCut();
+            (address top, uint256 sliceAssets) = ctx.controller.nextSettlementCut();
             if (top == address(0)) break;
             (, uint128 topBorrowShares, uint128 topCol) = ctx.market.position(ctx.id, top);
             (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = ctx.market.market(ctx.id);
@@ -479,7 +479,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
             if (cutShares > remaining) cutShares = remaining;
 
             vm.prank(LENDER);
-            try ctx.market.deleverage(ctx.marketParams, cutShares, top, LENDER, LENDER) returns (
+            try ctx.market.settle(ctx.marketParams, 0, cutShares, LENDER, top, LENDER) returns (
                 uint256 colSeized, uint256 debtCanceled
             ) {
                 remaining -= cutShares;
@@ -490,7 +490,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
                 if (cutShares > remaining / 2) cutShares = remaining / 2;
                 if (cutShares == 0) break;
                 vm.prank(LENDER);
-                try ctx.market.deleverage(ctx.marketParams, cutShares, top, LENDER, LENDER) returns (
+                try ctx.market.settle(ctx.marketParams, 0, cutShares, LENDER, top, LENDER) returns (
                     uint256 colSeized, uint256 debtCanceled
                 ) {
                     remaining -= cutShares;
@@ -509,14 +509,14 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
     // ── Logging
     // ────────────────────────────────────────────────────
 
-    function _logResult(Ctx memory ctx, string memory label, uint256 n, DeleverageResult memory res) internal view {
+    function _logResult(Ctx memory ctx, string memory label, uint256 n, SettlementResult memory res) internal view {
         console2.log("===", label, "===");
         console2.log("  borrowers:", n);
-        _logDeleverageResult(res);
+        _logSettlementResult(res);
         _logPositions(ctx, n);
     }
 
-    function _logDeleverageResult(DeleverageResult memory res) internal pure {
+    function _logSettlementResult(SettlementResult memory res) internal pure {
         console2.log("  iterations:", res.iterations);
         console2.log("  total_debt_canceled:", res.totalDebtCanceled);
         console2.log("  total_col_seized:", res.totalCollateralSeized);
@@ -525,7 +525,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
 
     function _logPositions(Ctx memory ctx, uint256 n) internal view {
         console2.log("  dust_positions:", _countDust(ctx, 0, n));
-        console2.log("  heap_size:", ctx.controller.deleverageQueueSize());
+        console2.log("  heap_size:", ctx.controller.settlementQueueSize());
     }
 
     // ── Deployment
@@ -544,7 +544,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
                 collateralToken: WSTETH_ADDRESS,
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
-                deleverageEnabled: true,
+                enableSettlement: true,
                 activation: ActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
@@ -562,7 +562,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
             })
         );
 
-        ctx.market = ILidoBlue(d.core);
+        ctx.market = ILidoLend(d.core);
         ctx.oracle = ControllableWstEthOracle(d.oracle);
         ctx.controller = IWethWstEthController(d.controllerProxy);
         ctx.marketParams = d.params;
@@ -653,7 +653,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         return SharesMathLib.toSharesDown(assets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
     }
 
-    function _mintWETH(ILidoBlue market, address user, uint256 amount) internal {
+    function _mintWETH(ILidoLend market, address user, uint256 amount) internal {
         vm.deal(user, amount);
         vm.prank(user);
         WETH.deposit{value: amount}();
@@ -661,7 +661,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         WETH.approve(address(market), type(uint256).max);
     }
 
-    function _mintWstETH(ILidoBlue market, address user, uint256 ethAmount) internal returns (uint256) {
+    function _mintWstETH(ILidoLend market, address user, uint256 ethAmount) internal returns (uint256) {
         uint256 wstETHAmount = (ethAmount * 1e18) / _wstEthRate;
         bytes32 balSlot = keccak256(abi.encode(user, uint256(0)));
         vm.store(WSTETH_ADDRESS, balSlot, bytes32(wstETHAmount));

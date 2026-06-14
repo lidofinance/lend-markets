@@ -17,12 +17,10 @@ them back into AGENTS.md.
 Order inside a contract file, top to bottom:
 
 1. SPDX header and `pragma`.
-2. Imports (grouped: external first, then `@morpho-blue/*`, then `@openzeppelin/*`, then local
+2. Imports (grouped: external first, then `@lido-lend/*`, then `@openzeppelin/*`, then local
    `./`-relative).
 3. Local interfaces (only those needed by the file).
-4. Fork-added libraries (errors, events) — see `MorphoBlueForkErrorsLib` /
-   `MorphoBlueForkEventsLib` in `src/MorphoBlueFork.sol` for the pattern.
-5. Contract body.
+4. Contract body.
 
 Inside a contract, order top to bottom:
 
@@ -52,20 +50,19 @@ the contract's `layout at`.
 ## Naming
 
 - **Contracts**: `PascalCase`. Match the file name.
-- **Interfaces**: prefixed with `I` (`IMarketController`, `IMorphoBase`).
-- **Libraries**: suffixed with `Lib` (`MaxHeapLib`, `DeleverageSliceLib`).
+- **Interfaces**: prefixed with `I` (`ISuspectsRegistry`, `IMorphoBase`).
+- **Libraries**: suffixed with `Lib` (`MaxHeapLib`, `SettlementQueueLib`).
 - **Functions / variables / parameters**: `camelCase`.
-- **Internal / private** helpers: leading underscore (`_validateDeleverage`, `_storage`).
+- **Internal / private** helpers: leading underscore (`_requireActiveHealth`, `_currentPosition`).
 - **Constants and immutables**: `SCREAMING_SNAKE_CASE`.
-- **Events**: past tense or noun (`Deleverage`, `MarketControllerSet`, `BorrowerWatermarkSet`).
+- **Events**: past tense or noun (`SettlementCut`, `BorrowerWatermarkSet`, `ConfigSet`).
 - **Errors**: noun phrase, no `Error` suffix (`Unauthorized`, `WatermarkOutOfRange`).
 - **Test functions**: see Testing Guidelines in AGENTS.md.
 
 ## Errors And Reverts
 
-- **Core (`src/MorphoBlueFork.sol`)** keeps upstream Morpho conventions: `require(..., "string")`
-  with constants in a dedicated library block (`MorphoBlueForkErrorsLib`). Preserves diff against
-  upstream.
+- **The vendored core (`lib/lido-lend`)** keeps upstream Morpho conventions (`require(..., "string")`).
+  See `lib/lido-lend/FORK_NOTES.md`.
 - **New contracts** (controllers, libs, vaults, adapters) use custom errors. Declare them at the
   top of the contract, near other state declarations.
 - Custom errors include parameters where useful (`InsufficientCollateralOut(received, minimum)`),
@@ -90,8 +87,8 @@ the contract's `layout at`.
 
 - **Named struct initialisation** (`Foo({a: 1, b: 2})`). No positional struct literals in new
   code.
-- Use struct hook payloads (`IMarketController.*HookData`) over positional `abi.encode` /
-  `abi.decode` tuples — keeps the payload schema obvious and refactor-safe.
+- Use struct hook payloads (`SettleHookData`, `SupplyCollateralHookData`, ...) over positional
+  `abi.encode` / `abi.decode` tuples — keeps the payload schema obvious and refactor-safe.
 - Pack storage structs deliberately; document the slot layout in a comment when packing is
   non-trivial.
 
@@ -131,12 +128,8 @@ the contract's `layout at`.
 
 ## Fork Conventions
 
-- `src/MorphoBlueFork.sol` is a near-verbatim copy of Morpho Blue. Style choices favour matching
-  upstream over local preference.
-- Fork-added errors and events live in dedicated library blocks at the top of the core file
-  (`MorphoBlueForkErrorsLib`, `MorphoBlueForkEventsLib`) so the upstream diff is visible at a
-  glance.
-- Do not reformat upstream Morpho code unless the upstream patch itself changes.
+- The Morpho Blue fork is the vendored `lib/lido-lend` dependency. Its style and fork-point record
+  live in `lib/lido-lend/FORK_NOTES.md`.
 - `src/proxy/OssifiableProxy.sol` is imported Lido source — never reformat.
 
 ## Tooling

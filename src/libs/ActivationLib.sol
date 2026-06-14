@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {MathLib, WAD} from "@lido-blue/src/libraries/MathLib.sol";
-import {UtilsLib} from "@lido-blue/src/libraries/UtilsLib.sol";
+import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
+import {UtilsLib} from "@lido-lend/src/libraries/UtilsLib.sol";
 
 /// @title ActivationLib
 /// @author Lido Lending contributors.
@@ -127,7 +127,7 @@ library ActivationLib {
     ///         accumulator is untouched.
     /// @param raw Borrower raw collateral in core, pre-decrement (core applies the decrement after the hook).
     /// @param activatingFloor Activating collateral held back (unwithdrawable) until it matures. Pass 0 on
-    ///        forced paths (liquidation, deleverage), which must be able to reach all collateral.
+    ///        forced paths (liquidation, settle), which must be able to reach all collateral.
     function consume(State storage $, address borrower, uint256 amount, uint256 raw, uint256 activatingFloor)
         internal
         returns (uint256 active)
@@ -162,7 +162,7 @@ library ActivationLib {
     ///         hold), then reverse any load this position charged earlier in the same tx for collateral
     ///         that just left activating (flash-loan undo). Returns post-debit `active` so the caller can
     ///         gate the remaining debt without re-reading.
-    /// @dev Forced seizure (liquidation, deleverage) must reach all collateral and must NOT reverse load,
+    /// @dev Forced seizure (liquidation, settle) must reach all collateral and must NOT reverse load,
     ///      so it calls `consume` directly with floor 0 instead of this.
     function withdraw(State storage $, address borrower, uint256 amount, uint256 raw, uint256 activatingFloor)
         internal

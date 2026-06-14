@@ -3,12 +3,12 @@ pragma solidity 0.8.35;
 
 import {Script, console2} from "forge-std/Script.sol";
 
-import {Id} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
-import {LidoBlueDeployer} from "./lib/LidoBlueDeployer.sol";
+import {LidoLendDeployer} from "./lib/LidoLendDeployer.sol";
 
 /// @notice Deploy script for a wstETH/WETH lending market on the lido-lending fork. Delegates the
-///         actual deploy steps to `LidoBlueDeployer` so tests can reuse the same logic.
+///         actual deploy steps to `LidoLendDeployer` so tests can reuse the same logic.
 ///
 /// @dev Draft, not production-ready. The activation parameters and registry bootstrap below are
 ///      placeholders — tune them (governance values) before any real deploy. See `script/DEPLOYMENT.md`.
@@ -19,7 +19,7 @@ import {LidoBlueDeployer} from "./lib/LidoBlueDeployer.sol";
 /// Usage (broadcast):
 ///   forge script script/DeployMarket.s.sol --rpc-url "$RPC_URL" --broadcast --private-key "$PK" \
 ///     --verify --etherscan-api-key "$ETHERSCAN_API_KEY"
-contract DeployMarket is Script, LidoBlueDeployer {
+contract DeployMarket is Script, LidoLendDeployer {
     address internal constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address internal constant WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
 
@@ -39,7 +39,7 @@ contract DeployMarket is Script, LidoBlueDeployer {
                 collateralToken: WSTETH,
                 oracleSource: WSTETH,
                 lltv: LLTV,
-                deleverageEnabled: true,
+                enableSettlement: true,
                 // DRAFT activation parameters — governance values, tune before any real deploy.
                 activation: ActivationConfig({
                     minActivationDelay: 10 minutes,

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
-import {MathLib, WAD} from "@lido-blue/src/libraries/MathLib.sol";
-import {ORACLE_PRICE_SCALE} from "@lido-blue/src/libraries/ConstantsLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {MaxHeapLib} from "./MaxHeapLib.sol";
 
-/// @title DeleverageQueueLib
+/// @title SettlementQueueLib
 /// @author Lido Lending contributors.
-/// @notice Risk-ordered queue of borrowers for the deleverage waterfall, with per-borrower watermark
+/// @notice Risk-ordered queue of borrowers for the settle waterfall, with per-borrower watermark
 ///         opt-in and the slice-sizing policy. Wraps a max-heap keyed by
 ///         borrowShares * KEY_SCALE / rawCollateral, so the root is the highest-LTV position: a
 ///         solvent root means no tracked position is bad debt, which is what makes the bad-debt gate
@@ -16,7 +16,7 @@ import {MaxHeapLib} from "./MaxHeapLib.sol";
 /// @dev Self-contained module: the caller embeds `State`, forwards mutations, and supplies a
 ///      `MarketView` (live core/oracle snapshot) for the slice math. The lib makes no external calls;
 ///      the slice arithmetic (`computeSlice` / `computeWatermarkSlice`) is pure and fuzz-testable.
-library DeleverageQueueLib {
+library SettlementQueueLib {
     using MaxHeapLib for MaxHeapLib.Heap;
     using SharesMathLib for uint256;
     using MathLib for uint256;
@@ -48,7 +48,7 @@ library DeleverageQueueLib {
         uint16 sliceFloorBps;
         // Absolute lower bound of the overshoot, also the minimum meaningful cut size.
         uint96 sliceFloorAssets;
-        // Minimum loan assets one deleverage call may cancel (anti dust-spam, 0 = no floor).
+        // Minimum loan assets one settle call may cancel (anti dust-spam, 0 = no floor).
         uint96 fallbackMinRequest;
     }
 
@@ -160,7 +160,7 @@ library DeleverageQueueLib {
         if (childMaxKey == 0) return type(uint256).max;
         uint256 slice = computeSlice(marketView, topKey, childMaxKey);
         // Heap-safety overshoot pushes the post-cut root key strictly below the runner-up,
-        // immune to integer rounding in `LidoBlue.deleverage`'s `collateralSeized = mulDivDown(...)`.
+        // immune to integer rounding in `LidoLend.settle`'s `collateralSeized = mulDivDown(...)`.
         uint256 debt = marketView.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
         uint256 overshoot = debt * $.policy.sliceFloorBps / BPS;
         if (overshoot < $.policy.sliceFloorAssets) overshoot = $.policy.sliceFloorAssets;

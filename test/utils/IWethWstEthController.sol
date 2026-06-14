@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {ILidoBlueMarketController} from "@lido-blue/src/interfaces/ILidoBlueMarketController.sol";
+import {ILidoLendMarketController} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
 
-/// @notice Test-only typed view of `WethWstEthController`. Inherits the controller's canonical
-///         interface (`nextDeleverageCut`, `allowedSliceFor`, hooks) and adds the admin + dashboard
-///         surface the tests need. `PositionView` and `SlicePolicy` mirror the controller's structs
+/// @notice Test-only typed view of `WethWstEthController`. Inherits the core hook interface and adds the
+///         admin, dashboard, and settle-queue surface the tests need. `nextSettlementCut` and
+///         `allowedSliceFor` are the controller's own views (no longer on the core hook interface), so
+///         they are declared here. `PositionView` and `SlicePolicy` mirror the controller's structs
 ///         field-for-field so calls decode.
-interface IWethWstEthController is ILidoBlueMarketController {
+interface IWethWstEthController is ILidoLendMarketController {
     struct PositionView {
         uint256 rawCollateral;
         uint256 active;
@@ -42,8 +43,10 @@ interface IWethWstEthController is ILidoBlueMarketController {
     function freeze() external;
     function unfreeze() external;
 
-    // Views (single-market: no id). nextDeleverageCut / allowedSliceFor come from the parent.
-    function deleverageQueueSize() external view returns (uint256);
+    // Views (single-market: no id). Controller-own settle views (not on the core hook interface).
+    function nextSettlementCut() external view returns (address borrower, uint256 sliceAssets);
+    function allowedSliceFor(address borrower) external view returns (uint256);
+    function settlementQueueSize() external view returns (uint256);
     function rootHasBadDebt() external view returns (bool);
     function watermarkInfo(address borrower) external view returns (uint256 watermarkLtv, uint256 sliceAssets);
     function positionOf(address borrower) external view returns (PositionView memory);

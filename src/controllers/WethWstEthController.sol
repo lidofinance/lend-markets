@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {Id, IMorpho, IMorphoStaticTyping, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
-import {MorphoBalancesLib} from "@lido-blue/src/libraries/periphery/MorphoBalancesLib.sol";
-import {IOracle} from "@lido-blue/src/interfaces/IOracle.sol";
-import {MathLib} from "@lido-blue/src/libraries/MathLib.sol";
-import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
-import {ORACLE_PRICE_SCALE} from "@lido-blue/src/libraries/ConstantsLib.sol";
+import {Id, IMorpho, IMorphoStaticTyping, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
+import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
+import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
 import {ISuspectsRegistry} from "../interfaces/ISuspectsRegistry.sol";
-import {ILidoBlueMarketController} from "@lido-blue/src/interfaces/ILidoBlueMarketController.sol";
+import {ILidoLendMarketController} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
 import {ActivationLib} from "../libs/ActivationLib.sol";
-import {DeleverageQueueLib} from "../libs/DeleverageQueueLib.sol";
+import {SettlementQueueLib} from "../libs/SettlementQueueLib.sol";
 
 /// @notice One-read borrower snapshot for off-chain dashboards: collateral split, activation timer,
-///         suspicion, debt, personal watermark, and live deleverage exposure.
+///         suspicion, debt, personal watermark, and live settle exposure.
 struct PositionView {
     uint256 rawCollateral;
     uint256 active; // matured, borrowable
@@ -27,15 +27,15 @@ struct PositionView {
     uint256 suspicion; // live 0..100
     uint256 debtAssets;
     uint256 watermarkLtv; // 0 = unset
-    bool isQueueRoot; // next in line for deleverage
+    bool isQueueRoot; // next in line for settle
     uint256 allowedSlice; // loan assets that may be cut from this position now
 }
 
 /// @notice Lido-policy controller for the wstETH/ETH market: collateral activation, freeze and pause,
-///         suspect gating, and the deleverage queue. All hook policy enters through `on`.
+///         suspect gating, and the settlement queue. All hook policy enters through `on`.
 contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEthController")
     is
-    ILidoBlueMarketController,
+    ILidoLendMarketController,
     Initializable,
     AccessControlUpgradeable,
     PausableUntil
@@ -43,7 +43,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     using MathLib for uint256;
     using SharesMathLib for uint256;
     using ActivationLib for ActivationLib.State;
-    using DeleverageQueueLib for DeleverageQueueLib.State;
+    using SettlementQueueLib for SettlementQueueLib.State;
 
     bytes32 public constant CONFIGURATOR_ROLE = keccak256("CONFIGURATOR_ROLE");
     bytes32 public constant RISK_STEWARD_ROLE = keccak256("RISK_STEWARD_ROLE");
@@ -51,8 +51,8 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     bytes32 public constant UNPAUSER_ROLE = keccak256("UNPAUSER_ROLE");
     bytes32 public constant COMMITTEE_ROLE = keccak256("COMMITTEE_ROLE");
 
-    IMorphoStaticTyping public immutable LIDO_BLUE;
-    Id public immutable override MARKET_ID;
+    IMorphoStaticTyping public immutable LIDO_LEND;
+    Id public immutable override marketId;
 
     error Unauthorized();
     error InvalidMarketId();
@@ -61,12 +61,12 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     error AddressBlocked();
     error ConfigNotTightened();
     error InsufficientActiveCollateral();
-    error DeleverageRootBadDebt();
-    error DeleverageIneligible();
-    error DeleverageExceedsAllowed();
-    error DeleverageExceedsDebt();
-    error DeleverageInvalidSeize();
-    error DeleverageBelowMin();
+    error SettlementRootBadDebt();
+    error SettlementIneligible();
+    error SettlementExceedsAllowed();
+    error SettlementExceedsDebt();
+    error SettlementInvalidSeize();
+    error SettlementBelowMin();
 
     event ConfigSet(ActivationLib.Config config);
     event SlicePolicySet(uint16 sliceFloorBps, uint96 sliceFloorAssets, uint96 fallbackMinRequest);
@@ -78,20 +78,20 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     /// @dev Config + load accumulator + per-borrower activation pipeline.
     ActivationLib.State private _activation;
     /// @dev Risk queue + watermarks + slice policy.
-    DeleverageQueueLib.State private _deleverage;
+    SettlementQueueLib.State private _settlementQueue;
     /// @dev Committee Sybil hold (0 = off); see `setActivatingHold`.
     uint128 private _activatingHold;
 
     modifier onlyControlledMarket(Id id) {
-        if (msg.sender != address(LIDO_BLUE)) revert Unauthorized();
-        if (Id.unwrap(id) != Id.unwrap(MARKET_ID)) revert InvalidMarketId();
+        if (msg.sender != address(LIDO_LEND)) revert Unauthorized();
+        if (Id.unwrap(id) != Id.unwrap(marketId)) revert InvalidMarketId();
         _;
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
-    constructor(IMorphoStaticTyping lidoBlue, Id marketId) {
-        LIDO_BLUE = lidoBlue;
-        MARKET_ID = marketId;
+    constructor(IMorphoStaticTyping lidoLend, Id marketId_) {
+        LIDO_LEND = lidoLend;
+        marketId = marketId_;
         _disableInitializers();
     }
 
@@ -103,7 +103,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _suspectsRegistry = suspects;
-        _deleverage.init();
+        _settlementQueue.init();
         _applyConfig(cfg);
     }
 
@@ -127,32 +127,32 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         _applyConfig(cfg);
     }
 
-    /// @notice Set the deleverage slice policy in one shot — the knobs tune the same cut and move
+    /// @notice Set the settle slice policy in one shot — the knobs tune the same cut and move
     ///         together. Overshoot per cut is `max(debt * sliceFloorBps / 10000, sliceFloorAssets)` on
     ///         top of the closed-form slice; `fallbackMinRequest` floors one call's total.
-    function setSlicePolicy(DeleverageQueueLib.SlicePolicy calldata policy) external onlyRole(CONFIGURATOR_ROLE) {
-        _deleverage.setSlicePolicy(policy);
+    function setSlicePolicy(SettlementQueueLib.SlicePolicy calldata policy) external onlyRole(CONFIGURATOR_ROLE) {
+        _settlementQueue.setSlicePolicy(policy);
         emit SlicePolicySet(policy.sliceFloorBps, policy.sliceFloorAssets, policy.fallbackMinRequest);
     }
 
-    function slicePolicy() external view returns (DeleverageQueueLib.SlicePolicy memory) {
-        return _deleverage.policy;
+    function slicePolicy() external view returns (SettlementQueueLib.SlicePolicy memory) {
+        return _settlementQueue.policy;
     }
 
     /// @notice Committee lever (Sybil protection): hold up to `activatingHold` of each position's
     ///         activating collateral unwithdrawable until it matures. 0 (the default) disables it.
-    /// @dev Forced paths (liquidation, deleverage) ignore the hold. The hold is temporary: held collateral
+    /// @dev Forced paths (liquidation, settle) ignore the hold. The hold is temporary: held collateral
     ///      matures into `active` on its timer and becomes withdrawable, so this is not a custody power.
     function setActivatingHold(uint128 activatingHold) external onlyRole(COMMITTEE_ROLE) {
         _activatingHold = activatingHold;
         emit ActivatingHoldSet(activatingHold);
     }
 
-    /// @notice Borrower opts into auto-deleverage down to a target post-cut LTV (WAD); 0 clears it.
-    /// @dev `msg.sender` is the borrower. Setting it makes the caller eligible for deleverage even
+    /// @notice Borrower opts into auto-settle down to a target post-cut LTV (WAD); 0 clears it.
+    /// @dev `msg.sender` is the borrower. Setting it makes the caller eligible for settle even
     ///      when it is not the queue root, capped at the slice that brings its LTV to `ltv`.
     function setBorrowerWatermark(uint256 ltv) external {
-        _deleverage.setWatermark(msg.sender, ltv);
+        _settlementQueue.setWatermark(msg.sender, ltv);
     }
 
     /// @notice Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and
@@ -200,8 +200,8 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
             _handleRepay(id, abi.decode(data, (RepayHookData)));
         } else if (hookEvent == HookEvent.Liquidate) {
             _handleLiquidate(id, abi.decode(data, (LiquidateHookData)));
-        } else if (hookEvent == HookEvent.Deleverage) {
-            _handleDeleverage(id, abi.decode(data, (DeleverageHookData)));
+        } else if (hookEvent == HookEvent.Settle) {
+            _handleSettle(id, abi.decode(data, (SettleHookData)));
         } else if (
             hookEvent == HookEvent.Supply || hookEvent == HookEvent.Withdraw || hookEvent == HookEvent.AccrueInterest
         ) {
@@ -212,23 +212,22 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     }
 
     // ---
-    // DELEVERAGE QUEUE VIEWS
+    // SETTLEMENT QUEUE VIEWS
     // ---
 
-    function deleverageQueueSize() external view returns (uint256) {
-        return _deleverage.size();
+    function settlementQueueSize() external view returns (uint256) {
+        return _settlementQueue.size();
     }
 
     /// @notice True if the queue root (the riskiest borrower) is bad debt: its debt value exceeds its
     ///         collateral value. The root is the highest debt/collateral position, so a solvent root means
-    ///         no tracked position is bad debt, which is why the deleverage gate need only check the root.
+    ///         no tracked position is bad debt, which is why the settle gate need only check the root.
     function rootHasBadDebt() external view returns (bool) {
-        address top = _deleverage.peekRoot();
+        address top = _settlementQueue.peekRoot();
         if (top == address(0)) return false;
-        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(MARKET_ID, top);
-        (uint256 totalBorrowAssets, uint256 totalBorrowShares) = _totalBorrowTotals(MARKET_ID);
-        return
-            _isBadDebt(borrowShares, rawCollateral, totalBorrowAssets, totalBorrowShares, _collateralPrice(MARKET_ID));
+        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(marketId, top);
+        (uint256 totalBorrowAssets, uint256 totalBorrowShares) = _totalBorrowTotals(marketId);
+        return _isBadDebt(borrowShares, rawCollateral, totalBorrowAssets, totalBorrowShares, _collateralPrice(marketId));
     }
 
     /// @notice Next borrower to cut (queue root) and the max slice the policy allows for it: the larger
@@ -236,16 +235,16 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     ///         at, and the same value `allowedSliceFor` returns). `borrower` is address(0) when the queue
     ///         is empty; `sliceAssets` is type(uint256).max for a lone borrower (caller caps it to the
     ///         remaining exit).
-    function nextDeleverageCut() external view override returns (address borrower, uint256 sliceAssets) {
-        borrower = _deleverage.peekRoot();
+    function nextSettlementCut() external view returns (address borrower, uint256 sliceAssets) {
+        borrower = _settlementQueue.peekRoot();
         if (borrower == address(0)) return (address(0), 0);
-        sliceAssets = _allowedSlice(borrower, _marketView(MARKET_ID, borrower));
+        sliceAssets = _allowedSlice(borrower, _marketView(marketId, borrower));
     }
 
-    /// @notice Maximum loan-asset slice the policy allows for a single deleverage cut against
+    /// @notice Maximum loan-asset slice the policy allows for a single settle cut against
     ///         `borrower` (max of heap slice and watermark slice). Zero means ineligible.
-    function allowedSliceFor(address borrower) external view override returns (uint256) {
-        return _allowedSlice(borrower, _marketView(MARKET_ID, borrower));
+    function allowedSliceFor(address borrower) external view returns (uint256) {
+        return _allowedSlice(borrower, _marketView(marketId, borrower));
     }
 
     /// @notice Borrowers currently in the queue (approximate top-down order) and their risk keys.
@@ -254,22 +253,22 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         view
         returns (address[] memory borrowers, uint256[] memory keys)
     {
-        return _deleverage.eligibleBorrowers(maxCount);
+        return _settlementQueue.eligibleBorrowers(maxCount);
     }
 
     /// @notice Borrower's personal watermark LTV and the corresponding watermark-derived slice.
     function watermarkInfo(address borrower) external view returns (uint256 watermarkLtv, uint256 sliceAssets) {
-        DeleverageQueueLib.State storage queue = _deleverage;
+        SettlementQueueLib.State storage queue = _settlementQueue;
         watermarkLtv = queue.watermarkOf(borrower);
         if (watermarkLtv == 0) return (0, 0);
-        sliceAssets = queue.watermarkSlice(borrower, _marketView(MARKET_ID, borrower));
+        sliceAssets = queue.watermarkSlice(borrower, _marketView(marketId, borrower));
     }
 
     /// @notice One-call borrower dashboard: collateral split, activation unlock, suspicion, debt,
-    ///         personal watermark, and live deleverage exposure (queue root + allowed slice).
+    ///         personal watermark, and live settle exposure (queue root + allowed slice).
     function positionOf(address borrower) external view returns (PositionView memory positionView) {
-        uint256 suspicion = _suspectsRegistry.suspicion(MARKET_ID, borrower);
-        (, uint256 rawCollateral) = _currentPosition(MARKET_ID, borrower);
+        uint256 suspicion = _suspectsRegistry.suspicion(marketId, borrower);
+        (, uint256 rawCollateral) = _currentPosition(marketId, borrower);
 
         (positionView.active, positionView.activating, positionView.dust) =
             _activation.bucketsOf(borrower, rawCollateral);
@@ -278,10 +277,10 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         positionView.readyToSettle =
             positionView.unlockAt != 0 && !_isFrozen && block.timestamp >= positionView.unlockAt;
         positionView.suspicion = suspicion;
-        positionView.debtAssets = _debtAssets(MARKET_ID, borrower);
-        positionView.watermarkLtv = _deleverage.watermarkOf(borrower);
-        positionView.isQueueRoot = _deleverage.peekRoot() == borrower;
-        positionView.allowedSlice = _allowedSlice(borrower, _marketView(MARKET_ID, borrower));
+        positionView.debtAssets = _debtAssets(marketId, borrower);
+        positionView.watermarkLtv = _settlementQueue.watermarkOf(borrower);
+        positionView.isQueueRoot = _settlementQueue.peekRoot() == borrower;
+        positionView.allowedSlice = _allowedSlice(borrower, _marketView(marketId, borrower));
     }
 
     // ---
@@ -295,11 +294,11 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, borrower);
 
         // settle anything already matured, then book the deposit (promotes past the dust threshold)
-        uint256 suspicion = _suspectsRegistry.suspicion(MARKET_ID, borrower);
+        uint256 suspicion = _suspectsRegistry.suspicion(marketId, borrower);
         _activation.syncActivation(borrower, suspicion, _isFrozen);
         _activation.deposit(borrower, hookData.assets, rawCollateral);
 
-        _deleverage.sync(borrower, borrowShares, rawCollateral + hookData.assets);
+        _settlementQueue.sync(borrower, borrowShares, rawCollateral + hookData.assets);
     }
 
     function _handleWithdrawCollateral(Id id, WithdrawCollateralHookData memory hookData) internal {
@@ -314,14 +313,16 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
 
         // settle activation, then debit the buckets (dust, activating, active) and reverse any same-tx
         // flash charge on the load (the lib owns the undo); a revert below rolls this back
-        uint256 suspicion = _suspectsRegistry.suspicion(MARKET_ID, borrower);
+        uint256 suspicion = _suspectsRegistry.suspicion(marketId, borrower);
         _activation.syncActivation(borrower, suspicion, _isFrozen);
         uint256 active = _activation.withdraw(borrower, hookData.assets, rawCollateral, _activatingHold);
 
         // with open debt, the remaining active must still cover it at LLTV (stricter than core's raw check)
         if (borrowShares != 0) _requireActiveHealth(id, borrower, active, 0);
 
-        _deleverage.sync(borrower, borrowShares, rawCollateral > hookData.assets ? rawCollateral - hookData.assets : 0);
+        _settlementQueue.sync(
+            borrower, borrowShares, rawCollateral > hookData.assets ? rawCollateral - hookData.assets : 0
+        );
     }
 
     function _handleBorrow(Id id, BorrowHookData memory hookData) internal {
@@ -334,19 +335,19 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
 
         // Stricter Lido constraint: borrow capacity uses active (matured) collateral only. The core's
         // standard health check uses raw collateral; this adds the active-only ceiling on the settled state.
-        uint256 suspicion = _suspectsRegistry.suspicion(MARKET_ID, hookData.onBehalf);
+        uint256 suspicion = _suspectsRegistry.suspicion(marketId, hookData.onBehalf);
         uint256 active = _activation.syncActivation(hookData.onBehalf, suspicion, _isFrozen);
         _requireActiveHealth(id, hookData.onBehalf, active, hookData.assets);
 
         (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.onBehalf);
-        _deleverage.sync(hookData.onBehalf, currentBorrowShares + hookData.shares, currentRawCollateral);
+        _settlementQueue.sync(hookData.onBehalf, currentBorrowShares + hookData.shares, currentRawCollateral);
     }
 
     function _handleRepay(Id id, RepayHookData memory hookData) internal {
         // repay lowers debt: re-key the queue on the post-repay shares (drops out at zero debt)
         (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, hookData.onBehalf);
         uint256 projected = borrowShares > hookData.shares ? borrowShares - hookData.shares : 0;
-        _deleverage.sync(hookData.onBehalf, projected, rawCollateral);
+        _settlementQueue.sync(hookData.onBehalf, projected, rawCollateral);
     }
 
     function _handleLiquidate(Id id, LiquidateHookData memory hookData) internal {
@@ -359,50 +360,50 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         // re-key on the post-liquidation position
         uint256 shares = borrowShares > hookData.repaidShares ? borrowShares - hookData.repaidShares : 0;
         uint256 raw = rawCollateral > hookData.seizedAssets ? rawCollateral - hookData.seizedAssets : 0;
-        _deleverage.sync(borrower, shares, raw);
+        _settlementQueue.sync(borrower, shares, raw);
     }
 
-    function _handleDeleverage(Id id, DeleverageHookData memory hookData) internal {
+    function _handleSettle(Id id, SettleHookData memory hookData) internal {
         address borrower = hookData.borrower;
 
-        if (hookData.assetsToCancel < _deleverage.policy.fallbackMinRequest) revert DeleverageBelowMin();
+        if (hookData.debtCanceled < _settlementQueue.policy.fallbackMinRequest) revert SettlementBelowMin();
 
         // Borrower market view, re-read from core (payload stays minimal). The core already bounded the
         // cut (seize <= raw, shares <= debt); the controller adds only its policy layer.
-        DeleverageQueueLib.MarketView memory marketView = _marketView(id, borrower);
+        SettlementQueueLib.MarketView memory marketView = _marketView(id, borrower);
 
         // bad-debt gate on the queue root; reuse the payload when the root is the target, else read the root
-        address root = _deleverage.peekRoot();
+        address root = _settlementQueue.peekRoot();
         if (root != address(0)) {
             (uint256 rootShares, uint256 rootRaw) =
                 root == borrower ? (marketView.borrowShares, marketView.rawCollateral) : _currentPosition(id, root);
             if (_isBadDebt(
                     rootShares, rootRaw, marketView.totalBorrowAssets, marketView.totalBorrowShares, marketView.price
                 )) {
-                revert DeleverageRootBadDebt();
+                revert SettlementRootBadDebt();
             }
         }
 
         // eligibility + cut bound: only the queue root or a watermarked borrower may be cut, capped at the
         // policy slice. A lone root's slice is unbounded here; the payload sanity checks below cap it.
         uint256 allowed = _allowedSlice(borrower, marketView);
-        if (allowed == 0) revert DeleverageIneligible();
-        if (hookData.assetsToCancel > allowed) revert DeleverageExceedsAllowed();
+        if (allowed == 0) revert SettlementIneligible();
+        if (hookData.debtCanceled > allowed) revert SettlementExceedsAllowed();
 
         // payload consistency (core already enforces these; cheap to re-check on the trusted values, no reads)
         uint256 sharesToBurn =
-            hookData.assetsToCancel.toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
-        if (sharesToBurn > marketView.borrowShares) revert DeleverageExceedsDebt();
+            hookData.debtCanceled.toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+        if (sharesToBurn > marketView.borrowShares) revert SettlementExceedsDebt();
         if (hookData.collateralSeized == 0 || hookData.collateralSeized > marketView.rawCollateral) {
-            revert DeleverageInvalidSeize();
+            revert SettlementInvalidSeize();
         }
 
         // settle activation, then debit buckets by the exact amount core seizes from raw (lockstep)
-        uint256 suspicion = _suspectsRegistry.suspicion(MARKET_ID, borrower);
+        uint256 suspicion = _suspectsRegistry.suspicion(marketId, borrower);
         _activation.syncActivation(borrower, suspicion, _isFrozen);
         _activation.consume(borrower, hookData.collateralSeized, marketView.rawCollateral, 0);
 
-        _deleverage.sync(
+        _settlementQueue.sync(
             borrower, marketView.borrowShares - sharesToBurn, marketView.rawCollateral - hookData.collateralSeized
         );
     }
@@ -413,12 +414,12 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
 
     /// @dev Single source for the hook cap and the sizing views: the queue's policy slice with the
     ///      dust extension, fed the activation minimum as the dust threshold.
-    function _allowedSlice(address borrower, DeleverageQueueLib.MarketView memory marketView)
+    function _allowedSlice(address borrower, SettlementQueueLib.MarketView memory marketView)
         internal
         view
         returns (uint256)
     {
-        return _deleverage.allowedSlice(borrower, marketView, _activation.config.minActivationAmount);
+        return _settlementQueue.allowedSlice(borrower, marketView, _activation.config.minActivationAmount);
     }
 
     function _applyConfig(ActivationLib.Config memory cfg) internal {
@@ -436,15 +437,15 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     }
 
     function _debtAssets(Id id, address borrower) internal view returns (uint256) {
-        (, uint128 borrowShares,) = LIDO_BLUE.position(id, borrower);
+        (, uint128 borrowShares,) = LIDO_LEND.position(id, borrower);
         if (borrowShares == 0) return 0;
-        (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = LIDO_BLUE.market(id);
+        (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = LIDO_LEND.market(id);
         return uint256(borrowShares).toAssetsUp(totalBorrowAssets, totalBorrowShares);
     }
 
     /// @dev Max loan assets `active` collateral can back at the market LLTV.
     function _maxBorrow(Id id, uint256 active) internal view returns (uint256) {
-        (,, address oracle,, uint256 lltv) = LIDO_BLUE.idToMarketParams(id);
+        (,, address oracle,, uint256 lltv) = LIDO_LEND.idToMarketParams(id);
         return active.mulDivDown(IOracle(oracle).price(), ORACLE_PRICE_SCALE).wMulDown(lltv);
     }
 
@@ -467,7 +468,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     function _marketView(Id id, address borrower)
         internal
         view
-        returns (DeleverageQueueLib.MarketView memory marketView)
+        returns (SettlementQueueLib.MarketView memory marketView)
     {
         marketView.price = _collateralPrice(id);
         (marketView.borrowShares, marketView.rawCollateral) = _currentPosition(id, borrower);
@@ -479,7 +480,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         view
         returns (uint256 borrowShares, uint256 rawCollateral)
     {
-        (, uint128 bs, uint128 rc) = LIDO_BLUE.position(id, borrower);
+        (, uint128 bs, uint128 rc) = LIDO_LEND.position(id, borrower);
         return (bs, rc);
     }
 
@@ -488,7 +489,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     ///      reduces to the raw market read).
     function _totalBorrowTotals(Id id) internal view returns (uint256 totalBorrowAssets, uint256 totalBorrowShares) {
         (,, totalBorrowAssets, totalBorrowShares) =
-            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(LIDO_BLUE)), _marketParamsOf(id));
+            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(LIDO_LEND)), _marketParamsOf(id));
     }
 
     function _marketParamsOf(Id id) internal view returns (MarketParams memory marketParams) {
@@ -498,11 +499,11 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
             marketParams.oracle,
             marketParams.irm,
             marketParams.lltv
-        ) = LIDO_BLUE.idToMarketParams(id);
+        ) = LIDO_LEND.idToMarketParams(id);
     }
 
     function _collateralPrice(Id id) internal view returns (uint256) {
-        (,, address oracle,,) = LIDO_BLUE.idToMarketParams(id);
+        (,, address oracle,,) = LIDO_LEND.idToMarketParams(id);
         return IOracle(oracle).price();
     }
 
@@ -513,6 +514,6 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     /// @dev Hard-block: a banned address may not borrow, receive a borrow, or initiate one. The soft
     ///      suspicion score only lengthens activation; a ban is the binary stop on the borrow path.
     function _checkNotBlocked(address user) internal view {
-        if (_suspectsRegistry.isBanned(MARKET_ID, user)) revert AddressBlocked();
+        if (_suspectsRegistry.isBanned(marketId, user)) revert AddressBlocked();
     }
 }

@@ -9,7 +9,7 @@ import {
 } from "@vault-v2/lib/morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
 import {Test} from "forge-std/Test.sol";
-import {LidoBlueDeployer} from "../../script/lib/LidoBlueDeployer.sol";
+import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 struct LidoMarketParams {
     address loanToken;
@@ -36,10 +36,10 @@ interface IWstETH is IERC20Like {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-interface ILidoBlueLike {
+interface ILidoLendLike {
     function enableIrm(address irm) external;
     function enableLltv(uint256 lltv) external;
-    function createMarket(LidoMarketParams memory marketParams, address controller, bool deleverageEnabled) external;
+    function createMarket(LidoMarketParams memory marketParams, address controller, bool enableSettlement) external;
     function supply(
         LidoMarketParams memory marketParams,
         uint256 assets,
@@ -60,11 +60,12 @@ interface ILidoBlueLike {
         address onBehalf,
         address receiver
     ) external returns (uint256, uint256);
-    function deleverage(
+    function settle(
         LidoMarketParams memory marketParams,
+        uint256 supplyAssets,
         uint256 supplyShares,
-        address borrower,
         address onBehalf,
+        address borrower,
         address receiver
     ) external returns (uint256, uint256);
     function position(bytes32 id, address user)
@@ -73,7 +74,7 @@ interface ILidoBlueLike {
         returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral);
 }
 
-contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
+contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
     using AdapterMarketParamsLib for AdapterMarketParams;
 
     address internal constant CURATOR = address(0x1001);
@@ -98,7 +99,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
     struct IntegrationContext {
         IERC20Like loanToken;
         IERC20Like collateralToken;
-        ILidoBlueLike market;
+        ILidoLendLike market;
         LidoMarketParams lidoParams;
         AdapterMarketParams adapterParams;
         bytes32 marketId;
@@ -120,7 +121,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
         ctx.vault.withdraw(10 ether, USER, USER);
 
         _forceDeallocateVaultUser(ctx);
-        _deleverageDirectLenderAndAssert(ctx, directSupplySharesBefore);
+        _settleDirectLenderAndAssert(ctx, directSupplySharesBefore);
 
         (uint256 userDirectSupplySharesAfter,,) = ctx.market.position(ctx.marketId, USER);
         assertTrue(userDirectSupplySharesAfter > 0, "direct market position remains with user");
@@ -142,7 +143,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
                 collateralToken: WSTETH_ADDRESS,
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
-                deleverageEnabled: true,
+                enableSettlement: true,
                 activation: ActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
@@ -160,7 +161,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
             })
         );
 
-        ctx.market = ILidoBlueLike(d.core);
+        ctx.market = ILidoLendLike(d.core);
         ctx.lidoParams = LidoMarketParams({
             loanToken: WETH_ADDRESS, collateralToken: WSTETH_ADDRESS, oracle: d.oracle, irm: d.irm, lltv: LLTV
         });
@@ -247,13 +248,13 @@ contract MetaMorphoV2IntegrationTest is Test, LidoBlueDeployer {
         ctx.vault.withdraw(10 ether, SOLVER, USER);
     }
 
-    function _deleverageDirectLenderAndAssert(IntegrationContext memory ctx, uint256 supplyShares) internal {
+    function _settleDirectLenderAndAssert(IntegrationContext memory ctx, uint256 supplyShares) internal {
         uint256 directCollateralBefore = ctx.collateralToken.balanceOf(DIRECT_LENDER);
         (,, uint128 borrowerRawCollateralBefore) = ctx.market.position(ctx.marketId, BORROWER);
 
         vm.prank(DIRECT_LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.market.deleverage(ctx.lidoParams, supplyShares, BORROWER, DIRECT_LENDER, DIRECT_LENDER);
+            ctx.market.settle(ctx.lidoParams, 0, supplyShares, DIRECT_LENDER, BORROWER, DIRECT_LENDER);
 
         (uint256 directSupplySharesAfterFallback,,) = ctx.market.position(ctx.marketId, DIRECT_LENDER);
         (,, uint128 borrowerRawCollateralAfter) = ctx.market.position(ctx.marketId, BORROWER);

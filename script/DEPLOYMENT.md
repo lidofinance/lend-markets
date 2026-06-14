@@ -6,7 +6,7 @@ activation parameters and suspects-registry bootstrap in the script are placehol
 
 ## What gets deployed
 
-1. `LidoBlue` — core implementation + `OssifiableProxy`; `initialize(owner = msg.sender)`.
+1. `LidoLend` — core implementation + `OssifiableProxy`; `initialize(owner = msg.sender)`.
 2. `SuspectsRegistry` implementation + `OssifiableProxy`; `initialize(admin, guardians, quorum)`.
    The script ships a placeholder bootstrap (deployer is the sole guardian, `quorum = 1`); the
    registry rejects `quorum = 0`.
@@ -14,10 +14,11 @@ activation parameters and suspects-registry bootstrap in the script are placehol
 4. `AdaptiveCurveIrm` — Morpho Blue's adaptive-curve IRM (unmodified upstream).
 5. `WethWstEthController` implementation (constructor bakes in `(core, marketId)`) +
    `OssifiableProxy`; `initialize(admin, suspectsRegistry, activationConfig)`.
-6. `createMarket(params, controllerProxy, deleverageEnabled = true)` on the core, after
-   `enableIrm` and `enableLltv(0.8e18)`. The controller binding is immutable for the market.
-7. `LidoBlueERC4626` — single-market ERC-4626 wrapper over the market, reading the
-   controller's deleverage view; constructor `(core, params, controllerProxy, name, symbol)`.
+6. `createMarket(params, controllerProxy, enableSettlement = true)` on the core. This owner-gated
+   call auto-enables the IRM and LLTV (the standalone `enableIrm`/`enableLltv` steps were removed).
+   The controller binding is immutable for the market.
+7. `LidoLendERC4626` — single-market ERC-4626 wrapper over the market, reading the
+   controller's settle view; constructor `(core, params, controllerProxy, name, symbol)`.
 
 ## Pre-flight
 
@@ -78,7 +79,7 @@ Then:
       `RISK_STEWARD_ROLE`, `PAUSER_ROLE`, `UNPAUSER_ROLE`, `COMMITTEE_ROLE`.
 - [ ] Retune the activation config if the deploy-time placeholder needs changing (`setConfig`, or
       the fast risk-reducing `tightenConfig`).
-- [ ] Set deleverage policy if defaults need overriding (`setSliceFloor`, `setFallbackMinRequest`),
+- [ ] Set settle policy if defaults need overriding (`setSliceFloor`, `setFallbackMinRequest`),
       and the committee Sybil hold (`setActivatingHold`) if used.
 - [ ] Confirm each proxy points at the expected implementation
       (`OssifiableProxy.proxy__getImplementation()`).

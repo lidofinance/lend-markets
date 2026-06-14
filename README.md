@@ -1,7 +1,8 @@
 # Lido Lending
 
-Draft Morpho Blue fork for Lido Lending markets. The current implementation keeps Morpho-style
-market accounting in an immutable core and puts Lido-specific policy in per-market controllers.
+Draft Lido Lending markets built on a Morpho Blue fork. Morpho-style market accounting lives in a
+vendored core (`lib/lido-lend`), and Lido-specific policy lives in a per-market controller in this
+repo.
 
 Status: draft, unaudited, not production-ready.
 
@@ -35,7 +36,7 @@ MAINNET_RPC_URL=<rpc-url> forge test --match-path 'test/integration/*.t.sol' --f
 Format Solidity:
 
 ```sh
-forge fmt src/MorphoBlueFork.sol src/controllers src/interfaces src/oracle test
+forge fmt src/LidoLendERC4626.sol src/SuspectsRegistry.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test
 ```
 
 ## Repository Tooling
@@ -74,47 +75,53 @@ git config core.hooksPath .githooks
 
 ```text
 src/
-├── MorphoBlueFork.sol
+├── LidoLendERC4626.sol            # single-market ERC-4626 vault over the market
+├── SuspectsRegistry.sol           # suspects / access registry
 ├── controllers/
-│   ├── LidoMarketController.sol
-│   └── MarketAccessRegistry.sol
+│   └── WethWstEthController.sol    # Lido policy: hooks, settlement queue, watermark, activation
 ├── interfaces/
-│   ├── IMarketAccessRegistry.sol
-│   └── IMarketController.sol
+│   └── ISuspectsRegistry.sol
+├── libs/
+│   ├── ActivationLib.sol
+│   ├── MaxHeapLib.sol
+│   └── SettlementQueueLib.sol
 ├── oracle/
 │   └── WstEthRateOracle.sol
-└── proxy/
-    └── OssifiableProxy.sol
+├── periphery/
+│   └── LidoLendDepositGateway.sol  # ETH / stETH / WETH deposit zaps
+├── proxy/
+│   └── OssifiableProxy.sol
+└── utils/
+    └── PausableUntil.sol
 ```
 
 ## Architecture
 
-`MorphoBlueFork` is the Morpho-compatible core:
+The vendored core (`lib/lido-lend`, contract `LidoLend`) is the Morpho-compatible market.
 
-- deployed once by constructor, with no core proxy or upgrade path;
-- preserves upstream `MarketParams`, `Position`, `Market`, and market id derivation;
-- preserves standard Morpho action signatures where possible;
-- binds an optional controller once at market creation;
-- binds `deleverage` availability once at market creation;
-- calls controller hooks for controller-enabled markets.
+- Upgradeable behind `OssifiableProxy`, with owner-gated market creation.
+- Preserves upstream `MarketParams`, `Position`, `Market`, and market id derivation.
+- Preserves standard Morpho action signatures where possible.
+- Binds an optional controller and settlement availability once at market creation.
+- Calls controller hooks for controller-enabled markets.
 
-`LidoMarketController` owns Lido policy:
+`WethWstEthController` owns Lido policy.
 
-- matured, activating, and dust collateral accounting;
-- matured-only borrow capacity checks;
-- freeze and pause flags;
-- fallback eligibility and matured-collateral caps;
-- market-level policy configuration.
+- Active, activating, and dust collateral accounting.
+- Active-only borrow capacity checks.
+- Freeze and pause flags.
+- Settlement eligibility, the settlement queue, and per-borrower watermarks.
+- Market-level policy configuration.
 
-`MarketAccessRegistry` owns shared address and position restrictions used by controllers.
+`SuspectsRegistry` owns shared address restrictions used by the controller.
 
 ## Fork Notes
 
-`src/MorphoBlueFork.sol` is the only direct Morpho Blue core fork in this draft. See
-`FORK_NOTES.md` for the fork point and the main contract-level changes.
+The Morpho Blue fork is the vendored `lib/lido-lend` dependency. See `FORK_NOTES.md`, which points
+to `lib/lido-lend/FORK_NOTES.md` for the fork point and core-level changes.
 
 ## License
 
-Repository source files use SPDX headers. The Morpho Blue fork point is pinned to upstream
-`main` commit `1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a`, where `src/Morpho.sol` is marked
-`GPL-2.0-or-later`. See `LICENSE` and `FORK_NOTES.md`.
+Repository source files use SPDX headers. The Morpho Blue fork point is pinned in the `lib/lido-lend`
+dependency to upstream `main` commit `1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a`, where `src/Morpho.sol`
+is marked `GPL-2.0-or-later`. See `LICENSE` and `lib/lido-lend/FORK_NOTES.md`.

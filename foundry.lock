@@ -8,6 +8,15 @@
   "lib/lido-blue-irm": {
     "rev": "2bce6da3ebe910ceeec963781aa3f4b4322c296e"
   },
+  "lib/lido-lend": {
+    "branch": {
+      "name": "refactor/lido-lend-and-spec",
+      "rev": "a0d59402d9226c28d3499928ed49798e46b52bd0"
+    }
+  },
+  "lib/lido-lend-irm": {
+    "rev": "2bce6da3ebe910ceeec963781aa3f4b4322c296e"
+  },
   "lib/morpho-blue": {
     "rev": "1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a"
   },
