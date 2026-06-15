@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
-import {UtilsLib} from "@lido-lend/src/libraries/UtilsLib.sol";
-import {SlotDerivation} from "@openzeppelin/contracts/utils/SlotDerivation.sol";
-import {TransientSlot} from "@openzeppelin/contracts/utils/TransientSlot.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 /// @title CollateralActivationLib
 /// @author Lido Lending contributors.
@@ -26,17 +23,11 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///      cannot dodge the throttle. The inflow decays linearly and fully clears in `inflowDecayWindow`
 ///      regardless of magnitude.
 /// @dev The caller embeds `State`, forwards calls, and supplies the external reads the lib cannot make
-///      (suspicion). The only state outside `State` is the per-tx transient counter for the
+///      (the strike count). The only state outside `State` is the per-tx transient counter for the
 ///      flash-loan undo.
 library CollateralActivationLib {
-    using MathLib for uint256;
-    using UtilsLib for uint256;
-    using SlotDerivation for bytes32;
-    using TransientSlot for bytes32;
-    using TransientSlot for TransientSlot.Uint256Slot;
+    using SafeCast for uint256;
 
-    /// @dev Unlock sentinel for a banned position (suspicion == WAD): never reached.
-    uint256 internal constant NEVER_UNLOCK = 2 ** 64 - 1 seconds;
     /// @dev Sanity ceiling for governance-set delays.
     uint256 internal constant MAX_DELAY_BOUND = 7 days;
 
@@ -68,7 +59,7 @@ library CollateralActivationLib {
     /// @param maxDelayInflow Inflow reference at which the base delay reaches the cap.
     /// @param inflowDecayWindow Seconds for the inflow to fully decay after the last deposit.
     /// @param minDecayInflow Floor of the decay-rate basis, so a small inflow still decays in bounded time.
-    /// @param maxSuspicionDelay Suspicion surcharge cap, approached as suspicion nears WAD.
+    /// @param delayPerStrike Activation-delay surcharge added per strike.
     /// @param activatingHold Committee Sybil hold honored by `withdraw`. 0 disables it. Forced paths pass floor 0.
     /// @param minActivationAmount Dust threshold. Collateral below it does not enter activation.
     struct Config {
@@ -79,8 +70,8 @@ library CollateralActivationLib {
         // inflow decay
         uint64 inflowDecayWindow;
         uint128 minDecayInflow;
-        // suspicion surcharge
-        uint64 maxSuspicionDelay;
+        // strike surcharge
+        uint64 delayPerStrike;
         // sybil hold on activating collateral
         uint128 activatingHold;
         // dust threshold (anti-griefing)
@@ -104,7 +95,7 @@ library CollateralActivationLib {
         if (cfg.minActivationDelay == 0) revert BadConfig();
         if (cfg.minActivationDelay > cfg.maxActivationDelay) revert BadConfig();
         if (cfg.maxActivationDelay > MAX_DELAY_BOUND) revert BadConfig();
-        if (cfg.maxSuspicionDelay > MAX_DELAY_BOUND) revert BadConfig();
+        if (cfg.delayPerStrike > MAX_DELAY_BOUND) revert BadConfig();
         if (cfg.minActivationAmount == 0) revert BadConfig();
         if (cfg.maxDelayInflow == 0 || cfg.inflowDecayWindow == 0 || cfg.minDecayInflow == 0) revert BadConfig();
         $.config = cfg;
@@ -150,13 +141,13 @@ library CollateralActivationLib {
     }
 
     /// @notice Mature the borrower's activation lot into `active` once its timer has elapsed. Returns the
-    ///         post-mature `active`. A banned address never matures. The inflow is untouched: it only decays
-    ///         with time, so a matured lot still weighs on the delay.
-    function syncActivation(State storage $, address borrower, uint256 suspicion) internal returns (uint256 active) {
+    ///         post-mature `active`. The inflow is untouched: it only decays with time, so a matured lot
+    ///         still weighs on the delay. The caller skips this for banned or frozen borrowers.
+    function syncActivation(State storage $, address borrower, uint256 strikes) internal returns (uint256 active) {
         Position storage position = $.positions[borrower];
 
-        // mature only with a timer set and elapsed (a banned address never elapses)
-        if (position.activatingStart > 0 && block.timestamp >= _getUnlockTime($, position, suspicion)) {
+        // mature only with a timer set and elapsed
+        if (position.activatingStart > 0 && block.timestamp >= _getUnlockTime($, position, strikes)) {
             uint128 activated = position.activating;
             position.active += activated;
             position.activating = 0;
@@ -207,11 +198,11 @@ library CollateralActivationLib {
         return position.active;
     }
 
-    /// @notice Unlock timestamp of the borrower's activating lot, 0 if none, NEVER_UNLOCK if banned.
-    function getUnlockTime(State storage $, address borrower, uint256 suspicion) internal view returns (uint256) {
+    /// @notice Unlock timestamp of the borrower's activating lot, 0 if none.
+    function getUnlockTime(State storage $, address borrower, uint256 strikes) internal view returns (uint256) {
         Position storage position = $.positions[borrower];
         if (position.activatingStart == 0) return 0;
-        return _getUnlockTime($, position, suspicion);
+        return _getUnlockTime($, position, strikes);
     }
 
     /// @notice Borrower's collateral split: active (matured), activating (in timer), dust.
@@ -266,14 +257,13 @@ library CollateralActivationLib {
         _setTxInflowAdded(borrower, inflowInTx - inflowDecrement);
     }
 
-    /// @dev Unlock = start + frozen base delay + live suspicion surcharge.
-    function _getUnlockTime(State storage $, Position storage position, uint256 suspicion)
+    /// @dev Unlock = start + frozen base delay + strike surcharge (strikes * delayPerStrike).
+    function _getUnlockTime(State storage $, Position storage position, uint256 strikes)
         private
         view
         returns (uint256)
     {
-        if (suspicion >= WAD) return NEVER_UNLOCK; // banned, unreachable
-        uint256 surcharge = suspicion * $.config.maxSuspicionDelay / WAD;
+        uint256 surcharge = strikes * $.config.delayPerStrike;
         return uint256(position.activatingStart) + position.activatingDelay + surcharge;
     }
 
@@ -299,18 +289,22 @@ library CollateralActivationLib {
         }
 
         uint256 span = cfg.maxActivationDelay - cfg.minActivationDelay;
-        uint256 ratioWad = effectiveInflow.wDivDown(cfg.maxDelayInflow);
-
-        return uint256(cfg.minActivationDelay) + span * ratioWad / WAD;
+        return uint256(cfg.minActivationDelay) + span * effectiveInflow / cfg.maxDelayInflow;
     }
 
     /// @dev Per-tx, per-borrower transient slot for the inflow added this tx (flash-loan undo).
-    function _getTxInflowAdded(address borrower) private view returns (uint256) {
-        return TX_INFLOW_ADDED_NAMESPACE.deriveMapping(borrower).asUint256().tload();
+    function _getTxInflowAdded(address borrower) private view returns (uint256 added) {
+        bytes32 slot = keccak256(abi.encode(TX_INFLOW_ADDED_NAMESPACE, borrower));
+        assembly ("memory-safe") {
+            added := tload(slot)
+        }
     }
 
     function _setTxInflowAdded(address borrower, uint256 value) private {
-        TX_INFLOW_ADDED_NAMESPACE.deriveMapping(borrower).asUint256().tstore(value);
+        bytes32 slot = keccak256(abi.encode(TX_INFLOW_ADDED_NAMESPACE, borrower));
+        assembly ("memory-safe") {
+            tstore(slot, value)
+        }
     }
 
     /// @dev Clear the activation timer. No activating balance means no timer.

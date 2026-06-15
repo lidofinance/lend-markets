@@ -50,7 +50,7 @@ the contract's `layout at`.
 ## Naming
 
 - **Contracts**: `PascalCase`. Match the file name.
-- **Interfaces**: prefixed with `I` (`ISuspectsRegistry`, `IMorphoBase`).
+- **Interfaces**: prefixed with `I` (`IGuardianSignals`, `IMorphoBase`).
 - **Libraries**: suffixed with `Lib` (`MaxHeapLib`, `SettlementQueueLib`).
 - **Functions / variables / parameters**: `camelCase`.
 - **Internal / private** helpers: leading underscore (`_requireActiveHealth`, `_currentPosition`).

@@ -7,7 +7,7 @@ activation parameters and suspects-registry bootstrap in the script are placehol
 ## What gets deployed
 
 1. `LidoLend` — core implementation + `OssifiableProxy`; `initialize(owner = msg.sender)`.
-2. `SuspectsRegistry` implementation + `OssifiableProxy`; `initialize(admin, guardians, quorum)`.
+2. `GuardianSignals` implementation + `OssifiableProxy`; `initialize(admin, guardians, quorum)`.
    The script ships a placeholder bootstrap (deployer is the sole guardian, `quorum = 1`); the
    registry rejects `quorum = 0`.
 3. `WstEthRateOracle` — wraps Lido's `stEthPerToken` as a Morpho-style oracle.
@@ -65,7 +65,7 @@ The script puts `msg.sender` into several privileged positions. Rotate each:
 
 - [ ] `core` owner → ops multisig (controls market creation, IRM/LLTV enable, fee setting).
 - [ ] Core `OssifiableProxy` admin (`proxy__changeAdmin(...)`) — controls core upgrades.
-- [ ] `SuspectsRegistry` `DEFAULT_ADMIN_ROLE` (`grantRole` + renounce on deployer) — manages
+- [ ] `GuardianSignals` `DEFAULT_ADMIN_ROLE` (`grantRole` + renounce on deployer) — manages
       guardians and quorum.
 - [ ] Registry `OssifiableProxy` admin (`proxy__changeAdmin(...)`).
 - [ ] Controller `OssifiableProxy` admin (`proxy__changeAdmin(...)`) — controls controller upgrades.

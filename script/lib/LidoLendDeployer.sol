@@ -17,7 +17,7 @@ interface IControllerConfigurator {
 }
 
 /// @title LidoLendDeployer
-/// @notice Shared deploy steps for a Lido Lending market: core, suspects registry, oracle, IRM,
+/// @notice Shared deploy steps for a Lido Lending market: core, guardian-signals registry, oracle, IRM,
 ///         controller (behind a proxy), the market, and the ERC-4626 vault.
 /// @dev Inherited by `script/DeployMarket.s.sol` (broadcasts the deploys) and by scenario/integration
 ///      tests in `test/` (drive it inside `setUp`). Single-source so script and tests cannot drift.
@@ -46,8 +46,8 @@ abstract contract LidoLendDeployer {
         // inflow decay
         uint64 inflowDecayWindow;
         uint128 minDecayInflow;
-        // suspicion surcharge
-        uint64 maxSuspicionDelay;
+        // strike surcharge
+        uint64 delayPerStrike;
         // sybil hold on activating collateral
         uint128 activatingHold;
         // dust threshold (anti-griefing)
@@ -56,7 +56,7 @@ abstract contract LidoLendDeployer {
 
     struct Deployed {
         address core;
-        address suspectsRegistry;
+        address guardianSignals;
         address oracle;
         address irm;
         address controllerProxy;
@@ -77,7 +77,7 @@ abstract contract LidoLendDeployer {
         bool enableSettlement;
         ActivationConfig activation;
         SlicePolicyConfig slicePolicy;
-        // Suspects registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
+        // Guardian-signals registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
         // `1 <= quorum <= guardians.length`; swap in the real guardian set post-deploy.
         address[] guardians;
         uint256 quorum;
@@ -88,7 +88,7 @@ abstract contract LidoLendDeployer {
     /// @notice One-shot deploy of the whole market stack.
     function _deployForkStack(DeployConfig memory cfg) internal returns (Deployed memory d) {
         d.core = _deployCore(cfg.admin);
-        d.suspectsRegistry = _deploySuspectsRegistry(cfg.admin, cfg.guardians, cfg.quorum);
+        d.guardianSignals = _deployGuardianSignals(cfg.admin, cfg.guardians, cfg.quorum);
         d.oracle = _deployOracle(cfg.oracleSource);
         d.irm = _deployIrm(d.core);
 
@@ -98,7 +98,7 @@ abstract contract LidoLendDeployer {
         d.marketId = d.params.id();
 
         (d.controllerProxy, d.controllerImpl) =
-            _deployController(d.core, d.marketId, d.suspectsRegistry, cfg.admin, cfg.activation);
+            _deployController(d.core, d.marketId, d.guardianSignals, cfg.admin, cfg.activation);
 
         // New core: createMarket is owner-gated and auto-enables the IRM and LLTV (standalone
         // enableIrm/enableLltv were removed). The bool gates whether settle is enabled for the market.
@@ -122,13 +122,13 @@ abstract contract LidoLendDeployer {
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
-    /// @dev Suspects registry behind a proxy. `initialize(admin, guardians, quorum)`.
-    function _deploySuspectsRegistry(address admin, address[] memory guardians, uint256 quorum)
+    /// @dev Guardian-signals registry behind a proxy. `initialize(admin, guardians, quorum)`.
+    function _deployGuardianSignals(address admin, address[] memory guardians, uint256 quorum)
         internal
         virtual
         returns (address)
     {
-        address impl = _deployArtifact("src/SuspectsRegistry.sol:SuspectsRegistry", "");
+        address impl = _deployArtifact("src/GuardianSignals.sol:GuardianSignals", "");
         bytes memory initData =
             abi.encodeWithSignature("initialize(address,address[],uint256)", admin, guardians, quorum);
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
@@ -146,11 +146,11 @@ abstract contract LidoLendDeployer {
     }
 
     /// @dev Controller behind a proxy. The impl bakes `(lidoLend, marketId)` into immutables at deploy,
-    ///      then `initialize(admin, suspects, activationConfig)` runs through the proxy.
+    ///      then `initialize(admin, guardianSignals, activationConfig)` runs through the proxy.
     function _deployController(
         address core,
         Id marketId,
-        address suspects,
+        address guardianSignals,
         address admin,
         ActivationConfig memory activation
     ) internal virtual returns (address proxy, address impl) {
@@ -160,7 +160,7 @@ abstract contract LidoLendDeployer {
         bytes memory initData = abi.encodeWithSignature(
             "initialize(address,address,(uint64,uint64,uint128,uint64,uint128,uint64,uint128,uint128))",
             admin,
-            suspects,
+            guardianSignals,
             activation
         );
         proxy = _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));

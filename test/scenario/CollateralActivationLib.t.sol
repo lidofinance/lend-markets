@@ -36,7 +36,7 @@ contract CollateralActivationLibTest is Test {
             CollateralActivationLib.Config({
                 minActivationDelay: 1 minutes,
                 maxActivationDelay: 1 hours,
-                maxSuspicionDelay: 1 hours,
+                delayPerStrike: 1 hours,
                 activatingHold: 0,
                 inflowDecayWindow: 1 days,
                 maxDelayInflow: type(uint128).max,

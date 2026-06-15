@@ -44,7 +44,7 @@ contract DeployMarket is Script, LidoLendDeployer {
                 activation: ActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    maxSuspicionDelay: 2 hours,
+                    delayPerStrike: 2 hours,
                     activatingHold: 0,
                     inflowDecayWindow: 4 hours,
                     maxDelayInflow: 10_000 ether,
@@ -70,7 +70,7 @@ contract DeployMarket is Script, LidoLendDeployer {
 
     function _logDeployment(Deployed memory d) internal pure {
         console2.log("core               :", d.core);
-        console2.log("suspectsRegistry   :", d.suspectsRegistry);
+        console2.log("guardianSignals   :", d.guardianSignals);
         console2.log("oracle             :", d.oracle);
         console2.log("irm                :", d.irm);
         console2.log("controller (proxy) :", d.controllerProxy);

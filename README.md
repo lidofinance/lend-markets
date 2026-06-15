@@ -36,7 +36,7 @@ MAINNET_RPC_URL=<rpc-url> forge test --match-path 'test/integration/*.t.sol' --f
 Format Solidity:
 
 ```sh
-forge fmt src/LidoLendERC4626.sol src/SuspectsRegistry.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test
+forge fmt src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test
 ```
 
 ## Repository Tooling
@@ -76,11 +76,11 @@ git config core.hooksPath .githooks
 ```text
 src/
 ├── LidoLendERC4626.sol            # single-market ERC-4626 vault over the market
-├── SuspectsRegistry.sol           # suspects / access registry
+├── GuardianSignals.sol           # guardian-signal registry
 ├── controllers/
 │   └── WethWstEthController.sol    # Lido policy: hooks, settlement queue, watermark, activation
 ├── interfaces/
-│   └── ISuspectsRegistry.sol
+│   └── IGuardianSignals.sol
 ├── libs/
 │   ├── ActivationLib.sol
 │   ├── MaxHeapLib.sol
@@ -113,7 +113,7 @@ The vendored core (`lib/lido-lend`, contract `LidoLend`) is the Morpho-compatibl
 - Settlement eligibility, the settlement queue, and per-borrower watermarks.
 - Market-level policy configuration.
 
-`SuspectsRegistry` owns shared address restrictions used by the controller.
+`GuardianSignals` owns shared address restrictions used by the controller.
 
 ## Fork Notes
 

@@ -7,7 +7,7 @@
 - `lib/lido-lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported
   via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
-- `src/SuspectsRegistry.sol`: suspects / access registry (one per project).
+- `src/GuardianSignals.sol`: guardian-signal registry (one per project).
 - `src/interfaces/`: local interfaces and hook payload structs.
 - `src/oracle/`: local oracle adapters.
 - `src/libs/`: pure libraries (math, data structures). Internal — they inline into call sites.
@@ -37,7 +37,7 @@
 - Build: `forge build --force`.
 - Test: `forge test`.
 - Format check for local Solidity files:
-  `forge fmt --check src/LidoLendERC4626.sol src/SuspectsRegistry.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
+  `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
 - Mainnet-fork tests skip when no mainnet fork context is available; guard with
   `vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required")`.

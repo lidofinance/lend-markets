@@ -18,7 +18,8 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController {
         uint256 dust;
         uint256 unlockTime;
         bool readyToSettle;
-        uint256 suspicion;
+        uint256 strikes;
+        bool banned;
         uint256 debtAssets;
         uint256 watermarkLtv;
         bool isQueueRoot;

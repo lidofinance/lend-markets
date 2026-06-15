@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {Id, IMorpho, IMorphoStaticTyping, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, IMorpho, MarketParams, Market, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
@@ -10,7 +10,7 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
-import {ISuspectsRegistry} from "../interfaces/ISuspectsRegistry.sol";
+import {IGuardianSignals} from "../interfaces/IGuardianSignals.sol";
 import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
@@ -18,15 +18,16 @@ import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
 import {SettlementQueueLib} from "../libs/SettlementQueueLib.sol";
 
 /// @notice One-read borrower snapshot for off-chain dashboards: collateral split, activation timer,
-///         suspicion, debt, personal watermark, and live settle exposure.
+///         guardian signal, debt, personal watermark, and live settle exposure.
 struct PositionView {
     uint256 rawCollateral;
     uint256 active; // matured, borrowable
     uint256 activating; // in the activation timer
     uint256 dust; // below the activation threshold, withdrawable
-    uint256 unlockTime; // 0 = no timer, NEVER_UNLOCK-far = banned
+    uint256 unlockTime; // 0 = no timer
     bool readyToSettle; // activating would move to active on the next action now
-    uint256 suspicion; // live, WAD-scaled (WAD = banned)
+    uint256 strikes; // effective strike count driving the activation surcharge
+    bool banned; // hard-blocked by a latched ban
     uint256 debtAssets;
     uint256 watermarkLtv; // 0 = unset
     bool isQueueRoot; // next in line for settle
@@ -34,7 +35,7 @@ struct PositionView {
 }
 
 /// @notice Lido-policy controller for a Lido Lend market: collateral activation, freeze and pause,
-///         suspect gating, and the settlement queue. All hook policy enters through `on`.
+///         address gating, and the settlement queue. All hook policy enters through `on`.
 contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLendMarketController")
     is
     ILidoLendBaseMarketController,
@@ -53,14 +54,14 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     bytes32 public constant UNPAUSER_ROLE = keccak256("UNPAUSER_ROLE");
     bytes32 public constant COMMITTEE_ROLE = keccak256("COMMITTEE_ROLE");
 
-    IMorphoStaticTyping public immutable LIDO_LEND;
+    IMorpho public immutable LIDO_LEND;
     Id internal immutable _MARKET_ID;
 
     error Unauthorized();
     error InvalidMarketId();
     error UnknownHookEvent();
     error MarketIsFrozen();
-    error AddressBlocked();
+    error AddressBanned();
     error ConfigNotTightened();
     error InsufficientActiveCollateral();
     error SettlementRootBadDebt();
@@ -76,7 +77,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     event ActivatingHoldSet(uint128 activatingHold);
 
     bool private _isFrozen;
-    ISuspectsRegistry private _suspectsRegistry;
+    IGuardianSignals private _guardianSignals;
     /// @dev Config + inflow accumulator + per-borrower activation pipeline.
     CollateralActivationLib.State private _activation;
     /// @dev Risk queue + watermarks + slice policy.
@@ -89,20 +90,20 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
-    constructor(IMorphoStaticTyping lidoLend, Id marketId_) {
+    constructor(IMorpho lidoLend, Id marketId_) {
         LIDO_LEND = lidoLend;
         _MARKET_ID = marketId_;
         _disableInitializers();
     }
 
-    /// @notice One-shot proxy initializer: grants roles and wires the suspects registry and config.
-    function initialize(address admin, ISuspectsRegistry suspects, CollateralActivationLib.Config calldata cfg)
+    /// @notice One-shot proxy initializer: grants roles and wires the guardian-signals registry and config.
+    function initialize(address admin, IGuardianSignals guardianSignals, CollateralActivationLib.Config calldata cfg)
         external
         initializer
     {
         __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _suspectsRegistry = suspects;
+        _guardianSignals = guardianSignals;
         _settlementQueue.init();
         _applyConfig(cfg);
     }
@@ -230,10 +231,15 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     function rootHasBadDebt() external view returns (bool) {
         address top = _settlementQueue.peekRoot();
         if (top == address(0)) return false;
-        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(_MARKET_ID, top);
+        Position memory position = LIDO_LEND.position(_MARKET_ID, top);
         (uint256 totalBorrowAssets, uint256 totalBorrowShares) = _totalBorrowTotals(_MARKET_ID);
-        return
-            _isBadDebt(borrowShares, rawCollateral, totalBorrowAssets, totalBorrowShares, _collateralPrice(_MARKET_ID));
+        return _isBadDebt(
+            position.borrowShares,
+            position.collateral,
+            totalBorrowAssets,
+            totalBorrowShares,
+            _collateralPrice(_MARKET_ID)
+        );
     }
 
     /// @notice Next borrower to cut (queue root) and the max slice the policy allows for it: the larger
@@ -270,18 +276,19 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         sliceAssets = queue.watermarkSlice(borrower, _marketView(_MARKET_ID, borrower));
     }
 
-    /// @notice One-call borrower dashboard: collateral split, activation unlock, suspicion, debt,
+    /// @notice One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt,
     ///         personal watermark, and live settle exposure (queue root + allowed slice).
     function positionOf(address borrower) external view returns (PositionView memory positionView) {
-        uint256 suspicion = _suspectsRegistry.suspicion(_MARKET_ID, borrower);
-        (, uint256 rawCollateral) = _currentPosition(_MARKET_ID, borrower);
+        uint256 rawCollateral = LIDO_LEND.position(_MARKET_ID, borrower).collateral;
 
+        (bool banned, uint256 strikes) = _accountStatus(borrower);
         (positionView.active, positionView.activating, positionView.dust) = _activation.getBuckets(borrower);
         positionView.rawCollateral = rawCollateral;
-        positionView.unlockTime = _activation.getUnlockTime(borrower, suspicion);
+        positionView.unlockTime = _activation.getUnlockTime(borrower, strikes);
         positionView.readyToSettle =
-            positionView.unlockTime != 0 && !_isFrozen && block.timestamp >= positionView.unlockTime;
-        positionView.suspicion = suspicion;
+            positionView.unlockTime != 0 && !_isFrozen && !banned && block.timestamp >= positionView.unlockTime;
+        positionView.strikes = strikes;
+        positionView.banned = banned;
         positionView.debtAssets = _debtAssets(_MARKET_ID, borrower);
         positionView.watermarkLtv = _settlementQueue.watermarkOf(borrower);
         positionView.isQueueRoot = _settlementQueue.peekRoot() == borrower;
@@ -296,79 +303,78 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         address borrower = hookData.onBehalf;
 
         // raw is pre-deposit: this hook runs before core's `collateral += assets`
-        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, borrower);
+        Position memory position = LIDO_LEND.position(id, borrower);
 
         // settle anything already matured, then book the deposit (promotes past the dust threshold).
-        // A freeze defers maturation.
-        if (!_isFrozen) {
-            _activation.syncActivation(borrower, _suspectsRegistry.suspicion(_MARKET_ID, borrower));
-        }
+        // A freeze or ban defers maturation.
+        _syncActivation(borrower);
         _activation.deposit(borrower, hookData.assets);
 
-        _settlementQueue.sync(borrower, borrowShares, rawCollateral + hookData.assets);
+        _settlementQueue.sync(borrower, position.borrowShares, position.collateral + hookData.assets);
     }
 
     function _handleWithdrawCollateral(Id id, WithdrawCollateralHookData memory hookData) internal {
         address borrower = hookData.onBehalf;
 
         // raw and borrowShares are pre-withdraw: this hook runs before core's `collateral -= assets`
-        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, borrower);
+        Position memory position = LIDO_LEND.position(id, borrower);
 
         // Freeze blocks withdraw only while there is open debt. A zero-debt withdraw is always allowed
-        // as a non-custody exit. No suspects gate either: a banned address can still pull its own collateral.
-        if (_isFrozen && borrowShares != 0) revert MarketIsFrozen();
+        // as a non-custody exit. No guardian gate either: a banned address can still pull its own collateral.
+        if (_isFrozen && position.borrowShares != 0) revert MarketIsFrozen();
 
         // settle activation, then debit the buckets (dust, activating, active) and reverse any same-tx
         // flash addition to the inflow (the lib owns the undo); a revert below rolls this back
-        if (!_isFrozen) {
-            _activation.syncActivation(borrower, _suspectsRegistry.suspicion(_MARKET_ID, borrower));
-        }
+        _syncActivation(borrower);
         uint256 active = _activation.withdraw(borrower, hookData.assets);
 
         // with open debt, the remaining active must still cover it at LLTV (stricter than core's raw check)
-        if (borrowShares != 0) _requireActiveHealth(id, borrower, active, 0);
+        if (position.borrowShares != 0) _requireActiveHealth(id, borrower, active, 0);
 
         _settlementQueue.sync(
-            borrower, borrowShares, rawCollateral > hookData.assets ? rawCollateral - hookData.assets : 0
+            borrower,
+            position.borrowShares,
+            position.collateral > hookData.assets ? position.collateral - hookData.assets : 0
         );
     }
 
     function _handleBorrow(Id id, BorrowHookData memory hookData) internal {
-        _checkNotFrozen();
+        if (_isFrozen) revert MarketIsFrozen();
+
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
-        // borrow (caller). Soft suspicion only delays activation; a ban hard-blocks the borrow path.
-        _checkNotBlocked(hookData.caller);
-        _checkNotBlocked(hookData.onBehalf);
-        _checkNotBlocked(hookData.receiver);
+        // borrow (caller). onBehalf's check returns its strikes, reused for the surcharge below, so each
+        // address's status is read once. Soft strikes only delay activation; a ban hard-blocks the borrow.
+        _checkNotBanned(hookData.caller);
+        _checkNotBanned(hookData.receiver);
+        uint256 strikes = _checkNotBanned(hookData.onBehalf);
 
         // Stricter Lido constraint: borrow capacity uses active (matured) collateral only. The core's
         // standard health check uses raw collateral; this adds the active-only ceiling on the settled state.
-        // not frozen here: _checkNotFrozen above gates the borrow path
-        uint256 suspicion = _suspectsRegistry.suspicion(_MARKET_ID, hookData.onBehalf);
-        uint256 active = _activation.syncActivation(hookData.onBehalf, suspicion);
+        uint256 active = _activation.syncActivation(hookData.onBehalf, strikes);
         _requireActiveHealth(id, hookData.onBehalf, active, hookData.assets);
 
-        (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.onBehalf);
-        _settlementQueue.sync(hookData.onBehalf, currentBorrowShares + hookData.shares, currentRawCollateral);
+        Position memory position = LIDO_LEND.position(id, hookData.onBehalf);
+        _settlementQueue.sync(hookData.onBehalf, position.borrowShares + hookData.shares, position.collateral);
     }
 
     function _handleRepay(Id id, RepayHookData memory hookData) internal {
         // repay lowers debt: re-key the queue on the post-repay shares (drops out at zero debt)
-        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, hookData.onBehalf);
-        uint256 projected = borrowShares > hookData.shares ? borrowShares - hookData.shares : 0;
-        _settlementQueue.sync(hookData.onBehalf, projected, rawCollateral);
+        Position memory position = LIDO_LEND.position(id, hookData.onBehalf);
+        uint256 projected = position.borrowShares > hookData.shares ? position.borrowShares - hookData.shares : 0;
+        _settlementQueue.sync(hookData.onBehalf, projected, position.collateral);
     }
 
     function _handleLiquidate(Id id, LiquidateHookData memory hookData) internal {
         address borrower = hookData.borrower;
-        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, borrower);
+        Position memory position = LIDO_LEND.position(id, borrower);
 
         // debit the seized collateral from the buckets before core decrements raw
         if (hookData.seizedAssets != 0) _activation.debit(borrower, hookData.seizedAssets, 0);
 
         // re-key on the post-liquidation position
-        uint256 shares = borrowShares > hookData.repaidShares ? borrowShares - hookData.repaidShares : 0;
-        uint256 raw = rawCollateral > hookData.seizedAssets ? rawCollateral - hookData.seizedAssets : 0;
+        uint256 shares =
+            position.borrowShares > hookData.repaidShares ? position.borrowShares - hookData.repaidShares : 0;
+        uint256 raw = position.collateral > hookData.seizedAssets ? position.collateral - hookData.seizedAssets : 0;
         _settlementQueue.sync(borrower, shares, raw);
     }
 
@@ -384,8 +390,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         // bad-debt gate on the queue root; reuse the payload when the root is the target, else read the root
         address root = _settlementQueue.peekRoot();
         if (root != address(0)) {
-            (uint256 rootShares, uint256 rootRaw) =
-                root == borrower ? (marketView.borrowShares, marketView.rawCollateral) : _currentPosition(id, root);
+            uint256 rootShares = marketView.borrowShares;
+            uint256 rootRaw = marketView.rawCollateral;
+            if (root != borrower) {
+                Position memory rootPosition = LIDO_LEND.position(id, root);
+                rootShares = rootPosition.borrowShares;
+                rootRaw = rootPosition.collateral;
+            }
             if (_isBadDebt(
                     rootShares, rootRaw, marketView.totalBorrowAssets, marketView.totalBorrowShares, marketView.price
                 )) {
@@ -408,10 +419,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         }
 
         // settle activation, then debit buckets by the exact amount core seizes from raw (lockstep).
-        // A freeze defers maturation, seizure still reaches all collateral via debit.
-        if (!_isFrozen) {
-            _activation.syncActivation(borrower, _suspectsRegistry.suspicion(_MARKET_ID, borrower));
-        }
+        // A freeze or ban defers maturation, seizure still reaches all collateral via debit.
+        _syncActivation(borrower);
+
         _activation.debit(borrower, hookData.collateralSeized, 0);
 
         _settlementQueue.sync(
@@ -448,16 +458,16 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     }
 
     function _debtAssets(Id id, address borrower) internal view returns (uint256) {
-        (, uint128 borrowShares,) = LIDO_LEND.position(id, borrower);
+        uint256 borrowShares = LIDO_LEND.position(id, borrower).borrowShares;
         if (borrowShares == 0) return 0;
-        (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = LIDO_LEND.market(id);
-        return uint256(borrowShares).toAssetsUp(totalBorrowAssets, totalBorrowShares);
+        Market memory market = LIDO_LEND.market(id);
+        return borrowShares.toAssetsUp(market.totalBorrowAssets, market.totalBorrowShares);
     }
 
     /// @dev Max loan assets `active` collateral can back at the market LLTV.
     function _maxBorrow(Id id, uint256 active) internal view returns (uint256) {
-        (,, address oracle,, uint256 lltv) = LIDO_LEND.idToMarketParams(id);
-        return active.mulDivDown(IOracle(oracle).price(), ORACLE_PRICE_SCALE).wMulDown(lltv);
+        MarketParams memory params = LIDO_LEND.idToMarketParams(id);
+        return active.mulDivDown(IOracle(params.oracle).price(), ORACLE_PRICE_SCALE).wMulDown(params.lltv);
     }
 
     /// @dev Bad debt: debt value exceeds collateral value. Pure; the caller supplies the position and
@@ -482,17 +492,10 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         returns (SettlementQueueLib.MarketView memory marketView)
     {
         marketView.price = _collateralPrice(id);
-        (marketView.borrowShares, marketView.rawCollateral) = _currentPosition(id, borrower);
+        Position memory position = LIDO_LEND.position(id, borrower);
+        marketView.borrowShares = position.borrowShares;
+        marketView.rawCollateral = position.collateral;
         (marketView.totalBorrowAssets, marketView.totalBorrowShares) = _totalBorrowTotals(id);
-    }
-
-    function _currentPosition(Id id, address borrower)
-        internal
-        view
-        returns (uint256 borrowShares, uint256 rawCollateral)
-    {
-        (, uint128 bs, uint128 rc) = LIDO_LEND.position(id, borrower);
-        return (bs, rc);
     }
 
     /// @dev Borrow totals with pending interest simulated, so view-driven slice sizing matches the
@@ -500,31 +503,30 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     ///      reduces to the raw market read).
     function _totalBorrowTotals(Id id) internal view returns (uint256 totalBorrowAssets, uint256 totalBorrowShares) {
         (,, totalBorrowAssets, totalBorrowShares) =
-            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(LIDO_LEND)), _marketParamsOf(id));
-    }
-
-    function _marketParamsOf(Id id) internal view returns (MarketParams memory marketParams) {
-        (
-            marketParams.loanToken,
-            marketParams.collateralToken,
-            marketParams.oracle,
-            marketParams.irm,
-            marketParams.lltv
-        ) = LIDO_LEND.idToMarketParams(id);
+            MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, LIDO_LEND.idToMarketParams(id));
     }
 
     function _collateralPrice(Id id) internal view returns (uint256) {
-        (,, address oracle,,) = LIDO_LEND.idToMarketParams(id);
-        return IOracle(oracle).price();
+        return IOracle(LIDO_LEND.idToMarketParams(id).oracle).price();
     }
 
-    function _checkNotFrozen() internal view {
-        if (_isFrozen) revert MarketIsFrozen();
+    function _syncActivation(address borrower) internal {
+        (bool banned, uint256 strikes) = _accountStatus(borrower);
+        if (!_isFrozen && !banned) {
+            _activation.syncActivation(borrower, strikes);
+        }
     }
 
-    /// @dev Hard-block: a banned address may not borrow, receive a borrow, or initiate one. The soft
-    ///      suspicion score only lengthens activation; a ban is the binary stop on the borrow path.
-    function _checkNotBlocked(address user) internal view {
-        if (_suspectsRegistry.isBanned(_MARKET_ID, user)) revert AddressBlocked();
+    /// @dev The account's effective guardian status in this market (amnesty already applied by the registry).
+    function _accountStatus(address account) internal view returns (bool banned, uint256 strikes) {
+        return _guardianSignals.statusOf(_MARKET_ID, account);
+    }
+
+    /// @dev Hard-block: a banned address may not borrow, receive a borrow, or initiate one. Returns the
+    ///      effective strike count so a caller that also needs the surcharge reads the status once.
+    function _checkNotBanned(address account) internal view returns (uint256 strikes) {
+        bool banned;
+        (banned, strikes) = _accountStatus(account);
+        if (banned) revert AddressBanned();
     }
 }

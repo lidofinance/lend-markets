@@ -30,9 +30,9 @@ interface IWstETH {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) a suspect in tests.
+/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests.
 interface IRegistryLike {
-    function flag(Id market, address suspect) external;
+    function flag(Id market, address account) external;
 }
 
 /// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
@@ -69,7 +69,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     struct TestMarket {
         ILidoLend market;
         ILidoLendMarketController controller;
-        address suspectsRegistry;
+        address guardianSignals;
         MarketParams marketParams;
         Id id;
         uint256 price;
@@ -426,8 +426,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     }
 
     /// @notice A banned borrower's collateral never settles into `active`, and its borrow is hard-blocked.
-    ///         Exercises the suspicion path: `suspicion == WAD` -> NEVER_UNLOCK unlock + the borrow ban.
-    function test_suspicion_bannedCollateralNeverMaturesAndBorrowBlocked() public {
+    ///         Exercises the guardian-ban path: a ban skips maturation (like a freeze) and hard-blocks the borrow.
+    function test_ban_bannedCollateralNeverMaturesAndBorrowBlocked() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(false);
 
@@ -442,12 +442,12 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         // Ban BORROWER: one flag reaches quorum 1, which latches the ban. The test contract is the
         // registry's sole guardian (set in `_deployMarket`).
-        IRegistryLike(ctx.suspectsRegistry).flag(ctx.id, BORROWER);
+        IRegistryLike(ctx.guardianSignals).flag(ctx.id, BORROWER);
 
         // Warp far past any normal activation delay — a banned address never settles.
         vm.warp(block.timestamp + 30 days);
         ILidoLendMarketController.PositionView memory pv = ctx.controller.positionOf(BORROWER);
-        assertEq(pv.suspicion, 1e18, "banned -> suspicion WAD");
+        assertTrue(pv.banned, "banned");
         assertFalse(pv.readyToSettle, "banned never ready to settle");
         _assertCollateralState(ctx.controller, BORROWER, 0, col, 0); // still activating, never active
 
@@ -567,7 +567,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                 activation: ActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    maxSuspicionDelay: 2 hours,
+                    delayPerStrike: 2 hours,
                     activatingHold: 0,
                     inflowDecayWindow: 4 hours,
                     maxDelayInflow: 10_000 ether,
@@ -584,7 +584,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         ctx.market = ILidoLend(d.core);
         ctx.controller = ILidoLendMarketController(d.controllerProxy);
-        ctx.suspectsRegistry = d.suspectsRegistry;
+        ctx.guardianSignals = d.guardianSignals;
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
         ctx.price = WstEthRateOracle(d.oracle).price();

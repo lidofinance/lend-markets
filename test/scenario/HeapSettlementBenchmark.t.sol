@@ -548,7 +548,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                 activation: ActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    maxSuspicionDelay: 2 hours,
+                    delayPerStrike: 2 hours,
                     activatingHold: 0,
                     inflowDecayWindow: 4 hours,
                     maxDelayInflow: 10_000 ether,
