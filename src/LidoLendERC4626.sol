@@ -12,12 +12,14 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
-import {ILidoLendMarketController} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
+import {
+    ILidoLendMarketController as ILidoLendBaseMarketController
+} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {SettlementQueueLib} from "./libs/SettlementQueueLib.sol";
 
 /// @dev Off-hook view surface of the controller the vault sizes its exit loop against. Not part of the
-///      core `ILidoLendMarketController` interface (which is hooks-only), so the vault reaches these
+///      core `ILidoLendBaseMarketController` interface (which is hooks-only), so the vault reaches these
 ///      controller-specific views by casting `address(CONTROLLER)`.
 interface ISlicePolicyView {
     function slicePolicy() external view returns (SettlementQueueLib.SlicePolicy memory);
@@ -74,7 +76,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
     uint256 internal constant MAX_SETTLEMENT_ITERATIONS = 150;
 
     IMorpho public MORPHO;
-    ILidoLendMarketController public CONTROLLER;
+    ILidoLendBaseMarketController public CONTROLLER;
     Id public marketId;
     MarketParams internal _marketParams;
 
@@ -101,7 +103,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
         __ERC4626_init(IERC20(marketParams_.loanToken));
 
         MORPHO = IMorpho(morpho);
-        CONTROLLER = ILidoLendMarketController(controller);
+        CONTROLLER = ILidoLendBaseMarketController(controller);
         marketId = marketParams_.id();
         _marketParams = marketParams_;
 

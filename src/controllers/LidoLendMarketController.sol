@@ -11,8 +11,10 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
 import {ISuspectsRegistry} from "../interfaces/ISuspectsRegistry.sol";
-import {ILidoLendMarketController} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
-import {ActivationLib} from "../libs/ActivationLib.sol";
+import {
+    ILidoLendMarketController as ILidoLendBaseMarketController
+} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
+import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
 import {SettlementQueueLib} from "../libs/SettlementQueueLib.sol";
 
 /// @notice One-read borrower snapshot for off-chain dashboards: collateral split, activation timer,
@@ -22,27 +24,27 @@ struct PositionView {
     uint256 active; // matured, borrowable
     uint256 activating; // in the activation timer
     uint256 dust; // below the activation threshold, withdrawable
-    uint256 unlockAt; // 0 = no timer, NEVER_DELAY-far = banned
+    uint256 unlockTime; // 0 = no timer, NEVER_UNLOCK-far = banned
     bool readyToSettle; // activating would move to active on the next action now
-    uint256 suspicion; // live 0..100
+    uint256 suspicion; // live, WAD-scaled (WAD = banned)
     uint256 debtAssets;
     uint256 watermarkLtv; // 0 = unset
     bool isQueueRoot; // next in line for settle
     uint256 allowedSlice; // loan assets that may be cut from this position now
 }
 
-/// @notice Lido-policy controller for the wstETH/ETH market: collateral activation, freeze and pause,
+/// @notice Lido-policy controller for a Lido Lend market: collateral activation, freeze and pause,
 ///         suspect gating, and the settlement queue. All hook policy enters through `on`.
-contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEthController")
+contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLendMarketController")
     is
-    ILidoLendMarketController,
+    ILidoLendBaseMarketController,
     Initializable,
     AccessControlUpgradeable,
     PausableUntil
 {
     using MathLib for uint256;
     using SharesMathLib for uint256;
-    using ActivationLib for ActivationLib.State;
+    using CollateralActivationLib for CollateralActivationLib.State;
     using SettlementQueueLib for SettlementQueueLib.State;
 
     bytes32 public constant CONFIGURATOR_ROLE = keccak256("CONFIGURATOR_ROLE");
@@ -52,7 +54,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     bytes32 public constant COMMITTEE_ROLE = keccak256("COMMITTEE_ROLE");
 
     IMorphoStaticTyping public immutable LIDO_LEND;
-    Id public immutable override marketId;
+    Id internal immutable _MARKET_ID;
 
     error Unauthorized();
     error InvalidMarketId();
@@ -68,35 +70,33 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     error SettlementInvalidSeize();
     error SettlementBelowMin();
 
-    event ConfigSet(ActivationLib.Config config);
+    event ConfigSet(CollateralActivationLib.Config config);
     event SlicePolicySet(uint16 sliceFloorBps, uint96 sliceFloorAssets, uint96 fallbackMinRequest);
     event FrozenSet(bool frozen, address indexed account);
     event ActivatingHoldSet(uint128 activatingHold);
 
     bool private _isFrozen;
     ISuspectsRegistry private _suspectsRegistry;
-    /// @dev Config + load accumulator + per-borrower activation pipeline.
-    ActivationLib.State private _activation;
+    /// @dev Config + inflow accumulator + per-borrower activation pipeline.
+    CollateralActivationLib.State private _activation;
     /// @dev Risk queue + watermarks + slice policy.
     SettlementQueueLib.State private _settlementQueue;
-    /// @dev Committee Sybil hold (0 = off); see `setActivatingHold`.
-    uint128 private _activatingHold;
 
     modifier onlyControlledMarket(Id id) {
         if (msg.sender != address(LIDO_LEND)) revert Unauthorized();
-        if (Id.unwrap(id) != Id.unwrap(marketId)) revert InvalidMarketId();
+        if (Id.unwrap(id) != Id.unwrap(_MARKET_ID)) revert InvalidMarketId();
         _;
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
     constructor(IMorphoStaticTyping lidoLend, Id marketId_) {
         LIDO_LEND = lidoLend;
-        marketId = marketId_;
+        _MARKET_ID = marketId_;
         _disableInitializers();
     }
 
     /// @notice One-shot proxy initializer: grants roles and wires the suspects registry and config.
-    function initialize(address admin, ISuspectsRegistry suspects, ActivationLib.Config calldata cfg)
+    function initialize(address admin, ISuspectsRegistry suspects, CollateralActivationLib.Config calldata cfg)
         external
         initializer
     {
@@ -107,9 +107,14 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         _applyConfig(cfg);
     }
 
+    /// @notice Market this controller is bound to, checked by the core when it binds at market creation.
+    function marketId() external view override returns (Id) {
+        return _MARKET_ID;
+    }
+
     /// @notice Update the governance-tunable activation parameters. Risk-increasing path: the role is
     ///         meant to be held by the EasyTrack factory, which adds the objection window.
-    function setConfig(ActivationLib.Config calldata cfg) external onlyRole(CONFIGURATOR_ROLE) {
+    function setConfig(CollateralActivationLib.Config calldata cfg) external onlyRole(CONFIGURATOR_ROLE) {
         _applyConfig(cfg);
     }
 
@@ -119,7 +124,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         external
         onlyRole(RISK_STEWARD_ROLE)
     {
-        ActivationLib.Config memory cfg = _activation.config;
+        CollateralActivationLib.Config memory cfg = _activation.config;
         if (newMinActivationDelay < cfg.minActivationDelay) revert ConfigNotTightened();
         if (newMinActivationAmount < cfg.minActivationAmount) revert ConfigNotTightened();
         cfg.minActivationDelay = newMinActivationDelay;
@@ -144,7 +149,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     /// @dev Forced paths (liquidation, settle) ignore the hold. The hold is temporary: held collateral
     ///      matures into `active` on its timer and becomes withdrawable, so this is not a custody power.
     function setActivatingHold(uint128 activatingHold) external onlyRole(COMMITTEE_ROLE) {
-        _activatingHold = activatingHold;
+        _activation.setActivatingHold(activatingHold);
         emit ActivatingHoldSet(activatingHold);
     }
 
@@ -180,9 +185,9 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         return _isFrozen;
     }
 
-    /// @notice Current decayed activation load (the leaky-bucket accumulator) — for monitoring and tests.
-    function currentLoad() external view returns (uint256) {
-        return _activation.currentLoad();
+    /// @notice Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
+    function currentInflow() external view returns (uint256) {
+        return _activation.getInflow();
     }
 
     /// @notice Core hook entrypoint, dispatches each market action to its internal handler.
@@ -225,9 +230,10 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     function rootHasBadDebt() external view returns (bool) {
         address top = _settlementQueue.peekRoot();
         if (top == address(0)) return false;
-        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(marketId, top);
-        (uint256 totalBorrowAssets, uint256 totalBorrowShares) = _totalBorrowTotals(marketId);
-        return _isBadDebt(borrowShares, rawCollateral, totalBorrowAssets, totalBorrowShares, _collateralPrice(marketId));
+        (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(_MARKET_ID, top);
+        (uint256 totalBorrowAssets, uint256 totalBorrowShares) = _totalBorrowTotals(_MARKET_ID);
+        return
+            _isBadDebt(borrowShares, rawCollateral, totalBorrowAssets, totalBorrowShares, _collateralPrice(_MARKET_ID));
     }
 
     /// @notice Next borrower to cut (queue root) and the max slice the policy allows for it: the larger
@@ -238,13 +244,13 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     function nextSettlementCut() external view returns (address borrower, uint256 sliceAssets) {
         borrower = _settlementQueue.peekRoot();
         if (borrower == address(0)) return (address(0), 0);
-        sliceAssets = _allowedSlice(borrower, _marketView(marketId, borrower));
+        sliceAssets = _allowedSlice(borrower, _marketView(_MARKET_ID, borrower));
     }
 
     /// @notice Maximum loan-asset slice the policy allows for a single settle cut against
     ///         `borrower` (max of heap slice and watermark slice). Zero means ineligible.
     function allowedSliceFor(address borrower) external view returns (uint256) {
-        return _allowedSlice(borrower, _marketView(marketId, borrower));
+        return _allowedSlice(borrower, _marketView(_MARKET_ID, borrower));
     }
 
     /// @notice Borrowers currently in the queue (approximate top-down order) and their risk keys.
@@ -261,26 +267,25 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         SettlementQueueLib.State storage queue = _settlementQueue;
         watermarkLtv = queue.watermarkOf(borrower);
         if (watermarkLtv == 0) return (0, 0);
-        sliceAssets = queue.watermarkSlice(borrower, _marketView(marketId, borrower));
+        sliceAssets = queue.watermarkSlice(borrower, _marketView(_MARKET_ID, borrower));
     }
 
     /// @notice One-call borrower dashboard: collateral split, activation unlock, suspicion, debt,
     ///         personal watermark, and live settle exposure (queue root + allowed slice).
     function positionOf(address borrower) external view returns (PositionView memory positionView) {
-        uint256 suspicion = _suspectsRegistry.suspicion(marketId, borrower);
-        (, uint256 rawCollateral) = _currentPosition(marketId, borrower);
+        uint256 suspicion = _suspectsRegistry.suspicion(_MARKET_ID, borrower);
+        (, uint256 rawCollateral) = _currentPosition(_MARKET_ID, borrower);
 
-        (positionView.active, positionView.activating, positionView.dust) =
-            _activation.bucketsOf(borrower, rawCollateral);
+        (positionView.active, positionView.activating, positionView.dust) = _activation.getBuckets(borrower);
         positionView.rawCollateral = rawCollateral;
-        positionView.unlockAt = _activation.unlockAt(borrower, suspicion);
+        positionView.unlockTime = _activation.getUnlockTime(borrower, suspicion);
         positionView.readyToSettle =
-            positionView.unlockAt != 0 && !_isFrozen && block.timestamp >= positionView.unlockAt;
+            positionView.unlockTime != 0 && !_isFrozen && block.timestamp >= positionView.unlockTime;
         positionView.suspicion = suspicion;
-        positionView.debtAssets = _debtAssets(marketId, borrower);
+        positionView.debtAssets = _debtAssets(_MARKET_ID, borrower);
         positionView.watermarkLtv = _settlementQueue.watermarkOf(borrower);
         positionView.isQueueRoot = _settlementQueue.peekRoot() == borrower;
-        positionView.allowedSlice = _allowedSlice(borrower, _marketView(marketId, borrower));
+        positionView.allowedSlice = _allowedSlice(borrower, _marketView(_MARKET_ID, borrower));
     }
 
     // ---
@@ -293,10 +298,12 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         // raw is pre-deposit: this hook runs before core's `collateral += assets`
         (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, borrower);
 
-        // settle anything already matured, then book the deposit (promotes past the dust threshold)
-        uint256 suspicion = _suspectsRegistry.suspicion(marketId, borrower);
-        _activation.syncActivation(borrower, suspicion, _isFrozen);
-        _activation.deposit(borrower, hookData.assets, rawCollateral);
+        // settle anything already matured, then book the deposit (promotes past the dust threshold).
+        // A freeze defers maturation.
+        if (!_isFrozen) {
+            _activation.syncActivation(borrower, _suspectsRegistry.suspicion(_MARKET_ID, borrower));
+        }
+        _activation.deposit(borrower, hookData.assets);
 
         _settlementQueue.sync(borrower, borrowShares, rawCollateral + hookData.assets);
     }
@@ -312,10 +319,11 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         if (_isFrozen && borrowShares != 0) revert MarketIsFrozen();
 
         // settle activation, then debit the buckets (dust, activating, active) and reverse any same-tx
-        // flash charge on the load (the lib owns the undo); a revert below rolls this back
-        uint256 suspicion = _suspectsRegistry.suspicion(marketId, borrower);
-        _activation.syncActivation(borrower, suspicion, _isFrozen);
-        uint256 active = _activation.withdraw(borrower, hookData.assets, rawCollateral, _activatingHold);
+        // flash addition to the inflow (the lib owns the undo); a revert below rolls this back
+        if (!_isFrozen) {
+            _activation.syncActivation(borrower, _suspectsRegistry.suspicion(_MARKET_ID, borrower));
+        }
+        uint256 active = _activation.withdraw(borrower, hookData.assets);
 
         // with open debt, the remaining active must still cover it at LLTV (stricter than core's raw check)
         if (borrowShares != 0) _requireActiveHealth(id, borrower, active, 0);
@@ -335,8 +343,9 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
 
         // Stricter Lido constraint: borrow capacity uses active (matured) collateral only. The core's
         // standard health check uses raw collateral; this adds the active-only ceiling on the settled state.
-        uint256 suspicion = _suspectsRegistry.suspicion(marketId, hookData.onBehalf);
-        uint256 active = _activation.syncActivation(hookData.onBehalf, suspicion, _isFrozen);
+        // not frozen here: _checkNotFrozen above gates the borrow path
+        uint256 suspicion = _suspectsRegistry.suspicion(_MARKET_ID, hookData.onBehalf);
+        uint256 active = _activation.syncActivation(hookData.onBehalf, suspicion);
         _requireActiveHealth(id, hookData.onBehalf, active, hookData.assets);
 
         (uint256 currentBorrowShares, uint256 currentRawCollateral) = _currentPosition(id, hookData.onBehalf);
@@ -355,7 +364,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         (uint256 borrowShares, uint256 rawCollateral) = _currentPosition(id, borrower);
 
         // debit the seized collateral from the buckets before core decrements raw
-        if (hookData.seizedAssets != 0) _activation.consume(borrower, hookData.seizedAssets, rawCollateral, 0);
+        if (hookData.seizedAssets != 0) _activation.debit(borrower, hookData.seizedAssets, 0);
 
         // re-key on the post-liquidation position
         uint256 shares = borrowShares > hookData.repaidShares ? borrowShares - hookData.repaidShares : 0;
@@ -398,10 +407,12 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
             revert SettlementInvalidSeize();
         }
 
-        // settle activation, then debit buckets by the exact amount core seizes from raw (lockstep)
-        uint256 suspicion = _suspectsRegistry.suspicion(marketId, borrower);
-        _activation.syncActivation(borrower, suspicion, _isFrozen);
-        _activation.consume(borrower, hookData.collateralSeized, marketView.rawCollateral, 0);
+        // settle activation, then debit buckets by the exact amount core seizes from raw (lockstep).
+        // A freeze defers maturation, seizure still reaches all collateral via debit.
+        if (!_isFrozen) {
+            _activation.syncActivation(borrower, _suspectsRegistry.suspicion(_MARKET_ID, borrower));
+        }
+        _activation.debit(borrower, hookData.collateralSeized, 0);
 
         _settlementQueue.sync(
             borrower, marketView.borrowShares - sharesToBurn, marketView.rawCollateral - hookData.collateralSeized
@@ -422,7 +433,7 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
         return _settlementQueue.allowedSlice(borrower, marketView, _activation.config.minActivationAmount);
     }
 
-    function _applyConfig(ActivationLib.Config memory cfg) internal {
+    function _applyConfig(CollateralActivationLib.Config memory cfg) internal {
         _activation.setConfig(cfg);
         emit ConfigSet(cfg);
     }
@@ -514,6 +525,6 @@ contract WethWstEthController layout at erc7201("lido.lending.storage.WethWstEth
     /// @dev Hard-block: a banned address may not borrow, receive a borrow, or initiate one. The soft
     ///      suspicion score only lengthens activation; a ban is the binary stop on the borrow path.
     function _checkNotBlocked(address user) internal view {
-        if (_suspectsRegistry.isBanned(marketId, user)) revert AddressBlocked();
+        if (_suspectsRegistry.isBanned(_MARKET_ID, user)) revert AddressBlocked();
     }
 }

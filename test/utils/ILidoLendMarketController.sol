@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {ILidoLendMarketController} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
+import {
+    ILidoLendMarketController as ILidoLendBaseMarketController
+} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
 
-/// @notice Test-only typed view of `WethWstEthController`. Inherits the core hook interface and adds the
+/// @notice Test-only typed view of `LidoLendMarketController`. Inherits the core hook interface and adds the
 ///         admin, dashboard, and settle-queue surface the tests need. `nextSettlementCut` and
 ///         `allowedSliceFor` are the controller's own views (no longer on the core hook interface), so
 ///         they are declared here. `PositionView` and `SlicePolicy` mirror the controller's structs
 ///         field-for-field so calls decode.
-interface IWethWstEthController is ILidoLendMarketController {
+interface ILidoLendMarketController is ILidoLendBaseMarketController {
     struct PositionView {
         uint256 rawCollateral;
         uint256 active;
         uint256 activating;
         uint256 dust;
-        uint256 unlockAt;
+        uint256 unlockTime;
         bool readyToSettle;
         uint256 suspicion;
         uint256 debtAssets;
@@ -50,5 +52,5 @@ interface IWethWstEthController is ILidoLendMarketController {
     function rootHasBadDebt() external view returns (bool);
     function watermarkInfo(address borrower) external view returns (uint256 watermarkLtv, uint256 sliceAssets);
     function positionOf(address borrower) external view returns (PositionView memory);
-    function currentLoad() external view returns (uint256);
+    function currentInflow() external view returns (uint256);
 }

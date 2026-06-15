@@ -12,7 +12,7 @@ activation parameters and suspects-registry bootstrap in the script are placehol
    registry rejects `quorum = 0`.
 3. `WstEthRateOracle` — wraps Lido's `stEthPerToken` as a Morpho-style oracle.
 4. `AdaptiveCurveIrm` — Morpho Blue's adaptive-curve IRM (unmodified upstream).
-5. `WethWstEthController` implementation (constructor bakes in `(core, marketId)`) +
+5. `LidoLendMarketController` implementation (constructor bakes in `(core, marketId)`) +
    `OssifiableProxy`; `initialize(admin, suspectsRegistry, activationConfig)`.
 6. `createMarket(params, controllerProxy, enableSettlement = true)` on the core. This owner-gated
    call auto-enables the IRM and LLTV (the standalone `enableIrm`/`enableLltv` steps were removed).
@@ -27,7 +27,7 @@ activation parameters and suspects-registry bootstrap in the script are placehol
 - `git submodule update --init --recursive` is up to date.
 - Deployer address is funded on the target chain.
 - Confirm `WETH` and `WSTETH` addresses for the target chain (the script defaults are mainnet).
-- Review the **DRAFT** `activation` config in the script (delays, dust threshold, load reference,
+- Review the **DRAFT** `activation` config in the script (delays, dust threshold, inflow reference,
   decay window, decay floor) — these are governance values.
 - Decide the real guardian set + quorum for the suspects registry (the script uses the deployer
   as a placeholder sole guardian).

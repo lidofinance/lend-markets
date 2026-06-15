@@ -2,6 +2,7 @@
 pragma solidity 0.8.35;
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {
     AccessControlEnumerableUpgradeable
@@ -19,11 +20,11 @@ import {ISuspectsRegistry} from "./interfaces/ISuspectsRegistry.sol";
 /// @dev Upgradeable, deployed behind a proxy (`initialize`, not a constructor), with ERC-7201
 ///      namespaced storage. Severity ladder, per `(market, suspect)`:
 ///        - flags == 0           : suspicion 0, clean, normal maturation.
-///        - 0 < flags < quorum   : suspicion in (0,100), controller scales the maturation delay up.
-///        - flags >= quorum      : suspicion 100 and `banned` LATCHES (controller hard-blocks borrow).
+///        - 0 < flags < quorum   : suspicion in (0,WAD), controller scales the maturation delay up.
+///        - flags >= quorum      : suspicion WAD and `banned` LATCHES (controller hard-blocks borrow).
 ///
 ///      The ban latches: it survives flag retraction, is cleared only by `unban`, and pins suspicion
-///      at 100 while it holds. The graded (0,100) range is driven only by live sub-quorum flags.
+///      at WAD while it holds. The graded (0,WAD) range is driven only by live sub-quorum flags.
 ///      `EVERY_MARKET` flags apply to every market. A suspect's effective state is the dirtier of its
 ///      per-market and global state.
 ///
@@ -46,11 +47,6 @@ contract SuspectsRegistry layout at erc7201("lido.lending.storage.SuspectsRegist
     /// @notice Sentinel market whose flags apply to every market.
     Id public constant EVERY_MARKET = Id.wrap(bytes32(0));
 
-    /// @notice Full-scale suspicion: the value at (and above) which an address counts as banned, and
-    ///         the scale the graded score `flags * SUSPICION_SCALE / quorum` is reported on. Must match
-    ///         `ActivationLib.SUSPICION_SCALE`, which consumes this value.
-    uint256 public constant SUSPICION_SCALE = 100;
-
     struct SuspectState {
         uint16 flags; // live count of distinct guardian flags on this (market, suspect)
         bool banned; // latched hard block, set at quorum or by `ban`, cleared only by `unban`
@@ -62,7 +58,7 @@ contract SuspectsRegistry layout at erc7201("lido.lending.storage.SuspectsRegist
     }
 
     EnumerableSet.AddressSet private _guardians;
-    /// @dev Flags that take suspicion to `SUSPICION_SCALE` and latch a ban.
+    /// @dev Flags that take suspicion to `WAD` and latch a ban.
     uint256 private _quorum;
     mapping(Id market => MarketSuspects) private _markets;
 
@@ -195,11 +191,10 @@ contract SuspectsRegistry layout at erc7201("lido.lending.storage.SuspectsRegist
     /* VIEWS (read by the controller) */
 
     /// @inheritdoc ISuspectsRegistry
-    /// @dev Controller use: `maturationDelay = base + suspicion * base / SUSPICION_SCALE`. A ban pins
-    ///      this at SUSPICION_SCALE (the latch survives flag retraction), so the controller reads
-    ///      suspicion alone.
+    /// @dev WAD-scaled (`WAD` = banned, the value the consumer treats as a full surcharge). A ban pins
+    ///      this at `WAD` (the latch survives flag retraction), so the controller reads suspicion alone.
     function suspicion(Id market, address suspect) external view override returns (uint256) {
-        if (isBanned(market, suspect)) return SUSPICION_SCALE;
+        if (isBanned(market, suspect)) return WAD;
         uint256 local = _suspicion(market, suspect);
         uint256 global = _suspicion(EVERY_MARKET, suspect);
         return local > global ? local : global;
@@ -216,7 +211,7 @@ contract SuspectsRegistry layout at erc7201("lido.lending.storage.SuspectsRegist
     }
 
     function _suspicion(Id market, address suspect) internal view returns (uint256) {
-        uint256 score = uint256(_markets[market].state[suspect].flags) * SUSPICION_SCALE / _quorum;
-        return score > SUSPICION_SCALE ? SUSPICION_SCALE : score;
+        uint256 score = uint256(_markets[market].state[suspect].flags) * WAD / _quorum;
+        return score > WAD ? WAD : score;
     }
 }

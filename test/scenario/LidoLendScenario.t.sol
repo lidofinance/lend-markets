@@ -8,7 +8,7 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Test} from "forge-std/Test.sol";
 
-import {IWethWstEthController} from "../utils/IWethWstEthController.sol";
+import {ILidoLendMarketController} from "../utils/ILidoLendMarketController.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 interface IWETH {
@@ -44,7 +44,7 @@ contract FlashRoundTrip {
     }
 }
 
-/// @notice End-to-end scenario over a freshly deployed ILidoLend + WethWstEthController stack on a
+/// @notice End-to-end scenario over a freshly deployed ILidoLend + LidoLendMarketController stack on a
 ///         mainnet fork (real Lido stETH/wstETH). Drives supply/borrow/maturation and the settle
 ///         queue (heap ordering, watermark, bad-debt guard) through the controller's hooks.
 contract LidoLendScenarioTest is Test, LidoLendDeployer {
@@ -68,7 +68,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
     struct TestMarket {
         ILidoLend market;
-        IWethWstEthController controller;
+        ILidoLendMarketController controller;
         address suspectsRegistry;
         MarketParams marketParams;
         Id id;
@@ -426,7 +426,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     }
 
     /// @notice A banned borrower's collateral never settles into `active`, and its borrow is hard-blocked.
-    ///         Exercises the suspicion path: `suspicion == 100` -> NEVER_DELAY unlock + the borrow ban.
+    ///         Exercises the suspicion path: `suspicion == WAD` -> NEVER_UNLOCK unlock + the borrow ban.
     function test_suspicion_bannedCollateralNeverMaturesAndBorrowBlocked() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(false);
@@ -446,8 +446,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         // Warp far past any normal activation delay — a banned address never settles.
         vm.warp(block.timestamp + 30 days);
-        IWethWstEthController.PositionView memory pv = ctx.controller.positionOf(BORROWER);
-        assertEq(pv.suspicion, 100, "banned -> suspicion 100");
+        ILidoLendMarketController.PositionView memory pv = ctx.controller.positionOf(BORROWER);
+        assertEq(pv.suspicion, 1e18, "banned -> suspicion WAD");
         assertFalse(pv.readyToSettle, "banned never ready to settle");
         _assertCollateralState(ctx.controller, BORROWER, 0, col, 0); // still activating, never active
 
@@ -457,9 +457,9 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.borrow(ctx.marketParams, 1 ether, 0, BORROWER, BORROWER);
     }
 
-    /// @notice The activation delay is load-scaled (a larger inflow charges more leaky-bucket load and
+    /// @notice The activation delay is inflow-scaled (a larger inflow adds more to the throttle and
     ///         earns a longer delay) and is enforced (collateral does not settle before its unlock).
-    function test_maturation_delayScalesWithLoadAndIsEnforced() public {
+    function test_maturation_delayScalesWithInflowAndIsEnforced() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(false);
 
@@ -468,13 +468,13 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, smallCol, BORROWER, "");
-        uint256 smallUnlock = ctx.controller.positionOf(BORROWER).unlockAt;
+        uint256 smallUnlock = ctx.controller.positionOf(BORROWER).unlockTime;
 
         vm.prank(SECOND_BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, bigCol, SECOND_BORROWER, "");
-        uint256 bigUnlock = ctx.controller.positionOf(SECOND_BORROWER).unlockAt;
+        uint256 bigUnlock = ctx.controller.positionOf(SECOND_BORROWER).unlockTime;
 
-        // The bigger inflow piled more onto the load accumulator -> strictly longer delay.
+        // The bigger inflow piled more onto the inflow accumulator -> strictly longer delay.
         assertGt(bigUnlock, smallUnlock, "bigger inflow -> longer activation delay");
         // The small lot activated (not dust) and, in a near-empty market, matures fast (under the 2h cap).
         assertGt(smallUnlock, block.timestamp, "small deposit activated (not dust)");
@@ -486,26 +486,26 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         assertTrue(ctx.controller.positionOf(BORROWER).readyToSettle, "ready at unlock");
     }
 
-    /// @notice A same-tx supplyCollateral -> withdrawCollateral round-trip is load-neutral: the deposit's
-    ///         load charge is reversed on the same-tx withdrawal, so a flash loan cannot pump the load.
-    function test_flashUndo_sameTxRoundTripIsLoadNeutral() public {
+    /// @notice A same-tx supplyCollateral -> withdrawCollateral round-trip is inflow-neutral: the deposit's
+    ///         inflow addition is reversed on the same-tx withdrawal, so a flash loan cannot pump the inflow.
+    function test_flashUndo_sameTxRoundTripIsInflowNeutral() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(false);
 
-        // Seed real load with a committed deposit so `currentLoad()` is observably non-zero.
+        // Seed real inflow with a committed deposit so `currentInflow()` is observably non-zero.
         uint256 seed = _mintWstETH(ctx.market, BORROWER, 30 ether);
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, seed, BORROWER, "");
-        uint256 loadBefore = ctx.controller.currentLoad();
-        assertGt(loadBefore, 0, "seed deposit charged load");
+        uint256 inflowBefore = ctx.controller.currentInflow();
+        assertGt(inflowBefore, 0, "seed deposit added to inflow");
 
         // Flash actor supplies and withdraws the same collateral in ONE transaction.
         FlashRoundTrip flasher = new FlashRoundTrip();
         uint256 amount = _mintWstETH(ctx.market, address(flasher), 50 ether);
         flasher.run(ctx.market, ctx.marketParams, amount);
 
-        // No time passed, so no decay: the round-trip must leave the load exactly where it was.
-        assertEq(ctx.controller.currentLoad(), loadBefore, "same-tx round-trip is load-neutral");
+        // No time passed, so no decay: the round-trip must leave the inflow exactly where it was.
+        assertEq(ctx.controller.currentInflow(), inflowBefore, "same-tx round-trip is inflow-neutral");
     }
 
     function _settleAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
@@ -568,10 +568,11 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     maxSuspicionDelay: 2 hours,
-                    maxDecayDuration: 4 hours,
-                    maxDelayLoad: 10_000 ether,
+                    activatingHold: 0,
+                    inflowDecayWindow: 4 hours,
+                    maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
-                    minDecayAmount: 1_000 ether
+                    minDecayInflow: 1_000 ether
                 }),
                 slicePolicy: SlicePolicyConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
                 guardians: guardians,
@@ -582,7 +583,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         );
 
         ctx.market = ILidoLend(d.core);
-        ctx.controller = IWethWstEthController(d.controllerProxy);
+        ctx.controller = ILidoLendMarketController(d.controllerProxy);
         ctx.suspectsRegistry = d.suspectsRegistry;
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
@@ -615,13 +616,13 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     }
 
     function _assertCollateralState(
-        IWethWstEthController controller,
+        ILidoLendMarketController controller,
         address borrower,
         uint256 matured,
         uint256 activating,
         uint256 dust
     ) internal view {
-        IWethWstEthController.PositionView memory pv = controller.positionOf(borrower);
+        ILidoLendMarketController.PositionView memory pv = controller.positionOf(borrower);
         assertEq(pv.active, matured, "matured (active) collateral");
         assertEq(pv.activating, activating, "maturing (activating) collateral");
         assertEq(pv.dust, dust, "dust collateral");

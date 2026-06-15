@@ -30,7 +30,7 @@ interface ISuspectsRegistry {
 
     /* CONFIG */
 
-    /// @notice Flags that take suspicion to 100 and latch a ban.
+    /// @notice Flags that take suspicion to `WAD` and latch a ban.
     function quorum() external view returns (uint256);
 
     /* MEMBERSHIP (admin) */
@@ -58,9 +58,9 @@ interface ISuspectsRegistry {
 
     /* VIEWS */
 
-    /// @notice Suspicion of `suspect` for `market`, 0 (clean) to 100 (fully suspect), folding the
-    ///         per-market and global (`EVERY_MARKET`) score (dirtier wins). Returns 100 when banned,
-    ///         so a single read drives the controller's maturation delay.
+    /// @notice Suspicion of `suspect` for `market`, WAD-scaled: 0 (clean) to `WAD` (fully suspect),
+    ///         folding the per-market and global (`EVERY_MARKET`) score (dirtier wins). Returns `WAD`
+    ///         when banned, so a single read drives the controller's maturation delay.
     function suspicion(Id market, address suspect) external view returns (uint256);
     /// @notice True if `suspect` is banned for `market`, directly or globally.
     function isBanned(Id market, address suspect) external view returns (bool);

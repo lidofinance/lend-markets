@@ -35,17 +35,23 @@ abstract contract LidoLendDeployer {
         uint96 fallbackMinRequest;
     }
 
-    /// @dev Mirror of `ActivationLib.Config` (same field order/types) so the controller initializer can
+    /// @dev Mirror of `CollateralActivationLib.Config` (same field order/types) so the controller initializer can
     ///      be abi-encoded without coupling the deployer to the controller's libraries. Field order must
     ///      match the hardcoded tuple in `_deployController`'s `encodeWithSignature`.
     struct ActivationConfig {
+        // delay ramp
         uint64 minActivationDelay;
         uint64 maxActivationDelay;
+        uint128 maxDelayInflow;
+        // inflow decay
+        uint64 inflowDecayWindow;
+        uint128 minDecayInflow;
+        // suspicion surcharge
         uint64 maxSuspicionDelay;
-        uint64 maxDecayDuration;
-        uint128 maxDelayLoad;
+        // sybil hold on activating collateral
+        uint128 activatingHold;
+        // dust threshold (anti-griefing)
         uint128 minActivationAmount;
-        uint128 minDecayAmount;
     }
 
     struct Deployed {
@@ -149,10 +155,10 @@ abstract contract LidoLendDeployer {
         ActivationConfig memory activation
     ) internal virtual returns (address proxy, address impl) {
         impl = _deployArtifact(
-            "src/controllers/WethWstEthController.sol:WethWstEthController", abi.encode(core, marketId)
+            "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core, marketId)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address,(uint64,uint64,uint64,uint64,uint128,uint128,uint128))",
+            "initialize(address,address,(uint64,uint64,uint128,uint64,uint128,uint64,uint128,uint128))",
             admin,
             suspects,
             activation

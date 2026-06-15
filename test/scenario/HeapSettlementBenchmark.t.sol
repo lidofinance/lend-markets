@@ -8,7 +8,7 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
 
-import {IWethWstEthController} from "../utils/IWethWstEthController.sol";
+import {ILidoLendMarketController} from "../utils/ILidoLendMarketController.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 interface IWETH {
@@ -69,7 +69,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     struct Ctx {
         ILidoLend market;
-        IWethWstEthController controller;
+        ILidoLendMarketController controller;
         ControllableWstEthOracle oracle;
         MarketParams marketParams;
         Id id;
@@ -549,10 +549,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     maxSuspicionDelay: 2 hours,
-                    maxDecayDuration: 4 hours,
-                    maxDelayLoad: 10_000 ether,
+                    activatingHold: 0,
+                    inflowDecayWindow: 4 hours,
+                    maxDelayInflow: 10_000 ether,
                     minActivationAmount: uint128(MIN_COLLATERAL_ACTIVATION),
-                    minDecayAmount: 1_000 ether
+                    minDecayInflow: 1_000 ether
                 }),
                 slicePolicy: SlicePolicyConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
                 guardians: guardians,
@@ -564,7 +565,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
         ctx.market = ILidoLend(d.core);
         ctx.oracle = ControllableWstEthOracle(d.oracle);
-        ctx.controller = IWethWstEthController(d.controllerProxy);
+        ctx.controller = ILidoLendMarketController(d.controllerProxy);
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
         ctx.price = ctx.oracle.price();
@@ -572,7 +573,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         ctx.controller.grantRole(ctx.controller.CONFIGURATOR_ROLE(), address(this));
         ctx.controller
             .setSlicePolicy(
-                IWethWstEthController.SlicePolicy({
+                ILidoLendMarketController.SlicePolicy({
                     sliceFloorBps: 100, sliceFloorAssets: SLICE_FLOOR, fallbackMinRequest: 0
                 })
             );

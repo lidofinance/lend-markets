@@ -65,10 +65,11 @@ contract LidoLendDepositGatewayTest is Test, LidoLendDeployer {
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     maxSuspicionDelay: 2 hours,
-                    maxDecayDuration: 4 hours,
-                    maxDelayLoad: 10_000 ether,
+                    activatingHold: 0,
+                    inflowDecayWindow: 4 hours,
+                    maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
-                    minDecayAmount: 1_000 ether
+                    minDecayInflow: 1_000 ether
                 }),
                 slicePolicy: SlicePolicyConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
                 guardians: guardians,
