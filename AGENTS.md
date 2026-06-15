@@ -136,6 +136,22 @@ either the contract or the test setup.
 - Tests land with the change. Separate "tests follow-up" PRs are not accepted for new functionality.
 - After source changes, run at least `forge build --force` and `forge test`.
 
+## Commit Messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/): the subject starts with a type
+prefix, an optional scope, and a short imperative summary.
+
+```
+<type>(<optional scope>): <summary>
+```
+
+- Allowed types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `build`, `ci`, `perf`, `style`.
+- Scope is optional and names the area touched, e.g. `feat(controller):`, `fix(vault):`,
+  `test(scenario):`, `chore(deps):`.
+- Summary is imperative and lower-case, no trailing period; keep it under ~72 characters and put
+  detail in the body.
+- Breaking changes: add `!` after the type/scope (`refactor!:`) and explain the break in the body.
+
 ## Pull Request Notes
 
 PR description includes:
