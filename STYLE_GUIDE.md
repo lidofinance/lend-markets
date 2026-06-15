@@ -38,6 +38,17 @@ Inside a contract, order top to bottom:
 10. Internal functions.
 11. Private functions.
 
+## Namespaced Storage (Upgradeable Contracts)
+
+Upgradeable contracts (everything deployed behind `OssifiableProxy`) declare their storage with
+the builtin `layout at erc7201("lido.lending.storage.<ContractName>")` clause on the contract
+header and plain state variables in the body. Do not hand-roll the ERC-7201 slot constant +
+assembly `_storage()` accessor — the compiler computes the same base slot and enforces the layout.
+Placement of the clause within the header is whatever `forge fmt` produces; don't fight the
+formatter. New fields are appended at the end of the variable list, never inserted, so upgrades
+stay layout-safe. Inherited OZ-upgradeable bases keep their own namespaces and are unaffected by
+the contract's `layout at`.
+
 ## Naming
 
 - **Contracts**: `PascalCase`. Match the file name.
@@ -84,6 +95,20 @@ Inside a contract, order top to bottom:
 - Pack storage structs deliberately; document the slot layout in a comment when packing is
   non-trivial.
 
+## Type Sizes
+
+- **Accounting values** (token amounts that mirror core positions/totals): `uint128`, matching the
+  core's storage types. Never narrower — collateral/loan tokens are arbitrary, and a narrower type
+  either reverts legitimate amounts (checked cast) or silently corrupts accounting (saturation).
+- **Policy bounds** (configurable floors/minimums compared against accounting values): `uint96` is
+  acceptable when it buys slot packing. Degradation is graceful — for a token whose amounts exceed
+  uint96 the bound saturates low and the policy weakens, nothing reverts.
+- **Timestamps and durations**: `uint64`.
+- **Ratios**: `uint16` basis points for policy knobs; `uint256` WAD where the math composes with
+  core values (LTV, watermark).
+- Counters and indexes: smallest type that demonstrably cannot overflow (`uint16` flags), `uint256`
+  for loop indexes and array lengths.
+
 ## Constants
 
 - Magic numbers go in named constants; document the source (oracle scale, WAD, `KEY_SCALE`,
@@ -97,12 +122,12 @@ Inside a contract, order top to bottom:
   WHAT (well-named identifiers cover that).
 - Keep NatSpec concise. One line per parameter when it adds something; skip when it would just
   restate the type.
-- Do not reference ADR numbers from contract NatSpec. Cite ADRs from `docs/` or the spec at
-  `docs/specs/<Contract>.md`.
+- **Never reference ADRs, tests, benchmarks, or docs from NatSpec or body comments.** Contract
+  comments must stand on their own; cross-references live in `docs/` (specs map invariants
+  to tests).
 - Body comments focus on non-obvious behaviour, invariants, or fork-specific deviations. Never
   restate code.
-- Avoid comments that pin to specific tasks/PRs/issues — they rot. Cite stable artefacts (ADRs,
-  specs) only.
+- Avoid comments that pin to specific tasks/PRs/issues — they rot.
 
 ## Fork Conventions
 

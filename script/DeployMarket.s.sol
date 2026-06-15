@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
 import {Script, console2} from "forge-std/Script.sol";
 
-import {Id} from "@morpho-blue/src/interfaces/IMorpho.sol";
+import {Id} from "@lido-blue/src/interfaces/IMorpho.sol";
 
 import {LidoBlueDeployer} from "./lib/LidoBlueDeployer.sol";
 
@@ -49,6 +49,12 @@ contract DeployMarket is Script, LidoBlueDeployer {
                     maxDelayLoad: 10_000 ether,
                     minActivationAmount: 10 ether,
                     minDecayAmount: 1_000 ether
+                }),
+                // DRAFT slice policy — governance values, tune before any real deploy.
+                slicePolicy: SlicePolicyConfig({
+                    sliceFloorBps: 100, // 1% of the root's debt on top of the closed-form slice
+                    sliceFloorAssets: 10 ether,
+                    fallbackMinRequest: 1 ether
                 }),
                 guardians: guardians,
                 quorum: 1,

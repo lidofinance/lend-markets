@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.35;
 
-import {IOracle} from "@morpho-blue/src/interfaces/IOracle.sol";
+import {IOracle} from "@lido-blue/src/interfaces/IOracle.sol";
 
 interface IWstETH {
     /// @notice Amount of stETH backing 1 wstETH, scaled by 1e18.
@@ -23,10 +23,10 @@ interface IWstETH {
 contract WstEthRateOracle is IOracle {
     IWstETH public immutable WSTETH;
 
-    error BadInput();
+    error ZeroAddress();
 
     constructor(address wstETH_) {
-        if (wstETH_ == address(0)) revert BadInput();
+        if (wstETH_ == address(0)) revert ZeroAddress();
         WSTETH = IWstETH(wstETH_);
     }
 

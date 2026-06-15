@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Lido <info@lido.fi>
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
 import {StorageSlot} from "@openzeppelin/contracts/utils/StorageSlot.sol";
 

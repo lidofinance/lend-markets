@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
-import {Id} from "@morpho-blue/src/interfaces/IMorpho.sol";
+import {Id} from "@lido-blue/src/interfaces/IMorpho.sol";
 
 /// @title ISuspectsRegistry
 /// @notice Guardian-committee suspect registry. Guardians flag suspect addresses; `quorum` flags

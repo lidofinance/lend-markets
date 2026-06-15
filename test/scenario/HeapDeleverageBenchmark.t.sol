@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.35;
 
-import {LidoBlue} from "../../src/LidoBlue.sol";
-import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
-import {ORACLE_PRICE_SCALE} from "@morpho-blue/src/libraries/ConstantsLib.sol";
-import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
+import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
+import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-blue/src/libraries/ConstantsLib.sol";
+import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
 
 import {IWethWstEthController} from "../utils/IWethWstEthController.sol";
@@ -62,13 +62,13 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
     address internal constant LENDER = address(0x9000);
 
     uint256 internal constant MAX_ITERATIONS = 150;
-    uint128 internal constant SLICE_FLOOR = 1 ether;
+    uint96 internal constant SLICE_FLOOR = 1 ether;
     uint128 internal constant DUST_THRESHOLD = 0.005 ether;
     uint256 internal constant MIN_COLLATERAL_ACTIVATION = 10e18;
     uint256 internal _wstEthRate;
 
     struct Ctx {
-        LidoBlue market;
+        ILidoBlue market;
         IWethWstEthController controller;
         ControllableWstEthOracle oracle;
         MarketParams marketParams;
@@ -163,6 +163,21 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
             ltvs[i] = 0.4e18;
         }
         _runScenarioWithLTVs(ctx, "ClusterNearTop(5@69-71%+3@40%)", debts, ltvs, _sum(debts) / 4);
+    }
+
+    /// @notice Worst case for the heap walk: many large positions packed into a 2% LTV band, so
+    ///         every cut barely re-orders the queue and the exit has to rotate through all of them.
+    function test_ManyLargeCloseLTV() public {
+        _skip();
+        Ctx memory ctx = _deployCtx();
+        uint256 n = 20;
+        uint256[] memory debts = new uint256[](n);
+        uint256[] memory ltvs = new uint256[](n);
+        for (uint256 i; i < n; ++i) {
+            debts[i] = 50 ether;
+            ltvs[i] = 0.74e18 + (i * 0.001e18); // 74.0% .. 75.9%
+        }
+        _runScenarioWithLTVs(ctx, "ManyLargeCloseLTV(20x50@74-76%)", debts, ltvs, _sum(debts) / 2);
     }
 
     // ── Serial exits
@@ -539,6 +554,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
                     minActivationAmount: uint128(MIN_COLLATERAL_ACTIVATION),
                     minDecayAmount: 1_000 ether
                 }),
+                slicePolicy: SlicePolicyConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
                 guardians: guardians,
                 quorum: 1,
                 vaultName: "Lido wstETH/WETH Vault",
@@ -546,7 +562,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
             })
         );
 
-        ctx.market = LidoBlue(d.core);
+        ctx.market = ILidoBlue(d.core);
         ctx.oracle = ControllableWstEthOracle(d.oracle);
         ctx.controller = IWethWstEthController(d.controllerProxy);
         ctx.marketParams = d.params;
@@ -554,7 +570,12 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         ctx.price = ctx.oracle.price();
 
         ctx.controller.grantRole(ctx.controller.CONFIGURATOR_ROLE(), address(this));
-        ctx.controller.setSliceFloor(SLICE_FLOOR);
+        ctx.controller
+            .setSlicePolicy(
+                IWethWstEthController.SlicePolicy({
+                    sliceFloorBps: 100, sliceFloorAssets: SLICE_FLOOR, fallbackMinRequest: 0
+                })
+            );
     }
 
     /// @dev Override the default `WstEthRateOracle` with a per-test controllable oracle so
@@ -632,7 +653,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         return SharesMathLib.toSharesDown(assets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
     }
 
-    function _mintWETH(LidoBlue market, address user, uint256 amount) internal {
+    function _mintWETH(ILidoBlue market, address user, uint256 amount) internal {
         vm.deal(user, amount);
         vm.prank(user);
         WETH.deposit{value: amount}();
@@ -640,7 +661,7 @@ contract HeapDeleverageBenchmark is Test, LidoBlueDeployer {
         WETH.approve(address(market), type(uint256).max);
     }
 
-    function _mintWstETH(LidoBlue market, address user, uint256 ethAmount) internal returns (uint256) {
+    function _mintWstETH(ILidoBlue market, address user, uint256 ethAmount) internal returns (uint256) {
         uint256 wstETHAmount = (ethAmount * 1e18) / _wstEthRate;
         bytes32 balSlot = keccak256(abi.encode(user, uint256(0)));
         vm.store(WSTETH_ADDRESS, balSlot, bytes32(wstETHAmount));

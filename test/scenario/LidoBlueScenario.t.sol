@@ -1,21 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.35;
 
-import {LidoBlue} from "../../src/LidoBlue.sol";
+import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
-import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
-import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
+import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
+import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
 import {Test} from "forge-std/Test.sol";
 
 import {IWethWstEthController} from "../utils/IWethWstEthController.sol";
 import {LidoBlueDeployer} from "../../script/lib/LidoBlueDeployer.sol";
-
-// Compile-trigger so Forge emits the `AdaptiveCurveIrm` artifact under `out/`. `LidoBlueDeployer`
-// deploys the IRM via `vm.getCode` (string lookup) and can't import it directly because the
-// deployer compiles under multiple Solc versions while `AdaptiveCurveIrm.sol` is pinned to 0.8.19.
-// solhint-disable-next-line no-unused-import
-import {AdaptiveCurveIrm} from "@morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -44,13 +38,13 @@ interface IRegistryLike {
 /// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
 ///      controller's same-tx flash-undo fires. Holds the collateral and is its own onBehalf/receiver.
 contract FlashRoundTrip {
-    function run(LidoBlue market, MarketParams calldata params, uint256 amount) external {
+    function run(ILidoBlue market, MarketParams calldata params, uint256 amount) external {
         market.supplyCollateral(params, amount, address(this), "");
         market.withdrawCollateral(params, amount, address(this), address(this));
     }
 }
 
-/// @notice End-to-end scenario over a freshly deployed LidoBlue + WethWstEthController stack on a
+/// @notice End-to-end scenario over a freshly deployed ILidoBlue + WethWstEthController stack on a
 ///         mainnet fork (real Lido stETH/wstETH). Drives supply/borrow/maturation and the deleverage
 ///         queue (heap ordering, watermark, bad-debt guard) through the controller's hooks.
 contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
@@ -73,7 +67,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
     uint256 internal constant LLTV = 0.8e18;
 
     struct TestMarket {
-        LidoBlue market;
+        ILidoBlue market;
         IWethWstEthController controller;
         address suspectsRegistry;
         MarketParams marketParams;
@@ -577,6 +571,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
                     minActivationAmount: 10 ether,
                     minDecayAmount: 1_000 ether
                 }),
+                slicePolicy: SlicePolicyConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
                 guardians: guardians,
                 quorum: 1,
                 vaultName: "Lido wstETH/WETH Vault",
@@ -584,7 +579,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
             })
         );
 
-        ctx.market = LidoBlue(d.core);
+        ctx.market = ILidoBlue(d.core);
         ctx.controller = IWethWstEthController(d.controllerProxy);
         ctx.suspectsRegistry = d.suspectsRegistry;
         ctx.marketParams = d.params;
@@ -594,7 +589,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         ctx.controller.grantRole(ctx.controller.CONFIGURATOR_ROLE(), address(this));
     }
 
-    function _mintWETH(LidoBlue market, address user, uint256 amount) internal {
+    function _mintWETH(ILidoBlue market, address user, uint256 amount) internal {
         vm.deal(user, amount);
         vm.prank(user);
         WETH.deposit{value: amount}();
@@ -602,7 +597,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         WETH.approve(address(market), type(uint256).max);
     }
 
-    function _mintWstETH(LidoBlue market, address user, uint256 ethAmount) internal returns (uint256) {
+    function _mintWstETH(ILidoBlue market, address user, uint256 ethAmount) internal returns (uint256) {
         vm.deal(user, ethAmount);
         vm.prank(user);
         STETH.submit{value: ethAmount}(address(0));

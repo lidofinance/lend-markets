@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity >=0.8.0;
+pragma solidity 0.8.35;
 
 /// @title MaxHeapLib
 /// @notice Generic binary max-heap over a storage struct, keyed by `(account, key)`.

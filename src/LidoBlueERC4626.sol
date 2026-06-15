@@ -1,24 +1,37 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.28;
+pragma solidity 0.8.35;
 
-import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {Id, IMorpho, MarketParams, Position} from "@morpho-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
-import {MorphoBalancesLib} from "@morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol";
-import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
+import {Id, IMorpho, MarketParams, Position} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
+import {MorphoBalancesLib} from "@lido-blue/src/libraries/periphery/MorphoBalancesLib.sol";
+import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
 
-import {ILidoBlueMarketController} from "./interfaces/ILidoBlueMarketController.sol";
-import {ILidoBlue} from "./interfaces/ILidoBlue.sol";
+import {ILidoBlueMarketController} from "@lido-blue/src/interfaces/ILidoBlueMarketController.sol";
+import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
+import {DeleverageQueueLib} from "./libs/DeleverageQueueLib.sol";
+
+/// @dev Slice-policy surface of the controller the vault sizes its loop against; not part of the
+///      core hook interface.
+interface ISlicePolicyView {
+    function slicePolicy() external view returns (DeleverageQueueLib.SlicePolicy memory);
+}
 
 /// @title LidoBlueERC4626
 /// @notice Single-market ERC-4626 wrapper for a Morpho Blue fork market with deleverage exit support.
-contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
+/// @dev    Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer
+///         callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`). Adding a market with
+///         a callback-bearing loan or collateral token invalidates the reentrancy analysis here.
+contract LidoBlueERC4626 layout at erc7201("lido.lending.storage.LidoBlueERC4626")
+    is
+    Initializable,
+    ERC4626Upgradeable
+{
     using MarketParamsLib for MarketParams;
     using SafeERC20 for IERC20;
     using SharesMathLib for uint256;
@@ -54,25 +67,35 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
         address indexed borrower, uint256 morphoSupplyShares, uint256 collateralSeized, uint256 debtCanceled
     );
 
-    IMorpho public immutable MORPHO;
-    ILidoBlueMarketController public immutable CONTROLLER;
-    Id public immutable MARKET_ID;
+    /// @dev Per-call cut bound for the fallback-exit loop (gas safety).
+    uint256 internal constant MAX_DELEVERAGE_ITERATIONS = 150;
 
-    /// @dev Per-call cut bound for the fallback-exit loop (gas safety). Was a controller config field.
-    uint256 internal constant MAX_DELEVERAGE_ITERATIONS = 100;
-
+    IMorpho public MORPHO;
+    ILidoBlueMarketController public CONTROLLER;
+    Id public MARKET_ID;
     MarketParams internal _marketParams;
 
-    constructor(
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(
         address morpho,
         MarketParams memory marketParams_,
         address controller,
         string memory name_,
         string memory symbol_
-    ) ERC20(name_, symbol_) ERC4626(IERC20(marketParams_.loanToken)) {
-        if (morpho == address(0) || controller == address(0) || marketParams_.collateralToken == address(0)) {
+    ) external initializer {
+        if (
+            morpho == address(0) || controller == address(0) || marketParams_.loanToken == address(0)
+                || marketParams_.collateralToken == address(0)
+        ) {
             revert ZeroAddress();
         }
+
+        __ERC20_init(name_, symbol_);
+        __ERC4626_init(IERC20(marketParams_.loanToken));
 
         MORPHO = IMorpho(morpho);
         CONTROLLER = ILidoBlueMarketController(controller);
@@ -84,22 +107,6 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
 
     function marketParams() external view returns (MarketParams memory) {
         return _marketParams;
-    }
-
-    function deposit(uint256 assets, address receiver) public override nonReentrant returns (uint256) {
-        return super.deposit(assets, receiver);
-    }
-
-    function mint(uint256 shares, address receiver) public override nonReentrant returns (uint256) {
-        return super.mint(shares, receiver);
-    }
-
-    function withdraw(uint256 assets, address receiver, address owner) public override nonReentrant returns (uint256) {
-        return super.withdraw(assets, receiver, owner);
-    }
-
-    function redeem(uint256 shares, address receiver, address owner) public override nonReentrant returns (uint256) {
-        return super.redeem(shares, receiver, owner);
     }
 
     function totalAssets() public view override returns (uint256) {
@@ -125,7 +132,6 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
         uint256 shares;
         address owner;
         address receiver;
-        uint256 loanAssetsTarget;
         uint256 morphoSupplyTarget;
         uint256 totalSupplyAssets;
         uint256 totalSupplyShares;
@@ -140,7 +146,6 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
     ///      Collateral is transferred directly by Morpho to `receiver`; the vault does not custody it.
     function fallbackExit(uint256 shares, address receiver, address owner)
         external
-        nonReentrant
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
     {
         ExitPlan memory plan = _beginExit(shares, receiver, owner);
@@ -155,7 +160,6 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
     ///         instead of the risk queue. Best-effort, no revert on shortfall.
     function deleverage(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
-        nonReentrant
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
     {
         ExitPlan memory plan = _beginExit(shares, receiver, owner);
@@ -166,7 +170,7 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
         (sharesBurned, loanAssets) = _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
     }
 
-    /// @dev Common exit preamble: validate, pull allowance, preview the target, snapshot market totals.
+    /// @dev Common exit preamble: validate, pull allowance, size the target, snapshot market totals.
     function _beginExit(uint256 shares, address receiver, address owner) private returns (ExitPlan memory plan) {
         if (shares == 0) revert ZeroShares();
         if (receiver == address(0)) revert ZeroAddress();
@@ -174,7 +178,7 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
         address caller = _msgSender();
         if (caller != owner) _spendAllowance(owner, caller, shares);
 
-        (plan.loanAssetsTarget, plan.morphoSupplyTarget) = previewFallbackExit(shares);
+        plan.morphoSupplyTarget = Math.mulDiv(_morphoSupplyShares(), shares, totalSupply());
         if (plan.morphoSupplyTarget == 0) revert ZeroMorphoSupplyShares();
         (plan.totalSupplyAssets, plan.totalSupplyShares) = _marketSupplyTotals();
 
@@ -183,8 +187,6 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
         plan.receiver = receiver;
     }
 
-    /// @dev Common exit settlement: pro-rate the burn/payout to what was actually serviced, burn,
-    ///      transfer the loan-asset slice, and emit the summary.
     function _finishExit(
         ExitPlan memory plan,
         uint256 morphoSupplyConsumed,
@@ -194,12 +196,12 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
         sharesBurned = morphoSupplyConsumed >= plan.morphoSupplyTarget
             ? plan.shares
             : Math.mulDiv(plan.shares, morphoSupplyConsumed, plan.morphoSupplyTarget);
-        loanAssets = morphoSupplyConsumed >= plan.morphoSupplyTarget
-            ? plan.loanAssetsTarget
-            : Math.mulDiv(plan.loanAssetsTarget, morphoSupplyConsumed, plan.morphoSupplyTarget);
 
-        if (sharesBurned != 0) _burn(plan.owner, sharesBurned);
-        if (loanAssets != 0) IERC20(asset()).safeTransfer(plan.receiver, loanAssets);
+        if (sharesBurned != 0) {
+            loanAssets = Math.mulDiv(IERC20(asset()).balanceOf(address(this)), sharesBurned, totalSupply());
+            _burn(plan.owner, sharesBurned);
+            if (loanAssets != 0) IERC20(asset()).safeTransfer(plan.receiver, loanAssets);
+        }
 
         // slither-disable-next-line uninitialized-local
         FallbackExitLog memory log;
@@ -230,7 +232,11 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
     /// @dev `view`, but result tracks the current block's accrued totals. If blocks pass between
     ///      this call and the matching `fallbackExit` transaction the numbers may shift slightly;
     ///      the on-chain pro-rate is recomputed at execution time so the actual burn matches live state.
-    function previewFallbackExit(uint256 shares) public view returns (uint256 loanAssets, uint256 morphoSupplyShares) {
+    function previewFallbackExit(uint256 shares)
+        external
+        view
+        returns (uint256 loanAssets, uint256 morphoSupplyShares)
+    {
         uint256 totalSupply_ = totalSupply();
         if (shares == 0 || totalSupply_ == 0) return (0, 0);
 
@@ -262,6 +268,7 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
         address receiver;
         uint256 totalSupplyAssets;
         uint256 totalSupplyShares;
+        uint256 minCutAssets;
     }
 
     function _deleverageFromHeap(
@@ -273,7 +280,10 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
         uint256 remainingShares = morphoSupplyShares;
         uint256 maxIterations = MAX_DELEVERAGE_ITERATIONS;
         CutContext memory ctx = CutContext({
-            receiver: receiver, totalSupplyAssets: totalSupplyAssets, totalSupplyShares: totalSupplyShares
+            receiver: receiver,
+            totalSupplyAssets: totalSupplyAssets,
+            totalSupplyShares: totalSupplyShares,
+            minCutAssets: ISlicePolicyView(address(CONTROLLER)).slicePolicy().fallbackMinRequest
         });
 
         for (uint256 i = 0; i < maxIterations; ++i) {
@@ -303,7 +313,10 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
     ) internal returns (uint256 collateralSeized, uint256 debtCanceled, uint256 sharesConsumed) {
         uint256 remainingShares = morphoSupplyShares;
         CutContext memory ctx = CutContext({
-            receiver: receiver, totalSupplyAssets: totalSupplyAssets, totalSupplyShares: totalSupplyShares
+            receiver: receiver,
+            totalSupplyAssets: totalSupplyAssets,
+            totalSupplyShares: totalSupplyShares,
+            minCutAssets: ISlicePolicyView(address(CONTROLLER)).slicePolicy().fallbackMinRequest
         });
 
         for (uint256 i = 0; i < borrowers.length; ++i) {
@@ -322,17 +335,17 @@ contract LidoBlueERC4626 is ERC4626, ReentrancyGuard {
         sharesConsumed = morphoSupplyShares - remainingShares;
     }
 
-    /// @dev One cut. Clamps `sliceAssets` to remaining debt, converts to shares, calls the core
+    /// @dev One cut. Sizes the cut via `DeleverageQueueLib.effectiveCut` (clamp to the remaining
+    ///      exit, drop dust tails the policy would reject), converts to shares, calls the core
     ///      single-borrower primitive, emits `DeleverageCut`. Zero `iterSupplyShares` means the
     ///      caller should stop / skip.
     function _executeCut(address borrower, uint256 sliceAssets, uint256 remainingShares, CutContext memory ctx)
         internal
         returns (uint256 iterSupplyShares, uint256 iterCollateralSeized, uint256 iterDebtCanceled)
     {
+        uint256 remainingExitAssets = remainingShares.toAssetsDown(ctx.totalSupplyAssets, ctx.totalSupplyShares);
+        sliceAssets = DeleverageQueueLib.effectiveCut(sliceAssets, remainingExitAssets, ctx.minCutAssets);
         if (sliceAssets == 0) return (0, 0, 0);
-
-        uint256 remainingDebtAssets = remainingShares.toAssetsDown(ctx.totalSupplyAssets, ctx.totalSupplyShares);
-        if (sliceAssets > remainingDebtAssets) sliceAssets = remainingDebtAssets;
 
         iterSupplyShares = sliceAssets.toSharesDown(ctx.totalSupplyAssets, ctx.totalSupplyShares);
         if (iterSupplyShares == 0) return (0, 0, 0);

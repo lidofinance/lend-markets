@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Permissive pragma so the deploy script (0.8.24) and the scenario/integration tests can all inherit.
-// All deploys go through `vm.getCode`, so this stays solc-agnostic and never imports the deployed
-// contracts (which span 0.8.19 core / 0.8.24 controller).
-pragma solidity >=0.8.19;
+pragma solidity 0.8.35;
 
 import {Vm} from "forge-std/Vm.sol";
 
-import {Id, MarketParams} from "@morpho-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
+import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
 
-import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
+import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
+
+/// @dev Minimal configurator surface of the controller used to seed the deploy-time policy.
+///      `LidoBlueDeployer.SlicePolicyConfig` mirrors the controller's struct, so the call ABI matches.
+interface IControllerConfigurator {
+    function CONFIGURATOR_ROLE() external view returns (bytes32);
+    function grantRole(bytes32 role, address account) external;
+    function setSlicePolicy(LidoBlueDeployer.SlicePolicyConfig calldata policy) external;
+}
 
 /// @title LidoBlueDeployer
 /// @notice Shared deploy steps for a Lido Lending market: core, suspects registry, oracle, IRM,
@@ -22,8 +27,17 @@ abstract contract LidoBlueDeployer {
     /// @dev forge-std cheatcode singleton, inlined so this contract need not inherit `Test` / `Script`.
     Vm internal constant _vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
+    /// @dev Mirror of `DeleverageQueueLib.SlicePolicy` (same field order/types); see `ActivationConfig`
+    ///      for why the deployer mirrors instead of importing.
+    struct SlicePolicyConfig {
+        uint16 sliceFloorBps;
+        uint96 sliceFloorAssets;
+        uint96 fallbackMinRequest;
+    }
+
     /// @dev Mirror of `ActivationLib.Config` (same field order/types) so the controller initializer can
-    ///      be abi-encoded without importing the 0.8.24 library into this solc-agnostic deployer.
+    ///      be abi-encoded without coupling the deployer to the controller's libraries. Field order must
+    ///      match the hardcoded tuple in `_deployController`'s `encodeWithSignature`.
     struct ActivationConfig {
         uint64 minActivationDelay;
         uint64 maxActivationDelay;
@@ -56,6 +70,7 @@ abstract contract LidoBlueDeployer {
         uint256 lltv;
         bool deleverageEnabled;
         ActivationConfig activation;
+        SlicePolicyConfig slicePolicy;
         // Suspects registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
         // `1 <= quorum <= guardians.length`; swap in the real guardian set post-deploy.
         address[] guardians;
@@ -83,13 +98,20 @@ abstract contract LidoBlueDeployer {
         ILidoBlue(d.core).enableLltv(cfg.lltv);
         ILidoBlue(d.core).createMarket(d.params, d.controllerProxy, cfg.deleverageEnabled);
 
-        d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.vaultName, cfg.vaultSymbol);
+        d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
+
+        // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the controller initializer;
+        // grant it CONFIGURATOR_ROLE (a placeholder, rotated to the EasyTrack factory post-deploy)
+        // so it can set the policy now and tune it later.
+        IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
+        controller.grantRole(controller.CONFIGURATOR_ROLE(), cfg.admin);
+        controller.setSlicePolicy(cfg.slicePolicy);
     }
 
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so
     ///      `admin` becomes the core's owner.
     function _deployCore(address admin) internal virtual returns (address) {
-        address impl = _deployArtifact("src/LidoBlue.sol:LidoBlue", "");
+        address impl = _deployArtifact("lib/lido-blue/src/LidoBlue.sol:LidoBlue", "");
         bytes memory initData = abi.encodeWithSignature("initialize(address)", admin);
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
@@ -113,7 +135,7 @@ abstract contract LidoBlueDeployer {
 
     function _deployIrm(address core) internal virtual returns (address) {
         return _deployArtifact(
-            "lib/morpho-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core)
+            "lib/lido-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core)
         );
     }
 
@@ -138,17 +160,26 @@ abstract contract LidoBlueDeployer {
         proxy = _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
-    /// @dev Single-market ERC-4626 wrapper over the core market, reading the controller's deleverage view.
+    /// @dev Single-market ERC-4626 wrapper behind `OssifiableProxy`. Impl is empty-constructor;
+    ///      `initialize` runs through the proxy. The proxy admin is the controller's admin (`admin`).
     function _deployVault(
         address core,
         MarketParams memory params,
         address controller,
+        address admin,
         string memory name_,
         string memory symbol_
     ) internal virtual returns (address) {
-        return _deployArtifact(
-            "src/LidoBlueERC4626.sol:LidoBlueERC4626", abi.encode(core, params, controller, name_, symbol_)
+        address impl = _deployArtifact("src/LidoBlueERC4626.sol:LidoBlueERC4626", "");
+        bytes memory initData = abi.encodeWithSignature(
+            "initialize(address,(address,address,address,address,uint256),address,string,string)",
+            core,
+            params,
+            controller,
+            name_,
+            symbol_
         );
+        return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
     /// @dev Deploys an artifact by full path so multi-version compilation in this repo doesn't ambiguify

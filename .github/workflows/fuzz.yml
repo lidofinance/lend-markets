@@ -3,8 +3,6 @@ name: fuzz
 # Heavy fuzz/invariant suite. Runs nightly and on-demand.
 # Kept off the PR path because high run counts slow down feedback.
 on:
-  schedule:
-    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:

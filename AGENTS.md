@@ -83,7 +83,8 @@ reviewer needs before reading code, not what the code already says.
   what each is trusted not to do.
 - New contracts: spec lands in the same PR as the contract. Behaviour-changing PRs update the
   existing spec under the same commit.
-- Reference the spec from contract-level NatSpec: `@dev See docs/specs/Foo.md`.
+- Specs reference the code; contract NatSpec never references specs, ADRs, tests, or docs
+  (see `STYLE_GUIDE.md`).
 
 ## Testing Guidelines
 
