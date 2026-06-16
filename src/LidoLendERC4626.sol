@@ -119,16 +119,27 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
     }
 
     function maxWithdraw(address owner) public view override returns (uint256) {
-        return
-            Math.min(super.maxWithdraw(owner), IERC20(asset()).balanceOf(address(this)) + _morphoWithdrawableAssets());
+        return Math.min(_ownerAssets(owner), _liquidAssets());
     }
 
     function maxRedeem(address owner) public view override returns (uint256) {
         uint256 ownerShares = balanceOf(owner);
-        uint256 liquidAssets = IERC20(asset()).balanceOf(address(this)) + _morphoWithdrawableAssets();
+        uint256 liquidAssets = _liquidAssets();
 
-        if (super.maxWithdraw(owner) <= liquidAssets) return ownerShares;
+        if (_ownerAssets(owner) <= liquidAssets) return ownerShares;
         return Math.min(ownerShares, convertToShares(liquidAssets));
+    }
+
+    /// @dev Owner's full position valued in assets. This is what OZ's `maxWithdraw` means, computed
+    ///      directly: the base `maxWithdraw` routes through `maxRedeem`, which this contract overrides,
+    ///      so calling `super.maxWithdraw` here would recurse into the override indefinitely.
+    function _ownerAssets(address owner) private view returns (uint256) {
+        return previewRedeem(balanceOf(owner));
+    }
+
+    /// @dev Idle loan assets the vault holds plus what its Morpho position can withdraw right now.
+    function _liquidAssets() private view returns (uint256) {
+        return IERC20(asset()).balanceOf(address(this)) + _morphoWithdrawableAssets();
     }
 
     /// @dev Shared plan for one exit: the preview target + live market totals, bundled to keep the
