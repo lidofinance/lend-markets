@@ -378,6 +378,37 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
         assertGt(queue.claimable(LENDER), 0, "lender credited the full owed");
     }
 
+    /* T8 — keeper brings liquidity and closes an otherwise-unfillable request in one call */
+
+    function test_fillWithLiquidity_keeperFundsAndCloses() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        _depositToVault(LENDER, 10 ether);
+        _drain(BORROWER, 60 ether, 9 ether); // leaves ~1 WETH idle — not enough for the request
+
+        uint64 deadline = uint64(block.timestamp + 1 days);
+        vm.prank(LENDER);
+        IERC20Like(d.vault).approve(address(queue), type(uint256).max);
+        vm.prank(LENDER);
+        uint256 id = queue.requestWithdrawal(WithdrawalQueueLib.Mode.Vault, 10 ether, 0.1 ether, deadline, false);
+
+        // The keeper deposits its own WETH into the vault and closes the request in one atomic call.
+        vm.warp(deadline);
+        vm.deal(KEEPER, 10 ether);
+        vm.startPrank(KEEPER);
+        WETH.deposit{value: 10 ether}();
+        WETH.approve(address(queue), 10 ether);
+        queue.fillWithLiquidity(id, 10 ether);
+        vm.stopPrank();
+
+        assertTrue(queue.getRequest(id).closed, "request closed by the keeper-funded fill");
+        assertEq(queue.activeRequestCount(), 0, "dropped from active set");
+        assertGt(queue.claimable(LENDER), 0, "lender credited the owed");
+        assertGt(queue.claimable(KEEPER), 0, "keeper credited the reward");
+        // The keeper supplied through the vault, so it now holds vault shares (a fresh lender position).
+        assertGt(IERC20Like(d.vault).balanceOf(KEEPER), 0, "keeper holds vault shares from the deposit");
+    }
+
     /* HELPERS */
 
     function _depositToVault(address lender, uint256 ethAmount) internal returns (uint256 shares) {

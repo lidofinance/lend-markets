@@ -194,11 +194,30 @@ contract WithdrawalQueue is Ownable {
         emit WithdrawalRequested(id, msg.sender, mode, assets, maxPriorityFee, deadline, fullFillOnly);
     }
 
-    /// @notice Drain whatever liquidity the market currently has into request `id`, splitting the
-    ///         proceeds between the lender, the caller (keeper), and the protocol. Callable by
-    ///         anyone, repeatedly, until the request is fully filled.
+    /// @notice Fill request `id`, splitting the proceeds between the lender, the caller (keeper), and
+    ///         the protocol. Callable by anyone, repeatedly, until the request is fully filled.
     /// @param id The request to fill.
     function processWithdrawal(uint256 id) external {
+        _process(id, msg.sender);
+    }
+
+    /// @notice Bring liquidity and close a request in one call: deposit `liquidity` of the loan token
+    ///         into the vault (the caller becomes a vault depositor) so the market has the idle assets
+    ///         to honour the fill, then fill request `id` for the caller. Atomic so no other keeper can
+    ///         fill the request on the liquidity this caller just supplied. Caller must have approved
+    ///         this contract for `liquidity` of the loan token.
+    /// @param id The request to fill.
+    /// @param liquidity Loan-asset amount to deposit into the vault before filling.
+    function fillWithLiquidity(uint256 id, uint256 liquidity) external {
+        ASSET.safeTransferFrom(msg.sender, address(this), liquidity);
+        ASSET.forceApprove(address(VAULT), liquidity);
+        VAULT.deposit(liquidity, msg.sender);
+        _process(id, msg.sender);
+    }
+
+    /// @dev Fill request `id`, crediting the keeper reward to `keeper`. Shared by the plain and
+    ///      bring-liquidity entrypoints.
+    function _process(uint256 id, address keeper) internal {
         WithdrawalQueueLib.Request storage request = _queue.requireOpen(id);
 
         (uint256 filledShares, uint256 assetsOut) = _pull(request);
@@ -218,10 +237,10 @@ contract WithdrawalQueue is Ownable {
 
         _queue.recordFill(id, filledShares);
         claimable[request.owner] += lenderAssets;
-        claimable[msg.sender] += keeperFee;
+        claimable[keeper] += keeperFee;
         if (protocolFee != 0) claimable[feeRecipient] += protocolFee;
 
-        emit WithdrawalProcessed(id, msg.sender, filledShares, lenderAssets, keeperFee, protocolFee);
+        emit WithdrawalProcessed(id, keeper, filledShares, lenderAssets, keeperFee, protocolFee);
     }
 
     /// @notice Cancel request `id`. Vault mode returns the unfilled escrowed shares; Direct mode just
