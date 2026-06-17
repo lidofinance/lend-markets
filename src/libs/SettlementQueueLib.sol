@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
-import {MathLib, WAD} from "@lido-blue/src/libraries/MathLib.sol";
-import {ORACLE_PRICE_SCALE} from "@lido-blue/src/libraries/ConstantsLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MaxHeapLib} from "./MaxHeapLib.sol";
+import {MarketView, PositionView, SlicePolicy} from "../types/SettlementTypes.sol";
 
-/// @title DeleverageQueueLib
+/// @title SettlementQueueLib
 /// @author Lido Lending contributors.
-/// @notice Risk-ordered queue of borrowers for the deleverage waterfall, with per-borrower watermark
+/// @notice Risk-ordered queue of borrowers for the settle waterfall, with per-borrower watermark
 ///         opt-in and the slice-sizing policy. Wraps a max-heap keyed by
 ///         borrowShares * KEY_SCALE / rawCollateral, so the root is the highest-LTV position: a
 ///         solvent root means no tracked position is bad debt, which is what makes the bad-debt gate
@@ -16,7 +18,7 @@ import {MaxHeapLib} from "./MaxHeapLib.sol";
 /// @dev Self-contained module: the caller embeds `State`, forwards mutations, and supplies a
 ///      `MarketView` (live core/oracle snapshot) for the slice math. The lib makes no external calls;
 ///      the slice arithmetic (`computeSlice` / `computeWatermarkSlice`) is pure and fuzz-testable.
-library DeleverageQueueLib {
+library SettlementQueueLib {
     using MaxHeapLib for MaxHeapLib.Heap;
     using SharesMathLib for uint256;
     using MathLib for uint256;
@@ -26,31 +28,13 @@ library DeleverageQueueLib {
 
     error WatermarkOutOfRange();
 
+    /// @notice Emitted when a borrower sets their personal settle-down watermark.
     event WatermarkSet(address indexed borrower, uint256 ltv);
 
-    /// @notice Live core/oracle snapshot of a borrower position, built by the controller from core
-    ///         reads and consumed by the slice and bad-debt math. Not carried in any hook payload.
-    struct MarketView {
-        uint256 borrowShares;
-        uint256 rawCollateral;
-        uint256 totalBorrowAssets;
-        uint256 totalBorrowShares;
-        uint256 price; // collateral price in loan asset, ORACLE_PRICE_SCALE
-    }
-
-    /// @notice Slice policy knobs. They tune the same cut and move together, so they are set
-    ///         together (`setSlicePolicy`). Packed into one slot. The uint96 amounts are policy
-    ///         bounds, not accounting: for a loan token whose plausible amounts exceed uint96
-    ///         (~7.9e28 base units) the configurable floors saturate low — the policy weakens but
-    ///         nothing reverts or loses accounting.
-    struct SlicePolicy {
-        // Relative part of the heap-safety overshoot: overshoot = debt * sliceFloorBps / BPS.
-        uint16 sliceFloorBps;
-        // Absolute lower bound of the overshoot, also the minimum meaningful cut size.
-        uint96 sliceFloorAssets;
-        // Minimum loan assets one deleverage call may cancel (anti dust-spam, 0 = no floor).
-        uint96 fallbackMinRequest;
-    }
+    /// @notice Emitted when the settle slice policy is set.
+    event SlicePolicySet(
+        uint16 sliceFloorBps, uint96 sliceFloorAssets, uint96 fallbackMinRequest, uint96 fullCutBelowCollateral
+    );
 
     struct State {
         MaxHeapLib.Heap heap;
@@ -67,19 +51,23 @@ library DeleverageQueueLib {
         $.heap.init();
     }
 
-    /// @notice Re-key `borrower` by risk, or drop it from the queue once it has no debt or no
-    ///         collateral. Risk key = borrowShares * KEY_SCALE / rawCollateral.
-    function sync(State storage $, address borrower, uint256 borrowShares, uint256 rawCollateral) internal {
-        if (borrowShares == 0 || rawCollateral == 0) {
+    /// @notice Re-key `borrower` by risk, or drop it from the queue once it has no debt or no collateral.
+    ///         Risk key = borrowShares * KEY_SCALE / collateral. `position` is the borrower's projected
+    ///         post-action position, so the heap tracks where the position will land, not its current state.
+    function sync(State storage $, address borrower, PositionView memory position) internal {
+        if (position.borrowShares == 0 || position.collateral == 0) {
             $.heap.remove(borrower);
             return;
         }
-        $.heap.upsert(borrower, borrowShares * KEY_SCALE / rawCollateral);
+        $.heap.upsert(borrower, position.borrowShares * KEY_SCALE / position.collateral);
     }
 
     function setSlicePolicy(State storage $, SlicePolicy memory policy) internal {
         if (policy.sliceFloorBps > BPS) revert SliceFloorOutOfRange();
         $.policy = policy;
+        emit SlicePolicySet(
+            policy.sliceFloorBps, policy.sliceFloorAssets, policy.fallbackMinRequest, policy.fullCutBelowCollateral
+        );
     }
 
     /// @notice Set `borrower`'s personal target post-cut LTV (WAD). 0 clears it; must be < WAD.
@@ -122,33 +110,31 @@ library DeleverageQueueLib {
 
     /// @notice Maximum loan-asset slice the policy allows for one cut against `borrower`:
     ///         max(heap slice, watermark slice), extended to the borrower's full debt when the cut
-    ///         would leave its collateral below `minRemainingCollateral` (a dust position no future
-    ///         cut could meaningfully target is closed in one go). Zero means ineligible: neither the
-    ///         root nor a watermarked borrower, or it has no debt/collateral.
-    /// @param minRemainingCollateral Dust threshold the caller supplies (the activation minimum).
-    function allowedSlice(
-        State storage $,
-        address borrower,
-        MarketView memory marketView,
-        uint256 minRemainingCollateral
-    ) internal view returns (uint256 allowed) {
-        uint256 hs = heapSlice($, borrower, marketView);
-        uint256 ws = watermarkSlice($, borrower, marketView);
+    ///         would leave its collateral below the policy's `fullCutBelowCollateral` sweep floor (a dust
+    ///         position no future cut could meaningfully target is closed in one go). Zero means
+    ///         ineligible: neither the root nor a watermarked borrower, or it has no debt/collateral.
+    function allowedSlice(State storage $, MarketView memory marketView, address borrower, PositionView memory position)
+        internal
+        view
+        returns (uint256 allowed)
+    {
+        uint256 hs = heapSlice($, marketView, borrower, position);
+        uint256 ws = watermarkSlice($, marketView, borrower, position);
         allowed = hs >= ws ? hs : ws;
         if (allowed == 0 || allowed == type(uint256).max || marketView.price == 0) return allowed;
 
         // collateral leaving with the cut, mirroring the core's seize computation
         uint256 seized = allowed.mulDivDown(ORACLE_PRICE_SCALE, marketView.price);
-        uint256 remaining = marketView.rawCollateral > seized ? marketView.rawCollateral - seized : 0;
-        if (remaining < minRemainingCollateral) {
-            allowed = marketView.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+        uint256 remaining = Math.saturatingSub(position.collateral, seized);
+        if (remaining < $.policy.fullCutBelowCollateral) {
+            allowed = _debtAssets(marketView, position);
         }
     }
 
     /// @notice Heap-driven slice: brings the root's key down to the runner-up's. Non-zero only for the
     ///         root. type(uint256).max for a lone borrower (no runner-up to bound against; the caller
     ///         caps it to the remaining exit).
-    function heapSlice(State storage $, address borrower, MarketView memory marketView)
+    function heapSlice(State storage $, MarketView memory marketView, address borrower, PositionView memory position)
         internal
         view
         returns (uint256)
@@ -158,10 +144,10 @@ library DeleverageQueueLib {
         if (top != borrower) return 0;
         uint256 childMaxKey = $.heap.rootChildMaxKey();
         if (childMaxKey == 0) return type(uint256).max;
-        uint256 slice = computeSlice(marketView, topKey, childMaxKey);
+        uint256 slice = computeSlice(marketView, position, topKey, childMaxKey);
         // Heap-safety overshoot pushes the post-cut root key strictly below the runner-up,
-        // immune to integer rounding in `LidoBlue.deleverage`'s `collateralSeized = mulDivDown(...)`.
-        uint256 debt = marketView.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+        // immune to integer rounding in `LidoLend.settle`'s `collateralSeized = mulDivDown(...)`.
+        uint256 debt = _debtAssets(marketView, position);
         uint256 overshoot = debt * $.policy.sliceFloorBps / BPS;
         if (overshoot < $.policy.sliceFloorAssets) overshoot = $.policy.sliceFloorAssets;
         return slice + overshoot;
@@ -169,15 +155,16 @@ library DeleverageQueueLib {
 
     /// @notice Watermark-driven slice: brings `borrower`'s LTV down to its target. Zero when no
     ///         watermark, no debt/collateral, or the current LTV is already at/under the target.
-    function watermarkSlice(State storage $, address borrower, MarketView memory marketView)
-        internal
-        view
-        returns (uint256)
-    {
+    function watermarkSlice(
+        State storage $,
+        MarketView memory marketView,
+        address borrower,
+        PositionView memory position
+    ) internal view returns (uint256) {
         uint256 watermark = $.watermarkLtv[borrower];
-        if (watermark == 0 || marketView.borrowShares == 0 || marketView.rawCollateral == 0) return 0;
-        uint256 debt = marketView.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
-        uint256 colValue = marketView.rawCollateral.mulDivDown(marketView.price, ORACLE_PRICE_SCALE);
+        if (watermark == 0 || position.borrowShares == 0 || position.collateral == 0) return 0;
+        uint256 debt = _debtAssets(marketView, position);
+        uint256 colValue = position.collateral.mulDivDown(marketView.price, ORACLE_PRICE_SCALE);
         return computeWatermarkSlice(debt, colValue, watermark);
     }
 
@@ -204,22 +191,27 @@ library DeleverageQueueLib {
     ///         Returns 0 when the target is not below the top, when any market input is zero, or
     ///         when the denominator is non-positive (linear system inverts in extreme regimes).
     ///         Heap-safety overshoot and the floor are applied by the caller (`heapSlice`).
-    function computeSlice(MarketView memory marketView, uint256 topKey, uint256 targetKey)
+    function computeSlice(MarketView memory marketView, PositionView memory position, uint256 topKey, uint256 targetKey)
         internal
         pure
         returns (uint256)
     {
         if (targetKey >= topKey) return 0;
-        if (marketView.rawCollateral == 0) return 0;
+        if (position.collateral == 0) return 0;
         if (marketView.totalBorrowShares == 0 || marketView.totalBorrowAssets == 0) return 0;
         if (marketView.price == 0) return 0;
 
-        uint256 keyGapWeighted = (topKey - targetKey) * marketView.rawCollateral;
+        uint256 keyGapWeighted = (topKey - targetKey) * position.collateral;
         uint256 sharesPerAssetTerm = (marketView.totalBorrowShares * KEY_SCALE) / marketView.totalBorrowAssets;
         uint256 targetPriceTerm = (targetKey * ORACLE_PRICE_SCALE) / marketView.price;
         if (sharesPerAssetTerm <= targetPriceTerm) return 0;
 
         return keyGapWeighted / (sharesPerAssetTerm - targetPriceTerm);
+    }
+
+    /// @dev Borrower debt in loan assets from a position + market snapshot.
+    function _debtAssets(MarketView memory marketView, PositionView memory position) private pure returns (uint256) {
+        return position.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
     }
 
     /// @notice Loan-asset slice that brings a borrower's LTV down to `watermarkLtv` (WAD), cutting at

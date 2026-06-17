@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
-import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
-import {SharesMathLib} from "@lido-blue/src/libraries/SharesMathLib.sol";
+import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Test} from "forge-std/Test.sol";
 
-import {IWethWstEthController} from "../utils/IWethWstEthController.sol";
-import {LidoBlueDeployer} from "../../script/lib/LidoBlueDeployer.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -30,24 +30,24 @@ interface IWstETH {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) a suspect in tests.
+/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests.
 interface IRegistryLike {
-    function flag(Id market, address suspect) external;
+    function flag(Id market, address[] calldata accounts, uint256 lastScannedBlock) external;
 }
 
 /// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
 ///      controller's same-tx flash-undo fires. Holds the collateral and is its own onBehalf/receiver.
 contract FlashRoundTrip {
-    function run(ILidoBlue market, MarketParams calldata params, uint256 amount) external {
+    function run(ILidoLend market, MarketParams calldata params, uint256 amount) external {
         market.supplyCollateral(params, amount, address(this), "");
         market.withdrawCollateral(params, amount, address(this), address(this));
     }
 }
 
-/// @notice End-to-end scenario over a freshly deployed ILidoBlue + WethWstEthController stack on a
-///         mainnet fork (real Lido stETH/wstETH). Drives supply/borrow/maturation and the deleverage
+/// @notice End-to-end scenario over a freshly deployed ILidoLend + LidoLendMarketController stack on a
+///         mainnet fork (real Lido stETH/wstETH). Drives supply/borrow/maturation and the settle
 ///         queue (heap ordering, watermark, bad-debt guard) through the controller's hooks.
-contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
+contract LidoLendScenarioTest is Test, LidoLendDeployer {
     using MarketParamsLib for MarketParams;
 
     address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
@@ -67,9 +67,9 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
     uint256 internal constant LLTV = 0.8e18;
 
     struct TestMarket {
-        ILidoBlue market;
-        IWethWstEthController controller;
-        address suspectsRegistry;
+        ILidoLend market;
+        ILidoLendMarketController controller;
+        address guardianSignals;
         MarketParams marketParams;
         Id id;
         uint256 price;
@@ -106,7 +106,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         _assertCollateralState(ctx.controller, BORROWER, activatedCollateral, 0, 0);
     }
 
-    function test_deleverage_happyPath() public {
+    function test_settle_happyPath() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(true);
@@ -138,21 +138,21 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         _assertCollateralState(ctx.controller, BORROWER, borrowerCollateral, 0, 0);
         _assertCollateralState(ctx.controller, SECOND_BORROWER, secondBorrowerCollateral, 0, 0);
 
-        _deleverageAndAssert(ctx, borrowerCollateral);
+        _settleAndAssert(ctx, borrowerCollateral);
     }
 
-    /// @notice One scenario exercising the heap-driven deleverage ordering end-to-end.
+    /// @notice One scenario exercising the heap-driven settle ordering end-to-end.
     /// @dev Covers, in order:
     ///        - three borrowers at different risk levels; queue root tracks the highest-LTV one;
     ///        - a cut targeting the root reduces it but does not flip the order;
     ///        - the root opts another borrower in via watermark, so a non-root cut succeeds;
     ///        - the lowest-LTV borrower is never touched throughout the scenario.
-    function test_deleverage_heapPicksTopBorrower() public {
+    function test_settle_heapPicksTopBorrower() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(true);
 
-        // Lender saturates the market so every cut below has to go through deleverage and not
+        // Lender saturates the market so every cut below has to go through settle and not
         // the ordinary withdraw path.
         _mintWETH(ctx.market, LENDER, 12 ether);
         vm.prank(LENDER);
@@ -178,30 +178,30 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         ctx.market.borrow(ctx.marketParams, 2 ether, 0, THIRD_BORROWER, THIRD_BORROWER);
 
         // (1) Initial queue order: highest-LTV borrower is at the root.
-        assertEq(ctx.controller.deleverageQueueSize(), 3, "all three active borrowers tracked");
-        (address root,) = ctx.controller.nextDeleverageCut();
+        assertEq(ctx.controller.settlementQueueSize(), 3, "all three active borrowers tracked");
+        (address root,) = ctx.controller.nextSettlementCut();
         assertEq(root, BORROWER, "highest-LTV borrower at root");
 
-        // (2) First cut on the root, sized to the controller's allowed slice (so the slice-cap hook
-        //     check passes). Reduces the root's key but does not flip the order.
-        uint256 firstCutShares = _sliceShares(ctx);
+        // (2) A partial cut on the root, half the allowed slice. The full slice is sized to push the
+        //     root's key just below the runner-up, so cutting half reduces the key without flipping.
+        uint256 firstCutShares = _sliceShares(ctx) / 2;
         vm.prank(LENDER);
-        ctx.market.deleverage(ctx.marketParams, firstCutShares, BORROWER, LENDER, LENDER);
-        (root,) = ctx.controller.nextDeleverageCut();
+        ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, BORROWER, LENDER);
+        (root,) = ctx.controller.nextSettlementCut();
         assertEq(root, BORROWER, "BORROWER still highest after first partial cut");
 
         // (3) Targeting the second borrower while it isn't the queue root is rejected by the
         //     controller hook — eligibility filter requires queue-head or personal watermark.
         vm.prank(LENDER);
-        vm.expectRevert(abi.encodeWithSignature("DeleverageIneligible()"));
-        ctx.market.deleverage(ctx.marketParams, firstCutShares, SECOND_BORROWER, LENDER, LENDER);
+        vm.expectRevert(abi.encodeWithSignature("SettlementIneligible()"));
+        ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (4) SECOND_BORROWER opts in to a 5% post-cut LTV — they are now eligible regardless of
         //     queue position. The same cut now succeeds against them.
         vm.prank(SECOND_BORROWER);
         ctx.controller.setBorrowerWatermark(0.05e18);
         vm.prank(LENDER);
-        ctx.market.deleverage(ctx.marketParams, firstCutShares, SECOND_BORROWER, LENDER, LENDER);
+        ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (5) THIRD_BORROWER (lowest LTV, no watermark) is never touched throughout the scenario.
         (, uint128 lowBorrowSharesAfter, uint128 lowCollateralAfter) = ctx.market.position(ctx.id, THIRD_BORROWER);
@@ -209,11 +209,11 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         assertGt(lowBorrowSharesAfter, 0, "low-LTV borrower still has debt");
     }
 
-    /// @notice Deleverage of any borrower is blocked while the queue root is bad debt.
+    /// @notice Settle of any borrower is blocked while the queue root is bad debt.
     /// @dev Setup: a high-LTV root (BORROWER) and a healthy tail (SECOND_BORROWER). A negative rebase
     ///      pushes the root underwater (debt > collateral value). Cutting the healthy tail must also
     ///      revert while the root is insolvent — the whole queue halts until bad debt is resolved.
-    function testRevert_deleverage_whenHeapRootBadDebt() public {
+    function testRevert_settle_whenHeapRootBadDebt() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(true);
@@ -237,7 +237,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 2 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address root,) = ctx.controller.nextDeleverageCut();
+        (address root,) = ctx.controller.nextSettlementCut();
         assertEq(root, BORROWER, "high-LTV borrower is the queue head");
 
         // Negative rebase: drop the wstETH rate so the head's collateral is worth less than its
@@ -246,25 +246,25 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         assertTrue(ctx.controller.rootHasBadDebt(), "head is bad debt after rebase");
 
         // Even targeting the head itself is blocked while head is bad debt: the controller's bad-debt
-        // guard fires on every deleverage path.
+        // guard fires on every settle path.
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 cut = lenderShares / 20;
         vm.prank(LENDER);
-        vm.expectRevert(abi.encodeWithSignature("DeleverageRootBadDebt()"));
-        ctx.market.deleverage(ctx.marketParams, cut, BORROWER, LENDER, LENDER);
+        vm.expectRevert(abi.encodeWithSignature("SettlementRootBadDebt()"));
+        ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
 
         // Restore the rate; the head is solvent again; the same cut against the head now succeeds.
         vm.clearMockedCalls();
         assertFalse(ctx.controller.rootHasBadDebt(), "head solvent after restore");
         vm.prank(LENDER);
-        ctx.market.deleverage(ctx.marketParams, cut, BORROWER, LENDER, LENDER);
+        ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
     }
 
-    /// @notice Deleverage works on an unhealthy-but-solvent position (LLTV < LTV < 100%).
+    /// @notice Settle works on an unhealthy-but-solvent position (LLTV < LTV < 100%).
     /// @dev Soft-liquidation must reach risky positions, not just healthy ones. The bound is the
     ///      over-cap check plus the bad-debt guard. A negative rebase pushes the borrower above LLTV
     ///      (unhealthy) while keeping their collateral worth more than their debt (solvent).
-    function test_deleverage_worksOnUnhealthyButSolventPosition() public {
+    function test_settle_worksOnUnhealthyButSolventPosition() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(true);
@@ -298,7 +298,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         uint256 cut = lenderShares / 10;
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.market.deleverage(ctx.marketParams, cut, BORROWER, LENDER, LENDER);
+            ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
 
         assertGt(debtCanceled, 0, "debt cancelled");
         assertEq(collateralSeized, debtCanceled * 1e36 / droppedPrice, "collateral seized at oracle rate");
@@ -331,7 +331,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         ctx.controller.setBorrowerWatermark(1e18);
     }
 
-    /// @notice When the queue root has a watermark, `nextDeleverageCut`'s slice is bumped up to bring
+    /// @notice When the queue root has a watermark, `nextSettlementCut`'s slice is bumped up to bring
     ///         the borrower's LTV down to the watermark. Close runner-up key keeps the algorithmic
     ///         slice small so the watermark dominates.
     function test_watermark_bumpsHeapSlice() public {
@@ -342,8 +342,10 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, 40 ether, 0, LENDER, "");
 
-        uint256 hotCol = _mintWstETH(ctx.market, BORROWER, 25 ether);
-        uint256 coldCol = _mintWstETH(ctx.market, SECOND_BORROWER, 25 ether);
+        // Collateral sized so the post-cut remainder stays above the activation minimum, keeping the
+        // watermark slice off the dust-extension clamp (which would promote it to the full debt).
+        uint256 hotCol = _mintWstETH(ctx.market, BORROWER, 30 ether);
+        uint256 coldCol = _mintWstETH(ctx.market, SECOND_BORROWER, 30 ether);
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, hotCol, BORROWER, "");
         vm.prank(SECOND_BORROWER);
@@ -356,13 +358,13 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 17 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (, uint256 sliceBefore) = ctx.controller.nextDeleverageCut();
+        (, uint256 sliceBefore) = ctx.controller.nextSettlementCut();
 
         // BORROWER opts in to a 30% post-cut LTV — a deep target.
         vm.prank(BORROWER);
         ctx.controller.setBorrowerWatermark(0.3e18);
 
-        (address rootAfter, uint256 sliceAfter) = ctx.controller.nextDeleverageCut();
+        (address rootAfter, uint256 sliceAfter) = ctx.controller.nextSettlementCut();
         assertEq(rootAfter, BORROWER, "root unchanged");
         assertGt(sliceAfter, sliceBefore, "watermark raised the slice");
 
@@ -372,9 +374,9 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         assertApproxEqAbs(sliceAfter, expected, 1e15, "slice matches watermark formula");
     }
 
-    /// @notice Direct EOA-lender can deleverage a non-root borrower iff that borrower has a personal
-    ///         watermark set. Without watermark the controller hook reverts with `DeleverageIneligible`.
-    function test_deleverage_eligibleViaPersonalWatermark() public {
+    /// @notice Direct EOA-lender can settle a non-root borrower iff that borrower has a personal
+    ///         watermark set. Without watermark the controller hook reverts with `SettlementIneligible`.
+    function test_settle_eligibleViaPersonalWatermark() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
@@ -383,7 +385,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
 
         // Two borrowers, BORROWER is the queue root (higher LTV). SECOND_BORROWER is tail. Total
-        // borrow drains the supply so the lender's exit must trigger deleverage.
+        // borrow drains the supply so the lender's exit must trigger settle.
         uint256 col1 = _mintWstETH(ctx.market, BORROWER, 20 ether);
         uint256 col2 = _mintWstETH(ctx.market, SECOND_BORROWER, 20 ether);
         vm.prank(BORROWER);
@@ -397,7 +399,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 3 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address root,) = ctx.controller.nextDeleverageCut();
+        (address root,) = ctx.controller.nextSettlementCut();
         assertEq(root, BORROWER, "BORROWER is queue root");
 
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
@@ -405,8 +407,8 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
 
         // Targeting tail SECOND_BORROWER without a watermark → hook revert.
         vm.prank(LENDER);
-        vm.expectRevert(abi.encodeWithSignature("DeleverageIneligible()"));
-        ctx.market.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
+        vm.expectRevert(abi.encodeWithSignature("SettlementIneligible()"));
+        ctx.market.settle(ctx.marketParams, 0, cut, LENDER, SECOND_BORROWER, LENDER);
 
         // SECOND_BORROWER opts in to 5% post-cut LTV — slice is large enough for the cut.
         vm.prank(SECOND_BORROWER);
@@ -415,7 +417,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         (,, uint128 colBefore) = ctx.market.position(ctx.id, SECOND_BORROWER);
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.market.deleverage(ctx.marketParams, cut, SECOND_BORROWER, LENDER, LENDER);
+            ctx.market.settle(ctx.marketParams, 0, cut, LENDER, SECOND_BORROWER, LENDER);
 
         (,, uint128 colAfter) = ctx.market.position(ctx.id, SECOND_BORROWER);
         assertEq(uint256(colAfter), uint256(colBefore) - collateralSeized, "tail collateral debited");
@@ -424,8 +426,8 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
     }
 
     /// @notice A banned borrower's collateral never settles into `active`, and its borrow is hard-blocked.
-    ///         Exercises the suspicion path: `suspicion == 100` -> NEVER_DELAY unlock + the borrow ban.
-    function test_suspicion_bannedCollateralNeverMaturesAndBorrowBlocked() public {
+    ///         Exercises the guardian-ban path: a ban skips maturation (like a freeze) and hard-blocks the borrow.
+    function test_ban_bannedCollateralNeverMaturesAndBorrowBlocked() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(false);
 
@@ -440,13 +442,14 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
 
         // Ban BORROWER: one flag reaches quorum 1, which latches the ban. The test contract is the
         // registry's sole guardian (set in `_deployMarket`).
-        IRegistryLike(ctx.suspectsRegistry).flag(ctx.id, BORROWER);
+        address[] memory toFlag = new address[](1);
+        toFlag[0] = BORROWER;
+        IRegistryLike(ctx.guardianSignals).flag(ctx.id, toFlag, block.number);
 
         // Warp far past any normal activation delay — a banned address never settles.
         vm.warp(block.timestamp + 30 days);
-        IWethWstEthController.PositionView memory pv = ctx.controller.positionOf(BORROWER);
-        assertEq(pv.suspicion, 100, "banned -> suspicion 100");
-        assertFalse(pv.readyToSettle, "banned never ready to settle");
+        ILidoLendMarketController.BorrowerPosition memory pv = ctx.controller.positionOf(BORROWER);
+        assertTrue(pv.banned, "banned");
         _assertCollateralState(ctx.controller, BORROWER, 0, col, 0); // still activating, never active
 
         // No active collateral + banned -> borrow reverts.
@@ -455,9 +458,9 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         ctx.market.borrow(ctx.marketParams, 1 ether, 0, BORROWER, BORROWER);
     }
 
-    /// @notice The activation delay is load-scaled (a larger inflow charges more leaky-bucket load and
+    /// @notice The activation delay is inflow-scaled (a larger inflow adds more to the throttle and
     ///         earns a longer delay) and is enforced (collateral does not settle before its unlock).
-    function test_maturation_delayScalesWithLoadAndIsEnforced() public {
+    function test_maturation_delayScalesWithInflowAndIsEnforced() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(false);
 
@@ -466,53 +469,51 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
 
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, smallCol, BORROWER, "");
-        uint256 smallUnlock = ctx.controller.positionOf(BORROWER).unlockAt;
+        uint256 smallUnlock = ctx.controller.positionOf(BORROWER).unlockTime;
 
         vm.prank(SECOND_BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, bigCol, SECOND_BORROWER, "");
-        uint256 bigUnlock = ctx.controller.positionOf(SECOND_BORROWER).unlockAt;
+        uint256 bigUnlock = ctx.controller.positionOf(SECOND_BORROWER).unlockTime;
 
-        // The bigger inflow piled more onto the load accumulator -> strictly longer delay.
+        // The bigger inflow piled more onto the inflow accumulator -> strictly longer delay.
         assertGt(bigUnlock, smallUnlock, "bigger inflow -> longer activation delay");
         // The small lot activated (not dust) and, in a near-empty market, matures fast (under the 2h cap).
         assertGt(smallUnlock, block.timestamp, "small deposit activated (not dust)");
         assertLt(smallUnlock - block.timestamp, 2 hours, "small deposit ~ minimum delay");
 
-        // The delay is enforced: not ready before its unlock, ready at it.
-        assertFalse(ctx.controller.positionOf(BORROWER).readyToSettle, "not ready before unlock");
-        vm.warp(smallUnlock);
-        assertTrue(ctx.controller.positionOf(BORROWER).readyToSettle, "ready at unlock");
+        // Enforced: while the timer runs the lot is held in `activating`, never borrowable as `active`.
+        _assertCollateralState(ctx.controller, BORROWER, 0, smallCol, 0);
     }
 
-    /// @notice A same-tx supplyCollateral -> withdrawCollateral round-trip is load-neutral: the deposit's
-    ///         load charge is reversed on the same-tx withdrawal, so a flash loan cannot pump the load.
-    function test_flashUndo_sameTxRoundTripIsLoadNeutral() public {
+    /// @notice A same-tx supplyCollateral -> withdrawCollateral round-trip is inflow-neutral: the deposit's
+    ///         inflow addition is reversed on the same-tx withdrawal, so a flash loan cannot pump the inflow.
+    function test_flashUndo_sameTxRoundTripIsInflowNeutral() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(false);
 
-        // Seed real load with a committed deposit so `currentLoad()` is observably non-zero.
+        // Seed real inflow with a committed deposit so `currentInflow()` is observably non-zero.
         uint256 seed = _mintWstETH(ctx.market, BORROWER, 30 ether);
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, seed, BORROWER, "");
-        uint256 loadBefore = ctx.controller.currentLoad();
-        assertGt(loadBefore, 0, "seed deposit charged load");
+        uint256 inflowBefore = ctx.controller.currentInflow();
+        assertGt(inflowBefore, 0, "seed deposit added to inflow");
 
         // Flash actor supplies and withdraws the same collateral in ONE transaction.
         FlashRoundTrip flasher = new FlashRoundTrip();
         uint256 amount = _mintWstETH(ctx.market, address(flasher), 50 ether);
         flasher.run(ctx.market, ctx.marketParams, amount);
 
-        // No time passed, so no decay: the round-trip must leave the load exactly where it was.
-        assertEq(ctx.controller.currentLoad(), loadBefore, "same-tx round-trip is load-neutral");
+        // No time passed, so no decay: the round-trip must leave the inflow exactly where it was.
+        assertEq(ctx.controller.currentInflow(), inflowBefore, "same-tx round-trip is inflow-neutral");
     }
 
-    function _deleverageAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
+    function _settleAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
         (uint256 supplyShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 sharesToExit = supplyShares / 5;
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ctx.market.deleverage(ctx.marketParams, sharesToExit, BORROWER, LENDER, LENDER);
+            ctx.market.settle(ctx.marketParams, 0, sharesToExit, LENDER, BORROWER, LENDER);
 
         uint256 expectedCollateralSeized = debtCanceled * 1e36 / ctx.price;
         assertEq(collateralSeized, expectedCollateralSeized, "oracle-rate collateral");
@@ -525,7 +526,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
     /// @dev Loan-asset slice the controller will allow against the current queue root, converted to
     ///      lender supply shares with Morpho's virtual-offset rounding.
     function _sliceShares(TestMarket memory ctx) internal view returns (uint256) {
-        (, uint256 sliceAssets) = ctx.controller.nextDeleverageCut();
+        (, uint256 sliceAssets) = ctx.controller.nextSettlementCut();
         if (sliceAssets == type(uint256).max) return type(uint256).max;
         (uint128 totalSupplyAssets, uint128 totalSupplyShares,,,,) = ctx.market.market(ctx.id);
         return SharesMathLib.toSharesDown(sliceAssets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
@@ -550,7 +551,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         _assertCollateralState(ctx.controller, BORROWER, initialCollateral - collateralSeized, 0, 0);
     }
 
-    function _deployMarket(bool deleverageEnabled) internal returns (TestMarket memory ctx) {
+    function _deployMarket(bool enableSettlement) internal returns (TestMarket memory ctx) {
         address[] memory guardians = new address[](1);
         guardians[0] = address(this);
 
@@ -561,17 +562,18 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
                 collateralToken: WSTETH_ADDRESS,
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
-                deleverageEnabled: deleverageEnabled,
+                enableSettlement: enableSettlement,
                 activation: ActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    maxSuspicionDelay: 2 hours,
-                    maxDecayDuration: 4 hours,
-                    maxDelayLoad: 10_000 ether,
-                    minActivationAmount: 10 ether,
-                    minDecayAmount: 1_000 ether
+                    delayPerStrike: 2 hours,
+                    activatingHold: 0,
+                    maxDelayInflow: 10_000 ether,
+                    minActivationAmount: 10 ether
                 }),
-                slicePolicy: SlicePolicyConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
+                slicePolicy: SlicePolicyConfig({
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0, fullCutBelowCollateral: 10 ether
+                }),
                 guardians: guardians,
                 quorum: 1,
                 vaultName: "Lido wstETH/WETH Vault",
@@ -579,17 +581,17 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
             })
         );
 
-        ctx.market = ILidoBlue(d.core);
-        ctx.controller = IWethWstEthController(d.controllerProxy);
-        ctx.suspectsRegistry = d.suspectsRegistry;
+        ctx.market = ILidoLend(d.core);
+        ctx.controller = ILidoLendMarketController(d.controllerProxy);
+        ctx.guardianSignals = d.guardianSignals;
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
         ctx.price = WstEthRateOracle(d.oracle).price();
 
-        ctx.controller.grantRole(ctx.controller.CONFIGURATOR_ROLE(), address(this));
+        ctx.controller.grantRole(ctx.controller.MANAGER_ROLE(), address(this));
     }
 
-    function _mintWETH(ILidoBlue market, address user, uint256 amount) internal {
+    function _mintWETH(ILidoLend market, address user, uint256 amount) internal {
         vm.deal(user, amount);
         vm.prank(user);
         WETH.deposit{value: amount}();
@@ -597,7 +599,7 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
         WETH.approve(address(market), type(uint256).max);
     }
 
-    function _mintWstETH(ILidoBlue market, address user, uint256 ethAmount) internal returns (uint256) {
+    function _mintWstETH(ILidoLend market, address user, uint256 ethAmount) internal returns (uint256) {
         vm.deal(user, ethAmount);
         vm.prank(user);
         STETH.submit{value: ethAmount}(address(0));
@@ -613,13 +615,13 @@ contract LidoBlueScenarioTest is Test, LidoBlueDeployer {
     }
 
     function _assertCollateralState(
-        IWethWstEthController controller,
+        ILidoLendMarketController controller,
         address borrower,
         uint256 matured,
         uint256 activating,
         uint256 dust
     ) internal view {
-        IWethWstEthController.PositionView memory pv = controller.positionOf(borrower);
+        ILidoLendMarketController.BorrowerPosition memory pv = controller.positionOf(borrower);
         assertEq(pv.active, matured, "matured (active) collateral");
         assertEq(pv.activating, activating, "maturing (activating) collateral");
         assertEq(pv.dust, dust, "dust collateral");

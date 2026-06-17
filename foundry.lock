@@ -1,24 +1,18 @@
 {
-  "lib/lido-blue": {
+  "lib/lido-lend": {
     "branch": {
-      "name": "feat/lido-blue",
-      "rev": "a0d59402d9226c28d3499928ed49798e46b52bd0"
+      "name": "refactor/lido-lend-and-spec",
+      "rev": "0f01910b28f36a1206971aa1cd23377bfe7c3d7e"
     }
   },
-  "lib/lido-blue-irm": {
-    "rev": "2bce6da3ebe910ceeec963781aa3f4b4322c296e"
-  },
-  "lib/morpho-blue": {
-    "rev": "1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a"
-  },
-  "lib/morpho-blue-irm": {
+  "lib/lido-lend-irm": {
     "rev": "2bce6da3ebe910ceeec963781aa3f4b4322c296e"
   },
   "lib/openzeppelin-contracts": {
-    "rev": "dbb6104ce834628e473d2173bbc9d47f81a9eec3"
+    "rev": "5fd1781b1454fd1ef8e722282f86f9293cacf256"
   },
   "lib/openzeppelin-contracts-upgradeable": {
-    "rev": "723f8cab09cdae1aca9ec9cc1cfa040c2d4b06c1"
+    "rev": "7bf4727aacdbfaa0f36cbd664654d0c9e1dc52bf"
   },
   "lib/vault-v2": {
     "rev": "425f6b1fb3a1d25083a9515348bd5e7bd3ab9017"

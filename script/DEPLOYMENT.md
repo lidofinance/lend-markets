@@ -6,18 +6,19 @@ activation parameters and suspects-registry bootstrap in the script are placehol
 
 ## What gets deployed
 
-1. `LidoBlue` — core implementation + `OssifiableProxy`; `initialize(owner = msg.sender)`.
-2. `SuspectsRegistry` implementation + `OssifiableProxy`; `initialize(admin, guardians, quorum)`.
+1. `LidoLend` — core implementation + `OssifiableProxy`; `initialize(owner = msg.sender)`.
+2. `GuardianSignals` implementation + `OssifiableProxy`; `initialize(admin, guardians, quorum)`.
    The script ships a placeholder bootstrap (deployer is the sole guardian, `quorum = 1`); the
    registry rejects `quorum = 0`.
 3. `WstEthRateOracle` — wraps Lido's `stEthPerToken` as a Morpho-style oracle.
 4. `AdaptiveCurveIrm` — Morpho Blue's adaptive-curve IRM (unmodified upstream).
-5. `WethWstEthController` implementation (constructor bakes in `(core, marketId)`) +
+5. `LidoLendMarketController` implementation (constructor bakes in `(core, marketId)`) +
    `OssifiableProxy`; `initialize(admin, suspectsRegistry, activationConfig)`.
-6. `createMarket(params, controllerProxy, deleverageEnabled = true)` on the core, after
-   `enableIrm` and `enableLltv(0.8e18)`. The controller binding is immutable for the market.
-7. `LidoBlueERC4626` — single-market ERC-4626 wrapper over the market, reading the
-   controller's deleverage view; constructor `(core, params, controllerProxy, name, symbol)`.
+6. `createMarket(params, controllerProxy, enableSettlement = true)` on the core. This owner-gated
+   call auto-enables the IRM and LLTV (the standalone `enableIrm`/`enableLltv` steps were removed).
+   The controller binding is immutable for the market.
+7. `LidoLendERC4626` — single-market ERC-4626 wrapper over the market, reading the
+   controller's settle view; constructor `(core, params, controllerProxy, name, symbol)`.
 
 ## Pre-flight
 
@@ -26,7 +27,7 @@ activation parameters and suspects-registry bootstrap in the script are placehol
 - `git submodule update --init --recursive` is up to date.
 - Deployer address is funded on the target chain.
 - Confirm `WETH` and `WSTETH` addresses for the target chain (the script defaults are mainnet).
-- Review the **DRAFT** `activation` config in the script (delays, dust threshold, load reference,
+- Review the **DRAFT** `activation` config in the script (delays, dust threshold, inflow reference,
   decay window, decay floor) — these are governance values.
 - Decide the real guardian set + quorum for the suspects registry (the script uses the deployer
   as a placeholder sole guardian).
@@ -64,7 +65,7 @@ The script puts `msg.sender` into several privileged positions. Rotate each:
 
 - [ ] `core` owner → ops multisig (controls market creation, IRM/LLTV enable, fee setting).
 - [ ] Core `OssifiableProxy` admin (`proxy__changeAdmin(...)`) — controls core upgrades.
-- [ ] `SuspectsRegistry` `DEFAULT_ADMIN_ROLE` (`grantRole` + renounce on deployer) — manages
+- [ ] `GuardianSignals` `DEFAULT_ADMIN_ROLE` (`grantRole` + renounce on deployer) — manages
       guardians and quorum.
 - [ ] Registry `OssifiableProxy` admin (`proxy__changeAdmin(...)`).
 - [ ] Controller `OssifiableProxy` admin (`proxy__changeAdmin(...)`) — controls controller upgrades.
@@ -74,12 +75,13 @@ Then:
 
 - [ ] Replace the placeholder guardian set + quorum on the registry (`addGuardian` / `removeGuardian`
       / `setQuorum`).
-- [ ] Grant the controller policy roles to their real holders: `CONFIGURATOR_ROLE`,
-      `RISK_STEWARD_ROLE`, `PAUSER_ROLE`, `UNPAUSER_ROLE`, `COMMITTEE_ROLE`.
+- [ ] Grant the controller policy roles to their real holders: `MANAGER_ROLE`,
+      `RISK_STEWARD_ROLE`, `FREEZER_ROLE`, `UNFREEZER_ROLE`, `PAUSER_ROLE`, `RESUMER_ROLE`.
+- [ ] Grant the registry override roles to their real holders: `RISK_STEWARD_ROLE`, `GOVERNANCE_ROLE`.
 - [ ] Retune the activation config if the deploy-time placeholder needs changing (`setConfig`, or
-      the fast risk-reducing `tightenConfig`).
-- [ ] Set deleverage policy if defaults need overriding (`setSliceFloor`, `setFallbackMinRequest`),
-      and the committee Sybil hold (`setActivatingHold`) if used.
+      the fast `increaseMinActivationDelay` / `increaseMaxActivationDelay`).
+- [ ] Set settle policy if defaults need overriding (`setSlicePolicy`), and the risk-steward Sybil
+      hold (`setActivatingHold`) if used.
 - [ ] Confirm each proxy points at the expected implementation
       (`OssifiableProxy.proxy__getImplementation()`).
 - [ ] Record the deployed addresses in `deployed-<network>.toml` (the integration tests read it).

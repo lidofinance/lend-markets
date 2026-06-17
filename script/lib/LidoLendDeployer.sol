@@ -3,54 +3,58 @@ pragma solidity 0.8.35;
 
 import {Vm} from "forge-std/Vm.sol";
 
-import {Id, MarketParams} from "@lido-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@lido-blue/src/libraries/MarketParamsLib.sol";
+import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 
-import {ILidoBlue} from "@lido-blue/src/interfaces/ILidoBlue.sol";
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 
 /// @dev Minimal configurator surface of the controller used to seed the deploy-time policy.
-///      `LidoBlueDeployer.SlicePolicyConfig` mirrors the controller's struct, so the call ABI matches.
+///      `LidoLendDeployer.SlicePolicyConfig` mirrors the controller's struct, so the call ABI matches.
 interface IControllerConfigurator {
-    function CONFIGURATOR_ROLE() external view returns (bytes32);
+    function MANAGER_ROLE() external view returns (bytes32);
     function grantRole(bytes32 role, address account) external;
-    function setSlicePolicy(LidoBlueDeployer.SlicePolicyConfig calldata policy) external;
+    function setSlicePolicy(LidoLendDeployer.SlicePolicyConfig calldata policy) external;
 }
 
-/// @title LidoBlueDeployer
-/// @notice Shared deploy steps for a Lido Lending market: core, suspects registry, oracle, IRM,
+/// @title LidoLendDeployer
+/// @notice Shared deploy steps for a Lido Lending market: core, guardian-signals registry, oracle, IRM,
 ///         controller (behind a proxy), the market, and the ERC-4626 vault.
 /// @dev Inherited by `script/DeployMarket.s.sol` (broadcasts the deploys) and by scenario/integration
 ///      tests in `test/` (drive it inside `setUp`). Single-source so script and tests cannot drift.
-abstract contract LidoBlueDeployer {
+abstract contract LidoLendDeployer {
     using MarketParamsLib for MarketParams;
 
     /// @dev forge-std cheatcode singleton, inlined so this contract need not inherit `Test` / `Script`.
     Vm internal constant _vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    /// @dev Mirror of `DeleverageQueueLib.SlicePolicy` (same field order/types); see `ActivationConfig`
+    /// @dev Mirror of `SettlementTypes.SlicePolicy` (same field order/types); see `ActivationConfig`
     ///      for why the deployer mirrors instead of importing.
     struct SlicePolicyConfig {
         uint16 sliceFloorBps;
         uint96 sliceFloorAssets;
         uint96 fallbackMinRequest;
+        uint96 fullCutBelowCollateral;
     }
 
-    /// @dev Mirror of `ActivationLib.Config` (same field order/types) so the controller initializer can
+    /// @dev Mirror of `CollateralActivationLib.Config` (same field order/types) so the controller initializer can
     ///      be abi-encoded without coupling the deployer to the controller's libraries. Field order must
     ///      match the hardcoded tuple in `_deployController`'s `encodeWithSignature`.
     struct ActivationConfig {
+        // delay ramp
         uint64 minActivationDelay;
         uint64 maxActivationDelay;
-        uint64 maxSuspicionDelay;
-        uint64 maxDecayDuration;
-        uint128 maxDelayLoad;
+        uint128 maxDelayInflow;
+        // strike surcharge
+        uint64 delayPerStrike;
+        // sybil hold on activating collateral
+        uint128 activatingHold;
+        // dust threshold (anti-griefing)
         uint128 minActivationAmount;
-        uint128 minDecayAmount;
     }
 
     struct Deployed {
         address core;
-        address suspectsRegistry;
+        address guardianSignals;
         address oracle;
         address irm;
         address controllerProxy;
@@ -68,10 +72,10 @@ abstract contract LidoBlueDeployer {
         // consumer overrides `_deployOracle`.
         address oracleSource;
         uint256 lltv;
-        bool deleverageEnabled;
+        bool enableSettlement;
         ActivationConfig activation;
         SlicePolicyConfig slicePolicy;
-        // Suspects registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
+        // Guardian-signals registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
         // `1 <= quorum <= guardians.length`; swap in the real guardian set post-deploy.
         address[] guardians;
         uint256 quorum;
@@ -82,7 +86,7 @@ abstract contract LidoBlueDeployer {
     /// @notice One-shot deploy of the whole market stack.
     function _deployForkStack(DeployConfig memory cfg) internal returns (Deployed memory d) {
         d.core = _deployCore(cfg.admin);
-        d.suspectsRegistry = _deploySuspectsRegistry(cfg.admin, cfg.guardians, cfg.quorum);
+        d.guardianSignals = _deployGuardianSignals(cfg.admin, cfg.guardians, cfg.quorum);
         d.oracle = _deployOracle(cfg.oracleSource);
         d.irm = _deployIrm(d.core);
 
@@ -92,37 +96,37 @@ abstract contract LidoBlueDeployer {
         d.marketId = d.params.id();
 
         (d.controllerProxy, d.controllerImpl) =
-            _deployController(d.core, d.marketId, d.suspectsRegistry, cfg.admin, cfg.activation);
+            _deployController(d.core, d.marketId, d.guardianSignals, cfg.admin, cfg.activation);
 
-        ILidoBlue(d.core).enableIrm(d.irm);
-        ILidoBlue(d.core).enableLltv(cfg.lltv);
-        ILidoBlue(d.core).createMarket(d.params, d.controllerProxy, cfg.deleverageEnabled);
+        // New core: createMarket is owner-gated and auto-enables the IRM and LLTV (standalone
+        // enableIrm/enableLltv were removed). The bool gates whether settle is enabled for the market.
+        ILidoLend(d.core).createMarket(d.params, d.controllerProxy, cfg.enableSettlement);
 
         d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
         // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the controller initializer;
-        // grant it CONFIGURATOR_ROLE (a placeholder, rotated to the EasyTrack factory post-deploy)
+        // grant it MANAGER_ROLE (a placeholder, rotated to the EasyTrack factory post-deploy)
         // so it can set the policy now and tune it later.
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
-        controller.grantRole(controller.CONFIGURATOR_ROLE(), cfg.admin);
+        controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
         controller.setSlicePolicy(cfg.slicePolicy);
     }
 
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so
     ///      `admin` becomes the core's owner.
     function _deployCore(address admin) internal virtual returns (address) {
-        address impl = _deployArtifact("lib/lido-blue/src/LidoBlue.sol:LidoBlue", "");
+        address impl = _deployArtifact("lib/lido-lend/src/LidoLend.sol:LidoLend", "");
         bytes memory initData = abi.encodeWithSignature("initialize(address)", admin);
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
-    /// @dev Suspects registry behind a proxy. `initialize(admin, guardians, quorum)`.
-    function _deploySuspectsRegistry(address admin, address[] memory guardians, uint256 quorum)
+    /// @dev Guardian-signals registry behind a proxy. `initialize(admin, guardians, quorum)`.
+    function _deployGuardianSignals(address admin, address[] memory guardians, uint256 quorum)
         internal
         virtual
         returns (address)
     {
-        address impl = _deployArtifact("src/SuspectsRegistry.sol:SuspectsRegistry", "");
+        address impl = _deployArtifact("src/GuardianSignals.sol:GuardianSignals", "");
         bytes memory initData =
             abi.encodeWithSignature("initialize(address,address[],uint256)", admin, guardians, quorum);
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
@@ -135,26 +139,26 @@ abstract contract LidoBlueDeployer {
 
     function _deployIrm(address core) internal virtual returns (address) {
         return _deployArtifact(
-            "lib/lido-blue-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core)
+            "lib/lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core)
         );
     }
 
-    /// @dev Controller behind a proxy. The impl bakes `(lidoBlue, marketId)` into immutables at deploy,
-    ///      then `initialize(admin, suspects, activationConfig)` runs through the proxy.
+    /// @dev Controller behind a proxy. The impl bakes `(lidoLend, marketId)` into immutables at deploy,
+    ///      then `initialize(admin, guardianSignals, activationConfig)` runs through the proxy.
     function _deployController(
         address core,
         Id marketId,
-        address suspects,
+        address guardianSignals,
         address admin,
         ActivationConfig memory activation
     ) internal virtual returns (address proxy, address impl) {
         impl = _deployArtifact(
-            "src/controllers/WethWstEthController.sol:WethWstEthController", abi.encode(core, marketId)
+            "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core, marketId)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address,(uint64,uint64,uint64,uint64,uint128,uint128,uint128))",
+            "initialize(address,address,(uint64,uint64,uint128,uint64,uint128,uint128))",
             admin,
-            suspects,
+            guardianSignals,
             activation
         );
         proxy = _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
@@ -170,7 +174,7 @@ abstract contract LidoBlueDeployer {
         string memory name_,
         string memory symbol_
     ) internal virtual returns (address) {
-        address impl = _deployArtifact("src/LidoBlueERC4626.sol:LidoBlueERC4626", "");
+        address impl = _deployArtifact("src/LidoLendERC4626.sol:LidoLendERC4626", "");
         bytes memory initData = abi.encodeWithSignature(
             "initialize(address,(address,address,address,address,uint256),address,string,string)",
             core,
@@ -190,6 +194,6 @@ abstract contract LidoBlueDeployer {
         assembly ("memory-safe") {
             deployed := create(0, add(creationCode, 0x20), mload(creationCode))
         }
-        require(deployed != address(0) && deployed.code.length != 0, "LidoBlueDeployer: artifact deploy failed");
+        require(deployed != address(0) && deployed.code.length != 0, "LidoLendDeployer: artifact deploy failed");
     }
 }

@@ -2,10 +2,12 @@
 
 ## Project Structure
 
-- `src/`: Solidity contracts for the Morpho Blue fork draft and Lido-specific extensions.
-- `src/MorphoBlueFork.sol`: the Morpho Blue fork. Keep changes narrow and easy to compare with upstream.
+- `src/`: Lido-specific extensions over the Morpho Blue fork — controller, vault, registry, oracle,
+  libraries.
+- `lib/lido-lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported
+  via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
-- `src/SuspectsRegistry.sol`: suspects / access registry (one per project).
+- `src/GuardianSignals.sol`: guardian-signal registry (one per project).
 - `src/interfaces/`: local interfaces and hook payload structs.
 - `src/oracle/`: local oracle adapters.
 - `src/libs/`: pure libraries (math, data structures). Internal — they inline into call sites.
@@ -35,7 +37,7 @@
 - Build: `forge build --force`.
 - Test: `forge test`.
 - Format check for local Solidity files:
-  `forge fmt --check src/MorphoBlueFork.sol src/controllers src/interfaces src/oracle src/libs test`.
+  `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
 - Mainnet-fork tests skip when no mainnet fork context is available; guard with
   `vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required")`.
@@ -52,16 +54,13 @@
 
 ## Morpho Fork Policy
 
-- `src/MorphoBlueFork.sol` is a near-verbatim copy of Morpho Blue. Minimum changes only.
-- **Do not touch the core accounting**: positions, supply/borrow shares, interest accrual, market
-  creation primitive, liquidate path. These stay byte-identical to upstream where practical.
-- All extension logic — Lido policy, controller hooks, deleverage flavours, watermark, batch
-  orchestration, lender auth — lives in the controller (`src/controllers/LidoMarketController.sol`),
-  not in core.
-- New core storage is appended after upstream state, never mixed in.
-- Fork-added errors and events live in dedicated library blocks at the top of the core file
-  (`MorphoBlueForkErrorsLib`, `MorphoBlueForkEventsLib`) so the upstream diff stays visible.
-- Update `FORK_NOTES.md` when the fork point or material fork delta changes.
+- The Morpho Blue fork is the vendored `lib/lido-lend` dependency (core `src/LidoLend.sol`), pinned
+  as a submodule. Its fork point, core-change record, and editing rules live in
+  `lib/lido-lend/FORK_NOTES.md`.
+- The forked core accounting (positions, supply/borrow shares, interest accrual, market creation,
+  liquidate, settle) changes only through a `lib/lido-lend` pin bump.
+- All Lido extension logic — policy, controller hooks, settlement flavours, watermark, batch
+  orchestration, lender auth — lives in the controller (`src/controllers/WethWstEthController.sol`).
 
 ## Solidity Style
 
@@ -137,6 +136,22 @@ either the contract or the test setup.
 - Tests land with the change. Separate "tests follow-up" PRs are not accepted for new functionality.
 - After source changes, run at least `forge build --force` and `forge test`.
 
+## Commit Messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/): the subject starts with a type
+prefix, an optional scope, and a short imperative summary.
+
+```
+<type>(<optional scope>): <summary>
+```
+
+- Allowed types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `build`, `ci`, `perf`, `style`.
+- Scope is optional and names the area touched, e.g. `feat(controller):`, `fix(vault):`,
+  `test(scenario):`, `chore(deps):`.
+- Summary is imperative and lower-case, no trailing period; keep it under ~72 characters and put
+  detail in the body.
+- Breaking changes: add `!` after the type/scope (`refactor!:`) and explain the break in the body.
+
 ## Pull Request Notes
 
 PR description includes:
@@ -146,5 +161,5 @@ PR description includes:
 - Storage layout impact for struct, mapping, or proxy/controller storage changes (which slot
   moved, whether append-only).
 - Updated specification (`docs/specs/<Contract>.md`) for behaviour-changing PRs.
-- For changes to `src/MorphoBlueFork.sol`: explicit upstream-diff note (e.g. "touches accounting"
-  / "controller-only addition" / "fork-additions library only").
+- For a `lib/lido-lend` pin bump: note what moved in the fork (accounting, ABI, storage layout) and
+  that `.gitmodules`, `foundry.lock`, and the gitlink are staged together.

@@ -3,12 +3,12 @@ pragma solidity 0.8.35;
 
 import {Script, console2} from "forge-std/Script.sol";
 
-import {Id} from "@lido-blue/src/interfaces/IMorpho.sol";
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
-import {LidoBlueDeployer} from "./lib/LidoBlueDeployer.sol";
+import {LidoLendDeployer} from "./lib/LidoLendDeployer.sol";
 
 /// @notice Deploy script for a wstETH/WETH lending market on the lido-lending fork. Delegates the
-///         actual deploy steps to `LidoBlueDeployer` so tests can reuse the same logic.
+///         actual deploy steps to `LidoLendDeployer` so tests can reuse the same logic.
 ///
 /// @dev Draft, not production-ready. The activation parameters and registry bootstrap below are
 ///      placeholders — tune them (governance values) before any real deploy. See `script/DEPLOYMENT.md`.
@@ -19,7 +19,7 @@ import {LidoBlueDeployer} from "./lib/LidoBlueDeployer.sol";
 /// Usage (broadcast):
 ///   forge script script/DeployMarket.s.sol --rpc-url "$RPC_URL" --broadcast --private-key "$PK" \
 ///     --verify --etherscan-api-key "$ETHERSCAN_API_KEY"
-contract DeployMarket is Script, LidoBlueDeployer {
+contract DeployMarket is Script, LidoLendDeployer {
     address internal constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address internal constant WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
 
@@ -39,22 +39,22 @@ contract DeployMarket is Script, LidoBlueDeployer {
                 collateralToken: WSTETH,
                 oracleSource: WSTETH,
                 lltv: LLTV,
-                deleverageEnabled: true,
+                enableSettlement: true,
                 // DRAFT activation parameters — governance values, tune before any real deploy.
                 activation: ActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    maxSuspicionDelay: 2 hours,
-                    maxDecayDuration: 4 hours,
-                    maxDelayLoad: 10_000 ether,
-                    minActivationAmount: 10 ether,
-                    minDecayAmount: 1_000 ether
+                    delayPerStrike: 2 hours,
+                    activatingHold: 0,
+                    maxDelayInflow: 10_000 ether,
+                    minActivationAmount: 10 ether
                 }),
                 // DRAFT slice policy — governance values, tune before any real deploy.
                 slicePolicy: SlicePolicyConfig({
                     sliceFloorBps: 100, // 1% of the root's debt on top of the closed-form slice
                     sliceFloorAssets: 10 ether,
-                    fallbackMinRequest: 1 ether
+                    fallbackMinRequest: 1 ether,
+                    fullCutBelowCollateral: 10 ether // sweep settle leftovers below the activation minimum
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -69,7 +69,7 @@ contract DeployMarket is Script, LidoBlueDeployer {
 
     function _logDeployment(Deployed memory d) internal pure {
         console2.log("core               :", d.core);
-        console2.log("suspectsRegistry   :", d.suspectsRegistry);
+        console2.log("guardianSignals   :", d.guardianSignals);
         console2.log("oracle             :", d.oracle);
         console2.log("irm                :", d.irm);
         console2.log("controller (proxy) :", d.controllerProxy);

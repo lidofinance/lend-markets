@@ -19,7 +19,7 @@ library MaxHeapLib {
     ///      `_saturateToKey` for the conversion from a uint256 caller-supplied value. Realistic
     ///      `borrowShares × 1e18 / rawCollateral` keys stay well below `type(uint96).max`
     ///      (≈ 7.9e28) under sane market constraints; pathological inputs saturate to the max,
-    ///      which ties them at the top of the heap — still the correct deleverage target order.
+    ///      which ties them at the top of the heap — still the correct settle target order.
     struct Node {
         address account;
         uint96 key;
