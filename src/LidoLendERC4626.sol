@@ -154,37 +154,74 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
         uint256 totalSupplyShares;
     }
 
-    /// @notice Automatic fallback exit. Walks the controller's risk queue (head first) and settles
-    ///         borrowers until up to `shares` worth of the owner's position is freed — the caller does
-    ///         not pick the positions. Best-effort: whatever fraction is serviced is burned (matching
-    ///         slice of idle loan assets paid out), no revert on shortfall.
-    /// @dev Reverts `ZeroMorphoSupplyShares` when there is no Morpho position to settle against.
-    ///      `loanAssets` rounds down via `Math.mulDiv`; the dust accrues to remaining shareholders.
+    /// @notice Automatic fallback exit. First pays out as much as ordinary market liquidity covers via a
+    ///         normal redeem, then settles the remainder against the controller's risk queue (head first),
+    ///         seizing collateral to `receiver`. The caller does not pick the positions. Settling is
+    ///         best-effort: whatever fraction is serviced is burned (matching slice of idle loan assets
+    ///         paid out), no revert on shortfall.
+    /// @dev Redeeming what liquidity covers before settling closes a griefing vector: the core blocks
+    ///      `settle` while idle liquidity still covers the amount (`SETTLEMENT_LIQUIDITY_AVAILABLE`), so
+    ///      without the redeem an attacker could add idle right before the call and force the whole exit
+    ///      to revert. Here that liquidity instead flows to the owner as loan assets.
+    ///      Reverts `ZeroMorphoSupplyShares` only if settling is reached with no Morpho position.
     ///      Collateral is transferred directly by Morpho to `receiver`; the vault does not custody it.
     function fallbackExit(uint256 shares, address receiver, address owner)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
     {
-        ExitPlan memory plan = _beginExit(shares, receiver, owner);
-        uint256 morphoSupplyConsumed;
-        (collateralSeized, debtCanceled, morphoSupplyConsumed) =
-            _settleFromHeap(plan.morphoSupplyTarget, receiver, plan.totalSupplyAssets, plan.totalSupplyShares);
-        (sharesBurned, loanAssets) = _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
+        // 1. Ordinary path: redeem whatever current liquidity (idle + Morpho-withdrawable) can honour.
+        uint256 remaining;
+        (sharesBurned, loanAssets, remaining) = _redeemAvailable(shares, receiver, owner);
+
+        // 2. Settle the remainder against the risk queue (collateral to receiver). The redeem above
+        //    drained idle, so the core's liquidity gate no longer blocks this settle.
+        if (remaining != 0) {
+            ExitPlan memory plan = _beginExit(remaining, receiver, owner);
+            uint256 morphoSupplyConsumed;
+            (collateralSeized, debtCanceled, morphoSupplyConsumed) =
+                _settleFromHeap(plan.morphoSupplyTarget, receiver, plan.totalSupplyAssets, plan.totalSupplyShares);
+            (uint256 settledShares, uint256 settledLoan) =
+                _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
+            sharesBurned += settledShares;
+            loanAssets += settledLoan;
+        }
     }
 
-    /// @notice Targeted exit. Same effect as `fallbackExit`, but the caller supplies the exact
-    ///         `borrowers` to settle (in order), using `controller.allowedSliceFor` per borrower
-    ///         instead of the risk queue. Best-effort, no revert on shortfall.
+    /// @notice Targeted exit. Like `fallbackExit` it first pays out what ordinary liquidity covers via a
+    ///         normal redeem, then settles the remainder — but the caller supplies the exact `borrowers`
+    ///         to settle (in order), using `controller.allowedSliceFor` per borrower instead of the risk
+    ///         queue. Settling is best-effort, no revert on shortfall. Redeeming first also closes the
+    ///         same liquidity-gate griefing vector described on `fallbackExit`.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
     {
-        ExitPlan memory plan = _beginExit(shares, receiver, owner);
-        uint256 morphoSupplyConsumed;
-        (collateralSeized, debtCanceled, morphoSupplyConsumed) = _settleFromList(
-            plan.morphoSupplyTarget, borrowers, receiver, plan.totalSupplyAssets, plan.totalSupplyShares
-        );
-        (sharesBurned, loanAssets) = _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
+        uint256 remaining;
+        (sharesBurned, loanAssets, remaining) = _redeemAvailable(shares, receiver, owner);
+
+        if (remaining != 0) {
+            ExitPlan memory plan = _beginExit(remaining, receiver, owner);
+            uint256 morphoSupplyConsumed;
+            (collateralSeized, debtCanceled, morphoSupplyConsumed) = _settleFromList(
+                plan.morphoSupplyTarget, borrowers, receiver, plan.totalSupplyAssets, plan.totalSupplyShares
+            );
+            (uint256 settledShares, uint256 settledLoan) =
+                _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
+            sharesBurned += settledShares;
+            loanAssets += settledLoan;
+        }
+    }
+
+    /// @dev Shared first step of `fallbackExit` and `settle`: pay out what ordinary liquidity covers via a
+    ///      normal redeem (this also drains idle, so the core's settle liquidity gate cannot block the
+    ///      remainder). Returns the shares redeemed, the loan assets paid, and the still-unmet remainder.
+    function _redeemAvailable(uint256 shares, address receiver, address owner)
+        private
+        returns (uint256 redeemedShares, uint256 redeemedAssets, uint256 remaining)
+    {
+        redeemedShares = Math.min(shares, maxRedeem(owner));
+        if (redeemedShares != 0) redeemedAssets = redeem(redeemedShares, receiver, owner);
+        remaining = shares - redeemedShares;
     }
 
     /// @dev Common exit preamble: validate, pull allowance, size the target, snapshot market totals.
