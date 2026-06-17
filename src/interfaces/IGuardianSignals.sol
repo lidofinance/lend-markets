@@ -4,85 +4,120 @@ pragma solidity 0.8.35;
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 /// @title IGuardianSignals
-/// @notice Guardian-committee signal layer over addresses. Guardians flag accounts per market; a `quorum`
-///         of strikes latches a ban. The market controller reads `statusOf` to scale collateral
-///         activation and to hard-block borrowing.
+/// @notice Guardian-committee signal layer over accounts, keyed per market. Guardians flag accounts they
+///         detect as malicious. A `quorum` of distinct flags latches a ban. The market controller reads
+///         `getStatus` to scale collateral activation and to hard-block borrowing.
 interface IGuardianSignals {
-    /// @notice Guardian signal for an account in a market, reported raw: amnesty is flagged, not applied, so
-    ///         the reader decides how to weigh it.
-    /// @param strikes   distinct guardians flagging the account. Drives the activation surcharge while sub-quorum.
-    /// @param banned    a guardian quorum latched a ban, or the committee banned.
-    /// @param amnestied the committee vouched for the account. While set, a reader treats the strikes and ban
-    ///                  as inert.
-    struct Signal {
-        uint16 strikes;
-        bool banned;
-        bool amnestied;
-    }
-
     /* EVENTS */
 
+    /// @notice Emitted when a guardian joins the set.
     event GuardianAdded(address indexed guardian);
+    /// @notice Emitted when a guardian leaves the set.
     event GuardianRemoved(address indexed guardian);
+    /// @notice Emitted when the quorum changes.
+    /// @param quorum The number of distinct flags that latches a ban.
     event QuorumSet(uint256 quorum);
+    /// @notice Emitted when a guardian reports liveness, directly or via `flag`/`unflag`.
+    event Heartbeat(address indexed guardian);
+    /// @notice Emitted when a guardian flags an account.
+    /// @param market   The market id.
+    /// @param account  The flagged account.
+    /// @param guardian The flagging guardian.
+    /// @param strikes  The account's flag count after the flag.
     event Flagged(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
+    /// @notice Emitted when a guardian retracts a flag.
+    /// @param market   The market id.
+    /// @param account  The account.
+    /// @param guardian The retracting guardian.
+    /// @param strikes  The account's flag count after the retraction.
     event Unflagged(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
+    /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
     event Banned(Id indexed market, address indexed account);
-    event Amnestied(Id indexed market, address indexed account, address indexed by);
-    event AmnestyRevoked(Id indexed market, address indexed account, address indexed by);
+    /// @notice Emitted when an account's ban is lifted.
+    /// @param by The `GOVERNANCE_ROLE` holder that unbanned.
+    event Unbanned(Id indexed market, address indexed account, address indexed by);
+    /// @notice Emitted when an account is exempted.
+    /// @param by The `GOVERNANCE_ROLE` holder that granted immunity.
+    event ImmunityGranted(Id indexed market, address indexed account, address indexed by);
+    /// @notice Emitted when an account's immunity is removed.
+    /// @param by The `RISK_STEWARD_ROLE` holder that revoked immunity.
+    event ImmunityRevoked(Id indexed market, address indexed account, address indexed by);
 
     /* ERRORS */
 
+    /// @notice Thrown when a zero address is passed where an account or guardian is required.
     error ZeroAddress();
+    /// @notice Thrown when the quorum is zero or exceeds the guardian count.
     error BadQuorum();
+    /// @notice Thrown when removing a guardian would drop the set below the quorum.
     error WouldBreakQuorum();
+    /// @notice Thrown when adding a guardian already in the set.
     error AlreadyGuardian();
+    /// @notice Thrown when the caller or target is not a guardian.
     error NotGuardian();
+    /// @notice Thrown when the guardian set is already at `MAX_GUARDIANS_COUNT`.
     error MaxGuardiansReached();
 
-    /* CONFIG */
+    /* MEMBERSHIP & QUORUM (admin) */
 
-    /// @notice Strikes that latch a ban.
+    /// @notice The number of distinct flags that latches a ban.
     function getQuorum() external view returns (uint256);
-
-    /* MEMBERSHIP (admin) */
-
+    /// @notice Add a guardian to the set.
     function addGuardian(address guardian) external;
+    /// @notice Remove a guardian from the set. Reverts if it would drop the set below the quorum.
     function removeGuardian(address guardian) external;
+    /// @notice Set the quorum. Reverts unless `1 <= newQuorum <= guardian count`.
     function setQuorum(uint256 newQuorum) external;
+    /// @notice Whether `account` is a guardian.
     function isGuardian(address account) external view returns (bool);
+    /// @notice The number of guardians in the set.
     function getGuardianCount() external view returns (uint256);
+    /// @notice The current guardian set.
     function getGuardians() external view returns (address[] memory);
+
+    /* LIVENESS */
+
+    /// @notice Record the caller's last-scanned block and refresh the quorum frontier. Clamped to
+    ///         `block.number`.
+    function heartbeat(uint256 lastScannedBlock) external;
+    /// @notice The last block `guardian` reported scanning.
+    function getHeartbeat(address guardian) external view returns (uint256);
+    /// @notice The guardian set paired with each guardian's last-scanned block.
+    function getHeartbeats() external view returns (address[] memory guardians, uint256[] memory heartbeats);
+    /// @notice Highest block at least a quorum of guardians have ever scanned past. Monotonic: a guardian
+    ///         rotation cannot lower it.
+    function getLastScannedQuorumBlock() external view returns (uint256);
 
     /* FLAGGING (guardians) */
 
-    /// @notice Flag `account` in `market`. Idempotent: re-flagging an account the caller already flags does
-    ///         nothing.
-    function flag(Id market, address account) external;
-    /// @notice Flag several `accounts` in `market` in one call; idempotent per account.
-    function flagMany(Id market, address[] calldata accounts) external;
-    /// @notice Retract the caller's own flag. Idempotent: unflagging an account the caller does not flag does
-    ///         nothing. Does not lift a latched ban.
-    function unflag(Id market, address account) external;
-    /// @notice Retract the caller's flags on several `accounts` in one call; idempotent per account.
-    function unflagMany(Id market, address[] calldata accounts) external;
+    /// @notice Flag `accounts` in `market`, then heartbeat. Per account a no-op when the caller already flags
+    ///         it or it is immune, so a batch never reverts on a skip.
+    function flag(Id market, address[] calldata accounts, uint256 lastScannedBlock) external;
+    /// @notice Retract the caller's flags on `accounts` in `market`, then heartbeat. Per account a no-op when
+    ///         the caller does not flag it or it is immune. Never lifts a latched ban.
+    function unflag(Id market, address[] calldata accounts, uint256 lastScannedBlock) external;
 
-    /* OVERRIDE (committee ban / amnesty) */
+    /* OVERRIDE (committee / governance) */
 
-    /// @notice Force a ban on `account` in `market`, bypassing the quorum.
+    /// @notice Force a ban on `account` in `market`, bypassing the quorum. Clears any immunity.
     function ban(Id market, address account) external;
-    /// @notice Amnesty `account` in `market`: readers treat its strikes and ban as inert until
-    ///         `revokeAmnesty`. Only `ban` can block again.
-    function amnesty(Id market, address account) external;
-    /// @notice Lift an amnesty, restoring the strikes and any standing ban for `account`.
-    function revokeAmnesty(Id market, address account) external;
+    /// @notice Lift the ban on `account` in `market` and clear its flags, so guardians re-evaluate from
+    ///         scratch and can re-ban it. Leaves immunity untouched.
+    function unban(Id market, address account) external;
+    /// @notice Exempt `account` in `market` from guardian signals. While immune, `flag`/`unflag` no-op and
+    ///         `getStatus` reads it as clean. Cleared by `revokeImmunity` or `ban`.
+    function grantImmunity(Id market, address account) external;
+    /// @notice Remove `account`'s immunity in `market`, re-subjecting it to guardian signals.
+    function revokeImmunity(Id market, address account) external;
 
     /* VIEWS */
 
-    /// @notice Raw guardian signal for `account` in `market`: strike count, ban, and amnesty. Amnesty is
-    ///         reported, not applied — use `statusOf` for the effective view.
-    function signalOf(Id market, address account) external view returns (Signal memory);
-    /// @notice Effective status of `account` in `market` with amnesty applied: an amnestied account reads as
-    ///         not banned with zero strikes. This is the view a gate consumes.
-    function statusOf(Id market, address account) external view returns (bool isBanned, uint256 strikes);
+    /// @notice Effective status of `account` in `market`, immunity applied: an immune account reads as not
+    ///         banned with zero strikes. The view a gate consumes.
+    /// @return isBanned Whether borrowing is hard-blocked.
+    /// @return strikes  The flag count the reader scales the activation delay by.
+    function getStatus(Id market, address account) external view returns (bool isBanned, uint256 strikes);
+    /// @notice Raw signal for `account` in `market`. `isImmune` is reported, not applied — use `getStatus`
+    ///         for the effective view.
+    function getSignal(Id market, address account) external view returns (bool isImmune, bool isBanned, uint256 strikes);
 }

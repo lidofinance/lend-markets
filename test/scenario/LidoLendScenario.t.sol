@@ -8,7 +8,7 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Test} from "forge-std/Test.sol";
 
-import {ILidoLendMarketController} from "../utils/ILidoLendMarketController.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 interface IWETH {
@@ -32,7 +32,7 @@ interface IWstETH {
 
 /// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests.
 interface IRegistryLike {
-    function flag(Id market, address account) external;
+    function flag(Id market, address[] calldata accounts, uint256 lastScannedBlock) external;
 }
 
 /// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
@@ -442,13 +442,14 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         // Ban BORROWER: one flag reaches quorum 1, which latches the ban. The test contract is the
         // registry's sole guardian (set in `_deployMarket`).
-        IRegistryLike(ctx.guardianSignals).flag(ctx.id, BORROWER);
+        address[] memory toFlag = new address[](1);
+        toFlag[0] = BORROWER;
+        IRegistryLike(ctx.guardianSignals).flag(ctx.id, toFlag, block.number);
 
         // Warp far past any normal activation delay — a banned address never settles.
         vm.warp(block.timestamp + 30 days);
-        ILidoLendMarketController.PositionView memory pv = ctx.controller.positionOf(BORROWER);
+        ILidoLendMarketController.BorrowerPosition memory pv = ctx.controller.positionOf(BORROWER);
         assertTrue(pv.banned, "banned");
-        assertFalse(pv.readyToSettle, "banned never ready to settle");
         _assertCollateralState(ctx.controller, BORROWER, 0, col, 0); // still activating, never active
 
         // No active collateral + banned -> borrow reverts.
@@ -480,10 +481,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         assertGt(smallUnlock, block.timestamp, "small deposit activated (not dust)");
         assertLt(smallUnlock - block.timestamp, 2 hours, "small deposit ~ minimum delay");
 
-        // The delay is enforced: not ready before its unlock, ready at it.
-        assertFalse(ctx.controller.positionOf(BORROWER).readyToSettle, "not ready before unlock");
-        vm.warp(smallUnlock);
-        assertTrue(ctx.controller.positionOf(BORROWER).readyToSettle, "ready at unlock");
+        // Enforced: while the timer runs the lot is held in `activating`, never borrowable as `active`.
+        _assertCollateralState(ctx.controller, BORROWER, 0, smallCol, 0);
     }
 
     /// @notice A same-tx supplyCollateral -> withdrawCollateral round-trip is inflow-neutral: the deposit's
@@ -569,12 +568,12 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
-                    inflowDecayWindow: 4 hours,
                     maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 10 ether,
-                    minDecayInflow: 1_000 ether
+                    minActivationAmount: 10 ether
                 }),
-                slicePolicy: SlicePolicyConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
+                slicePolicy: SlicePolicyConfig({
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0, fullCutBelowCollateral: 10 ether
+                }),
                 guardians: guardians,
                 quorum: 1,
                 vaultName: "Lido wstETH/WETH Vault",
@@ -589,7 +588,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.id = d.marketId;
         ctx.price = WstEthRateOracle(d.oracle).price();
 
-        ctx.controller.grantRole(ctx.controller.CONFIGURATOR_ROLE(), address(this));
+        ctx.controller.grantRole(ctx.controller.MANAGER_ROLE(), address(this));
     }
 
     function _mintWETH(ILidoLend market, address user, uint256 amount) internal {
@@ -622,7 +621,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         uint256 activating,
         uint256 dust
     ) internal view {
-        ILidoLendMarketController.PositionView memory pv = controller.positionOf(borrower);
+        ILidoLendMarketController.BorrowerPosition memory pv = controller.positionOf(borrower);
         assertEq(pv.active, matured, "matured (active) collateral");
         assertEq(pv.activating, activating, "maturing (activating) collateral");
         assertEq(pv.dust, dust, "dust collateral");

@@ -17,12 +17,13 @@ import {
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {SettlementQueueLib} from "./libs/SettlementQueueLib.sol";
+import {SlicePolicy} from "./types/SettlementTypes.sol";
 
 /// @dev Off-hook view surface of the controller the vault sizes its exit loop against. Not part of the
 ///      core `ILidoLendBaseMarketController` interface (which is hooks-only), so the vault reaches these
 ///      controller-specific views by casting `address(CONTROLLER)`.
 interface ISlicePolicyView {
-    function slicePolicy() external view returns (SettlementQueueLib.SlicePolicy memory);
+    function slicePolicy() external view returns (SlicePolicy memory);
     function nextSettlementCut() external view returns (address borrower, uint256 sliceAssets);
     function allowedSliceFor(address borrower) external view returns (uint256);
 }
@@ -394,7 +395,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
         (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) =
             MorphoBalancesLib.expectedMarketBalances(MORPHO, _marketParams);
         uint256 supplyAssets = supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
-        uint256 liquidity = totalSupplyAssets > totalBorrowAssets ? totalSupplyAssets - totalBorrowAssets : 0;
+        uint256 liquidity = Math.saturatingSub(totalSupplyAssets, totalBorrowAssets);
         return Math.min(supplyAssets, liquidity);
     }
 

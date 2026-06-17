@@ -7,28 +7,34 @@ import {
     AccessControlEnumerableUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {Arrays} from "@openzeppelin/contracts/utils/Arrays.sol";
 
 import {IGuardianSignals} from "./interfaces/IGuardianSignals.sol";
 
 /// @title GuardianSignals
 /// @author Lido Lending contributors.
-/// @notice Guardian committee that flags addresses per market. Guardians (bots run by trusted actors)
-///         flag accounts they detect as malicious. The market controller reads `statusOf` to
-///         scale collateral activation and to hard-block borrowing.
-/// @dev Upgradeable, deployed behind a proxy (`initialize`, not a constructor), with ERC-7201
-///      namespaced storage. Strike ladder, per `(market, account)`:
+/// @notice Per-market registry where guardians flag suspect accounts and a quorum of flags latches a ban.
+///         Guardians are bots run by trusted actors. The market controller reads `getStatus` to scale
+///         collateral activation and to hard-block borrowing.
+/// @dev Upgradeable behind a proxy (`initialize`, not a constructor), with ERC-7201 namespaced storage.
+///      State is per `(market, account)`, where `strikes` is the size of the flagger set `flaggedBy`. The
+///      escalation ladder, read through `getStatus`:
 ///        - strikes == 0           : clean, normal activation.
-///        - 0 < strikes < quorum   : reader scales the activation delay up by the strike count.
-///        - strikes >= quorum      : `banned` LATCHES (reader hard-blocks borrow).
+///        - 0 < strikes < quorum   : the reader scales the activation delay up by the strike count.
+///        - strikes >= quorum      : `banned` latches, the reader hard-blocks borrow.
 ///
-///      The ban latches: it survives flag retraction and is cleared only by `amnesty`. `amnesty` marks an
-///      account so readers treat its strikes and ban as inert until `revokeAmnesty`, and a re-gathered quorum
-///      cannot auto-ban an amnestied account. State is per `(market, account)`; `signalOf` reports it raw
-///      (amnesty flagged, not applied) and `statusOf` applies amnesty for the reader.
+///      The ban latches: retracting a flag never lifts it. `unban` lifts it and clears the flagger set, so
+///      guardians re-evaluate from scratch and can re-ban an account that is still bad. `immune` is the
+///      override for accounts the guardians misjudge: while set, `flag`/`unflag` no-op and `getStatus` reads
+///      the account as clean. `ban` clears `immune`.
 ///
-///      Roles are minimal: `DEFAULT_ADMIN_ROLE` manages the guardian set and the quorum, `BAN_MANAGER_ROLE`
-///      can ban an account, `AMNESTY_MANAGER_ROLE` can amnesty it or revoke that. The guardian committee is
-///      a plain enumerable set, not a role.
+///      The override splits into two opposing pairs by risk direction. The fast risk-reducing side sits at
+///      the committee (`ACCESS_LIMITER_ROLE`: `ban`, `revokeImmunity`), the slow risk-increasing side at
+///      governance (`ACCESS_RESTORER_ROLE`: `unban`, `grantImmunity`). `DEFAULT_ADMIN_ROLE` manages the
+///      guardian set and quorum. The guardian set is a plain enumerable set, not a role.
+///
+///      Guardians report liveness: `flag`, `unflag`, and `heartbeat` each record a last-scanned block, and
+///      `getLastScannedQuorumBlock` returns the highest block a quorum have scanned past (monotonic).
 ///
 ///      Events and errors are declared in {IGuardianSignals}.
 contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals")
@@ -43,23 +49,29 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     // DATA TYPES
     // ---
 
-    struct MarketSignals {
-        mapping(address account => Signal) byAccount;
-        mapping(address guardian => mapping(address account => bool)) flagged;
+    /// @notice Per-account guardian signal. `strikes` is `flaggedBy.length()`.
+    /// @param banned    A quorum of flags latched a ban, or `ban` forced one. Held until `unban`.
+    /// @param immune    Account is exempt. While set, `flag`/`unflag` no-op and `getStatus` reads it clean.
+    /// @param flaggedBy Live set of guardians flagging the account. `unban` clears it in one call.
+    struct Signal {
+        bool banned;
+        bool immune;
+        EnumerableSet.AddressSet flaggedBy;
     }
 
     // ---
     // CONSTANTS
     // ---
 
+    /// @notice Maximum number of guardians. Keeps the quorum in `uint8` and a strike count in `uint16`.
     uint256 public constant MAX_GUARDIANS_COUNT = type(uint8).max;
 
     // ---
     // ROLES
     // ---
 
-    bytes32 public constant BAN_MANAGER_ROLE = keccak256("BAN_MANAGER_ROLE");
-    bytes32 public constant AMNESTY_MANAGER_ROLE = keccak256("AMNESTY_MANAGER_ROLE");
+    bytes32 public constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
+    bytes32 public constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
 
     // ---
     // STORAGE
@@ -67,7 +79,9 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
 
     uint8 private _quorum;
     EnumerableSet.AddressSet private _guardians;
-    mapping(Id market => MarketSignals) private _markets;
+    mapping(Id market => mapping(address account => Signal)) private _markets;
+    mapping(address guardian => uint256) private _heartbeats;
+    uint256 private _lastScannedQuorumBlock;
 
     // ---
     // MODIFIERS
@@ -78,22 +92,29 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
         _;
     }
 
+    // ---
+    // INITIALIZATION
+    // ---
+
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    function initialize(address admin, address[] memory guardians_, uint256 quorum_) external initializer {
-        __AccessControlEnumerable_init();
+    /// @notice Set the admin, seed the guardian set, and set the quorum.
+    /// @param admin     Holder of `DEFAULT_ADMIN_ROLE`, manager of the guardian set and quorum.
+    /// @param guardians Initial guardian set.
+    /// @param quorum    Distinct flags that latch a ban. Must satisfy `1 <= quorum <= guardians.length`.
+    function initialize(address admin, address[] calldata guardians, uint256 quorum) external initializer {
         if (admin == address(0)) revert ZeroAddress();
+
+        __AccessControlEnumerable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
 
-        for (uint256 i; i < guardians_.length; ++i) {
-            if (guardians_[i] == address(0)) revert ZeroAddress();
-            if (_guardians.length() >= MAX_GUARDIANS_COUNT) revert MaxGuardiansReached();
-            _guardians.add(guardians_[i]);
+        for (uint256 i; i < guardians.length; ++i) {
+            _addGuardian(guardians[i]);
         }
-        _setQuorum(quorum_);
+        _setQuorum(quorum);
     }
 
     // ---
@@ -101,44 +122,66 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function getQuorum() external view override returns (uint256) {
+    function getQuorum() external view returns (uint256) {
         return _quorum;
     }
 
     /// @inheritdoc IGuardianSignals
-    function addGuardian(address guardian) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (guardian == address(0)) revert ZeroAddress();
-        if (_guardians.length() >= MAX_GUARDIANS_COUNT) revert MaxGuardiansReached();
-        if (!_guardians.add(guardian)) revert AlreadyGuardian();
-        emit GuardianAdded(guardian);
+    function addGuardian(address guardian) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _addGuardian(guardian);
     }
 
     /// @inheritdoc IGuardianSignals
     /// @dev Reverts if removal would drop the set below `quorum`, so the quorum stays reachable.
-    function removeGuardian(address guardian) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+    function removeGuardian(address guardian) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (!_guardians.remove(guardian)) revert NotGuardian();
         if (_guardians.length() < _quorum) revert WouldBreakQuorum();
         emit GuardianRemoved(guardian);
     }
 
     /// @inheritdoc IGuardianSignals
-    function setQuorum(uint256 newQuorum) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setQuorum(uint256 newQuorum) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _setQuorum(newQuorum);
     }
 
     /// @inheritdoc IGuardianSignals
-    function isGuardian(address account) external view override returns (bool) {
+    function isGuardian(address account) external view returns (bool) {
         return _guardians.contains(account);
     }
 
     /// @inheritdoc IGuardianSignals
-    function getGuardianCount() external view override returns (uint256) {
+    function getGuardianCount() external view returns (uint256) {
         return _guardians.length();
     }
 
     /// @inheritdoc IGuardianSignals
-    function getGuardians() external view override returns (address[] memory) {
+    function getGuardians() external view returns (address[] memory) {
         return _guardians.values();
+    }
+
+    // ---
+    // LIVENESS
+    // ---
+
+    /// @inheritdoc IGuardianSignals
+    function heartbeat(uint256 lastScannedBlock) external onlyGuardian {
+        _heartbeat(lastScannedBlock);
+    }
+
+    /// @inheritdoc IGuardianSignals
+    function getHeartbeat(address guardian) external view returns (uint256) {
+        return _heartbeats[guardian];
+    }
+
+    /// @inheritdoc IGuardianSignals
+    function getHeartbeats() external view returns (address[] memory guardians, uint256[] memory heartbeats) {
+        guardians = _guardians.values();
+        heartbeats = _getHeartbeats(guardians);
+    }
+
+    /// @inheritdoc IGuardianSignals
+    function getLastScannedQuorumBlock() external view returns (uint256) {
+        return _lastScannedQuorumBlock;
     }
 
     // ---
@@ -146,82 +189,56 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function flag(Id market, address account) external override onlyGuardian {
-        _flag(market, account);
-    }
-
-    /// @inheritdoc IGuardianSignals
-    function flagMany(Id market, address[] calldata accounts) external override onlyGuardian {
+    function flag(Id market, address[] calldata accounts, uint256 lastScannedBlock) external onlyGuardian {
         for (uint256 i; i < accounts.length; ++i) {
             _flag(market, accounts[i]);
         }
+        _heartbeat(lastScannedBlock);
     }
 
     /// @inheritdoc IGuardianSignals
-    function unflag(Id market, address account) external override onlyGuardian {
-        _unflag(market, account);
-    }
-
-    /// @inheritdoc IGuardianSignals
-    function unflagMany(Id market, address[] calldata accounts) external override onlyGuardian {
+    function unflag(Id market, address[] calldata accounts, uint256 lastScannedBlock) external onlyGuardian {
         for (uint256 i; i < accounts.length; ++i) {
             _unflag(market, accounts[i]);
         }
-    }
-
-    /// @dev Single-account flag, shared by the one-shot and batch entrypoints. Idempotent: a no-op (no state
-    ///      change, no event) when the caller already flags `account`, so a batch never reverts on an overlap.
-    function _flag(Id market, address account) internal {
-        if (account == address(0)) revert ZeroAddress();
-        MarketSignals storage m = _markets[market];
-        if (m.flagged[msg.sender][account]) return;
-
-        m.flagged[msg.sender][account] = true;
-        Signal storage sig = m.byAccount[account];
-        uint16 strikes = ++sig.strikes;
-
-        if (strikes >= _quorum && !sig.banned && !sig.amnestied) {
-            sig.banned = true;
-            emit Banned(market, account);
-        }
-        emit Flagged(market, account, msg.sender, strikes);
-    }
-
-    /// @dev Single-account unflag, shared by the one-shot and batch entrypoints. Idempotent: a no-op (no
-    ///      event) when the caller does not flag `account`. Does not lift a latched ban.
-    function _unflag(Id market, address account) internal {
-        MarketSignals storage m = _markets[market];
-        if (!m.flagged[msg.sender][account]) return;
-
-        delete m.flagged[msg.sender][account];
-        // the flag bit was set, so the count is >= 1: safe to decrement.
-        uint16 strikes = --m.byAccount[account].strikes;
-        emit Unflagged(market, account, msg.sender, strikes);
+        _heartbeat(lastScannedBlock);
     }
 
     // ---
-    // COMMITTEE OVERRIDE
+    // COMMITTEE / GOVERNANCE OVERRIDE
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function ban(Id market, address account) external override onlyRole(BAN_MANAGER_ROLE) {
+    /// @dev Clears immunity so the block takes effect even on an exempt account.
+    function ban(Id market, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
         if (account == address(0)) revert ZeroAddress();
-        _markets[market].byAccount[account].banned = true;
+        Signal storage signal = _markets[market][account];
+        signal.banned = true;
+        signal.immune = false;
         emit Banned(market, account);
     }
 
     /// @inheritdoc IGuardianSignals
-    /// @dev Sets the amnesty flag only; `signalOf` reports it and the reader applies it. A standing ban is
-    ///      preserved (suppressed by the reader, restored on `revokeAmnesty`).
-    function amnesty(Id market, address account) external override onlyRole(AMNESTY_MANAGER_ROLE) {
-        _markets[market].byAccount[account].amnestied = true;
-        emit Amnestied(market, account, msg.sender);
+    /// @dev Clears the flagger set, so the freshly-unbanned account can be re-flagged and re-banned from
+    ///      scratch. Immunity is left to `revokeImmunity`.
+    function unban(Id market, address account) external onlyRole(ACCESS_RESTORER_ROLE) {
+        Signal storage signal = _markets[market][account];
+        signal.banned = false;
+        signal.flaggedBy.clear();
+        emit Unbanned(market, account, msg.sender);
     }
 
     /// @inheritdoc IGuardianSignals
-    function revokeAmnesty(Id market, address account) external override onlyRole(AMNESTY_MANAGER_ROLE) {
-        _markets[market].byAccount[account].amnestied = false;
-        emit AmnestyRevoked(market, account, msg.sender);
+    function grantImmunity(Id market, address account) external onlyRole(ACCESS_RESTORER_ROLE) {
+        if (account == address(0)) revert ZeroAddress();
+        _markets[market][account].immune = true;
+        emit ImmunityGranted(market, account, msg.sender);
+    }
+
+    /// @inheritdoc IGuardianSignals
+    function revokeImmunity(Id market, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
+        _markets[market][account].immune = false;
+        emit ImmunityRevoked(market, account, msg.sender);
     }
 
     // ---
@@ -229,30 +246,84 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     // ---
 
     /// @inheritdoc IGuardianSignals
-    /// @dev Reports the stored entry raw — amnesty is flagged, not applied. `statusOf` is the
-    ///      effective view.
-    function signalOf(Id market, address account) external view override returns (Signal memory) {
-        return _markets[market].byAccount[account];
+    /// @dev Effective status with immunity applied: an immune account reads as not banned with zero
+    ///      strikes, so a reader needs no immunity logic of its own.
+    function getStatus(Id market, address account) external view returns (bool isBanned, uint256 strikes) {
+        Signal storage signal = _markets[market][account];
+        if (signal.immune) return (false, 0);
+        return (signal.banned, signal.flaggedBy.length());
     }
 
     /// @inheritdoc IGuardianSignals
-    /// @dev Effective status with amnesty applied: an amnestied account reads as not banned with zero
-    ///      strikes (the committee vouched), so a reader needs no amnesty logic of its own.
-    function statusOf(Id market, address account) external view override returns (bool isBanned, uint256 strikes) {
-        Signal storage sig = _markets[market].byAccount[account];
-        if (sig.amnestied) return (false, 0);
-        return (sig.banned, sig.strikes);
+    function getSignal(Id market, address account)
+        external
+        view
+        returns (bool isImmune, bool isBanned, uint256 strikes)
+    {
+        Signal storage signal = _markets[market][account];
+        return (signal.immune, signal.banned, signal.flaggedBy.length());
     }
 
     // ---
     // INTERNAL METHODS
     // ---
 
-    function _setQuorum(uint256 newQuorum) internal {
-        if (newQuorum == 0 || newQuorum > _guardians.length()) {
-            revert BadQuorum();
+    /// @dev Record the caller's last-scanned block and refresh the quorum frontier (the quorum-th largest
+    ///      heartbeat). The frontier is monotonic: a guardian rotation that adds fresh zero-heartbeat members
+    ///      cannot pull it back, since the past quorum's coverage stays valid.
+    function _heartbeat(uint256 lastScannedBlock) internal {
+        // a guardian cannot have scanned a block that does not exist yet
+        if (lastScannedBlock > block.number) lastScannedBlock = block.number;
+        _heartbeats[msg.sender] = lastScannedBlock;
+        emit Heartbeat(msg.sender);
+
+        uint256[] memory heartbeats = _getHeartbeats(_guardians.values());
+        uint256 quorumBlock = Arrays.sort(heartbeats)[_guardians.length() - _quorum];
+        if (quorumBlock > _lastScannedQuorumBlock) _lastScannedQuorumBlock = quorumBlock;
+    }
+
+    function _getHeartbeats(address[] memory guardians) internal view returns (uint256[] memory heartbeats) {
+        heartbeats = new uint256[](guardians.length);
+        for (uint256 i; i < guardians.length; ++i) {
+            heartbeats[i] = _heartbeats[guardians[i]];
         }
+    }
+
+    function _setQuorum(uint256 newQuorum) internal {
+        if (newQuorum == 0 || newQuorum > _guardians.length()) revert BadQuorum();
         _quorum = uint8(newQuorum);
         emit QuorumSet(newQuorum);
+    }
+
+    function _addGuardian(address guardian) internal {
+        if (guardian == address(0)) revert ZeroAddress();
+        if (_guardians.length() >= MAX_GUARDIANS_COUNT) revert MaxGuardiansReached();
+        if (!_guardians.add(guardian)) revert AlreadyGuardian();
+        emit GuardianAdded(guardian);
+    }
+
+    /// @dev Single-account flag, looped by `flag`. No-op (no state change, no event) when `account` is immune
+    ///      or the caller already flags it, so a batch never reverts on a skip.
+    function _flag(Id market, address account) internal {
+        if (account == address(0)) revert ZeroAddress();
+
+        Signal storage signal = _markets[market][account];
+        if (signal.immune || !signal.flaggedBy.add(msg.sender)) return;
+
+        uint256 strikes = signal.flaggedBy.length();
+        if (strikes >= _quorum && !signal.banned) {
+            signal.banned = true;
+            emit Banned(market, account);
+        }
+        emit Flagged(market, account, msg.sender, uint16(strikes));
+    }
+
+    /// @dev Single-account unflag, looped by `unflag`. No-op when `account` is immune or the caller does not
+    ///      flag it. Does not lift a latched ban.
+    function _unflag(Id market, address account) internal {
+        Signal storage signal = _markets[market][account];
+        if (signal.immune || !signal.flaggedBy.remove(msg.sender)) return;
+
+        emit Unflagged(market, account, msg.sender, uint16(signal.flaggedBy.length()));
     }
 }

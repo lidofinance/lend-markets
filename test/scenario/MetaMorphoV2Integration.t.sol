@@ -149,12 +149,12 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
-                    inflowDecayWindow: 4 hours,
                     maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 10 ether,
-                    minDecayInflow: 1_000 ether
+                    minActivationAmount: 10 ether
                 }),
-                slicePolicy: SlicePolicyConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
+                slicePolicy: SlicePolicyConfig({
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0, fullCutBelowCollateral: 10 ether
+                }),
                 guardians: guardians,
                 quorum: 1,
                 vaultName: "Lido wstETH/WETH Vault",

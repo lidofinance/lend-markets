@@ -11,7 +11,7 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 /// @dev Minimal configurator surface of the controller used to seed the deploy-time policy.
 ///      `LidoLendDeployer.SlicePolicyConfig` mirrors the controller's struct, so the call ABI matches.
 interface IControllerConfigurator {
-    function CONFIGURATOR_ROLE() external view returns (bytes32);
+    function MANAGER_ROLE() external view returns (bytes32);
     function grantRole(bytes32 role, address account) external;
     function setSlicePolicy(LidoLendDeployer.SlicePolicyConfig calldata policy) external;
 }
@@ -27,12 +27,13 @@ abstract contract LidoLendDeployer {
     /// @dev forge-std cheatcode singleton, inlined so this contract need not inherit `Test` / `Script`.
     Vm internal constant _vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    /// @dev Mirror of `SettlementQueueLib.SlicePolicy` (same field order/types); see `ActivationConfig`
+    /// @dev Mirror of `SettlementTypes.SlicePolicy` (same field order/types); see `ActivationConfig`
     ///      for why the deployer mirrors instead of importing.
     struct SlicePolicyConfig {
         uint16 sliceFloorBps;
         uint96 sliceFloorAssets;
         uint96 fallbackMinRequest;
+        uint96 fullCutBelowCollateral;
     }
 
     /// @dev Mirror of `CollateralActivationLib.Config` (same field order/types) so the controller initializer can
@@ -43,9 +44,6 @@ abstract contract LidoLendDeployer {
         uint64 minActivationDelay;
         uint64 maxActivationDelay;
         uint128 maxDelayInflow;
-        // inflow decay
-        uint64 inflowDecayWindow;
-        uint128 minDecayInflow;
         // strike surcharge
         uint64 delayPerStrike;
         // sybil hold on activating collateral
@@ -107,10 +105,10 @@ abstract contract LidoLendDeployer {
         d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
         // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the controller initializer;
-        // grant it CONFIGURATOR_ROLE (a placeholder, rotated to the EasyTrack factory post-deploy)
+        // grant it MANAGER_ROLE (a placeholder, rotated to the EasyTrack factory post-deploy)
         // so it can set the policy now and tune it later.
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
-        controller.grantRole(controller.CONFIGURATOR_ROLE(), cfg.admin);
+        controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
         controller.setSlicePolicy(cfg.slicePolicy);
     }
 
@@ -158,7 +156,7 @@ abstract contract LidoLendDeployer {
             "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core, marketId)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address,(uint64,uint64,uint128,uint64,uint128,uint64,uint128,uint128))",
+            "initialize(address,address,(uint64,uint64,uint128,uint64,uint128,uint128))",
             admin,
             guardianSignals,
             activation

@@ -14,6 +14,18 @@ contract ActivationHarness {
         $.setConfig(cfg);
     }
 
+    function setMinActivationDelay(uint64 minDelay) external {
+        $.setMinActivationDelay(minDelay);
+    }
+
+    function setMaxActivationDelay(uint64 maxDelay) external {
+        $.setMaxActivationDelay(maxDelay);
+    }
+
+    function delays() external view returns (uint64 minActivationDelay, uint64 maxActivationDelay) {
+        return ($.config.minActivationDelay, $.config.maxActivationDelay);
+    }
+
     function deposit(address borrower, uint256 assets) external {
         $.deposit(borrower, assets);
     }
@@ -38,36 +50,55 @@ contract CollateralActivationLibTest is Test {
                 maxActivationDelay: 1 hours,
                 delayPerStrike: 1 hours,
                 activatingHold: 0,
-                inflowDecayWindow: 1 days,
-                maxDelayInflow: type(uint128).max,
-                minActivationAmount: 1,
-                minDecayInflow: 1 ether
+                maxDelayInflow: 10_000 ether,
+                minActivationAmount: 1
             })
         );
     }
 
-    /// @notice F01 — characterization test for silent uint128 truncation in `deposit`'s inflow addition.
-    /// @dev    With a pathological `maxDelayInflow = type(uint128).max` config, two consecutive
-    ///         deposits whose sum exceeds `type(uint128).max` silently wrap the inflow accumulator.
-    ///         Under realistic governance bounds (`maxDelayInflow ≈ 10000 ether`) this is unreachable;
-    ///         this test pins down the misbehaviour so we can decide whether to cap in `setConfig`
-    ///         or switch the inflow addition to a saturating add.
-    function test_inflowAccumulator_silentlyWrapsAtUint128Max() public {
-        uint256 firstAssets = uint256(type(uint128).max) - 1 ether;
+    /// @notice The inflow accumulator saturates at `maxDelayInflow` rather than growing past it. The delay
+    ///         already clamps at the cap, so storing more would only lengthen the drain, and the cap keeps
+    ///         the uint128 store unwrappable.
+    function test_inflowAccumulator_capsAtMaxDelayInflow() public {
+        h.deposit(address(0xB1), 8_000 ether);
+        assertEq(h.currentInflow(), 8_000 ether, "below the cap, inflow accumulates linearly");
 
-        h.deposit(address(0xB1), firstAssets);
-        uint256 inflowAfterFirst = h.currentInflow();
-        assertEq(inflowAfterFirst, firstAssets, "first deposit accumulates linearly");
+        // pushes the total past the 10_000 ether cap: saturates instead of overshooting
+        h.deposit(address(0xB2), 5_000 ether);
+        assertEq(h.currentInflow(), 10_000 ether, "inflow saturates at maxDelayInflow");
+    }
 
-        h.deposit(address(0xB2), 2 ether);
-        uint256 inflowAfterSecond = h.currentInflow();
+    // setUp config: minActivationDelay = 1 minutes, maxActivationDelay = 1 hours (MAX_DELAY_BOUND = 7 days)
 
-        assertTrue(
-            inflowAfterSecond < inflowAfterFirst, "BUG: inflow wrapped after adding 2 ether (smaller than before)"
-        );
-        // The truncation drops the high uint128 bit. Pinning the exact post-wrap value documents the
-        // characterization; this assertion will break (intentionally) if the lib is changed to
-        // saturate or revert instead.
-        assertEq(inflowAfterSecond, 1 ether - 1, "post-wrap inflow is `(firstAssets + 2 ether) mod 2^128`");
+    function test_setMinActivationDelay_updatesFloor() public {
+        h.setMinActivationDelay(30 minutes);
+        (uint64 minActivationDelay,) = h.delays();
+        assertEq(minActivationDelay, 30 minutes, "floor updated");
+    }
+
+    function test_setMaxActivationDelay_updatesCap() public {
+        h.setMaxActivationDelay(2 hours);
+        (, uint64 maxActivationDelay) = h.delays();
+        assertEq(maxActivationDelay, 2 hours, "cap updated");
+    }
+
+    function testRevert_setMinActivationDelay_zero() public {
+        vm.expectRevert(CollateralActivationLib.BadConfig.selector);
+        h.setMinActivationDelay(0);
+    }
+
+    function testRevert_setMinActivationDelay_aboveCap() public {
+        vm.expectRevert(CollateralActivationLib.BadConfig.selector);
+        h.setMinActivationDelay(2 hours);
+    }
+
+    function testRevert_setMaxActivationDelay_belowFloor() public {
+        vm.expectRevert(CollateralActivationLib.BadConfig.selector);
+        h.setMaxActivationDelay(30 seconds);
+    }
+
+    function testRevert_setMaxActivationDelay_aboveBound() public {
+        vm.expectRevert(CollateralActivationLib.BadConfig.selector);
+        h.setMaxActivationDelay(8 days);
     }
 }

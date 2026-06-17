@@ -75,12 +75,13 @@ Then:
 
 - [ ] Replace the placeholder guardian set + quorum on the registry (`addGuardian` / `removeGuardian`
       / `setQuorum`).
-- [ ] Grant the controller policy roles to their real holders: `CONFIGURATOR_ROLE`,
-      `RISK_STEWARD_ROLE`, `PAUSER_ROLE`, `UNPAUSER_ROLE`, `COMMITTEE_ROLE`.
+- [ ] Grant the controller policy roles to their real holders: `MANAGER_ROLE`,
+      `RISK_STEWARD_ROLE`, `FREEZER_ROLE`, `UNFREEZER_ROLE`, `PAUSER_ROLE`, `RESUMER_ROLE`.
+- [ ] Grant the registry override roles to their real holders: `RISK_STEWARD_ROLE`, `GOVERNANCE_ROLE`.
 - [ ] Retune the activation config if the deploy-time placeholder needs changing (`setConfig`, or
-      the fast risk-reducing `tightenConfig`).
-- [ ] Set settle policy if defaults need overriding (`setSliceFloor`, `setFallbackMinRequest`),
-      and the committee Sybil hold (`setActivatingHold`) if used.
+      the fast `increaseMinActivationDelay` / `increaseMaxActivationDelay`).
+- [ ] Set settle policy if defaults need overriding (`setSlicePolicy`), and the risk-steward Sybil
+      hold (`setActivatingHold`) if used.
 - [ ] Confirm each proxy points at the expected implementation
       (`OssifiableProxy.proxy__getImplementation()`).
 - [ ] Record the deployed addresses in `deployed-<network>.toml` (the integration tests read it).

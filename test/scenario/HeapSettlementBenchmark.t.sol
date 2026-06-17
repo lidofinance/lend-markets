@@ -8,7 +8,8 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
 
-import {ILidoLendMarketController} from "../utils/ILidoLendMarketController.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {SlicePolicy} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 interface IWETH {
@@ -550,12 +551,12 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
-                    inflowDecayWindow: 4 hours,
                     maxDelayInflow: 10_000 ether,
-                    minActivationAmount: uint128(MIN_COLLATERAL_ACTIVATION),
-                    minDecayInflow: 1_000 ether
+                    minActivationAmount: uint128(MIN_COLLATERAL_ACTIVATION)
                 }),
-                slicePolicy: SlicePolicyConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0}),
+                slicePolicy: SlicePolicyConfig({
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0, fullCutBelowCollateral: 0
+                }),
                 guardians: guardians,
                 quorum: 1,
                 vaultName: "Lido wstETH/WETH Vault",
@@ -570,11 +571,14 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         ctx.id = d.marketId;
         ctx.price = ctx.oracle.price();
 
-        ctx.controller.grantRole(ctx.controller.CONFIGURATOR_ROLE(), address(this));
+        ctx.controller.grantRole(ctx.controller.MANAGER_ROLE(), address(this));
         ctx.controller
             .setSlicePolicy(
-                ILidoLendMarketController.SlicePolicy({
-                    sliceFloorBps: 100, sliceFloorAssets: SLICE_FLOOR, fallbackMinRequest: 0
+                SlicePolicy({
+                    sliceFloorBps: 100,
+                    sliceFloorAssets: SLICE_FLOOR,
+                    fallbackMinRequest: 0,
+                    fullCutBelowCollateral: uint96(MIN_COLLATERAL_ACTIVATION)
                 })
             );
     }

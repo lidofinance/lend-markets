@@ -20,8 +20,8 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///      A sub-threshold deposit stays in dust. Withdrawal and seizure debit in waterfall order:
 ///      dust, then activating above the Sybil hold, then active.
 /// @dev The base delay is frozen at deposit from the market-wide recent inflow, so address-splitting
-///      cannot dodge the throttle. The inflow decays linearly and fully clears in `inflowDecayWindow`
-///      regardless of magnitude.
+///      cannot dodge the throttle. The inflow is capped at `maxDelayInflow` and decays at a fixed rate,
+///      draining from the cap to zero over `maxActivationDelay`.
 /// @dev The caller embeds `State`, forwards calls, and supplies the external reads the lib cannot make
 ///      (the strike count). The only state outside `State` is the per-tx transient counter for the
 ///      flash-loan undo.
@@ -35,7 +35,28 @@ library CollateralActivationLib {
     bytes32 private constant TX_INFLOW_ADDED_NAMESPACE =
         keccak256("lido.lending.CollateralActivationLib.tx-inflow-added.v1");
 
+    /// @notice Emitted when collateral enters the activation timer: a deposit promotes the dormant amount
+    ///         past the dust threshold. `unlockTime` is the base unlock (`activatingStart + delay`), before
+    ///         any strike surcharge.
+    event ActivationScheduled(address indexed borrower, uint256 amount, uint256 unlockTime);
+
+    /// @notice Emitted when a borrower's activating lot matures into active collateral.
     event Activated(address indexed borrower, uint256 amount);
+
+    /// @notice Emitted when collateral leaves the position, split by the bucket it was debited from.
+    event CollateralDebited(address indexed borrower, uint256 fromDust, uint256 fromActivating, uint256 fromActive);
+
+    /// @notice Emitted when the full activation config is set.
+    event ConfigSet(Config config);
+
+    /// @notice Emitted when the activation delay floor is raised.
+    event MinActivationDelaySet(uint64 minActivationDelay);
+
+    /// @notice Emitted when the activation delay cap is raised.
+    event MaxActivationDelaySet(uint64 maxActivationDelay);
+
+    /// @notice Emitted when the Sybil hold on activating collateral is set.
+    event ActivatingHoldSet(uint128 activatingHold);
 
     error BadConfig();
 
@@ -55,10 +76,10 @@ library CollateralActivationLib {
 
     /// @notice Governance-tunable activation parameters, validated by `setConfig`.
     /// @param minActivationDelay Base delay floor, at zero inflow.
-    /// @param maxActivationDelay Base delay cap, reached at inflow >= maxDelayInflow.
-    /// @param maxDelayInflow Inflow reference at which the base delay reaches the cap.
-    /// @param inflowDecayWindow Seconds for the inflow to fully decay after the last deposit.
-    /// @param minDecayInflow Floor of the decay-rate basis, so a small inflow still decays in bounded time.
+    /// @param maxActivationDelay Base delay cap, reached at inflow >= maxDelayInflow. Also the inflow decay
+    ///        horizon: the accumulator drains from `maxDelayInflow` to zero over this duration.
+    /// @param maxDelayInflow Inflow reference at which the base delay reaches the cap, and the ceiling the
+    ///        inflow accumulator saturates at.
     /// @param delayPerStrike Activation-delay surcharge added per strike.
     /// @param activatingHold Committee Sybil hold honored by `withdraw`. 0 disables it. Forced paths pass floor 0.
     /// @param minActivationAmount Dust threshold. Collateral below it does not enter activation.
@@ -67,9 +88,6 @@ library CollateralActivationLib {
         uint64 minActivationDelay;
         uint64 maxActivationDelay;
         uint128 maxDelayInflow;
-        // inflow decay
-        uint64 inflowDecayWindow;
-        uint128 minDecayInflow;
         // strike surcharge
         uint64 delayPerStrike;
         // sybil hold on activating collateral
@@ -97,13 +115,29 @@ library CollateralActivationLib {
         if (cfg.maxActivationDelay > MAX_DELAY_BOUND) revert BadConfig();
         if (cfg.delayPerStrike > MAX_DELAY_BOUND) revert BadConfig();
         if (cfg.minActivationAmount == 0) revert BadConfig();
-        if (cfg.maxDelayInflow == 0 || cfg.inflowDecayWindow == 0 || cfg.minDecayInflow == 0) revert BadConfig();
+        if (cfg.maxDelayInflow == 0) revert BadConfig();
         $.config = cfg;
+        emit ConfigSet(cfg);
+    }
+
+    /// @notice Set the base delay floor. Reverts unless 0 < minDelay <= maxActivationDelay.
+    function setMinActivationDelay(State storage $, uint64 minDelay) internal {
+        if (minDelay == 0 || minDelay > $.config.maxActivationDelay) revert BadConfig();
+        $.config.minActivationDelay = minDelay;
+        emit MinActivationDelaySet(minDelay);
+    }
+
+    /// @notice Set the base delay cap. Reverts unless minActivationDelay <= maxDelay <= MAX_DELAY_BOUND.
+    function setMaxActivationDelay(State storage $, uint64 maxDelay) internal {
+        if (maxDelay < $.config.minActivationDelay || maxDelay > MAX_DELAY_BOUND) revert BadConfig();
+        $.config.maxActivationDelay = maxDelay;
+        emit MaxActivationDelaySet(maxDelay);
     }
 
     /// @notice Set the committee Sybil hold. 0 disables it.
     function setActivatingHold(State storage $, uint128 hold) internal {
         $.config.activatingHold = hold;
+        emit ActivatingHoldSet(hold);
     }
 
     /// @notice Book a new collateral deposit. Joins dust; once dust + this deposit crosses the threshold the
@@ -128,6 +162,8 @@ library CollateralActivationLib {
             position.activatingStart = uint64(block.timestamp);
             position.activatingDelay = uint64(delay);
         }
+
+        emit ActivationScheduled(borrower, assetsWithDust, position.activatingStart + position.activatingDelay);
     }
 
     /// @notice Voluntary withdrawal: debit honoring the committee Sybil hold, then reverse any same-tx inflow
@@ -187,14 +223,16 @@ library CollateralActivationLib {
         }
 
         // underflows (reverts) if the request reaches into the held hold or the buckets drift from raw
-        if (remaining != 0) {
-            position.active -= uint128(remaining);
+        uint256 fromActive = remaining;
+        if (fromActive != 0) {
+            position.active -= uint128(fromActive);
         }
 
         if (position.activating == 0) {
             _clearTimer(position);
         }
 
+        emit CollateralDebited(borrower, fromDust, fromActivating, fromActive);
         return position.active;
     }
 
@@ -216,16 +254,15 @@ library CollateralActivationLib {
     }
 
     /// @notice Current decayed inflow.
-    /// @dev Decays linearly from the snapshot, the rate basis floored at `minDecayInflow` so a small inflow
-    ///      still reaches 0 within the window. Saturates at 0.
+    /// @dev Fixed-rate decay: the inflow loses `maxDelayInflow` units over `maxActivationDelay`, independent
+    ///      of the current value. A constant rate is invariant under clock resets, so a deposit (or its
+    ///      same-tx undo) cannot defer the decay of prior volume. Saturates at 0.
     function getInflow(State storage $) internal view returns (uint256) {
         uint256 inflow = $.inflow;
         if (inflow == 0) return 0;
 
         uint256 elapsed = block.timestamp - $.inflowUpdatedAt;
-        uint256 rateBasis = Math.max(inflow, $.config.minDecayInflow);
-
-        uint256 decay = rateBasis * elapsed / $.config.inflowDecayWindow;
+        uint256 decay = uint256($.config.maxDelayInflow) * elapsed / $.config.maxActivationDelay;
         return Math.saturatingSub(inflow, decay);
     }
 
@@ -233,12 +270,19 @@ library CollateralActivationLib {
         private
         returns (uint256 newInflow)
     {
-        newInflow = getInflow($) + increment;
+        uint256 prev = getInflow($);
+        // Cap the throttle accumulator at maxDelayInflow: the delay already clamps there, so a higher inflow
+        // would only lengthen the drain, and the cap keeps the uint128 store unwrappable.
+        newInflow = Math.min(prev + increment, $.config.maxDelayInflow);
 
         $.inflow = uint128(newInflow);
         $.inflowUpdatedAt = uint64(block.timestamp);
 
-        _setTxInflowAdded(borrower, _getTxInflowAdded(borrower) + increment);
+        // Record the *applied* delta (post-cap), not the raw increment, so the same-tx undo reverses exactly
+        // what was added. Reversing the raw amount when saturated would push inflow below its pre-deposit
+        // value, a flash-loan throttle-suppression. Zero-floored for a governance cap-lowering.
+        uint256 applied = Math.saturatingSub(newInflow, prev);
+        _setTxInflowAdded(borrower, _getTxInflowAdded(borrower) + applied);
     }
 
     function _applyInflowDecrement(State storage $, address borrower, uint256 decrement) private {

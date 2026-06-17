@@ -46,16 +46,15 @@ contract DeployMarket is Script, LidoLendDeployer {
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
-                    inflowDecayWindow: 4 hours,
                     maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 10 ether,
-                    minDecayInflow: 1_000 ether
+                    minActivationAmount: 10 ether
                 }),
                 // DRAFT slice policy — governance values, tune before any real deploy.
                 slicePolicy: SlicePolicyConfig({
                     sliceFloorBps: 100, // 1% of the root's debt on top of the closed-form slice
                     sliceFloorAssets: 10 ether,
-                    fallbackMinRequest: 1 ether
+                    fallbackMinRequest: 1 ether,
+                    fullCutBelowCollateral: 10 ether // sweep settle leftovers below the activation minimum
                 }),
                 guardians: guardians,
                 quorum: 1,
