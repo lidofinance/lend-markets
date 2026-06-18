@@ -102,13 +102,7 @@ contract SettlementQueueSliceTest is Test {
     function test_allowedSlice_ltvTermWins_thenAbsFloorWins() public {
         QueueHarness h = new QueueHarness();
         h.setSlicePolicy(
-            SlicePolicy({
-                sliceFloorBps: 500,
-                sliceFloorAssets: 1 ether,
-                fallbackMinRequest: 0,
-                fullCutBelowCollateral: 0,
-                ltvStepBps: 100
-            })
+            SlicePolicy({sliceFloorBps: 500, sliceFloorAssets: 1 ether, fullCutBelowCollateral: 0, ltvStepBps: 100})
         );
         h.sync(ROOT, 90e24, 100e18); // LTV ~0.9
 
@@ -124,13 +118,7 @@ contract SettlementQueueSliceTest is Test {
 
         uint96 bigAbs = uint96(byLtv + 1 ether);
         h.setSlicePolicy(
-            SlicePolicy({
-                sliceFloorBps: 500,
-                sliceFloorAssets: bigAbs,
-                fallbackMinRequest: 0,
-                fullCutBelowCollateral: 0,
-                ltvStepBps: 100
-            })
+            SlicePolicy({sliceFloorBps: 500, sliceFloorAssets: bigAbs, fullCutBelowCollateral: 0, ltvStepBps: 100})
         );
         assertEq(h.allowedSlice(mv, ROOT, pos), bigAbs, "abs floor wins when it is the largest term");
     }
@@ -139,13 +127,7 @@ contract SettlementQueueSliceTest is Test {
     function test_allowedSlice_bpsTermWinsAtLowLtv() public {
         QueueHarness h = new QueueHarness();
         h.setSlicePolicy(
-            SlicePolicy({
-                sliceFloorBps: 500,
-                sliceFloorAssets: 0,
-                fallbackMinRequest: 0,
-                fullCutBelowCollateral: 0,
-                ltvStepBps: 100
-            })
+            SlicePolicy({sliceFloorBps: 500, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100})
         );
         h.sync(ROOT, 50e24, 100e18); // LTV ~0.5
 
@@ -168,13 +150,7 @@ contract SettlementQueueSliceTest is Test {
     function test_allowedSlice_dustExtensionLiftsToFullDebt() public {
         QueueHarness h = new QueueHarness();
         h.setSlicePolicy(
-            SlicePolicy({
-                sliceFloorBps: 500,
-                sliceFloorAssets: 0,
-                fallbackMinRequest: 0,
-                fullCutBelowCollateral: 0,
-                ltvStepBps: 100
-            })
+            SlicePolicy({sliceFloorBps: 500, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100})
         );
         h.sync(ROOT, 90e24, 100e18);
         h.sync(RUNNER_UP, 10e24, 100e18);
@@ -189,22 +165,14 @@ contract SettlementQueueSliceTest is Test {
         uint256 remaining = 100e18 - plainSlice;
         h.setSlicePolicy(
             SlicePolicy({
-                sliceFloorBps: 500,
-                sliceFloorAssets: 0,
-                fallbackMinRequest: 0,
-                fullCutBelowCollateral: uint96(remaining + 1),
-                ltvStepBps: 100
+                sliceFloorBps: 500, sliceFloorAssets: 0, fullCutBelowCollateral: uint96(remaining + 1), ltvStepBps: 100
             })
         );
         assertEq(h.allowedSlice(mv, ROOT, pos), fullDebt, "sweep lifts the bound to full debt");
 
         h.setSlicePolicy(
             SlicePolicy({
-                sliceFloorBps: 500,
-                sliceFloorAssets: 0,
-                fallbackMinRequest: 0,
-                fullCutBelowCollateral: uint96(remaining),
-                ltvStepBps: 100
+                sliceFloorBps: 500, sliceFloorAssets: 0, fullCutBelowCollateral: uint96(remaining), ltvStepBps: 100
             })
         );
         assertEq(h.allowedSlice(mv, ROOT, pos), plainSlice, "no sweep at the exact boundary");
@@ -213,13 +181,7 @@ contract SettlementQueueSliceTest is Test {
     function test_allowedSlice_capsAtDebt() public {
         QueueHarness h = new QueueHarness();
         h.setSlicePolicy(
-            SlicePolicy({
-                sliceFloorBps: 0,
-                sliceFloorAssets: 100 ether,
-                fallbackMinRequest: 0,
-                fullCutBelowCollateral: 0,
-                ltvStepBps: 0
-            })
+            SlicePolicy({sliceFloorBps: 0, sliceFloorAssets: 100 ether, fullCutBelowCollateral: 0, ltvStepBps: 0})
         );
         h.sync(ROOT, 10e24, 100e18);
 

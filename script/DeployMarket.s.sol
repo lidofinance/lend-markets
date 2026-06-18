@@ -53,7 +53,6 @@ contract DeployMarket is Script, LidoLendDeployer {
                 slicePolicy: SlicePolicyConfig({
                     sliceFloorBps: 100, // 1% of the root's debt
                     sliceFloorAssets: 10 ether,
-                    fallbackMinRequest: 1 ether,
                     fullCutBelowCollateral: 10 ether, // sweep settle leftovers below the activation minimum
                     ltvStepBps: 100 // 1% LTV step
                 }),

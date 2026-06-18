@@ -36,11 +36,7 @@ library SettlementQueueLib {
 
     /// @notice Emitted when the settle slice policy is set.
     event SlicePolicySet(
-        uint16 sliceFloorBps,
-        uint96 sliceFloorAssets,
-        uint96 fallbackMinRequest,
-        uint96 fullCutBelowCollateral,
-        uint16 ltvStepBps
+        uint16 sliceFloorBps, uint96 sliceFloorAssets, uint96 fullCutBelowCollateral, uint16 ltvStepBps
     );
 
     struct State {
@@ -71,11 +67,7 @@ library SettlementQueueLib {
         if (policy.sliceFloorBps > BPS || policy.ltvStepBps > BPS) revert SlicePolicyOutOfRange();
         $.policy = policy;
         emit SlicePolicySet(
-            policy.sliceFloorBps,
-            policy.sliceFloorAssets,
-            policy.fallbackMinRequest,
-            policy.fullCutBelowCollateral,
-            policy.ltvStepBps
+            policy.sliceFloorBps, policy.sliceFloorAssets, policy.fullCutBelowCollateral, policy.ltvStepBps
         );
     }
 
@@ -157,17 +149,11 @@ library SettlementQueueLib {
         return _watermarkSlice($, borrower, debt, collateralValue);
     }
 
-    /// @notice Effective cut for one loop iteration: the policy slice clamped to the remaining exit,
-    ///         or 0 when the clamped cut would fall below `minCutAssets` — the policy would reject
-    ///         such a cut, so the caller should stop (heap walk) or skip (explicit list) instead of
-    ///         letting the whole call revert on a dust tail.
-    function effectiveCut(uint256 sliceAssets, uint256 remainingExitAssets, uint256 minCutAssets)
-        internal
-        pure
-        returns (uint256)
-    {
-        uint256 cut = sliceAssets > remainingExitAssets ? remainingExitAssets : sliceAssets;
-        return cut < minCutAssets ? 0 : cut;
+    /// @notice Effective cut for one loop iteration: the policy slice clamped to the remaining exit.
+    ///         A zero result (no eligible cut, or the exit is already satisfied) tells the caller to
+    ///         stop (heap walk) or skip (explicit list).
+    function effectiveCut(uint256 sliceAssets, uint256 remainingExitAssets) internal pure returns (uint256) {
+        return sliceAssets > remainingExitAssets ? remainingExitAssets : sliceAssets;
     }
 
     // ---

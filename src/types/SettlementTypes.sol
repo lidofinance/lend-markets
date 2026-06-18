@@ -34,7 +34,6 @@ struct PositionView {
 ///         floors saturate low — the policy weakens but nothing reverts or loses accounting.
 /// @param sliceFloorBps Debt-fraction term of the root cut: one allowance is `debt * sliceFloorBps / BPS`.
 /// @param sliceFloorAssets Absolute term of the root cut: one allowance is this many loan assets.
-/// @param fallbackMinRequest Per-iteration cut floor for the vault's fallback exit (anti dust-spam, 0 = no floor).
 /// @param fullCutBelowCollateral Sweep floor in collateral units: when a cut would leave the borrower's
 ///        remaining collateral below this, the slice lifts to the full debt so the position closes in one
 ///        cut, leaving no dust tail. 0 disables the sweep.
@@ -43,7 +42,6 @@ struct PositionView {
 struct SlicePolicy {
     uint16 sliceFloorBps;
     uint96 sliceFloorAssets;
-    uint96 fallbackMinRequest;
     uint96 fullCutBelowCollateral;
     uint16 ltvStepBps;
 }

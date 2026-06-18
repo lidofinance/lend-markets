@@ -70,11 +70,7 @@ contract LidoLendDepositGatewayTest is Test, LidoLendDeployer {
                     minActivationAmount: 10 ether
                 }),
                 slicePolicy: SlicePolicyConfig({
-                    sliceFloorBps: 100,
-                    sliceFloorAssets: 0,
-                    fallbackMinRequest: 0,
-                    fullCutBelowCollateral: 10 ether,
-                    ltvStepBps: 100
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,

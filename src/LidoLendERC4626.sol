@@ -285,7 +285,6 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
         address receiver;
         uint256 totalSupplyAssets;
         uint256 totalSupplyShares;
-        uint256 minCutAssets;
     }
 
     function _settleFromHeap(
@@ -297,10 +296,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
         uint256 remainingShares = morphoSupplyShares;
         uint256 maxIterations = MAX_SETTLEMENT_ITERATIONS;
         CutContext memory ctx = CutContext({
-            receiver: receiver,
-            totalSupplyAssets: totalSupplyAssets,
-            totalSupplyShares: totalSupplyShares,
-            minCutAssets: ISlicePolicyView(address(CONTROLLER)).slicePolicy().fallbackMinRequest
+            receiver: receiver, totalSupplyAssets: totalSupplyAssets, totalSupplyShares: totalSupplyShares
         });
 
         for (uint256 i = 0; i < maxIterations; ++i) {
@@ -330,10 +326,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
     ) internal returns (uint256 collateralSeized, uint256 debtCanceled, uint256 sharesConsumed) {
         uint256 remainingShares = morphoSupplyShares;
         CutContext memory ctx = CutContext({
-            receiver: receiver,
-            totalSupplyAssets: totalSupplyAssets,
-            totalSupplyShares: totalSupplyShares,
-            minCutAssets: ISlicePolicyView(address(CONTROLLER)).slicePolicy().fallbackMinRequest
+            receiver: receiver, totalSupplyAssets: totalSupplyAssets, totalSupplyShares: totalSupplyShares
         });
 
         for (uint256 i = 0; i < borrowers.length; ++i) {
@@ -353,15 +346,14 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
     }
 
     /// @dev One cut. Sizes the cut via `SettlementQueueLib.effectiveCut` (clamp to the remaining
-    ///      exit, drop dust tails the policy would reject), converts to shares, calls the core
-    ///      `settle` primitive, emits `SettlementCut`. Zero `iterSupplyShares` means the
-    ///      caller should stop / skip.
+    ///      exit), converts to shares, calls the core `settle` primitive, emits `SettlementCut`.
+    ///      Zero `iterSupplyShares` (exit satisfied, or a sub-share cut) means the caller stops / skips.
     function _executeCut(address borrower, uint256 sliceAssets, uint256 remainingShares, CutContext memory ctx)
         internal
         returns (uint256 iterSupplyShares, uint256 iterCollateralSeized, uint256 iterDebtCanceled)
     {
         uint256 remainingExitAssets = remainingShares.toAssetsDown(ctx.totalSupplyAssets, ctx.totalSupplyShares);
-        sliceAssets = SettlementQueueLib.effectiveCut(sliceAssets, remainingExitAssets, ctx.minCutAssets);
+        sliceAssets = SettlementQueueLib.effectiveCut(sliceAssets, remainingExitAssets);
         if (sliceAssets == 0) return (0, 0, 0);
 
         iterSupplyShares = sliceAssets.toSharesDown(ctx.totalSupplyAssets, ctx.totalSupplyShares);

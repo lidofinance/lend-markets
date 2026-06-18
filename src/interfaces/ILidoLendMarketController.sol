@@ -148,8 +148,8 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
 
     /// @notice Set the settle slice policy in one shot — the knobs tune the same cut and move together.
     ///         The root cut is the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the cut
-    ///         that lowers the root's LTV by `ltvStepBps`. `fallbackMinRequest` is the vault's per-cut floor, and
-    ///         `fullCutBelowCollateral` lifts the cut to the full debt when the post-cut collateral would be dust.
+    ///         that lowers the root's LTV by `ltvStepBps`. `fullCutBelowCollateral` lifts the cut to the full
+    ///         debt when the post-cut collateral would be dust.
     function setSlicePolicy(SlicePolicy calldata policy) external;
 
     /// @notice The current settle slice policy.
