@@ -136,6 +136,44 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.borrow(ctx.marketParams, 0.1 ether, 0, BORROWER, BORROWER);
     }
 
+    /// @notice Open-debt collateral floor: while a borrower owes debt, a withdrawal may not draw raw
+    ///         collateral below the activation minimum. Repaying to zero lifts the floor.
+    function test_withdraw_collateralFloorWithOpenDebt() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false); // minActivationAmount = 10 ether
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether); // ~15 wstETH, comfortably above the floor
+        assertGt(col, 12 ether, "collateral above the floor for the test");
+
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 2 ether, 0, BORROWER, BORROWER);
+
+        // Down to just above the 10-wstETH floor is allowed (health is loose, so the floor is what binds).
+        vm.prank(BORROWER);
+        ctx.market.withdrawCollateral(ctx.marketParams, col - 11 ether, BORROWER, BORROWER);
+
+        // The next 2 wstETH would drop raw collateral to 9 < 10 with open debt: reverts.
+        vm.prank(BORROWER);
+        vm.expectRevert(ILidoLendMarketController.CollateralFloorBreached.selector);
+        ctx.market.withdrawCollateral(ctx.marketParams, 2 ether, BORROWER, BORROWER);
+
+        // Repay the debt to zero, then the floor no longer applies and the rest comes out.
+        _mintWETH(ctx.market, BORROWER, 3 ether);
+        (, uint128 borrowShares,) = ctx.market.position(ctx.id, BORROWER);
+        vm.prank(BORROWER);
+        ctx.market.repay(ctx.marketParams, 0, borrowShares, BORROWER, "");
+        vm.prank(BORROWER);
+        ctx.market.withdrawCollateral(ctx.marketParams, 11 ether, BORROWER, BORROWER);
+    }
+
     function test_settle_happyPath() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 

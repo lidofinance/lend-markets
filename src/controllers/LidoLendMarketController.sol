@@ -352,6 +352,15 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
         if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
         position.collateral -= hookData.assets;
+
+        // Open-debt collateral floor: while a borrower owes debt, raw collateral may not be drawn below the
+        // activation minimum. Sub-minimum collateral reaches the book only via forced seizure, never voluntary
+        // withdrawal, so a borrower cannot park a high-LTV dust position at the settlement-queue root. To exit
+        // below the floor, repay the debt to zero first.
+        if (position.borrowShares != 0 && position.collateral < _activation.config.minActivationAmount) {
+            revert CollateralFloorBreached();
+        }
+
         _settlementQueue.sync(borrower, position);
     }
 
