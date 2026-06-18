@@ -51,17 +51,6 @@ library MaxHeapLib {
         return (root.account, root.key);
     }
 
-    /// @notice Higher of the root's two children's keys (second-highest key in the heap), or 0 if
-    ///         the root has no children.
-    function rootChildMaxKey(Heap storage self) internal view returns (uint256) {
-        uint256 len = self.nodes.length;
-        if (len <= 2) return 0;
-        uint256 leftKey = self.nodes[2].key;
-        if (len == 3) return leftKey;
-        uint256 rightKey = self.nodes[3].key;
-        return leftKey >= rightKey ? leftKey : rightKey;
-    }
-
     /// @notice Account and key at heap-array index (0 = root). Approximate order, not a strict sort.
     function nodeAt(Heap storage self, uint256 index) internal view returns (address account, uint256 key) {
         uint256 idx = index + 1;

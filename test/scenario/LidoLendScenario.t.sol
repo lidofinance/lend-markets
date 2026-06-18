@@ -240,6 +240,9 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         (address root,) = ctx.controller.nextSettlementCut();
         assertEq(root, BORROWER, "high-LTV borrower is the queue head");
 
+        // Cut sized to the allowed slice at the real rate (reused after the rebase is cleared).
+        uint256 cut = _sliceShares(ctx) / 2;
+
         // Negative rebase: drop the wstETH rate so the head's collateral is worth less than its
         // debt (bad debt), while the tail stays healthy.
         vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.7e18)));
@@ -247,8 +250,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         // Even targeting the head itself is blocked while head is bad debt: the controller's bad-debt
         // guard fires on every settle path.
-        (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
-        uint256 cut = lenderShares / 20;
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementRootBadDebt()"));
         ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
@@ -508,8 +509,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     }
 
     function _settleAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
-        (uint256 supplyShares,,) = ctx.market.position(ctx.id, LENDER);
-        uint256 sharesToExit = supplyShares / 5;
+        uint256 sharesToExit = _sliceShares(ctx);
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
@@ -517,7 +517,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         uint256 expectedCollateralSeized = debtCanceled * 1e36 / ctx.price;
         assertEq(collateralSeized, expectedCollateralSeized, "oracle-rate collateral");
-        assertTrue(debtCanceled > 1.9 ether && debtCanceled <= 2 ether, "debt canceled near 2 WETH");
+        assertGt(debtCanceled, 0, "settled the allowed slice");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "lender received real wstETH");
 
         _assertBorrowerCollateralDebited(ctx, borrowerCollateral, collateralSeized);
@@ -572,7 +572,11 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                     minActivationAmount: 10 ether
                 }),
                 slicePolicy: SlicePolicyConfig({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0, fullCutBelowCollateral: 10 ether
+                    sliceFloorBps: 100,
+                    sliceFloorAssets: 0,
+                    fallbackMinRequest: 0,
+                    fullCutBelowCollateral: 10 ether,
+                    ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,

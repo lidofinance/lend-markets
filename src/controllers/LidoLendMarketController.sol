@@ -362,22 +362,20 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     function _handleSettle(Id id, SettleHookData memory hookData) internal {
         address borrower = hookData.borrower;
 
-        if (hookData.debtCanceled < _settlementQueue.policy.fallbackMinRequest) revert SettlementBelowMin();
-
         // Borrower position + market view, re-read from core (payload stays minimal). The core already
         // bounded the cut (seize <= raw, shares <= debt); the controller adds only its policy layer.
         PositionView memory position = _positionView(id, borrower);
         MarketView memory marketView = _marketView(id);
 
         // bad-debt gate: revert if the queue root (riskiest position) is bad debt. An empty queue has no root
-        // to check, so it falls through to the eligibility gate below.
-        address root = _settlementQueue.peekRoot();
-        if (root != address(0) && _isBadDebt(marketView, root == borrower ? position : _positionView(id, root))) {
+        // (peekRoot returns address(0)), so this falls through to the eligibility gate below.
+        address riskiestBorrower = _settlementQueue.peekRoot();
+        if (_isBadDebt(marketView, riskiestBorrower == borrower ? position : _positionView(id, riskiestBorrower))) {
             revert SettlementRootBadDebt();
         }
 
         // eligibility + cut bound: only the queue root or a watermarked borrower may be cut, capped at the
-        // policy slice. A lone root's slice is unbounded here; the payload sanity checks below cap it.
+        // policy slice.
         uint256 allowed = _allowedSlice(marketView, borrower, position);
         if (allowed == 0) revert SettlementIneligible();
         if (hookData.debtCanceled > allowed) revert SettlementExceedsAllowed();
@@ -405,8 +403,8 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // INTERNAL HELPERS
     // ---
 
-    /// @dev Single source for the hook cap and the sizing views: the queue's policy slice — overshoot,
-    ///      floors, and the full-cut sweep, all read from the slice policy.
+    /// @dev Single source for the hook cap and the sizing views: the queue's policy slice — the max-of-terms
+    ///      root cut, floors, and the full-cut sweep, all read from the slice policy.
     function _allowedSlice(MarketView memory marketView, address borrower, PositionView memory position)
         internal
         view

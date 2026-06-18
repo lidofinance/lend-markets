@@ -61,9 +61,6 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Thrown when the seized collateral is zero or exceeds the borrower's collateral.
     error SettlementInvalidSeize();
 
-    /// @notice Thrown when the canceled debt is below the fallback minimum.
-    error SettlementBelowMin();
-
     /* TYPES */
 
     /// @notice One-read borrower snapshot for off-chain dashboards: collateral split, activation timer,
@@ -122,9 +119,9 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /* SETTLEMENT QUEUE */
 
     /// @notice Set the settle slice policy in one shot — the knobs tune the same cut and move together.
-    ///         Overshoot per cut is `max(debt * sliceFloorBps / 10000, sliceFloorAssets)` on top of the
-    ///         closed-form slice. `fallbackMinRequest` floors one call's total, and `fullCutBelowCollateral`
-    ///         lifts the cut to the full debt when the post-cut collateral would be dust.
+    ///         The root cut is the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the cut
+    ///         that lowers the root's LTV by `ltvStepBps`. `fallbackMinRequest` is the vault's per-cut floor, and
+    ///         `fullCutBelowCollateral` lifts the cut to the full debt when the post-cut collateral would be dust.
     function setSlicePolicy(SlicePolicy calldata policy) external;
 
     /// @notice The current settle slice policy.
@@ -145,13 +142,12 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     function rootHasBadDebt() external view returns (bool);
 
     /// @notice Next borrower to cut (queue root) and the max slice the policy allows for it: the larger of
-    ///         the heap re-order slice and the root's own watermark slice (the same bound the hook caps at,
-    ///         and the same value `allowedSliceFor` returns). `borrower` is address(0) when the queue is
-    ///         empty. `sliceAssets` is type(uint256).max for a lone borrower (caller caps it to the exit).
+    ///         the root-policy slice and the root's own watermark slice (the same bound the hook caps at,
+    ///         and the same value `allowedSliceFor` returns). `borrower` is address(0) when the queue is empty.
     function nextSettlementCut() external view returns (address borrower, uint256 sliceAssets);
 
     /// @notice Maximum loan-asset slice the policy allows for a single settle cut against `borrower` (max of
-    ///         heap slice and watermark slice). Zero means ineligible.
+    ///         root-policy slice and watermark slice). Zero means ineligible.
     function allowedSliceFor(address borrower) external view returns (uint256);
 
     /// @notice Borrowers currently in the queue (approximate top-down order) and their risk keys.

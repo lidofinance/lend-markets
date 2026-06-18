@@ -555,7 +555,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     minActivationAmount: uint128(MIN_COLLATERAL_ACTIVATION)
                 }),
                 slicePolicy: SlicePolicyConfig({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0, fullCutBelowCollateral: 0
+                    sliceFloorBps: 100,
+                    sliceFloorAssets: 0,
+                    fallbackMinRequest: 0,
+                    fullCutBelowCollateral: 0,
+                    ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -578,7 +582,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     sliceFloorBps: 100,
                     sliceFloorAssets: SLICE_FLOOR,
                     fallbackMinRequest: 0,
-                    fullCutBelowCollateral: uint96(MIN_COLLATERAL_ACTIVATION)
+                    fullCutBelowCollateral: uint96(MIN_COLLATERAL_ACTIVATION),
+                    ltvStepBps: 100
                 })
             );
     }
