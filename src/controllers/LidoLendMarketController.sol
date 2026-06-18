@@ -4,7 +4,7 @@ pragma solidity 0.8.35;
 import {Id, IMorpho, MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
-import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
+import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -58,6 +58,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     CollateralActivationLib.State private _activation;
     /// @dev Risk queue + watermarks + slice policy.
     SettlementQueueLib.State private _settlementQueue;
+    /// @dev Minimum gap kept between borrow utilization and 100% (WAD): reserves that share of supply for
+    ///      lender withdrawals, so a borrow that would close the gap reverts. 0 = no gap.
+    uint256 private _borrowUtilizationGap;
 
     // ---
     // MODIFIERS
@@ -157,6 +160,43 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     /// @inheritdoc ILidoLendMarketController
     function currentInflow() external view returns (uint256) {
         return _activation.getInflow();
+    }
+
+    // ---
+    // BORROW UTILIZATION GAP
+    // ---
+
+    /// @inheritdoc ILidoLendMarketController
+    function setBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external onlyRole(MANAGER_ROLE) {
+        if (newBorrowUtilizationGap >= WAD) revert BorrowUtilizationGapTooHigh();
+        _borrowUtilizationGap = newBorrowUtilizationGap;
+        emit BorrowUtilizationGapSet(newBorrowUtilizationGap);
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function increaseBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external onlyRole(RISK_STEWARD_ROLE) {
+        if (newBorrowUtilizationGap >= WAD) revert BorrowUtilizationGapTooHigh();
+        if (newBorrowUtilizationGap <= _borrowUtilizationGap) revert ConfigNotTightened();
+        _borrowUtilizationGap = newBorrowUtilizationGap;
+        emit BorrowUtilizationGapSet(newBorrowUtilizationGap);
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function borrowUtilizationGap() external view returns (uint256) {
+        return _borrowUtilizationGap;
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function maxBorrowUtilization() external view returns (uint256) {
+        return WAD - _borrowUtilizationGap;
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function currentBorrowUtilization() external view returns (uint256) {
+        MarketParams memory params = LIDO_LEND.idToMarketParams(_MARKET_ID);
+        (uint256 totalSupplyAssets,, uint256 totalBorrowAssets,) =
+            MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
+        return totalSupplyAssets == 0 ? 0 : totalBorrowAssets * WAD / totalSupplyAssets;
     }
 
     // ---
@@ -330,6 +370,18 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         uint256 active = _activation.syncActivation(hookData.onBehalf, strikes);
         PositionView memory position = _positionView(id, hookData.onBehalf);
         _requireActiveHealth(id, position, active, hookData.assets);
+
+        // Borrow utilization gap: a borrow must leave at least `_borrowUtilizationGap` of supply
+        // un-borrowed (a gap below 100% utilization) for lender withdrawals. Borrow totals here are
+        // pre-this-borrow, so the prospective borrow adds `hookData.assets`. 0 = no gap.
+        if (_borrowUtilizationGap != 0) {
+            (uint256 totalSupplyAssets,, uint256 totalBorrowAssets,) =
+                MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, LIDO_LEND.idToMarketParams(id));
+            uint256 newBorrowAssets = totalBorrowAssets + hookData.assets;
+            if (newBorrowAssets * WAD > (WAD - _borrowUtilizationGap) * totalSupplyAssets) {
+                revert MaxBorrowUtilizationExceeded();
+            }
+        }
 
         position.borrowShares += hookData.shares;
         _settlementQueue.sync(hookData.onBehalf, position);
