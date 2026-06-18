@@ -552,7 +552,10 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
                     maxDelayInflow: 10_000 ether,
-                    minActivationAmount: uint128(MIN_COLLATERAL_ACTIVATION)
+                    // The benchmark builds sub-floor dust positions directly (borrow, then withdraw to a
+                    // sliver) to stress the heap. The open-debt collateral floor forbids that voluntary path,
+                    // so relax the activation minimum here — this benchmark is not exercising that policy.
+                    minActivationAmount: 1
                 }),
                 slicePolicy: SlicePolicyConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100

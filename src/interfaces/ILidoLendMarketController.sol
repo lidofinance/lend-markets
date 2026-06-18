@@ -22,6 +22,9 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Emitted when the borrow utilization gap is set (WAD; 0 = no gap).
     event BorrowUtilizationGapSet(uint256 borrowUtilizationGap);
 
+    /// @notice Emitted when a borrower's instant-activation (no maturation timer) status is set.
+    event InstantActivationSet(address indexed borrower, bool enabled);
+
     /* ERRORS */
 
     /// @notice Thrown when the hook caller is not the core.
@@ -128,6 +131,17 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
 
     /// @notice Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
     function currentInflow() external view returns (uint256);
+
+    /// @notice Whitelist `borrower` to skip the activation maturation timer — its collateral becomes active on
+    ///         deposit. Risk-increasing path (waives the anti-flash/Sybil delay): meant for the EasyTrack
+    ///         factory and reserved for trusted addresses. Ban and freeze still gate as usual.
+    function grantInstantActivation(address borrower) external;
+
+    /// @notice Fast risk-reducing lever: remove `borrower`'s instant activation, restoring the timer.
+    function revokeInstantActivation(address borrower) external;
+
+    /// @notice Whether `borrower` skips the activation maturation timer.
+    function hasInstantActivation(address borrower) external view returns (bool);
 
     /* BORROW UTILIZATION GAP */
 

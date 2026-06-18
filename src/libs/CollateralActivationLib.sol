@@ -141,8 +141,10 @@ library CollateralActivationLib {
     }
 
     /// @notice Book a new collateral deposit. Joins dust; once dust + this deposit crosses the threshold the
-    ///         whole dormant amount is promoted into the activation timer and added to the market inflow.
-    function deposit(State storage $, address borrower, uint256 assets) internal {
+    ///         whole dormant amount enters the activation timer and is added to the market inflow. When
+    ///         `instant` (a trusted borrower) the amount crosses straight into `active`, skipping the timer and
+    ///         the inflow throttle. The dust threshold still applies, so a sub-threshold deposit stays dust.
+    function deposit(State storage $, address borrower, uint256 assets, bool instant) internal {
         Position storage position = $.positions[borrower];
 
         uint256 assetsWithDust = assets + position.dust;
@@ -153,6 +155,13 @@ library CollateralActivationLib {
         }
 
         position.dust = 0;
+
+        if (instant) {
+            position.active += assetsWithDust.toUint128();
+            emit Activated(borrower, assetsWithDust);
+            return;
+        }
+
         position.activating += assetsWithDust.toUint128();
 
         uint256 currentInflow = _applyInflowIncrement($, borrower, assetsWithDust);
@@ -176,14 +185,18 @@ library CollateralActivationLib {
         _applyInflowDecrement($, borrower, activatingBefore - $.positions[borrower].activating);
     }
 
-    /// @notice Mature the borrower's activation lot into `active` once its timer has elapsed. Returns the
-    ///         post-mature `active`. The inflow is untouched: it only decays with time, so a matured lot
-    ///         still weighs on the delay. The caller skips this for banned or frozen borrowers.
-    function syncActivation(State storage $, address borrower, uint256 strikes) internal returns (uint256 active) {
+    /// @notice Mature the borrower's activation lot into `active` once its timer has elapsed, or immediately
+    ///         when `instant` (a trusted borrower). Returns the post-mature `active`. The inflow is untouched:
+    ///         it only decays with time, so a matured lot still weighs on the delay. The caller skips this for
+    ///         banned or frozen borrowers.
+    function syncActivation(State storage $, address borrower, uint256 strikes, bool instant)
+        internal
+        returns (uint256 active)
+    {
         Position storage position = $.positions[borrower];
 
-        // mature only with a timer set and elapsed
-        if (position.activatingStart > 0 && block.timestamp >= _getUnlockTime($, position, strikes)) {
+        // mature when instant, or once the timer has elapsed — only with a lot set
+        if (position.activatingStart > 0 && (instant || block.timestamp >= _getUnlockTime($, position, strikes))) {
             uint128 activated = position.activating;
             position.active += activated;
             position.activating = 0;

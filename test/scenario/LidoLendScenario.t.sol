@@ -106,6 +106,38 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         _assertCollateralState(ctx.controller, BORROWER, activatedCollateral, 0, 0);
     }
 
+    /// @notice Instant activation (whitelist): a trusted borrower's collateral is active on deposit, so it
+    ///         borrows with no maturation wait. Revoking restores the timer for fresh deposits.
+    function test_instantActivation_skipsMaturationDelay() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false);
+        ctx.controller.grantInstantActivation(BORROWER);
+        assertTrue(ctx.controller.hasInstantActivation(BORROWER), "borrower whitelisted");
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
+
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+
+        // No warp: the deposit is active immediately, so the borrow goes through.
+        _assertCollateralState(ctx.controller, BORROWER, col, 0, 0);
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
+        assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrowed with no maturation wait");
+
+        // Revoke restores the timer: a fresh deposit enters activation instead of going straight to active.
+        ctx.controller.grantRole(ctx.controller.RISK_STEWARD_ROLE(), address(this));
+        ctx.controller.revokeInstantActivation(BORROWER);
+        uint256 more = _mintWstETH(ctx.market, BORROWER, 15 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, more, BORROWER, "");
+        _assertCollateralState(ctx.controller, BORROWER, col, more, 0);
+    }
+
     /// @notice Borrow utilization gap: borrows that keep the gap below 100% succeed, a borrow that
     ///         would close it reverts at the controller hook. The gap is off (0) by default.
     function test_borrow_cappedByBorrowUtilizationGap() public {

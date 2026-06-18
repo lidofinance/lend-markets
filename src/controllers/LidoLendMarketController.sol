@@ -61,6 +61,8 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     /// @dev Minimum gap kept between borrow utilization and 100% (WAD): reserves that share of supply for
     ///      lender withdrawals, so a borrow that would close the gap reverts. 0 = no gap.
     uint256 private _borrowUtilizationGap;
+    /// @dev Trusted borrowers whose collateral skips the activation timer (matures on deposit / on sync).
+    mapping(address borrower => bool) private _instantActivation;
 
     // ---
     // MODIFIERS
@@ -160,6 +162,23 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     /// @inheritdoc ILidoLendMarketController
     function currentInflow() external view returns (uint256) {
         return _activation.getInflow();
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function grantInstantActivation(address borrower) external onlyRole(MANAGER_ROLE) {
+        _instantActivation[borrower] = true;
+        emit InstantActivationSet(borrower, true);
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function revokeInstantActivation(address borrower) external onlyRole(RISK_STEWARD_ROLE) {
+        _instantActivation[borrower] = false;
+        emit InstantActivationSet(borrower, false);
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function hasInstantActivation(address borrower) external view returns (bool) {
+        return _instantActivation[borrower];
     }
 
     // ---
@@ -326,7 +345,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         // settle anything already matured, then book the deposit (promotes past the dust threshold).
         // A freeze or ban defers maturation.
         _syncActivation(borrower);
-        _activation.deposit(borrower, hookData.assets);
+        _activation.deposit(borrower, hookData.assets, _instantActivation[borrower]);
 
         position.collateral += hookData.assets;
         _settlementQueue.sync(borrower, position);
@@ -376,7 +395,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
         // Stricter Lido constraint: borrow capacity uses active (matured) collateral only. The core's
         // standard health check uses raw collateral; this adds the active-only ceiling on the settled state.
-        uint256 active = _activation.syncActivation(hookData.onBehalf, strikes);
+        uint256 active = _activation.syncActivation(hookData.onBehalf, strikes, _instantActivation[hookData.onBehalf]);
         PositionView memory position = _positionView(id, hookData.onBehalf);
         _requireActiveHealth(id, position, active, hookData.assets);
 
@@ -524,7 +543,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     function _syncActivation(address borrower) internal {
         (bool banned, uint256 strikes) = _accountStatus(borrower);
         if (!_isFrozen && !banned) {
-            _activation.syncActivation(borrower, strikes);
+            _activation.syncActivation(borrower, strikes, _instantActivation[borrower]);
         }
     }
 
