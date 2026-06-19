@@ -49,10 +49,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     ///      this is a governance-level incident, not a routine fallback.
     uint256 internal constant MAX_ACTIVATION_QUORUM_GRACE = 7 days;
 
-    /// @dev Activation quorum-scan grace set at initialization. Governance retunes it via
-    ///      `setActivationQuorumGrace` (0 disables the gate, up to the max).
-    uint256 internal constant DEFAULT_ACTIVATION_QUORUM_GRACE = 1 days;
-
     // ---
     // IMMUTABLES
     // ---
@@ -75,8 +71,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     uint256 private _borrowUtilizationGap;
     /// @dev Trusted borrowers whose collateral skips the activation timer (matures on deposit / on sync).
     mapping(address borrower => bool) private _instantActivation;
-    /// @dev Liveness fallback for the quorum-scan gate: a lot whose timer elapsed this long ago matures even
-    ///      if the guardian quorum has not scanned its deposit. 0 disables the gate (timer-only activation).
+    /// @dev Quorum-scan gate grace: a lot whose activation timer elapsed this long ago matures even if the
+    ///      guardian quorum has not scanned its deposit. 0 (the default) disables the gate, so governance turns
+    ///      the gate on by setting a grace via `setActivationQuorumGrace`.
     uint256 private _activationQuorumGrace;
 
     // ---
@@ -110,7 +107,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         _guardianSignals = guardianSignals;
         _settlementQueue.init();
         _activation.setConfig(cfg);
-        _activationQuorumGrace = DEFAULT_ACTIVATION_QUORUM_GRACE;
     }
 
     // ---

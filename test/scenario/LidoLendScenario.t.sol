@@ -215,6 +215,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(false); // deploy catches the frontier up to the current block
+        ctx.controller.setActivationQuorumGrace(1 days); // gate is off by default, turn it on
 
         _mintWETH(ctx.market, LENDER, 10 ether);
         vm.prank(LENDER);
@@ -246,6 +247,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(false);
+        ctx.controller.setActivationQuorumGrace(1 days); // gate is off by default, turn it on
 
         _mintWETH(ctx.market, LENDER, 10 ether);
         vm.prank(LENDER);
@@ -269,6 +271,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(false);
+        ctx.controller.setActivationQuorumGrace(1 days); // gate on, to prove instant still bypasses it
         ctx.controller.grantInstantActivation(BORROWER);
 
         _mintWETH(ctx.market, LENDER, 10 ether);
@@ -286,18 +289,20 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         assertEq(WETH.balanceOf(BORROWER), 3 ether, "instant borrower bypasses the quorum-scan gate");
     }
 
-    /// @notice The quorum-scan grace is governance-tunable and bounded: setting it to 0 disables the gate, so
-    ///         collateral matures on the timer alone even when the quorum has not scanned the deposit.
+    /// @notice The quorum-scan grace is off by default (0) and governance-tunable within bounds. At 0 the gate
+    ///         is disabled, so collateral matures on the timer alone even when the quorum has not scanned it.
     function test_activation_graceConfigurableAndZeroDisablesGate() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
         TestMarket memory ctx = _deployMarket(false);
-        assertEq(ctx.controller.activationQuorumGrace(), 1 days, "default grace from initialize");
+        assertEq(ctx.controller.activationQuorumGrace(), 0, "gate off by default");
 
         vm.expectRevert(ILidoLendMarketController.ActivationQuorumGraceTooHigh.selector);
         ctx.controller.setActivationQuorumGrace(8 days);
 
-        ctx.controller.setActivationQuorumGrace(0); // disable the gate
+        ctx.controller.setActivationQuorumGrace(1 days); // enable, within bound
+        assertEq(ctx.controller.activationQuorumGrace(), 1 days, "grace set");
+        ctx.controller.setActivationQuorumGrace(0); // disable again
         assertEq(ctx.controller.activationQuorumGrace(), 0, "grace cleared");
 
         _mintWETH(ctx.market, LENDER, 10 ether);
