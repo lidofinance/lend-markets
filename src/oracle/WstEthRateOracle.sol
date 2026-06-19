@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 
 interface IWstETH {
@@ -23,24 +22,21 @@ interface IWstETH {
 ///         This matches Morpho's IOracle convention:
 ///         "price of 1 collateral asset (wstETH, 18 dec) quoted in 1 loan asset (ETH, 18 dec),
 ///          scaled by 1e36" — i.e. 36 + 18 - 18 = 36 decimals of precision.
-contract WstEthRateOracle layout at erc7201("lido.lending.storage.WstEthRateOracle") is IOracle, Initializable {
-    IWstETH public wstEth;
+contract WstEthRateOracle is IOracle {
+    IWstETH public immutable WSTETH;
 
     error ZeroAddress();
 
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
+    /// @param wstETH_ wstETH token whose stETH-per-wstETH rate this oracle returns.
+    constructor(address wstETH_) {
+        if (wstETH_ == address(0)) revert ZeroAddress();
+        WSTETH = IWstETH(wstETH_);
     }
 
-    /// @notice Sets the wstETH token.
-    /// @param wstETH_ wstETH token whose stETH-per-wstETH rate this oracle returns.
-    function initialize(address wstETH_) external initializer {
-        if (wstETH_ == address(0)) revert ZeroAddress();
-        wstEth = IWstETH(wstETH_);
-    }
+    /// @notice No-op that satisfies the proxy's mandatory init call; the config is immutable in the impl.
+    function initialize() external {}
 
     function price() external view override returns (uint256) {
-        return wstEth.getStETHByWstETH(1e36);
+        return WSTETH.getStETHByWstETH(1e36);
     }
 }

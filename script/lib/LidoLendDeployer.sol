@@ -132,13 +132,13 @@ abstract contract LidoLendDeployer {
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
-    /// @dev Default oracle: `WstEthRateOracle` behind an `OssifiableProxy` (stable address, upgradeable
-    ///      logic; feed config in proxy storage via `initialize`). Override for swap-in mock oracles —
+    /// @dev Default oracle: `WstEthRateOracle(wstETH)` behind an `OssifiableProxy` (stable address,
+    ///      upgradeable logic; feed config is immutable in the impl). Override for swap-in mock oracles —
     ///      mocks may return a bare instance since they have no `initialize`; real oracles wrap via
     ///      `_behindProxy(impl, admin, initData)`.
     function _deployOracle(address oracleSource, address admin) internal virtual returns (address) {
-        address impl = _deployArtifact("src/oracle/WstEthRateOracle.sol:WstEthRateOracle", "");
-        return _behindProxy(impl, admin, abi.encodeWithSignature("initialize(address)", oracleSource));
+        address impl = _deployArtifact("src/oracle/WstEthRateOracle.sol:WstEthRateOracle", abi.encode(oracleSource));
+        return _behindProxy(impl, admin, abi.encodeWithSignature("initialize()"));
     }
 
     /// @dev Wraps an already-deployed implementation in an `OssifiableProxy`, running `initData` (an

@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 
@@ -36,6 +37,14 @@ contract MockChainlinkFeed {
     }
 }
 
+/// @dev An oracle-like impl with NO `initialize()`, used to show such a contract cannot be deployed
+///      behind the hardened `OssifiableProxy`.
+contract NoInitOracle {
+    function price() external pure returns (uint256) {
+        return 1e36;
+    }
+}
+
 /// @notice Coverage for `UsdyStableOracle`: USDY NAV (1e18) quoted in a 6-dec stablecoin via its 8-dec
 ///         Chainlink USD feed, scaled to Morpho's 1e36 convention. Expected values are re-derived from
 ///         the convention (collateral 18 dec, loan 6 dec) independently of the contract's SCALE.
@@ -51,15 +60,12 @@ contract UsdyStableOracleTest is Test {
     function setUp() public {
         usdy = new MockRwaOracle();
         feed = new MockChainlinkFeed();
-        // Storage-config oracle: deploy the impl, then run `initialize` through a proxy (the impl
-        // disables initializers, so it is only usable behind a proxy).
-        oracle = UsdyStableOracle(address(_deployOracle(address(usdy), address(feed))));
-    }
-
-    function _deployOracle(address usdyOracle_, address stableFeed_) internal returns (address) {
-        address impl = address(new UsdyStableOracle());
-        bytes memory initData = abi.encodeWithSignature("initialize(address,address)", usdyOracle_, stableFeed_);
-        return address(new OssifiableProxy(impl, address(this), initData));
+        // Deploy as in production: immutable-config impl behind an OssifiableProxy. `initialize()` is the
+        // no-op the proxy must delegatecall — it rejects empty init data.
+        address impl = address(new UsdyStableOracle(address(usdy), address(feed)));
+        oracle = UsdyStableOracle(
+            address(new OssifiableProxy(impl, address(this), abi.encodeWithSignature("initialize()")))
+        );
     }
 
     /// @dev Independent re-derivation of Morpho's IOracle value: price of 1 collateral (USDY, 18 dec)
@@ -115,17 +121,22 @@ contract UsdyStableOracleTest is Test {
         assertEq(oracle.price(), _expected(usdyRaw, stableRaw), "price == convention re-derivation");
     }
 
-    function testRevert_initializeZeroUsdyOracle() public {
-        address impl = address(new UsdyStableOracle());
-        bytes memory initData = abi.encodeWithSignature("initialize(address,address)", address(0), address(feed));
+    function testRevert_constructorZeroUsdyOracle() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new OssifiableProxy(impl, address(this), initData);
+        new UsdyStableOracle(address(0), address(feed));
     }
 
-    function testRevert_initializeZeroFeed() public {
-        address impl = address(new UsdyStableOracle());
-        bytes memory initData = abi.encodeWithSignature("initialize(address,address)", address(usdy), address(0));
+    function testRevert_constructorZeroFeed() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new OssifiableProxy(impl, address(this), initData);
+        new UsdyStableOracle(address(usdy), address(0));
+    }
+
+    /// @notice Shows why the oracle needs an `initialize()` at all: an impl without one cannot be
+    ///         deployed behind the hardened proxy. With no function to delegatecall, the only option is
+    ///         empty init data, which the proxy rejects outright (`ERC1967ProxyUninitialized`).
+    function testRevert_proxyRejectsImplWithoutInitialize() public {
+        address implWithoutInitialize = address(new NoInitOracle());
+        vm.expectRevert(ERC1967Proxy.ERC1967ProxyUninitialized.selector);
+        new OssifiableProxy(implWithoutInitialize, address(this), "");
     }
 }
