@@ -25,6 +25,9 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Emitted when a borrower's instant-activation (no maturation timer) status is set.
     event InstantActivationSet(address indexed borrower, bool enabled);
 
+    /// @notice Emitted when the activation quorum-scan grace is set (seconds, 0 disables the gate).
+    event ActivationQuorumGraceSet(uint256 activationQuorumGrace);
+
     /* ERRORS */
 
     /// @notice Thrown when the hook caller is not the core.
@@ -57,6 +60,9 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
 
     /// @notice Thrown when the borrow utilization gap is set to WAD or more (would freeze borrowing).
     error BorrowUtilizationGapTooHigh();
+
+    /// @notice Thrown when the activation quorum-scan grace is set above the maximum.
+    error ActivationQuorumGraceTooHigh();
 
     /// @notice Thrown when a core-applied position delta exceeds the controller's read of that position.
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
@@ -142,6 +148,14 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
 
     /// @notice Whether `borrower` skips the activation maturation timer.
     function hasInstantActivation(address borrower) external view returns (bool);
+
+    /// @notice Set the activation quorum-scan grace in seconds (0 disables the gate, must be <= the max). A lot
+    ///         whose timer elapsed this long ago matures even if the guardian quorum has not scanned its
+    ///         deposit — the liveness fallback. Governance path (a deliberate security/liveness balance).
+    function setActivationQuorumGrace(uint256 newGrace) external;
+
+    /// @notice The activation quorum-scan grace in seconds (0 = gate disabled, timer-only activation).
+    function activationQuorumGrace() external view returns (uint256);
 
     /* BORROW UTILIZATION GAP */
 

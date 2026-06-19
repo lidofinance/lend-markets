@@ -77,9 +77,13 @@ interface IGuardianSignals {
 
     /* LIVENESS */
 
-    /// @notice Record the caller's last-scanned block and refresh the quorum frontier. Clamped to
-    ///         `block.number`.
+    /// @notice Record the caller's last-scanned block (clamped to `block.number`). O(1): the quorum frontier
+    ///         is recomputed separately by `syncQuorumBlock`.
     function heartbeat(uint256 lastScannedBlock) external;
+    /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless
+    ///         and monotonic — anyone may advance it (a keeper per scan frame, or a borrower whose activation
+    ///         depends on it). Decoupled from `heartbeat` so heartbeats stay O(1).
+    function syncQuorumBlock() external;
     /// @notice The last block `guardian` reported scanning.
     function getHeartbeat(address guardian) external view returns (uint256);
     /// @notice The guardian set paired with each guardian's last-scanned block.

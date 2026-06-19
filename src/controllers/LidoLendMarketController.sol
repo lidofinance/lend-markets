@@ -42,6 +42,18 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     bytes32 public constant RESUMER_ROLE = keccak256("RESUMER_ROLE");
 
     // ---
+    // CONSTANTS
+    // ---
+
+    /// @dev Upper bound for the activation quorum-scan grace (fat-finger guard). A committee down longer than
+    ///      this is a governance-level incident, not a routine fallback.
+    uint256 internal constant MAX_ACTIVATION_QUORUM_GRACE = 7 days;
+
+    /// @dev Activation quorum-scan grace set at initialization. Governance retunes it via
+    ///      `setActivationQuorumGrace` (0 disables the gate, up to the max).
+    uint256 internal constant DEFAULT_ACTIVATION_QUORUM_GRACE = 1 days;
+
+    // ---
     // IMMUTABLES
     // ---
 
@@ -63,6 +75,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     uint256 private _borrowUtilizationGap;
     /// @dev Trusted borrowers whose collateral skips the activation timer (matures on deposit / on sync).
     mapping(address borrower => bool) private _instantActivation;
+    /// @dev Liveness fallback for the quorum-scan gate: a lot whose timer elapsed this long ago matures even
+    ///      if the guardian quorum has not scanned its deposit. 0 disables the gate (timer-only activation).
+    uint256 private _activationQuorumGrace;
 
     // ---
     // MODIFIERS
@@ -95,6 +110,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         _guardianSignals = guardianSignals;
         _settlementQueue.init();
         _activation.setConfig(cfg);
+        _activationQuorumGrace = DEFAULT_ACTIVATION_QUORUM_GRACE;
     }
 
     // ---
@@ -179,6 +195,18 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     /// @inheritdoc ILidoLendMarketController
     function hasInstantActivation(address borrower) external view returns (bool) {
         return _instantActivation[borrower];
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function setActivationQuorumGrace(uint256 newGrace) external onlyRole(MANAGER_ROLE) {
+        if (newGrace > MAX_ACTIVATION_QUORUM_GRACE) revert ActivationQuorumGraceTooHigh();
+        _activationQuorumGrace = newGrace;
+        emit ActivationQuorumGraceSet(newGrace);
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function activationQuorumGrace() external view returns (uint256) {
+        return _activationQuorumGrace;
     }
 
     // ---
@@ -387,15 +415,15 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         if (_isFrozen) revert MarketIsFrozen();
 
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
-        // borrow (caller). onBehalf's check returns its strikes, reused for the surcharge below, so each
-        // address's status is read once. Soft strikes only delay activation; a ban hard-blocks the borrow.
+        // borrow (caller). Soft strikes only delay activation; a ban hard-blocks the borrow.
         _checkNotBanned(hookData.caller);
         _checkNotBanned(hookData.receiver);
-        uint256 strikes = _checkNotBanned(hookData.onBehalf);
+        _checkNotBanned(hookData.onBehalf);
 
-        // Stricter Lido constraint: borrow capacity uses active (matured) collateral only. The core's
-        // standard health check uses raw collateral; this adds the active-only ceiling on the settled state.
-        uint256 active = _activation.syncActivation(hookData.onBehalf, strikes, _instantActivation[hookData.onBehalf]);
+        // Stricter Lido constraint: borrow capacity uses active (matured) collateral only. `_syncActivation`
+        // matures any ready lot — subject to the quorum-scan gate — and returns the post-mature active. The
+        // core's standard health check uses raw collateral; this adds the active-only ceiling on the settled state.
+        uint256 active = _syncActivation(hookData.onBehalf);
         PositionView memory position = _positionView(id, hookData.onBehalf);
         _requireActiveHealth(id, position, active, hookData.assets);
 
@@ -540,11 +568,26 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         return PositionView({borrowShares: p.borrowShares, collateral: p.collateral});
     }
 
-    function _syncActivation(address borrower) internal {
+    function _syncActivation(address borrower) internal returns (uint256 active) {
         (bool banned, uint256 strikes) = _accountStatus(borrower);
-        if (!_isFrozen && !banned) {
-            _activation.syncActivation(borrower, strikes, _instantActivation[borrower]);
+        bool instant = _instantActivation[borrower];
+        // Mature any ready lot, unless frozen, banned, or — for a non-instant borrower — the guardian quorum
+        // has not yet scanned past the deposit (and no grace timeout). Blocked cases leave `active` untouched.
+        if (_isFrozen || banned || (!instant && !_quorumClearedActivation(borrower, strikes))) {
+            (active,,) = _activation.getBuckets(borrower);
+        } else {
+            active = _activation.syncActivation(borrower, strikes, instant);
         }
+    }
+
+    /// @dev Whether the borrower's activating lot may mature past the quorum-scan gate: the guardian quorum
+    ///      has scanned past its deposit block, or the timeout grace beyond its unlock has elapsed (so a
+    ///      stalled committee cannot freeze activation forever).
+    function _quorumClearedActivation(address borrower, uint256 strikes) internal view returns (bool) {
+        uint256 depositBlock = _activation.activatingStartBlockOf(borrower);
+        if (_guardianSignals.getLastScannedQuorumBlock() >= depositBlock) return true;
+        uint256 unlockTime = _activation.getUnlockTime(borrower, strikes);
+        return unlockTime != 0 && block.timestamp >= unlockTime + _activationQuorumGrace;
     }
 
     /// @dev The account's effective guardian status in this market (immunity already applied by the registry).

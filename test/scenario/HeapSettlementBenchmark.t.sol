@@ -11,6 +11,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SlicePolicy} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -566,6 +567,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                 vaultSymbol: "lidoWSTETH-WETH"
             })
         );
+
+        // Catch the guardian frontier up to head so the activation quorum-scan gate does not block maturation
+        // (this benchmark is not about that gate; this contract is the sole guardian, quorum 1).
+        IGuardianSignals(d.guardianSignals).heartbeat(block.number);
+        IGuardianSignals(d.guardianSignals).syncQuorumBlock();
 
         ctx.market = ILidoLend(d.core);
         ctx.oracle = ControllableWstEthOracle(d.oracle);

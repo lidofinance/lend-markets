@@ -66,12 +66,14 @@ library CollateralActivationLib {
     /// @param dust Free collateral below the activation threshold, withdrawable.
     /// @param activatingStart Activation timer start, 0 when there is no active timer.
     /// @param activatingDelay Base inflow-scaled delay, frozen at deposit.
+    /// @param activatingStartBlock Block of the latest deposit into the activating lot, for the quorum-scan gate.
     struct Position {
         uint128 active;
         uint128 activating;
         uint128 dust;
         uint64 activatingStart;
         uint64 activatingDelay;
+        uint64 activatingStartBlock;
     }
 
     /// @notice Governance-tunable activation parameters, validated by `setConfig`.
@@ -163,6 +165,9 @@ library CollateralActivationLib {
         }
 
         position.activating += assetsWithDust.toUint128();
+        // Record the latest deposit block so the controller's quorum-scan gate can require the guardian
+        // committee to have scanned past it before this lot may mature.
+        position.activatingStartBlock = uint64(block.number);
 
         uint256 currentInflow = _applyInflowIncrement($, borrower, assetsWithDust);
         uint256 delay = _computeDelay($, currentInflow);
@@ -254,6 +259,11 @@ library CollateralActivationLib {
         Position storage position = $.positions[borrower];
         if (position.activatingStart == 0) return 0;
         return _getUnlockTime($, position, strikes);
+    }
+
+    /// @notice Block of the latest deposit into the borrower's activating lot, 0 when there is no lot.
+    function activatingStartBlockOf(State storage $, address borrower) internal view returns (uint256) {
+        return $.positions[borrower].activatingStartBlock;
     }
 
     /// @notice Borrower's collateral split: active (matured), activating (in timer), dust.
@@ -368,5 +378,6 @@ library CollateralActivationLib {
     function _clearTimer(Position storage position) private {
         position.activatingStart = 0;
         position.activatingDelay = 0;
+        position.activatingStartBlock = 0;
     }
 }

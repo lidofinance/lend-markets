@@ -33,8 +33,9 @@ import {IGuardianSignals} from "./interfaces/IGuardianSignals.sol";
 ///      governance (`ACCESS_RESTORER_ROLE`: `unban`, `grantImmunity`). `DEFAULT_ADMIN_ROLE` manages the
 ///      guardian set and quorum. The guardian set is a plain enumerable set, not a role.
 ///
-///      Guardians report liveness: `flag`, `unflag`, and `heartbeat` each record a last-scanned block, and
-///      `getLastScannedQuorumBlock` returns the highest block a quorum have scanned past (monotonic).
+///      Guardians report liveness: `flag`, `unflag`, and `heartbeat` each record a last-scanned block (O(1)).
+///      `syncQuorumBlock` recomputes the quorum frontier that `getLastScannedQuorumBlock` returns — the highest
+///      block a quorum have scanned past (monotonic) — decoupled from the heartbeat so heartbeats stay cheap.
 ///
 ///      Events and errors are declared in {IGuardianSignals}.
 contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals")
@@ -63,8 +64,11 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     // CONSTANTS
     // ---
 
-    /// @notice Maximum number of guardians. Keeps the quorum in `uint8` and a strike count in `uint16`.
-    uint256 public constant MAX_GUARDIANS_COUNT = type(uint8).max;
+    /// @notice Maximum number of guardians. Capped low because every `heartbeat` (and the heartbeat inside
+    ///         `flag` / `unflag`) re-sorts all guardians' last-scanned blocks to recompute the quorum frontier,
+    ///         an O(n²)-worst-case cost. 32 keeps that bounded and still fits the quorum in `uint8` and a
+    ///         strike count in `uint16`.
+    uint256 public constant MAX_GUARDIANS_COUNT = 32;
 
     // ---
     // ROLES
@@ -169,6 +173,11 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     }
 
     /// @inheritdoc IGuardianSignals
+    function syncQuorumBlock() external {
+        _syncQuorumBlock();
+    }
+
+    /// @inheritdoc IGuardianSignals
     function getHeartbeat(address guardian) external view returns (uint256) {
         return _heartbeats[guardian];
     }
@@ -268,17 +277,24 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     // INTERNAL METHODS
     // ---
 
-    /// @dev Record the caller's last-scanned block and refresh the quorum frontier (the quorum-th largest
-    ///      heartbeat). The frontier is monotonic: a guardian rotation that adds fresh zero-heartbeat members
-    ///      cannot pull it back, since the past quorum's coverage stays valid.
+    /// @dev Record the caller's last-scanned block. O(1): the quorum frontier is recomputed separately by
+    ///      `_syncQuorumBlock`, so a heartbeat (and the heartbeat inside `flag`/`unflag`) does not pay the
+    ///      whole-set read and sort.
     function _heartbeat(uint256 lastScannedBlock) internal {
         // a guardian cannot have scanned a block that does not exist yet
         if (lastScannedBlock > block.number) lastScannedBlock = block.number;
         _heartbeats[msg.sender] = lastScannedBlock;
         emit Heartbeat(msg.sender);
+    }
 
+    /// @dev Recompute the quorum frontier (the quorum-th largest heartbeat) and ratchet it up. Monotonic: a
+    ///      guardian rotation that adds fresh zero-heartbeat members cannot pull it back, since the past
+    ///      quorum's coverage stays valid.
+    function _syncQuorumBlock() internal {
+        uint256 n = _guardians.length();
+        if (n < _quorum) return;
         uint256[] memory heartbeats = _getHeartbeats(_guardians.values());
-        uint256 quorumBlock = Arrays.sort(heartbeats)[_guardians.length() - _quorum];
+        uint256 quorumBlock = Arrays.sort(heartbeats)[n - _quorum];
         if (quorumBlock > _lastScannedQuorumBlock) _lastScannedQuorumBlock = quorumBlock;
     }
 

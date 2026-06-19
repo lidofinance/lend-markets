@@ -10,6 +10,7 @@ import {
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
 import {Test} from "forge-std/Test.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 
 struct LidoMarketParams {
     address loanToken;
@@ -161,6 +162,11 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
                 vaultSymbol: "lidoWSTETH-WETH"
             })
         );
+
+        // Catch the guardian frontier up to head so the activation quorum-scan gate does not block maturation
+        // (this flow is not about that gate; this contract is the sole guardian, quorum 1).
+        IGuardianSignals(d.guardianSignals).heartbeat(block.number);
+        IGuardianSignals(d.guardianSignals).syncQuorumBlock();
 
         ctx.market = ILidoLendLike(d.core);
         ctx.lidoParams = LidoMarketParams({
