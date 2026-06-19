@@ -72,9 +72,14 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
         return block.chainid == 1 && USDY.code.length != 0 && USDT.code.length != 0;
     }
 
-    /// @dev Real oracle: USDY NAV (Ondo) quoted in USDT via the real Chainlink USDT/USD feed.
-    function _deployOracle(address) internal override returns (address) {
-        return address(new UsdyStableOracle(ONDO_ORACLE, USDT_USD_FEED));
+    /// @dev Real oracle: USDY NAV (Ondo) quoted in USDT via the real Chainlink USDT/USD feed, behind an
+    ///      `OssifiableProxy` (feed config set in proxy storage via `initialize`).
+    function _deployOracle(address, address admin) internal override returns (address) {
+        address impl = address(new UsdyStableOracle());
+        return
+            _behindProxy(
+                impl, admin, abi.encodeWithSignature("initialize(address,address)", ONDO_ORACLE, USDT_USD_FEED)
+            );
     }
 
     function setUp() public {
@@ -116,7 +121,7 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
     }
 
     /// @dev Drop USDY NAV so the borrower becomes unhealthy (repo-standard mockCall on the price source,
-    ///      mirroring how existing fork tests mock `wstETH.stEthPerToken`).
+    ///      mirroring how existing fork tests mock `wstETH.getStETHByWstETH`).
     function _crashUsdyPrice(uint256 newGetPrice) internal {
         vm.mockCall(ONDO_ORACLE, abi.encodeWithSignature("getPrice()"), abi.encode(newGetPrice));
     }

@@ -81,8 +81,9 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
     WithdrawalQueue internal queue;
     Deployed internal d;
 
-    /// @dev Swap the default wstETH oracle for a constant-price one so no Lido contract is needed.
-    function _deployOracle(address) internal override returns (address) {
+    /// @dev Swap the default wstETH oracle for a constant-price one so no Lido contract is needed. Bare
+    ///      mock (no proxy): the constant-price oracle has no `initialize()`.
+    function _deployOracle(address, address) internal override returns (address) {
         return address(new FixedPriceOracle(ORACLE_PRICE));
     }
 

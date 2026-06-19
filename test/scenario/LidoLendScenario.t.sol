@@ -26,7 +26,7 @@ interface IStETH {
 interface IWstETH {
     function approve(address spender, uint256 amount) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
-    function stEthPerToken() external view returns (uint256);
+    function getStETHByWstETH(uint256 wstETHAmount) external view returns (uint256);
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
@@ -242,7 +242,11 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         // Negative rebase: drop the wstETH rate so the head's collateral is worth less than its
         // debt (bad debt), while the tail stays healthy.
-        vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.7e18)));
+        vm.mockCall(
+            WSTETH_ADDRESS,
+            abi.encodeWithSelector(IWstETH.getStETHByWstETH.selector, uint256(1e36)),
+            abi.encode(uint256(0.7e36))
+        );
         assertTrue(ctx.controller.rootHasBadDebt(), "head is bad debt after rebase");
 
         // Even targeting the head itself is blocked while head is bad debt: the controller's bad-debt
@@ -285,7 +289,9 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         // Negative rebase: LTV crosses above LLTV (unhealthy) but collateral still covers debt (solvent).
         uint256 droppedPrice = 0.95e36;
         vm.mockCall(
-            WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.95e18))
+            WSTETH_ADDRESS,
+            abi.encodeWithSelector(IWstETH.getStETHByWstETH.selector, uint256(1e36)),
+            abi.encode(droppedPrice)
         );
 
         (,, uint128 rc) = ctx.market.position(ctx.id, BORROWER);

@@ -87,7 +87,7 @@ abstract contract LidoLendDeployer {
     function _deployForkStack(DeployConfig memory cfg) internal returns (Deployed memory d) {
         d.core = _deployCore(cfg.admin);
         d.guardianSignals = _deployGuardianSignals(cfg.admin, cfg.guardians, cfg.quorum);
-        d.oracle = _deployOracle(cfg.oracleSource);
+        d.oracle = _deployOracle(cfg.oracleSource, cfg.admin);
         d.irm = _deployIrm(d.core);
 
         d.params = MarketParams({
@@ -132,9 +132,20 @@ abstract contract LidoLendDeployer {
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
-    /// @dev Default oracle: `WstEthRateOracle(wstETH)`. Override for swap-in mock oracles.
-    function _deployOracle(address oracleSource) internal virtual returns (address) {
-        return _deployArtifact("src/oracle/WstEthRateOracle.sol:WstEthRateOracle", abi.encode(oracleSource));
+    /// @dev Default oracle: `WstEthRateOracle` behind an `OssifiableProxy` (stable address, upgradeable
+    ///      logic; feed config in proxy storage via `initialize`). Override for swap-in mock oracles —
+    ///      mocks may return a bare instance since they have no `initialize`; real oracles wrap via
+    ///      `_behindProxy(impl, admin, initData)`.
+    function _deployOracle(address oracleSource, address admin) internal virtual returns (address) {
+        address impl = _deployArtifact("src/oracle/WstEthRateOracle.sol:WstEthRateOracle", "");
+        return _behindProxy(impl, admin, abi.encodeWithSignature("initialize(address)", oracleSource));
+    }
+
+    /// @dev Wraps an already-deployed implementation in an `OssifiableProxy`, running `initData` (an
+    ///      `initialize(...)` call) through the proxy — the proxy rejects empty init data. Used for the
+    ///      oracles, whose feed config lives in proxy storage. Proxy admin is `admin`.
+    function _behindProxy(address impl, address admin, bytes memory initData) internal returns (address) {
+        return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
     function _deployIrm(address core) internal virtual returns (address) {

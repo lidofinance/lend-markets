@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 
 /// @dev Mock of Ondo's USDY dynamic-rate (NAV) oracle: getPrice() scaled 1e18.
@@ -50,7 +51,15 @@ contract UsdyStableOracleTest is Test {
     function setUp() public {
         usdy = new MockRwaOracle();
         feed = new MockChainlinkFeed();
-        oracle = new UsdyStableOracle(address(usdy), address(feed));
+        // Storage-config oracle: deploy the impl, then run `initialize` through a proxy (the impl
+        // disables initializers, so it is only usable behind a proxy).
+        oracle = UsdyStableOracle(address(_deployOracle(address(usdy), address(feed))));
+    }
+
+    function _deployOracle(address usdyOracle_, address stableFeed_) internal returns (address) {
+        address impl = address(new UsdyStableOracle());
+        bytes memory initData = abi.encodeWithSignature("initialize(address,address)", usdyOracle_, stableFeed_);
+        return address(new OssifiableProxy(impl, address(this), initData));
     }
 
     /// @dev Independent re-derivation of Morpho's IOracle value: price of 1 collateral (USDY, 18 dec)
@@ -106,13 +115,17 @@ contract UsdyStableOracleTest is Test {
         assertEq(oracle.price(), _expected(usdyRaw, stableRaw), "price == convention re-derivation");
     }
 
-    function testRevert_constructorZeroUsdyOracle() public {
+    function testRevert_initializeZeroUsdyOracle() public {
+        address impl = address(new UsdyStableOracle());
+        bytes memory initData = abi.encodeWithSignature("initialize(address,address)", address(0), address(feed));
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new UsdyStableOracle(address(0), address(feed));
+        new OssifiableProxy(impl, address(this), initData);
     }
 
-    function testRevert_constructorZeroFeed() public {
+    function testRevert_initializeZeroFeed() public {
+        address impl = address(new UsdyStableOracle());
+        bytes memory initData = abi.encodeWithSignature("initialize(address,address)", address(usdy), address(0));
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new UsdyStableOracle(address(usdy), address(0));
+        new OssifiableProxy(impl, address(this), initData);
     }
 }

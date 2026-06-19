@@ -585,7 +585,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     /// @dev Override the default `WstEthRateOracle` with a per-test controllable oracle so
     ///      benchmark scenarios can pin a known price (off the live wstETH rate).
-    function _deployOracle(address oracleSource) internal override returns (address) {
+    function _deployOracle(address oracleSource, address) internal override returns (address) {
         return address(new ControllableWstEthOracle(oracleSource));
     }
 
