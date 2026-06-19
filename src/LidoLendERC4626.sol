@@ -165,13 +165,22 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
     ///      to revert. Here that liquidity instead flows to the owner as loan assets.
     ///      Reverts `ZeroMorphoSupplyShares` only if settling is reached with no Morpho position.
     ///      Collateral is transferred directly by Morpho to `receiver`; the vault does not custody it.
+    /// @param shares Vault shares to exit (redeemed first, then the remainder settled).
+    /// @param receiver Recipient of both the redeemed loan assets and the seized collateral.
+    /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
+    /// @return sharesBurned Total shares burned across the redeem and settle legs.
+    /// @return loanAssets Loan assets paid to `receiver` (redeem leg plus any idle slice on settle).
+    /// @return collateralSeized Collateral seized from settled positions and sent to `receiver`.
+    /// @return debtCanceled Borrower debt cancelled by the settle leg.
     function fallbackExit(uint256 shares, address receiver, address owner)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
     {
         // 1. Ordinary path: redeem whatever current liquidity (idle + Morpho-withdrawable) can honour.
-        uint256 remaining;
-        (sharesBurned, loanAssets, remaining) = _redeemAvailable(shares, receiver, owner);
+        //    Draining idle also stops the core's settle liquidity gate from blocking the remainder.
+        sharesBurned = Math.min(shares, maxRedeem(owner));
+        if (sharesBurned != 0) loanAssets = redeem(sharesBurned, receiver, owner);
+        uint256 remaining = shares - sharesBurned;
 
         // 2. Settle the remainder against the risk queue (collateral to receiver). The redeem above
         //    drained idle, so the core's liquidity gate no longer blocks this settle.
@@ -187,41 +196,33 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
         }
     }
 
-    /// @notice Targeted exit. Like `fallbackExit` it first pays out what ordinary liquidity covers via a
-    ///         normal redeem, then settles the remainder — but the caller supplies the exact `borrowers`
-    ///         to settle (in order), using `controller.allowedSliceFor` per borrower instead of the risk
-    ///         queue. Settling is best-effort, no revert on shortfall. Redeeming first also closes the
-    ///         same liquidity-gate griefing vector described on `fallbackExit`.
+    /// @notice Targeted settlement: cuts the caller-supplied `borrowers` in order (sizing each via
+    ///         `controller.allowedSliceFor`) against the owner's Morpho supply, paying seized collateral
+    ///         to `receiver`. Best-effort, no revert on shortfall.
+    /// @dev Unlike `fallbackExit`, this does NOT redeem ordinary liquidity first — a targeted settle must
+    ///      stay liquidity-neutral and only cut the named positions, never draining lender withdraw
+    ///      liquidity. It therefore remains subject to the core's `SETTLEMENT_LIQUIDITY_AVAILABLE` gate: a
+    ///      cut whose cancelled debt does not exceed the market's ordinary liquidity reverts. Use
+    ///      `fallbackExit` for the griefing-resistant lender exit; `settle` is the precise cut.
+    ///      Collateral is transferred directly by Morpho to `receiver`; the vault does not custody it.
+    /// @param shares Vault shares to settle against; bounds the Morpho supply consumed by the cuts.
+    /// @param borrowers Positions to cut, in order; each sized via `controller.allowedSliceFor`.
+    /// @param receiver Recipient of the seized collateral.
+    /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
+    /// @return sharesBurned Shares burned for the settled slice.
+    /// @return loanAssets Loan assets paid to `receiver` (idle slice only; no liquidity is withdrawn).
+    /// @return collateralSeized Collateral seized from the cut positions and sent to `receiver`.
+    /// @return debtCanceled Borrower debt cancelled by the cuts.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
     {
-        uint256 remaining;
-        (sharesBurned, loanAssets, remaining) = _redeemAvailable(shares, receiver, owner);
-
-        if (remaining != 0) {
-            ExitPlan memory plan = _beginExit(remaining, receiver, owner);
-            uint256 morphoSupplyConsumed;
-            (collateralSeized, debtCanceled, morphoSupplyConsumed) = _settleFromList(
-                plan.morphoSupplyTarget, borrowers, receiver, plan.totalSupplyAssets, plan.totalSupplyShares
-            );
-            (uint256 settledShares, uint256 settledLoan) =
-                _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
-            sharesBurned += settledShares;
-            loanAssets += settledLoan;
-        }
-    }
-
-    /// @dev Shared first step of `fallbackExit` and `settle`: pay out what ordinary liquidity covers via a
-    ///      normal redeem (this also drains idle, so the core's settle liquidity gate cannot block the
-    ///      remainder). Returns the shares redeemed, the loan assets paid, and the still-unmet remainder.
-    function _redeemAvailable(uint256 shares, address receiver, address owner)
-        private
-        returns (uint256 redeemedShares, uint256 redeemedAssets, uint256 remaining)
-    {
-        redeemedShares = Math.min(shares, maxRedeem(owner));
-        if (redeemedShares != 0) redeemedAssets = redeem(redeemedShares, receiver, owner);
-        remaining = shares - redeemedShares;
+        ExitPlan memory plan = _beginExit(shares, receiver, owner);
+        uint256 morphoSupplyConsumed;
+        (collateralSeized, debtCanceled, morphoSupplyConsumed) = _settleFromList(
+            plan.morphoSupplyTarget, borrowers, receiver, plan.totalSupplyAssets, plan.totalSupplyShares
+        );
+        (sharesBurned, loanAssets) = _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
     }
 
     /// @dev Common exit preamble: validate, pull allowance, size the target, snapshot market totals.

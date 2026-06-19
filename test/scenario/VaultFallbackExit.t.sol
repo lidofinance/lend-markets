@@ -141,21 +141,55 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer {
         _assertBothPhases(idle, loanAssets, collateralSeized);
     }
 
-    /* settle: same redeem-first behaviour, with a caller-supplied borrower list */
+    /* settle: liquidity-neutral targeted cut — seizes collateral, withdraws NO ordinary liquidity */
 
-    function test_settle_redeemsAvailableThenSettles() public {
+    function test_settle_seizesCollateralWithoutWithdrawingLiquidity() public {
         vm.skip(!_hasFork(), "mainnet fork with Lido contracts required");
 
-        uint256 idle = _setupExitWithIdle();
+        _setupExitWithIdle();
 
         address[] memory borrowers = new address[](1);
         borrowers[0] = BORROWER;
 
+        uint256 wethBefore = WETH.balanceOf(LENDER); // lender holds no idle WETH (all deposited)
+
         uint256 shares = vault.balanceOf(LENDER) / 2;
         vm.prank(LENDER);
-        (, uint256 loanAssets, uint256 collateralSeized,) = vault.settle(shares, borrowers, LENDER, LENDER);
+        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized,) =
+            vault.settle(shares, borrowers, LENDER, LENDER);
 
-        _assertBothPhases(idle, loanAssets, collateralSeized);
+        // Pure settle: the cut seizes collateral to the receiver and burns the matching shares, but the
+        // ordinary liquidity is left untouched — no redeem leg, so no loan assets are paid out.
+        assertGt(collateralSeized, 0, "settle seized collateral for the cut");
+        assertGt(sharesBurned, 0, "shares burned for the settled slice");
+        assertEq(loanAssets, 0, "settle withdrew no ordinary liquidity");
+        assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
+        assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
+    }
+
+    /* settle covers a cut below the market's ordinary liquidity. The new core gate allows settling up
+       to onBehalf's supply minus free liquidity (here equal to the borrower's debt), so a sub-liquidity
+       cut that the old `debtCanceled > availableLiquidity` gate rejected now goes through. */
+
+    function test_settle_smallCutBelowLiquiditySucceeds() public {
+        vm.skip(!_hasFork(), "mainnet fork with Lido contracts required");
+
+        _setupExitWithIdle(); // ~2 WETH of ordinary liquidity sits in the market
+
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = BORROWER;
+
+        uint256 wethBefore = WETH.balanceOf(LENDER);
+        uint256 shares = vault.balanceOf(LENDER) / 40; // ~0.5 WETH worth, well below the ~2 WETH liquidity
+        vm.prank(LENDER);
+        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized,) =
+            vault.settle(shares, borrowers, LENDER, LENDER);
+
+        assertGt(collateralSeized, 0, "sub-liquidity settle seized collateral under the new gate");
+        assertGt(sharesBurned, 0, "shares burned for the slice");
+        assertEq(loanAssets, 0, "settle withdrew no ordinary liquidity");
+        assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
+        assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
     }
 
     function _mintWETH(address user, uint256 amount) internal {
