@@ -32,15 +32,16 @@ struct PositionView {
 ///         (`setSlicePolicy`). The uint96 amounts are policy bounds, not accounting: for a loan or
 ///         collateral token whose plausible amounts exceed uint96 (~7.9e28 base units) the configurable
 ///         floors saturate low — the policy weakens but nothing reverts or loses accounting.
-/// @param sliceFloorBps Relative part of the heap-safety overshoot: overshoot = debt * sliceFloorBps / BPS.
-/// @param sliceFloorAssets Absolute lower bound of the overshoot, also the minimum meaningful cut size.
-/// @param fallbackMinRequest Minimum loan assets one settle call may cancel (anti dust-spam, 0 = no floor).
+/// @param sliceFloorBps Debt-fraction term of the root cut: one allowance is `debt * sliceFloorBps / BPS`.
+/// @param sliceFloorAssets Absolute term of the root cut: one allowance is this many loan assets.
 /// @param fullCutBelowCollateral Sweep floor in collateral units: when a cut would leave the borrower's
 ///        remaining collateral below this, the slice lifts to the full debt so the position closes in one
 ///        cut, leaving no dust tail. 0 disables the sweep.
+/// @param ltvStepBps LTV-step term of the root cut: one allowance is the cut that lowers the root's LTV by
+///        `ltvStepBps / BPS`. The root cut is the largest of the three terms (debt-fraction, absolute, LTV-step).
 struct SlicePolicy {
     uint16 sliceFloorBps;
     uint96 sliceFloorAssets;
-    uint96 fallbackMinRequest;
     uint96 fullCutBelowCollateral;
+    uint16 ltvStepBps;
 }

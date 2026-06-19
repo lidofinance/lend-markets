@@ -32,8 +32,8 @@ abstract contract LidoLendDeployer {
     struct SlicePolicyConfig {
         uint16 sliceFloorBps;
         uint96 sliceFloorAssets;
-        uint96 fallbackMinRequest;
         uint96 fullCutBelowCollateral;
+        uint16 ltvStepBps;
     }
 
     /// @dev Mirror of `CollateralActivationLib.Config` (same field order/types) so the controller initializer can

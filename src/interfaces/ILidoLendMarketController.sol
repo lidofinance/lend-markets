@@ -19,6 +19,15 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Emitted when the market is frozen or unfrozen.
     event FrozenSet(bool frozen, address indexed account);
 
+    /// @notice Emitted when the borrow utilization gap is set (WAD; 0 = no gap).
+    event BorrowUtilizationGapSet(uint256 borrowUtilizationGap);
+
+    /// @notice Emitted when a borrower's instant-activation (no maturation timer) status is set.
+    event InstantActivationSet(address indexed borrower, bool enabled);
+
+    /// @notice Emitted when the activation quorum-scan grace is set (seconds, 0 disables the gate).
+    event ActivationQuorumGraceSet(uint256 activationQuorumGrace);
+
     /* ERRORS */
 
     /// @notice Thrown when the hook caller is not the core.
@@ -42,6 +51,19 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
 
+    /// @notice Thrown when a withdrawal would draw a borrower's collateral below the activation minimum
+    ///         while it still owes debt. Repaying to zero lifts the floor.
+    error CollateralFloorBreached();
+
+    /// @notice Thrown when a borrow would push borrow utilization above the cap (WAD - borrowUtilizationGap).
+    error MaxBorrowUtilizationExceeded();
+
+    /// @notice Thrown when the borrow utilization gap is set to WAD or more (would freeze borrowing).
+    error BorrowUtilizationGapTooHigh();
+
+    /// @notice Thrown when the activation quorum-scan grace is set above the maximum.
+    error ActivationQuorumGraceTooHigh();
+
     /// @notice Thrown when a core-applied position delta exceeds the controller's read of that position.
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
     error PositionAccountingMismatch();
@@ -60,9 +82,6 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
 
     /// @notice Thrown when the seized collateral is zero or exceeds the borrower's collateral.
     error SettlementInvalidSeize();
-
-    /// @notice Thrown when the canceled debt is below the fallback minimum.
-    error SettlementBelowMin();
 
     /* TYPES */
 
@@ -119,12 +138,50 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
     function currentInflow() external view returns (uint256);
 
+    /// @notice Whitelist `borrower` to skip the activation maturation timer — its collateral becomes active on
+    ///         deposit. Risk-increasing path (waives the anti-flash/Sybil delay): meant for the EasyTrack
+    ///         factory and reserved for trusted addresses. Ban and freeze still gate as usual.
+    function grantInstantActivation(address borrower) external;
+
+    /// @notice Fast risk-reducing lever: remove `borrower`'s instant activation, restoring the timer.
+    function revokeInstantActivation(address borrower) external;
+
+    /// @notice Whether `borrower` skips the activation maturation timer.
+    function hasInstantActivation(address borrower) external view returns (bool);
+
+    /// @notice Set the activation quorum-scan grace in seconds (0 disables the gate, must be <= the max). A lot
+    ///         whose timer elapsed this long ago matures even if the guardian quorum has not scanned its
+    ///         deposit — the liveness fallback. Governance path (a deliberate security/liveness balance).
+    function setActivationQuorumGrace(uint256 newGrace) external;
+
+    /// @notice The activation quorum-scan grace in seconds (0 = gate disabled, timer-only activation).
+    function activationQuorumGrace() external view returns (uint256);
+
+    /* BORROW UTILIZATION GAP */
+
+    /// @notice Set the minimum gap kept between borrow utilization and 100% (WAD; 0 = no gap, must be < WAD).
+    ///         Reserves that share of supply for lender withdrawals — a borrow that would close the gap
+    ///         reverts. Risk-increasing path (shrinking or disabling the gap): meant for the EasyTrack factory.
+    function setBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external;
+
+    /// @notice Fast risk-reducing lever: widen the gap. Reverts if it would not raise it.
+    function increaseBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external;
+
+    /// @notice The minimum gap kept between borrow utilization and 100% (WAD; 0 = no gap).
+    function borrowUtilizationGap() external view returns (uint256);
+
+    /// @notice Max borrow utilization permitted (WAD), i.e. WAD - borrowUtilizationGap. WAD when no gap is set.
+    function maxBorrowUtilization() external view returns (uint256);
+
+    /// @notice The market's current borrow utilization (borrowed / supplied, WAD) with pending interest accrued.
+    function currentBorrowUtilization() external view returns (uint256);
+
     /* SETTLEMENT QUEUE */
 
     /// @notice Set the settle slice policy in one shot — the knobs tune the same cut and move together.
-    ///         Overshoot per cut is `max(debt * sliceFloorBps / 10000, sliceFloorAssets)` on top of the
-    ///         closed-form slice. `fallbackMinRequest` floors one call's total, and `fullCutBelowCollateral`
-    ///         lifts the cut to the full debt when the post-cut collateral would be dust.
+    ///         The root cut is the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the cut
+    ///         that lowers the root's LTV by `ltvStepBps`. `fullCutBelowCollateral` lifts the cut to the full
+    ///         debt when the post-cut collateral would be dust.
     function setSlicePolicy(SlicePolicy calldata policy) external;
 
     /// @notice The current settle slice policy.
@@ -145,13 +202,12 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     function rootHasBadDebt() external view returns (bool);
 
     /// @notice Next borrower to cut (queue root) and the max slice the policy allows for it: the larger of
-    ///         the heap re-order slice and the root's own watermark slice (the same bound the hook caps at,
-    ///         and the same value `allowedSliceFor` returns). `borrower` is address(0) when the queue is
-    ///         empty. `sliceAssets` is type(uint256).max for a lone borrower (caller caps it to the exit).
+    ///         the root-policy slice and the root's own watermark slice (the same bound the hook caps at,
+    ///         and the same value `allowedSliceFor` returns). `borrower` is address(0) when the queue is empty.
     function nextSettlementCut() external view returns (address borrower, uint256 sliceAssets);
 
     /// @notice Maximum loan-asset slice the policy allows for a single settle cut against `borrower` (max of
-    ///         heap slice and watermark slice). Zero means ineligible.
+    ///         root-policy slice and watermark slice). Zero means ineligible.
     function allowedSliceFor(address borrower) external view returns (uint256);
 
     /// @notice Borrowers currently in the queue (approximate top-down order) and their risk keys.

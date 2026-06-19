@@ -11,6 +11,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SlicePolicy} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -552,10 +553,13 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
                     maxDelayInflow: 10_000 ether,
-                    minActivationAmount: uint128(MIN_COLLATERAL_ACTIVATION)
+                    // The benchmark builds sub-floor dust positions directly (borrow, then withdraw to a
+                    // sliver) to stress the heap. The open-debt collateral floor forbids that voluntary path,
+                    // so relax the activation minimum here — this benchmark is not exercising that policy.
+                    minActivationAmount: 1
                 }),
                 slicePolicy: SlicePolicyConfig({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0, fullCutBelowCollateral: 0
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -563,6 +567,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                 vaultSymbol: "lidoWSTETH-WETH"
             })
         );
+
+        // Catch the guardian frontier up to head so the activation quorum-scan gate does not block maturation
+        // (this benchmark is not about that gate; this contract is the sole guardian, quorum 1).
+        IGuardianSignals(d.guardianSignals).heartbeat(block.number);
+        IGuardianSignals(d.guardianSignals).syncQuorumBlock();
 
         ctx.market = ILidoLend(d.core);
         ctx.oracle = ControllableWstEthOracle(d.oracle);
@@ -577,8 +586,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                 SlicePolicy({
                     sliceFloorBps: 100,
                     sliceFloorAssets: SLICE_FLOOR,
-                    fallbackMinRequest: 0,
-                    fullCutBelowCollateral: uint96(MIN_COLLATERAL_ACTIVATION)
+                    fullCutBelowCollateral: uint96(MIN_COLLATERAL_ACTIVATION),
+                    ltvStepBps: 100
                 })
             );
     }

@@ -27,7 +27,15 @@ contract ActivationHarness {
     }
 
     function deposit(address borrower, uint256 assets) external {
-        $.deposit(borrower, assets);
+        $.deposit(borrower, assets, false);
+    }
+
+    function depositInstant(address borrower, uint256 assets) external {
+        $.deposit(borrower, assets, true);
+    }
+
+    function sync(address borrower, uint256 strikes, bool instant) external returns (uint256) {
+        return $.syncActivation(borrower, strikes, instant);
     }
 
     function currentInflow() external view returns (uint256) {
@@ -66,6 +74,29 @@ contract CollateralActivationLibTest is Test {
         // pushes the total past the 10_000 ether cap: saturates instead of overshooting
         h.deposit(address(0xB2), 5_000 ether);
         assertEq(h.currentInflow(), 10_000 ether, "inflow saturates at maxDelayInflow");
+    }
+
+    /// @notice A trusted (instant) deposit crosses straight into `active`, with no timer and no inflow bump.
+    function test_instantDeposit_activatesImmediatelyWithoutInflow() public {
+        h.depositInstant(address(0xC1), 100 ether);
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(address(0xC1));
+        assertEq(active, 100 ether, "instant deposit is active at once");
+        assertEq(activating, 0, "no timed lot");
+        assertEq(dust, 0, "no dust");
+        assertEq(h.currentInflow(), 0, "instant deposit does not touch the inflow throttle");
+    }
+
+    /// @notice Whitelisting an already-deposited borrower: an instant sync matures the pending lot before its
+    ///         timer elapses.
+    function test_syncActivation_instantMaturesPendingLotBeforeTimer() public {
+        h.deposit(address(0xC3), 100 ether); // normal: enters the timer
+        (, uint256 activating,) = h.bucketsOf(address(0xC3));
+        assertEq(activating, 100 ether, "lot is timed");
+
+        h.sync(address(0xC3), 0, true); // instant sync, no warp
+        (uint256 active, uint256 activatingAfter,) = h.bucketsOf(address(0xC3));
+        assertEq(active, 100 ether, "instant sync matured the lot before the timer");
+        assertEq(activatingAfter, 0, "lot left the timer");
     }
 
     // setUp config: minActivationDelay = 1 minutes, maxActivationDelay = 1 hours (MAX_DELAY_BOUND = 7 days)

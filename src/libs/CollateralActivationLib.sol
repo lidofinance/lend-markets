@@ -66,12 +66,14 @@ library CollateralActivationLib {
     /// @param dust Free collateral below the activation threshold, withdrawable.
     /// @param activatingStart Activation timer start, 0 when there is no active timer.
     /// @param activatingDelay Base inflow-scaled delay, frozen at deposit.
+    /// @param activatingStartBlock Block of the latest deposit into the activating lot, for the quorum-scan gate.
     struct Position {
         uint128 active;
         uint128 activating;
         uint128 dust;
         uint64 activatingStart;
         uint64 activatingDelay;
+        uint64 activatingStartBlock;
     }
 
     /// @notice Governance-tunable activation parameters, validated by `setConfig`.
@@ -141,8 +143,10 @@ library CollateralActivationLib {
     }
 
     /// @notice Book a new collateral deposit. Joins dust; once dust + this deposit crosses the threshold the
-    ///         whole dormant amount is promoted into the activation timer and added to the market inflow.
-    function deposit(State storage $, address borrower, uint256 assets) internal {
+    ///         whole dormant amount enters the activation timer and is added to the market inflow. When
+    ///         `instant` (a trusted borrower) the amount crosses straight into `active`, skipping the timer and
+    ///         the inflow throttle. The dust threshold still applies, so a sub-threshold deposit stays dust.
+    function deposit(State storage $, address borrower, uint256 assets, bool instant) internal {
         Position storage position = $.positions[borrower];
 
         uint256 assetsWithDust = assets + position.dust;
@@ -153,7 +157,17 @@ library CollateralActivationLib {
         }
 
         position.dust = 0;
+
+        if (instant) {
+            position.active += assetsWithDust.toUint128();
+            emit Activated(borrower, assetsWithDust);
+            return;
+        }
+
         position.activating += assetsWithDust.toUint128();
+        // Record the latest deposit block so the controller's quorum-scan gate can require the guardian
+        // committee to have scanned past it before this lot may mature.
+        position.activatingStartBlock = uint64(block.number);
 
         uint256 currentInflow = _applyInflowIncrement($, borrower, assetsWithDust);
         uint256 delay = _computeDelay($, currentInflow);
@@ -176,14 +190,18 @@ library CollateralActivationLib {
         _applyInflowDecrement($, borrower, activatingBefore - $.positions[borrower].activating);
     }
 
-    /// @notice Mature the borrower's activation lot into `active` once its timer has elapsed. Returns the
-    ///         post-mature `active`. The inflow is untouched: it only decays with time, so a matured lot
-    ///         still weighs on the delay. The caller skips this for banned or frozen borrowers.
-    function syncActivation(State storage $, address borrower, uint256 strikes) internal returns (uint256 active) {
+    /// @notice Mature the borrower's activation lot into `active` once its timer has elapsed, or immediately
+    ///         when `instant` (a trusted borrower). Returns the post-mature `active`. The inflow is untouched:
+    ///         it only decays with time, so a matured lot still weighs on the delay. The caller skips this for
+    ///         banned or frozen borrowers.
+    function syncActivation(State storage $, address borrower, uint256 strikes, bool instant)
+        internal
+        returns (uint256 active)
+    {
         Position storage position = $.positions[borrower];
 
-        // mature only with a timer set and elapsed
-        if (position.activatingStart > 0 && block.timestamp >= _getUnlockTime($, position, strikes)) {
+        // mature when instant, or once the timer has elapsed — only with a lot set
+        if (position.activatingStart > 0 && (instant || block.timestamp >= _getUnlockTime($, position, strikes))) {
             uint128 activated = position.activating;
             position.active += activated;
             position.activating = 0;
@@ -241,6 +259,11 @@ library CollateralActivationLib {
         Position storage position = $.positions[borrower];
         if (position.activatingStart == 0) return 0;
         return _getUnlockTime($, position, strikes);
+    }
+
+    /// @notice Block of the latest deposit into the borrower's activating lot, 0 when there is no lot.
+    function activatingStartBlockOf(State storage $, address borrower) internal view returns (uint256) {
+        return $.positions[borrower].activatingStartBlock;
     }
 
     /// @notice Borrower's collateral split: active (matured), activating (in timer), dust.
@@ -355,5 +378,6 @@ library CollateralActivationLib {
     function _clearTimer(Position storage position) private {
         position.activatingStart = 0;
         position.activatingDelay = 0;
+        position.activatingStartBlock = 0;
     }
 }

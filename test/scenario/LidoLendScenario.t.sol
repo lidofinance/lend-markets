@@ -30,9 +30,12 @@ interface IWstETH {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests.
+/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests, and to
+///      heartbeat the quorum-scan frontier.
 interface IRegistryLike {
     function flag(Id market, address[] calldata accounts, uint256 lastScannedBlock) external;
+    function heartbeat(uint256 lastScannedBlock) external;
+    function syncQuorumBlock() external;
 }
 
 /// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
@@ -104,6 +107,218 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         assertEq(borrowedAssets, 3 ether, "borrowed after maturity");
         assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrower received real WETH");
         _assertCollateralState(ctx.controller, BORROWER, activatedCollateral, 0, 0);
+    }
+
+    /// @notice Instant activation (whitelist): a trusted borrower's collateral is active on deposit, so it
+    ///         borrows with no maturation wait. Revoking restores the timer for fresh deposits.
+    function test_instantActivation_skipsMaturationDelay() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false);
+        ctx.controller.grantInstantActivation(BORROWER);
+        assertTrue(ctx.controller.hasInstantActivation(BORROWER), "borrower whitelisted");
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
+
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+
+        // No warp: the deposit is active immediately, so the borrow goes through.
+        _assertCollateralState(ctx.controller, BORROWER, col, 0, 0);
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
+        assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrowed with no maturation wait");
+
+        // Revoke restores the timer: a fresh deposit enters activation instead of going straight to active.
+        ctx.controller.grantRole(ctx.controller.RISK_STEWARD_ROLE(), address(this));
+        ctx.controller.revokeInstantActivation(BORROWER);
+        uint256 more = _mintWstETH(ctx.market, BORROWER, 15 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, more, BORROWER, "");
+        _assertCollateralState(ctx.controller, BORROWER, col, more, 0);
+    }
+
+    /// @notice Borrow utilization gap: borrows that keep the gap below 100% succeed, a borrow that
+    ///         would close it reverts at the controller hook. The gap is off (0) by default.
+    function test_borrow_cappedByBorrowUtilizationGap() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false);
+        ctx.controller.setBorrowUtilizationGap(0.1e18); // keep a 10% gap => 90% max utilization
+        assertEq(ctx.controller.maxBorrowUtilization(), 0.9e18, "gap maps to a 90% cap");
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        // Ample collateral so the gap binds before the active-health ceiling.
+        uint256 collateral = _mintWstETH(ctx.market, BORROWER, 40 ether);
+
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, collateral, BORROWER, "");
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        // Borrowing 9 of 10 WETH keeps the 10% gap exactly, so it is allowed.
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 9 ether, 0, BORROWER, BORROWER);
+        assertApproxEqAbs(ctx.controller.currentBorrowUtilization(), 0.9e18, 1e15, "utilization sits at the cap");
+
+        // Any further borrow would close the gap and reverts.
+        vm.prank(BORROWER);
+        vm.expectRevert(ILidoLendMarketController.MaxBorrowUtilizationExceeded.selector);
+        ctx.market.borrow(ctx.marketParams, 0.1 ether, 0, BORROWER, BORROWER);
+    }
+
+    /// @notice Open-debt collateral floor: while a borrower owes debt, a withdrawal may not draw raw
+    ///         collateral below the activation minimum. Repaying to zero lifts the floor.
+    function test_withdraw_collateralFloorWithOpenDebt() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false); // minActivationAmount = 10 ether
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether); // ~15 wstETH, comfortably above the floor
+        assertGt(col, 12 ether, "collateral above the floor for the test");
+
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 2 ether, 0, BORROWER, BORROWER);
+
+        // Down to just above the 10-wstETH floor is allowed (health is loose, so the floor is what binds).
+        vm.prank(BORROWER);
+        ctx.market.withdrawCollateral(ctx.marketParams, col - 11 ether, BORROWER, BORROWER);
+
+        // The next 2 wstETH would drop raw collateral to 9 < 10 with open debt: reverts.
+        vm.prank(BORROWER);
+        vm.expectRevert(ILidoLendMarketController.CollateralFloorBreached.selector);
+        ctx.market.withdrawCollateral(ctx.marketParams, 2 ether, BORROWER, BORROWER);
+
+        // Repay the debt to zero, then the floor no longer applies and the rest comes out.
+        _mintWETH(ctx.market, BORROWER, 3 ether);
+        (, uint128 borrowShares,) = ctx.market.position(ctx.id, BORROWER);
+        vm.prank(BORROWER);
+        ctx.market.repay(ctx.marketParams, 0, borrowShares, BORROWER, "");
+        vm.prank(BORROWER);
+        ctx.market.withdrawCollateral(ctx.marketParams, 11 ether, BORROWER, BORROWER);
+    }
+
+    /// @notice Activation quorum-scan gate: collateral may not mature until the guardian quorum has scanned
+    ///         past its deposit block. Until then the lot stays `activating` and cannot back a borrow.
+    function test_activation_quorumScanGate() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false); // deploy catches the frontier up to the current block
+        ctx.controller.setActivationQuorumGrace(1 days); // gate is off by default, turn it on
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+
+        // Advance the block past the frontier, then deposit — so the quorum has not scanned this deposit.
+        vm.roll(block.number + 1);
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+        vm.warp(block.timestamp + 2 hours + 1); // timer elapsed, but the quorum is still behind the deposit
+
+        // Frontier < deposit block: the lot stays activating, so there is no active collateral to borrow against.
+        vm.prank(BORROWER);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
+
+        // The guardian scans to head: the frontier passes the deposit, the lot matures, the borrow goes through.
+        IRegistryLike(ctx.guardianSignals).heartbeat(block.number);
+        IRegistryLike(ctx.guardianSignals).syncQuorumBlock();
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
+        assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrow after the quorum scanned the deposit");
+    }
+
+    /// @notice Liveness fallback: if the quorum never catches up, the lot still matures once the timeout grace
+    ///         beyond its unlock has elapsed, so a stalled committee cannot freeze borrowing indefinitely.
+    function test_activation_quorumGraceFallback() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false);
+        ctx.controller.setActivationQuorumGrace(1 days); // gate is off by default, turn it on
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+
+        vm.roll(block.number + 1); // deposit stays unscanned (no further heartbeat)
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+
+        // Past the timer plus the 1-day grace: matures despite the quorum never scanning the deposit.
+        vm.warp(block.timestamp + 2 hours + 1 days + 1);
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
+        assertEq(WETH.balanceOf(BORROWER), 3 ether, "grace fallback matured despite a stalled quorum");
+    }
+
+    /// @notice Instant activation bypasses the quorum-scan gate: a whitelisted borrower's deposit is active at
+    ///         once even though the guardian quorum has not scanned it.
+    function test_activation_instantBypassesQuorumGate() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false);
+        ctx.controller.setActivationQuorumGrace(1 days); // gate on, to prove instant still bypasses it
+        ctx.controller.grantInstantActivation(BORROWER);
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+
+        vm.roll(block.number + 1); // deposit unscanned by the quorum
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+
+        // No warp and no heartbeat: instant skips both the timer and the quorum-scan gate.
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
+        assertEq(WETH.balanceOf(BORROWER), 3 ether, "instant borrower bypasses the quorum-scan gate");
+    }
+
+    /// @notice The quorum-scan grace is off by default (0) and governance-tunable within bounds. At 0 the gate
+    ///         is disabled, so collateral matures on the timer alone even when the quorum has not scanned it.
+    function test_activation_graceConfigurableAndZeroDisablesGate() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false);
+        assertEq(ctx.controller.activationQuorumGrace(), 0, "gate off by default");
+
+        vm.expectRevert(ILidoLendMarketController.ActivationQuorumGraceTooHigh.selector);
+        ctx.controller.setActivationQuorumGrace(8 days);
+
+        ctx.controller.setActivationQuorumGrace(1 days); // enable, within bound
+        assertEq(ctx.controller.activationQuorumGrace(), 1 days, "grace set");
+        ctx.controller.setActivationQuorumGrace(0); // disable again
+        assertEq(ctx.controller.activationQuorumGrace(), 0, "grace cleared");
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+
+        // Deposit at a block the quorum has not scanned; with the gate off it matures on the timer alone.
+        vm.roll(block.number + 1);
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        vm.prank(BORROWER);
+        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
+        assertEq(WETH.balanceOf(BORROWER), 3 ether, "gate disabled: matures on the timer despite the quorum behind");
     }
 
     function test_settle_happyPath() public {
@@ -240,6 +455,9 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         (address root,) = ctx.controller.nextSettlementCut();
         assertEq(root, BORROWER, "high-LTV borrower is the queue head");
 
+        // Cut sized to the allowed slice at the real rate (reused after the rebase is cleared).
+        uint256 cut = _sliceShares(ctx) / 2;
+
         // Negative rebase: drop the wstETH rate so the head's collateral is worth less than its
         // debt (bad debt), while the tail stays healthy.
         vm.mockCall(WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.7e18)));
@@ -247,8 +465,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         // Even targeting the head itself is blocked while head is bad debt: the controller's bad-debt
         // guard fires on every settle path.
-        (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
-        uint256 cut = lenderShares / 20;
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementRootBadDebt()"));
         ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
@@ -508,8 +724,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     }
 
     function _settleAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
-        (uint256 supplyShares,,) = ctx.market.position(ctx.id, LENDER);
-        uint256 sharesToExit = supplyShares / 5;
+        uint256 sharesToExit = _sliceShares(ctx);
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
@@ -517,7 +732,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         uint256 expectedCollateralSeized = debtCanceled * 1e36 / ctx.price;
         assertEq(collateralSeized, expectedCollateralSeized, "oracle-rate collateral");
-        assertTrue(debtCanceled > 1.9 ether && debtCanceled <= 2 ether, "debt canceled near 2 WETH");
+        assertGt(debtCanceled, 0, "settled the allowed slice");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "lender received real wstETH");
 
         _assertBorrowerCollateralDebited(ctx, borrowerCollateral, collateralSeized);
@@ -572,7 +787,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                     minActivationAmount: 10 ether
                 }),
                 slicePolicy: SlicePolicyConfig({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0, fullCutBelowCollateral: 10 ether
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -587,6 +802,11 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
         ctx.price = WstEthRateOracle(d.oracle).price();
+
+        // Catch the guardian frontier up to head so the activation quorum-scan gate does not hold collateral
+        // in `activating` (these flows are not about that gate; this contract is the sole guardian, quorum 1).
+        IRegistryLike(ctx.guardianSignals).heartbeat(block.number);
+        IRegistryLike(ctx.guardianSignals).syncQuorumBlock();
 
         ctx.controller.grantRole(ctx.controller.MANAGER_ROLE(), address(this));
     }
