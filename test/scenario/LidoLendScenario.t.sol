@@ -10,6 +10,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {BlockInfoWithHash} from "../../src/interfaces/GuardianSignalsTypes.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -30,12 +31,9 @@ interface IWstETH {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests, and to
-///      heartbeat the quorum-scan frontier.
+/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests.
 interface IRegistryLike {
-    function flag(Id market, address[] calldata accounts, uint256 lastScannedBlock) external;
-    function heartbeat(uint256 lastScannedBlock) external;
-    function syncQuorumBlock() external;
+    function flag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
 }
 
 /// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
@@ -207,118 +205,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.repay(ctx.marketParams, 0, borrowShares, BORROWER, "");
         vm.prank(BORROWER);
         ctx.market.withdrawCollateral(ctx.marketParams, 11 ether, BORROWER, BORROWER);
-    }
-
-    /// @notice Activation quorum-scan gate: collateral may not mature until the guardian quorum has scanned
-    ///         past its deposit block. Until then the lot stays `activating` and cannot back a borrow.
-    function test_activation_quorumScanGate() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(false); // deploy catches the frontier up to the current block
-        ctx.controller.setActivationQuorumGrace(1 days); // gate is off by default, turn it on
-
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
-
-        // Advance the block past the frontier, then deposit — so the quorum has not scanned this deposit.
-        vm.roll(block.number + 1);
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
-        vm.warp(block.timestamp + 2 hours + 1); // timer elapsed, but the quorum is still behind the deposit
-
-        // Frontier < deposit block: the lot stays activating, so there is no active collateral to borrow against.
-        vm.prank(BORROWER);
-        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-
-        // The guardian scans to head: the frontier passes the deposit, the lot matures, the borrow goes through.
-        IRegistryLike(ctx.guardianSignals).heartbeat(block.number);
-        IRegistryLike(ctx.guardianSignals).syncQuorumBlock();
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-        assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrow after the quorum scanned the deposit");
-    }
-
-    /// @notice Liveness fallback: if the quorum never catches up, the lot still matures once the timeout grace
-    ///         beyond its unlock has elapsed, so a stalled committee cannot freeze borrowing indefinitely.
-    function test_activation_quorumGraceFallback() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(false);
-        ctx.controller.setActivationQuorumGrace(1 days); // gate is off by default, turn it on
-
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
-
-        vm.roll(block.number + 1); // deposit stays unscanned (no further heartbeat)
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
-
-        // Past the timer plus the 1-day grace: matures despite the quorum never scanning the deposit.
-        vm.warp(block.timestamp + 2 hours + 1 days + 1);
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-        assertEq(WETH.balanceOf(BORROWER), 3 ether, "grace fallback matured despite a stalled quorum");
-    }
-
-    /// @notice Instant activation bypasses the quorum-scan gate: a whitelisted borrower's deposit is active at
-    ///         once even though the guardian quorum has not scanned it.
-    function test_activation_instantBypassesQuorumGate() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(false);
-        ctx.controller.setActivationQuorumGrace(1 days); // gate on, to prove instant still bypasses it
-        ctx.controller.grantInstantActivation(BORROWER);
-
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
-
-        vm.roll(block.number + 1); // deposit unscanned by the quorum
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
-
-        // No warp and no heartbeat: instant skips both the timer and the quorum-scan gate.
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-        assertEq(WETH.balanceOf(BORROWER), 3 ether, "instant borrower bypasses the quorum-scan gate");
-    }
-
-    /// @notice The quorum-scan grace is off by default (0) and governance-tunable within bounds. At 0 the gate
-    ///         is disabled, so collateral matures on the timer alone even when the quorum has not scanned it.
-    function test_activation_graceConfigurableAndZeroDisablesGate() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(false);
-        assertEq(ctx.controller.activationQuorumGrace(), 0, "gate off by default");
-
-        vm.expectRevert(ILidoLendMarketController.ActivationQuorumGraceTooHigh.selector);
-        ctx.controller.setActivationQuorumGrace(8 days);
-
-        ctx.controller.setActivationQuorumGrace(1 days); // enable, within bound
-        assertEq(ctx.controller.activationQuorumGrace(), 1 days, "grace set");
-        ctx.controller.setActivationQuorumGrace(0); // disable again
-        assertEq(ctx.controller.activationQuorumGrace(), 0, "grace cleared");
-
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
-
-        // Deposit at a block the quorum has not scanned; with the gate off it matures on the timer alone.
-        vm.roll(block.number + 1);
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
-        vm.warp(block.timestamp + 2 hours + 1);
-
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-        assertEq(WETH.balanceOf(BORROWER), 3 ether, "gate disabled: matures on the timer despite the quorum behind");
     }
 
     function test_settle_happyPath() public {
@@ -666,7 +552,14 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         // registry's sole guardian (set in `_deployMarket`).
         address[] memory toFlag = new address[](1);
         toFlag[0] = BORROWER;
-        IRegistryLike(ctx.guardianSignals).flag(ctx.id, toFlag, block.number);
+        IRegistryLike(ctx.guardianSignals)
+            .flag(
+                ctx.id,
+                toFlag,
+                BlockInfoWithHash({
+                    hash: blockhash(block.number), number: uint40(block.number), timestamp: uint40(block.timestamp)
+                })
+            );
 
         // Warp far past any normal activation delay — a banned address never settles.
         vm.warp(block.timestamp + 30 days);
@@ -790,7 +683,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
                     maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 10 ether
+                    minActivationAmount: 10 ether,
+                    maxGuardiansQuorumDelay: 0
                 }),
                 slicePolicy: SlicePolicyConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
@@ -808,11 +702,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
         ctx.price = WstEthRateOracle(d.oracle).price();
-
-        // Catch the guardian frontier up to head so the activation quorum-scan gate does not hold collateral
-        // in `activating` (these flows are not about that gate; this contract is the sole guardian, quorum 1).
-        IRegistryLike(ctx.guardianSignals).heartbeat(block.number);
-        IRegistryLike(ctx.guardianSignals).syncQuorumBlock();
 
         ctx.controller.grantRole(ctx.controller.MANAGER_ROLE(), address(this));
     }

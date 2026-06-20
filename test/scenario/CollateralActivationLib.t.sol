@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
+import {GuardiansOpinion, Status, BlockInfo} from "../../src/interfaces/GuardianSignalsTypes.sol";
 
 /// @dev Storage harness so the internal library can operate on a real storage struct.
 contract ActivationHarness {
@@ -27,15 +28,30 @@ contract ActivationHarness {
     }
 
     function deposit(address borrower, uint256 assets) external {
-        $.deposit(borrower, assets, false);
+        $.deposit(borrower, assets);
     }
 
     function depositInstant(address borrower, uint256 assets) external {
-        $.deposit(borrower, assets, true);
+        $.setInstantActivation(borrower, true);
+        $.deposit(borrower, assets);
     }
 
     function sync(address borrower, uint256 strikes, bool instant) external returns (uint256) {
-        return $.syncActivation(borrower, strikes, instant);
+        if (instant) $.setInstantActivation(borrower, true);
+        GuardiansOpinion memory opinion = GuardiansOpinion({
+            status: Status.Normal,
+            strikes: strikes,
+            quorumBlock: BlockInfo({number: uint40(block.number), timestamp: uint40(block.timestamp)})
+        });
+        return $.syncActivation(false, borrower, opinion);
+    }
+
+    /// @dev Sync with an explicit quorum-frontier timestamp, to exercise the activation gate.
+    function syncWithQuorum(address borrower, uint40 quorumTimestamp) external returns (uint256) {
+        GuardiansOpinion memory opinion = GuardiansOpinion({
+            status: Status.Normal, strikes: 0, quorumBlock: BlockInfo({number: 0, timestamp: quorumTimestamp})
+        });
+        return $.syncActivation(false, borrower, opinion);
     }
 
     function currentInflow() external view returns (uint256) {
@@ -59,7 +75,8 @@ contract CollateralActivationLibTest is Test {
                 delayPerStrike: 1 hours,
                 activatingHold: 0,
                 maxDelayInflow: 10_000 ether,
-                minActivationAmount: 1
+                minActivationAmount: 1,
+                maxGuardiansQuorumDelay: 1 days
             })
         );
     }
@@ -97,6 +114,39 @@ contract CollateralActivationLibTest is Test {
         (uint256 active, uint256 activatingAfter,) = h.bucketsOf(address(0xC3));
         assertEq(active, 100 ether, "instant sync matured the lot before the timer");
         assertEq(activatingAfter, 0, "lot left the timer");
+    }
+
+    /// @notice Quorum-scan gate: past the base timer, a lot stays activating until the guardian frontier has
+    ///         scanned past its unlock; once it does, the lot matures.
+    function test_syncActivation_gateHoldsUntilQuorumScansPastUnlock() public {
+        vm.warp(1_000_000);
+        h.deposit(address(0xD1), 100 ether);
+        uint40 depositTime = uint40(block.timestamp);
+        vm.warp(block.timestamp + 2 hours); // past the base unlock (cap 1 hour)
+
+        // Frontier still behind the unlock: the gate holds the lot.
+        h.syncWithQuorum(address(0xD1), depositTime - 1);
+        (uint256 active, uint256 activating,) = h.bucketsOf(address(0xD1));
+        assertEq(active, 0, "gate holds: quorum has not scanned past the unlock");
+        assertEq(activating, 100 ether, "still activating");
+
+        // Frontier scans past the unlock: the lot matures.
+        h.syncWithQuorum(address(0xD1), uint40(block.timestamp));
+        (uint256 activeAfter,,) = h.bucketsOf(address(0xD1));
+        assertEq(activeAfter, 100 ether, "matured once the quorum scanned past the unlock");
+    }
+
+    /// @notice Liveness fallback: once total activating time passes `maxGuardiansQuorumDelay` (1 day here), the
+    ///         lot matures even if the quorum never scans past the unlock.
+    function test_syncActivation_maxGuardiansQuorumDelayFallbackMatures() public {
+        vm.warp(1_000_000);
+        h.deposit(address(0xD2), 100 ether);
+        uint40 depositTime = uint40(block.timestamp);
+
+        vm.warp(block.timestamp + 1 days + 1); // past the cap, quorum never scans
+        h.syncWithQuorum(address(0xD2), depositTime - 1); // frontier still behind
+        (uint256 active,,) = h.bucketsOf(address(0xD2));
+        assertEq(active, 100 ether, "fallback matured the lot after maxGuardiansQuorumDelay despite a stalled quorum");
     }
 
     // setUp config: minActivationDelay = 1 minutes, maxActivationDelay = 1 hours (MAX_DELAY_BOUND = 7 days)

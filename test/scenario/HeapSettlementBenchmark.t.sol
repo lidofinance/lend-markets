@@ -11,7 +11,6 @@ import {Test, console2} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SlicePolicy} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
-import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -556,7 +555,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     // The benchmark builds sub-floor dust positions directly (borrow, then withdraw to a
                     // sliver) to stress the heap. The open-debt collateral floor forbids that voluntary path,
                     // so relax the activation minimum here — this benchmark is not exercising that policy.
-                    minActivationAmount: 1
+                    minActivationAmount: 1,
+                    maxGuardiansQuorumDelay: 0
                 }),
                 slicePolicy: SlicePolicyConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100
@@ -567,11 +567,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                 vaultSymbol: "lidoWSTETH-WETH"
             })
         );
-
-        // Catch the guardian frontier up to head so the activation quorum-scan gate does not block maturation
-        // (this benchmark is not about that gate; this contract is the sole guardian, quorum 1).
-        IGuardianSignals(d.guardianSignals).heartbeat(block.number);
-        IGuardianSignals(d.guardianSignals).syncQuorumBlock();
 
         ctx.market = ILidoLend(d.core);
         ctx.oracle = ControllableWstEthOracle(d.oracle);

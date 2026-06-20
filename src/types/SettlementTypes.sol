@@ -8,11 +8,13 @@ pragma solidity 0.8.35;
 /// @notice Live core/oracle snapshot of the market, built by the controller from core reads and consumed by
 ///         the slice, bad-debt, and active-health math alongside a borrower `Position`. Not carried in any
 ///         hook payload.
+/// @param totalSupplyAssets Market total supply assets, pending interest simulated.
 /// @param totalBorrowAssets Market total borrow assets, pending interest simulated.
 /// @param totalBorrowShares Market total borrow shares.
 /// @param price Collateral price in the loan asset, scaled by ORACLE_PRICE_SCALE.
 /// @param lltv Market liquidation loan-to-value, in WAD.
 struct MarketView {
+    uint256 totalSupplyAssets;
     uint256 totalBorrowAssets;
     uint256 totalBorrowShares;
     uint256 price;

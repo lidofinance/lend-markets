@@ -9,7 +9,6 @@ import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {WithdrawalQueue} from "../../src/periphery/WithdrawalQueue.sol";
 import {WithdrawalQueueLib} from "../../src/libs/WithdrawalQueueLib.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
-import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 
 /// @dev Plain ERC-20 with an open mint, so the suite runs on a bare local chain with no mainnet fork or
 ///      Lido contracts. Both the loan and collateral tokens use this.
@@ -109,7 +108,8 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
                     maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 10 ether
+                    minActivationAmount: 10 ether,
+                    maxGuardiansQuorumDelay: 0
                 }),
                 slicePolicy: SlicePolicyConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
@@ -120,12 +120,6 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
                 vaultSymbol: "lidoLOAN"
             })
         );
-
-        // The activation quorum-scan gate holds a lot in `activating` until the guardian frontier has scanned
-        // past its deposit block. These tests are not exercising that gate, so catch the frontier up to head
-        // (this contract is the sole guardian). No vm.roll in the suite, so this covers every deposit.
-        IGuardianSignals(d.guardianSignals).heartbeat(block.number);
-        IGuardianSignals(d.guardianSignals).syncQuorumBlock();
 
         queue = new WithdrawalQueue(d.vault, d.core, d.params, address(this), PROTOCOL, PROTOCOL_FEE_BPS);
     }

@@ -46,7 +46,9 @@ contract SettlementQueueSliceTest is Test {
 
     /// @dev price 1e36 => collateralValue == rawCollateral; debt(shares) ≈ shares·(100e18/100e24).
     function _marketView() internal pure returns (MarketView memory) {
-        return MarketView({totalBorrowAssets: 100e18, totalBorrowShares: 100e24, price: 1e36, lltv: 0});
+        return MarketView({
+            totalSupplyAssets: 100e18, totalBorrowAssets: 100e18, totalBorrowShares: 100e24, price: 1e36, lltv: 0
+        });
     }
 
     // ── sliceToLtv (pure)

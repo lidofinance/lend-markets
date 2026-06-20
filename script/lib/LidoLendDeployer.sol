@@ -50,6 +50,8 @@ abstract contract LidoLendDeployer {
         uint128 activatingHold;
         // dust threshold (anti-griefing)
         uint128 minActivationAmount;
+        // cap on total activating time from the lot's start (0 = no quorum-scan gate)
+        uint64 maxGuardiansQuorumDelay;
     }
 
     struct Deployed {
@@ -167,7 +169,7 @@ abstract contract LidoLendDeployer {
             "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core, marketId)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address,(uint64,uint64,uint128,uint64,uint128,uint128))",
+            "initialize(address,address,(uint64,uint64,uint128,uint64,uint128,uint128,uint64))",
             admin,
             guardianSignals,
             activation
