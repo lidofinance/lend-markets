@@ -9,7 +9,7 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {SlicePolicy} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 interface IWETH {
@@ -240,12 +240,12 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         _seedBorrowers(ctx, debts, 0.7e18, total);
 
         console2.log("=== 1000Mixed(900x0.5+90x5+10x20) ===");
-        console2.log("  heap_size_before:", ctx.controller.settlementQueueSize());
+        console2.log("  heap_size_before:", ctx.controller.settlementBorrowersCount());
         console2.log("  total_debt:", total);
 
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, total / 4));
         _logSettlementResult(res);
-        console2.log("  heap_size:", ctx.controller.settlementQueueSize());
+        console2.log("  heap_size:", ctx.controller.settlementBorrowersCount());
     }
 
     // ── Whale + dust
@@ -273,7 +273,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         _borrowAll(ctx, 1, n, dustDebt);
 
         console2.log("=== DustAndOneWhale100(99x0.3lowLTV+1x100whale) ===");
-        console2.log("  heap_size_before:", ctx.controller.settlementQueueSize());
+        console2.log("  heap_size_before:", ctx.controller.settlementBorrowersCount());
 
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, 75 ether));
         _logSettlementResult(res);
@@ -281,7 +281,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         (, uint128 whaleBorrowAfter, uint128 whaleColAfter) = ctx.market.position(ctx.id, _borrowerAddr(0));
         console2.log("  whale_debt_remaining:", uint256(whaleBorrowAfter));
         console2.log("  whale_col_remaining:", uint256(whaleColAfter));
-        console2.log("  heap_size:", ctx.controller.settlementQueueSize());
+        console2.log("  heap_size:", ctx.controller.settlementBorrowersCount());
         console2.log("  dust_positions_touched:", _countClosed(ctx, 1, n));
     }
 
@@ -298,7 +298,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         console2.log("=== 2000DustFullDrain ===");
         console2.log("  total_positions:", n);
         console2.log("  total_debt:", debtPer * n);
-        console2.log("  heap_size_before:", ctx.controller.settlementQueueSize());
+        console2.log("  heap_size_before:", ctx.controller.settlementBorrowersCount());
 
         uint256 totalTx;
         uint256 totalGas;
@@ -307,7 +307,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
         while (true) {
             (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
-            if (lenderShares == 0 || ctx.controller.settlementQueueSize() == 0) break;
+            if (lenderShares == 0 || ctx.controller.settlementBorrowersCount() == 0) break;
             SettlementResult memory res = _settleLoop(ctx, lenderShares);
             if (res.iterations == 0) break;
             totalTx++;
@@ -323,7 +323,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         console2.log("  total_iterations:", totalIter);
         console2.log("  total_debt_drained:", totalDebtDrained);
         console2.log("  total_gas:", totalGas);
-        console2.log("  positions_remaining:", ctx.controller.settlementQueueSize());
+        console2.log("  positions_remaining:", ctx.controller.settlementBorrowersCount());
     }
 
     // ── Runners
@@ -359,12 +359,12 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         internal
     {
         console2.log("===", label, "===");
-        console2.log("  heap_size_before:", ctx.controller.settlementQueueSize());
+        console2.log("  heap_size_before:", ctx.controller.settlementBorrowersCount());
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, debtPer * n / exitDivisor));
         console2.log("  borrowers:", n);
         _logSettlementResult(res);
         console2.log("  positions_closed:", _countClosed(ctx, 0, n));
-        console2.log("  heap_size:", ctx.controller.settlementQueueSize());
+        console2.log("  heap_size:", ctx.controller.settlementBorrowersCount());
     }
 
     // ── Seeding
@@ -455,9 +455,9 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         uint256 gasBefore = gasleft();
 
         for (uint256 i; i < MAX_ITERATIONS; ++i) {
-            if (remaining == 0 || ctx.controller.settlementQueueSize() == 0) break;
+            if (remaining == 0 || ctx.controller.settlementBorrowersCount() == 0) break;
 
-            (address top, uint256 sliceAssets) = ctx.controller.nextSettlementCut();
+            (address top, uint256 sliceAssets,) = ctx.controller.nextSettlementBorrower();
             if (top == address(0)) break;
             (, uint128 topBorrowShares, uint128 topCol) = ctx.market.position(ctx.id, top);
             (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = ctx.market.market(ctx.id);
@@ -526,7 +526,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     function _logPositions(Ctx memory ctx, uint256 n) internal view {
         console2.log("  dust_positions:", _countDust(ctx, 0, n));
-        console2.log("  heap_size:", ctx.controller.settlementQueueSize());
+        console2.log("  heap_size:", ctx.controller.settlementBorrowersCount());
     }
 
     // ── Deployment
@@ -558,7 +558,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     minActivationAmount: 1,
                     maxGuardiansQuorumDelay: 0
                 }),
-                slicePolicy: SlicePolicyConfig({
+                settlementConfig: SettlementConfigParams({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100
                 }),
                 guardians: guardians,
@@ -577,8 +577,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
         ctx.controller.grantRole(ctx.controller.MANAGER_ROLE(), address(this));
         ctx.controller
-            .setSlicePolicy(
-                SlicePolicy({
+            .setSettlementConfig(
+                SettlementConfig({
                     sliceFloorBps: 100,
                     sliceFloorAssets: SLICE_FLOOR,
                     fullCutBelowCollateral: uint96(MIN_COLLATERAL_ACTIVATION),

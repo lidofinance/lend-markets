@@ -6,7 +6,8 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
-import {BlockInfoWithHash} from "../../src/interfaces/GuardianSignalsTypes.sol";
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {BlockInfoWithHash, GuardiansOpinion, Status} from "../../src/interfaces/GuardianSignalsTypes.sol";
 
 /// @notice Unit tests for the guardian liveness frontier: heartbeats are O(1) and do not move the frontier,
 ///         `syncQuorumBlock` recomputes the quorum-th-largest and ratchets it up, and the guardian set is capped.
@@ -69,5 +70,53 @@ contract GuardianSignalsTest is Test {
 
         vm.expectRevert(IGuardianSignals.MaxGuardiansReached.selector);
         gs.addGuardian(address(0xBEEF));
+    }
+
+    /// @dev Flag `account` in `market` as `guardian`, carrying a valid heartbeat.
+    function _flag(address guardian, Id market, address account) internal {
+        address[] memory accounts = new address[](1);
+        accounts[0] = account;
+        vm.prank(guardian);
+        gs.flag(market, accounts, _hb(block.number));
+    }
+
+    /// @notice Immunity exempts an account from its strike surcharge without erasing the raw flags: `getOpinion`
+    ///         zeroes effective `strikes` while `Immune`, keeps `flagCount` visible, and restores `strikes` on
+    ///         revoke. A further flag is a no-op while immune, so an immune account can never latch a ban.
+    function test_immunity_zeroesEffectiveStrikesButKeepsFlagCount() public {
+        _deploy(3, 3); // quorum 3, so two flags stay below the ban threshold
+        GuardianSignals gsImpl = GuardianSignals(address(gs));
+        gsImpl.grantRole(gsImpl.ACCESS_RESTORER_ROLE(), address(this));
+        gsImpl.grantRole(gsImpl.ACCESS_LIMITER_ROLE(), address(this));
+        vm.roll(1000);
+
+        Id market = Id.wrap(bytes32(uint256(1)));
+        address account = address(0xCAFE);
+
+        _flag(guardians[0], market, account);
+        _flag(guardians[1], market, account);
+
+        GuardiansOpinion memory op = gs.getOpinion(market, account);
+        assertTrue(op.status == Status.Normal, "not banned below quorum");
+        assertEq(op.strikes, 2, "effective strikes = flags when normal");
+        assertEq(op.flagCount, 2, "raw flag count");
+
+        gs.grantImmunity(market, account);
+        op = gs.getOpinion(market, account);
+        assertTrue(op.status == Status.Immune, "immune");
+        assertEq(op.strikes, 0, "immune zeroes effective strikes");
+        assertEq(op.flagCount, 2, "immune keeps the raw flag count");
+
+        _flag(guardians[2], market, account); // no-op while immune
+        op = gs.getOpinion(market, account);
+        assertTrue(op.status == Status.Immune, "still immune, never banned");
+        assertEq(op.flagCount, 2, "flag is a no-op while immune");
+        assertEq(op.strikes, 0, "effective strikes stay zero");
+
+        gs.revokeImmunity(market, account);
+        op = gs.getOpinion(market, account);
+        assertTrue(op.status == Status.Normal, "normal after revoke");
+        assertEq(op.strikes, 2, "strikes restored on revoke");
+        assertEq(op.flagCount, 2, "flag count unchanged");
     }
 }

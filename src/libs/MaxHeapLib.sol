@@ -12,9 +12,23 @@ pragma solidity 0.8.35;
 ///      math (`idx*2`, `idx*2+1`, `idx/2`) works directly. A side mapping tracks each account's
 ///      1-indexed slot (0 = absent) so `upsert` / `remove` are O(log N).
 library MaxHeapLib {
+    // ---
+    // ERRORS
+    // ---
+
+    /// @notice `peek` was called on an empty heap, which has no root to return.
     error EmptyHeap();
+
+    /// @notice `nodeAt` was given an index past the last node.
     error IndexOutOfBounds();
 
+    // ---
+    // TYPES
+    // ---
+
+    /// @notice One heap entry: an account ordered by `key`.
+    /// @param account The account this node tracks.
+    /// @param key The ordering key; the heap is a max-heap on it. See the slot-packing note below.
     /// @dev account + key packed into a single 32-byte slot. `key` is uint96 (saturating); see
     ///      `_saturateToKey` for the conversion from a uint256 caller-supplied value. Realistic
     ///      `borrowShares × 1e18 / rawCollateral` keys stay well below `type(uint96).max`
@@ -29,22 +43,34 @@ library MaxHeapLib {
         return raw > type(uint96).max ? type(uint96).max : uint96(raw);
     }
 
+    /// @notice The heap itself: the node array plus the account-to-slot index that keeps `upsert` / `remove`
+    ///         O(log N) instead of scanning the array.
+    /// @param nodes 1-indexed node array; `nodes[0]` is a zero sentinel so parent/child index math works.
+    /// @param slot 1-indexed slot per account; 0 means the account is not in the heap.
     struct Heap {
-        Node[] nodes; // 1-indexed; nodes[0] is a zero sentinel.
-        mapping(address => uint256) slot; // 1-indexed slot per account; 0 means "not in heap".
+        Node[] nodes;
+        mapping(address => uint256) slot;
     }
+
+    // ---
+    // INITIALIZATION
+    // ---
 
     /// @notice Pushes the index-0 sentinel. Call once before any other operation.
     function init(Heap storage self) internal {
         self.nodes.push(Node({account: address(0), key: 0}));
     }
 
-    /* VIEWS */
+    // ---
+    // VIEWS
+    // ---
 
+    /// @notice Number of accounts in the heap, excluding the sentinel.
     function size(Heap storage self) internal view returns (uint256) {
         return self.nodes.length - 1;
     }
 
+    /// @notice Account and key at the root — the highest-key entry. Reverts on an empty heap.
     function peek(Heap storage self) internal view returns (address account, uint256 key) {
         if (self.nodes.length <= 1) revert EmptyHeap();
         Node storage root = self.nodes[1];
@@ -59,7 +85,9 @@ library MaxHeapLib {
         return (node.account, node.key);
     }
 
-    /* MUTATIONS */
+    // ---
+    // MUTATIONS
+    // ---
 
     /// @notice Insert `account` with `key`, or re-key it if already present.
     /// @dev `key` is saturated to `type(uint96).max` if it overflows the packed slot.
@@ -106,7 +134,9 @@ library MaxHeapLib {
         return true;
     }
 
-    /* INTERNAL */
+    // ---
+    // INTERNAL HELPERS
+    // ---
 
     function _siftUp(Heap storage self, uint256 idx) private returns (uint256) {
         while (idx > 1) {

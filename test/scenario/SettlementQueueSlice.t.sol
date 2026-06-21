@@ -3,11 +3,11 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
-import {MarketView, PositionView, SlicePolicy} from "../../src/types/SettlementTypes.sol";
+import {MarketView, PositionView, SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
 
-/// @dev Storage harness so the queue-bound `allowedSlice` view can be exercised.
+/// @dev Storage harness so the queue-bound `slice` view can be exercised.
 contract QueueHarness {
     using SettlementQueueLib for SettlementQueueLib.State;
 
@@ -21,8 +21,8 @@ contract QueueHarness {
         $.sync(borrower, PositionView({borrowShares: borrowShares, collateral: rawCollateral}));
     }
 
-    function setSlicePolicy(SlicePolicy memory policy) external {
-        $.setSlicePolicy(policy);
+    function setSettlementConfig(SettlementConfig memory policy) external {
+        $.setSettlementConfig(policy);
     }
 
     function allowedSlice(MarketView memory marketView, address borrower, PositionView memory position)
@@ -35,7 +35,7 @@ contract QueueHarness {
 }
 
 /// @notice Coverage for `SettlementQueueLib` slice math: the pure `sliceToLtv`, and the
-///         storage-bound `allowedSlice` policy terms and dust sweep.
+///         storage-bound `slice` policy terms and dust sweep.
 contract SettlementQueueSliceTest is Test {
     address internal constant ROOT = address(0xA1);
     address internal constant RUNNER_UP = address(0xA2);
@@ -47,30 +47,35 @@ contract SettlementQueueSliceTest is Test {
     /// @dev price 1e36 => collateralValue == rawCollateral; debt(shares) ≈ shares·(100e18/100e24).
     function _marketView() internal pure returns (MarketView memory) {
         return MarketView({
-            totalSupplyAssets: 100e18, totalBorrowAssets: 100e18, totalBorrowShares: 100e24, price: 1e36, lltv: 0
+            totalSupplyAssets: 100e18,
+            totalSupplyShares: 100e24,
+            totalBorrowAssets: 100e18,
+            totalBorrowShares: 100e24,
+            price: 1e36,
+            lltv: 0
         });
     }
 
     // ── sliceToLtv (pure)
     // ──────────────────────────────────
 
-    function test_watermarkSlice_zeroWhenLtvAtOrBelowTarget() public pure {
+    function test_sliceToLtv_zeroWhenLtvAtOrBelowTarget() public pure {
         assertEq(SettlementQueueLib.sliceToLtv(50 ether, 100 ether, 0.5e18), 0, "ltv == target");
         assertEq(SettlementQueueLib.sliceToLtv(40 ether, 100 ether, 0.5e18), 0, "ltv < target");
     }
 
-    function test_watermarkSlice_targetAtOrAboveWadReturnsZero() public pure {
+    function test_sliceToLtv_targetAtOrAboveWadReturnsZero() public pure {
         assertEq(SettlementQueueLib.sliceToLtv(50 ether, 100 ether, 1e18), 0, "target == WAD");
         assertEq(SettlementQueueLib.sliceToLtv(50 ether, 100 ether, 1.5e18), 0, "target > WAD");
     }
 
-    function test_watermarkSlice_closedFormValue() public pure {
+    function test_sliceToLtv_closedFormValue() public pure {
         // debt 80, collateralValue 100, target 50% => c = (80 - 0.5·100) / (1 - 0.5) = 60.
         uint256 slice = SettlementQueueLib.sliceToLtv(80 ether, 100 ether, 0.5e18);
         assertEq(slice, 60 ether, "closed form: cut 60 to land at LTV 50%");
     }
 
-    function testFuzz_watermarkSlice_solventPostCutLtvAtTarget(uint256 debt, uint256 colValue, uint256 targetLtv)
+    function testFuzz_sliceToLtv_solventPostCutLtvAtTarget(uint256 debt, uint256 colValue, uint256 targetLtv)
         public
         pure
     {
@@ -89,7 +94,7 @@ contract SettlementQueueSliceTest is Test {
         assertLe(postDebt * WAD, targetLtv * postColValue + WAD, "post-cut LTV at/under target");
     }
 
-    // ── allowedSlice = max(bps·debt, abs, 1%-LTV) for the queue root ──
+    // ── slice = max(bps·debt, abs, 1%-LTV) for the queue root ──
 
     function test_allowedSlice_zeroForNonRoot() public {
         QueueHarness h = new QueueHarness();
@@ -103,8 +108,10 @@ contract SettlementQueueSliceTest is Test {
     ///         the lone-root case — now bounded by the rule rather than unbounded.
     function test_allowedSlice_ltvTermWins_thenAbsFloorWins() public {
         QueueHarness h = new QueueHarness();
-        h.setSlicePolicy(
-            SlicePolicy({sliceFloorBps: 500, sliceFloorAssets: 1 ether, fullCutBelowCollateral: 0, ltvStepBps: 100})
+        h.setSettlementConfig(
+            SettlementConfig({
+                sliceFloorBps: 500, sliceFloorAssets: 1 ether, fullCutBelowCollateral: 0, ltvStepBps: 100
+            })
         );
         h.sync(ROOT, 90e24, 100e18); // LTV ~0.9
 
@@ -116,11 +123,11 @@ contract SettlementQueueSliceTest is Test {
         uint256 byBps = debt * 500 / 10_000;
 
         assertGt(byLtv, byBps, "1%-LTV step dominates 5% at ~0.9 LTV");
-        assertEq(h.allowedSlice(mv, ROOT, pos), byLtv, "allowedSlice = largest term (1%-LTV step)");
+        assertEq(h.allowedSlice(mv, ROOT, pos), byLtv, "slice = largest term (1%-LTV step)");
 
         uint96 bigAbs = uint96(byLtv + 1 ether);
-        h.setSlicePolicy(
-            SlicePolicy({sliceFloorBps: 500, sliceFloorAssets: bigAbs, fullCutBelowCollateral: 0, ltvStepBps: 100})
+        h.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 500, sliceFloorAssets: bigAbs, fullCutBelowCollateral: 0, ltvStepBps: 100})
         );
         assertEq(h.allowedSlice(mv, ROOT, pos), bigAbs, "abs floor wins when it is the largest term");
     }
@@ -128,8 +135,8 @@ contract SettlementQueueSliceTest is Test {
     /// @notice At a moderate LTV the 1%-LTV step is small, so the bps term wins.
     function test_allowedSlice_bpsTermWinsAtLowLtv() public {
         QueueHarness h = new QueueHarness();
-        h.setSlicePolicy(
-            SlicePolicy({sliceFloorBps: 500, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100})
+        h.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 500, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100})
         );
         h.sync(ROOT, 50e24, 100e18); // LTV ~0.5
 
@@ -141,18 +148,18 @@ contract SettlementQueueSliceTest is Test {
         uint256 byBps = debt * 500 / 10_000;
 
         assertGe(byBps, byLtv, "5% term >= 1%-LTV step at ~0.5 LTV");
-        assertEq(h.allowedSlice(mv, ROOT, pos), byBps, "allowedSlice = 5% of debt");
+        assertEq(h.allowedSlice(mv, ROOT, pos), byBps, "slice = 5% of debt");
     }
 
-    // ── allowedSlice dust sweep
+    // ── slice dust sweep
     // ───────────────────────────────────────
 
     /// @notice When the policy slice would leave the borrower's collateral below the sweep floor,
     ///         the allowed slice lifts to the full debt so the position closes in one cut.
     function test_allowedSlice_dustExtensionLiftsToFullDebt() public {
         QueueHarness h = new QueueHarness();
-        h.setSlicePolicy(
-            SlicePolicy({sliceFloorBps: 500, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100})
+        h.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 500, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100})
         );
         h.sync(ROOT, 90e24, 100e18);
         h.sync(RUNNER_UP, 10e24, 100e18);
@@ -165,15 +172,15 @@ contract SettlementQueueSliceTest is Test {
 
         // post-cut collateral = raw - seized; seized = plainSlice·SCALE/price (price 1e36 => seized == plainSlice).
         uint256 remaining = 100e18 - plainSlice;
-        h.setSlicePolicy(
-            SlicePolicy({
+        h.setSettlementConfig(
+            SettlementConfig({
                 sliceFloorBps: 500, sliceFloorAssets: 0, fullCutBelowCollateral: uint96(remaining + 1), ltvStepBps: 100
             })
         );
         assertEq(h.allowedSlice(mv, ROOT, pos), fullDebt, "sweep lifts the bound to full debt");
 
-        h.setSlicePolicy(
-            SlicePolicy({
+        h.setSettlementConfig(
+            SettlementConfig({
                 sliceFloorBps: 500, sliceFloorAssets: 0, fullCutBelowCollateral: uint96(remaining), ltvStepBps: 100
             })
         );
@@ -182,13 +189,13 @@ contract SettlementQueueSliceTest is Test {
 
     function test_allowedSlice_capsAtDebt() public {
         QueueHarness h = new QueueHarness();
-        h.setSlicePolicy(
-            SlicePolicy({sliceFloorBps: 0, sliceFloorAssets: 100 ether, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        h.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 0, sliceFloorAssets: 100 ether, fullCutBelowCollateral: 0, ltvStepBps: 0})
         );
         h.sync(ROOT, 10e24, 100e18);
 
         PositionView memory pos = _position(10e24, 100e18);
         uint256 debt = SharesMathLib.toAssetsUp(10e24, 100e18, 100e24);
-        assertEq(h.allowedSlice(_marketView(), ROOT, pos), debt, "allowedSlice cannot exceed borrower debt");
+        assertEq(h.allowedSlice(_marketView(), ROOT, pos), debt, "slice cannot exceed borrower debt");
     }
 }

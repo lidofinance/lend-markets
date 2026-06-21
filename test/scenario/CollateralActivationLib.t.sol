@@ -41,6 +41,7 @@ contract ActivationHarness {
         GuardiansOpinion memory opinion = GuardiansOpinion({
             status: Status.Normal,
             strikes: strikes,
+            flagCount: strikes,
             quorumBlock: BlockInfo({number: uint40(block.number), timestamp: uint40(block.timestamp)})
         });
         return $.syncActivation(false, borrower, opinion);
@@ -49,7 +50,10 @@ contract ActivationHarness {
     /// @dev Sync with an explicit quorum-frontier timestamp, to exercise the activation gate.
     function syncWithQuorum(address borrower, uint40 quorumTimestamp) external returns (uint256) {
         GuardiansOpinion memory opinion = GuardiansOpinion({
-            status: Status.Normal, strikes: 0, quorumBlock: BlockInfo({number: 0, timestamp: quorumTimestamp})
+            status: Status.Normal,
+            strikes: 0,
+            flagCount: 0,
+            quorumBlock: BlockInfo({number: 0, timestamp: quorumTimestamp})
         });
         return $.syncActivation(false, borrower, opinion);
     }

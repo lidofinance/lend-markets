@@ -263,7 +263,10 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
 
         opinion.status = signal.status;
         opinion.quorumBlock = _quorumBlock;
-        opinion.strikes = signal.flaggedBy.length();
+        opinion.flagCount = signal.flaggedBy.length();
+        // `Immune` exempts the account from guardian signals: zero its effective strikes so the surcharge and
+        // every reader treat it as clean, while `flagCount` keeps the raw flag activity visible.
+        opinion.strikes = signal.status == Status.Immune ? 0 : opinion.flagCount;
     }
 
     /// @inheritdoc IGuardianSignals

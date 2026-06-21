@@ -17,8 +17,18 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///      of the lender's owed; the unramped remainder stays with the lender. The protocol takes a cut
 ///      of the keeper's gross reward; the lender's owed is unaffected by that cut.
 library WithdrawalMathLib {
+    // ---
+    // CONSTANTS
+    // ---
+
+    /// @dev WAD scale for the fixed `pricePerShare` (assets per share).
     uint256 internal constant WAD = 1e18;
+    /// @dev Basis-point denominator for the fee ramp and the protocol cut.
     uint256 internal constant BPS = 10_000;
+
+    // ---
+    // PURE MATH
+    // ---
 
     /// @param assetsOut Assets produced by redeeming/withdrawing `filledShares` this fill.
     /// @param filledShares Shares filled by this fill.

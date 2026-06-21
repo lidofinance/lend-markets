@@ -153,7 +153,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
                     minActivationAmount: 10 ether,
                     maxGuardiansQuorumDelay: 0
                 }),
-                slicePolicy: SlicePolicyConfig({
+                settlementConfig: SettlementConfigParams({
                     sliceFloorBps: 100, sliceFloorAssets: 20 ether, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,

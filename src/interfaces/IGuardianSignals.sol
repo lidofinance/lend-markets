@@ -9,7 +9,9 @@ import {BlockInfo, BlockInfoWithHash, GuardiansOpinion} from "./GuardianSignalsT
 ///         detect as malicious. A `quorum` of distinct flags latches a ban. The market controller reads
 ///         `getOpinion` to scale collateral activation and to hard-block borrowing.
 interface IGuardianSignals {
-    /* EVENTS */
+    // ---
+    // EVENTS
+    // ---
 
     /// @notice Emitted when a guardian joins the set.
     event GuardianAdded(address indexed guardian);
@@ -35,16 +37,18 @@ interface IGuardianSignals {
     /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
     event Banned(Id indexed market, address indexed account);
     /// @notice Emitted when an account's ban is lifted.
-    /// @param by The `GOVERNANCE_ROLE` holder that unbanned.
+    /// @param by The `ACCESS_RESTORER_ROLE` holder that unbanned.
     event Unbanned(Id indexed market, address indexed account, address indexed by);
     /// @notice Emitted when an account is exempted.
-    /// @param by The `GOVERNANCE_ROLE` holder that granted immunity.
+    /// @param by The `ACCESS_RESTORER_ROLE` holder that granted immunity.
     event ImmunityGranted(Id indexed market, address indexed account, address indexed by);
     /// @notice Emitted when an account's immunity is removed.
-    /// @param by The `RISK_STEWARD_ROLE` holder that revoked immunity.
+    /// @param by The `ACCESS_LIMITER_ROLE` holder that revoked immunity.
     event ImmunityRevoked(Id indexed market, address indexed account, address indexed by);
 
-    /* ERRORS */
+    // ---
+    // ERRORS
+    // ---
 
     /// @notice Thrown when a zero address is passed where an account or guardian is required.
     error ZeroAddress();
@@ -63,7 +67,9 @@ interface IGuardianSignals {
     /// @notice Thrown when a heartbeat's reported hash does not match the block's hash.
     error InvalidBlockHash();
 
-    /* MEMBERSHIP & QUORUM (admin) */
+    // ---
+    // MEMBERSHIP & QUORUM (admin)
+    // ---
 
     /// @notice The number of distinct flags that latches a ban.
     function getQuorum() external view returns (uint256);
@@ -80,7 +86,9 @@ interface IGuardianSignals {
     /// @notice The current guardian set.
     function getGuardians() external view returns (address[] memory);
 
-    /* LIVENESS */
+    // ---
+    // LIVENESS
+    // ---
 
     /// @notice Record the caller's last-scanned block, validated against its block hash. O(1): the quorum
     ///         frontier is recomputed separately by `syncQuorumBlock`.
@@ -97,7 +105,9 @@ interface IGuardianSignals {
     ///         rotation cannot lower it.
     function getLastScannedQuorumBlock() external view returns (BlockInfo memory);
 
-    /* FLAGGING (guardians) */
+    // ---
+    // FLAGGING (guardians)
+    // ---
 
     /// @notice Flag `accounts` in `market`, then heartbeat. Per account a no-op when the caller already flags
     ///         it or it is immune, so a batch never reverts on a skip.
@@ -106,7 +116,9 @@ interface IGuardianSignals {
     ///         the caller does not flag it or it is immune. Never lifts a latched ban.
     function unflag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
 
-    /* OVERRIDE (committee / governance) */
+    // ---
+    // OVERRIDE (committee / governance)
+    // ---
 
     /// @notice Force a ban on `account` in `market`, bypassing the quorum. Clears any immunity.
     function ban(Id market, address account) external;
@@ -119,7 +131,9 @@ interface IGuardianSignals {
     /// @notice Remove `account`'s immunity in `market`, re-subjecting it to guardian signals.
     function revokeImmunity(Id market, address account) external;
 
-    /* VIEWS */
+    // ---
+    // VIEWS
+    // ---
 
     /// @notice Guardian opinion on `account` in `market`: status, strike count, and the quorum-scan frontier.
     ///         The view the controller's activation gate consumes.

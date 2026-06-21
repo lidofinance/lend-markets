@@ -3,6 +3,10 @@ pragma solidity 0.8.35;
 
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
+// ---
+// TYPES
+// ---
+
 /// @notice An account's latched guardian status. `Normal` is clean. `Immune` exempts the account from
 ///         guardian signals. `Banned` hard-blocks borrowing, latched by a quorum of flags or a forced `ban`.
 enum Status {
@@ -33,8 +37,8 @@ struct BlockInfoWithHash {
 /// @notice Per-account guardian signal, stored per `(market, account)`.
 /// @param status    Latched status. A quorum of flags or a forced `ban` latches `Banned`, held until `unban`.
 ///        While `Immune`, `flag`/`unflag` no-op and readers see the account as clean.
-/// @param flaggedBy Live set of guardians currently flagging the account. Its size is the strike count, and
-///        `unban` clears it in one call.
+/// @param flaggedBy Live set of guardians currently flagging the account. Its size is the raw flag count,
+///        which becomes the effective strikes unless the account is `Immune`. `unban` clears it in one call.
 struct GuardiansSignal {
     Status status;
     EnumerableSet.AddressSet flaggedBy;
@@ -43,10 +47,14 @@ struct GuardiansSignal {
 /// @notice Read model of an account's signal, returned by `getOpinion` and consumed by the controller's
 ///         activation gate.
 /// @param status     The account's latched status.
-/// @param strikes     The current flag count. Below quorum it scales the activation delay up.
+/// @param strikes     Effective guardian strikes: the flag count that scales the activation delay, forced to 0
+///        while `Immune` so an exempt account carries no surcharge.
+/// @param flagCount   Raw number of guardians currently flagging the account, regardless of status. Equals
+///        `strikes` except while `Immune`, where it stays visible while `strikes` reads 0.
 /// @param quorumBlock The quorum-scan frontier: the highest block a quorum of guardians have scanned past.
 struct GuardiansOpinion {
     Status status;
     uint256 strikes;
+    uint256 flagCount;
     BlockInfo quorumBlock;
 }

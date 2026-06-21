@@ -29,12 +29,20 @@ import {GuardiansOpinion, Status} from "../interfaces/GuardianSignalsTypes.sol";
 library CollateralActivationLib {
     using SafeCast for uint256;
 
+    // ---
+    // CONSTANTS
+    // ---
+
     /// @dev Sanity ceiling for governance-set delays.
     uint256 internal constant MAX_DELAY_BOUND = 7 days;
 
     /// @dev Transient-storage namespace for the inflow a position added in the current tx (flash-loan undo).
     bytes32 private constant TX_INFLOW_ADDED_NAMESPACE =
         keccak256("lido.lending.CollateralActivationLib.tx-inflow-added.v1");
+
+    // ---
+    // EVENTS
+    // ---
 
     /// @notice Emitted when collateral enters the activation timer: a deposit promotes the dormant amount
     ///         past the dust threshold. `unlockTime` is the base unlock (`activatingStart + delay`), before
@@ -48,7 +56,7 @@ library CollateralActivationLib {
     event CollateralDebited(address indexed borrower, uint256 fromDust, uint256 fromActivating, uint256 fromActive);
 
     /// @notice Emitted when the full activation config is set.
-    event ConfigSet(Config config);
+    event CollateralActivationConfigSet(Config config);
 
     /// @notice Emitted when the activation delay floor is raised.
     event MinActivationDelaySet(uint64 minActivationDelay);
@@ -62,7 +70,17 @@ library CollateralActivationLib {
     /// @notice Emitted when a borrower's instant-activation (skip-the-timer) flag is set.
     event InstantActivationSet(address indexed borrower, bool enabled);
 
+    // ---
+    // ERRORS
+    // ---
+
+    /// @notice A config setter received parameters that violate the activation-ramp bounds (delays out of
+    ///         order or above `MAX_DELAY_BOUND`, or a zero floor/threshold/inflow reference).
     error BadConfig();
+
+    // ---
+    // TYPES
+    // ---
 
     /// @notice Per-borrower collateral split, summing to the borrower's raw collateral in core.
     /// @param active Matured collateral, counts for borrow capacity.
@@ -118,6 +136,10 @@ library CollateralActivationLib {
         mapping(address borrower => bool) instantActivation;
     }
 
+    // ---
+    // CONFIGURATION
+    // ---
+
     /// @notice Validate and store the governance-tunable config.
     function setConfig(State storage $, Config memory cfg) internal {
         if (cfg.minActivationDelay == 0) revert BadConfig();
@@ -129,7 +151,7 @@ library CollateralActivationLib {
 
         $.config = cfg;
 
-        emit ConfigSet(cfg);
+        emit CollateralActivationConfigSet(cfg);
     }
 
     /// @notice Set the base delay floor. Reverts unless 0 < minDelay <= maxActivationDelay.
@@ -152,10 +174,16 @@ library CollateralActivationLib {
         emit ActivatingHoldSet(hold);
     }
 
+    /// @notice Toggle a borrower's instant-activation flag. When set, the borrower's deposits cross straight
+    ///         into `active`, skipping both the timer and the inflow throttle.
     function setInstantActivation(State storage $, address borrower, bool isInstantActivationAllowed) internal {
         $.instantActivation[borrower] = isInstantActivationAllowed;
         emit InstantActivationSet(borrower, isInstantActivationAllowed);
     }
+
+    // ---
+    // ACTIONS
+    // ---
 
     /// @notice Book a new collateral deposit. It joins dust, and once dust plus this deposit crosses the
     ///         threshold the whole dormant amount enters the activation timer and is added to the market inflow.
@@ -261,7 +289,7 @@ library CollateralActivationLib {
             remaining -= uint128(fromActivating);
         }
 
-        // underflows (reverts) if the request reaches into the held hold or the buckets drift from raw
+        // underflows (reverts) if the request reaches into the Sybil hold or the buckets drift from raw
         uint256 fromActive = remaining;
         if (fromActive != 0) {
             position.active -= uint128(fromActive);
@@ -274,6 +302,10 @@ library CollateralActivationLib {
         emit CollateralDebited(borrower, fromDust, fromActivating, fromActive);
         return position.active;
     }
+
+    // ---
+    // GETTERS
+    // ---
 
     /// @notice Unlock timestamp of the borrower's activating lot, 0 if none.
     function getUnlockTime(State storage $, address borrower, GuardiansOpinion memory opinion)
@@ -308,6 +340,10 @@ library CollateralActivationLib {
         uint256 decay = uint256($.config.maxDelayInflow) * elapsed / $.config.maxActivationDelay;
         return Math.saturatingSub(inflow, decay);
     }
+
+    // ---
+    // INTERNAL HELPERS
+    // ---
 
     function _applyInflowIncrement(State storage $, address borrower, uint256 increment)
         private

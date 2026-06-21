@@ -80,7 +80,7 @@ Then:
 - [ ] Grant the registry override roles to their real holders: `RISK_STEWARD_ROLE`, `GOVERNANCE_ROLE`.
 - [ ] Retune the activation config if the deploy-time placeholder needs changing (`setConfig`, or
       the fast `increaseMinActivationDelay` / `increaseMaxActivationDelay`).
-- [ ] Set settle policy if defaults need overriding (`setSlicePolicy`), and the risk-steward Sybil
+- [ ] Set the settlement config if defaults need overriding (`setSettlementConfig`), and the risk-steward Sybil
       hold (`setActivatingHold`) if used.
 - [ ] Confirm each proxy points at the expected implementation
       (`OssifiableProxy.proxy__getImplementation()`).

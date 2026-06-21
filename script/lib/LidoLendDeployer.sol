@@ -9,11 +9,11 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 
 /// @dev Minimal configurator surface of the controller used to seed the deploy-time policy.
-///      `LidoLendDeployer.SlicePolicyConfig` mirrors the controller's struct, so the call ABI matches.
+///      `LidoLendDeployer.SettlementConfigParams` mirrors the controller's struct, so the call ABI matches.
 interface IControllerConfigurator {
     function MANAGER_ROLE() external view returns (bytes32);
     function grantRole(bytes32 role, address account) external;
-    function setSlicePolicy(LidoLendDeployer.SlicePolicyConfig calldata policy) external;
+    function setSettlementConfig(LidoLendDeployer.SettlementConfigParams calldata policy) external;
 }
 
 /// @title LidoLendDeployer
@@ -27,9 +27,9 @@ abstract contract LidoLendDeployer {
     /// @dev forge-std cheatcode singleton, inlined so this contract need not inherit `Test` / `Script`.
     Vm internal constant _vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    /// @dev Mirror of `SettlementTypes.SlicePolicy` (same field order/types); see `ActivationConfig`
+    /// @dev Mirror of `SettlementTypes.SettlementConfig` (same field order/types); see `ActivationConfig`
     ///      for why the deployer mirrors instead of importing.
-    struct SlicePolicyConfig {
+    struct SettlementConfigParams {
         uint16 sliceFloorBps;
         uint96 sliceFloorAssets;
         uint96 fullCutBelowCollateral;
@@ -76,7 +76,7 @@ abstract contract LidoLendDeployer {
         uint256 lltv;
         bool enableSettlement;
         ActivationConfig activation;
-        SlicePolicyConfig slicePolicy;
+        SettlementConfigParams settlementConfig;
         // Guardian-signals registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
         // `1 <= quorum <= guardians.length`; swap in the real guardian set post-deploy.
         address[] guardians;
@@ -111,7 +111,7 @@ abstract contract LidoLendDeployer {
         // so it can set the policy now and tune it later.
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
-        controller.setSlicePolicy(cfg.slicePolicy);
+        controller.setSettlementConfig(cfg.settlementConfig);
     }
 
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so
@@ -187,10 +187,9 @@ abstract contract LidoLendDeployer {
         string memory name_,
         string memory symbol_
     ) internal virtual returns (address) {
-        address impl = _deployArtifact("src/LidoLendERC4626.sol:LidoLendERC4626", "");
+        address impl = _deployArtifact("src/LidoLendERC4626.sol:LidoLendERC4626", abi.encode(core));
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,(address,address,address,address,uint256),address,string,string)",
-            core,
+            "initialize((address,address,address,address,uint256),address,string,string)",
             params,
             controller,
             name_,

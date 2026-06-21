@@ -51,7 +51,7 @@ contract DeployMarket is Script, LidoLendDeployer {
                     maxGuardiansQuorumDelay: 0
                 }),
                 // DRAFT slice policy — governance values, tune before any real deploy.
-                slicePolicy: SlicePolicyConfig({
+                settlementConfig: SettlementConfigParams({
                     sliceFloorBps: 100, // 1% of the root's debt
                     sliceFloorAssets: 10 ether,
                     fullCutBelowCollateral: 10 ether, // sweep settle leftovers below the activation minimum

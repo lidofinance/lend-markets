@@ -7,26 +7,13 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {Id, IMorpho, MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, IMorpho, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
-import {
-    ILidoLendMarketController as ILidoLendBaseMarketController
-} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {SettlementQueueLib} from "./libs/SettlementQueueLib.sol";
-import {SlicePolicy} from "./types/SettlementTypes.sol";
-
-/// @dev Off-hook view surface of the controller the vault sizes its exit loop against. Not part of the
-///      core `ILidoLendBaseMarketController` interface (which is hooks-only), so the vault reaches these
-///      controller-specific views by casting `address(CONTROLLER)`.
-interface ISlicePolicyView {
-    function slicePolicy() external view returns (SlicePolicy memory);
-    function nextSettlementCut() external view returns (address borrower, uint256 sliceAssets);
-    function allowedSliceFor(address borrower) external view returns (uint256);
-}
+import {ILidoLendMarketController} from "./interfaces/ILidoLendMarketController.sol";
 
 /// @title LidoLendERC4626
 /// @notice Single-market ERC-4626 wrapper for a Morpho Blue fork market with settle exit support.
@@ -42,123 +29,288 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
     using SafeERC20 for IERC20;
     using SharesMathLib for uint256;
 
+    // ---
+    // ERRORS
+    // ---
+
+    /// @notice Thrown when an exit is requested for zero shares.
     error ZeroShares();
+
+    /// @notice Thrown when the seized-collateral receiver is the zero address.
     error ZeroAddress();
+
+    /// @notice Thrown when the LidoLend core address is zero at construction.
+    error ZeroLidoLend();
+
+    /// @notice Thrown when the controller address is zero at initialization.
+    error ZeroController();
+
+    /// @notice Thrown when the market's loan token is the zero address at initialization.
+    error ZeroLoanToken();
+
+    /// @notice Thrown when the market's collateral token is the zero address at initialization.
+    error ZeroCollateralToken();
+
+    /// @notice Thrown when an exit reaches its settle leg but the vault holds no Morpho supply shares to cut
+    ///         against, so the requested slice maps to a zero supply-share budget.
     error ZeroMorphoSupplyShares();
 
-    // Packed payload for `FallbackExit` to avoid stack-too-deep on the emit site under
-    // via_ir=false. Indexed fields stay as direct args.
-    struct FallbackExitLog {
-        uint256 sharesRequested;
-        uint256 sharesBurned;
-        uint256 loanAssets;
-        uint256 morphoSupplyShares;
-        uint256 collateralSeized;
-        uint256 debtCanceled;
-    }
+    /// @notice Thrown when the requested exit shares exceed the owner's balance.
+    error ExceededBalance(address owner, uint256 shares, uint256 balance);
 
+    /// @notice Thrown when `settle` is called with an empty borrowers list.
+    error EmptyBorrowers();
+
+    // ---
+    // EVENTS
+    // ---
+
+    /// @notice An automatic `fallbackExit` settled its illiquid remainder against the risk queue.
     event FallbackExit(
         address indexed caller,
         address indexed owner,
         address indexed receiver,
-        uint256 sharesRequested,
         uint256 sharesBurned,
-        uint256 loanAssets,
-        uint256 morphoSupplyShares,
         uint256 collateralSeized,
         uint256 debtCanceled
     );
 
-    event SettlementCut(
-        address indexed borrower, uint256 morphoSupplyShares, uint256 collateralSeized, uint256 debtCanceled
+    /// @notice A targeted `settle` cut the caller-named borrowers.
+    event Settled(
+        address indexed caller,
+        address indexed owner,
+        address indexed receiver,
+        uint256 sharesBurned,
+        uint256 collateralSeized,
+        uint256 debtCanceled
     );
 
-    /// @dev Per-call cut bound for the fallback-exit loop (gas safety).
-    uint256 internal constant MAX_SETTLEMENT_ITERATIONS = 150;
+    // ---
+    // CONSTANTS
+    // ---
 
-    IMorpho public MORPHO;
-    ILidoLendBaseMarketController public CONTROLLER;
+    /// @dev Default per-call cut bound for the fallback-exit loop (gas safety). `fallbackExit` callers can
+    ///      override it; passing 0 falls back to this.
+    uint256 public constant DEFAULT_MAX_SETTLEMENT_ITERATIONS = 150;
+
+    /// @dev Decimals the vault's shares normalize to, like every Morpho vault — independent of the loan
+    ///      token's own decimals. The virtual-share offset is `SHARE_DECIMALS - loanTokenDecimals` (floored at 0).
+    uint8 private constant SHARE_DECIMALS = 18;
+
+    // ---
+    // IMMUTABLES
+    // ---
+
+    /// @notice The LidoLend core (Morpho Blue fork) this vault supplies into and settles against.
+    ILidoLend public immutable LIDO_LEND;
+
+    // ---
+    // STORAGE
+    // ---
+
+    /// @notice Id of the market this vault wraps.
     Id public marketId;
+
+    /// @notice The market's policy controller. The vault reads its settlement-queue views to size exit cuts.
+    ILidoLendMarketController public controller;
+
+    /// @dev Cached market params (loan/collateral/oracle/irm/lltv) for the core supply, withdraw and settle calls.
     MarketParams internal _marketParams;
 
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    /// @dev Virtual-share decimals offset, `SHARE_DECIMALS - loanTokenDecimals`, frozen at init (see
+    /// `_decimalsOffset`).
+    uint8 internal _loanDecimalsOffset;
+
+    // ---
+    // INITIALIZATION
+    // ---
+
+    /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
+    constructor(address lidoLend) {
+        if (lidoLend == address(0)) {
+            revert ZeroLidoLend();
+        }
+
+        LIDO_LEND = ILidoLend(lidoLend);
+
         _disableInitializers();
     }
 
+    /// @notice Bind the proxy to one market: cache its params, point at the controller, freeze the
+    ///         virtual-share decimals offset, and grant the core an unbounded loan-token allowance so
+    ///         deposits can supply without a per-call approval.
+    /// @param marketParams_ The market this vault wraps; its loan token becomes the ERC-4626 asset.
+    /// @param controller_ The market's policy controller, read for settlement-queue sizing.
+    /// @param name_ ERC-20 name of the share token.
+    /// @param symbol_ ERC-20 symbol of the share token.
     function initialize(
-        address morpho,
         MarketParams memory marketParams_,
-        address controller,
+        address controller_,
         string memory name_,
         string memory symbol_
     ) external initializer {
-        if (
-            morpho == address(0) || controller == address(0) || marketParams_.loanToken == address(0)
-                || marketParams_.collateralToken == address(0)
-        ) {
-            revert ZeroAddress();
+        if (controller_ == address(0)) {
+            revert ZeroController();
+        }
+
+        if (marketParams_.loanToken == address(0)) {
+            revert ZeroLoanToken();
+        }
+
+        if (marketParams_.collateralToken == address(0)) {
+            revert ZeroCollateralToken();
         }
 
         __ERC20_init(name_, symbol_);
         __ERC4626_init(IERC20(marketParams_.loanToken));
 
-        MORPHO = IMorpho(morpho);
-        CONTROLLER = ILidoLendBaseMarketController(controller);
+        // Offset = SHARE_DECIMALS - loanTokenDecimals (floored at 0), so shares normalize to SHARE_DECIMALS and
+        // the virtual-share buffer scales to 10**offset. `decimals()` here returns the underlying's, because
+        // the offset is still 0 in storage and has not been folded in yet.
+        _loanDecimalsOffset = uint8(Math.saturatingSub(SHARE_DECIMALS, decimals()));
+
+        controller = ILidoLendMarketController(controller_);
         marketId = marketParams_.id();
         _marketParams = marketParams_;
 
-        IERC20(marketParams_.loanToken).forceApprove(morpho, type(uint256).max);
+        IERC20(marketParams_.loanToken).forceApprove(address(LIDO_LEND), type(uint256).max);
     }
 
+    // ---
+    // GETTERS
+    // ---
+
+    /// @notice The wrapped market's params (loan/collateral/oracle/irm/lltv), as cached at init.
     function marketParams() external view returns (MarketParams memory) {
         return _marketParams;
     }
 
+    // ---
+    // OVERRIDES
+    // ---
+
+    /// @dev Only the Morpho supply position backs shares. Loan tokens sent directly to the vault
+    ///      (donations) are not counted, so they cannot move the share price — this is the donation /
+    ///      inflation defense. Stray idle stays inert until a fresh deposit's supply folds it into the position.
     function totalAssets() public view override returns (uint256) {
-        return IERC20(asset()).balanceOf(address(this)) + _morphoSupplyAssets();
+        uint256 supplyShares = _lidoLendSupplyShares();
+        if (supplyShares == 0) return 0;
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares) = _marketSupplyTotals();
+        return supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
     }
 
+    /// @dev Capped by the market's free liquidity, not just the owner's position: the supplied loan token
+    ///      can be borrowed out, so withdrawing past available liquidity reverts in the core. The illiquid
+    ///      remainder exits through `fallbackExit`.
     function maxWithdraw(address owner) public view override returns (uint256) {
-        return Math.min(_ownerAssets(owner), _liquidAssets());
+        return Math.min(previewRedeem(balanceOf(owner)), _morphoWithdrawableAssets());
     }
 
+    /// @dev Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in free liquidity
+    ///      it returns the exact share balance, avoiding a `convertToShares` round-trip that could round the
+    ///      last wei down and strand a share. Otherwise it caps to the shares liquidity covers.
     function maxRedeem(address owner) public view override returns (uint256) {
         uint256 ownerShares = balanceOf(owner);
-        uint256 liquidAssets = _liquidAssets();
+        uint256 liquidAssets = _morphoWithdrawableAssets();
 
-        if (_ownerAssets(owner) <= liquidAssets) return ownerShares;
-        return Math.min(ownerShares, convertToShares(liquidAssets));
+        return previewRedeem(ownerShares) <= liquidAssets ? ownerShares : convertToShares(liquidAssets);
     }
 
-    /// @dev Owner's full position valued in assets. This is what OZ's `maxWithdraw` means, computed
-    ///      directly: the base `maxWithdraw` routes through `maxRedeem`, which this contract overrides,
-    ///      so calling `super.maxWithdraw` here would recurse into the override indefinitely.
-    function _ownerAssets(address owner) private view returns (uint256) {
-        return previewRedeem(balanceOf(owner));
+    function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override {
+        super._deposit(caller, receiver, assets, shares);
+        if (assets != 0) LIDO_LEND.supply(_marketParams, assets, 0, address(this), "");
     }
 
-    /// @dev Idle loan assets the vault holds plus what its Morpho position can withdraw right now.
-    function _liquidAssets() private view returns (uint256) {
-        return IERC20(asset()).balanceOf(address(this)) + _morphoWithdrawableAssets();
+    function _withdraw(address caller, address receiver, address owner, uint256 assets, uint256 shares)
+        internal
+        override
+    {
+        if (assets != 0) LIDO_LEND.withdraw(_marketParams, assets, 0, address(this), address(this));
+        super._withdraw(caller, receiver, owner, assets, shares);
     }
 
-    /// @dev Shared plan for one exit: the preview target + live market totals, bundled to keep the
-    ///      `_beginExit` / `_finishExit` signatures narrow under via_ir=false.
-    struct ExitPlan {
-        uint256 shares;
-        address owner;
-        address receiver;
-        uint256 morphoSupplyTarget;
-        uint256 totalSupplyAssets;
-        uint256 totalSupplyShares;
+    /// @dev `SHARE_DECIMALS - loanTokenDecimals` (frozen at init): shares normalize to SHARE_DECIMALS like every
+    ///      Morpho vault, and the virtual-share buffer scales to 10**offset — defense-in-depth on top of the
+    ///      position-only `totalAssets` above, which is the actual donation/inflation defense.
+    function _decimalsOffset() internal view override returns (uint8) {
+        return _loanDecimalsOffset;
+    }
+
+    // ---
+    // SETTLEMENT
+    // ---
+
+    /// @notice Targeted settlement: cuts the caller-supplied `borrowers` in order (sizing each via
+    ///         `controller.settlementFor`) against the owner's Morpho supply, paying seized collateral
+    ///         to `receiver`. Best-effort, no revert on shortfall.
+    /// @dev Unlike `fallbackExit`, this does NOT redeem ordinary liquidity first — a targeted settle must
+    ///      stay liquidity-neutral and only cut the named positions, never draining lender withdraw
+    ///      liquidity. It therefore remains subject to the core's `SETTLEMENT_LIQUIDITY_AVAILABLE` gate: a
+    ///      cut whose cancelled debt does not exceed the market's ordinary liquidity reverts. Use
+    ///      `fallbackExit` for the griefing-resistant lender exit; `settle` is the precise cut.
+    ///      Collateral is transferred directly by Morpho to `receiver`; the vault does not custody it.
+    /// @param shares Vault shares to settle against; bounds the Morpho supply consumed by the cuts.
+    /// @param borrowers Positions to cut, in order; each sized via `controller.settlementFor`.
+    /// @param receiver Recipient of the seized collateral.
+    /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
+    /// @return sharesBurned Shares burned for the settled slice.
+    /// @return loanAssets Always 0 — a targeted settle pays only seized collateral and withdraws no liquidity.
+    /// @return collateralSeized Collateral seized from the cut positions and sent to `receiver`.
+    /// @return debtCanceled Borrower debt cancelled by the cuts.
+    function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
+        external
+        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
+    {
+        if (borrowers.length == 0) revert EmptyBorrowers();
+        if (shares == 0) revert ZeroShares();
+        if (receiver == address(0)) revert ZeroAddress();
+        if (shares > balanceOf(owner)) revert ExceededBalance(owner, shares, balanceOf(owner));
+
+        // The owner's pro-rata slice of the vault's Morpho supply position, in supply shares: the budget the
+        // cuts consume.
+        uint256 supplyTarget = Math.mulDiv(_lidoLendSupplyShares(), shares, totalSupply());
+        if (supplyTarget == 0) revert ZeroMorphoSupplyShares();
+
+        uint256 remaining = supplyTarget;
+        for (uint256 i = 0; i < borrowers.length && remaining != 0; ++i) {
+            address borrower = borrowers[i];
+            (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) = _settleBorrower(remaining, borrower, receiver);
+
+            remaining -= cutShares;
+            collateralSeized += cutCollateral;
+            debtCanceled += cutDebt;
+        }
+
+        // Burn the shares actually settled (pro-rata when the cuts fell short of the target), spending allowance
+        // only for that. loanAssets stays 0 — settle pays the receiver collateral, not loan assets.
+        sharesBurned =
+            remaining == 0 ? shares : Math.mulDiv(shares, supplyTarget - remaining, supplyTarget, Math.Rounding.Ceil);
+
+        address caller = _msgSender();
+        if (sharesBurned != 0) {
+            if (caller != owner) _spendAllowance(owner, caller, sharesBurned);
+            _burn(owner, sharesBurned);
+        }
+
+        emit Settled(caller, owner, receiver, sharesBurned, collateralSeized, debtCanceled);
+    }
+
+    function _settleBorrower(uint256 maxSharesToCut, address borrower, address receiver)
+        internal
+        returns (uint256 cutShares, uint256 collateralSeized, uint256 debtCanceled)
+    {
+        (, uint256 sliceShares) = controller.settlementFor(borrower);
+        if (sliceShares > 0 && maxSharesToCut > 0) {
+            cutShares = Math.min(sliceShares, maxSharesToCut);
+            (collateralSeized, debtCanceled) =
+                LIDO_LEND.settle(_marketParams, 0, cutShares, address(this), borrower, receiver);
+        }
     }
 
     /// @notice Automatic fallback exit. First pays out as much as ordinary market liquidity covers via a
     ///         normal redeem, then settles the remainder against the controller's risk queue (head first),
     ///         seizing collateral to `receiver`. The caller does not pick the positions. Settling is
-    ///         best-effort: whatever fraction is serviced is burned (matching slice of idle loan assets
-    ///         paid out), no revert on shortfall.
+    ///         best-effort: whatever fraction is serviced is burned, no revert on shortfall.
     /// @dev Redeeming what liquidity covers before settling closes a griefing vector: the core blocks
     ///      `settle` while idle liquidity still covers the amount (`SETTLEMENT_LIQUIDITY_AVAILABLE`), so
     ///      without the redeem an attacker could add idle right before the call and force the whole exit
@@ -168,119 +320,66 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
     /// @param shares Vault shares to exit (redeemed first, then the remainder settled).
     /// @param receiver Recipient of both the redeemed loan assets and the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
+    /// @param maxIterations Cap on borrowers the settle leg cuts; 0 uses `DEFAULT_MAX_SETTLEMENT_ITERATIONS`.
     /// @return sharesBurned Total shares burned across the redeem and settle legs.
-    /// @return loanAssets Loan assets paid to `receiver` (redeem leg plus any idle slice on settle).
+    /// @return loanAssets Loan assets paid to `receiver` by the redeem leg (the settle leg pays only collateral).
     /// @return collateralSeized Collateral seized from settled positions and sent to `receiver`.
     /// @return debtCanceled Borrower debt cancelled by the settle leg.
-    function fallbackExit(uint256 shares, address receiver, address owner)
+    function fallbackExit(uint256 shares, address receiver, address owner, uint256 maxIterations)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
     {
-        // 1. Ordinary path: redeem whatever current liquidity (idle + Morpho-withdrawable) can honour.
-        //    Draining idle also stops the core's settle liquidity gate from blocking the remainder.
+        if (shares == 0) revert ZeroShares();
+        if (receiver == address(0)) revert ZeroAddress();
+        if (shares > balanceOf(owner)) revert ExceededBalance(owner, shares, balanceOf(owner));
+
+        // 1. Ordinary path: redeem whatever current liquidity (idle + Morpho-withdrawable) can honour. Draining
+        //    idle also stops the core's settle gate from blocking the remainder. OZ redeem burns these shares,
+        //    spends allowance, and emits Withdraw for this leg.
         sharesBurned = Math.min(shares, maxRedeem(owner));
         if (sharesBurned != 0) loanAssets = redeem(sharesBurned, receiver, owner);
         uint256 remaining = shares - sharesBurned;
+        if (remaining == 0) return (sharesBurned, loanAssets, 0, 0);
 
-        // 2. Settle the remainder against the risk queue (collateral to receiver). The redeem above
-        //    drained idle, so the core's liquidity gate no longer blocks this settle.
-        if (remaining != 0) {
-            ExitPlan memory plan = _beginExit(remaining, receiver, owner);
-            uint256 morphoSupplyConsumed;
-            (collateralSeized, debtCanceled, morphoSupplyConsumed) =
-                _settleFromHeap(plan.morphoSupplyTarget, receiver, plan.totalSupplyAssets, plan.totalSupplyShares);
-            (uint256 settledShares, uint256 settledLoan) =
-                _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
-            sharesBurned += settledShares;
-            loanAssets += settledLoan;
+        // 2. Settle the remainder against the risk queue, head first (collateral to receiver), up to the owner's
+        //    pro-rata supply-share budget for it.
+        uint256 supplyTarget = Math.mulDiv(_lidoLendSupplyShares(), remaining, totalSupply());
+        if (supplyTarget == 0) revert ZeroMorphoSupplyShares();
+
+        if (maxIterations == 0) maxIterations = DEFAULT_MAX_SETTLEMENT_ITERATIONS;
+        uint256 budget = supplyTarget;
+        for (uint256 i = 0; i < maxIterations && budget != 0; ++i) {
+            (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) = _settleNextAllowedBorrower(budget, receiver);
+            if (cutShares == 0) break;
+            budget -= cutShares;
+            collateralSeized += cutCollateral;
+            debtCanceled += cutDebt;
         }
-    }
 
-    /// @notice Targeted settlement: cuts the caller-supplied `borrowers` in order (sizing each via
-    ///         `controller.allowedSliceFor`) against the owner's Morpho supply, paying seized collateral
-    ///         to `receiver`. Best-effort, no revert on shortfall.
-    /// @dev Unlike `fallbackExit`, this does NOT redeem ordinary liquidity first — a targeted settle must
-    ///      stay liquidity-neutral and only cut the named positions, never draining lender withdraw
-    ///      liquidity. It therefore remains subject to the core's `SETTLEMENT_LIQUIDITY_AVAILABLE` gate: a
-    ///      cut whose cancelled debt does not exceed the market's ordinary liquidity reverts. Use
-    ///      `fallbackExit` for the griefing-resistant lender exit; `settle` is the precise cut.
-    ///      Collateral is transferred directly by Morpho to `receiver`; the vault does not custody it.
-    /// @param shares Vault shares to settle against; bounds the Morpho supply consumed by the cuts.
-    /// @param borrowers Positions to cut, in order; each sized via `controller.allowedSliceFor`.
-    /// @param receiver Recipient of the seized collateral.
-    /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
-    /// @return sharesBurned Shares burned for the settled slice.
-    /// @return loanAssets Loan assets paid to `receiver` (idle slice only; no liquidity is withdrawn).
-    /// @return collateralSeized Collateral seized from the cut positions and sent to `receiver`.
-    /// @return debtCanceled Borrower debt cancelled by the cuts.
-    function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
-        external
-        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
-    {
-        ExitPlan memory plan = _beginExit(shares, receiver, owner);
-        uint256 morphoSupplyConsumed;
-        (collateralSeized, debtCanceled, morphoSupplyConsumed) = _settleFromList(
-            plan.morphoSupplyTarget, borrowers, receiver, plan.totalSupplyAssets, plan.totalSupplyShares
-        );
-        (sharesBurned, loanAssets) = _finishExit(plan, morphoSupplyConsumed, collateralSeized, debtCanceled);
-    }
-
-    /// @dev Common exit preamble: validate, pull allowance, size the target, snapshot market totals.
-    function _beginExit(uint256 shares, address receiver, address owner) private returns (ExitPlan memory plan) {
-        if (shares == 0) revert ZeroShares();
-        if (receiver == address(0)) revert ZeroAddress();
-
+        // Burn the settled remainder (pro-rata, rounded up so remaining holders aren't diluted) and spend
+        // allowance for it; the redeem leg burned its own.
+        uint256 settledShares =
+            budget == 0 ? remaining : Math.mulDiv(remaining, supplyTarget - budget, supplyTarget, Math.Rounding.Ceil);
         address caller = _msgSender();
-        if (caller != owner) _spendAllowance(owner, caller, shares);
-
-        plan.morphoSupplyTarget = Math.mulDiv(_morphoSupplyShares(), shares, totalSupply());
-        if (plan.morphoSupplyTarget == 0) revert ZeroMorphoSupplyShares();
-        (plan.totalSupplyAssets, plan.totalSupplyShares) = _marketSupplyTotals();
-
-        plan.shares = shares;
-        plan.owner = owner;
-        plan.receiver = receiver;
-    }
-
-    function _finishExit(
-        ExitPlan memory plan,
-        uint256 morphoSupplyConsumed,
-        uint256 collateralSeized,
-        uint256 debtCanceled
-    ) private returns (uint256 sharesBurned, uint256 loanAssets) {
-        sharesBurned = morphoSupplyConsumed >= plan.morphoSupplyTarget
-            ? plan.shares
-            : Math.mulDiv(plan.shares, morphoSupplyConsumed, plan.morphoSupplyTarget);
-
-        if (sharesBurned != 0) {
-            loanAssets = Math.mulDiv(IERC20(asset()).balanceOf(address(this)), sharesBurned, totalSupply());
-            _burn(plan.owner, sharesBurned);
-            if (loanAssets != 0) IERC20(asset()).safeTransfer(plan.receiver, loanAssets);
+        if (settledShares != 0) {
+            if (caller != owner) _spendAllowance(owner, caller, settledShares);
+            _burn(owner, settledShares);
         }
+        sharesBurned += settledShares;
 
-        // slither-disable-next-line uninitialized-local
-        FallbackExitLog memory log;
-        log.sharesRequested = plan.shares;
-        log.sharesBurned = sharesBurned;
-        log.loanAssets = loanAssets;
-        log.morphoSupplyShares = morphoSupplyConsumed;
-        log.collateralSeized = collateralSeized;
-        log.debtCanceled = debtCanceled;
-        _emitFallbackExit(_msgSender(), plan.owner, plan.receiver, log);
+        emit FallbackExit(caller, owner, receiver, settledShares, collateralSeized, debtCanceled);
     }
 
-    function _emitFallbackExit(address caller, address owner, address receiver, FallbackExitLog memory log) internal {
-        emit FallbackExit(
-            caller,
-            owner,
-            receiver,
-            log.sharesRequested,
-            log.sharesBurned,
-            log.loanAssets,
-            log.morphoSupplyShares,
-            log.collateralSeized,
-            log.debtCanceled
-        );
+    function _settleNextAllowedBorrower(uint256 maxSharesToCut, address receiver)
+        internal
+        returns (uint256 cutShares, uint256 collateralSeized, uint256 debtCanceled)
+    {
+        (address borrower,, uint256 sliceShares) = controller.nextSettlementBorrower();
+        if (borrower != address(0) && sliceShares > 0 && maxSharesToCut > 0) {
+            cutShares = Math.min(sliceShares, maxSharesToCut);
+            (collateralSeized, debtCanceled) =
+                LIDO_LEND.settle(_marketParams, 0, cutShares, address(this), borrower, receiver);
+        }
     }
 
     /// @notice Returns the loan assets and Morpho supply shares consumed by `fallbackExit(shares, ...)`.
@@ -295,142 +394,29 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
         uint256 totalSupply_ = totalSupply();
         if (shares == 0 || totalSupply_ == 0) return (0, 0);
 
-        loanAssets = Math.mulDiv(IERC20(asset()).balanceOf(address(this)), shares, totalSupply_);
-        morphoSupplyShares = Math.mulDiv(_morphoSupplyShares(), shares, totalSupply_);
-    }
-
-    function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override {
-        super._deposit(caller, receiver, assets, shares);
-        if (assets != 0) MORPHO.supply(_marketParams, assets, 0, address(this), "");
-    }
-
-    function _withdraw(address caller, address receiver, address owner, uint256 assets, uint256 shares)
-        internal
-        override
-    {
-        _ensureIdleAssets(assets);
-        super._withdraw(caller, receiver, owner, assets, shares);
-    }
-
-    function _ensureIdleAssets(uint256 assets) internal {
-        uint256 idleAssets = IERC20(asset()).balanceOf(address(this));
-        if (idleAssets < assets) MORPHO.withdraw(_marketParams, assets - idleAssets, 0, address(this), address(this));
-    }
-
-    /// @dev Shared context for one settle call's loop — keeps the `_executeCut` signature
-    ///      narrow under via_ir=false (stack pressure with 6 raw args).
-    struct CutContext {
-        address receiver;
-        uint256 totalSupplyAssets;
-        uint256 totalSupplyShares;
-    }
-
-    function _settleFromHeap(
-        uint256 morphoSupplyShares,
-        address receiver,
-        uint256 totalSupplyAssets,
-        uint256 totalSupplyShares
-    ) internal returns (uint256 collateralSeized, uint256 debtCanceled, uint256 sharesConsumed) {
-        uint256 remainingShares = morphoSupplyShares;
-        uint256 maxIterations = MAX_SETTLEMENT_ITERATIONS;
-        CutContext memory ctx = CutContext({
-            receiver: receiver, totalSupplyAssets: totalSupplyAssets, totalSupplyShares: totalSupplyShares
-        });
-
-        for (uint256 i = 0; i < maxIterations; ++i) {
-            if (remainingShares == 0) break;
-
-            (address top, uint256 sliceAssets) = ISlicePolicyView(address(CONTROLLER)).nextSettlementCut();
-            if (top == address(0)) break;
-
-            (uint256 iterSupplyShares, uint256 iterCollateralSeized, uint256 iterDebtCanceled) =
-                _executeCut(top, sliceAssets, remainingShares, ctx);
-            if (iterSupplyShares == 0) break;
-
-            remainingShares -= iterSupplyShares;
-            collateralSeized += iterCollateralSeized;
-            debtCanceled += iterDebtCanceled;
-        }
-
-        sharesConsumed = morphoSupplyShares - remainingShares;
-    }
-
-    function _settleFromList(
-        uint256 morphoSupplyShares,
-        address[] calldata borrowers,
-        address receiver,
-        uint256 totalSupplyAssets,
-        uint256 totalSupplyShares
-    ) internal returns (uint256 collateralSeized, uint256 debtCanceled, uint256 sharesConsumed) {
-        uint256 remainingShares = morphoSupplyShares;
-        CutContext memory ctx = CutContext({
-            receiver: receiver, totalSupplyAssets: totalSupplyAssets, totalSupplyShares: totalSupplyShares
-        });
-
-        for (uint256 i = 0; i < borrowers.length; ++i) {
-            if (remainingShares == 0) break;
-
-            uint256 sliceAssets = ISlicePolicyView(address(CONTROLLER)).allowedSliceFor(borrowers[i]);
-            (uint256 iterSupplyShares, uint256 iterCollateralSeized, uint256 iterDebtCanceled) =
-                _executeCut(borrowers[i], sliceAssets, remainingShares, ctx);
-            if (iterSupplyShares == 0) continue;
-
-            remainingShares -= iterSupplyShares;
-            collateralSeized += iterCollateralSeized;
-            debtCanceled += iterDebtCanceled;
-        }
-
-        sharesConsumed = morphoSupplyShares - remainingShares;
-    }
-
-    /// @dev One cut. Sizes the cut via `SettlementQueueLib.effectiveCut` (clamp to the remaining
-    ///      exit), converts to shares, calls the core `settle` primitive, emits `SettlementCut`.
-    ///      Zero `iterSupplyShares` (exit satisfied, or a sub-share cut) means the caller stops / skips.
-    function _executeCut(address borrower, uint256 sliceAssets, uint256 remainingShares, CutContext memory ctx)
-        internal
-        returns (uint256 iterSupplyShares, uint256 iterCollateralSeized, uint256 iterDebtCanceled)
-    {
-        uint256 remainingExitAssets = remainingShares.toAssetsDown(ctx.totalSupplyAssets, ctx.totalSupplyShares);
-        sliceAssets = SettlementQueueLib.effectiveCut(sliceAssets, remainingExitAssets);
-        if (sliceAssets == 0) return (0, 0, 0);
-
-        iterSupplyShares = sliceAssets.toSharesDown(ctx.totalSupplyAssets, ctx.totalSupplyShares);
-        if (iterSupplyShares == 0) return (0, 0, 0);
-        if (iterSupplyShares > remainingShares) iterSupplyShares = remainingShares;
-
-        // New core API: settle takes dual assets/shares input (pass shares, assets 0) and orders onBehalf
-        // before borrower. We keep shares — the exit loop and ERC4626 accounting are shares-denominated and
-        // settle does not return the shares burned, so passing assets would desync `remainingShares`.
-        (iterCollateralSeized, iterDebtCanceled) = ILidoLend(address(MORPHO))
-            .settle(_marketParams, 0, iterSupplyShares, address(this), borrower, ctx.receiver);
-
-        emit SettlementCut(borrower, iterSupplyShares, iterCollateralSeized, iterDebtCanceled);
+        // Redeem leg pays loan assets up to what the Morpho position can withdraw; the rest settles for
+        // collateral. Stray idle is uncounted, so it never appears as loan assets.
+        loanAssets = Math.min(convertToAssets(shares), _morphoWithdrawableAssets());
+        morphoSupplyShares = Math.mulDiv(_lidoLendSupplyShares(), shares, totalSupply_);
     }
 
     function _marketSupplyTotals() internal view returns (uint256 totalSupplyAssets, uint256 totalSupplyShares) {
-        (totalSupplyAssets, totalSupplyShares,,) = MorphoBalancesLib.expectedMarketBalances(MORPHO, _marketParams);
-    }
-
-    function _morphoSupplyAssets() internal view returns (uint256) {
-        uint256 supplyShares = _morphoSupplyShares();
-        if (supplyShares == 0) return 0;
-        (uint256 totalSupplyAssets, uint256 totalSupplyShares) = _marketSupplyTotals();
-        return supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
+        (totalSupplyAssets, totalSupplyShares,,) =
+            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(LIDO_LEND)), _marketParams);
     }
 
     function _morphoWithdrawableAssets() internal view returns (uint256) {
-        uint256 supplyShares = _morphoSupplyShares();
+        uint256 supplyShares = _lidoLendSupplyShares();
         if (supplyShares == 0) return 0;
 
         (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) =
-            MorphoBalancesLib.expectedMarketBalances(MORPHO, _marketParams);
+            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(LIDO_LEND)), _marketParams);
         uint256 supplyAssets = supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
         uint256 liquidity = Math.saturatingSub(totalSupplyAssets, totalBorrowAssets);
         return Math.min(supplyAssets, liquidity);
     }
 
-    function _morphoSupplyShares() internal view returns (uint256) {
-        Position memory position = MORPHO.position(marketId, address(this));
-        return position.supplyShares;
+    function _lidoLendSupplyShares() internal view returns (uint256 supplyShares) {
+        (supplyShares,,) = LIDO_LEND.position(marketId, address(this));
     }
 }
