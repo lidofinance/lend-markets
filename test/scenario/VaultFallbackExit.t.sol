@@ -75,10 +75,11 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer {
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
                     maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 10 ether
+                    minActivationAmount: 10 ether,
+                    maxGuardiansQuorumDelay: 0
                 }),
-                slicePolicy: SlicePolicyConfig({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0, fullCutBelowCollateral: 10 ether
+                settlementConfig: SettlementConfigParams({
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -136,7 +137,7 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer {
         // Request more than idle covers, so the redeem leg pays the idle and the settle leg covers the rest.
         uint256 shares = vault.balanceOf(LENDER) / 2;
         vm.prank(LENDER);
-        (, uint256 loanAssets, uint256 collateralSeized,) = vault.fallbackExit(shares, LENDER, LENDER);
+        (, uint256 loanAssets, uint256 collateralSeized,) = vault.fallbackExit(shares, LENDER, LENDER, 0);
 
         _assertBothPhases(idle, loanAssets, collateralSeized);
     }

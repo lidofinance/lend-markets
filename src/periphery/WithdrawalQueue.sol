@@ -43,19 +43,41 @@ contract WithdrawalQueue is Ownable {
     using SharesMathLib for uint256;
     using WithdrawalQueueLib for WithdrawalQueueLib.State;
 
-    /* ERRORS */
+    // ---
+    // ERRORS
+    // ---
 
+    /// @notice A request was opened with zero `assets`.
     error ZeroSize();
+
+    /// @notice The vault or core address passed to the constructor was zero.
     error ZeroAddress();
+
+    /// @notice The vault's `asset()` does not match the market loan token.
     error AssetMismatch();
+
+    /// @notice The protocol fee exceeds `MAX_PROTOCOL_FEE_BPS`.
     error FeeTooHigh();
+
+    /// @notice A non-zero protocol fee was set with a zero recipient (nowhere to send the cut).
     error FeeRecipientRequired();
+
+    /// @notice A request was opened with a deadline at or before the current time.
     error DeadlineInPast();
+
+    /// @notice The fill produced no shares or assets — the market is dry, or a `fullFillOnly` request
+    ///         cannot yet be covered in one shot.
     error NothingAvailable();
+
+    /// @notice A Direct-mode request was opened before the caller authorized this contract on the core.
     error NotAuthorizedOnCore();
 
-    /* EVENTS */
+    // ---
+    // EVENTS
+    // ---
 
+    /// @notice Emitted when a lender opens an exit request. `size` is the loan-asset amount requested;
+    ///         the queue stores the matching shares at the price fixed by this call.
     event WithdrawalRequested(
         uint256 indexed id,
         address indexed owner,
@@ -65,6 +87,9 @@ contract WithdrawalQueue is Ownable {
         uint256 deadline,
         bool fullFillOnly
     );
+
+    /// @notice Emitted on each fill, recording the per-fill settlement split between the lender, the
+    ///         keeper, and the protocol.
     event WithdrawalProcessed(
         uint256 indexed id,
         address indexed keeper,
@@ -73,12 +98,22 @@ contract WithdrawalQueue is Ownable {
         uint256 keeperFee,
         uint256 protocolFee
     );
+
+    /// @notice Emitted when the owner cancels their request.
     event WithdrawalCancelled(uint256 indexed id);
+
+    /// @notice Emitted when an expired request is pruned from the active set.
     event WithdrawalExpired(uint256 indexed id);
+
+    /// @notice Emitted when an account withdraws its accumulated loan-asset balance.
     event Claimed(address indexed account, uint256 assets);
+
+    /// @notice Emitted when the protocol-fee recipient and rate are set together.
     event ProtocolFeeSet(address indexed feeRecipient, uint256 protocolFeeBps);
 
-    /* CONSTANTS */
+    // ---
+    // CONSTANTS
+    // ---
 
     /// @notice Hard cap on the protocol cut of the keeper's priority fee (1%).
     uint256 public constant MAX_PROTOCOL_FEE_BPS = 100;
@@ -86,15 +121,25 @@ contract WithdrawalQueue is Ownable {
     /// @dev Basis-point denominator, also the priority-fee ramp's value at the deadline.
     uint256 internal constant BPS = 10_000;
 
-    /* IMMUTABLES */
+    // ---
+    // IMMUTABLES
+    // ---
 
+    /// @dev The LidoLend core a Direct-mode fill withdraws from.
     IMorpho public immutable CORE;
+    /// @dev ERC-4626 vault wrapping this market; Vault-mode escrows and redeems its shares, and
+    ///      `fillWithLiquidity` deposits into it.
     IERC4626 public immutable VAULT;
+    /// @dev The market loan token — the asset lenders exit into and the unit all proceeds settle in.
     IERC20 public immutable ASSET;
+    /// @dev Id of the market this queue serves, derived from the constructor's `params`.
     Id public immutable MARKET_ID;
 
-    /* STORAGE */
+    // ---
+    // STORAGE
+    // ---
 
+    /// @dev The market parameters this queue serves, exposed through `marketParams()`.
     MarketParams internal _params;
 
     /// @notice Account credited the protocol cut; claims it through the shared `claim` path. The cut
@@ -103,12 +148,17 @@ contract WithdrawalQueue is Ownable {
     /// @notice Protocol cut of the keeper's priority fee, in basis points (≤ `MAX_PROTOCOL_FEE_BPS`).
     uint256 public protocolFeeBps;
 
+    /// @dev The request registry — flat id-keyed store plus the active-id index; see `WithdrawalQueueLib`.
     WithdrawalQueueLib.State internal _queue;
     /// @notice Loan-asset balance withdrawable by each account (lender proceeds or keeper fees).
     mapping(address account => uint256) public claimable;
 
-    /* CONSTRUCTOR */
+    // ---
+    // CONSTRUCTOR
+    // ---
 
+    /// @notice Bind the queue to one market: cache its core, vault, loan asset, and id, and set the
+    ///         initial protocol fee.
     /// @param vault ERC-4626 vault wrapping this market; its `asset()` must equal `params.loanToken`.
     /// @param core The LidoLend core the Direct mode withdraws from.
     /// @param params Market the queue serves (its id and loan asset are derived here).
@@ -129,7 +179,9 @@ contract WithdrawalQueue is Ownable {
         _setProtocolFee(recipient, bps);
     }
 
-    /* CONFIG */
+    // ---
+    // CONFIG
+    // ---
 
     /// @notice The market parameters this queue serves.
     /// @return params The stored market parameters.
@@ -154,7 +206,9 @@ contract WithdrawalQueue is Ownable {
         emit ProtocolFeeSet(recipient, bps);
     }
 
-    /* WITHDRAWAL FLOW */
+    // ---
+    // WITHDRAWAL FLOW
+    // ---
 
     /// @notice Open an exit request. Direct mode: caller must have authorized this contract on the
     ///         core first; `assets` worth of their supply position is queued. Vault mode: caller must
@@ -281,7 +335,9 @@ contract WithdrawalQueue is Ownable {
         emit Claimed(msg.sender, assets);
     }
 
-    /* VIEWS */
+    // ---
+    // VIEWS
+    // ---
 
     /// @notice The full record for request `id` (zero-valued struct if it never existed).
     /// @param id The request id to read.
@@ -304,7 +360,9 @@ contract WithdrawalQueue is Ownable {
         return _queue.count();
     }
 
-    /* INTERNAL */
+    // ---
+    // INTERNAL HELPERS
+    // ---
 
     /// @dev Redeem/withdraw as many of the request's shares as the market can honour now, capped at
     ///      `sizeRemaining` and at the request's own source (escrowed shares for Vault — bounded by
@@ -329,20 +387,25 @@ contract WithdrawalQueue is Ownable {
         }
     }
 
-    /* CORE LIQUIDITY / PRICE VIEWS */
+    // ---
+    // CORE LIQUIDITY / PRICE VIEWS
+    // ---
 
+    /// @dev Idle loan assets the Direct path can withdraw: supply minus borrow on the live market, or 0.
     function _idleAssets() internal view returns (uint256) {
         (uint256 totalSupplyAssets,, uint256 totalBorrowAssets,) =
             MorphoBalancesLib.expectedMarketBalances(CORE, _params);
         return totalSupplyAssets > totalBorrowAssets ? totalSupplyAssets - totalBorrowAssets : 0;
     }
 
+    /// @dev Core supply shares to assets at the live (interest-accrued) supply price, rounding down.
     function _coreSharesToAssets(uint256 shares) internal view returns (uint256) {
         (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
             MorphoBalancesLib.expectedMarketBalances(CORE, _params);
         return shares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
     }
 
+    /// @dev Core assets to supply shares at the live (interest-accrued) supply price, rounding down.
     function _coreAssetsToShares(uint256 assets) internal view returns (uint256) {
         (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
             MorphoBalancesLib.expectedMarketBalances(CORE, _params);

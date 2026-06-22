@@ -12,6 +12,12 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 ///         lifecycle (create, fill bookkeeping, cancel, enumerate).
 /// @dev Self-contained: operates on a caller-embedded `State`, makes no external calls.
 library WithdrawalQueueLib {
+    // ---
+    // TYPES
+    // ---
+
+    /// @notice How the request's shares are held, which decides what the embedding contract refunds on
+    ///         cancel/expiry and how a fill is settled.
     enum Mode {
         Direct, // core-authorized withdrawal from the lender's own position
         Vault // escrowed ERC-4626 vault shares
@@ -47,15 +53,32 @@ library WithdrawalQueueLib {
         bool closed;
     }
 
+    /// @notice The whole queue: a flat id-keyed store plus the live-id index for pagination.
+    /// @param nextId Monotonic id counter, never reused, so a closed id stays a stable handle.
+    /// @param requests Every request ever created, keyed by id; closed ones linger here for lookups.
+    /// @param activeIds Ids of open requests only, the set `paginate`/`count` walk. Swap-popped on close.
     struct State {
         uint256 nextId;
         mapping(uint256 id => Request) requests;
         uint256[] activeIds;
     }
 
+    // ---
+    // ERRORS
+    // ---
+
+    /// @notice The request is already closed (fully filled, cancelled, or pruned) and cannot be acted on.
     error RequestClosed();
+
+    /// @notice The request is past its `deadline`, so it can no longer be filled.
     error RequestExpired();
+
+    /// @notice The caller is not the request's `owner`, so it may not cancel it.
     error NotOwner();
+
+    // ---
+    // LIFECYCLE
+    // ---
 
     /// @notice Create a request and add it to the active set. `createdAt` is stamped to now, anchoring
     ///         the priority-fee ramp that runs to `deadline`.
@@ -132,6 +155,10 @@ library WithdrawalQueueLib {
         _close(self, id);
     }
 
+    // ---
+    // VIEWS
+    // ---
+
     /// @notice Open request ids, paginated; `offset`/`limit` index into the active set.
     function paginate(State storage self, uint256 offset, uint256 limit) internal view returns (uint256[] memory ids) {
         uint256 length = self.activeIds.length;
@@ -143,9 +170,14 @@ library WithdrawalQueueLib {
         }
     }
 
+    /// @notice Number of open requests, the upper bound for `paginate`.
     function count(State storage self) internal view returns (uint256) {
         return self.activeIds.length;
     }
+
+    // ---
+    // INTERNAL HELPERS
+    // ---
 
     /// @dev Mark closed and swap-pop the id out of the active set.
     function _close(State storage self, uint256 id) private {

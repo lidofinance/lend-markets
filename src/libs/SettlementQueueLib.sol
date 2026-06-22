@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MaxHeapLib} from "./MaxHeapLib.sol";
-import {MarketView, PositionView, SlicePolicy} from "../types/SettlementTypes.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTypes.sol";
 
 /// @title SettlementQueueLib
 /// @author Lido Lending contributors.
-/// @notice Risk-ordered queue of borrowers for the settle waterfall, with per-borrower watermark
+/// @notice Risk-ordered queue of borrowers for the settle waterfall, with per-borrower settlement-LTV
 ///         opt-in and the slice-sizing policy. Wraps a max-heap keyed by
 ///         borrowShares * KEY_SCALE / rawCollateral, so the root is the highest-LTV position: a
 ///         solvent root means no tracked position is bad debt, which is what makes the bad-debt gate
@@ -20,29 +20,55 @@ import {MarketView, PositionView, SlicePolicy} from "../types/SettlementTypes.so
 ///      the slice arithmetic (`sliceToLtv`) is pure and fuzz-testable.
 library SettlementQueueLib {
     using MaxHeapLib for MaxHeapLib.Heap;
-    using SharesMathLib for uint256;
     using MathLib for uint256;
+    using SharesMathLib for uint256;
+
+    // ---
+    // CONSTANTS
+    // ---
 
     /// @dev Heap key scale: key = borrowShares * KEY_SCALE / rawCollateral.
     uint256 internal constant KEY_SCALE = 1e18;
 
+    /// @dev Basis-point denominator for the slice-policy percentages (`sliceFloorBps`, `ltvStepBps`).
     uint256 internal constant BPS = 10_000;
 
-    error WatermarkOutOfRange();
-    error SlicePolicyOutOfRange();
+    // ---
+    // ERRORS
+    // ---
 
-    /// @notice Emitted when a borrower sets their personal settle-down watermark.
-    event WatermarkSet(address indexed borrower, uint256 ltv);
+    /// @notice A borrower's personal settlement LTV is not strictly below WAD (100%).
+    error SettlementLtvOutOfRange();
+
+    /// @notice A slice-policy percentage (`sliceFloorBps` or `ltvStepBps`) exceeds 100% (`BPS`).
+    error SettlementConfigOutOfRange();
+
+    // ---
+    // EVENTS
+    // ---
+
+    /// @notice Emitted when a borrower sets their personal settlement LTV.
+    event SettlementLtvSet(address indexed borrower, uint256 ltv);
 
     /// @notice Emitted when the settle slice policy is set.
-    event SlicePolicySet(
+    event SettlementConfigSet(
         uint16 sliceFloorBps, uint96 sliceFloorAssets, uint96 fullCutBelowCollateral, uint16 ltvStepBps
     );
 
+    // ---
+    // TYPES
+    // ---
+
+    /// @notice Embedded settlement-queue state: the risk-ordered heap, the slice policy, and per-borrower
+    ///         settlement-LTV opt-ins.
+    /// @param heap Max-heap of borrowers keyed by `_riskKey` (borrowShares * KEY_SCALE / collateral), so the
+    ///        root is the highest-LTV position.
+    /// @param policy Slice-sizing policy applied to the queue root.
+    /// @param settlementLtv Per-borrower target post-cut LTV (WAD), 0 = unset.
     struct State {
         MaxHeapLib.Heap heap;
-        SlicePolicy policy;
-        mapping(address borrower => uint256) watermarkLtv; // WAD target post-cut LTV, 0 = unset
+        SettlementConfig policy;
+        mapping(address borrower => uint256) settlementLtv;
     }
 
     // ---
@@ -63,29 +89,33 @@ library SettlementQueueLib {
         $.heap.upsert(borrower, _riskKey(position));
     }
 
-    function setSlicePolicy(State storage $, SlicePolicy memory policy) internal {
-        if (policy.sliceFloorBps > BPS || policy.ltvStepBps > BPS) revert SlicePolicyOutOfRange();
+    /// @notice Set the slice-sizing policy applied to the queue root. Reverts if `sliceFloorBps` or
+    ///         `ltvStepBps` exceeds 100% (`BPS`).
+    function setSettlementConfig(State storage $, SettlementConfig memory policy) internal {
+        if (policy.sliceFloorBps > BPS || policy.ltvStepBps > BPS) revert SettlementConfigOutOfRange();
         $.policy = policy;
-        emit SlicePolicySet(
+        emit SettlementConfigSet(
             policy.sliceFloorBps, policy.sliceFloorAssets, policy.fullCutBelowCollateral, policy.ltvStepBps
         );
     }
 
     /// @notice Set `borrower`'s personal target post-cut LTV (WAD). 0 clears it; must be < WAD.
-    function setWatermark(State storage $, address borrower, uint256 ltv) internal {
-        if (ltv >= WAD) revert WatermarkOutOfRange();
-        $.watermarkLtv[borrower] = ltv;
-        emit WatermarkSet(borrower, ltv);
+    function setSettlementLtv(State storage $, address borrower, uint256 ltv) internal {
+        if (ltv >= WAD) revert SettlementLtvOutOfRange();
+        $.settlementLtv[borrower] = ltv;
+        emit SettlementLtvSet(borrower, ltv);
     }
 
     // ---
     // VIEWS
     // ---
 
-    function watermarkOf(State storage $, address borrower) internal view returns (uint256) {
-        return $.watermarkLtv[borrower];
+    /// @notice The borrower's personal target post-cut LTV (WAD), 0 when unset.
+    function settlementLtvOf(State storage $, address borrower) internal view returns (uint256) {
+        return $.settlementLtv[borrower];
     }
 
+    /// @notice Number of borrowers currently tracked in the queue.
     function size(State storage $) internal view returns (uint256) {
         return $.heap.size();
     }
@@ -96,19 +126,22 @@ library SettlementQueueLib {
         (riskiestBorrower,) = $.heap.peek();
     }
 
-    /// @notice Borrowers in the queue in heap-array order (approximate, not a strict sort), up to
-    ///         `maxCount`.
-    function eligibleBorrowers(State storage $, uint256 maxCount)
+    /// @notice A window of the queue in heap-array order (approximate, not a strict sort): up to `maxCount`
+    ///         borrowers starting at `offset`. Past the end the arrays come back empty, so callers can page
+    ///         until they do.
+    function settlementBorrowers(State storage $, uint256 offset, uint256 maxCount)
         internal
         view
         returns (address[] memory borrowers, uint256[] memory keys)
     {
         uint256 n = $.heap.size();
-        uint256 count = n < maxCount ? n : maxCount;
+        if (offset >= n) return (new address[](0), new uint256[](0));
+        uint256 remaining = n - offset;
+        uint256 count = remaining < maxCount ? remaining : maxCount;
         borrowers = new address[](count);
         keys = new uint256[](count);
         for (uint256 i; i < count; ++i) {
-            (borrowers[i], keys[i]) = $.heap.nodeAt(i);
+            (borrowers[i], keys[i]) = $.heap.nodeAt(offset + i);
         }
     }
 
@@ -117,7 +150,7 @@ library SettlementQueueLib {
     // ---
 
     /// @notice Maximum loan-asset slice the policy allows for one cut against `borrower`. A queue-root
-    ///         borrower gets the policy slice; a watermarked borrower gets the watermark slice; if both
+    ///         borrower gets the policy slice; a borrower with a settlement LTV gets its settlement-LTV slice; if both
     ///         apply, the larger slice wins. Zero means ineligible or empty debt/collateral.
     function allowedSlice(State storage $, MarketView memory marketView, address borrower, PositionView memory position)
         internal
@@ -128,32 +161,25 @@ library SettlementQueueLib {
         if (debt == 0 || collateralValue == 0) return 0;
 
         uint256 rootCut = peekRoot($) == borrower ? _policySlice($.policy, debt, collateralValue) : 0;
-        uint256 watermarkCut = _watermarkSlice($, borrower, debt, collateralValue);
+        uint256 settlementLtvCut = _settlementLtvSlice($, borrower, debt, collateralValue);
 
-        uint256 slice = Math.min(Math.max(rootCut, watermarkCut), debt);
+        uint256 slice = Math.min(Math.max(rootCut, settlementLtvCut), debt);
         if (slice == 0) return 0;
 
         // A cut that would strand sub-threshold collateral is lifted to a full close.
         return _strandsDust($, marketView, position, slice) ? debt : slice;
     }
 
-    /// @notice Watermark cut: the slice that brings `borrower`'s LTV down to its personal target. Zero
-    ///         when no watermark, no debt/collateral, or the current LTV is already at/under the target.
-    function watermarkSlice(
+    /// @notice Settlement-LTV slice: the cut that brings `borrower`'s LTV down to its personal target. Zero
+    ///         when no settlement LTV is set, no debt/collateral, or the current LTV is already at/under the target.
+    function settlementLtvSlice(
         State storage $,
         MarketView memory marketView,
         address borrower,
         PositionView memory position
     ) internal view returns (uint256) {
         (uint256 debt, uint256 collateralValue) = _positionValues(marketView, position);
-        return _watermarkSlice($, borrower, debt, collateralValue);
-    }
-
-    /// @notice Effective cut for one loop iteration: the policy slice clamped to the remaining exit.
-    ///         A zero result (no eligible cut, or the exit is already satisfied) tells the caller to
-    ///         stop (heap walk) or skip (explicit list).
-    function effectiveCut(uint256 sliceAssets, uint256 remainingExitAssets) internal pure returns (uint256) {
-        return sliceAssets > remainingExitAssets ? remainingExitAssets : sliceAssets;
+        return _settlementLtvSlice($, borrower, debt, collateralValue);
     }
 
     // ---
@@ -161,7 +187,7 @@ library SettlementQueueLib {
     // ---
 
     /// @notice Loan-asset slice that brings a position's LTV down to `targetLtv` (WAD), cutting at the
-    ///         oracle rate so equal-value collateral leaves with the debt. Backs both the watermark cut
+    ///         oracle rate so equal-value collateral leaves with the debt. Backs both the settlement-LTV cut
     ///         and the root LTV-step rule.
     /// @param debt            Borrower debt in loan-asset units.
     /// @param collateralValue Borrower collateral value in loan-asset units (rawCollateral × price / SCALE).
@@ -193,8 +219,8 @@ library SettlementQueueLib {
 
     /// @dev Root cut: the largest of the three slice rules — `sliceFloorBps` of the debt, `sliceFloorAssets`,
     ///      and the cut that lowers the LTV by `ltvStepBps`. Caller guarantees `debt > 0` and
-    ///      `collateralValue > 0` (the `allowedSlice` entry gate), so the LTV division here is safe.
-    function _policySlice(SlicePolicy storage policy, uint256 debt, uint256 collateralValue)
+    ///      `collateralValue > 0` (the `slice` entry gate), so the LTV division here is safe.
+    function _policySlice(SettlementConfig storage policy, uint256 debt, uint256 collateralValue)
         private
         view
         returns (uint256)
@@ -212,40 +238,34 @@ library SettlementQueueLib {
         return Math.max(policy.sliceFloorAssets, Math.max(byDebtFraction, byLtvReduction));
     }
 
-    function _watermarkSlice(State storage $, address borrower, uint256 debt, uint256 collateralValue)
+    /// @dev Slice that lowers the borrower to its personal settlement LTV. Zero when no settlement LTV is set or
+    ///      there is no debt/collateral to cut against.
+    function _settlementLtvSlice(State storage $, address borrower, uint256 debt, uint256 collateralValue)
         private
         view
         returns (uint256)
     {
-        uint256 watermark = $.watermarkLtv[borrower];
-        if (watermark == 0 || debt == 0 || collateralValue == 0) return 0;
-        return sliceToLtv(debt, collateralValue, watermark);
+        uint256 ltv = $.settlementLtv[borrower];
+        if (ltv == 0 || debt == 0 || collateralValue == 0) return 0;
+        return sliceToLtv(debt, collateralValue, ltv);
     }
 
+    /// @dev Resolve a position into loan-asset units: `debt` from borrow shares at the live borrow index, and
+    ///      `collateralValue` as rawCollateral priced at the oracle rate.
     function _positionValues(MarketView memory marketView, PositionView memory position)
         private
         pure
         returns (uint256 debt, uint256 collateralValue)
     {
-        debt = _debtAssets(marketView, position);
-        collateralValue = _collateralValue(marketView, position);
+        if (position.borrowShares != 0) {
+            debt = position.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+        }
+        collateralValue = position.collateral.mulDivDown(marketView.price, ORACLE_PRICE_SCALE);
     }
 
+    /// @dev Heap ordering key: borrowShares * KEY_SCALE / collateral, monotonic in LTV so the heap root is the
+    ///      riskiest position. Caller guarantees non-zero collateral.
     function _riskKey(PositionView memory position) private pure returns (uint256) {
         return position.borrowShares * KEY_SCALE / position.collateral;
-    }
-
-    /// @dev Borrower debt in loan assets from a position + market snapshot.
-    function _debtAssets(MarketView memory marketView, PositionView memory position) private pure returns (uint256) {
-        return position.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
-    }
-
-    /// @dev Borrower collateral value in loan assets: rawCollateral × price / ORACLE_PRICE_SCALE.
-    function _collateralValue(MarketView memory marketView, PositionView memory position)
-        private
-        pure
-        returns (uint256)
-    {
-        return position.collateral.mulDivDown(marketView.price, ORACLE_PRICE_SCALE);
     }
 }

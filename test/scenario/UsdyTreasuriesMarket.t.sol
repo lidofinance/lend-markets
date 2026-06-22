@@ -99,10 +99,11 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
                     maxDelayInflow: 10_000 ether,
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
-                    minActivationAmount: 10 ether
+                    minActivationAmount: 10 ether,
+                    maxGuardiansQuorumDelay: 0
                 }),
-                slicePolicy: SlicePolicyConfig({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fallbackMinRequest: 0, fullCutBelowCollateral: 10 ether
+                settlementConfig: SettlementConfigParams({
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -212,12 +213,12 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         // USDY's blocklist revert ("USDY: 'to' address blocked") is wrapped by Morpho's SafeTransferLib.
         vm.expectRevert("transfer reverted");
-        vault.fallbackExit(shares, KEEPER_BAD, LENDER);
+        vault.fallbackExit(shares, KEEPER_BAD, LENDER, 0);
 
         // Eligible receiver: succeeds and receives seized USDY collateral.
         uint256 balBefore = IERC20Like(USDY).balanceOf(KEEPER_GOOD);
         vm.prank(LENDER);
-        (,, uint256 collateralSeized,) = vault.fallbackExit(shares, KEEPER_GOOD, LENDER);
+        (,, uint256 collateralSeized,) = vault.fallbackExit(shares, KEEPER_GOOD, LENDER, 0);
         assertGt(collateralSeized, 0, "collateral seized via settle");
         assertEq(IERC20Like(USDY).balanceOf(KEEPER_GOOD) - balBefore, collateralSeized, "eligible receiver got USDY");
     }

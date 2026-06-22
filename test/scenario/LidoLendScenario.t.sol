@@ -10,6 +10,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {BlockInfoWithHash} from "../../src/interfaces/GuardianSignalsTypes.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -30,12 +31,9 @@ interface IWstETH {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests, and to
-///      heartbeat the quorum-scan frontier.
+/// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests.
 interface IRegistryLike {
-    function flag(Id market, address[] calldata accounts, uint256 lastScannedBlock) external;
-    function heartbeat(uint256 lastScannedBlock) external;
-    function syncQuorumBlock() external;
+    function flag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
 }
 
 /// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
@@ -49,7 +47,7 @@ contract FlashRoundTrip {
 
 /// @notice End-to-end scenario over a freshly deployed ILidoLend + LidoLendMarketController stack on a
 ///         mainnet fork (real Lido stETH/wstETH). Drives supply/borrow/maturation and the settle
-///         queue (heap ordering, watermark, bad-debt guard) through the controller's hooks.
+///         queue (heap ordering, settlement LTV, bad-debt guard) through the controller's hooks.
 contract LidoLendScenarioTest is Test, LidoLendDeployer {
     using MarketParamsLib for MarketParams;
 
@@ -209,118 +207,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.withdrawCollateral(ctx.marketParams, 11 ether, BORROWER, BORROWER);
     }
 
-    /// @notice Activation quorum-scan gate: collateral may not mature until the guardian quorum has scanned
-    ///         past its deposit block. Until then the lot stays `activating` and cannot back a borrow.
-    function test_activation_quorumScanGate() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(false); // deploy catches the frontier up to the current block
-        ctx.controller.setActivationQuorumGrace(1 days); // gate is off by default, turn it on
-
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
-
-        // Advance the block past the frontier, then deposit — so the quorum has not scanned this deposit.
-        vm.roll(block.number + 1);
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
-        vm.warp(block.timestamp + 2 hours + 1); // timer elapsed, but the quorum is still behind the deposit
-
-        // Frontier < deposit block: the lot stays activating, so there is no active collateral to borrow against.
-        vm.prank(BORROWER);
-        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-
-        // The guardian scans to head: the frontier passes the deposit, the lot matures, the borrow goes through.
-        IRegistryLike(ctx.guardianSignals).heartbeat(block.number);
-        IRegistryLike(ctx.guardianSignals).syncQuorumBlock();
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-        assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrow after the quorum scanned the deposit");
-    }
-
-    /// @notice Liveness fallback: if the quorum never catches up, the lot still matures once the timeout grace
-    ///         beyond its unlock has elapsed, so a stalled committee cannot freeze borrowing indefinitely.
-    function test_activation_quorumGraceFallback() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(false);
-        ctx.controller.setActivationQuorumGrace(1 days); // gate is off by default, turn it on
-
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
-
-        vm.roll(block.number + 1); // deposit stays unscanned (no further heartbeat)
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
-
-        // Past the timer plus the 1-day grace: matures despite the quorum never scanning the deposit.
-        vm.warp(block.timestamp + 2 hours + 1 days + 1);
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-        assertEq(WETH.balanceOf(BORROWER), 3 ether, "grace fallback matured despite a stalled quorum");
-    }
-
-    /// @notice Instant activation bypasses the quorum-scan gate: a whitelisted borrower's deposit is active at
-    ///         once even though the guardian quorum has not scanned it.
-    function test_activation_instantBypassesQuorumGate() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(false);
-        ctx.controller.setActivationQuorumGrace(1 days); // gate on, to prove instant still bypasses it
-        ctx.controller.grantInstantActivation(BORROWER);
-
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
-
-        vm.roll(block.number + 1); // deposit unscanned by the quorum
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
-
-        // No warp and no heartbeat: instant skips both the timer and the quorum-scan gate.
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-        assertEq(WETH.balanceOf(BORROWER), 3 ether, "instant borrower bypasses the quorum-scan gate");
-    }
-
-    /// @notice The quorum-scan grace is off by default (0) and governance-tunable within bounds. At 0 the gate
-    ///         is disabled, so collateral matures on the timer alone even when the quorum has not scanned it.
-    function test_activation_graceConfigurableAndZeroDisablesGate() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(false);
-        assertEq(ctx.controller.activationQuorumGrace(), 0, "gate off by default");
-
-        vm.expectRevert(ILidoLendMarketController.ActivationQuorumGraceTooHigh.selector);
-        ctx.controller.setActivationQuorumGrace(8 days);
-
-        ctx.controller.setActivationQuorumGrace(1 days); // enable, within bound
-        assertEq(ctx.controller.activationQuorumGrace(), 1 days, "grace set");
-        ctx.controller.setActivationQuorumGrace(0); // disable again
-        assertEq(ctx.controller.activationQuorumGrace(), 0, "grace cleared");
-
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
-
-        // Deposit at a block the quorum has not scanned; with the gate off it matures on the timer alone.
-        vm.roll(block.number + 1);
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
-        vm.warp(block.timestamp + 2 hours + 1);
-
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-        assertEq(WETH.balanceOf(BORROWER), 3 ether, "gate disabled: matures on the timer despite the quorum behind");
-    }
-
     function test_settle_happyPath() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
@@ -360,7 +246,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     /// @dev Covers, in order:
     ///        - three borrowers at different risk levels; queue root tracks the highest-LTV one;
     ///        - a cut targeting the root reduces it but does not flip the order;
-    ///        - the root opts another borrower in via watermark, so a non-root cut succeeds;
+    ///        - the root opts another borrower in via a settlement LTV, so a non-root cut succeeds;
     ///        - the lowest-LTV borrower is never touched throughout the scenario.
     function test_settle_heapPicksTopBorrower() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
@@ -393,8 +279,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.borrow(ctx.marketParams, 2 ether, 0, THIRD_BORROWER, THIRD_BORROWER);
 
         // (1) Initial queue order: highest-LTV borrower is at the root.
-        assertEq(ctx.controller.settlementQueueSize(), 3, "all three active borrowers tracked");
-        (address root,) = ctx.controller.nextSettlementCut();
+        assertEq(ctx.controller.settlementBorrowersCount(), 3, "all three active borrowers tracked");
+        (address root,,) = ctx.controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "highest-LTV borrower at root");
 
         // (2) A partial cut on the root, half the allowed slice. The full slice is sized to push the
@@ -402,11 +288,11 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         uint256 firstCutShares = _sliceShares(ctx) / 2;
         vm.prank(LENDER);
         ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, BORROWER, LENDER);
-        (root,) = ctx.controller.nextSettlementCut();
+        (root,,) = ctx.controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "BORROWER still highest after first partial cut");
 
         // (3) Targeting the second borrower while it isn't the queue root is rejected by the
-        //     controller hook — eligibility filter requires queue-head or personal watermark.
+        //     controller hook — eligibility filter requires queue-head or a personal settlement LTV.
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementIneligible()"));
         ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
@@ -414,11 +300,11 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         // (4) SECOND_BORROWER opts in to a 5% post-cut LTV — they are now eligible regardless of
         //     queue position. The same cut now succeeds against them.
         vm.prank(SECOND_BORROWER);
-        ctx.controller.setBorrowerWatermark(0.05e18);
+        ctx.controller.setSettlementLtv(0.05e18);
         vm.prank(LENDER);
         ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
-        // (5) THIRD_BORROWER (lowest LTV, no watermark) is never touched throughout the scenario.
+        // (5) THIRD_BORROWER (lowest LTV, no settlement LTV) is never touched throughout the scenario.
         (, uint128 lowBorrowSharesAfter, uint128 lowCollateralAfter) = ctx.market.position(ctx.id, THIRD_BORROWER);
         assertEq(uint256(lowCollateralAfter), lowCol, "low-LTV borrower's collateral untouched");
         assertGt(lowBorrowSharesAfter, 0, "low-LTV borrower still has debt");
@@ -452,7 +338,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 2 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address root,) = ctx.controller.nextSettlementCut();
+        (address root,,) = ctx.controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "high-LTV borrower is the queue head");
 
         // Cut sized to the allowed slice at the real rate (reused after the rebase is cleared).
@@ -465,17 +351,17 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
             abi.encodeWithSelector(IWstETH.getStETHByWstETH.selector, uint256(1e36)),
             abi.encode(uint256(0.7e36))
         );
-        assertTrue(ctx.controller.rootHasBadDebt(), "head is bad debt after rebase");
+        assertTrue(ctx.controller.hasBadDebt(), "head is bad debt after rebase");
 
         // Even targeting the head itself is blocked while head is bad debt: the controller's bad-debt
         // guard fires on every settle path.
         vm.prank(LENDER);
-        vm.expectRevert(abi.encodeWithSignature("SettlementRootBadDebt()"));
+        vm.expectRevert(abi.encodeWithSignature("SettlementBadDebt()"));
         ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
 
         // Restore the rate; the head is solvent again; the same cut against the head now succeeds.
         vm.clearMockedCalls();
-        assertFalse(ctx.controller.rootHasBadDebt(), "head solvent after restore");
+        assertFalse(ctx.controller.hasBadDebt(), "head solvent after restore");
         vm.prank(LENDER);
         ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
     }
@@ -513,7 +399,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         (,, uint128 rc) = ctx.market.position(ctx.id, BORROWER);
         assertGt(borrowAmount, _maxBorrow(uint256(rc), droppedPrice), "position is unhealthy (LTV > LLTV)");
         assertGt(uint256(rc) * droppedPrice / 1e36, borrowAmount, "position is solvent (collateral value > debt)");
-        assertFalse(ctx.controller.rootHasBadDebt(), "head is not bad debt");
+        assertFalse(ctx.controller.hasBadDebt(), "head is not bad debt");
 
         // The cut succeeds even though the borrower is unhealthy.
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
@@ -528,35 +414,35 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         assertEq(uint256(rcAfter), uint256(rc) - collateralSeized, "borrower collateral debited");
     }
 
-    /// @notice setBorrowerWatermark stores the borrower's target LTV; rejects ltv >= 1e18.
-    function test_setBorrowerWatermark_storesAndRejectsOutOfRange() public {
+    /// @notice setSettlementLtv stores the borrower's target LTV; rejects ltv >= 1e18.
+    function test_setSettlementLtv_storesAndRejectsOutOfRange() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
-        (uint256 wm0,) = ctx.controller.watermarkInfo(BORROWER);
+        (uint256 wm0,) = ctx.controller.settlementLtv(BORROWER);
         assertEq(wm0, 0, "default unset");
 
         vm.prank(BORROWER);
-        ctx.controller.setBorrowerWatermark(0.6e18);
-        (uint256 wm1,) = ctx.controller.watermarkInfo(BORROWER);
+        ctx.controller.setSettlementLtv(0.6e18);
+        (uint256 wm1,) = ctx.controller.settlementLtv(BORROWER);
         assertEq(wm1, 0.6e18, "stored");
 
         // Clear with 0.
         vm.prank(BORROWER);
-        ctx.controller.setBorrowerWatermark(0);
-        (uint256 wm2,) = ctx.controller.watermarkInfo(BORROWER);
+        ctx.controller.setSettlementLtv(0);
+        (uint256 wm2,) = ctx.controller.settlementLtv(BORROWER);
         assertEq(wm2, 0, "cleared");
 
         // Out-of-range rejected.
         vm.prank(BORROWER);
-        vm.expectRevert(abi.encodeWithSignature("WatermarkOutOfRange()"));
-        ctx.controller.setBorrowerWatermark(1e18);
+        vm.expectRevert(abi.encodeWithSignature("SettlementLtvOutOfRange()"));
+        ctx.controller.setSettlementLtv(1e18);
     }
 
-    /// @notice When the queue root has a watermark, `nextSettlementCut`'s slice is bumped up to bring
-    ///         the borrower's LTV down to the watermark. Close runner-up key keeps the algorithmic
-    ///         slice small so the watermark dominates.
-    function test_watermark_bumpsHeapSlice() public {
+    /// @notice When the queue root has a settlement LTV, `nextSettlementBorrower`'s slice is bumped up to bring
+    ///         the borrower's LTV down to it. Close runner-up key keeps the algorithmic
+    ///         slice small so the settlement-LTV slice dominates.
+    function test_settlementLtv_bumpsHeapSlice() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
@@ -565,7 +451,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.supply(ctx.marketParams, 40 ether, 0, LENDER, "");
 
         // Collateral sized so the post-cut remainder stays above the activation minimum, keeping the
-        // watermark slice off the dust-extension clamp (which would promote it to the full debt).
+        // settlement-LTV slice off the dust-extension clamp (which would promote it to the full debt).
         uint256 hotCol = _mintWstETH(ctx.market, BORROWER, 30 ether);
         uint256 coldCol = _mintWstETH(ctx.market, SECOND_BORROWER, 30 ether);
         vm.prank(BORROWER);
@@ -580,25 +466,25 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 17 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (, uint256 sliceBefore) = ctx.controller.nextSettlementCut();
+        (, uint256 sliceBefore,) = ctx.controller.nextSettlementBorrower();
 
         // BORROWER opts in to a 30% post-cut LTV — a deep target.
         vm.prank(BORROWER);
-        ctx.controller.setBorrowerWatermark(0.3e18);
+        ctx.controller.setSettlementLtv(0.3e18);
 
-        (address rootAfter, uint256 sliceAfter) = ctx.controller.nextSettlementCut();
+        (address rootAfter, uint256 sliceAfter,) = ctx.controller.nextSettlementBorrower();
         assertEq(rootAfter, BORROWER, "root unchanged");
-        assertGt(sliceAfter, sliceBefore, "watermark raised the slice");
+        assertGt(sliceAfter, sliceBefore, "settlement LTV raised the slice");
 
-        // Watermark slice closed form: c = (D*WAD - W*V) / (WAD - W), with V = col * price / 1e36.
+        // Settlement-LTV slice closed form: c = (D*WAD - W*V) / (WAD - W), with V = col * price / 1e36.
         uint256 colValue = hotCol * ctx.price / 1e36;
         uint256 expected = (uint256(18 ether) * 1e18 - 0.3e18 * colValue) / (1e18 - 0.3e18);
-        assertApproxEqAbs(sliceAfter, expected, 1e15, "slice matches watermark formula");
+        assertApproxEqAbs(sliceAfter, expected, 1e15, "slice matches settlement-LTV formula");
     }
 
     /// @notice Direct EOA-lender can settle a non-root borrower iff that borrower has a personal
-    ///         watermark set. Without watermark the controller hook reverts with `SettlementIneligible`.
-    function test_settle_eligibleViaPersonalWatermark() public {
+    ///         settlement LTV set. Without one the controller hook reverts with `SettlementIneligible`.
+    function test_settle_eligibleViaPersonalSettlementLtv() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
@@ -621,20 +507,20 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 3 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address root,) = ctx.controller.nextSettlementCut();
+        (address root,,) = ctx.controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "BORROWER is queue root");
 
         (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
         uint256 cut = lenderShares / 5;
 
-        // Targeting tail SECOND_BORROWER without a watermark → hook revert.
+        // Targeting tail SECOND_BORROWER without a settlement LTV → hook revert.
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementIneligible()"));
         ctx.market.settle(ctx.marketParams, 0, cut, LENDER, SECOND_BORROWER, LENDER);
 
         // SECOND_BORROWER opts in to 5% post-cut LTV — slice is large enough for the cut.
         vm.prank(SECOND_BORROWER);
-        ctx.controller.setBorrowerWatermark(0.05e18);
+        ctx.controller.setSettlementLtv(0.05e18);
 
         (,, uint128 colBefore) = ctx.market.position(ctx.id, SECOND_BORROWER);
         vm.prank(LENDER);
@@ -666,7 +552,14 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         // registry's sole guardian (set in `_deployMarket`).
         address[] memory toFlag = new address[](1);
         toFlag[0] = BORROWER;
-        IRegistryLike(ctx.guardianSignals).flag(ctx.id, toFlag, block.number);
+        IRegistryLike(ctx.guardianSignals)
+            .flag(
+                ctx.id,
+                toFlag,
+                BlockInfoWithHash({
+                    hash: blockhash(block.number), number: uint40(block.number), timestamp: uint40(block.timestamp)
+                })
+            );
 
         // Warp far past any normal activation delay — a banned address never settles.
         vm.warp(block.timestamp + 30 days);
@@ -747,7 +640,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     /// @dev Loan-asset slice the controller will allow against the current queue root, converted to
     ///      lender supply shares with Morpho's virtual-offset rounding.
     function _sliceShares(TestMarket memory ctx) internal view returns (uint256) {
-        (, uint256 sliceAssets) = ctx.controller.nextSettlementCut();
+        (, uint256 sliceAssets,) = ctx.controller.nextSettlementBorrower();
         if (sliceAssets == type(uint256).max) return type(uint256).max;
         (uint128 totalSupplyAssets, uint128 totalSupplyShares,,,,) = ctx.market.market(ctx.id);
         return SharesMathLib.toSharesDown(sliceAssets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
@@ -790,9 +683,10 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                     delayPerStrike: 2 hours,
                     activatingHold: 0,
                     maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 10 ether
+                    minActivationAmount: 10 ether,
+                    maxGuardiansQuorumDelay: 0
                 }),
-                slicePolicy: SlicePolicyConfig({
+                settlementConfig: SettlementConfigParams({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
@@ -808,11 +702,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
         ctx.price = WstEthRateOracle(d.oracle).price();
-
-        // Catch the guardian frontier up to head so the activation quorum-scan gate does not hold collateral
-        // in `activating` (these flows are not about that gate; this contract is the sole guardian, quorum 1).
-        IRegistryLike(ctx.guardianSignals).heartbeat(block.number);
-        IRegistryLike(ctx.guardianSignals).syncQuorumBlock();
 
         ctx.controller.grantRole(ctx.controller.MANAGER_ROLE(), address(this));
     }

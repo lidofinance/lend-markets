@@ -32,26 +32,79 @@ interface ILidoLendVault is IERC20 {
 contract LidoLendDepositGateway {
     using SafeERC20 for IERC20;
 
+    // ---
+    // ERRORS
+    // ---
+
+    /// @notice A zap was passed a zero deposit (`msg.value` or amount argument).
     error ZeroAmount();
+
+    /// @notice A zap was passed the zero address as `onBehalf` / `receiver`, or the constructor as a
+    ///         core, token, or vault address.
     error ZeroAddress();
+
+    /// @notice A vault deposit minted zero shares, so the zap would credit `receiver` nothing.
     error ZeroShares();
+
+    /// @notice The vault's underlying asset does not match the market loan token, so it cannot back this
+    ///         market's lenders. Checked once at construction.
     error VaultAssetMismatch();
 
+    // ---
+    // EVENTS
+    // ---
+
+    /// @notice Emitted when stETH is wrapped and posted as collateral. `stEthAmount` is the measured
+    ///         stETH received (post rebasing-dust), `wstEthAmount` the wstETH supplied to core.
     event SuppliedCollateralWithStETH(
         address indexed caller, address indexed onBehalf, uint256 stEthAmount, uint256 wstEthAmount
     );
+
+    /// @notice Emitted when ETH is wrapped to WETH and supplied to the market for `onBehalf`.
     event SuppliedWithETH(address indexed caller, address indexed onBehalf, uint256 ethAmount, uint256 shares);
+
+    /// @notice Emitted when WETH is pulled from the caller and supplied to the market for `onBehalf`.
     event SuppliedWithWETH(address indexed caller, address indexed onBehalf, uint256 wethAmount, uint256 shares);
+
+    /// @notice Emitted when ETH is wrapped to WETH and deposited into the vault for `receiver`.
     event DepositedETHToVault(address indexed caller, address indexed receiver, uint256 ethAmount, uint256 shares);
 
+    /// @notice Emitted when WETH is pulled from the caller and deposited into the vault for `receiver`.
+    event DepositedWETHToVault(address indexed caller, address indexed receiver, uint256 wethAmount, uint256 shares);
+
+    // ---
+    // IMMUTABLES
+    // ---
+
+    /// @dev The `LidoLend` core the supply/collateral zaps route into.
     IMorpho public immutable MORPHO;
+
+    /// @dev The market loan token. Lenders' ETH is wrapped into it before supply.
     IWETH public immutable WETH;
+
+    /// @dev The market collateral token. Borrowers' stETH is wrapped into it before `supplyCollateral`.
     IWstETH public immutable WSTETH;
+
+    /// @dev The stETH wrapped into `WSTETH`. Read off `WSTETH.stETH()` at construction.
     IERC20 public immutable STETH;
+
+    /// @dev The ERC-4626 vault the deposit zaps route into. Its asset is the loan token.
     ILidoLendVault public immutable VAULT;
 
+    // ---
+    // STORAGE
+    // ---
+
+    /// @dev Frozen market identity passed to every `MORPHO.supply` / `supplyCollateral` call.
     MarketParams internal _params;
 
+    // ---
+    // CONSTRUCTOR
+    // ---
+
+    /// @notice Bind the gateway to one market and its vault, and grant the unlimited approvals the zaps
+    ///         rely on: loan and collateral tokens to the core, stETH to wstETH for wrapping, loan token
+    ///         to the vault. Reverts on any zero address or a vault whose asset is not the loan token.
     constructor(address morpho, MarketParams memory params, address vault) {
         if (
             morpho == address(0) || params.loanToken == address(0) || params.collateralToken == address(0)
@@ -74,6 +127,11 @@ contract LidoLendDepositGateway {
         IERC20(params.loanToken).forceApprove(vault, type(uint256).max);
     }
 
+    // ---
+    // ZAPS
+    // ---
+
+    /// @notice The market this gateway zaps into.
     function marketParams() external view returns (MarketParams memory) {
         return _params;
     }
@@ -131,5 +189,18 @@ contract LidoLendDepositGateway {
         if (shares == 0) revert ZeroShares();
 
         emit DepositedETHToVault(msg.sender, receiver, msg.value, shares);
+    }
+
+    /// @notice Pull WETH from the caller and deposit it into the vault for `receiver`.
+    /// @return shares Vault shares minted to `receiver`.
+    function depositWethToVault(uint256 wethAmount, address receiver) external returns (uint256 shares) {
+        if (wethAmount == 0) revert ZeroAmount();
+        if (receiver == address(0)) revert ZeroAddress();
+
+        IERC20(address(WETH)).safeTransferFrom(msg.sender, address(this), wethAmount);
+        shares = VAULT.deposit(wethAmount, receiver);
+        if (shares == 0) revert ZeroShares();
+
+        emit DepositedWETHToVault(msg.sender, receiver, wethAmount, shares);
     }
 }

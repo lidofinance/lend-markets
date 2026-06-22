@@ -34,14 +34,35 @@ interface IChainlinkAggregator {
 ///         This matches Morpho's IOracle convention: price of 1 collateral asset (USDY) quoted in 1
 ///         loan asset (stablecoin), scaled by 1e36.
 contract UsdyStableOracle is IOracle {
+    // ---
+    // CONSTANTS
+    // ---
+
     /// @dev Fixed for the supported decimals only: USDY collateral 18, Ondo oracle 1e18, stablecoin
     ///      loan 6, Chainlink USD feed 8. Deploying against assets with other decimals misprices.
     uint256 internal constant SCALE = 1e14;
 
+    // ---
+    // IMMUTABLES
+    // ---
+
+    /// @dev Ondo USDY dynamic-rate (NAV) oracle; `getPrice()` is the redemption value scaled by 1e18.
     IRWADynamicOracle public immutable USDY_ORACLE;
+
+    /// @dev Chainlink USD feed for the loan stablecoin (USDC/USD or USDT/USD), 8 decimals. The collateral
+    ///      valuation divides by it, so a stablecoin depeg flows through.
     IChainlinkAggregator public immutable STABLE_USD_FEED;
 
+    // ---
+    // ERRORS
+    // ---
+
+    /// @notice A constructor argument (USDY oracle or stablecoin feed) was the zero address.
     error ZeroAddress();
+
+    // ---
+    // CONSTRUCTOR
+    // ---
 
     /// @param usdyOracle Ondo USDY dynamic-rate (NAV) oracle; `getPrice()` scaled by 1e18.
     /// @param stableUsdFeed Chainlink USD feed for the loan stablecoin (USDC/USD or USDT/USD), 8 dec.
@@ -51,9 +72,18 @@ contract UsdyStableOracle is IOracle {
         STABLE_USD_FEED = IChainlinkAggregator(stableUsdFeed);
     }
 
+    // ---
+    // INITIALIZATION
+    // ---
+
     /// @notice No-op that satisfies the proxy's mandatory init call; the config is immutable in the impl.
     function initialize() external {}
 
+    // ---
+    // VIEWS
+    // ---
+
+    /// @inheritdoc IOracle
     function price() external view override returns (uint256) {
         (, int256 stableUsdPrice,,,) = STABLE_USD_FEED.latestRoundData();
         return Math.mulDiv(USDY_ORACLE.getPrice(), SCALE, uint256(stableUsdPrice));

@@ -23,9 +23,23 @@ interface IWstETH {
 ///         "price of 1 collateral asset (wstETH, 18 dec) quoted in 1 loan asset (ETH, 18 dec),
 ///          scaled by 1e36" — i.e. 36 + 18 - 18 = 36 decimals of precision.
 contract WstEthRateOracle is IOracle {
+    // ---
+    // IMMUTABLES
+    // ---
+
+    /// @dev wstETH token queried for its stETH-per-wstETH accounting rate.
     IWstETH public immutable WSTETH;
 
+    // ---
+    // ERRORS
+    // ---
+
+    /// @notice The wstETH address passed to the constructor was the zero address.
     error ZeroAddress();
+
+    // ---
+    // CONSTRUCTOR
+    // ---
 
     /// @param wstETH_ wstETH token whose stETH-per-wstETH rate this oracle returns.
     constructor(address wstETH_) {
@@ -33,9 +47,18 @@ contract WstEthRateOracle is IOracle {
         WSTETH = IWstETH(wstETH_);
     }
 
-    /// @notice No-op that satisfies the proxy's mandatory init call; the config is immutable in the impl.
+    // ---
+    // INITIALIZATION
+    // ---
+
+    /// @notice No-op that satisfies the proxy's mandatory init call. The config is immutable in the impl.
     function initialize() external {}
 
+    // ---
+    // VIEWS
+    // ---
+
+    /// @inheritdoc IOracle
     function price() external view override returns (uint256) {
         return WSTETH.getStETHByWstETH(1e36);
     }
