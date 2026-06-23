@@ -14,3 +14,4 @@
 [submodule "lib/lido-lend-irm"]
 	path = lib/lido-lend-irm
 	url = git@github.com:lidofinance/lido-blue-irm.git
+	branch = feat/irm-router

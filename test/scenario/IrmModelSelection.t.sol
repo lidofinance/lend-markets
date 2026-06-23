@@ -1,150 +1,44 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.35;
 
-// Self-contained IRM model-selection harness.
-// Everything the comparison needs lives in this one file so it can be deleted or updated as a unit: the three candidate
-// IRMs, the mock tokens, the scenario harness (mock + mainnet-fork token sources), and the adaptive
-// parameter-upgrade tests. Not production code.
+// IRM model-selection harness.
+// The adaptive candidate is the real `AdaptiveCurveIrm` from the `lido-lend-irm` submodule; the pegged and kinked
+// candidates, the mock tokens, the scenario harness (mock + mainnet-fork token sources), and the adaptive
+// parameter-upgrade tests live in this file. Not production code.
 
 import {Test, console2} from "forge-std/Test.sol";
-import {IIrm} from "@morpho-blue/src/interfaces/IIrm.sol";
-import {Id, MarketParams, Market} from "@morpho-blue/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@morpho-blue/src/libraries/MarketParamsLib.sol";
-import {MathLib as MorphoMathLib} from "@morpho-blue/src/libraries/MathLib.sol";
-import {SharesMathLib} from "@morpho-blue/src/libraries/SharesMathLib.sol";
-import {UtilsLib} from "@morpho-blue-irm/src/adaptive-curve-irm/libraries/UtilsLib.sol";
-import {ExpLib} from "@morpho-blue-irm/src/adaptive-curve-irm/libraries/ExpLib.sol";
-import {MathLib, WAD_INT} from "@morpho-blue-irm/src/adaptive-curve-irm/libraries/MathLib.sol";
+import {IIrm} from "@lido-lend/src/interfaces/IIrm.sol";
+import {Id, MarketParams, Market} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
-import {LidoBlue} from "../../src/LidoBlue.sol";
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
+import {IAdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveIrm.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
-import {IWethWstEthController} from "../utils/IWethWstEthController.sol";
-import {LidoBlueDeployer} from "../../script/lib/LidoBlueDeployer.sol";
+import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
-// ==========================================================================================================
-// Candidate IRMs (local variants, declared here rather than in src/ so the whole comparison is one file)
-// ==========================================================================================================
+// Adaptive-curve math, reused by the local CapD prototype. These libraries are pragma ^0.8.0 (not strict
+// 0.8.19 like AdaptiveCurveIrm), so they share this 0.8.35 compilation unit.
+import {MathLib as MorphoMathLib} from "@lido-lend/src/libraries/MathLib.sol";
+import {MathLib as IrmMathLib, WAD_INT} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/MathLib.sol";
+import {ExpLib} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/ExpLib.sol";
+import {UtilsLib} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/UtilsLib.sol";
 
-/// @notice Adaptive curve IRM, a fork of Morpho's `AdaptiveCurveIrm` with the upstream `ConstantsLib`
-///         constants lifted to constructor immutables. The per-second rate is `curve(rateAtTarget, err)`,
-///         `err` measuring distance from `TARGET_UTILIZATION`; `rateAtTarget` itself adapts over time toward
-///         the settled utilization, bounded to `[MIN, MAX]`. No external rate input. An optional
-///         `MAX_BORROW_RATE` is an absolute ceiling on the charged rate (0 disables it) that never touches the
-///         adapting `rateAtTarget`. It clips wherever the curve would exceed it, independent of the curve params.
-contract LidoAdaptiveCurveIrm is IIrm {
-    using MathLib for int256;
-    using UtilsLib for int256;
-    using MorphoMathLib for uint128;
-    using MarketParamsLib for MarketParams;
+// The adaptive candidate is the real `AdaptiveCurveIrm` from the `lido-lend-irm` submodule. It is pinned to
+// strict 0.8.19 and cannot share a compilation unit with this 0.8.35 file, so it is deployed via `deployCode`
+// off its artifact (emitted by test/utils/_AdaptiveCurveIrmCompileTrigger.sol) and driven through interfaces.
+string constant IRM_ARTIFACT = "lib/lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm";
 
-    event BorrowRateUpdate(Id indexed id, uint256 avgBorrowRate, uint256 rateAtTarget);
-
-    error ZeroAddress();
-    error NotMorpho();
-    error InvalidParams();
-
-    struct Config {
-        int256 curveSteepness; // WAD, >= 1e18
-        int256 adjustmentSpeed; // WAD per second, >= 0
-        int256 targetUtilization; // WAD, in (0, 1e18)
-        int256 initialRateAtTarget; // WAD per second, in [min, max]
-        int256 minRateAtTarget; // WAD per second, > 0
-        int256 maxRateAtTarget; // WAD per second, >= min
-        int256 maxBorrowRate; // WAD per second, 0 = uncapped; else an absolute hard ceiling on the charged rate
-    }
-
-    address public immutable MORPHO;
-    int256 public immutable CURVE_STEEPNESS;
-    int256 public immutable ADJUSTMENT_SPEED;
-    int256 public immutable TARGET_UTILIZATION;
-    int256 public immutable INITIAL_RATE_AT_TARGET;
-    int256 public immutable MIN_RATE_AT_TARGET;
-    int256 public immutable MAX_RATE_AT_TARGET;
-    int256 public immutable MAX_BORROW_RATE; // hard cap on the charged rate; 0 disables it
-
-    mapping(Id => int256) public rateAtTarget;
-
-    constructor(address morpho, Config memory cfg) {
-        if (morpho == address(0)) revert ZeroAddress();
-        if (
-            cfg.curveSteepness < WAD_INT || cfg.adjustmentSpeed < 0 || cfg.targetUtilization <= 0
-                || cfg.targetUtilization >= WAD_INT || cfg.minRateAtTarget <= 0
-                || cfg.maxRateAtTarget < cfg.minRateAtTarget || cfg.initialRateAtTarget < cfg.minRateAtTarget
-                || cfg.initialRateAtTarget > cfg.maxRateAtTarget || cfg.maxBorrowRate < 0
-        ) {
-            revert InvalidParams();
-        }
-
-        MORPHO = morpho;
-        CURVE_STEEPNESS = cfg.curveSteepness;
-        ADJUSTMENT_SPEED = cfg.adjustmentSpeed;
-        TARGET_UTILIZATION = cfg.targetUtilization;
-        INITIAL_RATE_AT_TARGET = cfg.initialRateAtTarget;
-        MIN_RATE_AT_TARGET = cfg.minRateAtTarget;
-        MAX_RATE_AT_TARGET = cfg.maxRateAtTarget;
-        MAX_BORROW_RATE = cfg.maxBorrowRate;
-    }
-
-    function borrowRateView(MarketParams memory marketParams, Market memory market) external view returns (uint256) {
-        (uint256 avgRate,) = _borrowRate(marketParams.id(), market);
-        return avgRate;
-    }
-
-    function borrowRate(MarketParams memory marketParams, Market memory market) external returns (uint256) {
-        if (msg.sender != MORPHO) revert NotMorpho();
-        Id id = marketParams.id();
-        (uint256 avgRate, int256 endRateAtTarget) = _borrowRate(id, market);
-        rateAtTarget[id] = endRateAtTarget;
-        emit BorrowRateUpdate(id, avgRate, uint256(endRateAtTarget));
-        return avgRate;
-    }
-
-    function _borrowRate(Id id, Market memory market) private view returns (uint256, int256) {
-        int256 utilization =
-            int256(market.totalSupplyAssets > 0 ? market.totalBorrowAssets.wDivDown(market.totalSupplyAssets) : 0);
-
-        int256 errNormFactor = utilization > TARGET_UTILIZATION ? WAD_INT - TARGET_UTILIZATION : TARGET_UTILIZATION;
-        int256 err = (utilization - TARGET_UTILIZATION).wDivToZero(errNormFactor);
-
-        int256 startRateAtTarget = rateAtTarget[id];
-
-        int256 avgRateAtTarget;
-        int256 endRateAtTarget;
-
-        if (startRateAtTarget == 0) {
-            avgRateAtTarget = INITIAL_RATE_AT_TARGET;
-            endRateAtTarget = INITIAL_RATE_AT_TARGET;
-        } else {
-            int256 speed = ADJUSTMENT_SPEED.wMulToZero(err);
-            int256 elapsed = int256(block.timestamp - market.lastUpdate);
-            int256 linearAdaptation = speed * elapsed;
-
-            if (linearAdaptation == 0) {
-                avgRateAtTarget = startRateAtTarget;
-                endRateAtTarget = startRateAtTarget;
-            } else {
-                endRateAtTarget = _newRateAtTarget(startRateAtTarget, linearAdaptation);
-                int256 midRateAtTarget = _newRateAtTarget(startRateAtTarget, linearAdaptation / 2);
-                avgRateAtTarget = (startRateAtTarget + endRateAtTarget + 2 * midRateAtTarget) / 4;
-            }
-        }
-
-        // Hard cap: clamp the charged rate to MAX_BORROW_RATE, leaving endRateAtTarget untouched. Adaptation is
-        // err-driven, not rate-driven, so the state machine is unchanged and only the reported rate is bounded.
-        uint256 rate = uint256(_curve(avgRateAtTarget, err));
-        if (MAX_BORROW_RATE != 0 && rate > uint256(MAX_BORROW_RATE)) rate = uint256(MAX_BORROW_RATE);
-        return (rate, endRateAtTarget);
-    }
-
-    function _curve(int256 _rateAtTarget, int256 err) private view returns (int256) {
-        int256 coeff = err < 0 ? WAD_INT - WAD_INT.wDivToZero(CURVE_STEEPNESS) : CURVE_STEEPNESS - WAD_INT;
-        return (coeff.wMulToZero(err) + WAD_INT).wMulToZero(_rateAtTarget);
-    }
-
-    function _newRateAtTarget(int256 startRateAtTarget, int256 linearAdaptation) private view returns (int256) {
-        return startRateAtTarget.wMulToZero(ExpLib.wExp(linearAdaptation)).bound(MIN_RATE_AT_TARGET, MAX_RATE_AT_TARGET);
-    }
+/// @dev Minimal view onto the adaptive IRM's `rateAtTarget`, declared locally because the submodule's
+///      `IAdaptiveCurveIrm` carries its own `Id` type that does not unify with the core's `Id`.
+interface IRateAtTargetLike {
+    function rateAtTarget(Id id) external view returns (int256);
 }
+
+// ==========================================================================================================
+// Candidate IRMs. The adaptive candidate is the real `AdaptiveCurveIrm` (see above). The pegged and kinked
+// candidates are local variants declared here rather than in src/.
+// ==========================================================================================================
 
 /// @dev Source of the collateral's accumulating exchange rate (wstETH's `stEthPerToken`).
 interface IRateSource {
@@ -319,6 +213,174 @@ contract KinkedIrm is IIrm {
     }
 }
 
+/// @notice capD: adaptive-curve IRM with a dynamic, staking-pegged ceiling.
+///         The curve and `rateAtTarget` adaptation are Morpho's adaptive curve (steepness `C`); on
+///         top, both the charged rate and the adapting `rateAtTarget` are capped at `k * stakingAPR`. Staking
+///         APR is measured from the collateral's `stEthPerToken` growth over a lookback window (ring-buffer
+///         TWAP), as in `StakingPeggedIrm`. Unlike a static `MAX_BORROW_RATE`, the ceiling tracks the yield
+///         down, so `rateAtTarget` cannot stay wound up ("hangover") when staking falls.
+contract CapDIrm is IIrm {
+    using IrmMathLib for int256;
+    using UtilsLib for int256;
+    using MorphoMathLib for uint128;
+    using MarketParamsLib for MarketParams;
+
+    uint256 internal constant WAD = 1e18;
+    uint256 internal constant CARD = 8;
+
+    event BorrowRateUpdate(Id indexed id, uint256 avgBorrowRate, uint256 rateAtTarget);
+
+    error NotMorpho();
+    error ZeroAddress();
+    error InvalidParams();
+
+    struct Config {
+        int256 curveSteepness; // WAD, >= 1e18
+        int256 adjustmentSpeed; // WAD per second, >= 0
+        int256 targetUtilization; // WAD, in (0, 1e18)
+        int256 initialRateAtTarget; // WAD per second
+        int256 minRateAtTarget; // WAD per second, > 0
+        int256 maxRateAtTarget; // WAD per second, >= min (static upper bound; the dynamic k*sd cap sits under it)
+        int256 capMultiple; // WAD, k >= 1e18: ceiling = k * stakingAPR
+        uint256 window; // staking-APR lookback (seconds), > 0
+    }
+
+    address public immutable MORPHO;
+    IRateSource public immutable RATE_SOURCE;
+    int256 public immutable CURVE_STEEPNESS;
+    int256 public immutable ADJUSTMENT_SPEED;
+    int256 public immutable TARGET_UTILIZATION;
+    int256 public immutable INITIAL_RATE_AT_TARGET;
+    int256 public immutable MIN_RATE_AT_TARGET;
+    int256 public immutable MAX_RATE_AT_TARGET;
+    int256 public immutable CAP_MULTIPLE;
+    uint256 public immutable WINDOW;
+    uint256 public immutable SAMPLE_GAP;
+
+    mapping(Id => int256) public rateAtTarget;
+
+    // Staking-APR measurement (ring-buffer TWAP of stEthPerToken growth), mirroring StakingPeggedIrm.
+    uint256 public stakingApr; // per-second WAD
+
+    struct Sample {
+        uint64 ts;
+        uint192 rate;
+    }
+
+    Sample[CARD] internal _ring;
+    uint256 internal _head;
+
+    constructor(address morpho, address rateSource, Config memory cfg) {
+        if (morpho == address(0) || rateSource == address(0)) revert ZeroAddress();
+        if (
+            cfg.curveSteepness < WAD_INT || cfg.adjustmentSpeed < 0 || cfg.targetUtilization <= 0
+                || cfg.targetUtilization >= WAD_INT || cfg.minRateAtTarget <= 0
+                || cfg.maxRateAtTarget < cfg.minRateAtTarget || cfg.capMultiple < WAD_INT || cfg.window == 0
+        ) revert InvalidParams();
+
+        MORPHO = morpho;
+        RATE_SOURCE = IRateSource(rateSource);
+        CURVE_STEEPNESS = cfg.curveSteepness;
+        ADJUSTMENT_SPEED = cfg.adjustmentSpeed;
+        TARGET_UTILIZATION = cfg.targetUtilization;
+        INITIAL_RATE_AT_TARGET = cfg.initialRateAtTarget;
+        MIN_RATE_AT_TARGET = cfg.minRateAtTarget;
+        MAX_RATE_AT_TARGET = cfg.maxRateAtTarget;
+        CAP_MULTIPLE = cfg.capMultiple;
+        WINDOW = cfg.window;
+        SAMPLE_GAP = cfg.window / CARD;
+
+        _ring[0] = Sample({ts: uint64(block.timestamp), rate: uint192(IRateSource(rateSource).stEthPerToken())});
+    }
+
+    function borrowRateView(MarketParams memory marketParams, Market memory market) external view returns (uint256) {
+        (uint256 avgRate,) = _borrowRate(marketParams.id(), market, _peekStakingApr());
+        return avgRate;
+    }
+
+    function borrowRate(MarketParams memory marketParams, Market memory market) external returns (uint256) {
+        if (msg.sender != MORPHO) revert NotMorpho();
+        Id id = marketParams.id();
+        (uint256 avgRate, int256 endRateAtTarget) = _borrowRate(id, market, _updateStakingApr());
+        rateAtTarget[id] = endRateAtTarget;
+        emit BorrowRateUpdate(id, avgRate, uint256(endRateAtTarget));
+        return avgRate;
+    }
+
+    /// @dev Adaptive curve with the dynamic `k * stakingAPR` ceiling on both `rateAtTarget` and the charged rate.
+    function _borrowRate(Id id, Market memory market, uint256 sd) private view returns (uint256, int256) {
+        int256 capRate = CAP_MULTIPLE.wMulToZero(int256(sd)); // k * stakingAPR (per-second WAD)
+        int256 dynMax = capRate < MAX_RATE_AT_TARGET ? capRate : MAX_RATE_AT_TARGET;
+
+        int256 utilization =
+            int256(market.totalSupplyAssets > 0 ? market.totalBorrowAssets.wDivDown(market.totalSupplyAssets) : 0);
+        int256 errNormFactor = utilization > TARGET_UTILIZATION ? WAD_INT - TARGET_UTILIZATION : TARGET_UTILIZATION;
+        int256 err = (utilization - TARGET_UTILIZATION).wDivToZero(errNormFactor);
+
+        int256 startRateAtTarget = rateAtTarget[id];
+        int256 avgRateAtTarget;
+        int256 endRateAtTarget;
+
+        if (startRateAtTarget == 0) {
+            // First interaction: seed at the initial rate, clamped under the dynamic ceiling.
+            avgRateAtTarget = INITIAL_RATE_AT_TARGET.bound(MIN_RATE_AT_TARGET, dynMax);
+            endRateAtTarget = avgRateAtTarget;
+        } else {
+            int256 speed = ADJUSTMENT_SPEED.wMulToZero(err);
+            int256 elapsed = int256(block.timestamp - market.lastUpdate);
+            int256 linearAdaptation = speed * elapsed;
+            // _newRateAtTarget re-clamps to dynMax every step, so the ceiling rides the yield down even when
+            // linearAdaptation is small (no hangover).
+            endRateAtTarget = _newRateAtTarget(startRateAtTarget, linearAdaptation, dynMax);
+            int256 midRateAtTarget = _newRateAtTarget(startRateAtTarget, linearAdaptation / 2, dynMax);
+            avgRateAtTarget = (startRateAtTarget + endRateAtTarget + 2 * midRateAtTarget) / 4;
+        }
+
+        uint256 rate = uint256(_curve(avgRateAtTarget, err));
+        if (rate > uint256(capRate)) rate = uint256(capRate); // charged rate clipped at k * stakingAPR
+        return (rate, endRateAtTarget);
+    }
+
+    function _curve(int256 _rateAtTarget, int256 err) private view returns (int256) {
+        int256 coeff = err < 0 ? WAD_INT - WAD_INT.wDivToZero(CURVE_STEEPNESS) : CURVE_STEEPNESS - WAD_INT;
+        return (coeff.wMulToZero(err) + WAD_INT).wMulToZero(_rateAtTarget);
+    }
+
+    function _newRateAtTarget(int256 start, int256 linearAdaptation, int256 dynMax) private view returns (int256) {
+        return start.wMulToZero(ExpLib.wExp(linearAdaptation)).bound(MIN_RATE_AT_TARGET, dynMax);
+    }
+
+    function _updateStakingApr() internal returns (uint256) {
+        uint256 current = RATE_SOURCE.stEthPerToken();
+        uint256 nowTs = block.timestamp;
+        Sample memory newest = _ring[_head];
+        if (current > newest.rate && nowTs - newest.ts >= SAMPLE_GAP) {
+            _head = (_head + 1) % CARD;
+            _ring[_head] = Sample({ts: uint64(nowTs), rate: uint192(current)});
+        }
+        stakingApr = _windowApr(current, nowTs);
+        return stakingApr;
+    }
+
+    function _peekStakingApr() internal view returns (uint256) {
+        return _windowApr(RATE_SOURCE.stEthPerToken(), block.timestamp);
+    }
+
+    function _windowApr(uint256 current, uint256 nowTs) internal view returns (uint256) {
+        uint256 cutoff = nowTs > WINDOW ? nowTs - WINDOW : 0;
+        Sample memory anchor;
+        for (uint256 i; i < CARD; ++i) {
+            Sample memory s = _ring[(_head + 1 + i) % CARD];
+            if (s.ts != 0 && s.ts >= cutoff) {
+                anchor = s;
+                break;
+            }
+        }
+        if (anchor.ts == 0 || nowTs <= anchor.ts || current <= anchor.rate) return stakingApr;
+        return (current - anchor.rate) * WAD / anchor.rate / (nowTs - anchor.ts);
+    }
+}
+
 // ==========================================================================================================
 // Mock tokens (no-fork runs). Self-contained (no OpenZeppelin, which pins ^0.8.20) so they compile at 0.8.19.
 // ==========================================================================================================
@@ -372,10 +434,15 @@ contract MockWstETH is MockERC20 {
     function setStEthPerToken(uint256 value) external {
         stEthPerToken = value;
     }
+
+    /// @dev Mirrors real wstETH: stETH backing `wstETHAmount` wstETH. `WstEthRateOracle.price()` queries this.
+    function getStETHByWstETH(uint256 wstETHAmount) external view returns (uint256) {
+        return wstETHAmount * stEthPerToken / 1e18;
+    }
 }
 
 // ==========================================================================================================
-// Scenario harness: one scenario, three IRMs, on a real LidoBlue + controller + vault instance.
+// Scenario harness: one scenario, three IRMs, on a real ILidoLend + controller + vault instance.
 // ==========================================================================================================
 
 interface IERC20Like {
@@ -390,13 +457,14 @@ interface IERC20Like {
 ///         the IRM params from the trailing-year average APR (adaptive and kinked by proxy upgrade, the peg
 ///         needs none). Concrete subclasses wire the token/staking source (mock or mainnet fork); the IRM is
 ///         selected per test through `_irmKind`.
-abstract contract IrmScenarioBase is Test, LidoBlueDeployer {
+abstract contract IrmScenarioBase is Test, LidoLendDeployer {
     using SharesMathLib for uint256;
 
     enum IrmKind {
         Adaptive,
         Pegged,
-        Kinked
+        Kinked,
+        CapD
     }
 
     uint256 internal constant WAD = 1e18;
@@ -428,8 +496,7 @@ abstract contract IrmScenarioBase is Test, LidoBlueDeployer {
 
     address internal loanToken;
     address internal collateralToken;
-    LidoBlue internal market;
-    IWethWstEthController internal controller;
+    ILidoLend internal market;
     address internal vault;
     address internal oracle;
     MarketParams internal params;
@@ -488,13 +555,15 @@ abstract contract IrmScenarioBase is Test, LidoBlueDeployer {
     function _label() internal view returns (string memory) {
         if (_irmKind == IrmKind.Adaptive) return "ADAPTIVE";
         if (_irmKind == IrmKind.Pegged) return "PEGGED";
+        if (_irmKind == IrmKind.CapD) return "CAPD";
         return "KINKED";
     }
 
-    /// @dev Deploy the IRM under test. The peg reads staking directly and needs no retune, so it is deployed
-    ///      directly (its constructor also seeds storage, which a proxy would not run). Adaptive and kinked are
-    ///      retuned yearly by upgrade, so they live behind an `OssifiableProxy`. Initial params are
-    ///      scenario inputs; yearly `_retune` derives params from the trailing-year average APR.
+    /// @dev Deploy the IRM under test. The peg and capD read staking directly (their dynamic ceiling tracks the
+    ///      yield), so they need no retune and are deployed directly (their constructors also seed storage, which
+    ///      a proxy would not run). Adaptive and kinked are retuned yearly by upgrade, so they live behind an
+    ///      `OssifiableProxy`. Initial params are scenario inputs; yearly `_retune` derives params from the
+    ///      trailing-year average APR.
     function _deployIrm(address core) internal override returns (address) {
         if (_irmKind == IrmKind.Pegged) {
             return address(
@@ -504,21 +573,42 @@ abstract contract IrmScenarioBase is Test, LidoBlueDeployer {
             );
         }
 
-        address impl;
-        if (_irmKind == IrmKind.Adaptive) {
-            // initial set for ~2.6% staking
-            _adaptiveCapApr = INITIAL_CAP_APR;
-            impl = address(
-                new LidoAdaptiveCurveIrm(
+        if (_irmKind == IrmKind.CapD) {
+            // Adaptive-curve initial set + k = 1.25x (matching CAP_MULT_BPS); the ceiling is the dynamic k*staking.
+            return address(
+                new CapDIrm(
                     core,
-                    LidoAdaptiveCurveIrm.Config({
+                    collateralToken,
+                    CapDIrm.Config({
                         curveSteepness: int256(1.5 ether),
                         adjustmentSpeed: ADAPT_SPEED,
                         targetUtilization: int256(TARGET_UTIL),
                         initialRateAtTarget: int256(0.02 ether) / int256(YEAR),
                         minRateAtTarget: int256(0.005 ether) / int256(YEAR),
                         maxRateAtTarget: int256(0.0275 ether) / int256(YEAR),
-                        maxBorrowRate: int256(_adaptiveCapApr) / int256(YEAR)
+                        capMultiple: int256(1.25 ether),
+                        window: 14 days
+                    })
+                )
+            );
+        }
+
+        address impl;
+        if (_irmKind == IrmKind.Adaptive) {
+            // initial set for ~2.6% staking
+            _adaptiveCapApr = INITIAL_CAP_APR;
+            impl = deployCode(
+                IRM_ARTIFACT,
+                abi.encode(
+                    core,
+                    IAdaptiveCurveIrm.Config({
+                        curveSteepness: int256(1.5 ether),
+                        adjustmentSpeed: ADAPT_SPEED,
+                        targetUtilization: int256(TARGET_UTIL),
+                        initialRateAtTarget: int256(0.02 ether) / int256(YEAR),
+                        minRateAtTarget: int256(0.005 ether) / int256(YEAR),
+                        maxRateAtTarget: int256(0.0275 ether) / int256(YEAR),
+                        maxBorrowRate: _adaptiveCapApr / YEAR
                     })
                 )
             );
@@ -529,8 +619,12 @@ abstract contract IrmScenarioBase is Test, LidoBlueDeployer {
                 )
             );
         }
+        // The new ERC1967Proxy rejects empty init data. The impls are not initializable (params are constructor
+        // immutables), so satisfy the mandatory init call with a harmless no-arg view that writes no storage.
+        bytes memory initCall =
+            _irmKind == IrmKind.Adaptive ? abi.encodeWithSignature("getConfig()") : abi.encodeWithSignature("KINK()");
         _irmProxy =
-            deployCode("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, address(this), new bytes(0)));
+            deployCode("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, address(this), initCall));
         return _irmProxy;
     }
 
@@ -543,7 +637,7 @@ abstract contract IrmScenarioBase is Test, LidoBlueDeployer {
             // light touch: the bounds move with the APR (initial is re-derived too, but it is inert once the
             // market's rateAtTarget is set); the rate self-adapts via utilization between retunes
             _adaptiveCapApr = avgApr * CAP_MULT_BPS / 10_000;
-            newImpl = address(new LidoAdaptiveCurveIrm(address(market), _adaptiveCfgFor(avgApr)));
+            newImpl = deployCode(IRM_ARTIFACT, abi.encode(address(market), _adaptiveCfgFor(avgApr)));
         } else {
             // re-center the whole curve: at target ~0.9*avgApr, at 100% ~1.5*avgApr
             newImpl =
@@ -552,17 +646,17 @@ abstract contract IrmScenarioBase is Test, LidoBlueDeployer {
         IOssifiableProxy(_irmProxy).proxy__upgradeTo(newImpl);
     }
 
-    function _adaptiveCfgFor(uint256 avgApr) internal view returns (LidoAdaptiveCurveIrm.Config memory) {
+    function _adaptiveCfgFor(uint256 avgApr) internal view returns (IAdaptiveCurveIrm.Config memory) {
         // floor keeps headroom below avgApr; rateAtTarget persists. Each retune re-derives the borrow ceiling on the
         // same trailing-avg basis as the bounds: 1.25x the average APR.
-        return LidoAdaptiveCurveIrm.Config({
+        return IAdaptiveCurveIrm.Config({
             curveSteepness: int256(1.5 ether),
             adjustmentSpeed: ADAPT_SPEED,
             targetUtilization: int256(TARGET_UTIL),
             initialRateAtTarget: int256(avgApr * 8 / 10) / int256(YEAR),
             minRateAtTarget: int256(avgApr / 4) / int256(YEAR),
             maxRateAtTarget: int256(avgApr) / int256(YEAR),
-            maxBorrowRate: int256(avgApr * CAP_MULT_BPS / 10_000) / int256(YEAR)
+            maxBorrowRate: avgApr * CAP_MULT_BPS / 10_000 / YEAR
         });
     }
 
@@ -590,15 +684,18 @@ abstract contract IrmScenarioBase is Test, LidoBlueDeployer {
                 collateralToken: collateralToken,
                 oracleSource: collateralToken,
                 lltv: LLTV,
-                deleverageEnabled: true,
+                enableSettlement: true,
                 activation: ActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    maxSuspicionDelay: 2 hours,
-                    maxDecayDuration: 4 hours,
-                    maxDelayLoad: 10_000 ether,
+                    delayPerStrike: 2 hours,
+                    activatingHold: 0,
+                    maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
-                    minDecayAmount: 1_000 ether
+                    maxGuardiansQuorumDelay: 0
+                }),
+                settlementConfig: SettlementConfigParams({
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -607,8 +704,7 @@ abstract contract IrmScenarioBase is Test, LidoBlueDeployer {
             })
         );
 
-        market = LidoBlue(d.core);
-        controller = IWethWstEthController(d.controllerProxy);
+        market = ILidoLend(d.core);
         vault = d.vault;
         oracle = d.oracle;
         params = d.params;
@@ -1032,6 +1128,10 @@ contract IrmModelSelectionMockTest is IrmScenarioBase {
     function test_scenario_kinked() public {
         _run(IrmKind.Kinked);
     }
+
+    function test_scenario_capD() public {
+        _run(IrmKind.CapD);
+    }
 }
 
 interface IWETHFork {
@@ -1111,6 +1211,10 @@ contract IrmModelSelectionForkTest is IrmScenarioBase {
     function test_scenario_kinked() public {
         _run(IrmKind.Kinked);
     }
+
+    function test_scenario_capD() public {
+        _run(IrmKind.CapD);
+    }
 }
 
 // ==========================================================================================================
@@ -1182,34 +1286,8 @@ contract AdaptiveIrmUpgradeTest is Test {
         assertLt(ratAfter, ratBefore, "rate jumped down after the upgrade");
     }
 
-    function testRevert_badParams_rejectedAtConstruction() public {
-        vm.expectRevert(LidoAdaptiveCurveIrm.InvalidParams.selector);
-        new LidoAdaptiveCurveIrm(
-            address(this), _cfg(int256(0.02 ether) / Y, int256(0.05 ether) / Y, int256(0.02 ether) / Y)
-        );
-
-        vm.expectRevert(LidoAdaptiveCurveIrm.InvalidParams.selector);
-        new LidoAdaptiveCurveIrm(
-            address(this),
-            LidoAdaptiveCurveIrm.Config({
-                curveSteepness: int256(0.5 ether),
-                adjustmentSpeed: int256(20 ether) / Y,
-                targetUtilization: int256(TARGET),
-                initialRateAtTarget: int256(0.02 ether) / Y,
-                minRateAtTarget: int256(0.005 ether) / Y,
-                maxRateAtTarget: int256(0.08 ether) / Y,
-                maxBorrowRate: 0
-            })
-        );
-
-        vm.expectRevert(LidoAdaptiveCurveIrm.InvalidParams.selector);
-        new LidoAdaptiveCurveIrm(
-            address(this), _cfg(int256(0.2 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y)
-        );
-    }
-
-    function _cfg(int256 initial, int256 min, int256 max) internal pure returns (LidoAdaptiveCurveIrm.Config memory) {
-        return LidoAdaptiveCurveIrm.Config({
+    function _cfg(int256 initial, int256 min, int256 max) internal pure returns (IAdaptiveCurveIrm.Config memory) {
+        return IAdaptiveCurveIrm.Config({
             curveSteepness: int256(1.5 ether),
             adjustmentSpeed: int256(20 ether) / Y,
             targetUtilization: int256(TARGET),
@@ -1220,13 +1298,16 @@ contract AdaptiveIrmUpgradeTest is Test {
         });
     }
 
-    function _impl(LidoAdaptiveCurveIrm.Config memory cfg) internal returns (address) {
-        return address(new LidoAdaptiveCurveIrm(address(this), cfg));
+    function _impl(IAdaptiveCurveIrm.Config memory cfg) internal returns (address) {
+        return deployCode(IRM_ARTIFACT, abi.encode(address(this), cfg));
     }
 
     function _proxy(address impl) internal returns (address) {
-        return
-            deployCode("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, address(this), new bytes(0)));
+        // ERC1967Proxy rejects empty init data; the impl is not initializable, so call a harmless no-arg view.
+        return deployCode(
+            "src/proxy/OssifiableProxy.sol:OssifiableProxy",
+            abi.encode(impl, address(this), abi.encodeWithSignature("getConfig()"))
+        );
     }
 
     function _wire(address proxy) internal {
@@ -1250,15 +1331,15 @@ contract AdaptiveIrmUpgradeTest is Test {
     function _poke(address proxy, uint256 utilWad) internal {
         Market memory m = _market(utilWad);
         vm.warp(block.timestamp + 5 days);
-        LidoAdaptiveCurveIrm(proxy).borrowRate(params, m);
+        IIrm(proxy).borrowRate(params, m);
     }
 
     function _borrowAtTarget(address proxy) internal view returns (uint256) {
-        return LidoAdaptiveCurveIrm(proxy).borrowRateView(params, _market(TARGET)) * uint256(Y);
+        return IIrm(proxy).borrowRateView(params, _market(TARGET)) * uint256(Y);
     }
 
     function _rat(address proxy) internal view returns (int256) {
-        return LidoAdaptiveCurveIrm(proxy).rateAtTarget(id);
+        return IRateAtTargetLike(proxy).rateAtTarget(id);
     }
 
     function _market(uint256 utilWad) internal view returns (Market memory m) {
@@ -1277,28 +1358,28 @@ contract AdaptiveHardCapTest is Test {
 
     int256 internal constant Y = 365 days;
     uint256 internal constant SUPPLY = 1_000_000 ether;
-    int256 internal constant CAP = int256(0.035 ether) / Y; // 3.5%/yr: above MAX (2.75%), below the 4.125% tip
+    uint256 internal constant CAP = uint256(0.035 ether) / uint256(Y); // 3.5%/yr: above MAX (2.75%), below 4.125% tip
 
-    LidoAdaptiveCurveIrm internal uncapped;
-    LidoAdaptiveCurveIrm internal capped;
+    address internal uncapped;
+    address internal capped;
     MarketParams internal pu;
     MarketParams internal pc;
     Id internal idu;
     Id internal idc;
 
     function setUp() public {
-        uncapped = new LidoAdaptiveCurveIrm(address(this), _cfg(0));
-        capped = new LidoAdaptiveCurveIrm(address(this), _cfg(CAP));
-        pu = _params(address(uncapped));
+        uncapped = deployCode(IRM_ARTIFACT, abi.encode(address(this), _cfg(0)));
+        capped = deployCode(IRM_ARTIFACT, abi.encode(address(this), _cfg(CAP)));
+        pu = _params(uncapped);
         idu = pu.id();
-        pc = _params(address(capped));
+        pc = _params(capped);
         idc = pc.id();
     }
 
     function test_hardCap_clampsTip() public {
         // First call uses INITIAL_RATE_AT_TARGET (= MAX here), so the 100%-util tip is the natural peak MAX*steepness.
-        uint256 tipUncapped = uncapped.borrowRateView(pu, _market(1 ether)) * uint256(Y);
-        uint256 tipCapped = capped.borrowRateView(pc, _market(1 ether)) * uint256(Y);
+        uint256 tipUncapped = IIrm(uncapped).borrowRateView(pu, _market(1 ether)) * uint256(Y);
+        uint256 tipCapped = IIrm(capped).borrowRateView(pc, _market(1 ether)) * uint256(Y);
 
         assertApproxEqAbs(tipUncapped, 0.04125 ether, 0.001 ether, "uncapped tip = MAX*steepness = 4.125%");
         assertApproxEqAbs(tipCapped, 0.035 ether, 0.001 ether, "capped tip clamped to MAX_BORROW_RATE = 3.5%");
@@ -1315,38 +1396,37 @@ contract AdaptiveHardCapTest is Test {
             _stepBothAndAssertStateMatches(0.5 ether);
         }
         assertLt(
-            uncapped.rateAtTarget(idu), int256(0.0275 ether) / Y, "rateAtTarget left the MAX boundary (state moved)"
+            IRateAtTargetLike(uncapped).rateAtTarget(idu),
+            int256(0.0275 ether) / Y,
+            "rateAtTarget left the MAX boundary (state moved)"
         );
-        assertGt(uncapped.rateAtTarget(idu), int256(0.005 ether) / Y, "rateAtTarget stayed above MIN");
+        assertGt(
+            IRateAtTargetLike(uncapped).rateAtTarget(idu), int256(0.005 ether) / Y, "rateAtTarget stayed above MIN"
+        );
     }
 
     function test_hardCap_belowMax_clipsAtTarget() public {
         // An absolute ceiling below MAX clips even the at-target rate (here rateAtTarget = MAX = 2.75%).
-        LidoAdaptiveCurveIrm low = new LidoAdaptiveCurveIrm(address(this), _cfg(int256(0.025 ether) / Y));
-        MarketParams memory p = _params(address(low));
-        uint256 atTarget = low.borrowRateView(p, _market(0.9 ether)) * uint256(Y);
+        address low = deployCode(IRM_ARTIFACT, abi.encode(address(this), _cfg(uint256(0.025 ether) / uint256(Y))));
+        MarketParams memory p = _params(low);
+        uint256 atTarget = IIrm(low).borrowRateView(p, _market(0.9 ether)) * uint256(Y);
         assertApproxEqAbs(atTarget, 0.025 ether, 0.001 ether, "at-target rate clipped to the absolute 2.5% ceiling");
-    }
-
-    function testRevert_negativeCap_rejectedAtConstruction() public {
-        vm.expectRevert(LidoAdaptiveCurveIrm.InvalidParams.selector);
-        new LidoAdaptiveCurveIrm(address(this), _cfg(-1));
     }
 
     function _stepBothAndAssertStateMatches(uint256 utilWad) internal {
         Market memory m = _market(utilWad);
         vm.warp(block.timestamp + 5 days);
-        uncapped.borrowRate(pu, m);
-        capped.borrowRate(pc, m);
+        IIrm(uncapped).borrowRate(pu, m);
+        IIrm(capped).borrowRate(pc, m);
         assertEq(
-            capped.rateAtTarget(idc),
-            uncapped.rateAtTarget(idu),
+            IRateAtTargetLike(capped).rateAtTarget(idc),
+            IRateAtTargetLike(uncapped).rateAtTarget(idu),
             "rateAtTarget adapts identically: the hard cap bounds the charged rate, never the state"
         );
     }
 
-    function _cfg(int256 cap) internal pure returns (LidoAdaptiveCurveIrm.Config memory) {
-        return LidoAdaptiveCurveIrm.Config({
+    function _cfg(uint256 cap) internal pure returns (IAdaptiveCurveIrm.Config memory) {
+        return IAdaptiveCurveIrm.Config({
             curveSteepness: int256(1.5 ether),
             adjustmentSpeed: int256(20 ether) / Y,
             targetUtilization: int256(0.9 ether),

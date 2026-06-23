@@ -6,7 +6,10 @@
     }
   },
   "lib/lido-lend-irm": {
-    "rev": "f4f6e08f9a2b26d4df8c4ed38b0b2dcbc10c1a70"
+    "branch": {
+      "name": "feat/irm-router",
+      "rev": "ef715844eb6a910ed7b7392e99694d1c9d41bfd0"
+    }
   },
   "lib/openzeppelin-contracts": {
     "rev": "5fd1781b1454fd1ef8e722282f86f9293cacf256"
