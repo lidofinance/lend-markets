@@ -59,10 +59,10 @@ library CollateralActivationLib {
     event CollateralActivationConfigSet(Config config);
 
     /// @notice Emitted when the activation delay floor is raised.
-    event MinActivationDelaySet(uint64 minActivationDelay);
+    event MinActivationDelaySet(uint40 minActivationDelay);
 
     /// @notice Emitted when the activation delay cap is raised.
-    event MaxActivationDelaySet(uint64 maxActivationDelay);
+    event MaxActivationDelaySet(uint40 maxActivationDelay);
 
     /// @notice Emitted when the Sybil hold on activating collateral is set.
     event ActivatingHoldSet(uint128 activatingHold);
@@ -92,8 +92,8 @@ library CollateralActivationLib {
         uint128 active;
         uint128 activating;
         uint128 dust;
-        uint64 activatingStart;
-        uint64 activatingDelay;
+        uint40 activatingStart;
+        uint40 activatingDelay;
     }
 
     /// @notice Governance-tunable activation parameters, validated by `setConfig`.
@@ -110,17 +110,17 @@ library CollateralActivationLib {
     ///        must exceed the base delay to leave the quorum any window. 0 matures at the base unlock (no gate).
     struct Config {
         // delay ramp
-        uint64 minActivationDelay;
-        uint64 maxActivationDelay;
+        uint40 minActivationDelay;
+        uint40 maxActivationDelay;
         uint128 maxDelayInflow;
         // strike surcharge
-        uint64 delayPerStrike;
+        uint40 delayPerStrike;
         // sybil hold on activating collateral
         uint128 activatingHold;
         // dust threshold (anti-griefing)
         uint128 minActivationAmount;
         // quorum-scan gate fallback (0 = no gate)
-        uint64 maxGuardiansQuorumDelay;
+        uint40 maxGuardiansQuorumDelay;
     }
 
     /// @notice Market-wide activation state.
@@ -131,7 +131,7 @@ library CollateralActivationLib {
     struct State {
         Config config;
         uint128 inflow;
-        uint64 inflowUpdatedAt;
+        uint40 inflowUpdatedAt;
         mapping(address borrower => Position) positions;
         mapping(address borrower => bool) instantActivation;
     }
@@ -155,14 +155,14 @@ library CollateralActivationLib {
     }
 
     /// @notice Set the base delay floor. Reverts unless 0 < minDelay <= maxActivationDelay.
-    function setMinActivationDelay(State storage $, uint64 minDelay) internal {
+    function setMinActivationDelay(State storage $, uint40 minDelay) internal {
         if (minDelay == 0 || minDelay > $.config.maxActivationDelay) revert BadConfig();
         $.config.minActivationDelay = minDelay;
         emit MinActivationDelaySet(minDelay);
     }
 
     /// @notice Set the base delay cap. Reverts unless minActivationDelay <= maxDelay <= MAX_DELAY_BOUND.
-    function setMaxActivationDelay(State storage $, uint64 maxDelay) internal {
+    function setMaxActivationDelay(State storage $, uint40 maxDelay) internal {
         if (maxDelay < $.config.minActivationDelay || maxDelay > MAX_DELAY_BOUND) revert BadConfig();
         $.config.maxActivationDelay = maxDelay;
         emit MaxActivationDelaySet(maxDelay);
@@ -214,8 +214,8 @@ library CollateralActivationLib {
         uint256 delay = _computeDelay($, currentInflow);
 
         if (block.timestamp + delay > position.activatingStart + position.activatingDelay) {
-            position.activatingStart = uint64(block.timestamp);
-            position.activatingDelay = uint64(delay);
+            position.activatingStart = block.timestamp.toUint40();
+            position.activatingDelay = delay.toUint40();
         }
 
         emit ActivationScheduled(borrower, assetsWithDust, position.activatingStart + position.activatingDelay);
@@ -355,7 +355,7 @@ library CollateralActivationLib {
         newInflow = Math.min(prev + increment, $.config.maxDelayInflow);
 
         $.inflow = uint128(newInflow);
-        $.inflowUpdatedAt = uint64(block.timestamp);
+        $.inflowUpdatedAt = block.timestamp.toUint40();
 
         // Record the *applied* delta (post-cap), not the raw increment, so the same-tx undo reverses exactly
         // what was added. Reversing the raw amount when saturated would push inflow below its pre-deposit
@@ -374,7 +374,7 @@ library CollateralActivationLib {
         uint256 currentInflow = getInflow($);
 
         $.inflow = uint128(Math.saturatingSub(currentInflow, inflowDecrement));
-        $.inflowUpdatedAt = uint64(block.timestamp);
+        $.inflowUpdatedAt = block.timestamp.toUint40();
 
         // within a tx no time elapses, so this nets the same-tx addition exactly
         _setTxInflowAdded(borrower, inflowInTx - inflowDecrement);

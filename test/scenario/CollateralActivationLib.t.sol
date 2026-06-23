@@ -15,15 +15,15 @@ contract ActivationHarness {
         $.setConfig(cfg);
     }
 
-    function setMinActivationDelay(uint64 minDelay) external {
+    function setMinActivationDelay(uint40 minDelay) external {
         $.setMinActivationDelay(minDelay);
     }
 
-    function setMaxActivationDelay(uint64 maxDelay) external {
+    function setMaxActivationDelay(uint40 maxDelay) external {
         $.setMaxActivationDelay(maxDelay);
     }
 
-    function delays() external view returns (uint64 minActivationDelay, uint64 maxActivationDelay) {
+    function delays() external view returns (uint40 minActivationDelay, uint40 maxActivationDelay) {
         return ($.config.minActivationDelay, $.config.maxActivationDelay);
     }
 
@@ -157,13 +157,13 @@ contract CollateralActivationLibTest is Test {
 
     function test_setMinActivationDelay_updatesFloor() public {
         h.setMinActivationDelay(30 minutes);
-        (uint64 minActivationDelay,) = h.delays();
+        (uint40 minActivationDelay,) = h.delays();
         assertEq(minActivationDelay, 30 minutes, "floor updated");
     }
 
     function test_setMaxActivationDelay_updatesCap() public {
         h.setMaxActivationDelay(2 hours);
-        (, uint64 maxActivationDelay) = h.delays();
+        (, uint40 maxActivationDelay) = h.delays();
         assertEq(maxActivationDelay, 2 hours, "cap updated");
     }
 

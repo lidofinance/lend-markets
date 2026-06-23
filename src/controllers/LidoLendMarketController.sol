@@ -155,13 +155,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function increaseMinActivationDelay(uint64 newMinActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
+    function increaseMinActivationDelay(uint40 newMinActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
         if (newMinActivationDelay < _activation.config.minActivationDelay) revert ConfigNotTightened();
         _activation.setMinActivationDelay(newMinActivationDelay);
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function increaseMaxActivationDelay(uint64 newMaxActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
+    function increaseMaxActivationDelay(uint40 newMaxActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
         if (newMaxActivationDelay < _activation.config.maxActivationDelay) revert ConfigNotTightened();
         _activation.setMaxActivationDelay(newMaxActivationDelay);
     }

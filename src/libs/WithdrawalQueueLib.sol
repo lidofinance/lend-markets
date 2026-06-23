@@ -47,8 +47,8 @@ library WithdrawalQueueLib {
         uint256 sizeTotal;
         uint256 pricePerShare;
         uint96 maxPriorityFee;
-        uint64 createdAt;
-        uint64 deadline;
+        uint40 createdAt;
+        uint40 deadline;
         bool fullFillOnly;
         bool closed;
     }
@@ -100,8 +100,8 @@ library WithdrawalQueueLib {
             sizeTotal: shares,
             pricePerShare: pricePerShare,
             maxPriorityFee: SafeCast.toUint96(maxPriorityFee),
-            createdAt: SafeCast.toUint64(block.timestamp),
-            deadline: SafeCast.toUint64(deadline),
+            createdAt: SafeCast.toUint40(block.timestamp),
+            deadline: SafeCast.toUint40(deadline),
             fullFillOnly: fullFillOnly,
             closed: false
         });
