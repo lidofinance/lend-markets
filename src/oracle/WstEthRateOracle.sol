@@ -5,6 +5,8 @@ import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 
 interface IWstETH {
     /// @notice stETH backing `wstETHAmount` wstETH, in the same units as the input.
+    /// @param  wstETHAmount Amount of wstETH to convert to its backing stETH.
+    /// @return stETH backing `wstETHAmount` wstETH, in the same units as the input.
     function getStETHByWstETH(uint256 wstETHAmount) external view returns (uint256);
 }
 
@@ -52,6 +54,9 @@ contract WstEthRateOracle is IOracle {
     // ---
 
     /// @inheritdoc IOracle
+    /// @dev wstETH→stETH rate scaled to `1e36`: `getStETHByWstETH(1e36)`. Queried at `1e36` (rather than
+    ///      at `1e18` then scaled) to keep the low-order digits instead of flooring the rate.
+    /// @return ETH per 1 wstETH scaled by `1e36`, under stETH/ETH par.
     function price() external view override returns (uint256) {
         return WSTETH.getStETHByWstETH(1e36);
     }

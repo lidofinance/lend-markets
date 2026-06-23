@@ -72,18 +72,26 @@ interface IGuardianSignals {
     // ---
 
     /// @notice The number of distinct flags that latches a ban.
+    /// @return The current quorum.
     function getQuorum() external view returns (uint256);
     /// @notice Add a guardian to the set.
+    /// @param guardian The address to add. Must be non-zero, not already a guardian, and within `MAX_GUARDIANS_COUNT`.
     function addGuardian(address guardian) external;
     /// @notice Remove a guardian from the set. Reverts if it would drop the set below the quorum.
+    /// @param guardian The guardian to remove. Reverts if not currently a guardian.
     function removeGuardian(address guardian) external;
     /// @notice Set the quorum. Reverts unless `1 <= newQuorum <= guardian count`.
+    /// @param newQuorum The new number of distinct flags that latches a ban.
     function setQuorum(uint256 newQuorum) external;
     /// @notice Whether `account` is a guardian.
+    /// @param account The address to check.
+    /// @return True if `account` is in the guardian set.
     function isGuardian(address account) external view returns (bool);
     /// @notice The number of guardians in the set.
+    /// @return The guardian count.
     function getGuardianCount() external view returns (uint256);
     /// @notice The current guardian set.
+    /// @return The list of guardian addresses.
     function getGuardians() external view returns (address[] memory);
 
     // ---
@@ -92,17 +100,24 @@ interface IGuardianSignals {
 
     /// @notice Record the caller's last-scanned block, validated against its block hash. O(1): the quorum
     ///         frontier is recomputed separately by `syncQuorumBlock`.
+    /// @param lastScannedBlock The block the caller reports scanning past. Reverts if `number` exceeds the
+    ///        current block or if `hash` does not match `blockhash(number)`. Only the caller (a guardian) is recorded.
     function heartbeat(BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless
     ///         and monotonic — anyone may advance it (a keeper per scan frame, or a borrower whose activation
     ///         depends on it). Decoupled from `heartbeat` so heartbeats stay O(1).
     function syncQuorumBlock() external;
     /// @notice The last block `guardian` reported scanning.
+    /// @param guardian The guardian to query.
+    /// @return The guardian's last-scanned block. Zero-valued if the guardian has never reported a heartbeat.
     function getHeartbeat(address guardian) external view returns (BlockInfo memory);
     /// @notice The guardian set paired with each guardian's last-scanned block.
+    /// @return guardians  The current guardian set.
+    /// @return heartbeats The last-scanned block of each guardian, aligned by index with `guardians`.
     function getHeartbeats() external view returns (address[] memory guardians, BlockInfo[] memory heartbeats);
     /// @notice Highest block at least a quorum of guardians have ever scanned past. Monotonic: a guardian
     ///         rotation cannot lower it.
+    /// @return The quorum-scan frontier as last ratcheted by `syncQuorumBlock`.
     function getLastScannedQuorumBlock() external view returns (BlockInfo memory);
 
     // ---
@@ -111,9 +126,16 @@ interface IGuardianSignals {
 
     /// @notice Flag `accounts` in `market`, then heartbeat. Per account a no-op when the caller already flags
     ///         it or it is immune, so a batch never reverts on a skip.
+    /// @param market           The market id the accounts are flagged in.
+    /// @param accounts         The accounts to flag. A zero address in the batch reverts. Each one a no-op when
+    ///        already flagged by the caller or immune.
+    /// @param lastScannedBlock The heartbeat recorded for the caller after flagging, validated like `heartbeat`.
     function flag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Retract the caller's flags on `accounts` in `market`, then heartbeat. Per account a no-op when
     ///         the caller does not flag it or it is immune. Never lifts a latched ban.
+    /// @param market           The market id the flags are retracted in.
+    /// @param accounts         The accounts to unflag. Each one a no-op when not flagged by the caller or immune.
+    /// @param lastScannedBlock The heartbeat recorded for the caller after retracting, validated like `heartbeat`.
     function unflag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
 
     // ---
@@ -121,14 +143,23 @@ interface IGuardianSignals {
     // ---
 
     /// @notice Force a ban on `account` in `market`, bypassing the quorum. Clears any immunity.
+    /// @param market  The market id the ban applies in.
+    /// @param account The account to ban. Reverts on the zero address.
     function ban(Id market, address account) external;
-    /// @notice Lift the ban on `account` in `market` and clear its flags, so guardians re-evaluate from
-    ///         scratch and can re-ban it. Leaves immunity untouched.
+    /// @notice Lift the ban on `account` in `market`: reset its status to `Normal` and clear its flags, so
+    ///         guardians re-evaluate from scratch and can re-ban it. Resetting to `Normal` also clears a
+    ///         standing immunity, so manage immunity with `grantImmunity` / `revokeImmunity`.
+    /// @param market  The market id the ban is lifted in.
+    /// @param account The account to unban. Its status returns to `Normal` and its flagger set is cleared.
     function unban(Id market, address account) external;
     /// @notice Exempt `account` in `market` from guardian signals. While immune, `flag`/`unflag` no-op and
     ///         `getOpinion` reads it as clean. Cleared by `revokeImmunity` or `ban`.
+    /// @param market  The market id the immunity applies in.
+    /// @param account The account to exempt. Reverts on the zero address. Its status is set to `Immune`.
     function grantImmunity(Id market, address account) external;
     /// @notice Remove `account`'s immunity in `market`, re-subjecting it to guardian signals.
+    /// @param market  The market id the immunity is revoked in.
+    /// @param account The account whose immunity is removed. Its status returns to `Normal`.
     function revokeImmunity(Id market, address account) external;
 
     // ---
@@ -137,7 +168,14 @@ interface IGuardianSignals {
 
     /// @notice Guardian opinion on `account` in `market`: status, strike count, and the quorum-scan frontier.
     ///         The view the controller's activation gate consumes.
+    /// @param market  The market id to read.
+    /// @param account The account to read.
+    /// @return The opinion: latched status, effective strikes (forced to 0 while `Immune`), raw flag count, and
+    ///         the quorum-scan frontier.
     function getOpinion(Id market, address account) external view returns (GuardiansOpinion memory);
     /// @notice The guardians currently flagging `account` in `market`.
+    /// @param market  The market id to read.
+    /// @param account The account to read.
+    /// @return The addresses of guardians currently flagging the account.
     function getFlaggedBy(Id market, address account) external view returns (address[] memory);
 }

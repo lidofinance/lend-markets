@@ -8,7 +8,7 @@ FMT_PATHS := src/LidoBlueERC4626.sol src/SuspectsRegistry.sol src/controllers sr
 # Heap-benchmark gas runs into the 100M+ range and skews any gas snapshot / diff. Skip it.
 SNAPSHOT_EXCLUDE := test/scenario/HeapDeleverageBenchmark.t.sol
 
-.PHONY: help build sizes test fork-test fmt fmt-check lint coverage snapshot snapshot-diff slither solhint ci clean
+.PHONY: help build sizes test fork-test fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
 
 help:
 	@echo "Targets:"
@@ -24,6 +24,7 @@ help:
 	@echo "  snapshot-diff forge snapshot --diff (against committed .gas-snapshot)"
 	@echo "  slither       slither . (needs slither installed)"
 	@echo "  solhint       solhint 'src/**/*.sol' (needs node + solhint installed)"
+	@echo "  doc           forge build --ast + regenerate docs/specs/api/ from NatSpec"
 	@echo "  ci            build + lint + test  (what GitHub Actions runs on PRs)"
 	@echo "  clean         forge clean"
 
@@ -63,6 +64,10 @@ slither:
 
 solhint:
 	solhint 'src/**/*.sol'
+
+doc:
+	forge build --ast
+	python3 tools/gen_api_from_artifacts.py
 
 ci: build lint test
 

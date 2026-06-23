@@ -69,19 +69,22 @@ Read before writing or reviewing contracts.
 
 ## Specifications
 
-Every non-trivial contract gets a spec at `docs/specs/<ContractName>.md`. The spec captures what a
-reviewer needs before reading code, not what the code already says.
+Specs live in `docs/specs/` in two layers (see `docs/specs/README.md`). They capture what a reviewer
+needs before reading code, not what the code already says.
 
-- Sections: Purpose · State · Invariants · Externally Visible
-  Behaviour (one subsection per external/public function) · Threat Model · Open Questions ·
-  Change Log.
+- **Conceptual specs** (hand-written): the architecture, the access-control matrix, per-market
+  parameters, and the invariants and threat model the code cannot state itself. `architecture.md` is the
+  system and controller-subsystem reference, `roles.md` maps every privilege to its role and holder,
+  `markets/<market>.md` is per market.
+- **API reference** (`docs/specs/api/`, generated): the per-contract surface — functions, structs, state
+  variables — rendered from the Solidity NatSpec by `tools/gen_api_from_artifacts.py` (`make doc`). It is
+  the single source for per-member behaviour, so never hand-write or hand-edit it: keep the NatSpec
+  accurate and regenerate. The forked Morpho core is documented under `lib/lido-lend/`.
 - Invariants are **testable**: each one maps to a scenario or integration assertion in `test/`.
-- Behaviour subsections list preconditions, state mutations, events, reverts. Match the order in
-  the source file.
-- Threat model lists the actors (lender, borrower, liquidator, controller admin, oracle, IRM) and
-  what each is trusted not to do.
-- New contracts: spec lands in the same PR as the contract. Behaviour-changing PRs update the
-  existing spec under the same commit.
+- Threat model lists the actors (lender, borrower, liquidator, controller admin, guardian, oracle, IRM)
+  and what each is trusted not to do.
+- Behaviour-changing PRs update the NatSpec (which regenerates the API reference) and any conceptual spec
+  the change affects, under the same commit.
 - Specs reference the code; contract NatSpec never references specs, ADRs, tests, or docs
   (see `STYLE_GUIDE.md`).
 
