@@ -3,7 +3,7 @@ pragma solidity 0.8.35;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-/// @title WithdrawalMathLib
+/// @title LenderExitMathLib
 /// @author Lido Lending contributors.
 /// @notice Pure per-fill settlement split for the lender withdrawal queue. One fill redeems part
 ///         of a request and produces `assetsOut`; this splits it between the exiting lender, the
@@ -16,7 +16,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///      scaled by the share fraction this fill covers (`filledShares / sizeTotal`). It is funded out
 ///      of the lender's owed; the unramped remainder stays with the lender. The protocol takes a cut
 ///      of the keeper's gross reward; the lender's owed is unaffected by that cut.
-library WithdrawalMathLib {
+library LenderExitMathLib {
     // ---
     // CONSTANTS
     // ---

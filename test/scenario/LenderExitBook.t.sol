@@ -6,8 +6,8 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {WithdrawalQueue} from "../../src/periphery/WithdrawalQueue.sol";
-import {WithdrawalQueueLib} from "../../src/libs/WithdrawalQueueLib.sol";
+import {LenderExitBook} from "../../src/periphery/LenderExitBook.sol";
+import {LenderExitBookLib} from "../../src/libs/LenderExitBookLib.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 /// @dev Plain ERC-20 with an open mint, so the suite runs on a bare local chain with no mainnet fork or
@@ -61,11 +61,11 @@ interface ICoreLike {
         returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral);
 }
 
-/// @notice Happy-path coverage for `WithdrawalQueue` on a freshly deployed stack over mock ERC-20s (no
+/// @notice Happy-path coverage for `LenderExitBook` on a freshly deployed stack over mock ERC-20s (no
 ///         mainnet fork): vault-mode and direct-mode requests, the Dutch fee ramp, partial then final
 ///         fills with accrued yield, the fee/protocol split, claims, cancel, prune, full-fill-only, the
 ///         keeper liquidity fill, and the views.
-contract WithdrawalQueueTest is Test, LidoLendDeployer {
+contract LenderExitBookTest is Test, LidoLendDeployer {
     address internal constant LENDER = address(0x1000);
     address internal constant KEEPER = address(0x2000);
     address internal constant BORROWER = address(0x3000);
@@ -78,7 +78,7 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
 
     MockERC20 internal loan;
     MockERC20 internal collateral;
-    WithdrawalQueue internal queue;
+    LenderExitBook internal queue;
     Deployed internal d;
 
     /// @dev Swap the default wstETH oracle for a constant-price one so no Lido contract is needed. Bare
@@ -121,7 +121,7 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
             })
         );
 
-        queue = new WithdrawalQueue(d.vault, d.core, d.params, address(this), PROTOCOL, PROTOCOL_FEE_BPS);
+        queue = new LenderExitBook(d.vault, d.core, d.params, address(this), PROTOCOL, PROTOCOL_FEE_BPS);
     }
 
     /* T1 — Vault mode, full single fill at the deadline (full fee ramp), ample liquidity */
@@ -134,14 +134,14 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(queue), type(uint256).max);
         vm.prank(LENDER);
-        uint256 id = queue.requestWithdrawal(WithdrawalQueueLib.Mode.Vault, 10 ether, maxFee, deadline, false);
+        uint256 id = queue.requestWithdrawal(LenderExitBookLib.Mode.Vault, 10 ether, maxFee, deadline, false);
 
         // escrow + registry state
         assertEq(IVaultLike(d.vault).balanceOf(address(queue)), shares, "shares escrowed");
         assertEq(queue.activeRequestCount(), 1, "one active request");
-        WithdrawalQueueLib.Request memory request = queue.getRequest(id);
+        LenderExitBookLib.Request memory request = queue.getRequest(id);
         assertEq(request.owner, LENDER);
-        assertEq(uint8(request.mode), uint8(WithdrawalQueueLib.Mode.Vault));
+        assertEq(uint8(request.mode), uint8(LenderExitBookLib.Mode.Vault));
         assertEq(request.sizeRemaining, shares, "size is the escrowed shares");
         assertEq(request.sizeTotal, shares, "total equals the initial size");
         assertEq(request.maxPriorityFee, maxFee, "fee cap stored");
@@ -181,7 +181,7 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(queue), type(uint256).max);
         vm.prank(LENDER);
-        uint256 id = queue.requestWithdrawal(WithdrawalQueueLib.Mode.Vault, 10 ether, maxFee, deadline, false);
+        uint256 id = queue.requestWithdrawal(LenderExitBookLib.Mode.Vault, 10 ether, maxFee, deadline, false);
 
         // Halfway to the deadline; no borrower → price flat → no yield, so the reward is purely the
         // ramped fee, which at the midpoint is half the cap.
@@ -205,7 +205,7 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         // Deadline well past the warp below so the request is still fillable (ramped, not expired).
         uint256 id = queue.requestWithdrawal(
-            WithdrawalQueueLib.Mode.Vault, 10 ether, maxFee, uint64(block.timestamp + 365 days), false
+            LenderExitBookLib.Mode.Vault, 10 ether, maxFee, uint64(block.timestamp + 365 days), false
         );
 
         uint256 priceAtRequest = queue.getRequest(id).pricePerShare;
@@ -255,7 +255,7 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
         ICoreLike(d.core).setAuthorization(address(queue), true);
         uint64 deadline = uint64(block.timestamp + 1 days);
         vm.prank(LENDER);
-        uint256 id = queue.requestWithdrawal(WithdrawalQueueLib.Mode.Direct, 5 ether, 0.05 ether, deadline, false);
+        uint256 id = queue.requestWithdrawal(LenderExitBookLib.Mode.Direct, 5 ether, 0.05 ether, deadline, false);
 
         // Fill at the deadline so the fee ramp is full and the keeper is actually paid.
         vm.warp(deadline);
@@ -276,7 +276,7 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
         IVaultLike(d.vault).approve(address(queue), type(uint256).max);
         vm.prank(LENDER);
         uint256 id =
-            queue.requestWithdrawal(WithdrawalQueueLib.Mode.Vault, 8 ether, 0, uint64(block.timestamp + 1 days), false);
+            queue.requestWithdrawal(LenderExitBookLib.Mode.Vault, 8 ether, 0, uint64(block.timestamp + 1 days), false);
 
         assertEq(IVaultLike(d.vault).balanceOf(LENDER), 0, "shares escrowed");
         vm.prank(LENDER);
@@ -298,7 +298,7 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
         for (uint256 index; index < 3; ++index) {
             vm.prank(LENDER);
             ids[index] = queue.requestWithdrawal(
-                WithdrawalQueueLib.Mode.Vault, 10 ether, 0, uint64(block.timestamp + 1 days), false
+                LenderExitBookLib.Mode.Vault, 10 ether, 0, uint64(block.timestamp + 1 days), false
             );
         }
         assertEq(queue.activeRequestCount(), 3, "three active");
@@ -331,7 +331,7 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
         IVaultLike(d.vault).approve(address(queue), type(uint256).max);
         uint64 deadline = uint64(block.timestamp + 1 days);
         vm.prank(LENDER);
-        uint256 id = queue.requestWithdrawal(WithdrawalQueueLib.Mode.Vault, 10 ether, 0, deadline, false);
+        uint256 id = queue.requestWithdrawal(LenderExitBookLib.Mode.Vault, 10 ether, 0, deadline, false);
 
         vm.warp(deadline + 1);
 
@@ -356,13 +356,13 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
         IVaultLike(d.vault).approve(address(queue), type(uint256).max);
         vm.prank(LENDER);
         uint256 id = queue.requestWithdrawal(
-            WithdrawalQueueLib.Mode.Vault, 10 ether, 0, uint64(block.timestamp + 365 days), true
+            LenderExitBookLib.Mode.Vault, 10 ether, 0, uint64(block.timestamp + 365 days), true
         );
         assertTrue(queue.getRequest(id).fullFillOnly, "full-fill-only policy stored");
 
         // Partial liquidity cannot satisfy a full-fill-only request: the keeper gets nothing.
         vm.prank(KEEPER);
-        vm.expectRevert(WithdrawalQueue.NothingAvailable.selector);
+        vm.expectRevert(LenderExitBook.NothingAvailable.selector);
         queue.processWithdrawal(id);
         assertEq(queue.getRequest(id).sizeRemaining, shares, "untouched after a rejected partial");
 
@@ -385,7 +385,7 @@ contract WithdrawalQueueTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(queue), type(uint256).max);
         vm.prank(LENDER);
-        uint256 id = queue.requestWithdrawal(WithdrawalQueueLib.Mode.Vault, 10 ether, 0.1 ether, deadline, false);
+        uint256 id = queue.requestWithdrawal(LenderExitBookLib.Mode.Vault, 10 ether, 0.1 ether, deadline, false);
 
         // The keeper deposits its own loan token into the vault and closes the request in one atomic call.
         vm.warp(deadline);

@@ -13,10 +13,10 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
-import {WithdrawalQueueLib} from "../libs/WithdrawalQueueLib.sol";
-import {WithdrawalMathLib} from "../libs/WithdrawalMathLib.sol";
+import {LenderExitBookLib} from "../libs/LenderExitBookLib.sol";
+import {LenderExitMathLib} from "../libs/LenderExitMathLib.sol";
 
-/// @title WithdrawalQueue
+/// @title LenderExitBook
 /// @author Lido Lending contributors.
 /// @notice Lender stablecoin-exit queue for a single LidoLend market. A lender posts a request to
 ///         exit a fixed size of their supply position; anyone (a "keeper") then drains whatever
@@ -34,14 +34,14 @@ import {WithdrawalMathLib} from "../libs/WithdrawalMathLib.sol";
 ///      linearly from 0 at request time to the cap at the deadline, so a liquidity-starved request
 ///      grows more attractive to fill the longer it waits, while one filled early costs the lender
 ///      almost nothing.
-///      The request registry lives in `WithdrawalQueueLib`; this contract owns the token movement,
+///      The request registry lives in `LenderExitBookLib`; this contract owns the token movement,
 ///      pricing, and the per-fill settlement split. Bolt-on: no core changes. Pause and freeze
 ///      interactions are out of scope for this revision.
-contract WithdrawalQueue is Ownable {
+contract LenderExitBook is Ownable {
     using SafeERC20 for IERC20;
     using MarketParamsLib for MarketParams;
     using SharesMathLib for uint256;
-    using WithdrawalQueueLib for WithdrawalQueueLib.State;
+    using LenderExitBookLib for LenderExitBookLib.State;
 
     // ---
     // ERRORS
@@ -78,10 +78,10 @@ contract WithdrawalQueue is Ownable {
 
     /// @notice Emitted when a lender opens an exit request. `size` is the loan-asset amount requested;
     ///         the queue stores the matching shares at the price fixed by this call.
-    event WithdrawalRequested(
+    event ExitRequested(
         uint256 indexed id,
         address indexed owner,
-        WithdrawalQueueLib.Mode mode,
+        LenderExitBookLib.Mode mode,
         uint256 size,
         uint256 maxPriorityFee,
         uint256 deadline,
@@ -90,7 +90,7 @@ contract WithdrawalQueue is Ownable {
 
     /// @notice Emitted on each fill, recording the per-fill settlement split between the lender, the
     ///         keeper, and the protocol.
-    event WithdrawalProcessed(
+    event ExitProcessed(
         uint256 indexed id,
         address indexed keeper,
         uint256 filledShares,
@@ -100,10 +100,10 @@ contract WithdrawalQueue is Ownable {
     );
 
     /// @notice Emitted when the owner cancels their request.
-    event WithdrawalCancelled(uint256 indexed id);
+    event ExitCancelled(uint256 indexed id);
 
     /// @notice Emitted when an expired request is pruned from the active set.
-    event WithdrawalExpired(uint256 indexed id);
+    event ExitExpired(uint256 indexed id);
 
     /// @notice Emitted when an account withdraws its accumulated loan-asset balance.
     event Claimed(address indexed account, uint256 assets);
@@ -148,8 +148,8 @@ contract WithdrawalQueue is Ownable {
     /// @notice Protocol cut of the keeper's priority fee, in basis points (≤ `MAX_PROTOCOL_FEE_BPS`).
     uint256 public protocolFeeBps;
 
-    /// @dev The request registry — flat id-keyed store plus the active-id index; see `WithdrawalQueueLib`.
-    WithdrawalQueueLib.State internal _queue;
+    /// @dev The request registry — flat id-keyed store plus the active-id index; see `LenderExitBookLib`.
+    LenderExitBookLib.State internal _queue;
     /// @notice Loan-asset balance withdrawable by each account (lender proceeds or keeper fees).
     mapping(address account => uint256) public claimable;
 
@@ -223,7 +223,7 @@ contract WithdrawalQueue is Ownable {
     ///        size; a fill is rejected while the market cannot cover it all, never leaving it partial.
     /// @return id The new request id.
     function requestWithdrawal(
-        WithdrawalQueueLib.Mode mode,
+        LenderExitBookLib.Mode mode,
         uint256 assets,
         uint256 maxPriorityFee,
         uint256 deadline,
@@ -234,7 +234,7 @@ contract WithdrawalQueue is Ownable {
 
         uint256 shares;
         uint256 pricePerShare;
-        if (mode == WithdrawalQueueLib.Mode.Vault) {
+        if (mode == LenderExitBookLib.Mode.Vault) {
             shares = VAULT.convertToShares(assets);
             pricePerShare = VAULT.convertToAssets(WAD);
             IERC20(address(VAULT)).safeTransferFrom(msg.sender, address(this), shares);
@@ -245,7 +245,7 @@ contract WithdrawalQueue is Ownable {
         }
 
         id = _queue.add(msg.sender, mode, shares, pricePerShare, maxPriorityFee, deadline, fullFillOnly);
-        emit WithdrawalRequested(id, msg.sender, mode, assets, maxPriorityFee, deadline, fullFillOnly);
+        emit ExitRequested(id, msg.sender, mode, assets, maxPriorityFee, deadline, fullFillOnly);
     }
 
     /// @notice Fill request `id`, splitting the proceeds between the lender, the caller (keeper), and
@@ -272,14 +272,14 @@ contract WithdrawalQueue is Ownable {
     /// @dev Fill request `id`, crediting the keeper reward to `keeper`. Shared by the plain and
     ///      bring-liquidity entrypoints.
     function _process(uint256 id, address keeper) internal {
-        WithdrawalQueueLib.Request storage request = _queue.requireOpen(id);
+        LenderExitBookLib.Request storage request = _queue.requireOpen(id);
 
         (uint256 filledShares, uint256 assetsOut) = _pull(request);
         if (filledShares == 0 || assetsOut == 0) revert NothingAvailable();
 
         // Dutch ramp: 0 at creation, full cap at the deadline (the request can't be filled past it).
         uint256 feeRampBps = (block.timestamp - request.createdAt) * BPS / (request.deadline - request.createdAt);
-        (uint256 lenderAssets, uint256 keeperFee, uint256 protocolFee) = WithdrawalMathLib.splitFill(
+        (uint256 lenderAssets, uint256 keeperFee, uint256 protocolFee) = LenderExitMathLib.splitFill(
             assetsOut,
             filledShares,
             request.sizeTotal,
@@ -294,7 +294,7 @@ contract WithdrawalQueue is Ownable {
         claimable[keeper] += keeperFee;
         if (protocolFee != 0) claimable[feeRecipient] += protocolFee;
 
-        emit WithdrawalProcessed(id, keeper, filledShares, lenderAssets, keeperFee, protocolFee);
+        emit ExitProcessed(id, keeper, filledShares, lenderAssets, keeperFee, protocolFee);
     }
 
     /// @notice Cancel request `id`. Vault mode returns the unfilled escrowed shares; Direct mode just
@@ -302,11 +302,11 @@ contract WithdrawalQueue is Ownable {
     /// @param id The request to cancel.
     function cancelWithdrawal(uint256 id) external {
         address owner = _queue.requests[id].owner;
-        (WithdrawalQueueLib.Mode mode, uint256 leftover) = _queue.cancel(id, msg.sender);
-        if (mode == WithdrawalQueueLib.Mode.Vault && leftover != 0) {
+        (LenderExitBookLib.Mode mode, uint256 leftover) = _queue.cancel(id, msg.sender);
+        if (mode == LenderExitBookLib.Mode.Vault && leftover != 0) {
             IERC20(address(VAULT)).safeTransfer(owner, leftover);
         }
-        emit WithdrawalCancelled(id);
+        emit ExitCancelled(id);
     }
 
     /// @notice Permissionlessly drop expired requests from the active set, refunding the escrowed
@@ -316,12 +316,12 @@ contract WithdrawalQueue is Ownable {
     function pruneExpired(uint256[] calldata ids) external {
         for (uint256 index; index < ids.length; ++index) {
             uint256 id = ids[index];
-            (bool pruned, WithdrawalQueueLib.Mode mode, address owner, uint256 leftover) = _queue.expireIfDue(id);
+            (bool pruned, LenderExitBookLib.Mode mode, address owner, uint256 leftover) = _queue.expireIfDue(id);
             if (!pruned) continue;
-            if (mode == WithdrawalQueueLib.Mode.Vault && leftover != 0) {
+            if (mode == LenderExitBookLib.Mode.Vault && leftover != 0) {
                 IERC20(address(VAULT)).safeTransfer(owner, leftover);
             }
-            emit WithdrawalExpired(id);
+            emit ExitExpired(id);
         }
     }
 
@@ -342,7 +342,7 @@ contract WithdrawalQueue is Ownable {
     /// @notice The full record for request `id` (zero-valued struct if it never existed).
     /// @param id The request id to read.
     /// @return request The stored request record.
-    function getRequest(uint256 id) external view returns (WithdrawalQueueLib.Request memory request) {
+    function getRequest(uint256 id) external view returns (LenderExitBookLib.Request memory request) {
         return _queue.requests[id];
     }
 
@@ -370,11 +370,11 @@ contract WithdrawalQueue is Ownable {
     ///      assets they produced; the fixed-price owed vs accrued yield split happens in the caller.
     ///      A `fullFillOnly` request yields nothing until the available amount covers its whole size,
     ///      so the caller reverts (`NothingAvailable`) rather than fill it partially.
-    function _pull(WithdrawalQueueLib.Request storage request)
+    function _pull(LenderExitBookLib.Request storage request)
         internal
         returns (uint256 filledShares, uint256 assetsOut)
     {
-        if (request.mode == WithdrawalQueueLib.Mode.Vault) {
+        if (request.mode == LenderExitBookLib.Mode.Vault) {
             filledShares = Math.min(request.sizeRemaining, VAULT.maxRedeem(address(this)));
             if (filledShares == 0 || (request.fullFillOnly && filledShares < request.sizeRemaining)) return (0, 0);
             assetsOut = VAULT.redeem(filledShares, address(this), address(this));

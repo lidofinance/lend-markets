@@ -4,14 +4,14 @@ pragma solidity 0.8.35;
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
-/// @title WithdrawalQueueLib
+/// @title LenderExitBookLib
 /// @author Lido Lending contributors.
 /// @notice Registry of lender withdrawal requests: a flat id-keyed store with an active-id list for
 ///         paginated reads. No ordering — any request is filled by id. The embedding contract owns
 ///         the token movement, pricing, and settlement split; this library owns only the request
 ///         lifecycle (create, fill bookkeeping, cancel, enumerate).
 /// @dev Self-contained: operates on a caller-embedded `State`, makes no external calls.
-library WithdrawalQueueLib {
+library LenderExitBookLib {
     // ---
     // TYPES
     // ---

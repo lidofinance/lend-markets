@@ -2,10 +2,10 @@
 pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
-import {WithdrawalMathLib} from "../../src/libs/WithdrawalMathLib.sol";
+import {LenderExitMathLib} from "../../src/libs/LenderExitMathLib.sol";
 
 /// @notice Unit + fuzz coverage for the pure withdrawal-queue settlement split.
-contract WithdrawalMathLibTest is Test {
+contract LenderExitMathLibTest is Test {
     uint256 internal constant WAD = 1e18;
     uint256 internal constant BPS = 10_000;
 
@@ -13,7 +13,7 @@ contract WithdrawalMathLibTest is Test {
     function test_atParFullRamp_feeFromOwed() public pure {
         // 10 shares × 1.0 = 10 owed == assetsOut; full ramp + full fill → whole cap (3) to keeper.
         (uint256 lender, uint256 keeper, uint256 protocol) =
-            WithdrawalMathLib.splitFill(10 ether, 10 ether, 10 ether, WAD, 3 ether, BPS, 0);
+            LenderExitMathLib.splitFill(10 ether, 10 ether, 10 ether, WAD, 3 ether, BPS, 0);
         assertEq(lender, 7 ether, "owed minus fee");
         assertEq(keeper, 3 ether, "fee to keeper");
         assertEq(protocol, 0);
@@ -23,7 +23,7 @@ contract WithdrawalMathLibTest is Test {
     ///         remainder stays with the lender.
     function test_halfRamp_chargesHalfTheCap() public pure {
         (uint256 lender, uint256 keeper,) =
-            WithdrawalMathLib.splitFill(10 ether, 10 ether, 10 ether, WAD, 4 ether, BPS / 2, 0);
+            LenderExitMathLib.splitFill(10 ether, 10 ether, 10 ether, WAD, 4 ether, BPS / 2, 0);
         assertEq(keeper, 2 ether, "half the 4 cap at half ramp");
         assertEq(lender, 8 ether, "lender keeps the unramped half");
     }
@@ -31,7 +31,7 @@ contract WithdrawalMathLibTest is Test {
     /// @notice A fill at request creation (ramp 0) earns no priority fee — the auction starts at zero.
     function test_zeroRamp_noFee() public pure {
         (uint256 lender, uint256 keeper,) =
-            WithdrawalMathLib.splitFill(10 ether, 10 ether, 10 ether, WAD, 4 ether, 0, 0);
+            LenderExitMathLib.splitFill(10 ether, 10 ether, 10 ether, WAD, 4 ether, 0, 0);
         assertEq(keeper, 0, "no fee at ramp start");
         assertEq(lender, 10 ether, "lender keeps the full owed");
     }
@@ -40,7 +40,7 @@ contract WithdrawalMathLibTest is Test {
     function test_accruedYieldGoesToKeeper() public pure {
         // 10 shares fixed at 1.0; redeemed now at 1.2 → assetsOut 12, owed 10, yield 2 → keeper.
         (uint256 lender, uint256 keeper, uint256 protocol) =
-            WithdrawalMathLib.splitFill(12 ether, 10 ether, 10 ether, WAD, 0, BPS, 0);
+            LenderExitMathLib.splitFill(12 ether, 10 ether, 10 ether, WAD, 0, BPS, 0);
         assertEq(lender, 10 ether, "lender gets fixed-price owed");
         assertEq(keeper, 2 ether, "keeper gets the accrued yield");
         assertEq(protocol, 0);
@@ -50,7 +50,7 @@ contract WithdrawalMathLibTest is Test {
     function test_yieldPlusFee_withProtocolCut() public pure {
         // owed 10, yield 2, fee 4 (full ramp) → keeperGross 6; protocol 25% = 1.5; keeper 4.5; lender 6.
         (uint256 lender, uint256 keeper, uint256 protocol) =
-            WithdrawalMathLib.splitFill(12 ether, 10 ether, 10 ether, WAD, 4 ether, BPS, 2500);
+            LenderExitMathLib.splitFill(12 ether, 10 ether, 10 ether, WAD, 4 ether, BPS, 2500);
         assertEq(lender, 6 ether, "owed minus fee, unaffected by protocol cut");
         assertEq(keeper, 4.5 ether, "(yield + fee) net of protocol cut");
         assertEq(protocol, 1.5 ether, "25% of the 6 gross");
@@ -60,7 +60,7 @@ contract WithdrawalMathLibTest is Test {
     function test_partialFillProRatesFee() public pure {
         // half the original shares filled at full ramp → half the cap; at par, no yield.
         (uint256 lender, uint256 keeper,) =
-            WithdrawalMathLib.splitFill(5 ether, 5 ether, 10 ether, WAD, 4 ether, BPS, 0);
+            LenderExitMathLib.splitFill(5 ether, 5 ether, 10 ether, WAD, 4 ether, BPS, 0);
         assertEq(keeper, 2 ether, "half the 4 cap for half the size");
         assertEq(lender, 3 ether, "owed (5) minus fee (2)");
     }
@@ -68,7 +68,7 @@ contract WithdrawalMathLibTest is Test {
     /// @notice A loss (redeem yields less than the fixed price) caps the owed at `assetsOut` and leaves
     ///         no yield; the lender eats the loss.
     function test_lossTrimsOwedNoYield() public pure {
-        (uint256 lender, uint256 keeper,) = WithdrawalMathLib.splitFill(8 ether, 10 ether, 10 ether, WAD, 0, BPS, 0);
+        (uint256 lender, uint256 keeper,) = LenderExitMathLib.splitFill(8 ether, 10 ether, 10 ether, WAD, 0, BPS, 0);
         assertEq(lender, 8 ether, "owed capped at assetsOut");
         assertEq(keeper, 0, "no yield on a loss");
     }
@@ -92,7 +92,7 @@ contract WithdrawalMathLibTest is Test {
         protocolFeeBps = bound(protocolFeeBps, 0, BPS);
 
         (uint256 lender, uint256 keeper, uint256 protocol) =
-            WithdrawalMathLib.splitFill(assetsOut, filled, sizeTotal, price, maxFee, feeRampBps, protocolFeeBps);
+            LenderExitMathLib.splitFill(assetsOut, filled, sizeTotal, price, maxFee, feeRampBps, protocolFeeBps);
         assertEq(lender + keeper + protocol, assetsOut, "split conserves assetsOut");
     }
 
@@ -104,9 +104,9 @@ contract WithdrawalMathLibTest is Test {
         rampHigh = bound(rampHigh, rampLow, BPS);
 
         (uint256 lenderLow, uint256 keeperLow,) =
-            WithdrawalMathLib.splitFill(100 ether, 100 ether, 100 ether, WAD, maxFee, rampLow, 0);
+            LenderExitMathLib.splitFill(100 ether, 100 ether, 100 ether, WAD, maxFee, rampLow, 0);
         (uint256 lenderHigh, uint256 keeperHigh,) =
-            WithdrawalMathLib.splitFill(100 ether, 100 ether, 100 ether, WAD, maxFee, rampHigh, 0);
+            LenderExitMathLib.splitFill(100 ether, 100 ether, 100 ether, WAD, maxFee, rampHigh, 0);
         assertGe(keeperHigh, keeperLow, "later fill earns at least as much fee");
         assertLe(lenderHigh, lenderLow, "lender keeps at most as much later");
     }
@@ -124,7 +124,7 @@ contract WithdrawalMathLibTest is Test {
             uint256 filled = step < remaining ? step : remaining;
             // at par, assetsOut == filled; lender gets owed minus fee, so fee == filled-owed-to-lender.
             (uint256 lender, uint256 keeper,) =
-                WithdrawalMathLib.splitFill(filled, filled, sizeTotal, WAD, maxFee, BPS, 0);
+                LenderExitMathLib.splitFill(filled, filled, sizeTotal, WAD, maxFee, BPS, 0);
             paid += keeper; // no yield, no protocol cut → keeper == fee
             assertEq(lender + keeper, filled, "fill conserves at par");
             remaining -= filled;
