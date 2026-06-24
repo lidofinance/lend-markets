@@ -413,6 +413,62 @@ contract ExitBookTest is Test, LidoLendDeployer {
         assertEq(reqs[2].owner, address(0), "unknown id -> empty request");
     }
 
+    /* rampStart holds the fee at startRate before the climb, then it interpolates to endRate as usual. */
+    function test_erc4626_priorityRamp_holdsThenClimbs() public {
+        uint256 startRate = 0.01e18; // 1%
+        uint256 endRate = 0.05e18; // 5%
+        uint256 rampStart = 3 days;
+        uint256 rampDuration = 10 days;
+        uint256 createdAt = block.timestamp;
+
+        uint256 shares = _depositToVault(LENDER, 40 ether);
+        vm.prank(LENDER);
+        IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+
+        uint256 slice = shares / 4;
+        uint256[3] memory ids;
+        for (uint256 i; i < 3; ++i) {
+            vm.prank(LENDER);
+            ids[i] = vaultBook.placeExitRequest(
+                IERC4626(d.vault),
+                slice,
+                _rampHold(startRate, endRate, rampStart, rampDuration),
+                createdAt + 20 days,
+                false
+            );
+        }
+
+        uint256[3] memory fillAt;
+        fillAt[0] = createdAt + rampStart - 1; // inside the hold -> startRate
+        fillAt[1] = createdAt + rampStart + rampDuration / 2; // mid-climb -> 3%
+        fillAt[2] = createdAt + rampStart + rampDuration + 5 days; // plateau -> endRate
+        uint256[3] memory wantRate;
+        wantRate[0] = startRate;
+        wantRate[1] = startRate + (endRate - startRate) / 2;
+        wantRate[2] = endRate;
+
+        for (uint256 i; i < 3; ++i) {
+            Request memory request = vaultBook.getExitRequest(ids[i]);
+            uint256 owed = uint256(request.sizeRemaining) * request.pricePerShare / WAD;
+            uint256 fee = owed * wantRate[i] / WAD; // flat price -> no yield -> reward is the fee only
+            uint256 serviceCut = fee * SERVICE_FEE / WAD;
+
+            uint256 lenderBefore = loan.balanceOf(LENDER);
+            uint256 fillerBefore = loan.balanceOf(FILLER);
+
+            vm.warp(fillAt[i]);
+            vm.prank(FILLER);
+            vaultBook.fillExitRequest(ids[i], 0, 0);
+
+            assertApproxEqAbs(
+                loan.balanceOf(LENDER) - lenderBefore, owed - fee, 1e6, "lender: owed minus held/ramped fee"
+            );
+            assertApproxEqAbs(
+                loan.balanceOf(FILLER) - fillerBefore, fee - serviceCut, 1e6, "filler: held/ramped fee minus cut"
+            );
+        }
+    }
+
     /* Priority fee follows the Dutch ramp: startRate at creation, linear to endRate, then flat to the deadline. */
     function test_erc4626_priorityRamp_interpolatesThenPlateaus() public {
         uint256 startRate = 0.01e18; // 1%
@@ -506,7 +562,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
         vm.prank(LENDER);
-        // rampDuration (10 days) overshoots the window to the deadline (5 days)
+        // ramp end (10 days) overshoots the window to the deadline (5 days)
         vm.expectRevert(ExitBookBase.RampPastDeadline.selector);
         vaultBook.placeExitRequest(
             IERC4626(d.vault), shares, _ramp(0, 0.05e18, 10 days), block.timestamp + 5 days, false
@@ -663,12 +719,21 @@ contract ExitBookTest is Test, LidoLendDeployer {
 
     /// @dev A flat priority fee: `rate` from creation, no ramp.
     function _flat(uint256 rate) internal pure returns (PriorityRamp memory) {
-        return PriorityRamp({startRate: rate, endRate: rate, rampDuration: 0});
+        return PriorityRamp({startRate: rate, endRate: rate, rampStart: 0, rampEnd: 0});
     }
 
     /// @dev A Dutch ramp: `start` at creation climbing to `end` over `dur` seconds, then flat to the deadline.
     function _ramp(uint256 start, uint256 end, uint256 dur) internal pure returns (PriorityRamp memory) {
-        return PriorityRamp({startRate: start, endRate: end, rampDuration: dur});
+        return PriorityRamp({startRate: start, endRate: end, rampStart: 0, rampEnd: dur});
+    }
+
+    /// @dev A Dutch ramp with a hold: `start` held for `hold` seconds, then climbing to `end` over `dur`.
+    function _rampHold(uint256 start, uint256 end, uint256 hold, uint256 dur)
+        internal
+        pure
+        returns (PriorityRamp memory)
+    {
+        return PriorityRamp({startRate: start, endRate: end, rampStart: hold, rampEnd: hold + dur});
     }
 
     function _depositToVault(address lender, uint256 amount) internal returns (uint256 shares) {

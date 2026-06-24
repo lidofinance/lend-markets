@@ -28,8 +28,8 @@ interface IErc4626ExitBook is IExitBook {
     ///         approved this book for `shares` and hold them; the fill redeems them via the allowance.
     /// @param vault The allowed ERC-4626 vault.
     /// @param shares Vault shares to exit.
-    /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, and ramp duration.
-    /// @param deadline Fill cutoff; capped at `now + MAX_REQUEST_LIFETIME` and `>= now + ramp.rampDuration`.
+    /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end.
+    /// @param deadline Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
     /// @param fullFillOnly When true a fill must cover the whole remaining size in one shot.
     /// @return id The new request id.
     function placeExitRequest(

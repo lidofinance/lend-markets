@@ -36,8 +36,8 @@ interface IMorphoExitBook is IExitBook {
     ///         the `shares`.
     /// @param marketId The allowed market's id (its `MarketParams` hash, registered via `setMarketAllowed`).
     /// @param shares Supply shares to exit.
-    /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, and ramp duration.
-    /// @param deadline Fill cutoff; capped at `now + MAX_REQUEST_LIFETIME` and `>= now + ramp.rampDuration`.
+    /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end.
+    /// @param deadline Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
     /// @param fullFillOnly When true a fill must cover the whole remaining size in one shot.
     /// @return id The new request id.
     function placeExitRequest(

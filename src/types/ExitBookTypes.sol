@@ -14,16 +14,19 @@ enum ExitStatus {
 }
 
 /// @notice Lender-set priority-fee schedule — a Dutch auction on the fee carved out of the amount owed. The rate
-///         climbs linearly from `startRate` at creation to `endRate` after `rampDuration`, then holds at
-///         `endRate` until the deadline. Rates are WAD fractions, each capped at `MAX_PRIORITY_FEE`.
-/// @param startRate Priority-fee rate (WAD) charged immediately at creation.
-/// @param endRate Priority-fee rate (WAD) reached after `rampDuration` and held to the deadline; `>= startRate`.
-/// @param rampDuration Seconds from creation over which the rate climbs `startRate` to `endRate` (0 means the
-///        rate is `endRate` from the start — a flat fee).
+///         holds at `startRate` for `rampStart` seconds from creation, then climbs linearly to `endRate` by
+///         `rampEnd`, then holds at `endRate` until the deadline. Rates are WAD fractions, each capped at
+///         `MAX_PRIORITY_FEE`.
+/// @param startRate Priority-fee rate (WAD) charged from creation through the `rampStart` hold.
+/// @param endRate Priority-fee rate (WAD) reached after the ramp and held to the deadline; `>= startRate`.
+/// @param rampStart Seconds from creation the rate holds at `startRate` before the climb begins (0 climbs
+///        immediately).
+/// @param rampEnd Seconds from creation the climb reaches `endRate` (>= `rampStart`, equal means an instant jump).
 struct PriorityRamp {
     uint256 startRate;
     uint256 endRate;
-    uint256 rampDuration;
+    uint256 rampStart;
+    uint256 rampEnd;
 }
 
 /// @notice One exit request — lifecycle and pricing only. The backing source (which vault / which market)
@@ -34,12 +37,13 @@ struct PriorityRamp {
 /// @param sizeRemaining Outstanding shares to fill. The fixed-price amount owed is `sizeRemaining * pricePerShare`.
 /// @param sizeTotal Original shares at creation (informational).
 /// @param pricePerShare Assets per share (WAD), snapshotted at creation; yield above it is the filler's.
-/// @param startRate Priority-fee rate (WAD) in force at `createdAt` (see `PriorityRamp`).
-/// @param endRate Priority-fee rate (WAD) reached at `createdAt + rampDuration` and held to the deadline.
-/// @param rampDuration Seconds over which the priority-fee rate climbs `startRate` to `endRate`.
-/// @param createdAt Creation timestamp: the fee ramp's start.
+/// @param startRate Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold.
+/// @param endRate Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline.
+/// @param rampStart Seconds from `createdAt` the rate holds at `startRate` before the climb begins.
+/// @param rampEnd Seconds from `createdAt` the climb reaches `endRate`.
+/// @param createdAt Creation timestamp: the fee schedule's start.
 /// @param deadline Last timestamp the request may be filled. Chosen by the lender, capped at
-///        `createdAt + MAX_LIFETIME` and never earlier than `createdAt + rampDuration`.
+///        `createdAt + MAX_LIFETIME` and never earlier than `createdAt + rampEnd`.
 /// @param fullFillOnly When true a fill must cover the whole remaining size in one shot or be rejected.
 /// @param status Open / Filled / Cancelled (Expired is derived).
 struct Request {
@@ -50,7 +54,8 @@ struct Request {
     uint128 pricePerShare;
     uint96 startRate;
     uint96 endRate;
-    uint40 rampDuration;
+    uint32 rampStart;
+    uint32 rampEnd;
     uint40 createdAt;
     uint40 deadline;
     bool fullFillOnly;

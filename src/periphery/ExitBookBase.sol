@@ -30,6 +30,7 @@ abstract contract ExitBookBase is IExitBook, Ownable {
     error FeeRecipientRequired();
     error PriorityFeeTooHigh();
     error StartFeeAboveEnd();
+    error RampStartAfterEnd();
     error RampPastDeadline();
     error NoFillableShares();
     error NoAssetsRedeemed();
@@ -46,9 +47,7 @@ abstract contract ExitBookBase is IExitBook, Ownable {
         address indexed owner,
         address asset,
         uint256 shares,
-        uint256 startRate,
-        uint256 endRate,
-        uint256 rampDuration,
+        PriorityRamp ramp,
         uint256 deadline,
         bool fullFillOnly
     );
@@ -309,20 +308,21 @@ abstract contract ExitBookBase is IExitBook, Ownable {
         if (ramp.startRate > ramp.endRate) {
             revert StartFeeAboveEnd();
         }
+        if (ramp.rampStart > ramp.rampEnd) {
+            revert RampStartAfterEnd();
+        }
         if (deadline <= block.timestamp) {
             revert DeadlineInPast();
         }
         if (deadline > block.timestamp + MAX_REQUEST_LIFETIME) {
             revert DeadlineTooFar();
         }
-        if (block.timestamp + ramp.rampDuration > deadline) {
+        if (block.timestamp + ramp.rampEnd > deadline) {
             revert RampPastDeadline();
         }
 
         id = _book.add(account, asset, shares, pricePerShare, ramp, deadline, fullFillOnly);
-        emit ExitRequested(
-            id, account, address(asset), shares, ramp.startRate, ramp.endRate, ramp.rampDuration, deadline, fullFillOnly
-        );
+        emit ExitRequested(id, account, address(asset), shares, ramp, deadline, fullFillOnly);
     }
 
     /// @dev Source fillable shares with the `fullFillOnly` policy applied.
@@ -333,19 +333,25 @@ abstract contract ExitBookBase is IExitBook, Ownable {
         }
     }
 
-    /// @dev The priority-fee rate (WAD) in force now: `startRate` at creation, climbing linearly to
-    ///      `endRate` over `rampDuration`, then held at `endRate` until the deadline.
+    /// @dev The priority-fee rate (WAD) in force now: `startRate` while within the `rampStart` hold, then
+    ///      climbing linearly to `endRate` by `rampEnd`, then held at `endRate` until the deadline.
     function _priorityFeeRate(Request storage request) internal view returns (uint256) {
-        uint256 endRate = request.endRate;
-        uint256 rampDuration = request.rampDuration;
+        uint256 startRate = request.startRate;
+        uint256 rampStart = request.rampStart;
         uint256 elapsed = block.timestamp - request.createdAt;
 
-        if (elapsed >= rampDuration) {
+        if (elapsed < rampStart) {
+            return startRate;
+        }
+
+        uint256 endRate = request.endRate;
+        uint256 rampEnd = request.rampEnd;
+
+        if (elapsed >= rampEnd) {
             return endRate;
         }
 
-        uint256 startRate = request.startRate;
-        return startRate + (endRate - startRate) * elapsed / rampDuration;
+        return startRate + (endRate - startRate) * (elapsed - rampStart) / (rampEnd - rampStart);
     }
 
     // ---
