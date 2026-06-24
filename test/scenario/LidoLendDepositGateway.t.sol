@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {LidoLendDepositGateway} from "../../src/periphery/LidoLendDepositGateway.sol";
+import {ILidoLendDepositGateway} from "../../src/interfaces/ILidoLendDepositGateway.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 interface IStETH {
@@ -80,7 +81,7 @@ contract LidoLendDepositGatewayTest is Test, LidoLendDeployer {
             })
         );
 
-        gateway = new LidoLendDepositGateway(d.core, d.params, d.vault);
+        gateway = new LidoLendDepositGateway(d.core, WETH_ADDRESS, WSTETH_ADDRESS, d.vault);
     }
 
     function test_supplyCollateralWithStEth_wrapsAndPostsCollateral() public {
@@ -97,7 +98,7 @@ contract LidoLendDepositGatewayTest is Test, LidoLendDeployer {
         (,, uint128 collateralBefore) = IMarketLike(d.core).position(d.marketId, BORROWER);
 
         vm.prank(BORROWER);
-        uint256 wstEthAmount = gateway.supplyCollateralWithStEth(stBalance, BORROWER);
+        uint256 wstEthAmount = gateway.supplyCollateralWithStEth(d.params, stBalance, BORROWER);
 
         (,, uint128 collateralAfter) = IMarketLike(d.core).position(d.marketId, BORROWER);
         assertEq(uint256(collateralAfter) - collateralBefore, wstEthAmount, "collateral grew by wrapped amount");
@@ -114,7 +115,7 @@ contract LidoLendDepositGatewayTest is Test, LidoLendDeployer {
         vm.deal(LENDER, 5 ether);
 
         vm.prank(LENDER);
-        (uint256 assets, uint256 shares) = gateway.supplyWithEth{value: 5 ether}(LENDER);
+        (uint256 assets, uint256 shares) = gateway.supplyWithEth{value: 5 ether}(d.params, LENDER);
 
         assertEq(assets, 5 ether, "supplied the full msg.value");
         (uint256 supplyShares,,) = IMarketLike(d.core).position(d.marketId, LENDER);
@@ -133,7 +134,7 @@ contract LidoLendDepositGatewayTest is Test, LidoLendDeployer {
         WETH.approve(address(gateway), type(uint256).max);
 
         vm.prank(LENDER);
-        (uint256 assets, uint256 shares) = gateway.supplyWithWeth(5 ether, LENDER);
+        (uint256 assets, uint256 shares) = gateway.supplyWithWeth(d.params, 5 ether, LENDER);
 
         assertEq(assets, 5 ether, "supplied the requested WETH");
         (uint256 supplyShares,,) = IMarketLike(d.core).position(d.marketId, LENDER);
@@ -158,27 +159,46 @@ contract LidoLendDepositGatewayTest is Test, LidoLendDeployer {
         assertGt(vaultSupplyShares, 0, "vault supplied into the market");
     }
 
-    function testRevert_zeroAmountAndZeroAddress() public {
+    function testRevert_zeroInputs() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
-        vm.expectRevert(LidoLendDepositGateway.ZeroAmount.selector);
-        gateway.supplyCollateralWithStEth(0, BORROWER);
+        vm.expectRevert(ILidoLendDepositGateway.ZeroAmount.selector);
+        gateway.supplyCollateralWithStEth(d.params, 0, BORROWER);
 
-        vm.expectRevert(LidoLendDepositGateway.ZeroAddress.selector);
-        gateway.supplyCollateralWithStEth(1 ether, address(0));
+        vm.expectRevert(ILidoLendDepositGateway.ZeroOnBehalf.selector);
+        gateway.supplyCollateralWithStEth(d.params, 1 ether, address(0));
 
-        vm.expectRevert(LidoLendDepositGateway.ZeroAmount.selector);
-        gateway.supplyWithEth{value: 0}(LENDER);
+        vm.expectRevert(ILidoLendDepositGateway.ZeroAmount.selector);
+        gateway.supplyWithEth{value: 0}(d.params, LENDER);
 
-        vm.deal(address(this), 1 ether);
-        vm.expectRevert(LidoLendDepositGateway.ZeroAddress.selector);
-        gateway.supplyWithEth{value: 1 ether}(address(0));
+        vm.deal(address(this), 2 ether);
+        vm.expectRevert(ILidoLendDepositGateway.ZeroOnBehalf.selector);
+        gateway.supplyWithEth{value: 1 ether}(d.params, address(0));
 
-        vm.expectRevert(LidoLendDepositGateway.ZeroAmount.selector);
-        gateway.supplyWithWeth(0, LENDER);
+        vm.expectRevert(ILidoLendDepositGateway.ZeroAmount.selector);
+        gateway.supplyWithWeth(d.params, 0, LENDER);
 
-        vm.expectRevert(LidoLendDepositGateway.ZeroAmount.selector);
+        vm.expectRevert(ILidoLendDepositGateway.ZeroAmount.selector);
         gateway.depositEthToVault{value: 0}(LENDER);
+
+        vm.expectRevert(ILidoLendDepositGateway.ZeroReceiver.selector);
+        gateway.depositEthToVault{value: 1 ether}(address(0));
+    }
+
+    function testRevert_marketTokenMismatch() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        // A WETH supply zap moves WETH, so it rejects a non-WETH loan token.
+        MarketParams memory badLoan = d.params;
+        badLoan.loanToken = STETH_ADDRESS;
+        vm.expectRevert(ILidoLendDepositGateway.LoanTokenMismatch.selector);
+        gateway.supplyWithWeth(badLoan, 1 ether, LENDER);
+
+        // The stETH collateral zap moves wstETH, so it rejects a non-wstETH collateral token.
+        MarketParams memory badCollateral = d.params;
+        badCollateral.collateralToken = WETH_ADDRESS;
+        vm.expectRevert(ILidoLendDepositGateway.CollateralTokenMismatch.selector);
+        gateway.supplyCollateralWithStEth(badCollateral, 1 ether, BORROWER);
     }
 
     function _hasMainnetLidoContracts() internal view returns (bool) {
