@@ -145,10 +145,10 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     function setConfig(CollateralActivationLib.Config calldata cfg) external;
 
     /// @notice Fast risk-reducing lever: raise the activation delay floor. Reverts if it would lower.
-    function increaseMinActivationDelay(uint64 newMinActivationDelay) external;
+    function increaseMinActivationDelay(uint40 newMinActivationDelay) external;
 
     /// @notice Fast risk-reducing lever: raise the activation delay cap. Reverts if it would lower.
-    function increaseMaxActivationDelay(uint64 newMaxActivationDelay) external;
+    function increaseMaxActivationDelay(uint40 newMaxActivationDelay) external;
 
     /// @notice Risk-steward lever (Sybil protection): hold up to `activatingHold` of each position's
     ///         activating collateral unwithdrawable until it matures. 0 (the default) disables it.

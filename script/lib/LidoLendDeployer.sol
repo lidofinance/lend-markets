@@ -169,7 +169,7 @@ abstract contract LidoLendDeployer {
             "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core, marketId)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address,(uint64,uint64,uint128,uint64,uint128,uint128,uint64))",
+            "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint128,uint40))",
             admin,
             guardianSignals,
             activation

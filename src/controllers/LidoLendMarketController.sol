@@ -4,8 +4,9 @@ pragma solidity 0.8.35;
 import {Id, IMorpho, MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
-import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
+import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
@@ -26,7 +27,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     PausableUntil,
     ILidoLendMarketController
 {
-    using MathLib for uint256;
     using SharesMathLib for uint256;
     using CollateralActivationLib for CollateralActivationLib.State;
     using SettlementQueueLib for SettlementQueueLib.State;
@@ -155,13 +155,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function increaseMinActivationDelay(uint64 newMinActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
+    function increaseMinActivationDelay(uint40 newMinActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
         if (newMinActivationDelay < _activation.config.minActivationDelay) revert ConfigNotTightened();
         _activation.setMinActivationDelay(newMinActivationDelay);
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function increaseMaxActivationDelay(uint64 newMaxActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
+    function increaseMaxActivationDelay(uint40 newMaxActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
         if (newMaxActivationDelay < _activation.config.maxActivationDelay) revert ConfigNotTightened();
         _activation.setMaxActivationDelay(newMaxActivationDelay);
     }
@@ -227,7 +227,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         MarketParams memory params = LIDO_LEND.idToMarketParams(_MARKET_ID);
         (uint256 totalSupplyAssets,, uint256 totalBorrowAssets,) =
             MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
-        return totalSupplyAssets == 0 ? 0 : totalBorrowAssets * WAD / totalSupplyAssets;
+        return totalSupplyAssets == 0 ? 0 : Math.mulDiv(totalBorrowAssets, WAD, totalSupplyAssets);
     }
 
     // ---
@@ -544,12 +544,12 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
     /// @dev Value of `collateral` units in loan assets at the market's oracle price, rounded down.
     function _collateralValue(MarketView memory marketView, uint256 collateral) internal pure returns (uint256) {
-        return collateral.mulDivDown(marketView.price, ORACLE_PRICE_SCALE);
+        return Math.mulDiv(collateral, marketView.price, ORACLE_PRICE_SCALE);
     }
 
     /// @dev Max loan assets `collateral` can back at the market LLTV.
     function _getMaxBorrow(MarketView memory marketView, uint256 collateral) internal pure returns (uint256) {
-        return _collateralValue(marketView, collateral).wMulDown(marketView.lltv);
+        return Math.mulDiv(_collateralValue(marketView, collateral), marketView.lltv, WAD);
     }
 
     /// @dev Bad debt over a position+market snapshot: debt value exceeds collateral value. Pure.
