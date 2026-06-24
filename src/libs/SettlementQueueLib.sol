@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
+import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MaxHeapLib} from "./MaxHeapLib.sol";
@@ -20,7 +20,6 @@ import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTyp
 ///      the slice arithmetic (`sliceToLtv`) is pure and fuzz-testable.
 library SettlementQueueLib {
     using MaxHeapLib for MaxHeapLib.Heap;
-    using MathLib for uint256;
     using SharesMathLib for uint256;
 
     // ---
@@ -149,7 +148,7 @@ library SettlementQueueLib {
     // SLICE SIZING
     // ---
 
-    /// @notice Maximum loan-asset slice the policy allows for one cut against `borrower`. A queue-root
+    /// @notice Maximum loan-asset slice the policy allows for one settle against `borrower`. A queue-root
     ///         borrower gets the policy slice; a borrower with a settlement LTV gets its settlement-LTV slice; if both
     ///         apply, the larger slice wins. Zero means ineligible or empty debt/collateral.
     function allowedSlice(State storage $, MarketView memory marketView, address borrower, PositionView memory position)
@@ -157,20 +156,20 @@ library SettlementQueueLib {
         view
         returns (uint256)
     {
-        (uint256 debt, uint256 collateralValue) = _positionValues(marketView, position);
-        if (debt == 0 || collateralValue == 0) return 0;
+        (uint256 debtAssets, uint256 collateralValue) = _positionValues(marketView, position);
+        if (debtAssets == 0 || collateralValue == 0) return 0;
 
-        uint256 rootCut = peekRoot($) == borrower ? _policySlice($.policy, debt, collateralValue) : 0;
-        uint256 settlementLtvCut = _settlementLtvSlice($, borrower, debt, collateralValue);
+        uint256 rootSliceAssets = peekRoot($) == borrower ? _policySlice($.policy, debtAssets, collateralValue) : 0;
+        uint256 settlementLtvSliceAssets = _settlementLtvSlice($, borrower, debtAssets, collateralValue);
 
-        uint256 slice = Math.min(Math.max(rootCut, settlementLtvCut), debt);
-        if (slice == 0) return 0;
+        uint256 sliceAssets = Math.min(Math.max(rootSliceAssets, settlementLtvSliceAssets), debtAssets);
+        if (sliceAssets == 0) return 0;
 
-        // A cut that would strand sub-threshold collateral is lifted to a full close.
-        return _strandsDust($, marketView, position, slice) ? debt : slice;
+        // A slice that would strand sub-threshold collateral is lifted to a full close.
+        return _strandsDust($, marketView, position, sliceAssets) ? debtAssets : sliceAssets;
     }
 
-    /// @notice Settlement-LTV slice: the cut that brings `borrower`'s LTV down to its personal target. Zero
+    /// @notice Settlement-LTV slice: brings `borrower`'s LTV down to its personal target. Zero
     ///         when no settlement LTV is set, no debt/collateral, or the current LTV is already at/under the target.
     function settlementLtvSlice(
         State storage $,
@@ -178,8 +177,8 @@ library SettlementQueueLib {
         address borrower,
         PositionView memory position
     ) internal view returns (uint256) {
-        (uint256 debt, uint256 collateralValue) = _positionValues(marketView, position);
-        return _settlementLtvSlice($, borrower, debt, collateralValue);
+        (uint256 debtAssets, uint256 collateralValue) = _positionValues(marketView, position);
+        return _settlementLtvSlice($, borrower, debtAssets, collateralValue);
     }
 
     // ---
@@ -187,85 +186,90 @@ library SettlementQueueLib {
     // ---
 
     /// @notice Loan-asset slice that brings a position's LTV down to `targetLtv` (WAD), cutting at the
-    ///         oracle rate so equal-value collateral leaves with the debt. Backs both the settlement-LTV cut
+    ///         oracle rate so equal-value collateral leaves with the debt. Backs both the settlement-LTV slice
     ///         and the root LTV-step rule.
-    /// @param debt            Borrower debt in loan-asset units.
+    /// @param debtAssets      Borrower debt in loan-asset units.
     /// @param collateralValue Borrower collateral value in loan-asset units (rawCollateral × price / SCALE).
-    /// @dev c = (debt × WAD − targetLtv × collateralValue) / (WAD − targetLtv); 0 when already at or below
+    /// @dev c = (debtAssets × WAD − targetLtv × collateralValue) / (WAD − targetLtv); 0 when already at or below
     ///      the target, or when `targetLtv >= WAD`.
-    function sliceToLtv(uint256 debt, uint256 collateralValue, uint256 targetLtv) internal pure returns (uint256) {
+    function sliceToLtv(uint256 debtAssets, uint256 collateralValue, uint256 targetLtv)
+        internal
+        pure
+        returns (uint256)
+    {
         if (targetLtv >= WAD) return 0;
-        uint256 debtScaled = debt * WAD;
-        uint256 targetTerm = targetLtv * collateralValue;
-        if (debtScaled <= targetTerm) return 0;
-        return (debtScaled - targetTerm) / (WAD - targetLtv);
+        uint256 debtScaledWad = debtAssets * WAD;
+        uint256 targetTermWad = targetLtv * collateralValue;
+        if (debtScaledWad <= targetTermWad) return 0;
+        return (debtScaledWad - targetTermWad) / (WAD - targetLtv);
     }
 
     // ---
     // INTERNAL HELPERS
     // ---
 
-    /// @dev True when cutting `slice` would leave the borrower's collateral below the full-close floor.
-    function _strandsDust(State storage $, MarketView memory marketView, PositionView memory position, uint256 slice)
-        private
-        view
-        returns (bool)
-    {
+    /// @dev True when cutting `sliceAssets` would leave the borrower's collateral below the full-close floor.
+    function _strandsDust(
+        State storage $,
+        MarketView memory marketView,
+        PositionView memory position,
+        uint256 sliceAssets
+    ) private view returns (bool) {
         if (marketView.price == 0) return false;
-        uint256 seized = slice.mulDivDown(ORACLE_PRICE_SCALE, marketView.price);
-        uint256 remainingCollateral = Math.saturatingSub(position.collateral, seized);
+        uint256 seizedCollateral = Math.mulDiv(sliceAssets, ORACLE_PRICE_SCALE, marketView.price);
+        uint256 remainingCollateral = Math.saturatingSub(position.collateral, seizedCollateral);
         return remainingCollateral < $.policy.fullCutBelowCollateral;
     }
 
-    /// @dev Root cut: the largest of the three slice rules — `sliceFloorBps` of the debt, `sliceFloorAssets`,
-    ///      and the cut that lowers the LTV by `ltvStepBps`. Caller guarantees `debt > 0` and
+    /// @dev Root slice: the largest of the three slice rules — `sliceFloorBps` of the debt, `sliceFloorAssets`,
+    ///      and the slice that lowers the LTV by `ltvStepBps`. Caller guarantees `debtAssets > 0` and
     ///      `collateralValue > 0` (the `slice` entry gate), so the LTV division here is safe.
-    function _policySlice(SettlementConfig storage policy, uint256 debt, uint256 collateralValue)
+    function _policySlice(SettlementConfig storage policy, uint256 debtAssets, uint256 collateralValue)
         private
         view
         returns (uint256)
     {
-        uint256 byDebtFraction = debt * policy.sliceFloorBps / BPS;
+        uint256 byDebtFractionAssets = Math.mulDiv(debtAssets, policy.sliceFloorBps, BPS);
 
-        uint256 byLtvReduction;
+        uint256 byLtvReductionAssets;
         if (policy.ltvStepBps != 0) {
-            uint256 currentLtv = debt * WAD / collateralValue;
-            uint256 ltvReduction = uint256(policy.ltvStepBps) * WAD / BPS;
-            byLtvReduction =
-                sliceToLtv(debt, collateralValue, currentLtv > ltvReduction ? currentLtv - ltvReduction : 0);
+            uint256 currentLtv = Math.mulDiv(debtAssets, WAD, collateralValue);
+            uint256 ltvReduction = Math.mulDiv(policy.ltvStepBps, WAD, BPS);
+            byLtvReductionAssets =
+                sliceToLtv(debtAssets, collateralValue, currentLtv > ltvReduction ? currentLtv - ltvReduction : 0);
         }
 
-        return Math.max(policy.sliceFloorAssets, Math.max(byDebtFraction, byLtvReduction));
+        return Math.max(policy.sliceFloorAssets, Math.max(byDebtFractionAssets, byLtvReductionAssets));
     }
 
     /// @dev Slice that lowers the borrower to its personal settlement LTV. Zero when no settlement LTV is set or
     ///      there is no debt/collateral to cut against.
-    function _settlementLtvSlice(State storage $, address borrower, uint256 debt, uint256 collateralValue)
+    function _settlementLtvSlice(State storage $, address borrower, uint256 debtAssets, uint256 collateralValue)
         private
         view
         returns (uint256)
     {
         uint256 ltv = $.settlementLtv[borrower];
-        if (ltv == 0 || debt == 0 || collateralValue == 0) return 0;
-        return sliceToLtv(debt, collateralValue, ltv);
+        if (ltv == 0 || debtAssets == 0 || collateralValue == 0) return 0;
+        return sliceToLtv(debtAssets, collateralValue, ltv);
     }
 
-    /// @dev Resolve a position into loan-asset units: `debt` from borrow shares at the live borrow index, and
-    ///      `collateralValue` as rawCollateral priced at the oracle rate.
+    /// @dev Resolve a position into loan-asset units: `debtAssets` from borrow shares at the live borrow index,
+    ///      and `collateralValue` as rawCollateral priced at the oracle rate.
     function _positionValues(MarketView memory marketView, PositionView memory position)
         private
         pure
-        returns (uint256 debt, uint256 collateralValue)
+        returns (uint256 debtAssets, uint256 collateralValue)
     {
         if (position.borrowShares != 0) {
-            debt = position.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+            debtAssets = position.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
         }
-        collateralValue = position.collateral.mulDivDown(marketView.price, ORACLE_PRICE_SCALE);
+        collateralValue = Math.mulDiv(position.collateral, marketView.price, ORACLE_PRICE_SCALE);
     }
 
     /// @dev Heap ordering key: borrowShares * KEY_SCALE / collateral, monotonic in LTV so the heap root is the
     ///      riskiest position. Caller guarantees non-zero collateral.
     function _riskKey(PositionView memory position) private pure returns (uint256) {
-        return position.borrowShares * KEY_SCALE / position.collateral;
+        return Math.mulDiv(position.borrowShares, KEY_SCALE, position.collateral);
     }
 }
