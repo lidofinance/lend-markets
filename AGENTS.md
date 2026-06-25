@@ -89,40 +89,75 @@ reviewer needs before reading code, not what the code already says.
 
 ### Layout
 
-Two suites, no overlap:
+```
+test/
+├── setup/        # shared infra — deploy + action helpers + mocks + types (no tests of its own)
+├── unit/         # L0+L1 — one file per contract / pure library, method-by-method
+├── scenario/     # L2 — end-to-end flows on a freshly deployed stack
+├── invariant/    # L4 — handler-based stateful properties
+└── integration/  # L3 — mainnet fork vs the already-deployed protocol (deployed-<network>.toml)
+```
 
-- `test/scenario/<Flow>.t.sol` — full flows against a **freshly deployed** protocol. The test
-  deploys core / controller / vault from scratch, then drives helpers end-to-end. May still use
-  a mainnet fork to reach real Lido stETH / wstETH (no usable local mock for those), but the
-  protocol under test is constructed inside the test. Pure-library fuzz tests live alongside as
-  `testFuzz_<property>`.
-- `test/integration/<Flow>.t.sol` — same flows on a mainnet fork against the **already-deployed**
-  protocol. Addresses come from `deployed-<network>.toml`; the test treats our system as a live
-  third party and verifies it still works under current state (live positions, accrued interest,
-  real oracle prices). Run with `forge test --fork-url $MAINNET_RPC_URL`.
+- `unit/<Contract>.t.sol` — single contract or pure library in isolation; **flat, one file per
+  contract** (no per-contract subfolders), pure-library harnesses + fuzz alongside. Drives one
+  contract's methods through every branch.
+- `scenario/<Flow>.t.sol` — full cross-contract flows on a **freshly deployed** protocol (built via
+  `setup/`). May use a mainnet fork to reach real stETH / wstETH / USDY, but the protocol under test
+  is deployed inside the test.
+- `invariant/<Area>.invariant.t.sol` — handler-based stateful properties (actors, ghosts, bounded
+  actions). Handlers under `invariant/handlers/`.
+- `integration/<Flow>.t.sol` — same flows on a mainnet fork against the **already-deployed** protocol;
+  addresses from `deployed-<network>.toml`. Run with `forge test --fork-url $MAINNET_RPC_URL`.
 
-### Helper Pattern (Scenario And Integration)
+### Setup Infra (`test/setup/`)
 
-Every user-visible action has a helper on the base test contract. The helper does the action and
-checks everything around it — call sites don't repeat assertion blocks. Each helper:
+Every suite builds on `LidoLendSetup` (abstract base) — do not re-implement deployment:
 
-1. Captures pre-state for the actors involved (`position[id][addr]`, `market[id]`, ERC-20 balances).
-2. Sets up `vm.expectEmit` for every event the action should fire.
+- **Deploys with `new`, not `vm.getCode`** (the fork core and IRM are 0.8.35-compatible). One
+  `LidoLend` core and one guardian registry are **singletons**; a core hosts **many markets**.
+  `Protocol { config, core, guardianSignals, Market[] markets }`; each `Market` carries its
+  per-market contracts (controller/vault/oracle/irm), its own config, and a handle on the core.
+- `_deployProtocol(cfg)` / `_addMarket(cfg)` deploy a market; `_defaultConfig(...)` is the starting
+  point; `irmKind` selects the IRM (Adaptive / Fixed); `_fund(token, to, amt)` and `_actor(name)`
+  set up actors.
+- **Oracle price is seeded, never `1e36` parity** (see Solidity-style / values rule below): the
+  seed is logged at deploy; reproduce a failure by exporting `TEST_SEED`.
+- Each proxied contract exposes two handles — the typed impl (`market.vault`) and the proxy admin
+  (`market.vaultProxy` / `IOssifiableProxy`) — at the same address.
+
+### Helper Pattern (`MarketActions`)
+
+Every user-visible action is a helper in the `MarketActions` library over `Market`
+(`using MarketActions for Market` → `market.borrow(bob, 10 ether)`). The helper does the action AND
+asserts everything around it — call sites never repeat assertion blocks. Each helper:
+
+1. Captures pre-state for the actors involved (position, market totals, ERC-20 balances, shares).
+2. Sets up `vm.expectEmit` for the events the action should fire (where args are static).
 3. Performs the call (`vm.prank` + invocation); returns the recorded outputs.
-4. **Recomputes the expected post-state from inputs independently** — do not trust the contract's
-   own return value. Re-derive shares↔assets, slice sizing, oracle conversions etc. using the
-   formula in the spec.
-5. Asserts state deltas match the recomputation, all expected events fired with exact args,
-   token balances moved by the right amount.
+4. **Recomputes expected values independently** — do not trust the call's return. Re-derive
+   shares↔assets, slice sizing, oracle conversions etc. with the spec formula.
+5. Asserts state deltas, events, and token movements match.
 
-Tests compose helpers. If a test needs a one-off check that doesn't fit the helper, extend the
-helper or add a sibling — don't sprinkle ad-hoc assertions across tests.
+Actors must be **funded first** (`_fund` on the base — `deal` is StdCheats, not a `vm` cheatcode, so
+it cannot live in the library). Coverage spans lender (deposit/mint/withdraw/redeem/settle/
+fallbackExit), borrower (supplyCollateral/activate/borrow/repay/withdrawCollateral/setSettlementLtv),
+keeper (`liquidate` asserts **no** bad debt, `liquidateBadDebt` asserts bad debt **is** realized),
+and interest utilities. Extend `MarketActions` rather than sprinkling ad-hoc assertions in tests.
+
+### Black-box, Model-first
+
+Tests are derived from **requirements** (specs), **never from the implementation** — a test
+read off the code inherits its bugs. Model each method independently (requirements · revert
+conditions · parameter boundaries · all branches) and recompute expected numbers from the spec
+formula. Fuzz and invariants are mandatory for state-mutating methods, not just example tests.
+Coverage is necessary hygiene but not the goal — completeness is the closed branch checklist;
+mutation score is the honest measure of test strength.
 
 ### Math Recomputation
 
-Where contracts compute amounts (shares↔assets, slice sizing, oracle conversions, watermark LTV),
-tests re-derive the expected number from inputs using the same formula. This catches drift in
-either the contract or the test setup.
+Where contracts compute amounts (shares↔assets, slice sizing, oracle conversions, settlement LTV),
+re-derive the expected number from inputs using the same formula. This catches drift in either the
+contract or the test setup.
 
 ### Naming
 
