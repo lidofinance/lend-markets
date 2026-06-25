@@ -28,11 +28,10 @@ contract WstEthRateOracleTest is Test {
 
     function setUp() public {
         wsteth = new MockWstETH();
-        // `initialize()` is the no-op the proxy must delegatecall — it rejects empty init data.
+        // Immutable-config impl behind an OssifiableProxy, deployed with no init call — the proxy allows
+        // empty init data and the config lives in the impl's immutables.
         address impl = address(new WstEthRateOracle(address(wsteth)));
-        oracle = WstEthRateOracle(
-            address(new OssifiableProxy(impl, address(this), abi.encodeWithSignature("initialize()")))
-        );
+        oracle = WstEthRateOracle(address(new OssifiableProxy(impl, address(this), "")));
     }
 
     /// @notice price() = getStETHByWstETH(1e36): the 1e36-scaled ETH-per-wstETH rate under stETH/ETH par.

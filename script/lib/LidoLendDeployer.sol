@@ -134,18 +134,16 @@ abstract contract LidoLendDeployer {
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
-    /// @dev Default oracle: `WstEthRateOracle(wstETH)` behind an `OssifiableProxy` (stable address,
-    ///      upgradeable logic; feed config is immutable in the impl). Override for swap-in mock oracles —
-    ///      mocks may return a bare instance since they have no `initialize`; real oracles wrap via
-    ///      `_behindProxy(impl, admin, initData)`.
+    /// @dev Default oracle: `WstEthRateOracle(wstETH)` behind an `OssifiableProxy` for a stable, upgradeable
+    ///      address. The feed config is immutable in the impl, so the proxy is deployed with no init call.
+    ///      Override for swap-in mock oracles.
     function _deployOracle(address oracleSource, address admin) internal virtual returns (address) {
         address impl = _deployArtifact("src/oracle/WstEthRateOracle.sol:WstEthRateOracle", abi.encode(oracleSource));
-        return _behindProxy(impl, admin, abi.encodeWithSignature("initialize()"));
+        return _behindProxy(impl, admin, "");
     }
 
-    /// @dev Wraps an already-deployed implementation in an `OssifiableProxy`, running `initData` (an
-    ///      `initialize(...)` call) through the proxy — the proxy rejects empty init data. Used for the
-    ///      oracles, whose feed config lives in proxy storage. Proxy admin is `admin`.
+    /// @dev Wraps an already-deployed implementation in an `OssifiableProxy`, optionally running `initData`.
+    ///      The oracles carry their config in immutables, so they pass empty init data. Proxy admin is `admin`.
     function _behindProxy(address impl, address admin, bytes memory initData) internal returns (address) {
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
