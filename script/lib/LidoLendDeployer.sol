@@ -12,6 +12,7 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 ///      `LidoLendDeployer.SettlementConfigParams` mirrors the controller's struct, so the call ABI matches.
 interface IControllerConfigurator {
     function MANAGER_ROLE() external view returns (bytes32);
+    function MANAGER_ADMIN_ROLE() external view returns (bytes32);
     function grantRole(bytes32 role, address account) external;
     function setSettlementConfig(LidoLendDeployer.SettlementConfigParams calldata policy) external;
 }
@@ -27,8 +28,8 @@ abstract contract LidoLendDeployer {
     /// @dev forge-std cheatcode singleton, inlined so this contract need not inherit `Test` / `Script`.
     Vm internal constant _vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    /// @dev Mirror of `SettlementTypes.SettlementConfig` (same field order/types); see `ActivationConfig`
-    ///      for why the deployer mirrors instead of importing.
+    /// @dev Mirror of `SettlementTypes.SettlementConfig` (same field order/types); see
+    /// `CollateralActivationConfigParams` for why the deployer mirrors instead of importing.
     struct SettlementConfigParams {
         uint16 sliceFloorBps;
         uint96 sliceFloorAssets;
@@ -36,18 +37,19 @@ abstract contract LidoLendDeployer {
         uint16 ltvStepBps;
     }
 
-    /// @dev Mirror of `CollateralActivationLib.Config` (same field order/types) so the controller initializer can
-    ///      be abi-encoded without coupling the deployer to the controller's libraries. Field order must
+    /// @dev Mirror of `CollateralActivationConfig` (`types/CollateralActivationTypes.sol`) so the controller
+    /// initializer can be abi-encoded without coupling the deployer to the controller's libraries. Field order must
     ///      match the hardcoded tuple in `_deployController`'s `encodeWithSignature`.
-    struct ActivationConfig {
+    struct CollateralActivationConfigParams {
         // delay ramp
         uint64 minActivationDelay;
         uint64 maxActivationDelay;
         uint128 maxDelayInflow;
         // strike surcharge
         uint64 delayPerStrike;
-        // sybil hold on activating collateral
-        uint128 activatingHold;
+        // sybil lock on activating collateral
+        uint128 activatingLockAmount;
+        uint64 activatingLockDuration;
         // dust threshold (anti-griefing)
         uint128 minActivationAmount;
         // cap on total activating time from the lot's start (0 = no quorum-scan gate)
@@ -75,7 +77,7 @@ abstract contract LidoLendDeployer {
         address oracleSource;
         uint256 lltv;
         bool enableSettlement;
-        ActivationConfig activation;
+        CollateralActivationConfigParams activation;
         SettlementConfigParams settlementConfig;
         // Guardian-signals registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
         // `1 <= quorum <= guardians.length`; swap in the real guardian set post-deploy.
@@ -106,10 +108,10 @@ abstract contract LidoLendDeployer {
 
         d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
-        // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the controller initializer;
-        // grant it MANAGER_ROLE (a placeholder, rotated to the EasyTrack factory post-deploy)
-        // so it can set the policy now and tune it later.
+        // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the initializer; bootstrap it through
+        // MANAGER_ADMIN_ROLE (the admin of MANAGER_ROLE) to MANAGER_ROLE so it can set the policy now.
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
+        controller.grantRole(controller.MANAGER_ADMIN_ROLE(), cfg.admin);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
         controller.setSettlementConfig(cfg.settlementConfig);
     }
@@ -161,13 +163,13 @@ abstract contract LidoLendDeployer {
         Id marketId,
         address guardianSignals,
         address admin,
-        ActivationConfig memory activation
+        CollateralActivationConfigParams memory activation
     ) internal virtual returns (address proxy, address impl) {
         impl = _deployArtifact(
             "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core, marketId)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint128,uint40))",
+            "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
             admin,
             guardianSignals,
             activation

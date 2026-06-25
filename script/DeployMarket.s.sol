@@ -41,11 +41,12 @@ contract DeployMarket is Script, LidoLendDeployer {
                 lltv: LLTV,
                 enableSettlement: true,
                 // DRAFT activation parameters — governance values, tune before any real deploy.
-                activation: ActivationConfig({
+                activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
-                    activatingHold: 0,
+                    activatingLockAmount: 0,
+                    activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
                     maxGuardiansQuorumDelay: 0

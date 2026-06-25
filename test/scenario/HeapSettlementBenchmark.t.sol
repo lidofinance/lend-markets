@@ -546,11 +546,12 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: ActivationConfig({
+                activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
-                    activatingHold: 0,
+                    activatingLockAmount: 0,
+                    activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     // The benchmark builds sub-floor dust positions directly (borrow, then withdraw to a
                     // sliver) to stress the heap. The open-debt collateral floor forbids that voluntary path,

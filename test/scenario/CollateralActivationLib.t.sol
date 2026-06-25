@@ -3,7 +3,8 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
-import {GuardiansOpinion, Status, BlockInfo} from "../../src/interfaces/GuardianSignalsTypes.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
+import {GuardiansOpinion, Status, BlockInfo} from "../../src/types/GuardianSignalsTypes.sol";
 
 /// @dev Storage harness so the internal library can operate on a real storage struct.
 contract ActivationHarness {
@@ -11,16 +12,20 @@ contract ActivationHarness {
 
     CollateralActivationLib.State internal $;
 
-    function setConfig(CollateralActivationLib.Config memory cfg) external {
+    function setConfig(CollateralActivationConfig memory cfg) external {
         $.setConfig(cfg);
     }
 
     function setMinActivationDelay(uint40 minDelay) external {
-        $.setMinActivationDelay(minDelay);
+        CollateralActivationConfig memory cfg = $.config;
+        cfg.minActivationDelay = minDelay;
+        $.setConfig(cfg);
     }
 
     function setMaxActivationDelay(uint40 maxDelay) external {
-        $.setMaxActivationDelay(maxDelay);
+        CollateralActivationConfig memory cfg = $.config;
+        cfg.maxActivationDelay = maxDelay;
+        $.setConfig(cfg);
     }
 
     function delays() external view returns (uint40 minActivationDelay, uint40 maxActivationDelay) {
@@ -28,16 +33,14 @@ contract ActivationHarness {
     }
 
     function deposit(address borrower, uint256 assets) external {
-        $.deposit(borrower, assets);
+        $.deposit(borrower, assets, false);
     }
 
     function depositInstant(address borrower, uint256 assets) external {
-        $.setInstantActivation(borrower, true);
-        $.deposit(borrower, assets);
+        $.deposit(borrower, assets, true);
     }
 
-    function sync(address borrower, uint256 strikes, bool instant) external returns (uint256) {
-        if (instant) $.setInstantActivation(borrower, true);
+    function sync(address borrower, uint256 strikes) external returns (uint256) {
         GuardiansOpinion memory opinion = GuardiansOpinion({
             status: Status.Normal,
             strikes: strikes,
@@ -59,11 +62,11 @@ contract ActivationHarness {
     }
 
     function currentInflow() external view returns (uint256) {
-        return $.getInflow();
+        return $.calcDecayedInflow();
     }
 
     function bucketsOf(address borrower) external view returns (uint256 active, uint256 activating, uint256 dust) {
-        return $.getBuckets(borrower);
+        return $.getCollateralSplit(borrower);
     }
 }
 
@@ -73,11 +76,12 @@ contract CollateralActivationLibTest is Test {
     function setUp() public {
         h = new ActivationHarness();
         h.setConfig(
-            CollateralActivationLib.Config({
+            CollateralActivationConfig({
                 minActivationDelay: 1 minutes,
                 maxActivationDelay: 1 hours,
                 delayPerStrike: 1 hours,
-                activatingHold: 0,
+                activatingLockAmount: 0,
+                activatingLockDuration: 0,
                 maxDelayInflow: 10_000 ether,
                 minActivationAmount: 1,
                 maxGuardiansQuorumDelay: 1 days
@@ -105,19 +109,6 @@ contract CollateralActivationLibTest is Test {
         assertEq(activating, 0, "no timed lot");
         assertEq(dust, 0, "no dust");
         assertEq(h.currentInflow(), 0, "instant deposit does not touch the inflow throttle");
-    }
-
-    /// @notice Whitelisting an already-deposited borrower: an instant sync matures the pending lot before its
-    ///         timer elapses.
-    function test_syncActivation_instantMaturesPendingLotBeforeTimer() public {
-        h.deposit(address(0xC3), 100 ether); // normal: enters the timer
-        (, uint256 activating,) = h.bucketsOf(address(0xC3));
-        assertEq(activating, 100 ether, "lot is timed");
-
-        h.sync(address(0xC3), 0, true); // instant sync, no warp
-        (uint256 active, uint256 activatingAfter,) = h.bucketsOf(address(0xC3));
-        assertEq(active, 100 ether, "instant sync matured the lot before the timer");
-        assertEq(activatingAfter, 0, "lot left the timer");
     }
 
     /// @notice Quorum-scan gate: past the base timer, a lot stays activating until the guardian frontier has
@@ -153,7 +144,7 @@ contract CollateralActivationLibTest is Test {
         assertEq(active, 100 ether, "fallback matured the lot after maxGuardiansQuorumDelay despite a stalled quorum");
     }
 
-    // setUp config: minActivationDelay = 1 minutes, maxActivationDelay = 1 hours (MAX_DELAY_BOUND = 7 days)
+    // setUp config: minActivationDelay = 1 minutes, maxActivationDelay = 1 hours (MAX_DELAY_DURATION = 7 days)
 
     function test_setMinActivationDelay_updatesFloor() public {
         h.setMinActivationDelay(30 minutes);
@@ -168,22 +159,22 @@ contract CollateralActivationLibTest is Test {
     }
 
     function testRevert_setMinActivationDelay_zero() public {
-        vm.expectRevert(CollateralActivationLib.BadConfig.selector);
+        vm.expectRevert(CollateralActivationLib.ZeroMinActivationDelay.selector);
         h.setMinActivationDelay(0);
     }
 
     function testRevert_setMinActivationDelay_aboveCap() public {
-        vm.expectRevert(CollateralActivationLib.BadConfig.selector);
+        vm.expectRevert(CollateralActivationLib.InvalidActivationDelays.selector);
         h.setMinActivationDelay(2 hours);
     }
 
     function testRevert_setMaxActivationDelay_belowFloor() public {
-        vm.expectRevert(CollateralActivationLib.BadConfig.selector);
+        vm.expectRevert(CollateralActivationLib.InvalidActivationDelays.selector);
         h.setMaxActivationDelay(30 seconds);
     }
 
     function testRevert_setMaxActivationDelay_aboveBound() public {
-        vm.expectRevert(CollateralActivationLib.BadConfig.selector);
+        vm.expectRevert(CollateralActivationLib.MaxActivationDelayExceeded.selector);
         h.setMaxActivationDelay(8 days);
     }
 }

@@ -75,13 +75,12 @@ Then:
 
 - [ ] Replace the placeholder guardian set + quorum on the registry (`addGuardian` / `removeGuardian`
       / `setQuorum`).
-- [ ] Grant the controller policy roles to their real holders: `MANAGER_ROLE`,
-      `RISK_STEWARD_ROLE`, `FREEZER_ROLE`, `UNFREEZER_ROLE`, `PAUSER_ROLE`, `RESUMER_ROLE`.
+- [ ] Grant the controller policy roles to their real holders: `MANAGER_ROLE`, `MANAGER_ADMIN_ROLE` (admin of `MANAGER_ROLE`, meant for EasyTrack), `FREEZER_ROLE`, `UNFREEZER_ROLE`, `PAUSER_ROLE`, `RESUMER_ROLE`. The deploy admin self-grants `MANAGER_ADMIN_ROLE` (as `DEFAULT_ADMIN_ROLE`) during deploy to seed `MANAGER_ROLE`; rotate `MANAGER_ADMIN_ROLE` to EasyTrack and revoke the placeholder afterwards.
 - [ ] Grant the registry override roles to their real holders: `RISK_STEWARD_ROLE`, `GOVERNANCE_ROLE`.
 - [ ] Retune the activation config if the deploy-time placeholder needs changing (`setConfig`, or
-      the fast `increaseMinActivationDelay` / `increaseMaxActivationDelay`).
+      the fast `increaseActivationDelays`).
 - [ ] Set the settlement config if defaults need overriding (`setSettlementConfig`), and the risk-steward Sybil
-      hold (`setActivatingHold`) if used.
+      lock (`setActivatingLock`) if used.
 - [ ] Confirm each proxy points at the expected implementation
       (`OssifiableProxy.proxy__getImplementation()`).
 - [ ] Record the deployed addresses in `deployed-<network>.toml` (the integration tests read it).

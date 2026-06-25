@@ -16,10 +16,10 @@ import {
     GuardiansSignal,
     GuardiansOpinion,
     Status
-} from "./interfaces/GuardianSignalsTypes.sol";
+} from "./types/GuardianSignalsTypes.sol";
 
 /// @title GuardianSignals
-/// @author Lido Lending contributors.
+/// @author Lido
 /// @notice Per-market registry where guardians flag suspect accounts and a quorum of flags latches a ban.
 ///         Guardians are bots run by trusted actors. The market controller reads `getOpinion` to scale
 ///         collateral activation and to hard-block borrowing.

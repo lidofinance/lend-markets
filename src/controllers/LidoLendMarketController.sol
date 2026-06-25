@@ -11,10 +11,12 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
 import {IGuardianSignals} from "../interfaces/IGuardianSignals.sol";
-import {GuardiansOpinion, Status} from "../interfaces/GuardianSignalsTypes.sol";
+import {GuardiansOpinion, Status} from "../types/GuardianSignalsTypes.sol";
 import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
+import {ILidoLendMarketConfigurator} from "../interfaces/ILidoLendMarketConfigurator.sol";
 import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
 import {SettlementQueueLib} from "../libs/SettlementQueueLib.sol";
+import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTypes.sol";
 
@@ -35,12 +37,11 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // ROLES
     // ---
 
-    /// @dev Sets the full config in either direction (risk-increasing path): activation params, instant
-    ///      activation, settlement config.
+    /// @dev The single governance role: full activation and settlement config, grant and revoke instant
+    ///      activation.
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
-    /// @dev Fast risk-reducing levers that can only tighten: raise the activation delays, raise the Sybil
-    ///      hold, revoke instant activation.
-    bytes32 public constant RISK_STEWARD_ROLE = keccak256("RISK_STEWARD_ROLE");
+    /// @dev Admin of `MANAGER_ROLE`: may grant and revoke `MANAGER_ROLE` without holding `DEFAULT_ADMIN_ROLE`.
+    bytes32 public constant MANAGER_ADMIN_ROLE = keccak256("MANAGER_ADMIN_ROLE");
     /// @dev Freezes the market: blocks new borrows and debt-bearing collateral withdrawals.
     bytes32 public constant FREEZER_ROLE = keccak256("FREEZER_ROLE");
     /// @dev Lifts a freeze.
@@ -72,6 +73,10 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     CollateralActivationLib.State private _activation;
     /// @dev Risk queue + settlement LTVs + settlement config.
     SettlementQueueLib.State private _settlementQueue;
+    /// @dev Trusted caller contracts whose supplies skip the activation timer/throttle (instant-active).
+    ///      Keyed on the supply `caller`, not the position owner, so a trusted router activating on behalf of
+    ///      users qualifies. Must only ever hold access-gated contracts, never a permissionless helper.
+    mapping(address caller => bool) private _instantActivationCallers;
 
     // ---
     // MODIFIERS
@@ -97,12 +102,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     }
 
     /// @notice One-shot proxy initializer: grants roles and wires the guardian-signals registry and config.
-    function initialize(address admin, IGuardianSignals guardianSignals, CollateralActivationLib.Config calldata cfg)
+    function initialize(address admin, IGuardianSignals guardianSignals, CollateralActivationConfig calldata cfg)
         external
         initializer
     {
         __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _setRoleAdmin(MANAGER_ROLE, MANAGER_ADMIN_ROLE);
         _guardianSignals = guardianSignals;
         _settlementQueue.init();
         _activation.setConfig(cfg);
@@ -146,48 +152,41 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // COLLATERAL ACTIVATION
     // ---
 
-    /// @inheritdoc ILidoLendMarketController
-    function setConfig(CollateralActivationLib.Config calldata cfg) external onlyRole(MANAGER_ROLE) {
+    /// @inheritdoc ILidoLendMarketConfigurator
+    function setCollateralActivationConfig(CollateralActivationConfig calldata cfg) external onlyRole(MANAGER_ROLE) {
         _activation.setConfig(cfg);
     }
 
-    /// @inheritdoc ILidoLendMarketController
-    function increaseMinActivationDelay(uint40 newMinActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
-        if (newMinActivationDelay < _activation.config.minActivationDelay) revert ConfigNotTightened();
-        _activation.setMinActivationDelay(newMinActivationDelay);
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    function increaseMaxActivationDelay(uint40 newMaxActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
-        if (newMaxActivationDelay < _activation.config.maxActivationDelay) revert ConfigNotTightened();
-        _activation.setMaxActivationDelay(newMaxActivationDelay);
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    /// @dev Forced paths (liquidation, settle) ignore the hold. The hold is temporary: held collateral
-    ///      matures into `active` on its timer and becomes withdrawable, so this is not a custody power.
-    function setActivatingHold(uint128 activatingHold) external onlyRole(RISK_STEWARD_ROLE) {
-        _activation.setActivatingHold(activatingHold);
+    /// @inheritdoc ILidoLendMarketConfigurator
+    function collateralActivationConfig() external view returns (CollateralActivationConfig memory) {
+        return _activation.config;
     }
 
     /// @inheritdoc ILidoLendMarketController
     function currentInflow() external view returns (uint256) {
-        return _activation.getInflow();
+        return _activation.calcDecayedInflow();
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function grantInstantActivation(address borrower) external onlyRole(MANAGER_ROLE) {
-        _activation.setInstantActivation(borrower, true);
+    function currentActivationDelay() external view returns (uint256) {
+        return _activation.currentActivationDelay();
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function revokeInstantActivation(address borrower) external onlyRole(RISK_STEWARD_ROLE) {
-        _activation.setInstantActivation(borrower, false);
+    function grantInstantActivation(address caller) external onlyRole(MANAGER_ROLE) {
+        _instantActivationCallers[caller] = true;
+        emit InstantActivationSet(caller, true);
+    }
+
+    /// @inheritdoc ILidoLendMarketConfigurator
+    function revokeInstantActivation(address caller) external onlyRole(MANAGER_ROLE) {
+        _instantActivationCallers[caller] = false;
+        emit InstantActivationSet(caller, false);
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function hasInstantActivation(address borrower) external view returns (bool) {
-        return _activation.instantActivation[borrower];
+    function hasInstantActivation(address caller) external view returns (bool) {
+        return _instantActivationCallers[caller];
     }
 
     // ---
@@ -307,7 +306,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         dashboard.banned = opinion.status == Status.Banned;
         dashboard.strikes = opinion.strikes;
         dashboard.flagCount = opinion.flagCount;
-        (dashboard.active, dashboard.activating, dashboard.dust) = _activation.getBuckets(borrower);
+        (dashboard.active, dashboard.activating, dashboard.dust) = _activation.getCollateralSplit(borrower);
         dashboard.unlockTime = _activation.getUnlockTime(borrower, opinion);
         dashboard.debtAssets = _debtAssets(marketView, position);
         dashboard.settlementLtv = _settlementQueue.settlementLtvOf(borrower);
@@ -330,7 +329,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         // settle anything already matured, then book the deposit (promotes past the dust threshold).
         // A freeze or ban defers maturation.
         _activation.syncActivation(_isFrozen, borrower, _guardianSignals.getOpinion(_MARKET_ID, borrower));
-        _activation.deposit(borrower, hookData.assets);
+        _activation.deposit(borrower, hookData.assets, _instantActivationCallers[hookData.caller]);
 
         position.collateral += hookData.assets;
         _settlementQueue.sync(borrower, position);
@@ -428,7 +427,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         PositionView memory position = _positionView(id, borrower);
 
         // debit the seized collateral from the buckets before core decrements raw
-        if (hookData.seizedAssets != 0) _activation.debit(borrower, hookData.seizedAssets, 0);
+        if (hookData.seizedAssets != 0) _activation.debit(borrower, hookData.seizedAssets);
 
         // re-key on the post-liquidation position
         if (hookData.repaidShares > position.borrowShares || hookData.seizedAssets > position.collateral) {
@@ -475,7 +474,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         // A freeze or ban defers maturation, seizure still reaches all collateral via debit.
         _activation.syncActivation(_isFrozen, borrower, _guardianSignals.getOpinion(_MARKET_ID, borrower));
 
-        _activation.debit(borrower, hookData.collateralSeized, 0);
+        _activation.debit(borrower, hookData.collateralSeized);
 
         position.borrowShares -= sharesToBurn;
         position.collateral -= hookData.collateralSeized;

@@ -7,7 +7,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {BlockInfoWithHash, GuardiansOpinion, Status} from "../../src/interfaces/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash, GuardiansOpinion, Status} from "../../src/types/GuardianSignalsTypes.sol";
 
 /// @notice Unit tests for the guardian liveness frontier: heartbeats are O(1) and do not move the frontier,
 ///         `syncQuorumBlock` recomputes the quorum-th-largest and ratchets it up, and the guardian set is capped.

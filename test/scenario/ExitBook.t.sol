@@ -128,11 +128,11 @@ contract ExitBookTest is Test, LidoLendDeployer {
         Id marketId,
         address guardianSignals,
         address admin,
-        ActivationConfig memory activation
+        CollateralActivationConfigParams memory activation
     ) internal override returns (address proxy, address impl) {
         impl = _deployOut("LidoLendMarketController.sol", "LidoLendMarketController", abi.encode(core, marketId));
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint128,uint40))",
+            "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
             admin,
             guardianSignals,
             activation
@@ -174,11 +174,12 @@ contract ExitBookTest is Test, LidoLendDeployer {
                 oracleSource: address(collateral), // ignored — _deployOracle is overridden
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: ActivationConfig({
+                activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
-                    activatingHold: 0,
+                    activatingLockAmount: 0,
+                    activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
                     maxGuardiansQuorumDelay: 0

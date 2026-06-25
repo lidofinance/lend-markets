@@ -10,7 +10,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
-import {BlockInfoWithHash} from "../../src/interfaces/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -131,7 +131,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrowed with no maturation wait");
 
         // Revoke restores the timer: a fresh deposit enters activation instead of going straight to active.
-        ctx.controller.grantRole(ctx.controller.RISK_STEWARD_ROLE(), address(this));
         ctx.controller.revokeInstantActivation(BORROWER);
         uint256 more = _mintWstETH(ctx.market, BORROWER, 15 ether);
         vm.prank(BORROWER);
@@ -647,11 +646,12 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
                 enableSettlement: enableSettlement,
-                activation: ActivationConfig({
+                activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
-                    activatingHold: 0,
+                    activatingLockAmount: 0,
+                    activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
                     maxGuardiansQuorumDelay: 0
