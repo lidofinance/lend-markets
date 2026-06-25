@@ -43,9 +43,6 @@ contract WstEthRateOracleTest is Test {
         new WstEthRateOracle(address(0));
     }
 
-    function test_initialize_isNoop() public {
-        oracle.initialize(); // satisfies the proxy init; must not revert
-    }
 
     function testFuzz_price_equalsScaledRate(uint256 ratePerToken) public {
         ratePerToken = bound(ratePerToken, 1e18, 2e18); // wstETH ≥ stETH, realistic band

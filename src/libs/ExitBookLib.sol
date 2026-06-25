@@ -74,6 +74,12 @@ library ExitBookLib {
     function recordFill(State storage self, uint256 id, uint256 filledShares) internal {
         Request storage request = self.requests[id];
 
+        // Only an open request can be filled — guards against re-closing a cancelled/filled request (a
+        // zero-share call would otherwise corrupt its status to `Filled`).
+        if (request.status != ExitStatus.Open) {
+            revert RequestClosed();
+        }
+
         request.sizeRemaining -= SafeCast.toUint128(filledShares);
 
         if (request.sizeRemaining == 0) {

@@ -224,10 +224,11 @@ contract CollateralActivationLibTest is Test {
     function test_sync_banned_neverMatures_evenAfterFallbackWindow() public {
         // The trap: a banned borrower must not mature even once maxGuardiansQuorumDelay has elapsed.
         CollateralActivationLib.Config memory c = _config();
-        c.maxGuardiansQuorumDelay = 1; // fallback window basically immediate
+        c.maxGuardiansQuorumDelay = 2 * c.maxActivationDelay; // valid: above the base-delay ceiling
         h.setConfig(c);
+        uint256 start = block.timestamp;
         h.deposit(BOB, 100 ether);
-        vm.warp(block.timestamp + 10 * c.maxActivationDelay); // way past both the timer and the fallback
+        vm.warp(start + 10 * c.maxActivationDelay); // way past both the timer and the fallback
         h.syncActivation(false, BOB, _opinion(Status.Banned, 0, 0));
         (uint256 active,,) = h.getBuckets(BOB);
         assertEq(active, 0, "banned (unlock=inf) never matures, fallback window notwithstanding");
@@ -254,11 +255,13 @@ contract CollateralActivationLibTest is Test {
 
     function test_sync_quorumStall_fallbackMatures() public {
         CollateralActivationLib.Config memory c = _config();
-        c.maxGuardiansQuorumDelay = 1; // fallback fires almost immediately after start
+        c.maxGuardiansQuorumDelay = 2 * c.maxActivationDelay; // valid; fallback sits above any lot's unlock
         h.setConfig(c);
+        uint256 start = block.timestamp;
         h.deposit(BOB, 100 ether);
-        vm.warp(h.getUnlockTime(BOB, _clean()) + 1);
-        // Frontier never advanced (quorumTs 0), but the fallback window elapsed -> matures anyway.
+        // Frontier never advanced (quorumTs 0); warp past the fallback window (start + maxGuardiansQuorumDelay,
+        // itself past the unlock) -> matures on the fallback alone.
+        vm.warp(start + c.maxGuardiansQuorumDelay);
         h.syncActivation(false, BOB, _opinion(Status.Normal, 0, 0));
         (uint256 active,,) = h.getBuckets(BOB);
         assertEq(active, 100 ether, "stalled committee: fallback matures the lot");
@@ -364,31 +367,31 @@ contract CollateralActivationLibTest is Test {
         h.setConfig(c); // both 0 are valid (no revert)
     }
 
-    // ── documented behaviour ──
+    // ── delay setter: no monotonicity constraint ──
 
-    /// @dev FINDING: the NatSpec / event names ("floor raised") suggest the delay setters are
-    ///      increase-only, but the code permits moving in EITHER direction within `min <= max`. This test
-    ///      DOCUMENTS the current (non-monotonic) behaviour; if increase-only is the intended requirement
-    ///      this is a missing guard.
-    function test_FINDING_setMinActivationDelay_canDecrease() public {
+    /// @dev Current behaviour: `setMinActivationDelay` accepts any value in `(0, maxActivationDelay]` and is
+    ///      NOT increase-only — it can move the floor down as well as up. Pinned so a future monotonicity
+    ///      requirement would be an explicit change.
+    function test_setMinActivationDelay_movesEitherDirection() public {
         h.setMinActivationDelay(1200); // raise
         assertEq(h.getConfig().minActivationDelay, 1200, "raised");
-        h.setMinActivationDelay(700); // ...then LOWER -- currently allowed (no revert)
-        assertEq(h.getConfig().minActivationDelay, 700, "FINDING: setter is NOT increase-only (lowered)");
+        h.setMinActivationDelay(700); // then lower -- accepted
+        assertEq(h.getConfig().minActivationDelay, 700, "floor lowered (setter is not increase-only)");
     }
 
-    /// @dev FINDING: NatSpec (src L108-110) says `maxGuardiansQuorumDelay` must exceed the base delay, but
-    ///      `setConfig` does not enforce it. Below the base delay the fallback elapses before the timer, so
-    ///      the lot matures on the timer alone with NO frontier scan -- the quorum gate is silently dropped.
-    function test_FINDING_quorumDelayBelowBaseDelay_dropsQuorumGate() public {
+    /// @dev `maxGuardiansQuorumDelay` is an independent parameter — there is no cross-field validation against
+    ///      the base delay. A value at or below the base delay is accepted, and a lot then matures on the
+    ///      timer alone (the quorum gate is effectively skipped). Pinned as accepted config behaviour:
+    ///      governance is responsible for setting a coherent value.
+    function test_quorumDelayBelowBase_skipsGate_byConfig() public {
         CollateralActivationLib.Config memory c = _config();
-        c.maxGuardiansQuorumDelay = 300; // < the ~606 base delay of a min-sized lot
+        c.maxGuardiansQuorumDelay = 300; // below the base delay; no coupling -> accepted
         h.setConfig(c);
         h.deposit(BOB, 10 ether);
         vm.warp(h.getUnlockTime(BOB, _clean())); // timer elapsed; frontier never advanced (quorumTs 0)
         h.syncActivation(false, BOB, _clean());
         (uint256 active,,) = h.getBuckets(BOB);
-        assertEq(active, 10 ether, "FINDING: quorum gate dropped -- matured with no frontier scan");
+        assertEq(active, 10 ether, "sub-base fallback matures on the timer alone (gate skipped)");
     }
 
     // -- extend / saturated undo / hold reverts / config bounds / fuzz --

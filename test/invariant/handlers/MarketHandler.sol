@@ -31,8 +31,16 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     uint256 internal immutable SEED_PRICE;
     address internal immutable ORACLE;
     uint256 internal constant LLTV = 0.8e18;
+    uint256 internal constant FLOOR = 10 ether; // minActivationAmount: a debt-bearing position can't drop below it
 
     address[] internal actors;
+
+    // Coverage counters (read by `afterInvariant`) — incremented only on a successful action.
+    uint256 public supplies;
+    uint256 public borrows;
+    uint256 public repays;
+    uint256 public crashes;
+    uint256 public liquidations;
 
     constructor(
         ILidoLend core,
@@ -76,6 +84,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         LOAN.approve(address(VAULT), amount);
         VAULT.deposit(amount, a);
         vm.stopPrank();
+        supplies++;
     }
 
     function withdraw(uint256 actorSeed, uint256 amount) external {
@@ -115,6 +124,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         amount = bound(amount, 1e18, room);
         vm.prank(a);
         CORE.borrow(params, amount, 0, a, a);
+        borrows++;
     }
 
     function repay(uint256 actorSeed, uint256 amount) external {
@@ -129,6 +139,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         LOAN.approve(address(CORE), owed);
         CORE.repay(params, 0, shares, a, "");
         vm.stopPrank();
+        repays++;
     }
 
     function withdrawCollateral(uint256 actorSeed, uint256 amount) external {
@@ -140,8 +151,11 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
             mk.totalBorrowShares == 0 ? 0 : uint256(pos.borrowShares) * mk.totalBorrowAssets / mk.totalBorrowShares;
         // Collateral that can leave while keeping the position healthy: collateral - debt/(price*LLTV).
         uint256 requiredColl = debt == 0 ? 0 : debt * 1e18 / LLTV * 1e36 / _price();
-        if (pos.collateral <= requiredColl) return;
-        uint256 free = (uint256(pos.collateral) - requiredColl) * 9 / 10; // 90% margin, clear of the gate
+        // A debt-bearing position also can't drop below the activation floor, so keep at least that too.
+        uint256 floorKeep = pos.borrowShares == 0 ? 0 : FLOOR;
+        uint256 minKeep = requiredColl > floorKeep ? requiredColl : floorKeep;
+        if (pos.collateral <= minKeep) return;
+        uint256 free = (uint256(pos.collateral) - minKeep) * 9 / 10; // 90% margin, clear of the gate
         if (free == 0) return;
         amount = bound(amount, 1, free);
         vm.prank(a);
@@ -159,6 +173,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     function crashPrice(uint256 factor) external {
         factor = bound(factor, 25, 70);
         MockPriceOracle(ORACLE).setPrice(SEED_PRICE * factor / 100);
+        crashes++;
     }
 
     /// @dev Liquidate an unhealthy borrower. Underwater (debt > collateral value) → seize ALL collateral to
@@ -180,5 +195,6 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         LOAN.approve(address(CORE), type(uint256).max);
         CORE.liquidate(params, victim, amount, 0, "");
         vm.stopPrank();
+        liquidations++;
     }
 }

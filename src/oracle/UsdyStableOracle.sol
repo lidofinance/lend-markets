@@ -68,6 +68,13 @@ contract UsdyStableOracle is IOracle {
     /// @notice A constructor address argument was the zero address.
     error ZeroAddress();
 
+    /// @notice The stablecoin USD feed returned a non-positive answer (zero would brick `price()` on a
+    ///         division by zero; a negative cast would silently collapse the price toward zero).
+    error InvalidStablePrice();
+
+    /// @notice The USDY NAV oracle returned zero, which would collapse the collateral price to zero.
+    error InvalidNavPrice();
+
     // ---
     // CONSTRUCTOR
     // ---
@@ -97,7 +104,10 @@ contract UsdyStableOracle is IOracle {
 
     /// @inheritdoc IOracle
     function price() external view override returns (uint256) {
+        uint256 navPrice = USDY_ORACLE.getPrice();
+        if (navPrice == 0) revert InvalidNavPrice();
         (, int256 stableUsdPrice,,,) = STABLE_USD_FEED.latestRoundData();
-        return Math.mulDiv(USDY_ORACLE.getPrice(), SCALE, uint256(stableUsdPrice));
+        if (stableUsdPrice <= 0) revert InvalidStablePrice();
+        return Math.mulDiv(navPrice, SCALE, uint256(stableUsdPrice));
     }
 }

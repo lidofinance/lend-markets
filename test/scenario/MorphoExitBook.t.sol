@@ -1,0 +1,399 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+pragma solidity 0.8.35;
+
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
+import {Id, MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
+
+import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
+import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
+import {Request, ExitStatus, PriorityRamp, RequestPreview} from "../../src/types/ExitBookTypes.sol";
+import {WAD} from "../../src/libs/Constants.sol";
+
+import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
+import {Market} from "../setup/Types.sol";
+import {MarketActions} from "../setup/MarketActions.sol";
+import {MockERC20} from "../setup/Mocks.sol";
+
+/// @notice L2 scenario coverage for `MorphoExitBook` — the Direct-mode exit book over a LidoLend/Morpho
+///         supply position. Built on the `new`-based `LidoLendSetup` (one core, one market). The lender's
+///         backing is its CORE supply position (not a vault share); the book is authorized on the core to
+///         withdraw on the lender's behalf at fill time. Every payout is recomputed independently from the
+///         on-chain `pricePerShare` snapshot, the previewed `assetsOut`, the ramp rate, and `serviceFee`
+///         (mirrors `ExitBookFeeSplit.t.sol`): owed/fee/fillerGross/serviceCut/lenderAssets are derived and
+///         `assertEq`'d, with the three legs reconstructing `assetsOut` exactly.
+contract MorphoExitBookTest is LidoLendSetup {
+    using MarketActions for Market;
+
+    uint256 internal constant MAX_LIFETIME = 30 days;
+    uint256 internal constant SERVICE_FEE = 0.05e18; // 5% cut of filler gross (WAD)
+
+    MorphoExitBook internal book;
+    address internal feeRecipient = address(0xFEE);
+
+    function setUp() public {
+        MockERC20 loan = new MockERC20("Loan", "LOAN", 18);
+        MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
+        _deployProtocol(_defaultConfig(address(loan), address(collateral), address(collateral)));
+
+        book = new MorphoExitBook(address(protocol.core), address(this), MAX_LIFETIME);
+        book.setServiceFee(feeRecipient, SERVICE_FEE);
+        book.setMarketAllowed(_m().params, true);
+    }
+
+    function _m() internal view returns (Market storage) {
+        return protocol.markets[0];
+    }
+
+    // ---
+    // HELPERS
+    // ---
+
+    function _ramp() internal pure returns (PriorityRamp memory) {
+        return PriorityRamp({startRate: 0.02e18, endRate: 0.08e18, rampStart: 1 hours, rampEnd: 1 days});
+    }
+
+    /// @dev Lender supplies `amount` of the loan token DIRECTLY into the core supply position and authorizes
+    ///      the book to manage it. Returns the supply shares it received.
+    function _lenderSupply(address lender, uint256 amount) internal returns (uint256 shares) {
+        Market storage m = _m();
+        _fund(m.loanToken, lender, amount);
+
+        vm.startPrank(lender);
+        m.loanToken.approve(address(m.core), amount);
+        (, shares) = m.core.supply(m.params, amount, 0, lender, "");
+        m.core.setAuthorization(address(book), true);
+        vm.stopPrank();
+
+        assertEq(m.core.position(m.id, lender).supplyShares, shares, "supply: shares credited to position");
+    }
+
+    /// @dev Place an exit for `shares` against the market (full-fill optional). Authorization/backing assumed.
+    function _place(address lender, uint256 shares, bool fullFillOnly) internal returns (uint256 id) {
+        vm.prank(lender);
+        id = book.placeExitRequest(_m().id, shares, _ramp(), block.timestamp + MAX_LIFETIME, fullFillOnly);
+    }
+
+    function _priorityRate(PriorityRamp memory ramp, uint256 elapsed) internal pure returns (uint256) {
+        if (elapsed < ramp.rampStart) return ramp.startRate;
+        if (elapsed >= ramp.rampEnd) return ramp.endRate;
+        return
+            ramp.startRate + (ramp.endRate - ramp.startRate) * (elapsed - ramp.rampStart)
+                / (ramp.rampEnd - ramp.rampStart);
+    }
+
+    struct Split {
+        uint256 lenderAssets;
+        uint256 fillerFee;
+        uint256 serviceCut;
+        uint256 assetsOut;
+    }
+
+    /// @dev Independent recompute, mirroring `ExitBookBase.fillExitRequest`.
+    function _expectedSplit(uint256 shares, uint256 pricePerShare, uint256 assetsOut, uint256 rate, uint256 serviceFee)
+        internal
+        pure
+        returns (Split memory s)
+    {
+        uint256 owed = Math.min(Math.mulDiv(shares, pricePerShare, WAD), assetsOut);
+        uint256 fee = Math.mulDiv(owed, rate, WAD);
+        uint256 fillerGross = (assetsOut - owed) + fee;
+        s.serviceCut = Math.mulDiv(fillerGross, serviceFee, WAD);
+        s.fillerFee = fillerGross - s.serviceCut;
+        s.lenderAssets = owed - fee;
+        s.assetsOut = assetsOut;
+    }
+
+    /// @dev Fill request `id` (filler brings no liquidity) and assert the exact three-way split + conservation.
+    ///      `elapsed` is the time since placement (sets the ramp rate). Reads `pricePerShare` from the request
+    ///      and `filledShares`/`assetsOut` from the contract's own preview, then recomputes the split.
+    function _fillAndAssert(uint256 id, uint256 elapsed) internal {
+        Market storage m = _m();
+        vm.warp(block.timestamp + elapsed);
+
+        RequestPreview memory pv = book.previewFill(id);
+        Split memory s = _expectedSplit(
+            pv.filledShares,
+            book.getExitRequest(id).pricePerShare,
+            pv.assetsOut,
+            _priorityRate(_ramp(), elapsed),
+            SERVICE_FEE
+        );
+
+        address lender = book.getExitRequest(id).owner;
+        uint256[3] memory pre = [
+            m.loanToken.balanceOf(lender), m.loanToken.balanceOf(address(0x2000)), m.loanToken.balanceOf(feeRecipient)
+        ];
+
+        vm.prank(address(0x2000));
+        book.fillExitRequest(id, 0, 0);
+
+        uint256 lenderGot = m.loanToken.balanceOf(lender) - pre[0];
+        uint256 fillerGot = m.loanToken.balanceOf(address(0x2000)) - pre[1];
+        uint256 feeGot = m.loanToken.balanceOf(feeRecipient) - pre[2];
+
+        assertEq(lenderGot, s.lenderAssets, "lender share exact");
+        assertEq(fillerGot, s.fillerFee, "filler share exact");
+        assertEq(feeGot, s.serviceCut, "service cut exact");
+        assertEq(lenderGot + fillerGot + feeGot, s.assetsOut, "three-way conservation == assetsOut");
+
+        // The book never holds anything between fills.
+        assertEq(m.loanToken.balanceOf(address(book)), 0, "book holds nothing post-fill");
+    }
+
+    /// @dev Borrower posts collateral, matures it, and borrows `amount` — drains idle liquidity from the market.
+    function _borrowOut(address borrower, uint256 amount) internal {
+        Market storage m = _m();
+        uint256 collat = amount * 1e36 / oraclePrice * 2; // over-collateralized at the seeded price
+        _fund(m.collateralToken, borrower, collat);
+        m.supplyCollateral(borrower, collat);
+        m.activateCollateral();
+        m.borrow(borrower, amount);
+    }
+
+    // ---
+    // G7 — full fill pushes payouts
+    // ---
+
+    /// @dev Supply 10e18, authorize, place full, fill: no borrower so idle == full supply -> full fill.
+    ///      Position supply shares drop to zero, exact 3-way split + conservation, book balance 0.
+    function test_fill_pushesPayouts() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+
+        uint256 shares = _lenderSupply(lender, 10 ether);
+        uint256 id = _place(lender, shares, true);
+
+        // Preview before fill: full position is fillable (idle == full supply).
+        RequestPreview memory pv = book.previewFill(id);
+        assertEq(pv.filledShares, shares, "full fill available");
+
+        _fillAndAssert(id, 12 hours); // mid-ramp
+
+        assertEq(m.core.position(m.id, lender).supplyShares, 0, "supply position drained");
+        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "request filled");
+    }
+
+    // ---
+    // G8 — place against a market that was never allowed
+    // ---
+
+    function testRevert_place_marketNotAllowed() public {
+        // A fresh book with NO setMarketAllowed call.
+        MorphoExitBook fresh = new MorphoExitBook(address(protocol.core), address(this), MAX_LIFETIME);
+        address lender = _actor("lender");
+
+        Market storage m = _m();
+        _fund(m.loanToken, lender, 10 ether);
+        vm.startPrank(lender);
+        m.loanToken.approve(address(m.core), 10 ether);
+        (, uint256 shares) = m.core.supply(m.params, 10 ether, 0, lender, "");
+        m.core.setAuthorization(address(fresh), true);
+
+        vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
+        fresh.placeExitRequest(m.id, shares, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        vm.stopPrank();
+    }
+
+    // ---
+    // G9 — supplied but never authorized the book on Morpho
+    // ---
+
+    function testRevert_place_notAuthorized() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+
+        _fund(m.loanToken, lender, 10 ether);
+        vm.startPrank(lender);
+        m.loanToken.approve(address(m.core), 10 ether);
+        (, uint256 shares) = m.core.supply(m.params, 10 ether, 0, lender, "");
+        // NOTE: no setAuthorization.
+
+        vm.expectRevert(MorphoExitBook.NotAuthorizedOnMorpho.selector);
+        book.placeExitRequest(m.id, shares, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        vm.stopPrank();
+    }
+
+    // ---
+    // G10 — authorized, but placing more than the backing
+    // ---
+
+    function testRevert_place_insufficientBacking() public {
+        address lender = _actor("lender");
+        uint256 shares = _lenderSupply(lender, 10 ether);
+
+        vm.prank(lender);
+        vm.expectRevert(MorphoExitBook.InsufficientBacking.selector);
+        book.placeExitRequest(_m().id, shares + 1, _ramp(), block.timestamp + MAX_LIFETIME, false);
+    }
+
+    // ---
+    // G11 — setMarketAllowed on a never-created market reverts (on disallow too)
+    // ---
+
+    function testRevert_setMarketAllowed_marketNotCreated() public {
+        Market storage m = _m();
+        // Real tokens, bogus oracle/irm/lltv -> an id that was never created on the core.
+        MarketParams memory ghost = MarketParams({
+            loanToken: address(m.loanToken),
+            collateralToken: address(m.collateralToken),
+            oracle: address(0xDEAD),
+            irm: address(0xBEEF),
+            lltv: 0.5e18
+        });
+
+        vm.expectRevert(MorphoExitBook.MarketNotCreated.selector);
+        book.setMarketAllowed(ghost, true);
+
+        // Fires on disallow too (the live-market check runs regardless of `allowed`).
+        vm.expectRevert(MorphoExitBook.MarketNotCreated.selector);
+        book.setMarketAllowed(ghost, false);
+    }
+
+    // ---
+    // G12 — disallowing a market blocks new places but not the fill of an in-flight request
+    // ---
+
+    function test_disallowMarket_blocksPlaceNotFill() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+
+        uint256 shares = _lenderSupply(lender, 10 ether);
+        uint256 id = _place(lender, shares, true); // placed while allowed
+
+        // Disallow the market.
+        book.setMarketAllowed(m.params, false);
+        assertFalse(book.isMarketAllowed(m.id), "market disallowed");
+
+        // A NEW place now reverts.
+        address lender2 = _actor("lender2");
+        uint256 shares2 = _lenderSupply(lender2, 5 ether);
+        vm.prank(lender2);
+        vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
+        book.placeExitRequest(m.id, shares2, _ramp(), block.timestamp + MAX_LIFETIME, false);
+
+        // BUT the in-flight request still fills (fill uses stored params, never re-checks isMarketAllowed).
+        _fillAndAssert(id, 12 hours);
+        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "in-flight request still fills");
+    }
+
+    // ---
+    // G13 — previewFill and fill reflect a revoked authorization
+    // ---
+
+    function test_previewFill_reflectsDeauthorize() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+
+        uint256 shares = _lenderSupply(lender, 10 ether);
+        uint256 id = _place(lender, shares, true);
+
+        // Authorized: there is something fillable.
+        assertGt(book.previewFill(id).filledShares, 0, "authorized: fillable");
+
+        // Revoke authorization -> nothing fillable, fill reverts.
+        vm.prank(lender);
+        m.core.setAuthorization(address(book), false);
+
+        assertEq(book.previewFill(id).filledShares, 0, "deauthorized: nothing fillable");
+
+        vm.prank(address(0x2000));
+        vm.expectRevert(ExitBookBase.NoFillableShares.selector);
+        book.fillExitRequest(id, 0, 0);
+    }
+
+    // ---
+    // BONUS — partial fill when a borrower drains idle below the owed
+    // ---
+
+    /// @dev A borrower drains most idle liquidity so `idleAssets < owed`. The request is NOT full-fill, so it
+    ///      fills the partial idle amount, stays Open, and the partial split conserves exactly.
+    function test_partialFill_borrowerDrainsIdle() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        address borrower = _actor("borrower");
+
+        uint256 shares = _lenderSupply(lender, 100 ether);
+        uint256 id = _place(lender, shares, false); // partial fills allowed
+        uint256 createdAt = book.getExitRequest(id).createdAt;
+
+        // Borrower draws 90 ether, leaving ~10 ether idle. (`_borrowOut` warps past the activation delay.)
+        _borrowOut(borrower, 90 ether);
+
+        RequestPreview memory pv = book.previewFill(id);
+        assertGt(pv.filledShares, 0, "some idle is fillable");
+        assertLt(pv.filledShares, shares, "but less than the full position");
+
+        uint256[3] memory pre = [
+            m.loanToken.balanceOf(lender), m.loanToken.balanceOf(address(0x2000)), m.loanToken.balanceOf(feeRecipient)
+        ];
+
+        uint128 sizeBefore = book.getExitRequest(id).sizeRemaining;
+        uint256 pricePerShare = book.getExitRequest(id).pricePerShare;
+
+        vm.prank(address(0x2000));
+        book.fillExitRequest(id, 0, 0);
+
+        uint256 lenderGot = m.loanToken.balanceOf(lender) - pre[0];
+        uint256 fillerGot = m.loanToken.balanceOf(address(0x2000)) - pre[1];
+        uint256 feeGot = m.loanToken.balanceOf(feeRecipient) - pre[2];
+
+        // The `filledShares` is debited atomically so it is exactly the preview; but the loan token's
+        // share-to-asset rate accrues inside the withdraw, so `assetsOut` is measured from the actual legs,
+        // not the pre-fill preview. Recompute every leg from that measured `assetsOut` and assert exact.
+        uint256 assetsOut = lenderGot + fillerGot + feeGot;
+        uint256 rate = _priorityRate(_ramp(), block.timestamp - createdAt);
+        Split memory s = _expectedSplit(pv.filledShares, pricePerShare, assetsOut, rate, SERVICE_FEE);
+
+        assertEq(lenderGot, s.lenderAssets, "partial: lender share exact");
+        assertEq(fillerGot, s.fillerFee, "partial: filler share exact");
+        assertEq(feeGot, s.serviceCut, "partial: service cut exact");
+        assertEq(lenderGot + fillerGot + feeGot, s.assetsOut, "partial: conservation == assetsOut");
+
+        // Request stays Open, size reduced by exactly the filled shares.
+        Request memory req = book.getExitRequest(id);
+        assertEq(uint8(req.status), uint8(ExitStatus.Open), "partial: request stays open");
+        assertEq(uint256(sizeBefore) - req.sizeRemaining, pv.filledShares, "partial: size reduced by filled shares");
+    }
+
+    // ---
+    // BONUS — filler supplies liquidity to enable the fill, ends with a supply position
+    // ---
+
+    /// @dev Borrower drains ALL idle, so without liquidity nothing is fillable. The filler passes
+    ///      `depositAssets`: `_depositLiquidity` supplies it to the core on the filler's behalf (the filler
+    ///      ends with a supply position), which then lets the withdraw pull the lender's position out.
+    function test_fillWithLiquidity_fillerGainsSupplyPosition() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        address borrower = _actor("borrower");
+        address filler = _actor("filler");
+
+        uint256 shares = _lenderSupply(lender, 100 ether);
+        uint256 id = _place(lender, shares, false);
+
+        // Borrower drains essentially all idle liquidity.
+        _borrowOut(borrower, 100 ether);
+
+        // No idle -> nothing fillable from the position alone.
+        assertEq(book.previewFill(id).filledShares, 0, "no idle: nothing fillable without liquidity");
+
+        // Filler brings liquidity to back the fill.
+        uint256 deposit = 40 ether;
+        _fund(m.loanToken, filler, deposit);
+        vm.prank(filler);
+        m.loanToken.approve(address(book), deposit);
+
+        uint256 lenderBefore = m.loanToken.balanceOf(lender);
+
+        vm.prank(filler);
+        book.fillExitRequest(id, deposit, 0);
+
+        // The filler now holds a supply position credited from its deposit.
+        assertGt(m.core.position(m.id, filler).supplyShares, 0, "filler gained a supply position");
+        // The lender received their owed payout from the freshly-supplied idle.
+        assertGt(m.loanToken.balanceOf(lender), lenderBefore, "lender paid out from filler liquidity");
+        // The book holds nothing afterward.
+        assertEq(m.loanToken.balanceOf(address(book)), 0, "book holds nothing post-fill");
+    }
+}

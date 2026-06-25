@@ -136,17 +136,41 @@ contract GuardianSignalsTest is Test {
         assertEq(_flagCount(BOB), 0, "flags are frozen (dropped) while immune");
     }
 
-    /// @dev FINDING: `revokeImmunity` hard-writes `Normal` and does NOT recompute
-    ///      `Banned` from `flagCount >= quorum`. An immunity round-trip therefore UN-BANS a quorum-flagged
-    ///      account without an `unban`. This DOCUMENTS the current behaviour.
-    function test_FINDING_immunityRoundTrip_unbansQuorumFlagged() public {
+    /// @dev `revokeImmunity` re-derives the status from the flag set instead of forcing `Normal`: an account
+    ///      still carrying a quorum of flags re-latches to `Banned`, so an immunity round-trip cannot silently
+    ///      unban it.
+    function test_immunityRoundTrip_stillQuorumFlagged_relatchesBanned() public {
         _flag(G1, BOB);
         _flag(G2, BOB); // Banned, flagCount 2 >= quorum
         gs.grantImmunity(MARKET, BOB);
+        assertEq(uint8(_status(BOB)), uint8(Status.Immune), "immune during the grant");
         gs.revokeImmunity(MARKET, BOB);
-        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "FINDING: revoke leaves Normal, not Banned");
-        assertEq(_flagCount(BOB), 2, "flags still present and >= quorum");
-        assertEq(_strikes(BOB), 2, "FINDING: strikes restored but status un-banned");
+        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "re-latches Banned, still quorum-flagged");
+        assertEq(_flagCount(BOB), 2, "flags retained across the round-trip");
+        assertEq(_strikes(BOB), 2, "effective strikes restored once no longer immune");
+    }
+
+    /// @dev The mirror branch: an account below quorum at revoke returns to `Normal`, not `Banned`.
+    function test_immunityRoundTrip_belowQuorum_returnsNormal() public {
+        _flag(G1, BOB); // 1 flag < quorum 2
+        gs.grantImmunity(MARKET, BOB);
+        gs.revokeImmunity(MARKET, BOB);
+        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "below quorum -> Normal after revoke");
+        assertEq(_flagCount(BOB), 1, "the single flag is retained");
+    }
+
+    /// @dev `revokeImmunity` is a no-op on a non-immune account: it must not lift a committee `ban` (a forced
+    ///      Banned carries zero flags) — closing the limiter-role unban bypass.
+    function test_revokeImmunity_onForcedBan_isNoop() public {
+        gs.ban(MARKET, BOB); // forced Banned, zero flags
+        gs.revokeImmunity(MARKET, BOB);
+        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "forced ban survives revoke (no-op on non-immune)");
+    }
+
+    /// @dev ...and it leaves a never-immune Normal account untouched.
+    function test_revokeImmunity_onNormal_isNoop() public {
+        gs.revokeImmunity(MARKET, BOB);
+        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "no-op on a never-immune account");
     }
 
     // ── forced ban / unban ──

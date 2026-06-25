@@ -16,6 +16,12 @@ import {MarketHandler} from "./handlers/MarketHandler.sol";
 ///           - the un-borrowed supply (idle) is backed by real loan tokens held by the core/vault.
 ///         Activation is short-circuited (actors hold instant activation) so the fuzzer reaches the
 ///         borrow/repay state space without fighting the maturation timer.
+/// @dev `fail-on-revert` stays FALSE here on purpose. Flipping it to true surfaced a reachable
+///      `PositionAccountingMismatch` (the controller's defensive hook guard) under crash → long-warp →
+///      repay/withdrawCollateral sequences — i.e. the controller's position mirror can diverge from the core
+///      such that a core-valid op trips the guard. That is logged as an open item to investigate (real mirror
+///      desync vs. handler-bounding gap); it must NOT be hidden by forcing the stricter mode green. The
+///      ExitBook invariant suite, whose handler can be fully revert-bounded, does run with fail-on-revert=true.
 /// forge-config: default.invariant.fail-on-revert = false
 /// forge-config: default.invariant.runs = 256
 /// forge-config: default.invariant.depth = 250
@@ -26,21 +32,22 @@ contract MarketSolvencyInvariant is LidoLendSetup {
     address internal constant A2 = address(0x9002);
     address internal constant A3 = address(0x9003);
 
+    address[] internal actors;
+
     function setUp() public {
         MockERC20 loan = new MockERC20("Loan", "LOAN", 18);
         MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
         _deployProtocol(_defaultConfig(address(loan), address(collateral), address(collateral)));
 
         Market storage m = protocol.markets[0];
+        actors.push(A1);
+        actors.push(A2);
+        actors.push(A3);
         // Instant activation for the actors → supplied collateral is immediately borrowable.
-        m.controller.grantInstantActivation(A1);
-        m.controller.grantInstantActivation(A2);
-        m.controller.grantInstantActivation(A3);
+        for (uint256 i; i < actors.length; i++) {
+            m.controller.grantInstantActivation(actors[i]);
+        }
 
-        address[] memory actors = new address[](3);
-        actors[0] = A1;
-        actors[1] = A2;
-        actors[2] = A3;
         handler = new MarketHandler(
             m.core, m.vault, m.loanToken, m.collateralToken, m.params, m.id, oraclePrice, address(m.oracle), actors
         );
@@ -71,9 +78,10 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         Market storage m = protocol.markets[0];
         MorphoMarket memory mk = _market();
         uint256 idle = mk.totalSupplyAssets - mk.totalBorrowAssets;
-        // The vault forwards every deposit straight to the core, so the idle (un-borrowed supply) is held
-        // by the CORE — the vault holds no loan tokens at rest (asserted separately below).
-        assertGe(m.loanToken.balanceOf(address(m.core)), idle, "idle supply backed by loan tokens in the core");
+        // The core holds AT LEAST the idle (un-borrowed) supply. It can hold a few wei MORE: per-operation
+        // rounding (e.g. repay rounding owed up) leaves dust in the core that `supply - borrow` does not
+        // track. Under-backing (balance < idle) would be the real solvency bug; the inequality is the property.
+        assertGe(m.loanToken.balanceOf(address(m.core)), idle, "core loan balance covers idle supply");
     }
 
     function invariant_vaultHoldsNoLoanTokens() public view {
@@ -81,25 +89,54 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         assertEq(m.loanToken.balanceOf(address(m.vault)), 0, "vault forwards deposits; holds no idle loan tokens");
     }
 
+    /// @dev The vault is the only supplier in this fuzz (every deposit routes through it), so it must own
+    ///      exactly the whole supply-share book — a phantom supply share anywhere else is a bug.
+    function invariant_vaultIsSoleSupplier() public view {
+        Market storage m = protocol.markets[0];
+        assertEq(
+            m.core.position(m.id, address(m.vault)).supplyShares,
+            _market().totalSupplyShares,
+            "vault holds 100% of supply shares"
+        );
+    }
+
+    /// @dev The vault never reports more assets than the market actually holds (no value creation): its
+    ///      `totalAssets()` claim stays within the market's total supply.
+    function invariant_vaultNeverOverReports() public view {
+        Market storage m = protocol.markets[0];
+        assertLe(m.vault.totalAssets(), _market().totalSupplyAssets, "vault totalAssets <= market supply");
+    }
+
     function invariant_collateralConservation() public view {
         Market storage m = protocol.markets[0];
-        uint256 sum = uint256(m.core.position(m.id, A1).collateral) + m.core.position(m.id, A2).collateral
-            + m.core.position(m.id, A3).collateral;
+        uint256 sum;
+        for (uint256 i; i < actors.length; i++) {
+            sum += m.core.position(m.id, actors[i]).collateral;
+        }
         assertEq(sum, m.collateralToken.balanceOf(address(m.core)), "sum of position collateral == core balance");
     }
 
     /// @dev The controller's activation buckets must exactly partition each borrower's core collateral.
     function invariant_activationBucketsPartitionCollateral() public view {
         Market storage m = protocol.markets[0];
-        address[3] memory who = [A1, A2, A3];
-        for (uint256 i; i < 3; i++) {
-            ILidoLendMarketController.BorrowerPosition memory d = m.controller.positionOf(who[i]);
+        for (uint256 i; i < actors.length; i++) {
+            ILidoLendMarketController.BorrowerPosition memory d = m.controller.positionOf(actors[i]);
             assertEq(
                 d.active + d.activating + d.dust,
-                m.core.position(m.id, who[i]).collateral,
+                m.core.position(m.id, actors[i]).collateral,
                 "active + activating + dust == core collateral"
             );
         }
+    }
+
+    /// @dev Surfaces vacuous campaigns: reports how deep the fuzzer reached (last run's counters). If borrows
+    ///      or liquidations stay at 0 the solvency invariants are passing only because nothing risky happened.
+    function afterInvariant() public {
+        emit log_named_uint("supplies", handler.supplies());
+        emit log_named_uint("borrows", handler.borrows());
+        emit log_named_uint("repays", handler.repays());
+        emit log_named_uint("crashes", handler.crashes());
+        emit log_named_uint("liquidations", handler.liquidations());
     }
 
     /// @dev Deterministic companion to the fuzz run: force a position underwater and fully liquidate it, then

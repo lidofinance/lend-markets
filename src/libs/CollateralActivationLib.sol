@@ -106,8 +106,10 @@ library CollateralActivationLib {
     /// @param activatingHold Committee Sybil hold honored by `withdraw`. 0 disables it. Forced paths pass floor 0.
     /// @param minActivationAmount Dust threshold. Collateral below it does not enter activation.
     /// @param maxGuardiansQuorumDelay Cap on total time a lot may stay activating, measured from its start.
-    ///        Once it elapses the lot matures even if the guardian quorum has not scanned past the unlock. It
-    ///        must exceed the base delay to leave the quorum any window. 0 matures at the base unlock (no gate).
+    ///        Once it elapses the lot matures even if the guardian quorum has not scanned past the unlock.
+    ///        Independent of the other delays (not enforced): set it above the base delay to leave the quorum
+    ///        a window — at or below it the lot matures on the timer alone (the gate is effectively skipped).
+    ///        0 matures at the base unlock (no gate).
     struct Config {
         // delay ramp
         uint40 minActivationDelay;

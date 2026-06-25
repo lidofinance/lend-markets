@@ -34,23 +34,44 @@ contract MockChainlinkFeed {
     function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
         return (1, answer, 0, updatedAt, 1);
     }
+
+    function decimals() external pure returns (uint8) {
+        return 8;
+    }
+}
+
+/// @dev Loan stablecoin stub: only `decimals()` is read by the oracle to size SCALE (USDC-like, 6 dec).
+contract MockLoanToken {
+    function decimals() external pure returns (uint8) {
+        return 6;
+    }
+}
+
+/// @dev 18-decimal loan stablecoin (e.g. DAI), to exercise the dynamic SCALE at a different decimal config.
+contract MockLoanToken18 {
+    function decimals() external pure returns (uint8) {
+        return 18;
+    }
 }
 
 /// @notice Unit/fuzz for `UsdyStableOracle`: price = mulDiv(USDY/USD price,
 ///         SCALE, stable/USD price) with SCALE = 1e14 = 10^(36+6+8-18-18) for an 18-dec USDY collateral /
-///         6-dec stablecoin loan market (Morpho scale 36+6-18 = 24). Recomputed independently. Includes
-///         documenting tests for the missing Chainlink staleness / non-positive-answer guards.
+///         6-dec stablecoin loan market (Morpho scale 36+6-18 = 24). Recomputed independently. A non-positive
+///         feed answer is rejected (`InvalidStablePrice`); the adapter performs no on-chain staleness check.
 contract UsdyStableOracleTest is Test {
     uint256 internal constant SCALE = 1e14;
 
     MockRWAOracle internal usdy;
     MockChainlinkFeed internal feed;
+    MockLoanToken internal loan;
     UsdyStableOracle internal oracle;
 
     function setUp() public {
         usdy = new MockRWAOracle();
         feed = new MockChainlinkFeed();
-        oracle = new UsdyStableOracle(address(usdy), address(feed));
+        loan = new MockLoanToken();
+        // SCALE is now derived from decimals: loan 6 + feed 8 -> 10^(36+6+8-18-18) = 1e14 (unchanged).
+        oracle = new UsdyStableOracle(address(usdy), address(feed), address(loan));
     }
 
     function _expected(uint256 getPrice, int256 answer) internal pure returns (uint256) {
@@ -74,12 +95,33 @@ contract UsdyStableOracleTest is Test {
 
     function testRevert_constructor_zeroUsdyOracle() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new UsdyStableOracle(address(0), address(feed));
+        new UsdyStableOracle(address(0), address(feed), address(loan));
     }
 
     function testRevert_constructor_zeroStableFeed() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new UsdyStableOracle(address(usdy), address(0));
+        new UsdyStableOracle(address(usdy), address(0), address(loan));
+    }
+
+    function testRevert_constructor_zeroLoanToken() public {
+        vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
+        new UsdyStableOracle(address(usdy), address(feed), address(0));
+    }
+
+    function test_scale_isDerivedFromDecimals() public view {
+        assertEq(oracle.SCALE(), 1e14, "SCALE = 10^(36+6+8-18-18) from loan/feed decimals");
+    }
+
+    /// @dev An 18-decimal stablecoin loan (DAI-like) sizes SCALE differently: 10^(36+18+8-18-18) = 1e26.
+    function test_price_eighteenDecimalStable() public {
+        UsdyStableOracle o = new UsdyStableOracle(address(usdy), address(feed), address(new MockLoanToken18()));
+        assertEq(o.SCALE(), 1e26, "18-dec loan / 8-dec feed -> SCALE 1e26");
+
+        usdy.setPrice(1.08e18);
+        feed.setAnswer(1e8);
+        // price = 1.08e18 * 1e26 / 1e8 = 1.08e36
+        assertEq(o.price(), uint256(1.08e18) * 1e26 / 1e8, "exact recompute at 18-dec");
+        assertEq(o.price(), 1.08e36, "explicit value");
     }
 
     function testFuzz_price_recompute(uint256 getPrice, int256 answer) public {
@@ -101,30 +143,40 @@ contract UsdyStableOracleTest is Test {
 
     // ── documented no-guard behaviour (NatSpec L26-27: intentionally matches Morpho's stock oracle) ──
 
-    /// @dev The adapter ignores `updatedAt`/`answeredInRound` — a stale feed is used as-is. This regression-
-    ///      pins the deliberate no-staleness-guard behaviour; any future guard is then an explicit change.
-    function test_staleFeed_isUsedAnyway() public {
+    /// @dev Current behaviour: `price()` reads only the feed's `answer`, with no on-chain staleness check on
+    ///      `updatedAt`/`answeredInRound`, so an old round is used as-is. Adding a staleness bound would be an
+    ///      explicit behaviour change; this pins the present contract.
+    function test_staleFeed_isUsedAsIs() public {
         usdy.setPrice(1.08e18);
         feed.setUpdatedAt(1); // ancient round
         vm.warp(10_000_000);
-        assertEq(oracle.price(), _expected(1.08e18, 1e8), "stale feed price returned without a guard");
+        assertEq(oracle.price(), _expected(1.08e18, 1e8), "stale feed answer used without a staleness check");
     }
 
-    /// @dev FINDING: no `stableUsdPrice <= 0` guard. Zero -> `mulDiv` div-by-zero
-    ///      reverts (DoS, fail-closed). The omission is documented as intended, but the zero path bricks
-    ///      price() for the whole market — pinned here.
-    function testRevert_FINDING_price_zeroAnswer_bricks() public {
+    /// @dev A zero feed answer is the realistic failure (an un-updated / stale-outage round). The
+    ///      `stableUsdPrice <= 0` guard turns what would be a raw `mulDiv` division-by-zero into a clean
+    ///      `InvalidStablePrice` revert.
+    function testRevert_price_zeroAnswer() public {
         feed.setAnswer(0);
-        vm.expectRevert(); // div-by-zero in mulDiv
+        vm.expectRevert(UsdyStableOracle.InvalidStablePrice.selector);
         oracle.price();
     }
 
-    /// @dev FINDING (the dangerous fail-OPEN branch): a NEGATIVE answer is cast
-    ///      `uint256(answer)` to ~2^256, so price() collapses to ~0 — USDY collateral valued at nothing,
-    ///      triggering mass/unjust liquidations. A cheap `answer > 0` guard would remove this path; flag.
-    function test_FINDING_price_negativeAnswer_collapsesToZero() public {
+    /// @dev A negative answer is implausible for a USD stablecoin feed but type-permitted (`int256`); without
+    ///      a guard the `uint256(answer)` cast would collapse the price toward zero (fail-open). The same
+    ///      `<= 0` guard rejects it cleanly — defense-in-depth on the oracle input.
+    function testRevert_price_negativeAnswer() public {
         usdy.setPrice(1.08e18);
-        feed.setAnswer(-1); // uint256(-1) = 2^256-1 -> price ≈ 0
-        assertEq(oracle.price(), 0, "FINDING: negative feed answer collapses the collateral price to 0");
+        feed.setAnswer(-1);
+        vm.expectRevert(UsdyStableOracle.InvalidStablePrice.selector);
+        oracle.price();
+    }
+
+    /// @dev The NAV numerator is guarded symmetrically with the divisor: a zero NAV reverts cleanly rather
+    ///      than collapsing the collateral price to zero (the same fail-open class as the feed answer).
+    function testRevert_price_zeroNavPrice() public {
+        usdy.setPrice(0);
+        vm.expectRevert(UsdyStableOracle.InvalidNavPrice.selector);
+        oracle.price();
     }
 }
