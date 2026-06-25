@@ -48,13 +48,6 @@ contract WstEthRateOracle is IOracle {
     }
 
     // ---
-    // INITIALIZATION
-    // ---
-
-    /// @notice No-op that satisfies the proxy's mandatory init call. The config is immutable in the impl.
-    function initialize() external {}
-
-    // ---
     // VIEWS
     // ---
 
