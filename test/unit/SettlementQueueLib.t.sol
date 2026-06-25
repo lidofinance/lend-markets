@@ -107,15 +107,15 @@ contract SettlementQueueLibTest is Test {
     function test_sliceToLtv_collatBelowDebt_canExceedDebt_unclamped() public {
         // LTV > 1 (collat 50 < debt 100): Δ = (100 − 0.5·50)/0.5 = 75/0.5 = 150 > debt -> NOT clamped here
         uint256 got = q.sliceToLtv(100, 50, 0.5e18);
-        assertEq(got, 150, "unclamped above debt");
-        assertGt(got, 100, "exceeds debt (clamp lives in callers)");
+        assertEq(got, 150, "unclamped above debt (150 > debt 100; clamp lives in callers)");
     }
 
     function test_sliceToLtv_boundaryEquality() public {
         // debt·WAD (60e18) == target·collat (0.6·100=60e18) -> `<=` returns 0
         assertEq(q.sliceToLtv(60, 100, 0.6e18), 0, "equality -> 0");
         // a target meaningfully below the current LTV yields a >= 1 cut (a sub-unit cut would floor to 0)
-        assertGt(q.sliceToLtv(60, 100, 0.5e18), 0, "below target -> positive");
+        // (60*WAD - 0.5e18*100)/(WAD - 0.5e18) = 10e18/0.5e18 = 20
+        assertEq(q.sliceToLtv(60, 100, 0.5e18), 20, "below target -> exact closed-form cut");
     }
 
     function testFuzz_sliceToLtv_matchesRecompute_andNoOvershoot(uint256 debt, uint256 collat, uint256 target) public {
@@ -327,8 +327,7 @@ contract SettlementQueueLibTest is Test {
         uint256 currentLtv = 80 * WAD / 150;
         uint256 target = currentLtv - (1_000 * WAD / 10_000);
         uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(80, 100));
-        assertEq(slice, _expectedSlice(80, 150, target), "root cut is the LTV-step term");
-        assertGt(slice, 1, "LTV-step beats the 0.01% debt-fraction floor");
+        assertEq(slice, _expectedSlice(80, 150, target), "root cut is exactly the LTV-step term (beats the floor)");
     }
 
     function test_allowedSlice_dustLift_boundary() public {

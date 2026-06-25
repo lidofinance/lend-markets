@@ -322,10 +322,9 @@ contract CollateralActivationLibTest is Test {
         h.setConfig(c);
 
         h.deposit(BOB, 100 ether);
-        uint256 inflowAfterDeposit = h.getInflow();
-        h.withdraw(BOB, 100 ether); // same block -> inflow contribution reversed
-        assertLt(h.getInflow(), inflowAfterDeposit, "same-tx withdraw reverses the inflow it added");
-        assertEq(h.getInflow(), 0, "inflow back to pre-deposit (0)");
+        assertEq(h.getInflow(), 100 ether, "deposit added exactly its lot to inflow");
+        h.withdraw(BOB, 100 ether); // same block -> inflow contribution fully reversed
+        assertEq(h.getInflow(), 0, "inflow back to pre-deposit (exactly 0)");
     }
 
     // ── setConfig BadConfig (each guarded field) ──
@@ -449,13 +448,13 @@ contract CollateralActivationLibTest is Test {
         h.setConfig(c);
     }
 
-    function testFuzz_firstDeposit_delayMatchesRampAndBounds(uint256 amount) public {
+    function testFuzz_firstDeposit_delayMatchesRamp(uint256 amount) public {
         CollateralActivationLib.Config memory c = _config();
         amount = bound(amount, c.minActivationAmount, 1e30); // >= min so it enters activating
         h.deposit(BOB, amount);
         uint256 unlock = h.getUnlockTime(BOB, _clean());
-        assertEq(unlock, block.timestamp + _expectedDelay(amount), "unlock matches the ramp recompute");
-        assertGe(unlock, block.timestamp + c.minActivationDelay, "delay >= floor");
-        assertLe(unlock, block.timestamp + c.maxActivationDelay, "delay <= cap");
+        // Exact ramp recompute. `_expectedDelay` already clamps to [min, max], so the equality below
+        // simultaneously pins the value AND proves the floor/cap clamp — no separate bound checks needed.
+        assertEq(unlock, block.timestamp + _expectedDelay(amount), "unlock == ramp recompute (clamped)");
     }
 }

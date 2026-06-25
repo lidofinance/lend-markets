@@ -66,7 +66,7 @@ contract MaxHeapLibTest is Test {
         for (uint256 i = 1; i < n; ++i) {
             (, uint256 ki) = h.nodeAt(i);
             (, uint256 kParent) = h.nodeAt((i - 1) / 2);
-            assertGe(kParent, ki, "heap property: parent < child");
+            assertGe(kParent, ki, "heap property: parent >= child");
             assertGe(rootKey, ki, "root is not the global max");
         }
         (, uint256 peekKey) = h.peek();

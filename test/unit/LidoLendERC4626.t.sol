@@ -61,10 +61,11 @@ contract LidoLendERC4626Test is LidoLendSetup {
         Market storage m = _market();
         address lender = _actor("lender");
         _fund(m.loanToken, lender, 100 ether);
+        uint256 expectedShares = m.vault.previewDeposit(100 ether);
         uint256 shares = m.vaultDeposit(lender, 100 ether);
+        assertEq(shares, expectedShares, "minted shares == previewDeposit");
         m.vaultWithdraw(lender, 100 ether);
         assertEq(m.vault.balanceOf(lender), 0, "all shares burned");
-        assertGt(shares, 0, "minted");
     }
 
     function test_mintRedeem_roundTrip() public {
@@ -90,9 +91,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.activateCollateral();
         m.borrow(borrower, 20 ether); // 20 of the 100 supplied is borrowed out (safe at any seeded price)
 
-        uint256 maxW = m.vault.maxWithdraw(lender);
-        assertLt(maxW, 100 ether, "capped below the full position");
-        assertApproxEqAbs(maxW, 80 ether, 1e15, "bounded by free liquidity (~80)");
+        // Free liquidity = totalSupply - totalBorrow = 100 - 20 = 80; the 100-asset position caps to it.
+        assertEq(m.vault.maxWithdraw(lender), 80 ether, "maxWithdraw == free liquidity (100 - 20)");
     }
 
     // ── fallbackExit: redeem-first, then settle ──
@@ -110,10 +110,13 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
     function test_fallbackExit_redeemThenSettle_whenLiquidityShort() public {
         Market storage m = _market();
-        (address lender,) = _distress(m, 100 ether, 20 ether, 0.22e36); // 80 idle, 20 borrowed (illiquid part settles)
+        (address lender, address borrower) = _distress(m, 100 ether, 20 ether, 0.22e36); // 80 idle, 20 settles
+        uint256 idle = m.core.market(m.id).totalSupplyAssets - m.core.market(m.id).totalBorrowAssets;
+        uint128 colBefore = m.core.position(m.id, borrower).collateral;
         (, uint256 loanAssets, uint256 collateralSeized,) = m.fallbackExit(lender, m.vault.balanceOf(lender), lender, 0);
-        assertGt(loanAssets, 0, "redeem leg paid out the idle liquidity");
-        assertGt(collateralSeized, 0, "settle leg seized collateral for the illiquid remainder");
+        assertEq(loanAssets, idle, "redeem leg == idle liquidity (exact)");
+        assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");
+        assertEq(m.vault.balanceOf(lender), 0, "fully exited: redeem covered idle, settle covered the rest");
     }
 
     // ── reverts (vault-owned guards) ──
@@ -153,10 +156,12 @@ contract LidoLendERC4626Test is LidoLendSetup {
         (address lender, address borrower) = _distress(m, 100 ether, 20 ether, 0.22e36);
         address[] memory bs = new address[](1);
         bs[0] = borrower;
-        // The helper asserts loanAssets == 0 (no redeem leg) and the collateral/share deltas.
-        (, uint256 loanAssets, uint256 collateralSeized,) = m.settle(lender, m.vault.balanceOf(lender), bs, lender);
-        assertEq(loanAssets, 0, "settle pays no loan assets");
-        assertGt(collateralSeized, 0, "settle seized collateral");
+        (uint256 sliceAssets,) = m.controller.settlementFor(borrower);
+        uint128 colBefore = m.core.position(m.id, borrower).collateral;
+        // The helper asserts loanAssets == 0 (no redeem leg) and the receiver/share deltas.
+        (,, uint256 collateralSeized, uint256 debtCanceled) = m.settle(lender, m.vault.balanceOf(lender), bs, lender);
+        assertEq(debtCanceled, sliceAssets, "settle cut == settlementFor prediction (exact)");
+        assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");
     }
 
     /// @dev Borrower posts large collateral and borrows the WHOLE lender supply (idle -> 0), then a crash to
@@ -184,10 +189,14 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
     function test_fallbackExit_pureSettle_whenNoIdle() public {
         Market storage m = _market();
-        (address lender,) = _distressFull(m, 100 ether); // idle == 0
+        (address lender, address borrower) = _distressFull(m, 100 ether); // idle == 0
+        uint128 colBefore = m.core.position(m.id, borrower).collateral;
         (, uint256 loanAssets, uint256 collateralSeized,) = m.fallbackExit(lender, m.vault.balanceOf(lender), lender, 0);
         assertEq(loanAssets, 0, "no redeem leg when there is no idle liquidity");
-        assertGt(collateralSeized, 0, "exit serviced entirely by the settle leg");
+        assertEq(
+            collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "settle seized == position delta"
+        );
+        assertEq(m.vault.balanceOf(lender), 0, "exit serviced entirely by the settle leg");
     }
 
     function test_fallbackExit_maxIterations_capsTheSettleLeg() public {
@@ -204,11 +213,18 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.activateCollateral();
         m.borrow(borrower, 20 ether); // 80 idle; remainder 20
 
+        // One settle cut == the controller's predicted slice; total shares burned == the shares for the
+        // 80 idle redeemed PLUS the shares for that one cut — both recomputed before the exit.
+        (uint256 sliceAssets,) = m.controller.settlementFor(borrower);
         uint256 shares = m.vault.balanceOf(lender);
+        uint256 expectedBurned = m.vault.previewWithdraw(80 ether) + m.vault.previewWithdraw(sliceAssets);
         vm.prank(lender);
-        (uint256 sharesBurned,,,) = m.vault.fallbackExit(shares, lender, lender, 1);
-        assertLt(sharesBurned, shares, "maxIterations=1 -> only the idle part + one cut is burned");
-        assertGt(sharesBurned, 0, "redeem leg burned at least the idle part");
+        (uint256 sharesBurned, uint256 loanAssets,, uint256 debtCanceled) =
+            m.vault.fallbackExit(shares, lender, lender, 1);
+        assertEq(loanAssets, 80 ether, "redeem leg paid exactly the 80 idle (100 - 20)");
+        assertEq(debtCanceled, sliceAssets, "settle leg cut == settlementFor (one cut)");
+        assertEq(sharesBurned, expectedBurned, "shares burned == redeem(80) + settle(cut), exact");
+        assertEq(m.vault.balanceOf(lender), shares - sharesBurned, "remaining balance == unserviced shares");
     }
 
     function test_fallbackExit_receiverNotOwner() public {
@@ -326,8 +342,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.activateCollateral();
         m.borrow(borrower, 20 ether);
 
-        // 20 borrowed out -> redeemable shares are capped below the full balance.
-        assertLt(m.vault.maxRedeem(lender), m.vault.balanceOf(lender), "maxRedeem capped by free liquidity");
+        // 20 borrowed out -> redeemable shares == the shares needed to withdraw the 80 of free liquidity.
+        assertEq(m.vault.maxRedeem(lender), m.vault.previewWithdraw(80 ether), "maxRedeem == previewWithdraw(free)");
     }
 
     function test_totalAssets_tracksDeposit() public {

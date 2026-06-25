@@ -194,7 +194,7 @@ contract GuardianSignalsTest is Test {
         // Now a lagging guardian heartbeats at a lower block; the frontier must not move backward.
         _heartbeat(G3, 990);
         gs.syncQuorumBlock();
-        assertGe(gs.getLastScannedQuorumBlock().number, 998, "monotonic ratchet: frontier never regresses");
+        assertEq(gs.getLastScannedQuorumBlock().number, 998, "monotonic ratchet: frontier stays at 998, no regress");
     }
 
     function test_syncQuorumBlock_isPermissionless() public {

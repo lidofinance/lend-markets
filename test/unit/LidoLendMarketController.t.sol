@@ -2,7 +2,10 @@
 pragma solidity 0.8.35;
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {ILidoLendMarketController} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
+import {
+    ILidoLendMarketController as ILidoLendBaseMarketController
+} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
@@ -76,14 +79,14 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     function testRevert_on_nonCoreCaller_unauthorized() public {
         vm.expectRevert(ILidoLendMarketController.Unauthorized.selector);
-        c.on(_m().id, ILidoLendMarketController.HookEvent.Supply, "");
+        c.on(_m().id, ILidoLendBaseMarketController.HookEvent.Supply, "");
     }
 
     function testRevert_on_wrongMarketId_invalidMarketId() public {
         Id wrongId = Id.wrap(bytes32(uint256(0xDEAD)));
         vm.prank(address(_m().core)); // authorized caller, wrong market
         vm.expectRevert(ILidoLendMarketController.InvalidMarketId.selector);
-        c.on(wrongId, ILidoLendMarketController.HookEvent.Supply, "");
+        c.on(wrongId, ILidoLendBaseMarketController.HookEvent.Supply, "");
     }
 
     // ── pause: every hook reverts ──
@@ -145,8 +148,10 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function test_freeze_allowsDebtFreeWithdraw() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0); // no debt
         c.freeze();
+        uint256 before = _m().collateralToken.balanceOf(borrower);
         vm.prank(borrower);
         _m().core.withdrawCollateral(_m().params, 1 ether, borrower, borrower); // succeeds while frozen
+        assertEq(_m().collateralToken.balanceOf(borrower) - before, 1 ether, "collateral returned while frozen");
     }
 
     function test_freeze_allowsRepay() public {
@@ -155,8 +160,19 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _fund(_m().loanToken, borrower, 20 ether);
         vm.prank(borrower);
         _m().loanToken.approve(address(_m().core), type(uint256).max);
+        uint256 before = _m().loanToken.balanceOf(borrower);
         vm.prank(borrower);
         _m().core.repay(_m().params, 5 ether, 0, borrower, ""); // repay allowed while frozen
+        assertEq(before - _m().loanToken.balanceOf(borrower), 5 ether, "repay debited the borrower while frozen");
+    }
+
+    function test_unfreeze_restoresBorrow() public {
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
+        c.freeze();
+        c.unfreeze();
+        assertFalse(c.isFrozen(), "unfrozen");
+        vm.prank(borrower);
+        _m().core.borrow(_m().params, 10 ether, 0, borrower, borrower); // borrow works again
     }
 
     // ── borrow-utilization gap (WAD) ──
@@ -270,5 +286,75 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertFalse(c.isFrozen(), "not frozen initially");
         assertFalse(c.isPaused(), "not paused initially");
         assertEq(c.maxBorrowUtilization(), 1e18, "no gap -> full utilization allowed");
+    }
+
+    function test_currentBorrowUtilization_afterBorrow() public {
+        (, address borrower) = _seedBorrower(100 ether, 1000 ether, 0);
+        vm.prank(borrower);
+        _m().core.borrow(_m().params, 40 ether, 0, borrower, borrower);
+        // utilization = totalBorrow * WAD / totalSupply = 40/100 = 0.4e18 (no interest yet).
+        assertEq(c.currentBorrowUtilization(), 0.4e18, "utilization == 40/100 exactly (no interest accrued)");
+    }
+
+    function test_setBorrowUtilizationGap_freeSetBothDirections() public {
+        c.setBorrowUtilizationGap(0.5e18);
+        assertEq(c.borrowUtilizationGap(), 0.5e18, "set");
+        c.setBorrowUtilizationGap(0.3e18); // MANAGER may lower (free-set, unlike increase*)
+        assertEq(c.borrowUtilizationGap(), 0.3e18, "lowered");
+    }
+
+    function testRevert_increaseMaxActivationDelay_notTightened() public {
+        // The default max delay is 2h; a lower value is not a tightening.
+        vm.expectRevert(ILidoLendMarketController.ConfigNotTightened.selector);
+        c.increaseMaxActivationDelay(60);
+    }
+
+    // ── ban 3-way: receiver and caller (distinct from onBehalf) ──
+
+    function testRevert_borrow_bannedReceiver() public {
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
+        address receiver = _actor("receiver");
+        _ban(receiver);
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
+        _m().core.borrow(_m().params, 10 ether, 0, borrower, receiver);
+    }
+
+    function testRevert_borrow_bannedCaller() public {
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
+        address operator = _actor("operator");
+        _ban(operator);
+        vm.prank(borrower);
+        _m().core.setAuthorization(operator, true); // borrower authorizes the (banned) operator
+        vm.prank(operator);
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
+        _m().core.borrow(_m().params, 10 ether, 0, borrower, borrower);
+    }
+
+    // ── fuzz: borrow-util gap boundary & gap monotonicity ──
+
+    function testFuzz_borrowUtilizationGap(uint256 gap, uint256 borrow) public {
+        gap = bound(gap, 0, 0.9e18);
+        borrow = bound(borrow, 1 ether, 100 ether);
+        c.setBorrowUtilizationGap(gap);
+        (, address borrower) = _seedBorrower(100 ether, 1000 ether, 0); // ample collateral + LLTV headroom
+        // Util gate is the only blocker: revert iff post-borrow utilization exceeds WAD - gap.
+        bool shouldRevert = borrow * 1e18 > (1e18 - gap) * 100 ether;
+        vm.prank(borrower);
+        if (shouldRevert) vm.expectRevert(ILidoLendMarketController.MaxBorrowUtilizationExceeded.selector);
+        _m().core.borrow(_m().params, borrow, 0, borrower, borrower);
+    }
+
+    function testFuzz_increaseBorrowUtilizationGap_monotonic(uint256 first, uint256 second) public {
+        first = bound(first, 1, 0.9e18);
+        c.setBorrowUtilizationGap(first);
+        second = bound(second, 0, 1.05e18);
+        if (second <= first || second >= 1e18) {
+            vm.expectRevert(); // ConfigNotTightened (<=current) or BorrowUtilizationGapTooHigh (>=WAD)
+            c.increaseBorrowUtilizationGap(second);
+        } else {
+            c.increaseBorrowUtilizationGap(second);
+            assertEq(c.borrowUtilizationGap(), second, "increased to the tightened value");
+        }
     }
 }
