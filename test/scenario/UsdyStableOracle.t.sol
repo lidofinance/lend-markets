@@ -3,7 +3,6 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 
@@ -20,61 +19,72 @@ contract MockRwaOracle {
     }
 }
 
-/// @dev Mock Chainlink USD aggregator: only `answer` matters here (8-dec USD price).
+/// @dev Mock Chainlink USD aggregator: `answer` is the price, `decimals()` its scale.
 contract MockChainlinkFeed {
     int256 internal answer;
+    uint8 public immutable decimals;
+
+    constructor(uint8 dec) {
+        decimals = dec;
+    }
 
     function set(int256 newAnswer) external {
         answer = newAnswer;
     }
 
-    function latestRoundData()
-        external
-        view
-        returns (uint80 roundId, int256 ans, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
-    {
+    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
         return (0, answer, 0, 0, 0);
     }
 }
 
-/// @dev An oracle-like impl with NO `initialize()`, used to show such a contract cannot be deployed
-///      behind the hardened `OssifiableProxy`.
-contract NoInitOracle {
-    function price() external pure returns (uint256) {
-        return 1e36;
+/// @dev Loan stablecoin stub exposing only `decimals()`, read by the oracle to size the scale.
+contract MockToken {
+    uint8 public immutable decimals;
+
+    constructor(uint8 dec) {
+        decimals = dec;
     }
 }
 
-/// @notice Coverage for `UsdyStableOracle`: USDY NAV (1e18) quoted in a 6-dec stablecoin via its 8-dec
-///         Chainlink USD feed, scaled to Morpho's 1e36 convention. Expected values are re-derived from
-///         the convention (collateral 18 dec, loan 6 dec) independently of the contract's SCALE.
+/// @notice Coverage for `UsdyStableOracle`: USDY NAV (1e18, 18-dec collateral) quoted in a USD stablecoin via
+///         its Chainlink USD feed, scaled to Morpho's 1e36 convention. The scale is computed from the loan
+///         token and feed decimals, so the same contract serves any Chainlink-priced stablecoin — exercised
+///         here for a 6-dec stable (USDC/USDT) and an 18-dec stable. Expected values are re-derived from the
+///         convention, independent of the contract's SCALE.
 contract UsdyStableOracleTest is Test {
     uint256 internal constant USDY_DEC = 1e18; // USDY token + Ondo getPrice() scale
     uint256 internal constant FEED_DEC = 1e8; // Chainlink USD feed scale
-    uint256 internal constant LOAN_UNIT = 1e6; // USDC/USDT (6 dec)
+    uint256 internal constant LOAN_UNIT = 1e6; // 6-dec stable (USDC/USDT)
 
     MockRwaOracle internal usdy;
     MockChainlinkFeed internal feed;
+    MockToken internal stable6; // 6 dec
     UsdyStableOracle internal oracle;
 
     function setUp() public {
         usdy = new MockRwaOracle();
-        feed = new MockChainlinkFeed();
-        // Deploy as in production: immutable-config impl behind an OssifiableProxy. `initialize()` is the
-        // no-op the proxy must delegatecall — it rejects empty init data.
-        address impl = address(new UsdyStableOracle(address(usdy), address(feed)));
-        oracle = UsdyStableOracle(
-            address(new OssifiableProxy(impl, address(this), abi.encodeWithSignature("initialize()")))
-        );
+        feed = new MockChainlinkFeed(8);
+        stable6 = new MockToken(6);
+        // Deploy as in production: immutable-config impl behind an OssifiableProxy, with no init call — the
+        // config lives in the impl's immutables and the proxy allows empty init data.
+        address impl = address(new UsdyStableOracle(address(usdy), address(feed), address(stable6)));
+        oracle = UsdyStableOracle(_behindProxy(impl));
     }
 
-    /// @dev Independent re-derivation of Morpho's IOracle value: price of 1 collateral (USDY, 18 dec)
-    ///      quoted in the loan (stable, 6 dec), scaled 1e36.
+    function _behindProxy(address impl) internal returns (address) {
+        return address(new OssifiableProxy(impl, address(this), ""));
+    }
+
+    /// @dev Independent re-derivation of Morpho's IOracle value: price of 1 USDY (18 dec) in the loan (6 dec).
     ///      usdyUsd = usdyRaw / 1e18 ; stableUsd = stableRaw / 1e8
-    ///      price = (usdyUsd / stableUsd) * 1e36 * 10^loanDec / 10^collDec
+    ///      price = (usdyUsd / stableUsd) * 1e36 * 10^loanDec / 10^18
     function _expected(uint256 usdyRaw, uint256 stableRaw) internal pure returns (uint256) {
-        // = usdyRaw * FEED_DEC * 1e36 * LOAN_UNIT / (USDY_DEC * stableRaw * USDY_DEC)
         return Math.mulDiv(usdyRaw * FEED_DEC, 1e36 * LOAN_UNIT, USDY_DEC * stableRaw * USDY_DEC);
+    }
+
+    /// @notice The scale is derived from the loan/feed decimals, not hardwired (1e14 for a 6-dec stable).
+    function test_scale_derivedFromDecimals() public view {
+        assertEq(oracle.SCALE(), 1e14, "10^(36 + 6 + 8 - 18 - 18)");
     }
 
     /// @notice At par ($1.00 stable): 1 USDY at NAV $1.14 → 1.14 USDC, i.e. 1.14e24 at 1e36 scale.
@@ -112,6 +122,20 @@ contract UsdyStableOracleTest is Test {
         assertEq(p1, p0 * 2, "price tracks NAV linearly");
     }
 
+    /// @notice The same contract prices an 18-dec stablecoin loan: SCALE becomes 1e26, not the 1e14 of the
+    ///         6-dec case — proving the scale comes from the loan/feed decimals, not a constant.
+    function test_price_eighteenDecimalStable() public {
+        MockToken stable18 = new MockToken(18);
+        UsdyStableOracle o = new UsdyStableOracle(address(usdy), address(feed), address(stable18));
+        assertEq(o.SCALE(), 1e26, "10^(36 + 18 + 8 - 18 - 18)");
+
+        usdy.set(114 * USDY_DEC / 100); // $1.14
+        feed.set(int256(FEED_DEC)); // $1.00
+        uint256 p = o.price();
+        assertEq(p, 1.14e36, "1.14 (18-dec) stable per USDY at 1e36 scale");
+        assertEq(uint256(1e18) * p / 1e36, 1.14e18, "1 USDY collateral -> 1.14 stable (18 dec)");
+    }
+
     /// @notice The contract value always equals the convention re-derivation across a range of inputs.
     function testFuzz_matchesConvention(uint256 usdyRaw, uint256 stableRaw) public {
         usdyRaw = bound(usdyRaw, 1, 1e24); // up to ~$1e6 NAV, generous
@@ -123,20 +147,16 @@ contract UsdyStableOracleTest is Test {
 
     function testRevert_constructorZeroUsdyOracle() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new UsdyStableOracle(address(0), address(feed));
+        new UsdyStableOracle(address(0), address(feed), address(stable6));
     }
 
     function testRevert_constructorZeroFeed() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new UsdyStableOracle(address(usdy), address(0));
+        new UsdyStableOracle(address(usdy), address(0), address(stable6));
     }
 
-    /// @notice Shows why the oracle needs an `initialize()` at all: an impl without one cannot be
-    ///         deployed behind the hardened proxy. With no function to delegatecall, the only option is
-    ///         empty init data, which the proxy rejects outright (`ERC1967ProxyUninitialized`).
-    function testRevert_proxyRejectsImplWithoutInitialize() public {
-        address implWithoutInitialize = address(new NoInitOracle());
-        vm.expectRevert(ERC1967Proxy.ERC1967ProxyUninitialized.selector);
-        new OssifiableProxy(implWithoutInitialize, address(this), "");
+    function testRevert_constructorZeroLoan() public {
+        vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
+        new UsdyStableOracle(address(usdy), address(feed), address(0));
     }
 }

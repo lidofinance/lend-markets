@@ -38,6 +38,13 @@ contract OssifiableProxy is ERC1967Proxy {
         ERC1967Utils.changeAdmin(admin_);
     }
 
+    /// @dev Allow construction with empty `data_` (no init delegate call) — the proxy's behaviour before
+    ///     OpenZeppelin 5.6 made an init call mandatory. Implementations whose config lives in immutables
+    ///     have nothing to initialize.
+    function _unsafeAllowUninitialized() internal pure override returns (bool) {
+        return true;
+    }
+
     /// @notice Fallback function that delegates calls to the address returned by `_implementation()`.
     // Will run if call data is empty.
     // The only use of this function is to suppress the solidity warning "This contract has a payable fallback function, but no receive ether function"

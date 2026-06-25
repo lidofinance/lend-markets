@@ -73,10 +73,11 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
     }
 
     /// @dev Real oracle: USDY NAV (Ondo) quoted in USDT via the real Chainlink USDT/USD feed, behind an
-    ///      `OssifiableProxy` (feed config set in proxy storage via `initialize`).
+    ///      `OssifiableProxy`. Feed config and the decimal-derived scale are immutable in the impl, so the
+    ///      proxy is deployed with no init call.
     function _deployOracle(address, address admin) internal override returns (address) {
-        address impl = address(new UsdyStableOracle(ONDO_ORACLE, USDT_USD_FEED));
-        return _behindProxy(impl, admin, abi.encodeWithSignature("initialize()"));
+        address impl = address(new UsdyStableOracle(ONDO_ORACLE, USDT_USD_FEED, USDT));
+        return _behindProxy(impl, admin, "");
     }
 
     function setUp() public {
