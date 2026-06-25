@@ -36,10 +36,10 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // ---
 
     /// @dev Sets the full config in either direction (risk-increasing path): activation params, instant
-    ///      activation, borrow-utilization gap, settlement config. Meant for the EasyTrack factory.
+    ///      activation, settlement config.
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
-    /// @dev Fast risk-reducing levers that can only tighten: raise the activation delays, widen the borrow
-    ///      gap, raise the Sybil hold, revoke instant activation.
+    /// @dev Fast risk-reducing levers that can only tighten: raise the activation delays, raise the Sybil
+    ///      hold, revoke instant activation.
     bytes32 public constant RISK_STEWARD_ROLE = keccak256("RISK_STEWARD_ROLE");
     /// @dev Freezes the market: blocks new borrows and debt-bearing collateral withdrawals.
     bytes32 public constant FREEZER_ROLE = keccak256("FREEZER_ROLE");
@@ -72,9 +72,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     CollateralActivationLib.State private _activation;
     /// @dev Risk queue + settlement LTVs + settlement config.
     SettlementQueueLib.State private _settlementQueue;
-    /// @dev Minimum gap kept between borrow utilization and 100% (WAD): reserves that share of supply for
-    ///      lender withdrawals, so a borrow that would close the gap reverts. 0 = no gap.
-    uint256 private _borrowUtilizationGap;
 
     // ---
     // MODIFIERS
@@ -191,43 +188,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     /// @inheritdoc ILidoLendMarketController
     function hasInstantActivation(address borrower) external view returns (bool) {
         return _activation.instantActivation[borrower];
-    }
-
-    // ---
-    // BORROW UTILIZATION GAP
-    // ---
-
-    /// @inheritdoc ILidoLendMarketController
-    function setBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external onlyRole(MANAGER_ROLE) {
-        if (newBorrowUtilizationGap >= WAD) revert BorrowUtilizationGapTooHigh();
-        _borrowUtilizationGap = newBorrowUtilizationGap;
-        emit BorrowUtilizationGapSet(newBorrowUtilizationGap);
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    function increaseBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external onlyRole(RISK_STEWARD_ROLE) {
-        if (newBorrowUtilizationGap >= WAD) revert BorrowUtilizationGapTooHigh();
-        if (newBorrowUtilizationGap <= _borrowUtilizationGap) revert ConfigNotTightened();
-        _borrowUtilizationGap = newBorrowUtilizationGap;
-        emit BorrowUtilizationGapSet(newBorrowUtilizationGap);
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    function borrowUtilizationGap() external view returns (uint256) {
-        return _borrowUtilizationGap;
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    function maxBorrowUtilization() external view returns (uint256) {
-        return WAD - _borrowUtilizationGap;
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    function currentBorrowUtilization() external view returns (uint256) {
-        MarketParams memory params = LIDO_LEND.idToMarketParams(_MARKET_ID);
-        (uint256 totalSupplyAssets,, uint256 totalBorrowAssets,) =
-            MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
-        return totalSupplyAssets == 0 ? 0 : Math.mulDiv(totalBorrowAssets, WAD, totalSupplyAssets);
     }
 
     // ---
@@ -416,7 +376,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     }
 
     /// @dev Borrow hook: blocked by a freeze or a ban on caller/receiver/borrower. Capacity uses active
-    ///      (matured) collateral only, and the borrow must leave the borrow-utilization gap intact.
+    ///      (matured) collateral only.
     function _handleBorrow(Id id, BorrowHookData memory hookData) internal {
         if (_isFrozen) revert MarketIsFrozen();
 
@@ -446,16 +406,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         MarketView memory marketView = _marketView(id);
         if (_debtAssets(marketView, position) + hookData.assets > _getMaxBorrow(marketView, activeCollateral)) {
             revert InsufficientActiveCollateral();
-        }
-
-        // Borrow utilization gap: a borrow must leave at least `_borrowUtilizationGap` of supply
-        // un-borrowed (a gap below 100% utilization) for lender withdrawals. Borrow totals here are
-        // pre-this-borrow, so the prospective borrow adds `hookData.assets`. 0 = no gap.
-        if (_borrowUtilizationGap != 0) {
-            uint256 newBorrowAssets = marketView.totalBorrowAssets + hookData.assets;
-            if (newBorrowAssets * WAD > (WAD - _borrowUtilizationGap) * marketView.totalSupplyAssets) {
-                revert MaxBorrowUtilizationExceeded();
-            }
         }
 
         position.borrowShares += hookData.shares;

@@ -21,9 +21,6 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Emitted when the market is frozen or unfrozen.
     event FrozenSet(bool frozen, address indexed account);
 
-    /// @notice Emitted when the borrow utilization gap is set (WAD; 0 = no gap).
-    event BorrowUtilizationGapSet(uint256 borrowUtilizationGap);
-
     /// @notice Emitted when a borrower's instant-activation (no maturation timer) status is set.
     event InstantActivationSet(address indexed borrower, bool enabled);
 
@@ -55,12 +52,6 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Thrown when a withdrawal would draw a borrower's collateral below the activation minimum
     ///         while it still owes debt. Repaying to zero lifts the floor.
     error CollateralFloorBreached();
-
-    /// @notice Thrown when a borrow would push borrow utilization above the cap (WAD - borrowUtilizationGap).
-    error MaxBorrowUtilizationExceeded();
-
-    /// @notice Thrown when the borrow utilization gap is set to WAD or more (would freeze borrowing).
-    error BorrowUtilizationGapTooHigh();
 
     /// @notice Thrown when a core-applied position delta exceeds the controller's read of that position.
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
@@ -117,11 +108,11 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     // ---
 
     /// @notice Role gating the risk-increasing levers: full activation config, granting instant activation,
-    ///         the borrow-utilization gap, and the settlement config. Meant for the EasyTrack factory.
+    ///         and the settlement config. Meant for the EasyTrack factory.
     function MANAGER_ROLE() external view returns (bytes32);
 
     /// @notice Role gating the fast risk-reducing levers, each one-directional toward tighter policy: raise the
-    ///         activation delay floor/cap, set the Sybil hold, revoke instant activation, widen the gap.
+    ///         activation delay floor/cap, set the Sybil hold, revoke instant activation.
     function RISK_STEWARD_ROLE() external view returns (bytes32);
 
     /// @notice Role allowed to freeze the market.
@@ -167,27 +158,6 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
 
     /// @notice Whether `borrower` skips the activation maturation timer.
     function hasInstantActivation(address borrower) external view returns (bool);
-
-    // ---
-    // BORROW UTILIZATION GAP
-    // ---
-
-    /// @notice Set the minimum gap kept between borrow utilization and 100% (WAD; 0 = no gap, must be < WAD).
-    ///         Reserves that share of supply for lender withdrawals — a borrow that would close the gap
-    ///         reverts. Risk-increasing path (shrinking or disabling the gap): meant for the EasyTrack factory.
-    function setBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external;
-
-    /// @notice Fast risk-reducing lever: widen the gap. Reverts if it would not raise it.
-    function increaseBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external;
-
-    /// @notice The minimum gap kept between borrow utilization and 100% (WAD; 0 = no gap).
-    function borrowUtilizationGap() external view returns (uint256);
-
-    /// @notice Max borrow utilization permitted (WAD), i.e. WAD - borrowUtilizationGap. WAD when no gap is set.
-    function maxBorrowUtilization() external view returns (uint256);
-
-    /// @notice The market's current borrow utilization (borrowed / supplied, WAD) with pending interest accrued.
-    function currentBorrowUtilization() external view returns (uint256);
 
     // ---
     // SETTLEMENT QUEUE

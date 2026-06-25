@@ -139,36 +139,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         _assertCollateralState(ctx.controller, BORROWER, col, more, 0);
     }
 
-    /// @notice Borrow utilization gap: borrows that keep the gap below 100% succeed, a borrow that
-    ///         would close it reverts at the controller hook. The gap is off (0) by default.
-    function test_borrow_cappedByBorrowUtilizationGap() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(false);
-        ctx.controller.setBorrowUtilizationGap(0.1e18); // keep a 10% gap => 90% max utilization
-        assertEq(ctx.controller.maxBorrowUtilization(), 0.9e18, "gap maps to a 90% cap");
-
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        // Ample collateral so the gap binds before the active-health ceiling.
-        uint256 collateral = _mintWstETH(ctx.market, BORROWER, 40 ether);
-
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, collateral, BORROWER, "");
-        vm.warp(block.timestamp + 2 hours + 1);
-
-        // Borrowing 9 of 10 WETH keeps the 10% gap exactly, so it is allowed.
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 9 ether, 0, BORROWER, BORROWER);
-        assertApproxEqAbs(ctx.controller.currentBorrowUtilization(), 0.9e18, 1e15, "utilization sits at the cap");
-
-        // Any further borrow would close the gap and reverts.
-        vm.prank(BORROWER);
-        vm.expectRevert(ILidoLendMarketController.MaxBorrowUtilizationExceeded.selector);
-        ctx.market.borrow(ctx.marketParams, 0.1 ether, 0, BORROWER, BORROWER);
-    }
-
     /// @notice Open-debt collateral floor: while a borrower owes debt, a withdrawal may not draw raw
     ///         collateral below the activation minimum. Repaying to zero lifts the floor.
     function test_withdraw_collateralFloorWithOpenDebt() public {
