@@ -2,7 +2,7 @@
 pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, MarketParams, Position, Market} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
@@ -193,7 +193,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
         console2.log("=== SerialSmallExits(10x5%x10rounds) ===");
         for (uint256 round; round < 10; ++round) {
-            (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
+            uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
             if (lenderShares == 0) break;
             uint256 roundShares = _assetsToSupplyShares(ctx, total / 10);
             if (roundShares > lenderShares) roundShares = lenderShares;
@@ -278,7 +278,9 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, 75 ether));
         _logSettlementResult(res);
 
-        (, uint128 whaleBorrowAfter, uint128 whaleColAfter) = ctx.market.position(ctx.id, _borrowerAddr(0));
+        Position memory _pos = ctx.market.position(ctx.id, _borrowerAddr(0));
+        uint128 whaleBorrowAfter = _pos.borrowShares;
+        uint128 whaleColAfter = _pos.collateral;
         console2.log("  whale_debt_remaining:", uint256(whaleBorrowAfter));
         console2.log("  whale_col_remaining:", uint256(whaleColAfter));
         console2.log("  heap_size:", ctx.controller.settlementBorrowersCount());
@@ -306,7 +308,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         uint256 totalDebtDrained;
 
         while (true) {
-            (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
+            uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
             if (lenderShares == 0 || ctx.controller.settlementBorrowersCount() == 0) break;
             SettlementResult memory res = _settleLoop(ctx, lenderShares);
             if (res.iterations == 0) break;
@@ -416,7 +418,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         uint256 minCol = _collateralForDebt(debtPer, targetLTV, ctx.price);
         for (uint256 i; i < n; ++i) {
             address b = _borrowerAddr(i);
-            (,, uint128 col) = ctx.market.position(ctx.id, b);
+            uint128 col = ctx.market.position(ctx.id, b).collateral;
             uint256 toWithdraw = uint256(col) - minCol;
             if (toWithdraw > 0) {
                 vm.prank(b);
@@ -459,8 +461,20 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
             (address top, uint256 sliceAssets,) = ctx.controller.nextSettlementBorrower();
             if (top == address(0)) break;
-            (, uint128 topBorrowShares, uint128 topCol) = ctx.market.position(ctx.id, top);
-            (,, uint128 totalBorrowAssets, uint128 totalBorrowShares,,) = ctx.market.market(ctx.id);
+            uint128 topBorrowShares;
+            uint128 topCol;
+            {
+                Position memory _pos = ctx.market.position(ctx.id, top);
+                topBorrowShares = _pos.borrowShares;
+                topCol = _pos.collateral;
+            }
+            uint128 totalBorrowAssets;
+            uint128 totalBorrowShares;
+            {
+                Market memory _mkt = ctx.market.market(ctx.id);
+                totalBorrowAssets = _mkt.totalBorrowAssets;
+                totalBorrowShares = _mkt.totalBorrowShares;
+            }
 
             // Single-borrower sentinel: size the cut to the whole position.
             if (sliceAssets == type(uint256).max) {
@@ -647,14 +661,16 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     function _countClosed(Ctx memory ctx, uint256 from, uint256 to) internal view returns (uint256 count) {
         for (uint256 i = from; i < to; ++i) {
-            (, uint128 bs,) = ctx.market.position(ctx.id, _borrowerAddr(i));
+            uint128 bs = ctx.market.position(ctx.id, _borrowerAddr(i)).borrowShares;
             if (bs == 0) count++;
         }
     }
 
     function _countDust(Ctx memory ctx, uint256 from, uint256 to) internal view returns (uint256 count) {
         for (uint256 i = from; i < to; ++i) {
-            (, uint128 bs, uint128 col) = ctx.market.position(ctx.id, _borrowerAddr(i));
+            Position memory _pos = ctx.market.position(ctx.id, _borrowerAddr(i));
+            uint128 bs = _pos.borrowShares;
+            uint128 col = _pos.collateral;
             if (bs > 0 && col < uint128(DUST_THRESHOLD)) count++;
         }
     }
@@ -664,8 +680,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     }
 
     function _assetsToSupplyShares(Ctx memory ctx, uint256 assets) internal view returns (uint256) {
-        (uint128 totalSupplyAssets, uint128 totalSupplyShares,,,,) = ctx.market.market(ctx.id);
-        return SharesMathLib.toSharesDown(assets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
+        Market memory _mkt = ctx.market.market(ctx.id);
+        return SharesMathLib.toSharesDown(assets, uint256(_mkt.totalSupplyAssets), uint256(_mkt.totalSupplyShares));
     }
 
     function _mintWETH(ILidoLend market, address user, uint256 amount) internal {

@@ -463,13 +463,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         // policy slice.
         uint256 allowed = _settlementQueue.allowedSlice(marketView, borrower, position);
         if (allowed == 0) revert SettlementIneligible();
-        if (hookData.debtCanceled > allowed) revert SettlementExceedsAllowed();
+        if (hookData.borrowAssetsCanceled > allowed) revert SettlementExceedsAllowed();
 
         // payload consistency (core already enforces these; cheap to re-check on the trusted values, no reads)
         uint256 sharesToBurn =
-            hookData.debtCanceled.toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+            hookData.borrowAssetsCanceled.toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
         if (sharesToBurn > position.borrowShares) revert SettlementExceedsDebt();
-        if (hookData.collateralSeized == 0 || hookData.collateralSeized > position.collateral) {
+        if (hookData.seizedAssets == 0 || hookData.seizedAssets > position.collateral) {
             revert SettlementInvalidSeize();
         }
 
@@ -477,10 +477,10 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         // A freeze or ban defers maturation, and `seize` drains all buckets regardless of maturation state.
         _activation.sync(_isFrozen, borrower, _guardianSignals.getOpinion(_MARKET_ID, borrower));
 
-        _activation.seize(borrower, hookData.collateralSeized);
+        _activation.seize(borrower, hookData.seizedAssets);
 
         position.borrowShares -= sharesToBurn;
-        position.collateral -= hookData.collateralSeized;
+        position.collateral -= hookData.seizedAssets;
         _settlementQueue.sync(borrower, position);
     }
 

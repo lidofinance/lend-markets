@@ -3,7 +3,7 @@ pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, MarketParams, Position, Market} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Test} from "forge-std/Test.sol";
@@ -169,7 +169,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         // Repay the debt to zero, then the floor no longer applies and the rest comes out.
         _mintWETH(ctx.market, BORROWER, 3 ether);
-        (, uint128 borrowShares,) = ctx.market.position(ctx.id, BORROWER);
+        uint128 borrowShares = ctx.market.position(ctx.id, BORROWER).borrowShares;
         vm.prank(BORROWER);
         ctx.market.repay(ctx.marketParams, 0, borrowShares, BORROWER, "");
         vm.prank(BORROWER);
@@ -302,7 +302,9 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (5) THIRD_BORROWER (lowest LTV, no settlement LTV) is never touched throughout the scenario.
-        (, uint128 lowBorrowSharesAfter, uint128 lowCollateralAfter) = ctx.market.position(ctx.id, THIRD_BORROWER);
+        Position memory _pos = ctx.market.position(ctx.id, THIRD_BORROWER);
+        uint128 lowBorrowSharesAfter = _pos.borrowShares;
+        uint128 lowCollateralAfter = _pos.collateral;
         assertEq(uint256(lowCollateralAfter), lowCol, "low-LTV borrower's collateral untouched");
         assertGt(lowBorrowSharesAfter, 0, "low-LTV borrower still has debt");
     }
@@ -393,13 +395,13 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
             abi.encode(droppedPrice)
         );
 
-        (,, uint128 rc) = ctx.market.position(ctx.id, BORROWER);
+        uint128 rc = ctx.market.position(ctx.id, BORROWER).collateral;
         assertGt(borrowAmount, _maxBorrow(uint256(rc), droppedPrice), "position is unhealthy (LTV > LLTV)");
         assertGt(uint256(rc) * droppedPrice / 1e36, borrowAmount, "position is solvent (collateral value > debt)");
         assertFalse(ctx.controller.hasBadDebt(), "head is not bad debt");
 
         // The cut succeeds even though the borrower is unhealthy.
-        (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
+        uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
         uint256 cut = lenderShares / 10;
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
@@ -407,7 +409,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         assertGt(debtCanceled, 0, "debt cancelled");
         assertEq(collateralSeized, debtCanceled * 1e36 / droppedPrice, "collateral seized at oracle rate");
-        (,, uint128 rcAfter) = ctx.market.position(ctx.id, BORROWER);
+        uint128 rcAfter = ctx.market.position(ctx.id, BORROWER).collateral;
         assertEq(uint256(rcAfter), uint256(rc) - collateralSeized, "borrower collateral debited");
     }
 
@@ -507,7 +509,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         (address root,,) = ctx.controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "BORROWER is queue root");
 
-        (uint256 lenderShares,,) = ctx.market.position(ctx.id, LENDER);
+        uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
         uint256 cut = lenderShares / 5;
 
         // Targeting tail SECOND_BORROWER without a settlement LTV → hook revert.
@@ -519,12 +521,12 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.controller.setSettlementLtv(0.05e18);
 
-        (,, uint128 colBefore) = ctx.market.position(ctx.id, SECOND_BORROWER);
+        uint128 colBefore = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
             ctx.market.settle(ctx.marketParams, 0, cut, LENDER, SECOND_BORROWER, LENDER);
 
-        (,, uint128 colAfter) = ctx.market.position(ctx.id, SECOND_BORROWER);
+        uint128 colAfter = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
         assertEq(uint256(colAfter), uint256(colBefore) - collateralSeized, "tail collateral debited");
         assertGt(debtCanceled, 0, "tail debt canceled");
         assertEq(collateralSeized, debtCanceled * 1e36 / ctx.price, "oracle-rate cut");
@@ -639,8 +641,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     function _sliceShares(TestMarket memory ctx) internal view returns (uint256) {
         (, uint256 sliceAssets,) = ctx.controller.nextSettlementBorrower();
         if (sliceAssets == type(uint256).max) return type(uint256).max;
-        (uint128 totalSupplyAssets, uint128 totalSupplyShares,,,,) = ctx.market.market(ctx.id);
-        return SharesMathLib.toSharesDown(sliceAssets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
+        Market memory _mkt = ctx.market.market(ctx.id);
+        return SharesMathLib.toSharesDown(sliceAssets, uint256(_mkt.totalSupplyAssets), uint256(_mkt.totalSupplyShares));
     }
 
     function _hasMainnetLidoContracts() internal view returns (bool) {
@@ -657,7 +659,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         uint256 initialCollateral,
         uint256 collateralSeized
     ) internal view {
-        (,, uint128 borrowerRawCollateral) = ctx.market.position(ctx.id, BORROWER);
+        uint128 borrowerRawCollateral = ctx.market.position(ctx.id, BORROWER).collateral;
         assertEq(uint256(borrowerRawCollateral), initialCollateral - collateralSeized, "raw collateral debited");
         _assertCollateralState(ctx.controller, BORROWER, initialCollateral - collateralSeized, 0, 0);
     }
