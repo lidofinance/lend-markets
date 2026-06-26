@@ -28,8 +28,8 @@ import {MarketHandler} from "./handlers/MarketHandler.sol";
 ///      found: the panic the fuzzer hit was purely the handler's own keeper-index overflow, not a core
 ///      bad-debt-socialization overflow.
 /// forge-config: default.invariant.fail-on-revert = true
-/// forge-config: default.invariant.runs = 256
-/// forge-config: default.invariant.depth = 250
+/// forge-config: default.invariant.runs = 1000
+/// forge-config: default.invariant.depth = 400
 contract MarketSolvencyInvariant is LidoLendSetup {
     MarketHandler internal handler;
 
@@ -38,6 +38,8 @@ contract MarketSolvencyInvariant is LidoLendSetup {
     address internal constant A3 = address(0x9003);
 
     address[] internal actors;
+
+    uint256 internal constant FLOOR = 10 ether; // minActivationAmount in the default config
 
     function setUp() public {
         MockERC20 loan = new MockERC20("Loan", "LOAN", 18);
@@ -121,6 +123,25 @@ contract MarketSolvencyInvariant is LidoLendSetup {
             sum += m.core.position(m.id, actors[i]).collateral;
         }
         assertEq(sum, m.collateralToken.balanceOf(address(m.core)), "sum of position collateral == core balance");
+    }
+
+    /// @dev A debt-bearing borrower never reaches collateral below `minActivationAmount` through the VOLUNTARY
+    ///      paths: `withdrawCollateral` reverts `CollateralFloorBreached` below the floor with open debt, and
+    ///      the borrow hook now likewise reverts `CollateralFloorBreached` against sub-floor active collateral
+    ///      (a gap this invariant first caught — a debt-free withdraw below the floor followed by a borrow).
+    ///      Liquidation is a FORCED path that may legitimately leave a debt-bearing sub-floor position, so its
+    ///      victims are excluded; only the voluntary paths must uphold the floor.
+    function invariant_noDebtWithSubFloorCollateral() public view {
+        Market storage m = protocol.markets[0];
+        for (uint256 i; i < actors.length; i++) {
+            if (!handler.liquidated(actors[i]) && m.core.position(m.id, actors[i]).borrowShares > 0) {
+                assertGe(
+                    m.core.position(m.id, actors[i]).collateral,
+                    FLOOR,
+                    "debt-bearing position keeps collateral >= minActivationAmount"
+                );
+            }
+        }
     }
 
     /// @dev The controller's activation buckets must exactly partition each borrower's core collateral.

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, stdError} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {ExitBookLib} from "../../src/libs/ExitBookLib.sol";
 import {ExitStatus, PriorityRamp} from "../../src/types/ExitBookTypes.sol";
@@ -116,7 +117,7 @@ contract ExitBookLibTest is Test {
 
     function testRevert_recordFill_overfill() public {
         uint256 id = _add(ALICE, 100 ether);
-        vm.expectRevert(); // sizeRemaining -= filled underflows
+        vm.expectRevert(stdError.arithmeticError); // sizeRemaining -= filled underflows
         h.recordFill(id, 101 ether);
     }
 
@@ -191,19 +192,27 @@ contract ExitBookLibTest is Test {
     // ── SafeCast packing bounds ──
 
     function testRevert_add_sharesOverflowUint128() public {
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SafeCast.SafeCastOverflowedUintDowncast.selector, 128, uint256(type(uint128).max) + 1
+            )
+        );
         h.add(ALICE, ASSET, uint256(type(uint128).max) + 1, 1e18, _ramp(), block.timestamp + 1, false);
     }
 
     function testRevert_add_deadlineOverflowsUint40() public {
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 40, uint256(type(uint40).max) + 1)
+        );
         h.add(ALICE, ASSET, 1 ether, 1e18, _ramp(), uint256(type(uint40).max) + 1, false);
     }
 
     function testRevert_add_rampRateOverflowsUint96() public {
         PriorityRamp memory r =
             PriorityRamp({startRate: uint256(type(uint96).max) + 1, endRate: 0, rampStart: 0, rampEnd: 1});
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 96, uint256(type(uint96).max) + 1)
+        );
         h.add(ALICE, ASSET, 1 ether, 1e18, r, block.timestamp + 1, false);
     }
 

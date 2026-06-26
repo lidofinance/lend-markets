@@ -10,6 +10,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
+import {ExitBookLib} from "../../src/libs/ExitBookLib.sol";
 import {Request, RequestPreview, PriorityRamp, ExitStatus} from "../../src/types/ExitBookTypes.sol";
 
 contract MockAsset is ERC20 {
@@ -22,6 +23,18 @@ contract MockAsset is ERC20 {
 
 contract MockVault is ERC4626 {
     constructor(IERC20 asset_) ERC20("Vault", "vAST") ERC4626(asset_) {}
+}
+
+/// @notice A vault whose `redeem` burns the shares but transfers no assets out, so the book measures a
+///         zero `assetsOut` delta and must revert `NoAssetsRedeemed`. Backing (balance/allowance/maxRedeem)
+///         stays real so a request can be placed and reach the redeem.
+contract ZeroRedeemVault is ERC4626 {
+    constructor(IERC20 asset_) ERC20("ZeroVault", "zAST") ERC4626(asset_) {}
+
+    function redeem(uint256 shares, address, address owner) public override returns (uint256) {
+        _burn(owner, shares); // burn the shares but send nothing — assetsOut delta is 0
+        return 0;
+    }
 }
 
 /// @notice Exact three-way conservation of `ExitBookBase.fillExitRequest` — the fee split that the deleted
@@ -425,5 +438,133 @@ contract ExitBookFeeSplitTest is Test {
         vm.prank(filler);
         book.fillExitRequest(id, 0, 0);
         assertEq(_status(id), uint8(ExitStatus.Filled), "in-flight request fills despite the vault being disallowed");
+    }
+
+    // ── G7: constructor validation ──
+
+    function testRevert_constructor_zeroMaxLifetime() public {
+        vm.expectRevert(ExitBookBase.ZeroMaxLifetime.selector);
+        new Erc4626ExitBook(address(this), 0);
+    }
+
+    // ── G8: setServiceFee validation + happy path ──
+
+    function testRevert_setServiceFee_feeTooHigh() public {
+        uint256 tooHigh = book.MAX_SERVICE_FEE() + 1;
+        vm.expectRevert(ExitBookBase.FeeTooHigh.selector);
+        book.setServiceFee(feeRecipient, tooHigh);
+    }
+
+    function testRevert_setServiceFee_recipientRequired() public {
+        // fee != 0 with a zero recipient is rejected; the order matters — fee passes the cap check first.
+        vm.expectRevert(ExitBookBase.FeeRecipientRequired.selector);
+        book.setServiceFee(address(0), 0.1e18);
+    }
+
+    function test_setServiceFee_happyPath() public {
+        vm.expectEmit(true, false, false, true, address(book));
+        emit ExitBookBase.ServiceFeeSet(feeRecipient, 0.1e18);
+        book.setServiceFee(feeRecipient, 0.1e18);
+
+        assertEq(book.feeRecipient(), feeRecipient, "recipient stored");
+        assertEq(book.serviceFee(), 0.1e18, "fee stored");
+
+        // a zero fee with a zero recipient is allowed (clears the fee).
+        book.setServiceFee(address(0), 0);
+        assertEq(book.feeRecipient(), address(0), "recipient cleared");
+        assertEq(book.serviceFee(), 0, "fee cleared");
+    }
+
+    // ── G9: NoAssetsRedeemed — a fill whose redeem produces zero assets ──
+
+    function test_fill_noAssetsRedeemed_reverts() public {
+        ZeroRedeemVault zv = new ZeroRedeemVault(IERC20(address(asset)));
+        book.setVaultAllowed(IERC4626(address(zv)), true);
+
+        asset.mint(lender, 100 ether);
+        vm.startPrank(lender);
+        asset.approve(address(zv), 100 ether);
+        uint256 shares = zv.deposit(100 ether, lender);
+        zv.approve(address(book), shares);
+        uint256 id = book.placeExitRequest(IERC4626(address(zv)), shares, _ramp(), block.timestamp + 30 days, false);
+        vm.stopPrank();
+
+        // filledShares > 0 (real backing) but the redeem yields a zero asset delta -> NoAssetsRedeemed.
+        vm.prank(filler);
+        vm.expectRevert(ExitBookBase.NoAssetsRedeemed.selector);
+        book.fillExitRequest(id, 0, 0);
+    }
+
+    // ── G10: cancelExitRequest at the contract level ──
+
+    function test_cancelExitRequest_marksCancelledAndEmits() public {
+        (uint256 id,) = _lenderPlace(100 ether, _ramp());
+
+        vm.expectEmit(true, false, false, false, address(book));
+        emit ExitBookBase.ExitCancelled(id);
+        vm.prank(lender);
+        book.cancelExitRequest(id);
+
+        assertEq(_status(id), uint8(ExitStatus.Cancelled), "request marked cancelled");
+        assertEq(book.getExitRequest(id).sizeRemaining, 0, "remaining zeroed on cancel");
+    }
+
+    function testRevert_cancelExitRequest_notOwner() public {
+        (uint256 id,) = _lenderPlace(100 ether, _ramp());
+
+        vm.prank(filler);
+        vm.expectRevert(ExitBookLib.NotOwner.selector);
+        book.cancelExitRequest(id);
+    }
+
+    // ── G11: lastRequestId view ──
+
+    function test_lastRequestId_tracksLatest() public {
+        assertEq(book.lastRequestId(), 0, "no requests issued yet");
+        (uint256 id1,) = _lenderPlace(100 ether, _ramp());
+        assertEq(book.lastRequestId(), id1, "tracks the first id");
+        (uint256 id2,) = _lenderPlace(50 ether, _ramp());
+        assertEq(book.lastRequestId(), id2, "tracks the latest id");
+    }
+
+    // ── G12: remaining placement-validation reverts ──
+
+    function testRevert_place_rampStartAfterEnd() public {
+        _depositAndApprove(100 ether, type(uint256).max);
+        vm.prank(lender);
+        vm.expectRevert(ExitBookBase.RampStartAfterEnd.selector);
+        book.placeExitRequest(
+            IERC4626(address(vault)),
+            1 ether,
+            PriorityRamp({startRate: 0, endRate: 0.05e18, rampStart: 2 days, rampEnd: 1 days}), // start > end
+            block.timestamp + 30 days,
+            false
+        );
+    }
+
+    function testRevert_place_deadlineInPast() public {
+        _depositAndApprove(100 ether, type(uint256).max);
+        vm.prank(lender);
+        vm.expectRevert(ExitBookBase.DeadlineInPast.selector);
+        book.placeExitRequest(
+            IERC4626(address(vault)),
+            1 ether,
+            _ramp(),
+            block.timestamp, // deadline <= now
+            false
+        );
+    }
+
+    function testRevert_place_deadlineTooFar() public {
+        _depositAndApprove(100 ether, type(uint256).max);
+        vm.prank(lender);
+        vm.expectRevert(ExitBookBase.DeadlineTooFar.selector);
+        book.placeExitRequest(
+            IERC4626(address(vault)),
+            1 ether,
+            _ramp(),
+            block.timestamp + 365 days + 1, // > now + MAX_REQUEST_LIFETIME
+            false
+        );
     }
 }

@@ -42,6 +42,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     uint256 public repays;
     uint256 public crashes;
     uint256 public liquidations;
+    mapping(address => bool) public liquidated; // victims of a forced seizure (excluded from the floor invariant)
 
     constructor(
         ILidoLend core,
@@ -111,6 +112,9 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     function borrow(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         Position memory pos = CORE.position(ID, a);
+        // Borrowing against collateral below the activation floor now reverts `CollateralFloorBreached`; the
+        // handler honours that gate (no dust action here, so raw collateral equals active collateral).
+        if (pos.collateral < FLOOR) return;
         MorphoMarket memory mk = CORE.market(ID);
 
         uint256 maxBorrow = Math.mulDiv(Math.mulDiv(pos.collateral, _price(), 1e36), LLTV, 1e18);
@@ -209,5 +213,6 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         CORE.liquidate(params, victim, amount, 0, "");
         vm.stopPrank();
         liquidations++;
+        liquidated[victim] = true;
     }
 }

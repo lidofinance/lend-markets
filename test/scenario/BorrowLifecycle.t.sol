@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
@@ -91,7 +92,8 @@ contract BorrowLifecycleTest is LidoLendSetup {
         // Withdrawing a large slice of collateral under that debt trips the health gate (the open debt
         // genuinely LOCKS the collateral) — this is the blocked branch the previous version never exercised.
         vm.prank(borrower);
-        vm.expectRevert(); // InsufficientActiveCollateral: would leave the position unhealthy
+        // InsufficientActiveCollateral: would leave the position unhealthy
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
         m.core.withdrawCollateral(m.params, 50 ether, borrower, borrower);
 
         // Repay the whole debt, then the same withdrawal is allowed.

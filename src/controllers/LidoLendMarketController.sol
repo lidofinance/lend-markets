@@ -441,6 +441,12 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         // core's standard health check uses raw collateral; this adds the active-only ceiling on the settled state.
         uint256 activeCollateral = _activation.syncActivation(_isFrozen, hookData.onBehalf, borrowerOpinion);
 
+        // Open-debt collateral floor (mirrors the withdraw hook): a borrow may not run against active collateral
+        // below the activation minimum, so a borrower cannot open a debt-bearing sub-floor (dust) position — e.g.
+        // by withdrawing below the floor while debt-free, then borrowing. Forced seizure may still leave a
+        // settled position below the floor; only the voluntary borrow/withdraw paths are gated.
+        if (activeCollateral < _activation.config.minActivationAmount) revert CollateralFloorBreached();
+
         PositionView memory position = _positionView(id, hookData.onBehalf);
 
         MarketView memory marketView = _marketView(id);

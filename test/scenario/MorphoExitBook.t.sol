@@ -396,4 +396,22 @@ contract MorphoExitBookTest is LidoLendSetup {
         // The book holds nothing afterward.
         assertEq(m.loanToken.balanceOf(address(book)), 0, "book holds nothing post-fill");
     }
+
+    function testRevert_constructor_zeroMorpho() public {
+        vm.expectRevert(MorphoExitBook.ZeroMorpho.selector);
+        new MorphoExitBook(address(0), address(this), MAX_LIFETIME);
+    }
+
+    function test_marketParamsOf_returnsRequestMarket() public {
+        address lender = address(0xA11CE);
+        uint256 shares = _lenderSupply(lender, 10 ether);
+        uint256 id = _place(lender, shares, false);
+
+        MarketParams memory p = book.marketParamsOf(id);
+        assertEq(p.loanToken, _m().params.loanToken, "loan token matches the request market");
+        assertEq(p.collateralToken, _m().params.collateralToken, "collateral token");
+        assertEq(p.oracle, _m().params.oracle, "oracle");
+        assertEq(p.irm, _m().params.irm, "irm");
+        assertEq(p.lltv, _m().params.lltv, "lltv");
+    }
 }

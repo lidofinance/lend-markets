@@ -2,6 +2,7 @@
 pragma solidity 0.8.35;
 
 import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
@@ -265,8 +266,10 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.vaultDeposit(owner, 100 ether);
         uint256 shares = m.vault.balanceOf(owner);
 
-        vm.prank(_actor("caller"));
-        vm.expectRevert(); // OZ ERC20InsufficientAllowance
+        address caller = _actor("caller");
+        vm.prank(caller);
+        // OZ ERC20: the caller holds no allowance from owner, needs `shares`.
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, caller, 0, shares));
         m.vault.fallbackExit(shares, owner, owner, 0);
     }
 
@@ -390,5 +393,19 @@ contract LidoLendERC4626Test is LidoLendSetup {
         p.collateralToken = address(0);
         vm.expectRevert(ILidoLendERC4626.ZeroCollateralToken.selector);
         _deployVaultProxy(p, address(_market().controller));
+    }
+
+    function testRevert_constructor_zeroLidoLend() public {
+        vm.expectRevert(ILidoLendERC4626.ZeroLidoLend.selector);
+        new LidoLendERC4626(address(0));
+    }
+
+    function test_marketParams_returnsConfigured() public view {
+        MarketParams memory p = _market().vault.marketParams();
+        assertEq(p.loanToken, _market().params.loanToken, "loan token");
+        assertEq(p.collateralToken, _market().params.collateralToken, "collateral token");
+        assertEq(p.oracle, _market().params.oracle, "oracle");
+        assertEq(p.irm, _market().params.irm, "irm");
+        assertEq(p.lltv, _market().params.lltv, "lltv");
     }
 }

@@ -111,7 +111,7 @@ contract LiquidationTest is LidoLendSetup {
         vm.prank(keeper);
         m.loanToken.approve(address(m.core), type(uint256).max);
         vm.prank(keeper);
-        vm.expectRevert(); // Morpho: position is healthy
+        vm.expectRevert(bytes("position is healthy")); // Morpho require-string on a healthy position
         m.core.liquidate(m.params, borrower, 10 ether, 0, "");
     }
 }

@@ -43,7 +43,6 @@ contract WstEthRateOracleTest is Test {
         new WstEthRateOracle(address(0));
     }
 
-
     function testFuzz_price_equalsScaledRate(uint256 ratePerToken) public {
         ratePerToken = bound(ratePerToken, 1e18, 2e18); // wstETH ≥ stETH, realistic band
         wsteth.setStEthPerToken(ratePerToken);

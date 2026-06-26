@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
@@ -71,6 +72,68 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.core.withdrawCollateral(m.params, 95 ether, borrower, borrower);
     }
 
+    /// @dev BUG FOUND VIA THE SOLVENCY INVARIANT, now fixed: the borrow hook enforces the collateral floor.
+    ///      A borrower could otherwise withdraw active collateral BELOW the floor while debt-free (allowed —
+    ///      the withdraw floor only gates open-debt positions) and THEN borrow, ending with debt + sub-floor
+    ///      collateral. The borrow now reverts `CollateralFloorBreached`, mirroring the withdraw hook.
+    function testRevert_borrow_subFloorActiveAfterDebtFreeWithdraw() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        m.vaultDeposit(lender, 1000 ether);
+
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 50 ether);
+        m.supplyCollateral(borrower, 50 ether);
+        m.activateCollateral();
+
+        // Debt-free, so withdrawing active collateral below the floor IS allowed.
+        vm.prank(borrower);
+        m.core.withdrawCollateral(m.params, 45 ether, borrower, borrower);
+        assertEq(m.controller.positionOf(borrower).active, 5 ether, "active collateral now below the floor");
+
+        // Opening a loan against that sub-floor active collateral is rejected.
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.CollateralFloorBreached.selector);
+        m.core.borrow(m.params, 0.5 ether, 0, borrower, borrower);
+    }
+
+    /// @dev A fresh sub-floor deposit stays dust (active 0) and likewise cannot be borrowed against — now via
+    ///      the floor gate (previously this reverted only because zero active collateral failed the health gate).
+    function testRevert_borrow_freshDustCollateral() public {
+        Market storage m = _m();
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 5 ether); // < 10 floor -> dust
+        m.supplyCollateral(borrower, 5 ether);
+        m.activateCollateral();
+        assertEq(m.controller.positionOf(borrower).active, 0, "sub-floor deposit never activates");
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.CollateralFloorBreached.selector);
+        m.core.borrow(m.params, 1, 0, borrower, borrower);
+    }
+
+    /// @dev Contrast (accepted behaviour): liquidation is a FORCED path that does NOT re-check the floor, so a
+    ///      partial seize MAY leave a debt-bearing position below the floor. The residual is un-reactivatable
+    ///      dust under a small debt; only the voluntary borrow/withdraw paths are gated.
+    function test_liquidation_mayLeaveDebtBearingSubFloorCollateral() public {
+        Market storage m = _m();
+        (, address borrower,) = _seed(50 ether, 8000); // 50 collateral, ~80% of LLTV-max
+
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 75 / 100); // unhealthy, still solvent
+        m.accrueInterest();
+
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1_000_000 ether);
+        vm.startPrank(keeper);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+        m.core.liquidate(m.params, borrower, 41 ether, 0, ""); // partial seize -> ~9 left, residual debt
+        vm.stopPrank();
+
+        assertLt(m.core.position(m.id, borrower).collateral, 10 ether, "forced seize left sub-floor collateral");
+        assertGt(m.core.position(m.id, borrower).borrowShares, 0, "with residual debt -> accepted forced-path state");
+    }
+
     /// @dev Pinned from the solvency fuzz: seizing the FULL collateral of a SOLVENT (unhealthy-but-not-
     ///      underwater) position implies repaying more debt than the borrower owes. The controller's liquidate
     ///      hook rejects the over-repay with `PositionAccountingMismatch` before the core underflows.
@@ -114,6 +177,30 @@ contract SettlementSafetyTest is LidoLendSetup {
         assertEq(colBefore - m.core.position(m.id, borrower).collateral, seized, "collateral delta == seized");
         assertLt(seized, colBefore, "solvent: only the incentivized slice is seized, not all collateral");
         assertGt(m.core.position(m.id, borrower).collateral, 0, "borrower keeps the surplus collateral");
+    }
+
+    /// @dev The ASSETS path works too — it is not "shares only". Seizing a modest `seizedAssets` (whose
+    ///      incentivized value is under the debt) liquidates partially; only over-seizing past the debt
+    ///      reverts. So both liquidation parameters are usable; over-seize is the keeper's input error.
+    function test_liquidate_solventPosition_bySeizedAssets_succeeds() public {
+        Market storage m = _m();
+        (, address borrower,) = _seed(100 ether, 8000);
+
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 75 / 100); // unhealthy, still solvent
+        m.accrueInterest();
+
+        uint256 sharesBefore = m.core.position(m.id, borrower).borrowShares;
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1_000_000 ether);
+        vm.startPrank(keeper);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+        (uint256 seized, uint256 repaid) = m.core.liquidate(m.params, borrower, 10 ether, 0, ""); // assets path
+        vm.stopPrank();
+
+        assertEq(seized, 10 ether, "assets path seizes exactly the requested collateral");
+        assertGt(repaid, 0, "and repays the corresponding debt");
+        assertLt(m.core.position(m.id, borrower).borrowShares, sharesBefore, "partial seize -> debt reduced");
+        assertGt(m.core.position(m.id, borrower).borrowShares, 0, "but not fully cleared (partial)");
     }
 
     /// @dev A borrower opts into a personal settlement LTV; it is stored and read back, and a value at/above
@@ -172,6 +259,31 @@ contract SettlementSafetyTest is LidoLendSetup {
         vm.prank(lender);
         (,,, uint256 cancelledAfter) = m.vault.settle(shares, bs, lender, lender);
         assertEq(cancelledAfter, sliceAssets, "after opt-in: eligible, cancels the personal-LTV slice exactly");
+    }
+
+    /// @dev Probes whether the `UnknownHookEvent` body guard is reachable with an
+    ///      unknown hook value. Verified empirically (Solidity can't cast an out-of-range enum, so we
+    ///      hand-craft calldata and call `on()` as the core):
+    ///        - a VALID skipped event (Withdraw=1) reaches the body and no-ops → the dispatch IS exercised;
+    ///        - an OUT-OF-RANGE value (9, beyond the 9-member enum) is rejected by the ABI enum-decode and
+    ///          reverts EMPTY (this repo is `via_ir = false`; the legacy pipeline reverts `revert(0,0)`, not
+    ///          `Panic(0x21)`) BEFORE the body — so the `UnknownHookEvent` revert is a fail-closed guard that
+    ///          cannot fire with the current enum. Confirmed: it is genuinely unreachable, not just untested.
+    function test_on_outOfRangeHookEvent_isRejectedAtDecode() public {
+        Market storage m = _m();
+
+        // Control: a valid skipped event reaches the body and succeeds (no-op).
+        vm.prank(address(m.core));
+        (bool okValid,) = address(m.controller)
+            .call(abi.encodeWithSignature("on(bytes32,uint8,bytes)", Id.unwrap(m.id), uint8(1), bytes("")));
+        assertTrue(okValid, "valid skipped hook (Withdraw) reaches the body and no-ops");
+
+        // Out-of-range hook event: rejected at ABI enum-decode, before the body.
+        vm.prank(address(m.core));
+        (bool okBad, bytes memory ret) = address(m.controller)
+            .call(abi.encodeWithSignature("on(bytes32,uint8,bytes)", Id.unwrap(m.id), uint8(9), bytes("")));
+        assertFalse(okBad, "out-of-range HookEvent reverts");
+        assertEq(ret.length, 0, "reverts empty at enum-decode (legacy pipeline), not the UnknownHookEvent body");
     }
 
     /// @dev Setting LTV to 0 clears the opt-in.
