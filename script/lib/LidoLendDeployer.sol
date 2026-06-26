@@ -16,6 +16,12 @@ interface IControllerConfigurator {
     function setSettlementConfig(LidoLendDeployer.SettlementConfigParams calldata policy) external;
 }
 
+/// @dev Minimal surface of the owner facade used at deploy: create the market through it. Local interface
+///      (no concrete import), mirroring `IControllerConfigurator`.
+interface IOwnerFacade {
+    function createMarket(MarketParams calldata marketParams, address controller, bool enableSettlement) external;
+}
+
 /// @title LidoLendDeployer
 /// @notice Shared deploy steps for a Lido Lending market: core, guardian-signals registry, oracle, IRM,
 ///         controller (behind a proxy), the market, and the ERC-4626 vault.
@@ -58,6 +64,7 @@ abstract contract LidoLendDeployer {
 
     struct Deployed {
         address core;
+        address ownerFacade;
         address guardianSignals;
         address oracle;
         address irm;
@@ -90,6 +97,15 @@ abstract contract LidoLendDeployer {
     /// @notice One-shot deploy of the whole market stack.
     function _deployForkStack(DeployConfig memory cfg) internal returns (Deployed memory d) {
         d.core = _deployCore(cfg.admin);
+
+        // Hand the core's ownership to the role-gated facade: from here every owner-only call (market
+        // creation, fees, ownership transfer) is gated behind a role on the facade rather than a single EOA.
+        // The deploy needs to create the market, so `admin` gets MARKET_CREATOR_ROLE at construction (a
+        // placeholder it keeps and can rotate post-deploy); FEE_MANAGER_ROLE is left for governance to grant.
+        // `setOwner` runs in the deploy context, which is the current core owner (`admin`).
+        d.ownerFacade = _deployOwnerFacade(d.core, cfg.admin, cfg.admin, address(0));
+        ILidoLend(d.core).setOwner(d.ownerFacade);
+
         d.guardianSignals = _deployGuardianSignals(cfg.admin, cfg.guardians, cfg.quorum);
         d.oracle = _deployOracle(cfg.oracleSource, cfg.admin);
         d.irm = _deployIrm(d.core);
@@ -102,9 +118,10 @@ abstract contract LidoLendDeployer {
         (d.controllerProxy, d.controllerImpl) =
             _deployController(d.core, d.marketId, d.guardianSignals, cfg.admin, cfg.activation);
 
-        // New core: createMarket is owner-gated and auto-enables the IRM and LLTV (standalone
-        // enableIrm/enableLltv were removed). The bool gates whether settle is enabled for the market.
-        ILidoLend(d.core).createMarket(d.params, d.controllerProxy, cfg.enableSettlement);
+        // Market creation is owner-gated on the core (it auto-enables the IRM and LLTV — standalone
+        // enableIrm/enableLltv were removed) and the bool gates whether settle is enabled. The facade owns
+        // the core now and `admin` (the deploy context) holds MARKET_CREATOR_ROLE, so create through it.
+        IOwnerFacade(d.ownerFacade).createMarket(d.params, d.controllerProxy, cfg.enableSettlement);
 
         d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
@@ -121,6 +138,18 @@ abstract contract LidoLendDeployer {
         address impl = _deployArtifact("lib/lido-lend/src/LidoLend.sol:LidoLend", "");
         bytes memory initData = abi.encodeWithSignature("initialize(address)", admin);
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
+    }
+
+    /// @dev Immutable role-gated owner facade for the core (no proxy). `admin` gets `DEFAULT_ADMIN_ROLE`;
+    ///      `marketCreator`/`feeManager` get their capability roles (`address(0)` grants none).
+    function _deployOwnerFacade(address core, address admin, address marketCreator, address feeManager)
+        internal
+        virtual
+        returns (address)
+    {
+        return _deployArtifact(
+            "src/LidoLendOwner.sol:LidoLendOwner", abi.encode(core, admin, marketCreator, feeManager)
+        );
     }
 
     /// @dev Guardian-signals registry behind a proxy. `initialize(admin, guardians, quorum)`.
