@@ -71,6 +71,51 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.core.withdrawCollateral(m.params, 95 ether, borrower, borrower);
     }
 
+    /// @dev Pinned from the solvency fuzz: seizing the FULL collateral of a SOLVENT (unhealthy-but-not-
+    ///      underwater) position implies repaying more debt than the borrower owes. The controller's liquidate
+    ///      hook rejects the over-repay with `PositionAccountingMismatch` before the core underflows.
+    function testRevert_liquidate_seizeAllOnSolventPosition_overRepays() public {
+        Market storage m = _m();
+        (, address borrower,) = _seed(100 ether, 8000); // ~80% of LLTV-max
+
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 75 / 100); // unhealthy, still solvent (coll > debt)
+        m.accrueInterest();
+
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1_000_000 ether);
+        vm.startPrank(keeper);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+        vm.expectRevert(ILidoLendMarketController.PositionAccountingMismatch.selector);
+        m.core.liquidate(m.params, borrower, 100 ether, 0, ""); // seize ALL -> over-repay on a solvent position
+        vm.stopPrank();
+    }
+
+    /// @dev The over-seize revert above is NOT a stuck-position bug: the SAME solvent position liquidates fine
+    ///      when the keeper specifies the debt to repay (`repaidShares`) instead of over-seizing. The core
+    ///      seizes only the incentivized collateral for that debt and leaves the surplus with the borrower.
+    function test_liquidate_solventPosition_byRepaidShares_succeeds() public {
+        Market storage m = _m();
+        (, address borrower,) = _seed(100 ether, 8000);
+
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 75 / 100); // unhealthy, still solvent
+        m.accrueInterest();
+
+        uint256 shares = m.core.position(m.id, borrower).borrowShares;
+        uint256 colBefore = m.core.position(m.id, borrower).collateral;
+
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1_000_000 ether);
+        vm.startPrank(keeper);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+        (uint256 seized,) = m.core.liquidate(m.params, borrower, 0, shares, ""); // repay the WHOLE debt
+        vm.stopPrank();
+
+        assertEq(m.core.position(m.id, borrower).borrowShares, 0, "debt fully cleared");
+        assertEq(colBefore - m.core.position(m.id, borrower).collateral, seized, "collateral delta == seized");
+        assertLt(seized, colBefore, "solvent: only the incentivized slice is seized, not all collateral");
+        assertGt(m.core.position(m.id, borrower).collateral, 0, "borrower keeps the surplus collateral");
+    }
+
     /// @dev A borrower opts into a personal settlement LTV; it is stored and read back, and a value at/above
     ///      WAD is rejected.
     function test_setSettlementLtv_storesAndRejectsOutOfRange() public {

@@ -6,8 +6,11 @@ import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
 import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 
-/// @dev Verifies WHERE `coreLoanBalance - idle` dust originates (the 1-wei the invariant caught). Logs the
-///      gap after each op so the mechanism is observed, not assumed.
+/// @dev Pins down the `coreLoanBalance - idle` slack the solvency invariant allows via `assertGe`. RESULT
+///      (verified, not assumed): the common single paths — supply, borrow, accrue, repay, and both full and
+///      partial liquidation — are each EXACTLY synced (zero dust). So the >=1-wei slack the fuzz occasionally
+///      shows is NOT from any of these; it only emerges from longer mixed sequences. The earlier "repay
+///      rounds owed up" explanation was wrong — disproven here.
 contract RoundingDustTest is LidoLendSetup {
     address internal constant LP = address(0x9001);
     address internal constant B1 = address(0x9002);
@@ -85,7 +88,7 @@ contract RoundingDustTest is LidoLendSetup {
         uint256 finalDust = _gap("after B2 full ");
 
         // The property the invariant relies on: the core never holds LESS than idle.
-        assertGe(finalDust, 0, "core balance >= idle (dust is non-negative)");
+        assertEq(finalDust, 0, "supply/borrow/accrue/repay are EXACTLY synced: zero dust");
     }
 
     /// @dev The other suspect: bad-debt liquidation (seize-all → socialization). Trace the gap across it.
@@ -114,7 +117,7 @@ contract RoundingDustTest is LidoLendSetup {
         vm.stopPrank();
         uint256 dust = _gap("after liq     ");
         emit log_named_uint("FINAL DUST (liquidation)", dust);
-        assertGe(dust, 0);
+        assertEq(dust, 0, "bad-debt liquidation is EXACTLY synced: zero dust");
     }
 
     /// @dev Partial liquidation (unhealthy-but-solvent) — the liquidation-incentive rounding is the last suspect.
@@ -141,6 +144,6 @@ contract RoundingDustTest is LidoLendSetup {
         vm.stopPrank();
         uint256 dust = _gap("after partial ");
         emit log_named_uint("FINAL DUST (partial liq)", dust);
-        assertGe(dust, 0);
+        assertEq(dust, 0, "partial liquidation is EXACTLY synced: zero dust");
     }
 }

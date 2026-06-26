@@ -16,13 +16,18 @@ import {MarketHandler} from "./handlers/MarketHandler.sol";
 ///           - the un-borrowed supply (idle) is backed by real loan tokens held by the core/vault.
 ///         Activation is short-circuited (actors hold instant activation) so the fuzzer reaches the
 ///         borrow/repay state space without fighting the maturation timer.
-/// @dev `fail-on-revert` stays FALSE here on purpose. Flipping it to true surfaced a reachable
-///      `PositionAccountingMismatch` (the controller's defensive hook guard) under crash → long-warp →
-///      repay/withdrawCollateral sequences — i.e. the controller's position mirror can diverge from the core
-///      such that a core-valid op trips the guard. That is logged as an open item to investigate (real mirror
-///      desync vs. handler-bounding gap); it must NOT be hidden by forcing the stricter mode green. The
-///      ExitBook invariant suite, whose handler can be fully revert-bounded, does run with fail-on-revert=true.
-/// forge-config: default.invariant.fail-on-revert = false
+/// @dev Runs REVERT-BOUNDED (`fail-on-revert = true`): every handler action self-bounds so that, for all fuzz
+///      inputs including extreme ones, the underlying call never reverts. Reaching this surfaced three
+///      HANDLER-bounding gaps, all fixed as genuine robustness improvements: (1) a `PositionAccountingMismatch`
+///      traced to the handler over-seizing on a SOLVENT liquidation — collateral worth more than the debt
+///      implies repaying more debt than exists, which the core itself rejects (there is no controller mirror;
+///      the hook reads core pre-state, so the guard was faithful) — `liquidate` now caps the seize; (2)
+///      share↔asset conversions now use `Math.mulDiv` to avoid intermediate overflow; and (3) the keeper
+///      selection in `liquidate` added 1 to a raw `actorSeed`, which overflowed when the fuzzer supplied
+///      `type(uint256).max` — it now shifts the victim's modular index instead. No core-arithmetic edge was
+///      found: the panic the fuzzer hit was purely the handler's own keeper-index overflow, not a core
+///      bad-debt-socialization overflow.
+/// forge-config: default.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 256
 /// forge-config: default.invariant.depth = 250
 contract MarketSolvencyInvariant is LidoLendSetup {
@@ -78,9 +83,11 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         Market storage m = protocol.markets[0];
         MorphoMarket memory mk = _market();
         uint256 idle = mk.totalSupplyAssets - mk.totalBorrowAssets;
-        // The core holds AT LEAST the idle (un-borrowed) supply. It can hold a few wei MORE: per-operation
-        // rounding (e.g. repay rounding owed up) leaves dust in the core that `supply - borrow` does not
-        // track. Under-backing (balance < idle) would be the real solvency bug; the inequality is the property.
+        // The core holds AT LEAST the idle (un-borrowed) supply. It can hold a few wei MORE over long mixed
+        // sequences. The common single paths are each EXACTLY synced (zero dust) — supply, borrow, accrue,
+        // repay, and full/partial liquidation, verified in RoundingDust.t.sol — so the slack only emerges from
+        // compounded rounding, not any one operation. Under-backing (balance < idle) is the real solvency bug;
+        // the inequality is the property (assertEq fails by ~1 wei).
         assertGe(m.loanToken.balanceOf(address(m.core)), idle, "core loan balance covers idle supply");
     }
 

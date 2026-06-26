@@ -6,6 +6,7 @@ import {StdCheats} from "forge-std/StdCheats.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams, Position, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
@@ -112,9 +113,9 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         Position memory pos = CORE.position(ID, a);
         MorphoMarket memory mk = CORE.market(ID);
 
-        uint256 maxBorrow = uint256(pos.collateral) * _price() / 1e36 * LLTV / 1e18;
+        uint256 maxBorrow = Math.mulDiv(Math.mulDiv(pos.collateral, _price(), 1e36), LLTV, 1e18);
         uint256 debt =
-            mk.totalBorrowShares == 0 ? 0 : uint256(pos.borrowShares) * mk.totalBorrowAssets / mk.totalBorrowShares;
+            mk.totalBorrowShares == 0 ? 0 : Math.mulDiv(pos.borrowShares, mk.totalBorrowAssets, mk.totalBorrowShares);
         if (maxBorrow <= debt) return;
         uint256 healthRoom = (maxBorrow - debt) * 99 / 100; // near the LLTV edge -> a crash tips it unhealthy
         uint256 liquidity = mk.totalSupplyAssets - mk.totalBorrowAssets;
@@ -133,7 +134,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         if (pos.borrowShares == 0) return;
         MorphoMarket memory mk = CORE.market(ID);
         uint256 shares = bound(amount, 1, pos.borrowShares);
-        uint256 owed = shares * mk.totalBorrowAssets / mk.totalBorrowShares + 1; // round up
+        uint256 owed = Math.mulDiv(shares, mk.totalBorrowAssets, mk.totalBorrowShares) + 1; // round up
         _mintTo(LOAN, a, owed);
         vm.startPrank(a);
         LOAN.approve(address(CORE), owed);
@@ -148,9 +149,9 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         if (pos.collateral == 0) return;
         MorphoMarket memory mk = CORE.market(ID);
         uint256 debt =
-            mk.totalBorrowShares == 0 ? 0 : uint256(pos.borrowShares) * mk.totalBorrowAssets / mk.totalBorrowShares;
+            mk.totalBorrowShares == 0 ? 0 : Math.mulDiv(pos.borrowShares, mk.totalBorrowAssets, mk.totalBorrowShares);
         // Collateral that can leave while keeping the position healthy: collateral - debt/(price*LLTV).
-        uint256 requiredColl = debt == 0 ? 0 : debt * 1e18 / LLTV * 1e36 / _price();
+        uint256 requiredColl = debt == 0 ? 0 : Math.mulDiv(Math.mulDiv(debt, 1e18, LLTV), 1e36, _price());
         // A debt-bearing position also can't drop below the activation floor, so keep at least that too.
         uint256 floorKeep = pos.borrowShares == 0 ? 0 : FLOOR;
         uint256 minKeep = requiredColl > floorKeep ? requiredColl : floorKeep;
@@ -184,12 +185,24 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         Position memory pos = CORE.position(ID, victim);
         if (pos.borrowShares == 0 || pos.collateral == 0) return;
         MorphoMarket memory mk = CORE.market(ID);
-        uint256 debt = uint256(pos.borrowShares) * mk.totalBorrowAssets / mk.totalBorrowShares;
-        uint256 collValue = uint256(pos.collateral) * _price() / 1e36;
+        uint256 debt = Math.mulDiv(pos.borrowShares, mk.totalBorrowAssets, mk.totalBorrowShares);
+        uint256 collValue = Math.mulDiv(pos.collateral, _price(), 1e36);
         if (debt <= collValue * LLTV / 1e18) return; // healthy
 
-        uint256 amount = debt > collValue ? pos.collateral : bound(seize, 1, pos.collateral);
-        address keeper = _actor(actorSeed + 1); // +1 mod 3 != 0 -> never the victim
+        uint256 amount;
+        if (debt > collValue) {
+            amount = pos.collateral; // underwater: seize all -> bad-debt socialization (valid, shares clamp to 0)
+        } else {
+            // Solvent: the seize must not imply repaying MORE debt than exists, or the liquidation-incentive
+            // math over-repays and the core (and its controller hook) revert. Collateral worth at most the
+            // debt's FACE value maps, after the incentive divisor, to strictly less than the debt -> safe.
+            uint256 maxSeize = Math.mulDiv(debt, 1e36, _price());
+            if (maxSeize == 0) return;
+            amount = bound(seize, 1, maxSeize);
+        }
+        // Pick a keeper distinct from the victim WITHOUT overflowing `actorSeed` (it may be `type(uint256).max`):
+        // shift the victim's index by 1 modulo the actor count, which never coincides with the victim.
+        address keeper = actors[(actorSeed % actors.length + 1) % actors.length];
         _mintTo(LOAN, keeper, type(uint128).max);
         vm.startPrank(keeper);
         LOAN.approve(address(CORE), type(uint256).max);
