@@ -40,8 +40,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     /// @dev The single governance role: full activation and settlement config, grant and revoke instant
     ///      activation.
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
-    /// @dev Admin of `MANAGER_ROLE`: may grant and revoke `MANAGER_ROLE` without holding `DEFAULT_ADMIN_ROLE`.
-    bytes32 public constant MANAGER_ADMIN_ROLE = keccak256("MANAGER_ADMIN_ROLE");
     /// @dev Freezes the market: blocks new borrows and debt-bearing collateral withdrawals.
     bytes32 public constant FREEZER_ROLE = keccak256("FREEZER_ROLE");
     /// @dev Lifts a freeze.
@@ -108,7 +106,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     {
         __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _setRoleAdmin(MANAGER_ROLE, MANAGER_ADMIN_ROLE);
         _guardianSignals = guardianSignals;
         _settlementQueue.init();
         _activation.setConfig(cfg);

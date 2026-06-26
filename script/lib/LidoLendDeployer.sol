@@ -12,7 +12,6 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 ///      `LidoLendDeployer.SettlementConfigParams` mirrors the controller's struct, so the call ABI matches.
 interface IControllerConfigurator {
     function MANAGER_ROLE() external view returns (bytes32);
-    function MANAGER_ADMIN_ROLE() external view returns (bytes32);
     function grantRole(bytes32 role, address account) external;
     function setSettlementConfig(LidoLendDeployer.SettlementConfigParams calldata policy) external;
 }
@@ -108,10 +107,9 @@ abstract contract LidoLendDeployer {
 
         d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
-        // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the initializer; bootstrap it through
-        // MANAGER_ADMIN_ROLE (the admin of MANAGER_ROLE) to MANAGER_ROLE so it can set the policy now.
+        // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the initializer, the default admin of
+        // MANAGER_ROLE, so it grants itself MANAGER_ROLE to set the policy now.
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
-        controller.grantRole(controller.MANAGER_ADMIN_ROLE(), cfg.admin);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
         controller.setSettlementConfig(cfg.settlementConfig);
     }

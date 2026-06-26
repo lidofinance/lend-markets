@@ -16,7 +16,8 @@ pragma solidity 0.8.35;
 /// @param maxDelayInflow Inflow reference at which the base delay reaches the cap, and the ceiling the
 ///        inflow accumulator saturates at.
 /// @param delayPerStrike Activation-delay surcharge added per strike.
-/// @param activatingLockAmount Lock on activating collateral, honored by `withdraw`. 0 disables it. Forced paths pass floor 0.
+/// @param activatingLockAmount Lock on activating collateral, honored by `withdraw`. 0 disables it. Forced
+///        paths pass floor 0.
 /// @param activatingLockDuration How long, from `activatingStart`, the `activatingLockAmount` portion stays
 ///        unwithdrawable. Once it elapses the locked collateral is withdrawable even if the lot has not
 ///        matured, so a locked deposit is only delayed out, never trapped. 0 disables the lock.

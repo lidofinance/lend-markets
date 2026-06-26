@@ -68,7 +68,11 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     // ---
 
     bytes32 public constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
+
     bytes32 public constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
+
+    /// @dev Manages the guardian set and quorum.
+    bytes32 public constant GUARDIANS_MANAGER_ROLE = keccak256("GUARDIANS_MANAGER_ROLE");
 
     // ---
     // STORAGE
@@ -124,20 +128,20 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     }
 
     /// @inheritdoc IGuardianSignals
-    function addGuardian(address guardian) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function addGuardian(address guardian) external onlyRole(GUARDIANS_MANAGER_ROLE) {
         _addGuardian(guardian);
     }
 
     /// @inheritdoc IGuardianSignals
     /// @dev Reverts if removal would drop the set below `quorum`, so the quorum stays reachable.
-    function removeGuardian(address guardian) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function removeGuardian(address guardian) external onlyRole(GUARDIANS_MANAGER_ROLE) {
         if (!_guardians.remove(guardian)) revert NotGuardian();
         if (_guardians.length() < _quorum) revert WouldBreakQuorum();
         emit GuardianRemoved(guardian);
     }
 
     /// @inheritdoc IGuardianSignals
-    function setQuorum(uint256 newQuorum) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setQuorum(uint256 newQuorum) external onlyRole(GUARDIANS_MANAGER_ROLE) {
         _setQuorum(newQuorum);
     }
 

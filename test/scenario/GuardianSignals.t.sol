@@ -66,7 +66,9 @@ contract GuardianSignalsTest is Test {
     /// @notice The guardian set is capped at 32: adding the 33rd reverts.
     function test_maxGuardians_cappedAt32() public {
         _deploy(32, 1);
-        assertEq(GuardianSignals(address(gs)).MAX_GUARDIANS_COUNT(), 32, "cap is 32");
+        GuardianSignals gsImpl = GuardianSignals(address(gs));
+        assertEq(gsImpl.MAX_GUARDIANS_COUNT(), 32, "cap is 32");
+        gsImpl.grantRole(gsImpl.GUARDIANS_MANAGER_ROLE(), address(this));
 
         vm.expectRevert(IGuardianSignals.MaxGuardiansReached.selector);
         gs.addGuardian(address(0xBEEF));

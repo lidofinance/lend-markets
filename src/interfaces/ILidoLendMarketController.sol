@@ -108,9 +108,6 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     ///         activation.
     function MANAGER_ROLE() external view returns (bytes32);
 
-    /// @notice Admin of `MANAGER_ROLE`: appoints and removes managers without `DEFAULT_ADMIN_ROLE`.
-    function MANAGER_ADMIN_ROLE() external view returns (bytes32);
-
     /// @notice Role allowed to freeze the market.
     function FREEZER_ROLE() external view returns (bytes32);
 
