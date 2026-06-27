@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MaxHeapLib} from "./MaxHeapLib.sol";
+import {WAD, BPS} from "./Constants.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTypes.sol";
 
@@ -27,10 +27,7 @@ library SettlementQueueLib {
     // ---
 
     /// @dev Heap key scale: key = borrowShares * KEY_SCALE / rawCollateral.
-    uint256 internal constant KEY_SCALE = 1e18;
-
-    /// @dev Basis-point denominator for the slice-policy percentages (`sliceFloorBps`, `ltvStepBps`).
-    uint256 internal constant BPS = 10_000;
+    uint256 internal constant KEY_SCALE = WAD;
 
     // ---
     // ERRORS

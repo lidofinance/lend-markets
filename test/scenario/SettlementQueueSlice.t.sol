@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
 import {MarketView, PositionView, SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
-import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
+import {WAD} from "../../src/libs/Constants.sol";
 
 /// @dev Storage harness so the queue-bound `slice` view can be exercised.
 contract QueueHarness {

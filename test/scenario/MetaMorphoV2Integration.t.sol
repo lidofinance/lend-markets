@@ -10,6 +10,7 @@ import {
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
 import {Test} from "forge-std/Test.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {WAD} from "../../src/libs/Constants.sol";
 
 struct LidoMarketParams {
     address loanToken;
@@ -94,7 +95,6 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
     IWstETH internal constant WSTETH = IWstETH(WSTETH_ADDRESS);
 
     uint256 internal constant LLTV = 0.8e18;
-    uint256 internal constant WAD = 1e18;
 
     struct IntegrationContext {
         IERC20Like loanToken;

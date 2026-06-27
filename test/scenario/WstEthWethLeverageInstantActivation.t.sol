@@ -11,6 +11,7 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {WAD, BPS} from "../../src/libs/Constants.sol";
 
 interface IWETH {
     function deposit() external payable;
@@ -52,8 +53,6 @@ contract WstEthWethLeverageHelper {
     /// @dev Collateral asset for the supported market (wstETH).
     address public immutable WSTETH;
 
-    uint256 internal constant WAD = 1e18;
-    uint256 internal constant BPS = 10_000;
     /// @dev Loop floor (0.001 ETH); below this the swap leg's compounded rounding fails slippage.
     uint256 internal constant MIN_BORROW_PER_ITER = 1e15;
 
