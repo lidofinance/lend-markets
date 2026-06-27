@@ -138,12 +138,12 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         _assertCollateralState(ctx.controller, BORROWER, col, more, 0);
     }
 
-    /// @notice Open-debt collateral floor: while a borrower owes debt, a withdrawal may not draw raw
-    ///         collateral below the activation minimum. Repaying to zero lifts the floor.
+    /// @notice Open-debt position floor: while a borrower owes debt, a withdrawal may not draw raw
+    ///         collateral below the minimum borrowable size. Repaying to zero lifts the floor.
     function test_withdraw_collateralFloorWithOpenDebt() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
-        TestMarket memory ctx = _deployMarket(false); // minActivationAmount = 10 ether
+        TestMarket memory ctx = _deployMarket(false); // minBorrowCollateral = 10 ether
 
         _mintWETH(ctx.market, LENDER, 10 ether);
         uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether); // ~15 wstETH, comfortably above the floor
@@ -174,6 +174,34 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.repay(ctx.marketParams, 0, borrowShares, BORROWER, "");
         vm.prank(BORROWER);
         ctx.market.withdrawCollateral(ctx.marketParams, 11 ether, BORROWER, BORROWER);
+    }
+
+    /// @notice Position floor on borrow: a position whose raw collateral is below the minimum borrowable size
+    ///         cannot open debt. Symmetric to the withdraw floor, but binds before any debt exists.
+    function test_borrow_belowPositionFloorReverts() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false); // minBorrowCollateral = 10 ether
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether); // ~15 wstETH, above the floor
+        assertGt(col, 12 ether, "collateral above the floor for the test");
+
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        // No debt yet, so the withdraw floor does not bind: draw raw collateral below the borrow floor.
+        vm.prank(BORROWER);
+        ctx.market.withdrawCollateral(ctx.marketParams, col - 5 ether, BORROWER, BORROWER);
+        _assertCollateralState(ctx.controller, BORROWER, 5 ether, 0, 0); // raw collateral = 5 < 10
+
+        // Borrowing against sub-floor collateral is blocked, even for a tiny amount.
+        vm.prank(BORROWER);
+        vm.expectRevert(ILidoLendMarketController.CollateralFloorBreached.selector);
+        ctx.market.borrow(ctx.marketParams, 1, 0, BORROWER, BORROWER);
     }
 
     function test_settle_happyPath() public {
@@ -657,7 +685,11 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                     maxGuardiansQuorumDelay: 0
                 }),
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
+                    sliceFloorBps: 100,
+                    sliceFloorAssets: 0,
+                    fullCutBelowCollateral: 10 ether,
+                    ltvStepBps: 100,
+                    minBorrowCollateral: 10 ether
                 }),
                 guardians: guardians,
                 quorum: 1,

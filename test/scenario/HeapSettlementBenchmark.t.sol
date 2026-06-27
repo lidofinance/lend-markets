@@ -560,7 +560,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     maxGuardiansQuorumDelay: 0
                 }),
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100
+                    sliceFloorBps: 100,
+                    sliceFloorAssets: 0,
+                    fullCutBelowCollateral: 0,
+                    ltvStepBps: 100,
+                    minBorrowCollateral: 0
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -583,7 +587,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     sliceFloorBps: 100,
                     sliceFloorAssets: SLICE_FLOOR,
                     fullCutBelowCollateral: uint96(MIN_COLLATERAL_ACTIVATION),
-                    ltvStepBps: 100
+                    ltvStepBps: 100,
+                    minBorrowCollateral: 0
                 })
             );
     }

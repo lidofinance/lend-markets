@@ -56,7 +56,8 @@ contract DeployMarket is Script, LidoLendDeployer {
                     sliceFloorBps: 100, // 1% of the root's debt
                     sliceFloorAssets: 10 ether,
                     fullCutBelowCollateral: 10 ether, // sweep settle leftovers below the activation minimum
-                    ltvStepBps: 100 // 1% LTV step
+                    ltvStepBps: 100, // 1% LTV step
+                    minBorrowCollateral: 10 ether // min raw collateral to borrow against / withdraw to with debt
                 }),
                 guardians: guardians,
                 quorum: 1,

@@ -34,6 +34,7 @@ abstract contract LidoLendDeployer {
         uint96 sliceFloorAssets;
         uint96 fullCutBelowCollateral;
         uint16 ltvStepBps;
+        uint96 minBorrowCollateral;
     }
 
     /// @dev Mirror of `CollateralActivationConfig` (`types/CollateralActivationTypes.sol`) so the controller

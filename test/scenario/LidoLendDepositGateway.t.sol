@@ -73,7 +73,11 @@ contract LidoLendDepositGatewayTest is Test, LidoLendDeployer {
                     maxGuardiansQuorumDelay: 0
                 }),
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
+                    sliceFloorBps: 100,
+                    sliceFloorAssets: 0,
+                    fullCutBelowCollateral: 10 ether,
+                    ltvStepBps: 100,
+                    minBorrowCollateral: 0
                 }),
                 guardians: guardians,
                 quorum: 1,

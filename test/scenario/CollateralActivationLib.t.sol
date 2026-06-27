@@ -12,6 +12,9 @@ contract ActivationHarness {
 
     CollateralActivationLib.State internal $;
 
+    /// @dev Mirrors the borrower's raw collateral in core, so the harness can derive `active = total - inactive`.
+    mapping(address => uint256) internal _total;
+
     function setConfig(CollateralActivationConfig memory cfg) external {
         $.setConfig(cfg);
     }
@@ -28,16 +31,43 @@ contract ActivationHarness {
         $.setConfig(cfg);
     }
 
+    function setMinActivationAmount(uint128 amount) external {
+        CollateralActivationConfig memory cfg = $.config;
+        cfg.minActivationAmount = amount;
+        $.setConfig(cfg);
+    }
+
+    function setMaxGuardiansQuorumDelay(uint40 quorumDelay) external {
+        CollateralActivationConfig memory cfg = $.config;
+        cfg.maxGuardiansQuorumDelay = quorumDelay;
+        $.setConfig(cfg);
+    }
+
     function delays() external view returns (uint40 minActivationDelay, uint40 maxActivationDelay) {
         return ($.config.minActivationDelay, $.config.maxActivationDelay);
     }
 
     function deposit(address borrower, uint256 assets) external {
-        $.deposit(borrower, assets, false);
+        _total[borrower] += assets;
+        $.credit(borrower, assets, false);
     }
 
     function depositInstant(address borrower, uint256 assets) external {
-        $.deposit(borrower, assets, true);
+        _total[borrower] += assets;
+        $.credit(borrower, assets, true);
+    }
+
+    function debit(address borrower, uint256 amount) external returns (uint256) {
+        _total[borrower] -= amount;
+        uint256 inactive = $.seize(borrower, amount);
+        return _total[borrower] - inactive;
+    }
+
+    /// @dev Voluntary withdrawal path ($.debit), which honors the lock and runs the same-tx inflow undo.
+    function withdraw(address borrower, uint256 amount) external returns (uint256) {
+        _total[borrower] -= amount;
+        uint256 inactive = $.debit(borrower, amount);
+        return _total[borrower] - inactive;
     }
 
     function sync(address borrower, uint256 strikes) external returns (uint256) {
@@ -47,7 +77,7 @@ contract ActivationHarness {
             flagCount: strikes,
             quorumBlock: BlockInfo({number: uint40(block.number), timestamp: uint40(block.timestamp)})
         });
-        return $.syncActivation(false, borrower, opinion);
+        return _total[borrower] - $.sync(false, borrower, opinion);
     }
 
     /// @dev Sync with an explicit quorum-frontier timestamp, to exercise the activation gate.
@@ -58,7 +88,7 @@ contract ActivationHarness {
             flagCount: 0,
             quorumBlock: BlockInfo({number: 0, timestamp: quorumTimestamp})
         });
-        return $.syncActivation(false, borrower, opinion);
+        return _total[borrower] - $.sync(false, borrower, opinion);
     }
 
     function currentInflow() external view returns (uint256) {
@@ -66,7 +96,8 @@ contract ActivationHarness {
     }
 
     function bucketsOf(address borrower) external view returns (uint256 active, uint256 activating, uint256 dust) {
-        return $.getCollateralSplit(borrower);
+        (activating, dust) = $.getActivationState(borrower);
+        active = _total[borrower] - activating - dust;
     }
 }
 
@@ -101,6 +132,34 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.currentInflow(), 10_000 ether, "inflow saturates at maxDelayInflow");
     }
 
+    /// @notice A flash-loaned deposit cannot inflate the throttle. The deposit bumps the inflow, but withdrawing
+    ///         it in the same tx undoes that bump, bounded by the activating actually removed. A sub-threshold
+    ///         dust top-up cannot shield the crossed deposit from the drain, so the only inflow left is matched
+    ///         1:1 by the dust collateral left behind (no cheaper than an honest deposit of that size).
+    function test_flashDepositDustWithdraw_doesNotInflateThrottle() public {
+        h.setMinActivationAmount(1 ether); // raise the threshold so a sub-threshold dust deposit is possible
+
+        address attacker = address(0xBAD);
+
+        // flash-loaned 10 ether crosses the threshold into activating and bumps the inflow
+        h.deposit(attacker, 10 ether);
+        assertEq(h.currentInflow(), 10 ether, "the crossing deposit bumps the inflow");
+
+        // a sub-threshold top-up stays dust and leaves the inflow alone
+        h.deposit(attacker, 0.5 ether);
+        assertEq(h.currentInflow(), 10 ether, "dust does not bump the inflow");
+
+        // repay the flash loan: withdraw the 10 ether in the same tx, so the transient undo applies
+        h.withdraw(attacker, 10 ether);
+
+        // the inflow falls back to the 0.5 ether dust left behind, not the flash-loaned 10
+        assertEq(h.currentInflow(), 0.5 ether, "same-tx undo reverses all inflow but the collateral kept");
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(attacker);
+        assertEq(active, 0, "no matured collateral");
+        assertEq(activating + dust, 0.5 ether, "only the sub-threshold dust remains, matched 1:1 by the inflow");
+    }
+
     /// @notice A trusted (instant) deposit crosses straight into `active`, with no timer and no inflow bump.
     function test_instantDeposit_activatesImmediatelyWithoutInflow() public {
         h.depositInstant(address(0xC1), 100 ether);
@@ -113,7 +172,7 @@ contract CollateralActivationLibTest is Test {
 
     /// @notice Quorum-scan gate: past the base timer, a lot stays activating until the guardian frontier has
     ///         scanned past its unlock; once it does, the lot matures.
-    function test_syncActivation_gateHoldsUntilQuorumScansPastUnlock() public {
+    function test_sync_gateHoldsUntilQuorumScansPastUnlock() public {
         vm.warp(1_000_000);
         h.deposit(address(0xD1), 100 ether);
         uint40 depositTime = uint40(block.timestamp);
@@ -133,7 +192,7 @@ contract CollateralActivationLibTest is Test {
 
     /// @notice Liveness fallback: once total activating time passes `maxGuardiansQuorumDelay` (1 day here), the
     ///         lot matures even if the quorum never scans past the unlock.
-    function test_syncActivation_maxGuardiansQuorumDelayFallbackMatures() public {
+    function test_sync_maxGuardiansQuorumDelayFallbackMatures() public {
         vm.warp(1_000_000);
         h.deposit(address(0xD2), 100 ether);
         uint40 depositTime = uint40(block.timestamp);
@@ -176,5 +235,12 @@ contract CollateralActivationLibTest is Test {
     function testRevert_setMaxActivationDelay_aboveBound() public {
         vm.expectRevert(CollateralActivationLib.MaxActivationDelayExceeded.selector);
         h.setMaxActivationDelay(8 days);
+    }
+
+    /// @notice A nonzero quorum-fallback delay must strictly exceed the base delay cap, else the quorum gate has
+    ///         no window (the fallback fires at the unlock). Equal to `maxActivationDelay` is rejected.
+    function testRevert_setMaxGuardiansQuorumDelay_notAboveMaxActivationDelay() public {
+        vm.expectRevert(CollateralActivationLib.InvalidMaxGuardiansQuorumDelay.selector);
+        h.setMaxGuardiansQuorumDelay(1 hours); // == maxActivationDelay
     }
 }
