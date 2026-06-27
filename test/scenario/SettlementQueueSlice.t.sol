@@ -21,8 +21,8 @@ contract QueueHarness {
         $.sync(borrower, PositionView({borrowShares: borrowShares, collateral: rawCollateral}));
     }
 
-    function setSettlementConfig(SettlementConfig memory policy) external {
-        $.setSettlementConfig(policy);
+    function setSettlementConfig(SettlementConfig memory config) external {
+        $.setSettlementConfig(config);
     }
 
     function allowedSlice(MarketView memory marketView, address borrower, PositionView memory position)

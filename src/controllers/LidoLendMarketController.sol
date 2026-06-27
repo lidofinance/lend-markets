@@ -197,7 +197,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
     /// @inheritdoc ILidoLendMarketController
     function settlementConfig() external view returns (SettlementConfig memory) {
-        return _settlementQueue.policy;
+        return _settlementQueue.config;
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -365,7 +365,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
         // Open-debt position floor: while a borrower owes debt, raw collateral may not be drawn below the
         // minimum borrowable size. To exit below the floor, repay the debt to zero first.
-        if (position.borrowShares != 0 && position.collateral < _settlementQueue.policy.minBorrowCollateral) {
+        if (position.borrowShares != 0 && position.collateral < _settlementQueue.config.minBorrowCollateral) {
             revert CollateralFloorBreached();
         }
 
@@ -402,8 +402,8 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
         // Position floor: a borrow may not open or grow debt against a position whose raw collateral is below
         // the minimum borrowable size, keeping debt positions economical to liquidate and settle. The check
-        // reads the live policy value, so a raised floor applies to subsequent borrows immediately.
-        if (position.collateral < _settlementQueue.policy.minBorrowCollateral) revert CollateralFloorBreached();
+        // reads the live config value, so a raised floor applies to subsequent borrows immediately.
+        if (position.collateral < _settlementQueue.config.minBorrowCollateral) revert CollateralFloorBreached();
 
         MarketView memory marketView = _marketView(id);
         if (_debtAssets(marketView, position) + hookData.assets > _getMaxBorrow(marketView, activeCollateral)) {
