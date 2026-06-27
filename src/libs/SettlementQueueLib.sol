@@ -47,9 +47,7 @@ library SettlementQueueLib {
     event SettlementLtvSet(address indexed borrower, uint256 ltv);
 
     /// @notice Emitted when the settlement config is set.
-    event SettlementConfigSet(
-        uint16 sliceFloorBps, uint96 sliceFloorAssets, uint96 fullCutBelowCollateral, uint16 ltvStepBps
-    );
+    event SettlementConfigSet(SettlementConfig config);
 
     // ---
     // TYPES
@@ -90,9 +88,7 @@ library SettlementQueueLib {
     function setSettlementConfig(State storage $, SettlementConfig memory config) internal {
         if (config.sliceFloorBps > BPS || config.ltvStepBps > BPS) revert SettlementConfigOutOfRange();
         $.config = config;
-        emit SettlementConfigSet(
-            config.sliceFloorBps, config.sliceFloorAssets, config.fullCutBelowCollateral, config.ltvStepBps
-        );
+        emit SettlementConfigSet(config);
     }
 
     /// @notice Set `borrower`'s personal target post-cut LTV (WAD). 0 clears it; must be < WAD.
