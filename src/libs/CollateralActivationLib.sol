@@ -23,7 +23,8 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 ///      later deposit folds in its own size and can push the unlock out, never pull it in. Maturity empties
 ///      `activating`, lowering the borrower's inactive total, so the caller's `total - inactive` counts it as active.
 ///      An instant deposit counts as active immediately. Withdrawal and seizure drain dust then activating above
-///      the lock and return the post-op inactive (`activating + dust`).
+///      the lock and return the post-op inactive (`activating + dust`). A withdrawal that leaves the activating
+///      lot below the threshold folds the remainder back into dust, off the timer and the maturation scan.
 /// @dev The base delay is frozen at deposit from the market-wide recent inflow, the same for every position
 ///      regardless of the depositing address. The inflow is capped at `maxDelayInflow` and decays at a fixed
 ///      rate, draining from the cap to zero over `maxActivationDelay`.
@@ -60,6 +61,10 @@ library CollateralActivationLib {
     /// @notice Emitted when collateral is drained from the un-matured buckets, reporting the amounts taken from
     ///         dust and activating.
     event CollateralDrained(address indexed borrower, uint256 fromDust, uint256 fromActivating);
+
+    /// @notice Emitted when a withdrawal drains an activating lot below the threshold and its remainder is folded
+    ///         back into untimed dust.
+    event CollateralDemoted(address indexed borrower, uint256 amount);
 
     /// @notice Emitted when the full activation config is set.
     event CollateralActivationConfigSet(CollateralActivationConfig config);
@@ -186,20 +191,31 @@ library CollateralActivationLib {
     }
 
     /// @notice Voluntary withdrawal: drain `amount` from the un-matured buckets honoring the activating lock,
-    ///         then reverse any inflow this collateral added earlier in the same tx. Returns the post-debit
-    ///         inactive (`activating + dust`); the caller derives `active = total - inactive`.
+    ///         then reverse any inflow this collateral added earlier in the same tx, and — when no lock is in
+    ///         force — demote a sub-threshold activating remainder to dust. Returns the post-debit inactive
+    ///         (`activating + dust`); the caller derives `active = total - inactive`.
     /// @dev Forced seizure uses `seize`, which drains with no lock floor.
     function debit(State storage $, address borrower, uint256 amount) internal returns (uint256 inactive) {
         Position storage position = $.positions[borrower];
 
-        uint256 activatingBefore = position.activating;
-        uint256 activatingLockAmount = position.activatingStart != 0
-            && block.timestamp < position.activatingStart + $.config.activatingLockDuration
-            ? $.config.activatingLockAmount
-            : 0;
+        (uint256 activatingBefore, uint256 activatingStart) = (position.activating, position.activatingStart);
+        uint256 activatingLockDeadline = activatingStart + $.config.activatingLockDuration;
+        uint256 activatingLockAmount =
+            activatingStart != 0 && block.timestamp < activatingLockDeadline ? $.config.activatingLockAmount : 0;
 
         inactive = _drain($, borrower, amount, activatingLockAmount);
-        _applyInflowDecrement($, borrower, activatingBefore - position.activating);
+
+        uint256 activatingAfter = position.activating;
+        _applyInflowDecrement($, borrower, activatingBefore - activatingAfter);
+
+        // Fold a sub-threshold activating remainder into dust. Skip under an active lock — dust is freely
+        // withdrawable, so demoting a locked remainder would bypass it.
+        if (activatingLockAmount == 0 && activatingAfter != 0 && activatingAfter < $.config.minActivationAmount) {
+            position.dust += activatingAfter.toUint128();
+            position.activating = 0;
+            _clearTimer(position);
+            emit CollateralDemoted(borrower, activatingAfter);
+        }
     }
 
     /// @notice Mature the borrower's activating lot once its timer has elapsed and the guardian quorum has

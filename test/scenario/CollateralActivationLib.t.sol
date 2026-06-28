@@ -243,4 +243,76 @@ contract CollateralActivationLibTest is Test {
         vm.expectRevert(CollateralActivationLib.InvalidMaxGuardiansQuorumDelay.selector);
         h.setMaxGuardiansQuorumDelay(1 hours); // == maxActivationDelay
     }
+
+    /// @notice A withdrawal that drains an activating lot below the threshold folds the remainder into dust: it
+    ///         leaves the timer, so it never matures and stays off the guardian scan, and only a fresh crossing
+    ///         deposit re-throttles it. The inactive total is unchanged, so `active` is too.
+    function test_withdraw_demotesSubThresholdActivatingToDust() public {
+        h.setMinActivationAmount(1 ether);
+        address borrower = address(0xDE);
+
+        h.deposit(borrower, 10 ether);
+        (, uint256 activating0, uint256 dust0) = h.bucketsOf(borrower);
+        assertEq(activating0, 10 ether, "deposit enters activating");
+        assertEq(dust0, 0, "no dust");
+
+        // Drain to 0.5 ether activating (< 1 ether threshold): the remainder is demoted to dust.
+        h.withdraw(borrower, 9.5 ether);
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(activating, 0, "sub-threshold remainder no longer activating");
+        assertEq(dust, 0.5 ether, "remainder folded into dust");
+        assertEq(active, 0, "dust is not active");
+
+        // Off the timer: even past the unlock, sync leaves it dust — it never matures.
+        vm.warp(block.timestamp + 2 hours);
+        h.sync(borrower, 0);
+        (uint256 activeAfter,, uint256 dustAfter) = h.bucketsOf(borrower);
+        assertEq(activeAfter, 0, "demoted collateral never matures");
+        assertEq(dustAfter, 0.5 ether, "still dust");
+    }
+
+    /// @notice A withdrawal that leaves the activating lot at or above the threshold keeps it activating — it
+    ///         still matures on its timer.
+    function test_withdraw_atThresholdStaysActivating() public {
+        h.setMinActivationAmount(1 ether);
+        address borrower = address(0xDF);
+
+        h.deposit(borrower, 10 ether);
+        h.withdraw(borrower, 9 ether); // leaves exactly 1 ether == threshold
+        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(activating, 1 ether, "at-threshold remainder stays activating");
+        assertEq(dust, 0, "not demoted");
+
+        vm.warp(block.timestamp + 2 hours);
+        h.sync(borrower, 0);
+        (uint256 active,,) = h.bucketsOf(borrower);
+        assertEq(active, 1 ether, "at-threshold lot matures on its timer");
+    }
+
+    /// @notice With an activating-lock in force, a withdrawal that drains down to the lock floor leaves the locked
+    ///         remainder in `activating` — it is NOT demoted into freely-withdrawable dust, which would bypass the
+    ///         lock. (Without the lock the identical sub-threshold remainder demotes; see the demote test above.)
+    function test_withdraw_doesNotDemoteLockedActivating() public {
+        h.setConfig(
+            CollateralActivationConfig({
+                minActivationDelay: 1 minutes,
+                maxActivationDelay: 1 hours,
+                delayPerStrike: 0,
+                activatingLockAmount: 1 ether,
+                activatingLockDuration: 1 hours,
+                maxDelayInflow: 10_000 ether,
+                minActivationAmount: 2 ether, // above the lock, so the lock floor is a sub-threshold remainder
+                maxGuardiansQuorumDelay: 0
+            })
+        );
+        address borrower = address(0x10C);
+
+        h.deposit(borrower, 10 ether);
+        // Drain to the 1 ether lock floor: the 1 ether remainder is sub-threshold (< 2 ether) but LOCKED.
+        h.withdraw(borrower, 9 ether);
+
+        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(activating, 1 ether, "locked remainder stays activating, not demoted");
+        assertEq(dust, 0, "locked remainder not folded into freely-withdrawable dust");
+    }
 }
