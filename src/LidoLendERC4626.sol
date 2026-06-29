@@ -336,6 +336,6 @@ contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626
     }
 
     function _lidoLendSupplyShares() internal view returns (uint256 supplyShares) {
-        (supplyShares,,) = LIDO_LEND.position(marketId, address(this));
+        supplyShares = LIDO_LEND.position(marketId, address(this)).supplyShares;
     }
 }

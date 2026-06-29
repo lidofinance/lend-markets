@@ -72,6 +72,7 @@ contract DeployMarket is Script, LidoLendDeployer {
 
     function _logDeployment(Deployed memory d) internal pure {
         console2.log("core               :", d.core);
+        console2.log("ownerFacade        :", d.ownerFacade);
         console2.log("guardianSignals   :", d.guardianSignals);
         console2.log("oracle             :", d.oracle);
         console2.log("irm                :", d.irm);

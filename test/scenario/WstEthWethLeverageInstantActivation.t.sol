@@ -270,7 +270,7 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer {
         assertEq(pv.activating, 0, "every router supply is active, none left in the timer");
         assertEq(pv.dust, 0, "no dust");
 
-        (, uint128 borrowShares,) = s.core.position(s.id, USER);
+        uint128 borrowShares = s.core.position(s.id, USER).borrowShares;
         assertGt(borrowShares, 0, "real debt drawn against the leveraged collateral");
 
         // The router strands nothing: each iteration borrows, swaps, and supplies the full output.
