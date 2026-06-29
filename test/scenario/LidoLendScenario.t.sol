@@ -10,7 +10,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
-import {BlockInfoWithHash} from "../../src/interfaces/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -131,7 +131,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrowed with no maturation wait");
 
         // Revoke restores the timer: a fresh deposit enters activation instead of going straight to active.
-        ctx.controller.grantRole(ctx.controller.RISK_STEWARD_ROLE(), address(this));
         ctx.controller.revokeInstantActivation(BORROWER);
         uint256 more = _mintWstETH(ctx.market, BORROWER, 15 ether);
         vm.prank(BORROWER);
@@ -139,42 +138,12 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         _assertCollateralState(ctx.controller, BORROWER, col, more, 0);
     }
 
-    /// @notice Borrow utilization gap: borrows that keep the gap below 100% succeed, a borrow that
-    ///         would close it reverts at the controller hook. The gap is off (0) by default.
-    function test_borrow_cappedByBorrowUtilizationGap() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
-        TestMarket memory ctx = _deployMarket(false);
-        ctx.controller.setBorrowUtilizationGap(0.1e18); // keep a 10% gap => 90% max utilization
-        assertEq(ctx.controller.maxBorrowUtilization(), 0.9e18, "gap maps to a 90% cap");
-
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        // Ample collateral so the gap binds before the active-health ceiling.
-        uint256 collateral = _mintWstETH(ctx.market, BORROWER, 40 ether);
-
-        vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.marketParams, collateral, BORROWER, "");
-        vm.warp(block.timestamp + 2 hours + 1);
-
-        // Borrowing 9 of 10 WETH keeps the 10% gap exactly, so it is allowed.
-        vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 9 ether, 0, BORROWER, BORROWER);
-        assertApproxEqAbs(ctx.controller.currentBorrowUtilization(), 0.9e18, 1e15, "utilization sits at the cap");
-
-        // Any further borrow would close the gap and reverts.
-        vm.prank(BORROWER);
-        vm.expectRevert(ILidoLendMarketController.MaxBorrowUtilizationExceeded.selector);
-        ctx.market.borrow(ctx.marketParams, 0.1 ether, 0, BORROWER, BORROWER);
-    }
-
-    /// @notice Open-debt collateral floor: while a borrower owes debt, a withdrawal may not draw raw
-    ///         collateral below the activation minimum. Repaying to zero lifts the floor.
+    /// @notice Open-debt position floor: while a borrower owes debt, a withdrawal may not draw raw
+    ///         collateral below the minimum borrowable size. Repaying to zero lifts the floor.
     function test_withdraw_collateralFloorWithOpenDebt() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
-        TestMarket memory ctx = _deployMarket(false); // minActivationAmount = 10 ether
+        TestMarket memory ctx = _deployMarket(false); // minBorrowCollateral = 10 ether
 
         _mintWETH(ctx.market, LENDER, 10 ether);
         uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether); // ~15 wstETH, comfortably above the floor
@@ -205,6 +174,34 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.repay(ctx.marketParams, 0, borrowShares, BORROWER, "");
         vm.prank(BORROWER);
         ctx.market.withdrawCollateral(ctx.marketParams, 11 ether, BORROWER, BORROWER);
+    }
+
+    /// @notice Position floor on borrow: a position whose raw collateral is below the minimum borrowable size
+    ///         cannot open debt. Symmetric to the withdraw floor, but binds before any debt exists.
+    function test_borrow_belowPositionFloorReverts() public {
+        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+
+        TestMarket memory ctx = _deployMarket(false); // minBorrowCollateral = 10 ether
+
+        _mintWETH(ctx.market, LENDER, 10 ether);
+        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether); // ~15 wstETH, above the floor
+        assertGt(col, 12 ether, "collateral above the floor for the test");
+
+        vm.prank(LENDER);
+        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        // No debt yet, so the withdraw floor does not bind: draw raw collateral below the borrow floor.
+        vm.prank(BORROWER);
+        ctx.market.withdrawCollateral(ctx.marketParams, col - 5 ether, BORROWER, BORROWER);
+        _assertCollateralState(ctx.controller, BORROWER, 5 ether, 0, 0); // raw collateral = 5 < 10
+
+        // Borrowing against sub-floor collateral is blocked, even for a tiny amount.
+        vm.prank(BORROWER);
+        vm.expectRevert(ILidoLendMarketController.CollateralFloorBreached.selector);
+        ctx.market.borrow(ctx.marketParams, 1, 0, BORROWER, BORROWER);
     }
 
     function test_settle_happyPath() public {
@@ -305,9 +302,9 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (5) THIRD_BORROWER (lowest LTV, no settlement LTV) is never touched throughout the scenario.
-        Position memory thirdPos = ctx.market.position(ctx.id, THIRD_BORROWER);
-        uint128 lowBorrowSharesAfter = thirdPos.borrowShares;
-        uint128 lowCollateralAfter = thirdPos.collateral;
+        Position memory _pos = ctx.market.position(ctx.id, THIRD_BORROWER);
+        uint128 lowBorrowSharesAfter = _pos.borrowShares;
+        uint128 lowCollateralAfter = _pos.collateral;
         assertEq(uint256(lowCollateralAfter), lowCol, "low-LTV borrower's collateral untouched");
         assertGt(lowBorrowSharesAfter, 0, "low-LTV borrower still has debt");
     }
@@ -644,10 +641,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     function _sliceShares(TestMarket memory ctx) internal view returns (uint256) {
         (, uint256 sliceAssets,) = ctx.controller.nextSettlementBorrower();
         if (sliceAssets == type(uint256).max) return type(uint256).max;
-        Market memory mkt = ctx.market.market(ctx.id);
-        uint128 totalSupplyAssets = mkt.totalSupplyAssets;
-        uint128 totalSupplyShares = mkt.totalSupplyShares;
-        return SharesMathLib.toSharesDown(sliceAssets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
+        Market memory _mkt = ctx.market.market(ctx.id);
+        return SharesMathLib.toSharesDown(sliceAssets, uint256(_mkt.totalSupplyAssets), uint256(_mkt.totalSupplyShares));
     }
 
     function _hasMainnetLidoContracts() internal view returns (bool) {
@@ -681,17 +676,22 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
                 enableSettlement: enableSettlement,
-                activation: ActivationConfig({
+                activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
-                    activatingHold: 0,
+                    activatingLockAmount: 0,
+                    activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
                     maxGuardiansQuorumDelay: 0
                 }),
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
+                    sliceFloorBps: 100,
+                    sliceFloorAssets: 0,
+                    fullCutBelowCollateral: 10 ether,
+                    ltvStepBps: 100,
+                    minBorrowCollateral: 10 ether
                 }),
                 guardians: guardians,
                 quorum: 1,

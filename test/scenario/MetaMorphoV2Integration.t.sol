@@ -10,6 +10,7 @@ import {
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
 import {Test} from "forge-std/Test.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {WAD} from "../../src/libs/Constants.sol";
 
 struct LidoMarketParams {
     address loanToken;
@@ -94,7 +95,6 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
     IWstETH internal constant WSTETH = IWstETH(WSTETH_ADDRESS);
 
     uint256 internal constant LLTV = 0.8e18;
-    uint256 internal constant WAD = 1e18;
 
     struct IntegrationContext {
         IERC20Like loanToken;
@@ -144,17 +144,22 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: ActivationConfig({
+                activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
-                    activatingHold: 0,
+                    activatingLockAmount: 0,
+                    activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
                     maxGuardiansQuorumDelay: 0
                 }),
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100, sliceFloorAssets: 20 ether, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
+                    sliceFloorBps: 100,
+                    sliceFloorAssets: 20 ether,
+                    fullCutBelowCollateral: 10 ether,
+                    ltvStepBps: 100,
+                    minBorrowCollateral: 0
                 }),
                 guardians: guardians,
                 quorum: 1,

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MaxHeapLib} from "./MaxHeapLib.sol";
+import {WAD, BPS} from "./Constants.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTypes.sol";
 
@@ -27,10 +27,7 @@ library SettlementQueueLib {
     // ---
 
     /// @dev Heap key scale: key = borrowShares * KEY_SCALE / rawCollateral.
-    uint256 internal constant KEY_SCALE = 1e18;
-
-    /// @dev Basis-point denominator for the slice-policy percentages (`sliceFloorBps`, `ltvStepBps`).
-    uint256 internal constant BPS = 10_000;
+    uint256 internal constant KEY_SCALE = WAD;
 
     // ---
     // ERRORS
@@ -49,24 +46,22 @@ library SettlementQueueLib {
     /// @notice Emitted when a borrower sets their personal settlement LTV.
     event SettlementLtvSet(address indexed borrower, uint256 ltv);
 
-    /// @notice Emitted when the settle slice policy is set.
-    event SettlementConfigSet(
-        uint16 sliceFloorBps, uint96 sliceFloorAssets, uint96 fullCutBelowCollateral, uint16 ltvStepBps
-    );
+    /// @notice Emitted when the settlement config is set.
+    event SettlementConfigSet(SettlementConfig config);
 
     // ---
     // TYPES
     // ---
 
-    /// @notice Embedded settlement-queue state: the risk-ordered heap, the slice policy, and per-borrower
+    /// @notice Embedded settlement-queue state: the risk-ordered heap, the settlement config, and per-borrower
     ///         settlement-LTV opt-ins.
     /// @param heap Max-heap of borrowers keyed by `_riskKey` (borrowShares * KEY_SCALE / collateral), so the
     ///        root is the highest-LTV position.
-    /// @param policy Slice-sizing policy applied to the queue root.
+    /// @param config Slice-sizing policy applied to the queue root.
     /// @param settlementLtv Per-borrower target post-cut LTV (WAD), 0 = unset.
     struct State {
         MaxHeapLib.Heap heap;
-        SettlementConfig policy;
+        SettlementConfig config;
         mapping(address borrower => uint256) settlementLtv;
     }
 
@@ -90,12 +85,10 @@ library SettlementQueueLib {
 
     /// @notice Set the slice-sizing policy applied to the queue root. Reverts if `sliceFloorBps` or
     ///         `ltvStepBps` exceeds 100% (`BPS`).
-    function setSettlementConfig(State storage $, SettlementConfig memory policy) internal {
-        if (policy.sliceFloorBps > BPS || policy.ltvStepBps > BPS) revert SettlementConfigOutOfRange();
-        $.policy = policy;
-        emit SettlementConfigSet(
-            policy.sliceFloorBps, policy.sliceFloorAssets, policy.fullCutBelowCollateral, policy.ltvStepBps
-        );
+    function setSettlementConfig(State storage $, SettlementConfig memory config) internal {
+        if (config.sliceFloorBps > BPS || config.ltvStepBps > BPS) revert SettlementConfigOutOfRange();
+        $.config = config;
+        emit SettlementConfigSet(config);
     }
 
     /// @notice Set `borrower`'s personal target post-cut LTV (WAD). 0 clears it; must be < WAD.
@@ -159,7 +152,7 @@ library SettlementQueueLib {
         (uint256 debtAssets, uint256 collateralValue) = _positionValues(marketView, position);
         if (debtAssets == 0 || collateralValue == 0) return 0;
 
-        uint256 rootSliceAssets = peekRoot($) == borrower ? _policySlice($.policy, debtAssets, collateralValue) : 0;
+        uint256 rootSliceAssets = peekRoot($) == borrower ? _policySlice($.config, debtAssets, collateralValue) : 0;
         uint256 settlementLtvSliceAssets = _settlementLtvSlice($, borrower, debtAssets, collateralValue);
 
         uint256 sliceAssets = Math.min(Math.max(rootSliceAssets, settlementLtvSliceAssets), debtAssets);
@@ -218,28 +211,28 @@ library SettlementQueueLib {
         if (marketView.price == 0) return false;
         uint256 seizedCollateral = Math.mulDiv(sliceAssets, ORACLE_PRICE_SCALE, marketView.price);
         uint256 remainingCollateral = Math.saturatingSub(position.collateral, seizedCollateral);
-        return remainingCollateral < $.policy.fullCutBelowCollateral;
+        return remainingCollateral < $.config.fullCutBelowCollateral;
     }
 
     /// @dev Root slice: the largest of the three slice rules — `sliceFloorBps` of the debt, `sliceFloorAssets`,
     ///      and the slice that lowers the LTV by `ltvStepBps`. Caller guarantees `debtAssets > 0` and
     ///      `collateralValue > 0` (the `slice` entry gate), so the LTV division here is safe.
-    function _policySlice(SettlementConfig storage policy, uint256 debtAssets, uint256 collateralValue)
+    function _policySlice(SettlementConfig storage config, uint256 debtAssets, uint256 collateralValue)
         private
         view
         returns (uint256)
     {
-        uint256 byDebtFractionAssets = Math.mulDiv(debtAssets, policy.sliceFloorBps, BPS);
+        uint256 byDebtFractionAssets = Math.mulDiv(debtAssets, config.sliceFloorBps, BPS);
 
         uint256 byLtvReductionAssets;
-        if (policy.ltvStepBps != 0) {
+        if (config.ltvStepBps != 0) {
             uint256 currentLtv = Math.mulDiv(debtAssets, WAD, collateralValue);
-            uint256 ltvReduction = Math.mulDiv(policy.ltvStepBps, WAD, BPS);
+            uint256 ltvReduction = Math.mulDiv(config.ltvStepBps, WAD, BPS);
             byLtvReductionAssets =
                 sliceToLtv(debtAssets, collateralValue, currentLtv > ltvReduction ? currentLtv - ltvReduction : 0);
         }
 
-        return Math.max(policy.sliceFloorAssets, Math.max(byDebtFractionAssets, byLtvReductionAssets));
+        return Math.max(config.sliceFloorAssets, Math.max(byDebtFractionAssets, byLtvReductionAssets));
     }
 
     /// @dev Slice that lowers the borrower to its personal settlement LTV. Zero when no settlement LTV is set or

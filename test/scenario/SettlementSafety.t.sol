@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -25,6 +26,14 @@ contract SettlementSafetyTest is LidoLendSetup {
 
     function _m() internal view returns (Market storage) {
         return protocol.markets[0];
+    }
+
+    /// @dev Raise the per-position raw-collateral floor (`minBorrowCollateral`) on the live market. The setup
+    ///      grants the test contract MANAGER_ROLE, so it sets the settlement config directly.
+    function _setMinBorrowCollateral(uint96 floor) internal {
+        SettlementConfig memory cfg = _m().controller.settlementConfig();
+        cfg.minBorrowCollateral = floor;
+        _m().controller.setSettlementConfig(cfg);
     }
 
     function _seed(uint256 collat, uint256 borrowBps)
@@ -64,6 +73,7 @@ contract SettlementSafetyTest is LidoLendSetup {
     ///      (10 ether) — it would strand un-reactivatable dust backing a loan.
     function testRevert_withdrawCollateral_belowFloorWithOpenDebt() public {
         Market storage m = _m();
+        _setMinBorrowCollateral(10 ether);
         (, address borrower,) = _seed(100 ether, 100); // tiny debt -> lots of health headroom
 
         // Leaving 5 ether (< the 10 ether floor) while debt is open trips the floor, not the health gate.
@@ -78,6 +88,7 @@ contract SettlementSafetyTest is LidoLendSetup {
     ///      collateral. The borrow now reverts `CollateralFloorBreached`, mirroring the withdraw hook.
     function testRevert_borrow_subFloorActiveAfterDebtFreeWithdraw() public {
         Market storage m = _m();
+        _setMinBorrowCollateral(10 ether);
         address lender = _actor("lender");
         _fund(m.loanToken, lender, 1000 ether);
         m.vaultDeposit(lender, 1000 ether);
@@ -102,6 +113,7 @@ contract SettlementSafetyTest is LidoLendSetup {
     ///      the floor gate (previously this reverted only because zero active collateral failed the health gate).
     function testRevert_borrow_freshDustCollateral() public {
         Market storage m = _m();
+        _setMinBorrowCollateral(10 ether);
         address borrower = _actor("borrower");
         _fund(m.collateralToken, borrower, 5 ether); // < 10 floor -> dust
         m.supplyCollateral(borrower, 5 ether);
@@ -111,6 +123,26 @@ contract SettlementSafetyTest is LidoLendSetup {
         vm.prank(borrower);
         vm.expectRevert(ILidoLendMarketController.CollateralFloorBreached.selector);
         m.core.borrow(m.params, 1, 0, borrower, borrower);
+    }
+
+    /// @dev Floor boundary: a position with raw collateral exactly at `minBorrowCollateral` clears the gate
+    ///      (the check is strict `<`), so the borrow succeeds. One wei below is the dust case above.
+    function test_borrow_atFloorExactly_passes() public {
+        Market storage m = _m();
+        _setMinBorrowCollateral(10 ether);
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        m.vaultDeposit(lender, 1000 ether);
+
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 10 ether); // exactly at the floor
+        m.supplyCollateral(borrower, 10 ether);
+        m.activateCollateral();
+
+        // Raw collateral 10 == floor 10 -> not below, so the floor gate passes and a tiny borrow goes through.
+        vm.prank(borrower);
+        m.core.borrow(m.params, 1 ether, 0, borrower, borrower);
+        assertEq(m.controller.positionOf(borrower).debtAssets, 1 ether, "borrow at the exact floor succeeds");
     }
 
     /// @dev Contrast (accepted behaviour): liquidation is a FORCED path that does NOT re-check the floor, so a

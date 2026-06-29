@@ -94,17 +94,22 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
                 oracleSource: USDY, // ignored — _deployOracle overridden
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: ActivationConfig({
+                activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     maxDelayInflow: 10_000 ether,
                     delayPerStrike: 2 hours,
-                    activatingHold: 0,
+                    activatingLockAmount: 0,
+                    activatingLockDuration: 0,
                     minActivationAmount: 10 ether,
                     maxGuardiansQuorumDelay: 0
                 }),
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
+                    sliceFloorBps: 100,
+                    sliceFloorAssets: 0,
+                    fullCutBelowCollateral: 10 ether,
+                    ltvStepBps: 100,
+                    minBorrowCollateral: 0
                 }),
                 guardians: guardians,
                 quorum: 1,

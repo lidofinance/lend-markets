@@ -2,7 +2,7 @@
 pragma solidity 0.8.35;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {BlockInfoWithHash} from "../../src/interfaces/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";

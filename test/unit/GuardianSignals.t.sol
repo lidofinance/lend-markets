@@ -9,7 +9,7 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
-import {Status, BlockInfo, BlockInfoWithHash} from "../../src/interfaces/GuardianSignalsTypes.sol";
+import {Status, BlockInfo, BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 /// @notice Unit suite for `GuardianSignals`, modelled from the "Guardian signals" spec:
@@ -41,6 +41,7 @@ contract GuardianSignalsTest is Test {
         gs = GuardianSignals(address(new OssifiableProxy(impl, address(this), initData)));
 
         // Governance roles (not granted by initialize).
+        gs.grantRole(gs.GUARDIANS_MANAGER_ROLE(), address(this));
         gs.grantRole(gs.ACCESS_LIMITER_ROLE(), address(this));
         gs.grantRole(gs.ACCESS_RESTORER_ROLE(), address(this));
     }
@@ -372,8 +373,8 @@ contract GuardianSignalsTest is Test {
     }
 
     function testRevert_setQuorum_wrongRole() public {
-        bytes32 role = gs.DEFAULT_ADMIN_ROLE();
-        vm.prank(BOB); // lacks DEFAULT_ADMIN
+        bytes32 role = gs.GUARDIANS_MANAGER_ROLE();
+        vm.prank(BOB); // lacks GUARDIANS_MANAGER_ROLE
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
         gs.setQuorum(1);
     }

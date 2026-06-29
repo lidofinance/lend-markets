@@ -11,8 +11,8 @@ import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketCon
 
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
-import {BlockInfoWithHash} from "../../src/interfaces/GuardianSignalsTypes.sol";
-import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
+import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
@@ -23,8 +23,8 @@ import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 ///         "Policy boundary" and "Freeze and pause" sections. The controller's `on` hook is driven by the
 ///         core, so the policy is exercised through real market actions on a fresh `setup/` stack. The
 ///         libraries it composes (activation/settlement/guardian) are covered in §3–5; here the focus is
-///         the controller-specific policy: pause (every hook), freeze gate, borrow-utilization gap (WAD),
-///         banned-borrow, active-only health, instant activation, and setter role-gating / monotonicity.
+///         the controller-specific policy: pause (every hook), freeze gate, banned-borrow, active-only
+///         health, instant activation, settlement config, and setter role-gating.
 contract LidoLendMarketControllerTest is LidoLendSetup {
     using MarketActions for Market;
 
@@ -39,8 +39,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _deployProtocol(_defaultConfig(address(loan), address(collateral), address(collateral)));
 
         c = LidoLendMarketController(address(protocol.markets[0].controller));
-        // Grant every governance role to the test contract (admin holds DEFAULT_ADMIN).
-        c.grantRole(c.RISK_STEWARD_ROLE(), address(this));
+        // Grant the remaining governance roles to the test contract (admin holds DEFAULT_ADMIN, and the setup
+        // already granted MANAGER_ROLE).
         c.grantRole(c.FREEZER_ROLE(), address(this));
         c.grantRole(c.UNFREEZER_ROLE(), address(this));
         c.grantRole(c.PAUSER_ROLE(), address(this));
@@ -181,25 +181,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.borrow(_m().params, 10 ether, 0, borrower, borrower); // borrow works again
     }
 
-    // ── borrow-utilization gap (WAD) ──
-
-    function testRevert_borrowUtilizationGap_blocksOverMax() public {
-        // gap = 50% (WAD/2) -> at most half the supply borrowable.
-        c.setBorrowUtilizationGap(0.5e18);
-        (, address borrower) = _seedBorrower(100 ether, 1000 ether, 0); // ample collateral
-        vm.prank(borrower);
-        vm.expectRevert(ILidoLendMarketController.MaxBorrowUtilizationExceeded.selector);
-        _m().core.borrow(_m().params, 60 ether, 0, borrower, borrower); // 60 > 50% of 100 supply
-    }
-
-    function test_borrowUtilizationGap_allowsUpToMax() public {
-        c.setBorrowUtilizationGap(0.5e18);
-        (, address borrower) = _seedBorrower(100 ether, 1000 ether, 0);
-        vm.prank(borrower);
-        _m().core.borrow(_m().params, 50 ether, 0, borrower, borrower); // exactly at the 50% ceiling
-        assertEq(c.maxBorrowUtilization(), 0.5e18, "max = WAD - gap");
-    }
-
     // ── banned borrow ──
 
     function testRevert_borrow_bannedBorrower() public {
@@ -259,14 +240,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.pauseFor(1 hours);
     }
 
-    function testRevert_setBorrowUtilizationGap_wrongRole() public {
-        address nobody = _actor("nobody");
-        bytes32 role = c.MANAGER_ROLE();
-        vm.prank(nobody);
-        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
-        c.setBorrowUtilizationGap(0.5e18);
-    }
-
     function testRevert_grantInstantActivation_wrongRole() public {
         address nobody = _actor("nobody");
         address borrower = _actor("borrower");
@@ -274,38 +247,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         vm.prank(nobody);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
         c.grantInstantActivation(borrower);
-    }
-
-    // ── setter monotonicity ──
-
-    function testRevert_increaseBorrowUtilizationGap_notTightened() public {
-        c.setBorrowUtilizationGap(0.5e18);
-        vm.expectRevert(ILidoLendMarketController.ConfigNotTightened.selector);
-        c.increaseBorrowUtilizationGap(0.4e18); // lower -> not tightened
-    }
-
-    function testRevert_increaseBorrowUtilizationGap_aboveWad() public {
-        vm.expectRevert(ILidoLendMarketController.BorrowUtilizationGapTooHigh.selector);
-        c.increaseBorrowUtilizationGap(1e18); // >= WAD
-    }
-
-    function testRevert_increaseMinActivationDelay_notTightened() public {
-        // The default min is 10 minutes; a lower value is not a tightening.
-        vm.expectRevert(ILidoLendMarketController.ConfigNotTightened.selector);
-        c.increaseMinActivationDelay(60);
-    }
-
-    function test_setBorrowUtilizationGap_freeSetBothDirections() public {
-        c.setBorrowUtilizationGap(0.5e18);
-        assertEq(c.borrowUtilizationGap(), 0.5e18, "set");
-        c.setBorrowUtilizationGap(0.3e18); // MANAGER may lower (free-set, unlike increase*)
-        assertEq(c.borrowUtilizationGap(), 0.3e18, "lowered");
-    }
-
-    function testRevert_increaseMaxActivationDelay_notTightened() public {
-        // The default max delay is 2h; a lower value is not a tightening.
-        vm.expectRevert(ILidoLendMarketController.ConfigNotTightened.selector);
-        c.increaseMaxActivationDelay(60);
     }
 
     // ── ban 3-way: receiver and caller (distinct from onBehalf) ──
@@ -330,143 +271,45 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.borrow(_m().params, 10 ether, 0, borrower, borrower);
     }
 
-    // ── fuzz: borrow-util gap boundary & gap monotonicity ──
+    // ── collateral-activation config (MANAGER_ROLE) ──
 
-    function testFuzz_borrowUtilizationGap(uint256 gap, uint256 borrow) public {
-        gap = bound(gap, 0, 0.9e18);
-        borrow = bound(borrow, 1 ether, 100 ether);
-        c.setBorrowUtilizationGap(gap);
-        (, address borrower) = _seedBorrower(100 ether, 1000 ether, 0); // ample collateral + LLTV headroom
-        // Util gate is the only blocker: revert iff post-borrow utilization exceeds WAD - gap.
-        bool shouldRevert = borrow * 1e18 > (1e18 - gap) * 100 ether;
-        vm.prank(borrower);
-        if (shouldRevert) vm.expectRevert(ILidoLendMarketController.MaxBorrowUtilizationExceeded.selector);
-        _m().core.borrow(_m().params, borrow, 0, borrower, borrower);
-    }
-
-    function testFuzz_increaseBorrowUtilizationGap_monotonic(uint256 first, uint256 second) public {
-        first = bound(first, 1, 0.9e18);
-        c.setBorrowUtilizationGap(first);
-        second = bound(second, 0, 1.05e18);
-        if (second >= 1e18 || second <= first) {
-            // The contract checks `>= WAD` before `<= current`, so a value at/over WAD is rejected as
-            // BorrowUtilizationGapTooHigh; otherwise (`<= first`, which is bounded to <= 0.9e18 < WAD) the
-            // monotonicity check fires ConfigNotTightened. The two ranges are disjoint under these bounds.
-            bytes4 expected = second >= 1e18
-                ? ILidoLendMarketController.BorrowUtilizationGapTooHigh.selector
-                : ILidoLendMarketController.ConfigNotTightened.selector;
-            vm.expectRevert(expected);
-            c.increaseBorrowUtilizationGap(second);
-        } else {
-            c.increaseBorrowUtilizationGap(second);
-            assertEq(c.borrowUtilizationGap(), second, "increased to the tightened value");
-        }
-    }
-
-    // ── setConfig (MANAGER_ROLE, full config in either direction) ──
-
-    /// @dev `setConfig` writes the full activation config (the test contract holds MANAGER_ROLE from deploy).
-    ///      We loosen the min delay below the default (600s -> 300s), proving it is not monotone, and read it
-    ///      back through the activation-driven views.
-    function test_setConfig_storesFullConfig() public {
-        CollateralActivationLib.Config memory cfg = CollateralActivationLib.Config({
+    /// @dev `setCollateralActivationConfig` writes the full activation config in one shot (the test contract
+    ///      holds MANAGER_ROLE from deploy). We write a non-default config and read it back through the view.
+    function test_setCollateralActivationConfig_storesFullConfig() public {
+        CollateralActivationConfig memory cfg = CollateralActivationConfig({
             minActivationDelay: 300,
             maxActivationDelay: 3 hours,
             maxDelayInflow: 20_000 ether,
             delayPerStrike: 1 hours,
-            activatingHold: 5 ether,
+            activatingLockAmount: 5 ether,
+            activatingLockDuration: 1 hours,
             minActivationAmount: 7 ether,
-            maxGuardiansQuorumDelay: 1 hours
+            // must be 0 or strictly above maxActivationDelay (the liveness fallback sits past the delay cap)
+            maxGuardiansQuorumDelay: 4 hours
         });
-        c.setConfig(cfg);
+        c.setCollateralActivationConfig(cfg);
 
-        // A 300s min (below the 600s default) is now accepted by increaseMinActivationDelay's floor check:
-        // raising to exactly 300 is a no-op tightening, below 300 reverts ConfigNotTightened. We assert the
-        // stored min by probing that floor: 299 reverts, 300 succeeds.
-        vm.expectRevert(ILidoLendMarketController.ConfigNotTightened.selector);
-        c.increaseMinActivationDelay(299);
-        c.increaseMinActivationDelay(300); // == stored min, accepted
+        CollateralActivationConfig memory stored = c.collateralActivationConfig();
+        assertEq(stored.minActivationDelay, 300, "minActivationDelay");
+        assertEq(stored.maxActivationDelay, 3 hours, "maxActivationDelay");
+        assertEq(stored.maxDelayInflow, 20_000 ether, "maxDelayInflow");
+        assertEq(stored.delayPerStrike, 1 hours, "delayPerStrike");
+        assertEq(stored.activatingLockAmount, 5 ether, "activatingLockAmount");
+        assertEq(stored.activatingLockDuration, 1 hours, "activatingLockDuration");
+        assertEq(stored.minActivationAmount, 7 ether, "minActivationAmount");
+        assertEq(stored.maxGuardiansQuorumDelay, 4 hours, "maxGuardiansQuorumDelay");
     }
 
-    function testRevert_setConfig_wrongRole() public {
-        CollateralActivationLib.Config memory cfg = CollateralActivationLib.Config({
-            minActivationDelay: 300,
-            maxActivationDelay: 3 hours,
-            maxDelayInflow: 20_000 ether,
-            delayPerStrike: 1 hours,
-            activatingHold: 0,
-            minActivationAmount: 7 ether,
-            maxGuardiansQuorumDelay: 0
-        });
+    function testRevert_setCollateralActivationConfig_wrongRole() public {
+        CollateralActivationConfig memory cfg = c.collateralActivationConfig();
         address nobody = _actor("nobody");
         bytes32 role = c.MANAGER_ROLE();
         vm.prank(nobody);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
-        c.setConfig(cfg);
+        c.setCollateralActivationConfig(cfg);
     }
 
-    // ── RISK_STEWARD increase*/set* tightening levers (success + role gating) ──
-
-    /// @dev Default min is 600s; raising it to 900s is a tightening and is stored. Re-probe via the floor.
-    function test_increaseMinActivationDelay_tightens() public {
-        c.increaseMinActivationDelay(900);
-        // stored min is now 900: 899 reverts, 900 is accepted (no-op tighten).
-        vm.expectRevert(ILidoLendMarketController.ConfigNotTightened.selector);
-        c.increaseMinActivationDelay(899);
-        c.increaseMinActivationDelay(900);
-    }
-
-    /// @dev Default max is 2h; raising it to 3h is a tightening (longer delay cap = stricter) and is stored.
-    function test_increaseMaxActivationDelay_tightens() public {
-        c.increaseMaxActivationDelay(3 hours);
-        vm.expectRevert(ILidoLendMarketController.ConfigNotTightened.selector);
-        c.increaseMaxActivationDelay(3 hours - 1);
-        c.increaseMaxActivationDelay(3 hours);
-    }
-
-    function testRevert_increaseMinActivationDelay_wrongRole() public {
-        address nobody = _actor("nobody");
-        bytes32 role = c.RISK_STEWARD_ROLE();
-        vm.prank(nobody);
-        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
-        c.increaseMinActivationDelay(900);
-    }
-
-    function testRevert_increaseMaxActivationDelay_wrongRole() public {
-        address nobody = _actor("nobody");
-        bytes32 role = c.RISK_STEWARD_ROLE();
-        vm.prank(nobody);
-        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
-        c.increaseMaxActivationDelay(3 hours);
-    }
-
-    /// @dev `setActivatingHold` is a free RISK_STEWARD lever (no monotonicity check). Set it and observe it via
-    ///      a withdraw: with a hold, activating collateral is held back. Here we just exercise the setter path.
-    function test_setActivatingHold_setsHold() public {
-        c.setActivatingHold(3 ether);
-        // The hold gates withdrawals of activating collateral: a borrower with 100 ether activating can pull at
-        // most 97 ether (100 - 3 hold) before maturation. Pulling 98 reverts inside the activation lib.
-        Market storage m = _m();
-        address borrower = _actor("borrower");
-        _fund(m.collateralToken, borrower, 100 ether);
-        m.supplyCollateral(borrower, 100 ether); // activating, not matured
-        vm.prank(borrower);
-        vm.expectRevert(stdError.arithmeticError); // arithmetic underflow in debit: request reaches into the Sybil hold
-        m.core.withdrawCollateral(m.params, 98 ether, borrower, borrower);
-        // 97 ether is exactly withdrawable (100 - 3 hold), confirming the stored hold.
-        vm.prank(borrower);
-        m.core.withdrawCollateral(m.params, 97 ether, borrower, borrower);
-    }
-
-    function testRevert_setActivatingHold_wrongRole() public {
-        address nobody = _actor("nobody");
-        bytes32 role = c.RISK_STEWARD_ROLE();
-        vm.prank(nobody);
-        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
-        c.setActivatingHold(3 ether);
-    }
-
-    /// @dev `revokeInstantActivation` (RISK_STEWARD) clears a previously-granted instant flag.
+    /// @dev `revokeInstantActivation` (MANAGER_ROLE) clears a previously-granted instant flag.
     function test_revokeInstantActivation_clearsFlag() public {
         address borrower = _actor("borrower");
         c.grantInstantActivation(borrower);
@@ -478,7 +321,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function testRevert_revokeInstantActivation_wrongRole() public {
         address nobody = _actor("nobody");
         address borrower = _actor("borrower");
-        bytes32 role = c.RISK_STEWARD_ROLE();
+        bytes32 role = c.MANAGER_ROLE();
         vm.prank(nobody);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
         c.revokeInstantActivation(borrower);
@@ -543,15 +386,17 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
                 onBehalf: lender,
                 borrower: borrower,
                 receiver: lender,
-                debtCanceled: allowedAssets,
-                collateralSeized: 1
+                supplySharesBurned: 0,
+                borrowAssetsCanceled: allowedAssets,
+                borrowSharesCanceled: 0,
+                seizedAssets: 1
             })
         );
         vm.prank(address(m.core));
         c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data); // no revert: no SettlementExceedsDebt
     }
 
-    /// @dev Forge a Settle payload with collateralSeized == 0 -> SettlementInvalidSeize.
+    /// @dev Forge a Settle payload with seizedAssets == 0 -> SettlementInvalidSeize.
     function testRevert_settle_zeroSeize_forgedPayload() public {
         Market storage m = _m();
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
@@ -563,8 +408,10 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
                 onBehalf: address(this),
                 borrower: borrower,
                 receiver: address(this),
-                debtCanceled: allowedAssets, // within slice, within debt
-                collateralSeized: 0 // invalid: zero seize
+                supplySharesBurned: 0,
+                borrowAssetsCanceled: allowedAssets, // within slice, within debt
+                borrowSharesCanceled: 0,
+                seizedAssets: 0 // invalid: zero seize
             })
         );
         vm.prank(address(m.core));
@@ -572,12 +419,12 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
     }
 
-    /// @dev Forge a Settle payload with collateralSeized > the borrower's collateral -> SettlementInvalidSeize.
+    /// @dev Forge a Settle payload with seizedAssets > the borrower's collateral -> SettlementInvalidSeize.
     function testRevert_settle_overSeize_forgedPayload() public {
         Market storage m = _m();
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
         (, uint256 allowedAssets,) = c.nextSettlementBorrower();
-        uint256 collateral = m.core.position(m.id, borrower).collateral;
+        uint256 borrowerCollateral = m.core.position(m.id, borrower).collateral;
 
         bytes memory data = abi.encode(
             ILidoLendBaseMarketController.SettleHookData({
@@ -585,8 +432,10 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
                 onBehalf: address(this),
                 borrower: borrower,
                 receiver: address(this),
-                debtCanceled: allowedAssets,
-                collateralSeized: collateral + 1 // invalid: over the borrower's collateral
+                supplySharesBurned: 0,
+                borrowAssetsCanceled: allowedAssets,
+                borrowSharesCanceled: 0,
+                seizedAssets: borrowerCollateral + 1 // invalid: over the borrower's collateral
             })
         );
         vm.prank(address(m.core));
@@ -594,7 +443,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
     }
 
-    /// @dev Forge a Settle payload whose debtCanceled exceeds the allowed slice -> SettlementExceedsAllowed.
+    /// @dev Forge a Settle payload whose borrowAssetsCanceled exceeds the allowed slice -> SettlementExceedsAllowed.
     function testRevert_settle_exceedsAllowed_forgedPayload() public {
         Market storage m = _m();
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
@@ -606,8 +455,10 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
                 onBehalf: address(this),
                 borrower: borrower,
                 receiver: address(this),
-                debtCanceled: allowedAssets + 1, // one over the allowed slice
-                collateralSeized: 1
+                supplySharesBurned: 0,
+                borrowAssetsCanceled: allowedAssets + 1, // one over the allowed slice
+                borrowSharesCanceled: 0,
+                seizedAssets: 1
             })
         );
         vm.prank(address(m.core));
@@ -641,8 +492,10 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
                 onBehalf: address(this),
                 borrower: nonRoot,
                 receiver: address(this),
-                debtCanceled: 1,
-                collateralSeized: 1
+                supplySharesBurned: 0,
+                borrowAssetsCanceled: 1,
+                borrowSharesCanceled: 0,
+                seizedAssets: 1
             })
         );
         vm.prank(address(m.core));
@@ -702,15 +555,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function test_views_defaults() public view {
         assertFalse(c.isFrozen(), "not frozen initially");
         assertFalse(c.isPaused(), "not paused initially");
-        assertEq(c.maxBorrowUtilization(), 1e18, "no gap -> full utilization allowed");
-    }
-
-    function test_currentBorrowUtilization_afterBorrow() public {
-        (, address borrower) = _seedBorrower(100 ether, 1000 ether, 0);
-        vm.prank(borrower);
-        _m().core.borrow(_m().params, 40 ether, 0, borrower, borrower);
-        // utilization = totalBorrow * WAD / totalSupply = 40/100 = 0.4e18 (no interest yet).
-        assertEq(c.currentBorrowUtilization(), 0.4e18, "utilization == 40/100 exactly (no interest accrued)");
     }
 
     /// @dev `currentInflow` reads the decayed activation inflow accumulator. A fresh market has zero inflow;

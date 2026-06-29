@@ -2,7 +2,7 @@
 pragma solidity 0.8.35;
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {BlockInfo, BlockInfoWithHash, GuardiansOpinion} from "./GuardianSignalsTypes.sol";
+import {BlockInfo, BlockInfoWithHash, GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
 
 /// @title IGuardianSignals
 /// @notice Guardian-committee signal layer over accounts, keyed per market. Guardians flag accounts they

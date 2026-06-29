@@ -11,7 +11,8 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {LidoLend} from "@lido-lend/src/LidoLend.sol";
 
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
-import {IAdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveIrm.sol";
+import {IMarketConfig} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IMarketConfig.sol";
+import {MarketConfig} from "@lido-lend-irm/src/adaptive-curve-irm/MarketConfig.sol";
 import {FixedRateIrm} from "@lido-lend-irm/src/fixed-rate-irm/FixedRateIrm.sol";
 // The IRM ships its own morpho-blue, so its `Id` is a distinct UDVT from `@lido-lend`'s. Same bytes32
 // market hash; bridged by unwrap/wrap only where the IRM's typed API needs it.
@@ -74,17 +75,22 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
             oracleSource: oracleSource,
             lltv: 0.8e18,
             enableSettlement: true,
-            activation: ActivationConfig({
+            activation: CollateralActivationConfigParams({
                 minActivationDelay: 10 minutes,
                 maxActivationDelay: 2 hours,
                 maxDelayInflow: 10_000 ether,
                 delayPerStrike: 2 hours,
-                activatingHold: 0,
+                activatingLockAmount: 0,
+                activatingLockDuration: 0,
                 minActivationAmount: 10 ether,
                 maxGuardiansQuorumDelay: 0
             }),
             settlementConfig: SettlementConfigParams({
-                sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
+                sliceFloorBps: 100,
+                sliceFloorAssets: 0,
+                fullCutBelowCollateral: 10 ether,
+                ltvStepBps: 100,
+                minBorrowCollateral: 0
             }),
             guardians: guardians,
             quorum: 1,
@@ -94,8 +100,8 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
     }
 
     /// @dev Standard adaptive curve parameters (Morpho mainnet-like; pass `_validateConfig`).
-    function _curveConfig() internal pure returns (IAdaptiveCurveIrm.Config memory) {
-        return IAdaptiveCurveIrm.Config({
+    function _curveConfig() internal pure returns (IMarketConfig.Config memory) {
+        return IMarketConfig.Config({
             curveSteepness: 4e18,
             adjustmentSpeed: int256(50e18) / int256(365 days),
             targetUtilization: 9e17,
@@ -166,16 +172,20 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         address core = address(protocol.core);
 
         address oracle = _deployOracle(cfg.oracleSource, admin);
-        address irm = _deployMarketIrm(core);
+        address irm = _deployMarketIrm(core, admin);
 
         MarketParams memory params = MarketParams({
             loanToken: cfg.loanToken, collateralToken: cfg.collateralToken, oracle: oracle, irm: irm, lltv: cfg.lltv
         });
         Id id = params.id();
 
-        // FixedRateIrm needs its per-market rate set before the market is created.
+        // The IRM needs its per-market config set before the market is used. Fixed: a constant rate. Adaptive:
+        // an immutable `MarketConfig` holding the curve params, pointed at by the owner via `setConfig`.
         if (irmKind == IrmKind.Fixed) {
             FixedRateIrm(irm).setBorrowRate(IrmId.wrap(Id.unwrap(id)), fixedBorrowRate);
+        } else {
+            MarketConfig marketConfig = new MarketConfig(_curveConfig());
+            AdaptiveCurveIrm(irm).setConfig(IrmId.wrap(Id.unwrap(id)), marketConfig);
         }
 
         address controllerImpl = address(new LidoLendMarketController(IMorpho(core), id));
@@ -184,7 +194,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 controllerImpl,
                 admin,
                 abi.encodeWithSignature(
-                    "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint128,uint40))",
+                    "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
                     admin,
                     address(protocol.guardianSignals),
                     cfg.activation
@@ -216,7 +226,8 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 sliceFloorBps: cfg.settlementConfig.sliceFloorBps,
                 sliceFloorAssets: cfg.settlementConfig.sliceFloorAssets,
                 fullCutBelowCollateral: cfg.settlementConfig.fullCutBelowCollateral,
-                ltvStepBps: cfg.settlementConfig.ltvStepBps
+                ltvStepBps: cfg.settlementConfig.ltvStepBps,
+                minBorrowCollateral: cfg.settlementConfig.minBorrowCollateral
             })
         );
 
@@ -253,10 +264,11 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         return address(new OssifiableProxy(impl, admin, abi.encodeWithSignature("initialize(uint256)", oraclePrice)));
     }
 
-    /// @dev IRM picked by `irmKind`. Adaptive needs no per-market setup; Fixed has its rate set later.
-    function _deployMarketIrm(address core) internal returns (address) {
+    /// @dev IRM picked by `irmKind`. Both flavours have their per-market config set after the id is known
+    ///      (Adaptive's curve via `setConfig`, Fixed's rate via `setBorrowRate`).
+    function _deployMarketIrm(address core, address owner) internal returns (address) {
         if (irmKind == IrmKind.Fixed) return address(new FixedRateIrm());
-        return address(new AdaptiveCurveIrm(core, _curveConfig()));
+        return address(new AdaptiveCurveIrm(core, owner));
     }
 
     // ---

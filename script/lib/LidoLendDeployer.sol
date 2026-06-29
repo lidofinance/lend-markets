@@ -16,6 +16,12 @@ interface IControllerConfigurator {
     function setSettlementConfig(LidoLendDeployer.SettlementConfigParams calldata policy) external;
 }
 
+/// @dev Minimal surface of the owner facade used at deploy: create the market through it. Local interface
+///      (no concrete import), mirroring `IControllerConfigurator`.
+interface IOwnerFacade {
+    function createMarket(MarketParams calldata marketParams, address controller, bool enableSettlement) external;
+}
+
 /// @title LidoLendDeployer
 /// @notice Shared deploy steps for a Lido Lending market: core, guardian-signals registry, oracle, IRM,
 ///         controller (behind a proxy), the market, and the ERC-4626 vault.
@@ -27,27 +33,29 @@ abstract contract LidoLendDeployer {
     /// @dev forge-std cheatcode singleton, inlined so this contract need not inherit `Test` / `Script`.
     Vm internal constant _vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    /// @dev Mirror of `SettlementTypes.SettlementConfig` (same field order/types); see `ActivationConfig`
-    ///      for why the deployer mirrors instead of importing.
+    /// @dev Mirror of `SettlementTypes.SettlementConfig` (same field order/types); see
+    /// `CollateralActivationConfigParams` for why the deployer mirrors instead of importing.
     struct SettlementConfigParams {
         uint16 sliceFloorBps;
         uint96 sliceFloorAssets;
         uint96 fullCutBelowCollateral;
         uint16 ltvStepBps;
+        uint96 minBorrowCollateral;
     }
 
-    /// @dev Mirror of `CollateralActivationLib.Config` (same field order/types) so the controller initializer can
-    ///      be abi-encoded without coupling the deployer to the controller's libraries. Field order must
+    /// @dev Mirror of `CollateralActivationConfig` (`types/CollateralActivationTypes.sol`) so the controller
+    /// initializer can be abi-encoded without coupling the deployer to the controller's libraries. Field order must
     ///      match the hardcoded tuple in `_deployController`'s `encodeWithSignature`.
-    struct ActivationConfig {
+    struct CollateralActivationConfigParams {
         // delay ramp
         uint64 minActivationDelay;
         uint64 maxActivationDelay;
         uint128 maxDelayInflow;
         // strike surcharge
         uint64 delayPerStrike;
-        // sybil hold on activating collateral
-        uint128 activatingHold;
+        // sybil lock on activating collateral
+        uint128 activatingLockAmount;
+        uint64 activatingLockDuration;
         // dust threshold (anti-griefing)
         uint128 minActivationAmount;
         // cap on total activating time from the lot's start (0 = no quorum-scan gate)
@@ -56,6 +64,7 @@ abstract contract LidoLendDeployer {
 
     struct Deployed {
         address core;
+        address ownerFacade;
         address guardianSignals;
         address oracle;
         address irm;
@@ -75,7 +84,7 @@ abstract contract LidoLendDeployer {
         address oracleSource;
         uint256 lltv;
         bool enableSettlement;
-        ActivationConfig activation;
+        CollateralActivationConfigParams activation;
         SettlementConfigParams settlementConfig;
         // Guardian-signals registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
         // `1 <= quorum <= guardians.length`; swap in the real guardian set post-deploy.
@@ -88,27 +97,39 @@ abstract contract LidoLendDeployer {
     /// @notice One-shot deploy of the whole market stack.
     function _deployForkStack(DeployConfig memory cfg) internal returns (Deployed memory d) {
         d.core = _deployCore(cfg.admin);
+
+        // Hand the core's ownership to the role-gated facade: from here every owner-only call (market
+        // creation, fees, ownership transfer) is gated behind a role on the facade rather than a single EOA.
+        // The deploy needs to create the market, so `admin` gets MARKET_CREATOR_ROLE at construction (a
+        // placeholder it keeps and can rotate post-deploy); FEE_MANAGER_ROLE is left for governance to grant.
+        // `setOwner` runs in the deploy context, which is the current core owner (`admin`).
+        d.ownerFacade = _deployOwnerFacade(d.core, cfg.admin, cfg.admin, address(0));
+        ILidoLend(d.core).setOwner(d.ownerFacade);
+
         d.guardianSignals = _deployGuardianSignals(cfg.admin, cfg.guardians, cfg.quorum);
         d.oracle = _deployOracle(cfg.oracleSource, cfg.admin);
-        d.irm = _deployIrm(d.core);
+        d.irm = _deployIrm(d.core, cfg.admin);
 
         d.params = MarketParams({
             loanToken: cfg.loanToken, collateralToken: cfg.collateralToken, oracle: d.oracle, irm: d.irm, lltv: cfg.lltv
         });
         d.marketId = d.params.id();
 
+        // The adaptive IRM reads per-market curve params from an immutable MarketConfig the owner points it at.
+        _configureAdaptiveIrm(d.irm, d.marketId);
+
         (d.controllerProxy, d.controllerImpl) =
             _deployController(d.core, d.marketId, d.guardianSignals, cfg.admin, cfg.activation);
 
-        // New core: createMarket is owner-gated and auto-enables the IRM and LLTV (standalone
-        // enableIrm/enableLltv were removed). The bool gates whether settle is enabled for the market.
-        ILidoLend(d.core).createMarket(d.params, d.controllerProxy, cfg.enableSettlement);
+        // Market creation is owner-gated on the core (it auto-enables the IRM and LLTV — standalone
+        // enableIrm/enableLltv were removed) and the bool gates whether settle is enabled. The facade owns
+        // the core now and `admin` (the deploy context) holds MARKET_CREATOR_ROLE, so create through it.
+        IOwnerFacade(d.ownerFacade).createMarket(d.params, d.controllerProxy, cfg.enableSettlement);
 
         d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
-        // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the controller initializer;
-        // grant it MANAGER_ROLE (a placeholder, rotated to the EasyTrack factory post-deploy)
-        // so it can set the policy now and tune it later.
+        // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the initializer, the default admin of
+        // MANAGER_ROLE, so it grants itself MANAGER_ROLE to set the policy now.
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
         controller.setSettlementConfig(cfg.settlementConfig);
@@ -120,6 +141,18 @@ abstract contract LidoLendDeployer {
         address impl = _deployArtifact("lib/lido-lend/src/LidoLend.sol:LidoLend", "");
         bytes memory initData = abi.encodeWithSignature("initialize(address)", admin);
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
+    }
+
+    /// @dev Immutable role-gated owner facade for the core (no proxy). `admin` gets `DEFAULT_ADMIN_ROLE`;
+    ///      `marketCreator`/`feeManager` get their capability roles (`address(0)` grants none).
+    function _deployOwnerFacade(address core, address admin, address marketCreator, address feeManager)
+        internal
+        virtual
+        returns (address)
+    {
+        return _deployArtifact(
+            "src/LidoLendOwner.sol:LidoLendOwner", abi.encode(core, admin, marketCreator, feeManager)
+        );
     }
 
     /// @dev Guardian-signals registry behind a proxy. `initialize(admin, guardians, quorum)`.
@@ -148,10 +181,35 @@ abstract contract LidoLendDeployer {
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
-    function _deployIrm(address core) internal virtual returns (address) {
+    function _deployIrm(address core, address owner) internal virtual returns (address) {
         return _deployArtifact(
-            "lib/lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core)
+            "lib/lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core, owner)
         );
+    }
+
+    /// @dev Morpho mainnet-like adaptive curve params, ABI-encoded as the `IMarketConfig.Config` tuple. The IRM
+    ///      and its config are pinned to an older solc, so they are reached through artifacts and a low-level
+    ///      call rather than a typed import.
+    function _encodedCurveConfig() internal pure virtual returns (bytes memory) {
+        return abi.encode(
+            int256(4e18), // curveSteepness
+            int256(50e18) / int256(365 days), // adjustmentSpeed
+            int256(9e17), // targetUtilization
+            int256(4e16) / int256(365 days), // initialRateAtTarget
+            int256(1e15) / int256(365 days), // minRateAtTarget
+            int256(2e18) / int256(365 days), // maxRateAtTarget
+            uint256(0) // maxBorrowRate (0 disables the ceiling)
+        );
+    }
+
+    /// @dev Deploy an immutable per-market `MarketConfig` and point the adaptive IRM at it (owner-only, run in
+    ///      the deploy context which owns the IRM).
+    function _configureAdaptiveIrm(address irm, Id marketId) internal virtual {
+        address marketConfig = _deployArtifact(
+            "lib/lido-lend-irm/src/adaptive-curve-irm/MarketConfig.sol:MarketConfig", _encodedCurveConfig()
+        );
+        (bool ok,) = irm.call(abi.encodeWithSignature("setConfig(bytes32,address)", Id.unwrap(marketId), marketConfig));
+        require(ok, "LidoLendDeployer: irm setConfig failed");
     }
 
     /// @dev Controller behind a proxy. The impl bakes `(lidoLend, marketId)` into immutables at deploy,
@@ -161,13 +219,13 @@ abstract contract LidoLendDeployer {
         Id marketId,
         address guardianSignals,
         address admin,
-        ActivationConfig memory activation
+        CollateralActivationConfigParams memory activation
     ) internal virtual returns (address proxy, address impl) {
         impl = _deployArtifact(
             "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core, marketId)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint128,uint40))",
+            "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
             admin,
             guardianSignals,
             activation

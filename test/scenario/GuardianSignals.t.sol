@@ -7,7 +7,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {BlockInfoWithHash, GuardiansOpinion, Status} from "../../src/interfaces/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash, GuardiansOpinion, Status} from "../../src/types/GuardianSignalsTypes.sol";
 
 /// @notice Unit tests for the guardian liveness frontier: heartbeats are O(1) and do not move the frontier,
 ///         `syncQuorumBlock` recomputes the quorum-th-largest and ratchets it up, and the guardian set is capped.
@@ -66,7 +66,9 @@ contract GuardianSignalsTest is Test {
     /// @notice The guardian set is capped at 32: adding the 33rd reverts.
     function test_maxGuardians_cappedAt32() public {
         _deploy(32, 1);
-        assertEq(GuardianSignals(address(gs)).MAX_GUARDIANS_COUNT(), 32, "cap is 32");
+        GuardianSignals gsImpl = GuardianSignals(address(gs));
+        assertEq(gsImpl.MAX_GUARDIANS_COUNT(), 32, "cap is 32");
+        gsImpl.grantRole(gsImpl.GUARDIANS_MANAGER_ROLE(), address(this));
 
         vm.expectRevert(IGuardianSignals.MaxGuardiansReached.selector);
         gs.addGuardian(address(0xBEEF));
