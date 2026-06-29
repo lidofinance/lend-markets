@@ -277,7 +277,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         // (1) Initial queue order: highest-LTV borrower is at the root.
         assertEq(ctx.controller.settlementBorrowersCount(), 3, "all three active borrowers tracked");
-        (address root,,) = ctx.controller.nextSettlementBorrower();
+        (address root,,,) = ctx.controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "highest-LTV borrower at root");
 
         // (2) A partial cut on the root, half the allowed slice. The full slice is sized to push the
@@ -285,13 +285,13 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         uint256 firstCutShares = _sliceShares(ctx) / 2;
         vm.prank(LENDER);
         ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, BORROWER, LENDER);
-        (root,,) = ctx.controller.nextSettlementBorrower();
+        (root,,,) = ctx.controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "BORROWER still highest after first partial cut");
 
-        // (3) Targeting the second borrower while it isn't the queue root is rejected by the
-        //     controller hook — eligibility filter requires queue-head or a personal settlement LTV.
+        // (3) Targeting the second borrower while it isn't the queue root is rejected by the controller hook:
+        //     a non-root borrower without a personal settlement LTV has a zero slice, so any cut exceeds it.
         vm.prank(LENDER);
-        vm.expectRevert(abi.encodeWithSignature("SettlementIneligible()"));
+        vm.expectRevert(abi.encodeWithSignature("SettlementExceedsAllowed()"));
         ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (4) SECOND_BORROWER opts in to a 5% post-cut LTV — they are now eligible regardless of
@@ -302,9 +302,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (5) THIRD_BORROWER (lowest LTV, no settlement LTV) is never touched throughout the scenario.
-        Position memory _pos = ctx.market.position(ctx.id, THIRD_BORROWER);
-        uint128 lowBorrowSharesAfter = _pos.borrowShares;
-        uint128 lowCollateralAfter = _pos.collateral;
+        Position memory _pLow = ctx.market.position(ctx.id, THIRD_BORROWER);
+        (uint128 lowBorrowSharesAfter, uint128 lowCollateralAfter) = (_pLow.borrowShares, _pLow.collateral);
         assertEq(uint256(lowCollateralAfter), lowCol, "low-LTV borrower's collateral untouched");
         assertGt(lowBorrowSharesAfter, 0, "low-LTV borrower still has debt");
     }
@@ -337,7 +336,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 2 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address root,,) = ctx.controller.nextSettlementBorrower();
+        (address root,,,) = ctx.controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "high-LTV borrower is the queue head");
 
         // Cut sized to the allowed slice at the real rate (reused after the rebase is cleared).
@@ -438,7 +437,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.controller.setSettlementLtv(1e18);
     }
 
-    /// @notice When the queue root has a settlement LTV, `nextSettlementBorrower`'s slice is bumped up to bring
+    /// @notice When the queue root has a settlement LTV, the root's allowed slice is bumped up to bring
     ///         the borrower's LTV down to it. Close runner-up key keeps the algorithmic
     ///         slice small so the settlement-LTV slice dominates.
     function test_settlementLtv_bumpsHeapSlice() public {
@@ -465,13 +464,15 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 17 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (, uint256 sliceBefore,) = ctx.controller.nextSettlementBorrower();
+        (address rootBefore,,,) = ctx.controller.nextSettlementBorrower();
+        uint256 sliceBefore = ctx.controller.positionOf(rootBefore).slice;
 
         // BORROWER opts in to a 30% post-cut LTV — a deep target.
         vm.prank(BORROWER);
         ctx.controller.setSettlementLtv(0.3e18);
 
-        (address rootAfter, uint256 sliceAfter,) = ctx.controller.nextSettlementBorrower();
+        (address rootAfter,,,) = ctx.controller.nextSettlementBorrower();
+        uint256 sliceAfter = ctx.controller.positionOf(rootAfter).slice;
         assertEq(rootAfter, BORROWER, "root unchanged");
         assertGt(sliceAfter, sliceBefore, "settlement LTV raised the slice");
 
@@ -482,7 +483,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     }
 
     /// @notice Direct EOA-lender can settle a non-root borrower iff that borrower has a personal
-    ///         settlement LTV set. Without one the controller hook reverts with `SettlementIneligible`.
+    ///         settlement LTV set. Without one its policy slice is zero, so the controller hook reverts
+    ///         `SettlementExceedsAllowed` on any cut.
     function test_settle_eligibleViaPersonalSettlementLtv() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
@@ -506,15 +508,15 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 3 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address root,,) = ctx.controller.nextSettlementBorrower();
+        (address root,,,) = ctx.controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "BORROWER is queue root");
 
         uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
         uint256 cut = lenderShares / 5;
 
-        // Targeting tail SECOND_BORROWER without a settlement LTV → hook revert.
+        // Targeting tail SECOND_BORROWER without a settlement LTV → zero slice → hook revert.
         vm.prank(LENDER);
-        vm.expectRevert(abi.encodeWithSignature("SettlementIneligible()"));
+        vm.expectRevert(abi.encodeWithSignature("SettlementExceedsAllowed()"));
         ctx.market.settle(ctx.marketParams, 0, cut, LENDER, SECOND_BORROWER, LENDER);
 
         // SECOND_BORROWER opts in to 5% post-cut LTV — slice is large enough for the cut.
@@ -639,10 +641,12 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     /// @dev Loan-asset slice the controller will allow against the current queue root, converted to
     ///      lender supply shares with Morpho's virtual-offset rounding.
     function _sliceShares(TestMarket memory ctx) internal view returns (uint256) {
-        (, uint256 sliceAssets,) = ctx.controller.nextSettlementBorrower();
+        (address root,,,) = ctx.controller.nextSettlementBorrower();
+        uint256 sliceAssets = ctx.controller.positionOf(root).slice;
         if (sliceAssets == type(uint256).max) return type(uint256).max;
-        Market memory _mkt = ctx.market.market(ctx.id);
-        return SharesMathLib.toSharesDown(sliceAssets, uint256(_mkt.totalSupplyAssets), uint256(_mkt.totalSupplyShares));
+        Market memory _m = ctx.market.market(ctx.id);
+        (uint128 totalSupplyAssets, uint128 totalSupplyShares) = (_m.totalSupplyAssets, _m.totalSupplyShares);
+        return SharesMathLib.toSharesDown(sliceAssets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
     }
 
     function _hasMainnetLidoContracts() internal view returns (bool) {

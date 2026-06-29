@@ -162,6 +162,42 @@ library SettlementQueueLib {
         return _strandsDust($, marketView, position, sliceAssets) ? debtAssets : sliceAssets;
     }
 
+    /// @notice Returns `borrower`'s policy-allowed cut as the two anchors a core `settle` accepts: the caller
+    ///         passes one and 0 for the other. `supplyShares` settles supply-anchored, `borrowShares` borrow-
+    ///         anchored. `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All zero
+    ///         when nothing can be cut.
+    /// @dev A full close (`remainingBorrowShares == 0`) must use `borrowShares`: it is the whole debt and closes
+    ///      the position to exactly zero. `supplyShares` there is the close's supply cost — supply-anchoring with
+    ///      it rounds the derived debt up past the position and reverts `SETTLEMENT_EXCEEDS_DEBT`.
+    /// @param position The borrower's position to cut.
+    function settlementSlice(
+        State storage $,
+        MarketView memory marketView,
+        address borrower,
+        PositionView memory position
+    ) internal view returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares) {
+        uint256 sliceAssets = allowedSlice($, marketView, borrower, position);
+        if (sliceAssets == 0 || position.borrowShares == 0) return (0, 0, 0);
+
+        (uint256 debtAssets,) = _positionValues(marketView, position);
+        uint256 canceledShares = sliceAssets.toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+
+        // Slice spans (or rounds up to) the whole debt: a full close. supplyShares is the supply cost of closing
+        // it (what a borrow-anchored close burns), computed the core's way. The settle itself uses borrowShares.
+        if (sliceAssets == debtAssets || canceledShares >= position.borrowShares) {
+            supplyShares = uint256(position.borrowShares)
+                .toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares)
+                .toSharesUp(marketView.totalSupplyAssets, marketView.totalSupplyShares);
+            return (supplyShares, position.borrowShares, 0);
+        }
+
+        // Partial cut: both anchors for the slice. supplyShares burns supply worth the slice (down-rounded),
+        // borrowShares cancels the slice's debt (up-rounded), remaining is the debt left behind.
+        borrowShares = canceledShares;
+        supplyShares = sliceAssets.toSharesDown(marketView.totalSupplyAssets, marketView.totalSupplyShares);
+        remainingBorrowShares = uint256(position.borrowShares) - canceledShares;
+    }
+
     /// @notice Settlement-LTV slice: brings `borrower`'s LTV down to its personal target. Zero
     ///         when no settlement LTV is set, no debt/collateral, or the current LTV is already at/under the target.
     function settlementLtvSlice(

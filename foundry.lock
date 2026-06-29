@@ -1,8 +1,8 @@
 {
   "lib/lido-lend": {
     "branch": {
-      "name": "refactor/lido-lend-and-spec",
-      "rev": "0f01910b28f36a1206971aa1cd23377bfe7c3d7e"
+      "name": "feat/settle-share-anchors",
+      "rev": "af65ee63dc781f9ef8654abcdf34278a9d3c75b9"
     }
   },
   "lib/lido-lend-irm": {
