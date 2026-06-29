@@ -5,7 +5,7 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
-import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
+import {ILidoLendMarketConfigurator} from "./ILidoLendMarketConfigurator.sol";
 import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 /// @title ILidoLendMarketController
@@ -13,7 +13,7 @@ import {SettlementConfig} from "../types/SettlementTypes.sol";
 ///         (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the
 ///         borrower dashboard. The controller implements this interface, so it is the single source for
 ///         the dashboard struct, events, errors, and the function docs the contract inherits.
-interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessControl {
+interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessControl, ILidoLendMarketConfigurator {
     // ---
     // EVENTS
     // ---
@@ -21,11 +21,8 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Emitted when the market is frozen or unfrozen.
     event FrozenSet(bool frozen, address indexed account);
 
-    /// @notice Emitted when the borrow utilization gap is set (WAD; 0 = no gap).
-    event BorrowUtilizationGapSet(uint256 borrowUtilizationGap);
-
-    /// @notice Emitted when a borrower's instant-activation (no maturation timer) status is set.
-    event InstantActivationSet(address indexed borrower, bool enabled);
+    /// @notice Emitted when a trusted caller's instant-activation status is set.
+    event InstantActivationSet(address indexed caller, bool enabled);
 
     // ---
     // ERRORS
@@ -46,21 +43,12 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Thrown when a banned address borrows, receives a borrow, or initiates one.
     error AddressBanned();
 
-    /// @notice Thrown when a risk-steward lever would loosen a parameter instead of tightening it.
-    error ConfigNotTightened();
-
     /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
 
     /// @notice Thrown when a withdrawal would draw a borrower's collateral below the activation minimum
     ///         while it still owes debt. Repaying to zero lifts the floor.
     error CollateralFloorBreached();
-
-    /// @notice Thrown when a borrow would push borrow utilization above the cap (WAD - borrowUtilizationGap).
-    error MaxBorrowUtilizationExceeded();
-
-    /// @notice Thrown when the borrow utilization gap is set to WAD or more (would freeze borrowing).
-    error BorrowUtilizationGapTooHigh();
 
     /// @notice Thrown when a core-applied position delta exceeds the controller's read of that position.
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
@@ -116,13 +104,9 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     // ROLES
     // ---
 
-    /// @notice Role gating the risk-increasing levers: full activation config, granting instant activation,
-    ///         the borrow-utilization gap, and the settlement config. Meant for the EasyTrack factory.
+    /// @notice The single governance role: full activation and settlement config, grant and revoke instant
+    ///         activation.
     function MANAGER_ROLE() external view returns (bytes32);
-
-    /// @notice Role gating the fast risk-reducing levers, each one-directional toward tighter policy: raise the
-    ///         activation delay floor/cap, set the Sybil hold, revoke instant activation, widen the gap.
-    function RISK_STEWARD_ROLE() external view returns (bytes32);
 
     /// @notice Role allowed to freeze the market.
     function FREEZER_ROLE() external view returns (bytes32);
@@ -140,54 +124,21 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     // COLLATERAL ACTIVATION
     // ---
 
-    /// @notice Update the governance-tunable activation parameters. Risk-increasing path: the role is meant
-    ///         to be held by the EasyTrack factory, which adds the objection window.
-    function setConfig(CollateralActivationLib.Config calldata cfg) external;
-
-    /// @notice Fast risk-reducing lever: raise the activation delay floor. Reverts if it would lower.
-    function increaseMinActivationDelay(uint40 newMinActivationDelay) external;
-
-    /// @notice Fast risk-reducing lever: raise the activation delay cap. Reverts if it would lower.
-    function increaseMaxActivationDelay(uint40 newMaxActivationDelay) external;
-
-    /// @notice Risk-steward lever (Sybil protection): hold up to `activatingHold` of each position's
-    ///         activating collateral unwithdrawable until it matures. 0 (the default) disables it.
-    function setActivatingHold(uint128 activatingHold) external;
-
     /// @notice Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
     function currentInflow() external view returns (uint256);
 
-    /// @notice Whitelist `borrower` to skip the activation maturation timer — its collateral becomes active on
-    ///         deposit. Risk-increasing path (waives the anti-flash/Sybil delay): meant for the EasyTrack
-    ///         factory and reserved for trusted addresses. Ban and freeze still gate as usual.
-    function grantInstantActivation(address borrower) external;
+    /// @notice Base activation delay a deposit incurs at the current inflow — for borrowers gauging the wait.
+    function currentActivationDelay() external view returns (uint256);
 
-    /// @notice Fast risk-reducing lever: remove `borrower`'s instant activation, restoring the timer.
-    function revokeInstantActivation(address borrower) external;
+    /// @notice Whitelist a trusted caller contract (e.g. a router supplying on behalf of users) so its supplies
+    ///         cross straight into `active`, skipping the activation timer and inflow throttle. Risk-increasing
+    ///         path (waives the anti-flash/Sybil delay): reserved for trusted, access-gated callers — never a
+    ///         permissionless helper, which would waive the throttle for everyone routing through it. Keyed on
+    ///         the supply caller, not the position owner. Ban and freeze still gate as usual.
+    function grantInstantActivation(address caller) external;
 
-    /// @notice Whether `borrower` skips the activation maturation timer.
-    function hasInstantActivation(address borrower) external view returns (bool);
-
-    // ---
-    // BORROW UTILIZATION GAP
-    // ---
-
-    /// @notice Set the minimum gap kept between borrow utilization and 100% (WAD; 0 = no gap, must be < WAD).
-    ///         Reserves that share of supply for lender withdrawals — a borrow that would close the gap
-    ///         reverts. Risk-increasing path (shrinking or disabling the gap): meant for the EasyTrack factory.
-    function setBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external;
-
-    /// @notice Fast risk-reducing lever: widen the gap. Reverts if it would not raise it.
-    function increaseBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external;
-
-    /// @notice The minimum gap kept between borrow utilization and 100% (WAD; 0 = no gap).
-    function borrowUtilizationGap() external view returns (uint256);
-
-    /// @notice Max borrow utilization permitted (WAD), i.e. WAD - borrowUtilizationGap. WAD when no gap is set.
-    function maxBorrowUtilization() external view returns (uint256);
-
-    /// @notice The market's current borrow utilization (borrowed / supplied, WAD) with pending interest accrued.
-    function currentBorrowUtilization() external view returns (uint256);
+    /// @notice Whether `caller`'s supplies skip the activation timer.
+    function hasInstantActivation(address caller) external view returns (bool);
 
     // ---
     // SETTLEMENT QUEUE

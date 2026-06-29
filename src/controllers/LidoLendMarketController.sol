@@ -4,17 +4,19 @@ pragma solidity 0.8.35;
 import {Id, IMorpho, MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
-import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
+import {WAD} from "../libs/Constants.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
 import {IGuardianSignals} from "../interfaces/IGuardianSignals.sol";
-import {GuardiansOpinion, Status} from "../interfaces/GuardianSignalsTypes.sol";
+import {GuardiansOpinion, Status} from "../types/GuardianSignalsTypes.sol";
 import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
+import {ILidoLendMarketConfigurator} from "../interfaces/ILidoLendMarketConfigurator.sol";
 import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
 import {SettlementQueueLib} from "../libs/SettlementQueueLib.sol";
+import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTypes.sol";
 
@@ -35,12 +37,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // ROLES
     // ---
 
-    /// @dev Sets the full config in either direction (risk-increasing path): activation params, instant
-    ///      activation, borrow-utilization gap, settlement config. Meant for the EasyTrack factory.
+    /// @dev The single governance role: full activation and settlement config, grant and revoke instant
+    ///      activation.
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
-    /// @dev Fast risk-reducing levers that can only tighten: raise the activation delays, widen the borrow
-    ///      gap, raise the Sybil hold, revoke instant activation.
-    bytes32 public constant RISK_STEWARD_ROLE = keccak256("RISK_STEWARD_ROLE");
     /// @dev Freezes the market: blocks new borrows and debt-bearing collateral withdrawals.
     bytes32 public constant FREEZER_ROLE = keccak256("FREEZER_ROLE");
     /// @dev Lifts a freeze.
@@ -64,7 +63,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // ---
 
     /// @dev When set, new borrows and debt-bearing collateral withdrawals revert and activation maturation
-    ///      defers. Debt-free positions can still withdraw. Distinct from the pause, which stops every hook.
+    ///      defers. Debt-free positions can still withdraw.
     bool private _isFrozen;
     /// @dev Guardian-signal registry read on every hook to gate borrowing (ban) and scale activation (strikes).
     IGuardianSignals private _guardianSignals;
@@ -72,9 +71,10 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     CollateralActivationLib.State private _activation;
     /// @dev Risk queue + settlement LTVs + settlement config.
     SettlementQueueLib.State private _settlementQueue;
-    /// @dev Minimum gap kept between borrow utilization and 100% (WAD): reserves that share of supply for
-    ///      lender withdrawals, so a borrow that would close the gap reverts. 0 = no gap.
-    uint256 private _borrowUtilizationGap;
+    /// @dev Trusted caller contracts whose supplies skip the activation timer/throttle (instant-active).
+    ///      Keyed on the supply `caller`, not the position owner, so a trusted router activating on behalf of
+    ///      users qualifies. Must only ever hold access-gated contracts, never a permissionless helper.
+    mapping(address caller => bool) private _instantActivationCallers;
 
     // ---
     // MODIFIERS
@@ -100,7 +100,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     }
 
     /// @notice One-shot proxy initializer: grants roles and wires the guardian-signals registry and config.
-    function initialize(address admin, IGuardianSignals guardianSignals, CollateralActivationLib.Config calldata cfg)
+    function initialize(address admin, IGuardianSignals guardianSignals, CollateralActivationConfig calldata cfg)
         external
         initializer
     {
@@ -149,85 +149,41 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // COLLATERAL ACTIVATION
     // ---
 
-    /// @inheritdoc ILidoLendMarketController
-    function setConfig(CollateralActivationLib.Config calldata cfg) external onlyRole(MANAGER_ROLE) {
+    /// @inheritdoc ILidoLendMarketConfigurator
+    function setCollateralActivationConfig(CollateralActivationConfig calldata cfg) external onlyRole(MANAGER_ROLE) {
         _activation.setConfig(cfg);
     }
 
-    /// @inheritdoc ILidoLendMarketController
-    function increaseMinActivationDelay(uint40 newMinActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
-        if (newMinActivationDelay < _activation.config.minActivationDelay) revert ConfigNotTightened();
-        _activation.setMinActivationDelay(newMinActivationDelay);
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    function increaseMaxActivationDelay(uint40 newMaxActivationDelay) external onlyRole(RISK_STEWARD_ROLE) {
-        if (newMaxActivationDelay < _activation.config.maxActivationDelay) revert ConfigNotTightened();
-        _activation.setMaxActivationDelay(newMaxActivationDelay);
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    /// @dev Forced paths (liquidation, settle) ignore the hold. The hold is temporary: held collateral
-    ///      matures into `active` on its timer and becomes withdrawable, so this is not a custody power.
-    function setActivatingHold(uint128 activatingHold) external onlyRole(RISK_STEWARD_ROLE) {
-        _activation.setActivatingHold(activatingHold);
+    /// @inheritdoc ILidoLendMarketConfigurator
+    function collateralActivationConfig() external view returns (CollateralActivationConfig memory) {
+        return _activation.config;
     }
 
     /// @inheritdoc ILidoLendMarketController
     function currentInflow() external view returns (uint256) {
-        return _activation.getInflow();
+        return _activation.calcDecayedInflow();
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function grantInstantActivation(address borrower) external onlyRole(MANAGER_ROLE) {
-        _activation.setInstantActivation(borrower, true);
+    function currentActivationDelay() external view returns (uint256) {
+        return _activation.getCurrentActivationDelay();
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function revokeInstantActivation(address borrower) external onlyRole(RISK_STEWARD_ROLE) {
-        _activation.setInstantActivation(borrower, false);
+    function grantInstantActivation(address caller) external onlyRole(MANAGER_ROLE) {
+        _instantActivationCallers[caller] = true;
+        emit InstantActivationSet(caller, true);
+    }
+
+    /// @inheritdoc ILidoLendMarketConfigurator
+    function revokeInstantActivation(address caller) external onlyRole(MANAGER_ROLE) {
+        _instantActivationCallers[caller] = false;
+        emit InstantActivationSet(caller, false);
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function hasInstantActivation(address borrower) external view returns (bool) {
-        return _activation.instantActivation[borrower];
-    }
-
-    // ---
-    // BORROW UTILIZATION GAP
-    // ---
-
-    /// @inheritdoc ILidoLendMarketController
-    function setBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external onlyRole(MANAGER_ROLE) {
-        if (newBorrowUtilizationGap >= WAD) revert BorrowUtilizationGapTooHigh();
-        _borrowUtilizationGap = newBorrowUtilizationGap;
-        emit BorrowUtilizationGapSet(newBorrowUtilizationGap);
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    function increaseBorrowUtilizationGap(uint256 newBorrowUtilizationGap) external onlyRole(RISK_STEWARD_ROLE) {
-        if (newBorrowUtilizationGap >= WAD) revert BorrowUtilizationGapTooHigh();
-        if (newBorrowUtilizationGap <= _borrowUtilizationGap) revert ConfigNotTightened();
-        _borrowUtilizationGap = newBorrowUtilizationGap;
-        emit BorrowUtilizationGapSet(newBorrowUtilizationGap);
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    function borrowUtilizationGap() external view returns (uint256) {
-        return _borrowUtilizationGap;
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    function maxBorrowUtilization() external view returns (uint256) {
-        return WAD - _borrowUtilizationGap;
-    }
-
-    /// @inheritdoc ILidoLendMarketController
-    function currentBorrowUtilization() external view returns (uint256) {
-        MarketParams memory params = LIDO_LEND.idToMarketParams(_MARKET_ID);
-        (uint256 totalSupplyAssets,, uint256 totalBorrowAssets,) =
-            MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
-        return totalSupplyAssets == 0 ? 0 : Math.mulDiv(totalBorrowAssets, WAD, totalSupplyAssets);
+    function hasInstantActivation(address caller) external view returns (bool) {
+        return _instantActivationCallers[caller];
     }
 
     // ---
@@ -241,7 +197,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
     /// @inheritdoc ILidoLendMarketController
     function settlementConfig() external view returns (SettlementConfig memory) {
-        return _settlementQueue.policy;
+        return _settlementQueue.config;
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -347,7 +303,8 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         dashboard.banned = opinion.status == Status.Banned;
         dashboard.strikes = opinion.strikes;
         dashboard.flagCount = opinion.flagCount;
-        (dashboard.active, dashboard.activating, dashboard.dust) = _activation.getBuckets(borrower);
+        (dashboard.activating, dashboard.dust) = _activation.getActivationState(borrower);
+        dashboard.active = position.collateral - dashboard.activating - dashboard.dust;
         dashboard.unlockTime = _activation.getUnlockTime(borrower, opinion);
         dashboard.debtAssets = _debtAssets(marketView, position);
         dashboard.settlementLtv = _settlementQueue.settlementLtvOf(borrower);
@@ -367,17 +324,17 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         // raw is pre-deposit: this hook runs before core's `collateral += assets`
         PositionView memory position = _positionView(id, borrower);
 
-        // settle anything already matured, then book the deposit (promotes past the dust threshold).
-        // A freeze or ban defers maturation.
-        _activation.syncActivation(_isFrozen, borrower, _guardianSignals.getOpinion(_MARKET_ID, borrower));
-        _activation.deposit(borrower, hookData.assets);
+        // settle anything already matured, then book the deposit. A sub-threshold deposit stays dust, and only
+        // once it crosses the threshold does the lot enter the activation timer. A freeze or ban defers maturation.
+        _activation.sync(_isFrozen, borrower, _guardianSignals.getOpinion(_MARKET_ID, borrower));
+        _activation.credit(borrower, hookData.assets, _instantActivationCallers[hookData.caller]);
 
         position.collateral += hookData.assets;
         _settlementQueue.sync(borrower, position);
     }
 
     /// @dev Withdraw hook: with open debt a freeze blocks it, the remaining active must still cover the debt
-    ///      at LLTV, and raw collateral may not fall below the activation minimum. Debt-free exits are free.
+    ///      at LLTV, and raw collateral may not fall below the minimum borrowable size. Debt-free exits are free.
     function _handleWithdrawCollateral(Id id, WithdrawCollateralHookData memory hookData) internal {
         address borrower = hookData.onBehalf;
 
@@ -385,15 +342,20 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         PositionView memory position = _positionView(id, borrower);
 
         // Freeze blocks withdraw only while there is open debt. A zero-debt withdraw is always allowed
-        // as a non-custody exit. No guardian gate either: a banned address can still pull its own collateral.
+        // as a non-custody exit, and a banned address may still pull its own collateral.
         if (_isFrozen && position.borrowShares != 0) revert MarketIsFrozen();
 
-        // settle activation, then debit the buckets (dust, activating, active) and reverse any same-tx
-        // flash addition to the inflow (the lib owns the undo); a revert below rolls this back
-        _activation.syncActivation(_isFrozen, borrower, _guardianSignals.getOpinion(_MARKET_ID, borrower));
-        uint256 activeCollateral = _activation.withdraw(borrower, hookData.assets);
+        // settle activation, then drain the un-matured buckets (dust, then activating above the lock) and reverse
+        // any same-tx flash addition to the inflow (the lib owns the undo); a revert below rolls this back. The
+        // lib returns the post-debit inactive, so active is the post-withdraw raw minus it.
+        _activation.sync(_isFrozen, borrower, _guardianSignals.getOpinion(_MARKET_ID, borrower));
+        uint256 inactive = _activation.debit(borrower, hookData.assets);
 
-        // with open debt, the remaining active must still cover it at LLTV (stricter than core's raw check)
+        if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
+        position.collateral -= hookData.assets;
+        uint256 activeCollateral = position.collateral - inactive;
+
+        // with open debt, the remaining active collateral must still cover the debt at LLTV
         if (position.borrowShares != 0) {
             MarketView memory marketView = _marketView(id);
             if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, activeCollateral)) {
@@ -401,14 +363,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
             }
         }
 
-        if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
-        position.collateral -= hookData.assets;
-
-        // Open-debt collateral floor: while a borrower owes debt, raw collateral may not be drawn below the
-        // activation minimum. Sub-minimum collateral reaches the book only via forced seizure, never voluntary
-        // withdrawal, so a borrower cannot park a high-LTV dust position at the settlement-queue root. To exit
-        // below the floor, repay the debt to zero first.
-        if (position.borrowShares != 0 && position.collateral < _activation.config.minActivationAmount) {
+        // Open-debt position floor: while a borrower owes debt, raw collateral may not be drawn below the
+        // minimum borrowable size. To exit below the floor, repay the debt to zero first.
+        if (position.borrowShares != 0 && position.collateral < _settlementQueue.config.minBorrowCollateral) {
             revert CollateralFloorBreached();
         }
 
@@ -416,7 +373,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     }
 
     /// @dev Borrow hook: blocked by a freeze or a ban on caller/receiver/borrower. Capacity uses active
-    ///      (matured) collateral only, and the borrow must leave the borrow-utilization gap intact.
+    ///      (matured) collateral only.
     function _handleBorrow(Id id, BorrowHookData memory hookData) internal {
         if (_isFrozen) revert MarketIsFrozen();
 
@@ -436,26 +393,21 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
             revert AddressBanned();
         }
 
-        // Stricter Lido constraint: borrow capacity uses active (matured) collateral only. `syncActivation`
-        // matures any ready lot — subject to the quorum-scan gate — and returns the post-mature active. The
-        // core's standard health check uses raw collateral; this adds the active-only ceiling on the settled state.
-        uint256 activeCollateral = _activation.syncActivation(_isFrozen, hookData.onBehalf, borrowerOpinion);
+        // Borrow capacity uses active (matured) collateral only. `sync` matures any ready lot, subject to the
+        // quorum-scan gate, and returns the post-mature inactive total. Active is the raw collateral minus that.
+        uint256 inactive = _activation.sync(_isFrozen, hookData.onBehalf, borrowerOpinion);
 
         PositionView memory position = _positionView(id, hookData.onBehalf);
+        uint256 activeCollateral = position.collateral - inactive;
+
+        // Position floor: a borrow may not open or grow debt against a position whose raw collateral is below
+        // the minimum borrowable size, keeping debt positions economical to liquidate and settle. The check
+        // reads the live config value, so a raised floor applies to subsequent borrows immediately.
+        if (position.collateral < _settlementQueue.config.minBorrowCollateral) revert CollateralFloorBreached();
 
         MarketView memory marketView = _marketView(id);
         if (_debtAssets(marketView, position) + hookData.assets > _getMaxBorrow(marketView, activeCollateral)) {
             revert InsufficientActiveCollateral();
-        }
-
-        // Borrow utilization gap: a borrow must leave at least `_borrowUtilizationGap` of supply
-        // un-borrowed (a gap below 100% utilization) for lender withdrawals. Borrow totals here are
-        // pre-this-borrow, so the prospective borrow adds `hookData.assets`. 0 = no gap.
-        if (_borrowUtilizationGap != 0) {
-            uint256 newBorrowAssets = marketView.totalBorrowAssets + hookData.assets;
-            if (newBorrowAssets * WAD > (WAD - _borrowUtilizationGap) * marketView.totalSupplyAssets) {
-                revert MaxBorrowUtilizationExceeded();
-            }
         }
 
         position.borrowShares += hookData.shares;
@@ -471,14 +423,14 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         _settlementQueue.sync(hookData.onBehalf, position);
     }
 
-    /// @dev Liquidate hook: debit the seized collateral from the activation buckets and re-key the queue on
-    ///      the post-liquidation position. No policy gate — liquidation is a forced path.
+    /// @dev Liquidate hook: drain the seized collateral from the activation buckets and re-key the queue on
+    ///      the post-liquidation position. Liquidation is a forced path.
     function _handleLiquidate(Id id, LiquidateHookData memory hookData) internal {
         address borrower = hookData.borrower;
         PositionView memory position = _positionView(id, borrower);
 
-        // debit the seized collateral from the buckets before core decrements raw
-        if (hookData.seizedAssets != 0) _activation.debit(borrower, hookData.seizedAssets, 0);
+        // drain the seized collateral from the buckets before core decrements raw
+        if (hookData.seizedAssets != 0) _activation.seize(borrower, hookData.seizedAssets);
 
         // re-key on the post-liquidation position
         if (hookData.repaidShares > position.borrowShares || hookData.seizedAssets > position.collateral) {
@@ -490,13 +442,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     }
 
     /// @dev Settle hook: gates the cut on policy — reverts if the queue root is bad debt, if the target is
-    ///      ineligible, or if the cut exceeds the allowed slice — then debits buckets in lockstep with the
+    ///      ineligible, or if the cut exceeds the allowed slice — then drains buckets in lockstep with the
     ///      raw seizure and re-keys the queue.
     function _handleSettle(Id id, SettleHookData memory hookData) internal {
         address borrower = hookData.borrower;
 
-        // Borrower position + market view, re-read from core (payload stays minimal). The core already
-        // bounded the cut (seize <= raw, shares <= debt); the controller adds only its policy layer.
+        // Re-read the borrower position and market view from core, since the payload carries only the cut
+        // amounts. The policy checks below gate that cut.
         PositionView memory position = _positionView(id, borrower);
         MarketView memory marketView = _marketView(id);
 
@@ -521,11 +473,11 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
             revert SettlementInvalidSeize();
         }
 
-        // settle activation, then debit buckets by the exact amount core seizes from raw (lockstep).
-        // A freeze or ban defers maturation, seizure still reaches all collateral via debit.
-        _activation.syncActivation(_isFrozen, borrower, _guardianSignals.getOpinion(_MARKET_ID, borrower));
+        // settle activation, then drain buckets by the exact amount core seizes from raw (lockstep).
+        // A freeze or ban defers maturation, and `seize` drains all buckets regardless of maturation state.
+        _activation.sync(_isFrozen, borrower, _guardianSignals.getOpinion(_MARKET_ID, borrower));
 
-        _activation.debit(borrower, hookData.collateralSeized, 0);
+        _activation.seize(borrower, hookData.collateralSeized);
 
         position.borrowShares -= sharesToBurn;
         position.collateral -= hookData.collateralSeized;
@@ -567,7 +519,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         marketView.lltv = params.lltv;
         marketView.price = IOracle(params.oracle).price();
         // supply and borrow totals with pending interest simulated, so view sizing matches the hook-time
-        // numbers (the core accrues before invoking hooks; with nothing pending this is the raw market read)
+        // numbers (the core accrues before invoking hooks)
         (
             marketView.totalSupplyAssets,
             marketView.totalSupplyShares,

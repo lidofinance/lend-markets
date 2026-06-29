@@ -41,11 +41,12 @@ contract DeployMarket is Script, LidoLendDeployer {
                 lltv: LLTV,
                 enableSettlement: true,
                 // DRAFT activation parameters — governance values, tune before any real deploy.
-                activation: ActivationConfig({
+                activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
-                    activatingHold: 0,
+                    activatingLockAmount: 0,
+                    activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
                     maxGuardiansQuorumDelay: 0
@@ -55,7 +56,8 @@ contract DeployMarket is Script, LidoLendDeployer {
                     sliceFloorBps: 100, // 1% of the root's debt
                     sliceFloorAssets: 10 ether,
                     fullCutBelowCollateral: 10 ether, // sweep settle leftovers below the activation minimum
-                    ltvStepBps: 100 // 1% LTV step
+                    ltvStepBps: 100, // 1% LTV step
+                    minBorrowCollateral: 10 ether // min raw collateral to borrow against / withdraw to with debt
                 }),
                 guardians: guardians,
                 quorum: 1,

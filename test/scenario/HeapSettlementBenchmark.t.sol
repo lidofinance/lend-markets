@@ -546,11 +546,12 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: ActivationConfig({
+                activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     delayPerStrike: 2 hours,
-                    activatingHold: 0,
+                    activatingLockAmount: 0,
+                    activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     // The benchmark builds sub-floor dust positions directly (borrow, then withdraw to a
                     // sliver) to stress the heap. The open-debt collateral floor forbids that voluntary path,
@@ -559,7 +560,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     maxGuardiansQuorumDelay: 0
                 }),
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100
+                    sliceFloorBps: 100,
+                    sliceFloorAssets: 0,
+                    fullCutBelowCollateral: 0,
+                    ltvStepBps: 100,
+                    minBorrowCollateral: 0
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -582,7 +587,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     sliceFloorBps: 100,
                     sliceFloorAssets: SLICE_FLOOR,
                     fullCutBelowCollateral: uint96(MIN_COLLATERAL_ACTIVATION),
-                    ltvStepBps: 100
+                    ltvStepBps: 100,
+                    minBorrowCollateral: 0
                 })
             );
     }
