@@ -108,12 +108,15 @@ abstract contract LidoLendDeployer {
 
         d.guardianSignals = _deployGuardianSignals(cfg.admin, cfg.guardians, cfg.quorum);
         d.oracle = _deployOracle(cfg.oracleSource, cfg.admin);
-        d.irm = _deployIrm(d.core);
+        d.irm = _deployIrm(d.core, cfg.admin);
 
         d.params = MarketParams({
             loanToken: cfg.loanToken, collateralToken: cfg.collateralToken, oracle: d.oracle, irm: d.irm, lltv: cfg.lltv
         });
         d.marketId = d.params.id();
+
+        // The adaptive IRM reads per-market curve params from an immutable MarketConfig the owner points it at.
+        _configureAdaptiveIrm(d.irm, d.marketId);
 
         (d.controllerProxy, d.controllerImpl) =
             _deployController(d.core, d.marketId, d.guardianSignals, cfg.admin, cfg.activation);
@@ -178,10 +181,35 @@ abstract contract LidoLendDeployer {
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
-    function _deployIrm(address core) internal virtual returns (address) {
+    function _deployIrm(address core, address owner) internal virtual returns (address) {
         return _deployArtifact(
-            "lib/lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core)
+            "lib/lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core, owner)
         );
+    }
+
+    /// @dev Morpho mainnet-like adaptive curve params, ABI-encoded as the `IMarketConfig.Config` tuple. The IRM
+    ///      and its config are pinned to an older solc, so they are reached through artifacts and a low-level
+    ///      call rather than a typed import.
+    function _encodedCurveConfig() internal pure virtual returns (bytes memory) {
+        return abi.encode(
+            int256(4e18), // curveSteepness
+            int256(50e18) / int256(365 days), // adjustmentSpeed
+            int256(9e17), // targetUtilization
+            int256(4e16) / int256(365 days), // initialRateAtTarget
+            int256(1e15) / int256(365 days), // minRateAtTarget
+            int256(2e18) / int256(365 days), // maxRateAtTarget
+            uint256(0) // maxBorrowRate (0 disables the ceiling)
+        );
+    }
+
+    /// @dev Deploy an immutable per-market `MarketConfig` and point the adaptive IRM at it (owner-only, run in
+    ///      the deploy context which owns the IRM).
+    function _configureAdaptiveIrm(address irm, Id marketId) internal virtual {
+        address marketConfig = _deployArtifact(
+            "lib/lido-lend-irm/src/adaptive-curve-irm/MarketConfig.sol:MarketConfig", _encodedCurveConfig()
+        );
+        (bool ok,) = irm.call(abi.encodeWithSignature("setConfig(bytes32,address)", Id.unwrap(marketId), marketConfig));
+        require(ok, "LidoLendDeployer: irm setConfig failed");
     }
 
     /// @dev Controller behind a proxy. The impl bakes `(lidoLend, marketId)` into immutables at deploy,

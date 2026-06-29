@@ -252,7 +252,12 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     /// @inheritdoc IGuardianSignals
     function revokeImmunity(Id market, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
         GuardiansSignal storage signal = _signalsByMarket[market][account];
-        signal.status = Status.Normal;
+        // Only act on an actually-immune account: revoking is a no-op otherwise, so this never clears a
+        // committee `ban` (a forced `Banned` carries no flags) nor disturbs a `Normal` account.
+        if (signal.status != Status.Immune) return;
+        // Restore the status the flag set implies rather than forcing `Normal`: an account still carrying a
+        // quorum of flags re-latches to `Banned`, so revoking immunity never silently unbans it.
+        signal.status = signal.flaggedBy.length() >= _quorum ? Status.Banned : Status.Normal;
 
         emit ImmunityRevoked(market, account, msg.sender);
     }
