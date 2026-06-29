@@ -256,7 +256,7 @@ contract LidoLendOwnerTest is Test {
         vm.expectEmit(true, true, true, true, address(core));
         emit SetOwner(newOwner);
         vm.prank(ADMIN);
-        facade.transferCoreOwnership(newOwner);
+        facade.transferLidoLendOwnership(newOwner);
 
         assertEq(core.owner(), newOwner, "core owner moved");
     }
@@ -267,14 +267,14 @@ contract LidoLendOwnerTest is Test {
         bytes32 role = facade.DEFAULT_ADMIN_ROLE();
         vm.expectRevert(_unauthorized(CREATOR, role));
         vm.prank(CREATOR);
-        facade.transferCoreOwnership(address(0xBEEF));
+        facade.transferLidoLendOwnership(address(0xBEEF));
     }
 
     /// @notice Transferring ownership to the zero address is rejected before reaching the core.
     function testRevert_transferCoreOwnership_zeroAddress() public {
         vm.prank(ADMIN);
         vm.expectRevert(ILidoLendOwner.ZeroAddress.selector);
-        facade.transferCoreOwnership(address(0));
+        facade.transferLidoLendOwnership(address(0));
     }
 
     /// @notice After ownership leaves the facade, the facade can no longer drive the core even with a granted
@@ -282,7 +282,7 @@ contract LidoLendOwnerTest is Test {
     function test_transferCoreOwnership_revokesFacadeControl() public {
         _grant(facade.MARKET_CREATOR_ROLE(), CREATOR);
         vm.prank(ADMIN);
-        facade.transferCoreOwnership(address(0xBEEF));
+        facade.transferLidoLendOwnership(address(0xBEEF));
 
         MarketParams memory p = _params(1);
         vm.expectRevert("not owner"); // core's onlyOwner string require

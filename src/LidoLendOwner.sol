@@ -28,7 +28,7 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
     // ---
 
     /// @inheritdoc ILidoLendOwner
-    ILidoLend public immutable CORE;
+    ILidoLend public immutable LIDO_LEND;
 
     // ---
     // CONSTRUCTOR
@@ -42,7 +42,7 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
     /// @param feeManager    Initial `FEE_MANAGER_ROLE` holder; `address(0)` grants none (admin can later).
     constructor(ILidoLend core, address admin, address marketCreator, address feeManager) {
         if (address(core) == address(0) || admin == address(0)) revert ZeroAddress();
-        CORE = core;
+        LIDO_LEND = core;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         if (marketCreator != address(0)) _grantRole(MARKET_CREATOR_ROLE, marketCreator);
         if (feeManager != address(0)) _grantRole(FEE_MANAGER_ROLE, feeManager);
@@ -54,7 +54,7 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
 
     /// @inheritdoc ILidoLendOwner
     function createMarket(MarketParams calldata marketParams) external onlyRole(MARKET_CREATOR_ROLE) {
-        CORE.createMarket(marketParams);
+        LIDO_LEND.createMarket(marketParams);
     }
 
     /// @inheritdoc ILidoLendOwner
@@ -62,7 +62,7 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
         external
         onlyRole(MARKET_CREATOR_ROLE)
     {
-        CORE.createMarket(marketParams, controller, enableSettlement);
+        LIDO_LEND.createMarket(marketParams, controller, enableSettlement);
     }
 
     // ---
@@ -71,12 +71,12 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
 
     /// @inheritdoc ILidoLendOwner
     function setFee(MarketParams calldata marketParams, uint256 newFee) external onlyRole(FEE_MANAGER_ROLE) {
-        CORE.setFee(marketParams, newFee);
+        LIDO_LEND.setFee(marketParams, newFee);
     }
 
     /// @inheritdoc ILidoLendOwner
     function setFeeRecipient(address newFeeRecipient) external onlyRole(FEE_MANAGER_ROLE) {
-        CORE.setFeeRecipient(newFeeRecipient);
+        LIDO_LEND.setFeeRecipient(newFeeRecipient);
     }
 
     // ---
@@ -84,8 +84,8 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
     // ---
 
     /// @inheritdoc ILidoLendOwner
-    function transferCoreOwnership(address newOwner) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function transferLidoLendOwnership(address newOwner) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newOwner == address(0)) revert ZeroAddress();
-        CORE.setOwner(newOwner);
+        LIDO_LEND.setOwner(newOwner);
     }
 }

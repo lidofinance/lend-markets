@@ -22,7 +22,7 @@ interface ILidoLendOwner {
     // ---
 
     /// @notice The `LidoLend` core this facade owns.
-    function CORE() external view returns (ILidoLend);
+    function LIDO_LEND() external view returns (ILidoLend);
 
     // ---
     // MARKET CREATION (MARKET_CREATOR_ROLE)
@@ -48,5 +48,5 @@ interface ILidoLendOwner {
 
     /// @notice Hand the core's `owner` to `newOwner`, relinquishing this facade's control of the core. The
     ///         escape hatch for migrating to a different owner; irreversible from the facade's side.
-    function transferCoreOwnership(address newOwner) external;
+    function transferLidoLendOwnership(address newOwner) external;
 }
