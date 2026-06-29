@@ -1,15 +1,12 @@
-# Lido Lending
+# Lido Lend Markets
 
-Draft Lido Lending markets built on a Morpho Blue fork. Morpho-style market accounting lives in a
-vendored core (`lib/lido-lend`), and Lido-specific policy lives in a per-market controller in this
-repo.
+Lido Lend is a family of isolated lending markets for established, low-risk looping trades, built on the [`lido-lend`](https://github.com/lidofinance/lido-lend) Morpho Blue fork. Each market is narrow by design, with strong exit paths and conservative controls that limit how quickly new collateral becomes borrowable.
 
-Status: draft, unaudited, not production-ready.
+The Morpho-style market accounting lives in that core, with the interest-rate model in [`lido-lend-irm`](https://github.com/lidofinance/lido-lend-irm). This repository — Lido Lend Markets — holds everything built on top: the per-market policy and contracts, the specifications, the deployment scripts, and the deployed-address registry.
 
 ## Setup
 
-Install Foundry, then fetch pinned dependencies. Current setup was checked with
-`forge 1.5.1-stable`.
+Install Foundry, then fetch pinned dependencies. Current setup was checked with `forge 1.5.1-stable`.
 
 ```sh
 git submodule update --init --recursive
@@ -18,7 +15,7 @@ git submodule update --init --recursive
 Build:
 
 ```sh
-forge build
+forge build --force
 ```
 
 Run the local test suite:
@@ -46,7 +43,7 @@ Most everyday commands are wrapped in a `Makefile`:
 ```sh
 make help            # list available targets
 make build           # forge build
-make test            # forge test (unit + benchmark; fork tests auto-skip without RPC)
+make test            # forge test (unit + benchmark, fork tests auto-skip without RPC)
 make fork-test       # forge test --fork-url $MAINNET_RPC_URL (copy .env.example to .env first)
 make fmt-check       # forge fmt --check on tracked paths (CI gate)
 make lint            # forge lint
@@ -56,14 +53,9 @@ make solhint         # stylistic/security checks (requires `solhint` in PATH)
 make ci              # everything CI runs on PRs: build + fmt-check + lint + test
 ```
 
-Environment variables are documented in `.env.example`; copy it to `.env` and fill in
-`MAINNET_RPC_URL` to enable fork tests locally.
+Environment variables are documented in `.env.example`. Copy it to `.env` and fill in `MAINNET_RPC_URL` to enable fork tests locally.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); locally
-`forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`:
-`ci.yml` (build/fmt/lint/test on every PR), `fork-test.yml` (mainnet-fork integration with
-`MAINNET_RPC_URL` secret), `static.yml` (Slither + Solhint), `coverage.yml`,
-`gas-diff.yml` (gas snapshot diff posted as PR comment), and `fuzz.yml` (deep fuzz on nightly cron).
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`). Locally `forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`: `ci.yml` (build/fmt/lint/test on every PR), `fork-test.yml` (mainnet-fork integration with the `MAINNET_RPC_URL` secret), `static.yml` (Slither + Solhint), `coverage.yml`, `gas-diff.yml` (gas snapshot diff posted as a PR comment), and `fuzz.yml` (deep fuzz on a nightly cron).
 
 To run the local pre-commit fmt check, point Git at the bundled hook:
 
@@ -75,22 +67,30 @@ git config core.hooksPath .githooks
 
 ```text
 src/
-├── LidoLendERC4626.sol            # single-market ERC-4626 vault over the market
-├── GuardianSignals.sol           # guardian-signal registry
+├── LidoLendERC4626.sol              # single-market ERC-4626 vault (the lender layer) with settle exit
+├── LidoLendOwner.sol                # owner/admin entrypoint for deployed markets
+├── GuardianSignals.sol              # guardian-signal registry (address bans and activation strikes)
 ├── controllers/
-│   └── WethWstEthController.sol    # Lido policy: hooks, settlement queue, watermark, activation
-├── interfaces/
-│   └── IGuardianSignals.sol
+│   └── LidoLendMarketController.sol # Lido policy: hooks, collateral activation, freeze/pause, gating, settlement queue
+├── interfaces/                      # local interfaces and hook payload structs
 ├── libs/
-│   ├── ActivationLib.sol
-│   ├── MaxHeapLib.sol
-│   └── SettlementQueueLib.sol
+│   ├── CollateralActivationLib.sol  # active / activating / dust collateral accounting
+│   ├── SettlementQueueLib.sol       # risk-ordered settlement queue and slice sizing
+│   ├── MaxHeapLib.sol               # max-heap primitive backing the queue
+│   ├── ExitBookLib.sol
+│   └── Constants.sol
 ├── oracle/
-│   └── WstEthRateOracle.sol
+│   ├── WstEthRateOracle.sol         # wstETH/ETH accounting-rate adapter
+│   └── UsdyStableOracle.sol         # USDY to stablecoin oracle
 ├── periphery/
-│   └── LidoLendDepositGateway.sol  # ETH / stETH / WETH deposit zaps
+│   ├── RiskStewardDashboard.sol     # bounded per-market risk levers
+│   ├── LidoLendDepositGateway.sol   # ETH / stETH / WETH deposit zaps
+│   ├── ExitBookBase.sol             # lender exit queue (base) and adapters
+│   ├── Erc4626ExitBook.sol
+│   └── MorphoExitBook.sol
+├── types/                           # shared value types (activation, settlement, guardian, exit-book)
 ├── proxy/
-│   └── OssifiableProxy.sol
+│   └── OssifiableProxy.sol          # vendored Lido upgradeable proxy
 └── utils/
     └── PausableUntil.sol
 ```
@@ -101,27 +101,24 @@ The vendored core (`lib/lido-lend`, contract `LidoLend`) is the Morpho-compatibl
 
 - Upgradeable behind `OssifiableProxy`, with owner-gated market creation.
 - Preserves upstream `MarketParams`, `Position`, `Market`, and market id derivation.
-- Preserves standard Morpho action signatures where possible.
-- Binds an optional controller and settlement availability once at market creation.
-- Calls controller hooks for controller-enabled markets.
+- Preserves the standard Morpho action signatures, plus a two-anchor `settle` for the lender exit.
+- Binds an optional controller and settlement availability once at market creation, and calls controller hooks for controller-enabled markets.
 
-`WethWstEthController` owns Lido policy.
+`LidoLendMarketController` owns Lido policy for a market.
 
-- Active, activating, and dust collateral accounting.
-- Active-only borrow capacity checks.
-- Freeze and pause flags.
-- Settlement eligibility, the settlement queue, and per-borrower watermarks.
-- Market-level policy configuration.
+- Collateral activation: active, activating, and dust buckets with a maturation timer and an inflow throttle.
+- Active-only borrow capacity and a minimum-position floor.
+- Freeze and pause controls, plus guardian-signal address gating.
+- The settlement queue: risk-ordered borrowers, a per-borrower settlement LTV, and the policy-sized cut.
 
-`GuardianSignals` owns shared address restrictions used by the controller.
+`LidoLendERC4626` is the single-market ERC-4626 vault, the sole lender, with a fallback settle exit when ordinary liquidity is short.
+
+Supporting pieces: `GuardianSignals` (shared address bans and activation strikes), `RiskStewardDashboard` (bounded tighten-only risk levers), the exit-book periphery (`ExitBookBase` and its adapters), `LidoLendDepositGateway` (deposit zaps), and the `WstEthRateOracle` / `UsdyStableOracle` adapters.
 
 ## Fork Notes
 
-The Morpho Blue fork is the vendored `lib/lido-lend` dependency. See `FORK_NOTES.md`, which points
-to `lib/lido-lend/FORK_NOTES.md` for the fork point and core-level changes.
+The Morpho Blue fork is the vendored `lib/lido-lend` dependency. See `FORK_NOTES.md`, which points to `lib/lido-lend/FORK_NOTES.md` for the fork point and core-level changes.
 
 ## License
 
-Repository source files use SPDX headers. The Morpho Blue fork point is pinned in the `lib/lido-lend`
-dependency to upstream `main` commit `1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a`, where `src/Morpho.sol`
-is marked `GPL-2.0-or-later`. See `LICENSE` and `lib/lido-lend/FORK_NOTES.md`.
+Repository source files use SPDX headers. The Morpho Blue fork point is pinned in the `lib/lido-lend` dependency to upstream `main` commit `1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a`, where `src/Morpho.sol` is marked `GPL-2.0-or-later`. See `LICENSE` and `lib/lido-lend/FORK_NOTES.md`.
