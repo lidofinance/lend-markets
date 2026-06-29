@@ -73,33 +73,29 @@ contract MaxHeapLibTest is Test {
         assertEq(peekKey, rootKey, "peek != root");
     }
 
-    // ── requirements: empty / singleton ──
-
-    function testRevert_peekOnEmpty() public {
-        vm.expectRevert(MaxHeapLib.EmptyHeap.selector);
-        h.peek();
+    /// @dev Key of `account` by scanning the heap (independent of the lib's index map).
+    function _keyOf(address account) internal view returns (uint256) {
+        uint256 n = h.size();
+        for (uint256 i = 0; i < n; ++i) {
+            (address acc, uint256 k) = h.nodeAt(i);
+            if (acc == account) return k;
+        }
+        revert("account not in heap");
     }
 
-    function test_singleton() public {
-        h.upsert(_a(1), 42);
-        assertEq(h.size(), 1, "size");
-        (address acc, uint256 key) = h.peek();
-        assertEq(acc, _a(1), "account");
-        assertEq(key, 42, "key");
+    /// @dev Reference-set membership by scanning the heap (independent of the lib's index map).
+    function _present(address actor) internal view returns (bool) {
+        uint256 n = h.size();
+        for (uint256 i = 0; i < n; ++i) {
+            (address acc,) = h.nodeAt(i);
+            if (acc == actor) return true;
+        }
+        return false;
     }
+
+    // ── mutations ──
 
     // ── requirements: root is max, upsert is insert-or-rekey ──
-
-    function test_rootIsMax() public {
-        h.upsert(_a(1), 30);
-        h.upsert(_a(2), 90);
-        h.upsert(_a(3), 50);
-        h.upsert(_a(4), 70);
-        (address acc, uint256 key) = h.peek();
-        assertEq(acc, _a(2), "max account");
-        assertEq(key, 90, "max key");
-        _assertHeap();
-    }
 
     function test_upsertExisting_rekeysNotDuplicates() public {
         h.upsert(_a(1), 10);
@@ -176,37 +172,6 @@ contract MaxHeapLibTest is Test {
 
     // ── edge cases: saturation, zero key, ties, fresh-insert sift-up, bounds ──
 
-    /// @dev Key of `account` by scanning the heap (independent of the lib's index map).
-    function _keyOf(address account) internal view returns (uint256) {
-        uint256 n = h.size();
-        for (uint256 i = 0; i < n; ++i) {
-            (address acc, uint256 k) = h.nodeAt(i);
-            if (acc == account) return k;
-        }
-        revert("account not in heap");
-    }
-
-    function test_saturatesKeysAboveUint96() public {
-        h.upsert(_a(1), type(uint256).max); // saturates to type(uint96).max
-        h.upsert(_a(2), uint256(type(uint96).max)); // already the cap
-        h.upsert(_a(3), 50);
-        assertEq(_keyOf(_a(1)), uint256(type(uint96).max), "key saturates to uint96 max");
-        assertEq(_keyOf(_a(2)), uint256(type(uint96).max), "cap stored as-is");
-        (address root,) = h.peek();
-        assertTrue(root == _a(1) || root == _a(2), "a saturated account is root");
-        _assertHeap();
-    }
-
-    function test_keyZero_isPresentNotAbsent() public {
-        h.upsert(_a(1), 0); // key 0 is a valid key; only slot==0 marks an absent account
-        assertEq(h.size(), 1, "present");
-        (address acc, uint256 key) = h.peek();
-        assertEq(acc, _a(1), "key-0 account is the only root");
-        assertEq(key, 0, "key is 0");
-        assertTrue(h.remove(_a(1)), "removable");
-        assertEq(h.size(), 0, "removed");
-    }
-
     function test_tiedKeys_heapHolds() public {
         h.upsert(_a(1), 50);
         h.upsert(_a(2), 50);
@@ -244,12 +209,6 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
-    function testRevert_nodeAtOutOfRange() public {
-        h.upsert(_a(1), 5);
-        vm.expectRevert(MaxHeapLib.IndexOutOfBounds.selector);
-        h.nodeAt(1); // size is 1; the only valid index is 0
-    }
-
     // ── property: heap holds after any mutation sequence ──
 
     function testFuzz_heapPropertyHoldsAcrossSequence(uint256 seed) public {
@@ -278,13 +237,62 @@ contract MaxHeapLibTest is Test {
         }
     }
 
-    /// @dev Reference-set membership by scanning the heap (independent of the lib's index map).
-    function _present(address actor) internal view returns (bool) {
-        uint256 n = h.size();
-        for (uint256 i = 0; i < n; ++i) {
-            (address acc,) = h.nodeAt(i);
-            if (acc == actor) return true;
-        }
-        return false;
+    // ── views ──
+
+    // ── requirements: empty / singleton ──
+
+    function testRevert_peekOnEmpty() public {
+        vm.expectRevert(MaxHeapLib.EmptyHeap.selector);
+        h.peek();
+    }
+
+    function test_singleton() public {
+        h.upsert(_a(1), 42);
+        assertEq(h.size(), 1, "size");
+        (address acc, uint256 key) = h.peek();
+        assertEq(acc, _a(1), "account");
+        assertEq(key, 42, "key");
+    }
+
+    // ── requirements: root is max, upsert is insert-or-rekey ──
+
+    function test_rootIsMax() public {
+        h.upsert(_a(1), 30);
+        h.upsert(_a(2), 90);
+        h.upsert(_a(3), 50);
+        h.upsert(_a(4), 70);
+        (address acc, uint256 key) = h.peek();
+        assertEq(acc, _a(2), "max account");
+        assertEq(key, 90, "max key");
+        _assertHeap();
+    }
+
+    // ── edge cases: saturation, zero key, ties, fresh-insert sift-up, bounds ──
+
+    function test_saturatesKeysAboveUint96() public {
+        h.upsert(_a(1), type(uint256).max); // saturates to type(uint96).max
+        h.upsert(_a(2), uint256(type(uint96).max)); // already the cap
+        h.upsert(_a(3), 50);
+        assertEq(_keyOf(_a(1)), uint256(type(uint96).max), "key saturates to uint96 max");
+        assertEq(_keyOf(_a(2)), uint256(type(uint96).max), "cap stored as-is");
+        (address root,) = h.peek();
+        assertTrue(root == _a(1) || root == _a(2), "a saturated account is root");
+        _assertHeap();
+    }
+
+    function test_keyZero_isPresentNotAbsent() public {
+        h.upsert(_a(1), 0); // key 0 is a valid key; only slot==0 marks an absent account
+        assertEq(h.size(), 1, "present");
+        (address acc, uint256 key) = h.peek();
+        assertEq(acc, _a(1), "key-0 account is the only root");
+        assertEq(key, 0, "key is 0");
+        assertTrue(h.remove(_a(1)), "removable");
+        assertEq(h.size(), 0, "removed");
+    }
+
+    function testRevert_nodeAtOutOfRange() public {
+        h.upsert(_a(1), 5);
+        vm.expectRevert(MaxHeapLib.IndexOutOfBounds.selector);
+        h.nodeAt(1); // size is 1; the only valid index is 0
     }
 }

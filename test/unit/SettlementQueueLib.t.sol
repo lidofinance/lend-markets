@@ -79,6 +79,134 @@ contract SettlementQueueLibTest is Test {
         return (debt * WAD - target * collat) / (WAD - target);
     }
 
+    function _pos(uint256 borrowShares, uint256 collateral) internal pure returns (PositionView memory) {
+        return PositionView({borrowShares: borrowShares, collateral: collateral});
+    }
+
+    /// @dev Large 1:1 totals so `borrowShares.toAssetsUp` ~= borrowShares (the Morpho virtual-share offset
+    ///      is negligible), keeping `debtAssets` predictable for the slice assertions.
+    function _market(uint256 price) internal pure returns (MarketView memory) {
+        return MarketView({
+            totalSupplyAssets: 1e24,
+            totalSupplyShares: 1e24,
+            totalBorrowAssets: 1e24,
+            totalBorrowShares: 1e24,
+            price: price,
+            lltv: 0.86e18
+        });
+    }
+
+    function _setFloor(uint16 bps, uint96 fullCut) internal {
+        q.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: bps, sliceFloorAssets: 0, fullCutBelowCollateral: fullCut, ltvStepBps: 0})
+        );
+    }
+
+    // ── events ──
+
+    event SettlementLtvSet(address indexed borrower, uint256 ltv);
+    event SettlementConfigSet(
+        uint16 sliceFloorBps, uint96 sliceFloorAssets, uint96 fullCutBelowCollateral, uint16 ltvStepBps
+    );
+
+    // ── mutations ──
+
+    // ── config / borrower opt-in ──
+
+    function test_setSettlementConfig_bpsBoundaryAllowed() public {
+        q.setSettlementConfig(
+            SettlementConfig({
+                sliceFloorBps: 10_000, sliceFloorAssets: 1, fullCutBelowCollateral: 1, ltvStepBps: 10_000
+            })
+        );
+    }
+
+    function testRevert_setSettlementConfig_sliceFloorBpsOver() public {
+        vm.expectRevert(SettlementQueueLib.SettlementConfigOutOfRange.selector);
+        q.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 10_001, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        );
+    }
+
+    function testRevert_setSettlementConfig_ltvStepBpsOver() public {
+        vm.expectRevert(SettlementQueueLib.SettlementConfigOutOfRange.selector);
+        q.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 0, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 10_001})
+        );
+    }
+
+    function test_setSettlementLtv_storesAndClears() public {
+        q.setSettlementLtv(_b(1), 0.7e18);
+        assertEq(q.settlementLtvOf(_b(1)), 0.7e18, "stored");
+        q.setSettlementLtv(_b(1), 0); // 0 clears the opt-in
+        assertEq(q.settlementLtvOf(_b(1)), 0, "cleared");
+    }
+
+    function testRevert_setSettlementLtv_geWad() public {
+        vm.expectRevert(SettlementQueueLib.SettlementLtvOutOfRange.selector);
+        q.setSettlementLtv(_b(1), WAD);
+    }
+
+    function test_setSettlementLtv_justBelowWadAllowed() public {
+        q.setSettlementLtv(_b(1), WAD - 1);
+        assertEq(q.settlementLtvOf(_b(1)), WAD - 1, "WAD-1 allowed");
+    }
+
+    // ── queue: sync / peekRoot / settlementBorrowers ──
+
+    function test_sync_enqueuesRemovesRekeys() public {
+        // risk key = borrowShares/collateral; _b(1) riskier than _b(2)
+        q.sync(_b(1), _pos(80, 100)); // ratio 0.8
+        q.sync(_b(2), _pos(40, 100)); // ratio 0.4
+        assertEq(q.size(), 2, "two enqueued");
+        assertEq(q.peekRoot(), _b(1), "riskier is root");
+
+        // zero collateral removes the position from the queue
+        q.sync(_b(1), _pos(80, 0));
+        assertEq(q.size(), 1, "removed on zero collateral");
+        assertEq(q.peekRoot(), _b(2), "next is root");
+
+        // re-key: make _b(2) less risky (still present, no duplicate)
+        q.sync(_b(2), _pos(10, 100));
+        assertEq(q.size(), 1, "still one (re-key, not insert)");
+    }
+
+    function test_sync_zeroBorrowShares_removes() public {
+        q.sync(_b(1), _pos(50, 100));
+        assertEq(q.size(), 1, "enqueued");
+        q.sync(_b(1), _pos(0, 100)); // no debt -> removed
+        assertEq(q.size(), 0, "removed on zero debt");
+    }
+
+    // ── events ──
+
+    function test_setSettlementConfig_emitsEvent() public {
+        vm.expectEmit(false, false, false, true, address(q));
+        emit SettlementConfigSet(2_000, 5, 7, 1_000);
+        q.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 2_000, sliceFloorAssets: 5, fullCutBelowCollateral: 7, ltvStepBps: 1_000})
+        );
+    }
+
+    function test_setSettlementLtv_emitsEvent() public {
+        vm.expectEmit(true, false, false, true, address(q));
+        emit SettlementLtvSet(_b(1), 0.4e18);
+        q.setSettlementLtv(_b(1), 0.4e18);
+    }
+
+    // ── queue: truncation & re-key ordering ──
+
+    function test_sync_rekeyChangesRoot() public {
+        q.sync(_b(1), _pos(50, 100)); // ratio 0.5
+        q.sync(_b(2), _pos(40, 100)); // ratio 0.4 → b1 is root
+        assertEq(q.peekRoot(), _b(1), "b1 root initially");
+        q.sync(_b(1), _pos(10, 100)); // re-key b1 down to 0.1 → b2 becomes root
+        assertEq(q.peekRoot(), _b(2), "re-key demoted b1; b2 is root");
+        assertEq(q.size(), 2, "still two");
+    }
+
+    // ── views ──
+
     // ── sliceToLtv: closed form & boundaries ──
 
     function test_sliceToLtv_targetZero_isFullDebt() public {
@@ -143,80 +271,11 @@ contract SettlementQueueLibTest is Test {
         assertGe(q.sliceToLtv(debt, collat, tLow), q.sliceToLtv(debt, collat, tHigh), "lower target -> >= cut");
     }
 
-    // ── config / borrower opt-in ──
-
-    function test_setSettlementConfig_bpsBoundaryAllowed() public {
-        q.setSettlementConfig(
-            SettlementConfig({
-                sliceFloorBps: 10_000, sliceFloorAssets: 1, fullCutBelowCollateral: 1, ltvStepBps: 10_000
-            })
-        );
-    }
-
-    function testRevert_setSettlementConfig_sliceFloorBpsOver() public {
-        vm.expectRevert(SettlementQueueLib.SettlementConfigOutOfRange.selector);
-        q.setSettlementConfig(
-            SettlementConfig({sliceFloorBps: 10_001, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 0})
-        );
-    }
-
-    function testRevert_setSettlementConfig_ltvStepBpsOver() public {
-        vm.expectRevert(SettlementQueueLib.SettlementConfigOutOfRange.selector);
-        q.setSettlementConfig(
-            SettlementConfig({sliceFloorBps: 0, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 10_001})
-        );
-    }
-
-    function test_setSettlementLtv_storesAndClears() public {
-        q.setSettlementLtv(_b(1), 0.7e18);
-        assertEq(q.settlementLtvOf(_b(1)), 0.7e18, "stored");
-        q.setSettlementLtv(_b(1), 0); // 0 clears the opt-in
-        assertEq(q.settlementLtvOf(_b(1)), 0, "cleared");
-    }
-
-    function testRevert_setSettlementLtv_geWad() public {
-        vm.expectRevert(SettlementQueueLib.SettlementLtvOutOfRange.selector);
-        q.setSettlementLtv(_b(1), WAD);
-    }
-
-    function test_setSettlementLtv_justBelowWadAllowed() public {
-        q.setSettlementLtv(_b(1), WAD - 1);
-        assertEq(q.settlementLtvOf(_b(1)), WAD - 1, "WAD-1 allowed");
-    }
-
     // ── queue: sync / peekRoot / settlementBorrowers ──
-
-    function _pos(uint256 borrowShares, uint256 collateral) internal pure returns (PositionView memory) {
-        return PositionView({borrowShares: borrowShares, collateral: collateral});
-    }
 
     function test_peekRoot_empty_isZeroAddress() public {
         assertEq(q.peekRoot(), address(0), "empty queue peeks zero");
         assertEq(q.size(), 0, "empty");
-    }
-
-    function test_sync_enqueuesRemovesRekeys() public {
-        // risk key = borrowShares/collateral; _b(1) riskier than _b(2)
-        q.sync(_b(1), _pos(80, 100)); // ratio 0.8
-        q.sync(_b(2), _pos(40, 100)); // ratio 0.4
-        assertEq(q.size(), 2, "two enqueued");
-        assertEq(q.peekRoot(), _b(1), "riskier is root");
-
-        // zero collateral removes the position from the queue
-        q.sync(_b(1), _pos(80, 0));
-        assertEq(q.size(), 1, "removed on zero collateral");
-        assertEq(q.peekRoot(), _b(2), "next is root");
-
-        // re-key: make _b(2) less risky (still present, no duplicate)
-        q.sync(_b(2), _pos(10, 100));
-        assertEq(q.size(), 1, "still one (re-key, not insert)");
-    }
-
-    function test_sync_zeroBorrowShares_removes() public {
-        q.sync(_b(1), _pos(50, 100));
-        assertEq(q.size(), 1, "enqueued");
-        q.sync(_b(1), _pos(0, 100)); // no debt -> removed
-        assertEq(q.size(), 0, "removed on zero debt");
     }
 
     function test_settlementBorrowers_pagination() public {
@@ -242,19 +301,6 @@ contract SettlementQueueLibTest is Test {
 
     // ── allowedSlice: max-of-rules, floor only for the root, debt clamp, dust lift ──
     // Non-parity price (1.5e36) and non-1:1 shares isolate the slice logic while keeping values non-round.
-
-    /// @dev Large 1:1 totals so `borrowShares.toAssetsUp` ~= borrowShares (the Morpho virtual-share offset
-    ///      is negligible), keeping `debtAssets` predictable for the slice assertions.
-    function _market(uint256 price) internal pure returns (MarketView memory) {
-        return MarketView({
-            totalSupplyAssets: 1e24,
-            totalSupplyShares: 1e24,
-            totalBorrowAssets: 1e24,
-            totalBorrowShares: 1e24,
-            price: price,
-            lltv: 0.86e18
-        });
-    }
 
     function test_allowedSlice_cappedAtDebt() public {
         // Root borrower, huge floor -> cut is clamped to the debt.
@@ -300,12 +346,6 @@ contract SettlementQueueLibTest is Test {
 
     // ── allowedSlice: productive policy branches (settlement-LTV cut, LTV-step term, dust lift) ──
 
-    function _setFloor(uint16 bps, uint96 fullCut) internal {
-        q.setSettlementConfig(
-            SettlementConfig({sliceFloorBps: bps, sliceFloorAssets: 0, fullCutBelowCollateral: fullCut, ltvStepBps: 0})
-        );
-    }
-
     function test_allowedSlice_settlementLtvCut_appliesToNonRoot() public {
         _setFloor(0, 0); // kill the root-cut floor terms so only the settlement-LTV cut can show
         q.sync(_b(1), _pos(90, 100)); // root (riskier)
@@ -348,27 +388,6 @@ contract SettlementQueueLibTest is Test {
         assertEq(q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 100)), 20, "fullCutBelowCollateral==0 never lifts");
     }
 
-    // ── events ──
-
-    event SettlementLtvSet(address indexed borrower, uint256 ltv);
-    event SettlementConfigSet(
-        uint16 sliceFloorBps, uint96 sliceFloorAssets, uint96 fullCutBelowCollateral, uint16 ltvStepBps
-    );
-
-    function test_setSettlementConfig_emitsEvent() public {
-        vm.expectEmit(false, false, false, true, address(q));
-        emit SettlementConfigSet(2_000, 5, 7, 1_000);
-        q.setSettlementConfig(
-            SettlementConfig({sliceFloorBps: 2_000, sliceFloorAssets: 5, fullCutBelowCollateral: 7, ltvStepBps: 1_000})
-        );
-    }
-
-    function test_setSettlementLtv_emitsEvent() public {
-        vm.expectEmit(true, false, false, true, address(q));
-        emit SettlementLtvSet(_b(1), 0.4e18);
-        q.setSettlementLtv(_b(1), 0.4e18);
-    }
-
     // ── queue: truncation & re-key ordering ──
 
     function test_settlementBorrowers_truncatesTail() public {
@@ -377,14 +396,5 @@ contract SettlementQueueLibTest is Test {
         q.sync(_b(3), _pos(30, 100));
         (address[] memory page,) = q.settlementBorrowers(1, 10); // offset 1, want 10, size 3 → 2
         assertEq(page.length, 2, "offset+maxCount > size truncates to size-offset");
-    }
-
-    function test_sync_rekeyChangesRoot() public {
-        q.sync(_b(1), _pos(50, 100)); // ratio 0.5
-        q.sync(_b(2), _pos(40, 100)); // ratio 0.4 → b1 is root
-        assertEq(q.peekRoot(), _b(1), "b1 root initially");
-        q.sync(_b(1), _pos(10, 100)); // re-key b1 down to 0.1 → b2 becomes root
-        assertEq(q.peekRoot(), _b(2), "re-key demoted b1; b2 is root");
-        assertEq(q.size(), 2, "still two");
     }
 }

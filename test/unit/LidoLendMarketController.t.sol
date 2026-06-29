@@ -79,6 +79,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         protocol.guardianSignals.flag(_m().id, a, _validBlock());
     }
 
+    // ── mutations ──
+
     // ── on() access ──
 
     function testRevert_on_nonCoreCaller_unauthorized() public {
@@ -293,22 +295,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.increaseMinActivationDelay(60);
     }
 
-    // ── views ──
-
-    function test_views_defaults() public view {
-        assertFalse(c.isFrozen(), "not frozen initially");
-        assertFalse(c.isPaused(), "not paused initially");
-        assertEq(c.maxBorrowUtilization(), 1e18, "no gap -> full utilization allowed");
-    }
-
-    function test_currentBorrowUtilization_afterBorrow() public {
-        (, address borrower) = _seedBorrower(100 ether, 1000 ether, 0);
-        vm.prank(borrower);
-        _m().core.borrow(_m().params, 40 ether, 0, borrower, borrower);
-        // utilization = totalBorrow * WAD / totalSupply = 40/100 = 0.4e18 (no interest yet).
-        assertEq(c.currentBorrowUtilization(), 0.4e18, "utilization == 40/100 exactly (no interest accrued)");
-    }
-
     function test_setBorrowUtilizationGap_freeSetBothDirections() public {
         c.setBorrowUtilizationGap(0.5e18);
         assertEq(c.borrowUtilizationGap(), 0.5e18, "set");
@@ -480,17 +466,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.setActivatingHold(3 ether);
     }
 
-    /// @dev `currentInflow` reads the decayed activation inflow accumulator. A fresh market has zero inflow;
-    ///      after a maturing deposit of 100 ether the accumulator equals that deposit (no decay in-block).
-    function test_currentInflow_tracksDeposit() public {
-        assertEq(c.currentInflow(), 0, "no inflow before any deposit");
-        Market storage m = _m();
-        address borrower = _actor("borrower");
-        _fund(m.collateralToken, borrower, 100 ether);
-        m.supplyCollateral(borrower, 100 ether);
-        assertEq(c.currentInflow(), 100 ether, "inflow == the activating deposit (no decay in-block)");
-    }
-
     /// @dev `revokeInstantActivation` (RISK_STEWARD) clears a previously-granted instant flag.
     function test_revokeInstantActivation_clearsFlag() public {
         address borrower = _actor("borrower");
@@ -507,72 +482,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         vm.prank(nobody);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
         c.revokeInstantActivation(borrower);
-    }
-
-    // ── settlement views ──
-
-    /// @dev `settlementConfig()` returns the policy set at deploy (`_defaultConfig`: 100/0/10e18/100).
-    function test_settlementConfig_returnsDeployedPolicy() public view {
-        SettlementConfig memory cfg = c.settlementConfig();
-        assertEq(cfg.sliceFloorBps, 100, "sliceFloorBps");
-        assertEq(cfg.sliceFloorAssets, 0, "sliceFloorAssets");
-        assertEq(cfg.fullCutBelowCollateral, 10 ether, "fullCutBelowCollateral");
-        assertEq(cfg.ltvStepBps, 100, "ltvStepBps");
-    }
-
-    /// @dev `settlementBorrowersCount()` is the queue size: 0 with no borrowers, 1 after one borrow enters.
-    function test_settlementBorrowersCount_tracksQueue() public {
-        assertEq(c.settlementBorrowersCount(), 0, "empty queue");
-        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
-        assertEq(c.settlementBorrowersCount(), 1, "one borrower queued after a borrow");
-        // Repay to zero drops the borrower out of the queue.
-        _fund(_m().loanToken, borrower, 100 ether);
-        uint256 shares = _m().core.position(_m().id, borrower).borrowShares;
-        _m().repay(borrower, shares);
-        assertEq(c.settlementBorrowersCount(), 0, "queue empties when debt clears");
-    }
-
-    /// @dev `positionOf` dashboard: every field recomputed independently from the seeded position. A borrower
-    ///      with 100 ether active collateral and a 10 ether borrow, not banned, not yet settle-eligible until a
-    ///      personal LTV is set.
-    function test_positionOf_recomputesDashboard() public {
-        Market storage m = _m();
-        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
-
-        ILidoLendMarketController.BorrowerPosition memory d = c.positionOf(borrower);
-
-        // Collateral is fully matured (we warped past the delay before borrowing): active = 100, no activating/dust.
-        assertEq(d.active, 100 ether, "active == matured collateral");
-        assertEq(d.activating, 0, "no activating left after maturation");
-        assertEq(d.dust, 0, "no dust");
-        assertEq(d.unlockTime, 0, "no timer once matured");
-        assertEq(d.strikes, 0, "no guardian strikes");
-        assertEq(d.flagCount, 0, "no flags");
-        assertFalse(d.banned, "not banned");
-        // Fresh borrow with no interest accrued: debt assets == borrowed amount.
-        assertEq(d.debtAssets, 10 ether, "debt == borrow (no interest yet)");
-        assertEq(d.settlementLtv, 0, "no personal settle LTV");
-        // Sole borrower -> it is the queue root -> next to settle, and its allowed slice is non-empty.
-        assertTrue(d.isNextToSettle, "sole borrower is the queue root");
-        (, uint256 expectedSlice,) = c.nextSettlementBorrower();
-        assertEq(d.slice, expectedSlice, "dashboard slice == nextSettlementBorrower slice");
-    }
-
-    /// @dev `positionOf` reflects a banned borrower and a personal settlement LTV opt-in.
-    function test_positionOf_reflectsBanAndSettleLtv() public {
-        Market storage m = _m();
-        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
-        _ban(borrower); // quorum 1 -> Banned, 1 flag
-        vm.prank(borrower);
-        c.setSettlementLtv(0.5e18);
-
-        ILidoLendMarketController.BorrowerPosition memory d = c.positionOf(borrower);
-        assertTrue(d.banned, "banned reflected");
-        assertEq(d.flagCount, 1, "one flag recorded");
-        assertEq(d.settlementLtv, 0.5e18, "personal settle LTV reflected");
-        // A banned position never unlocks: getUnlockTime returns max. But active is already 100 (matured pre-ban),
-        // and the activating bucket is empty, so there is no live timer -> unlockTime is 0 (no activating lot).
-        assertEq(d.unlockTime, 0, "no activating lot -> no unlock time");
     }
 
     // ── on() unknown hook event (defensive, see note) and onBehalf-banned borrow ──
@@ -787,6 +696,97 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
         c.unfreeze();
     }
+
+    // ── views ──
+
+    function test_views_defaults() public view {
+        assertFalse(c.isFrozen(), "not frozen initially");
+        assertFalse(c.isPaused(), "not paused initially");
+        assertEq(c.maxBorrowUtilization(), 1e18, "no gap -> full utilization allowed");
+    }
+
+    function test_currentBorrowUtilization_afterBorrow() public {
+        (, address borrower) = _seedBorrower(100 ether, 1000 ether, 0);
+        vm.prank(borrower);
+        _m().core.borrow(_m().params, 40 ether, 0, borrower, borrower);
+        // utilization = totalBorrow * WAD / totalSupply = 40/100 = 0.4e18 (no interest yet).
+        assertEq(c.currentBorrowUtilization(), 0.4e18, "utilization == 40/100 exactly (no interest accrued)");
+    }
+
+    /// @dev `currentInflow` reads the decayed activation inflow accumulator. A fresh market has zero inflow;
+    ///      after a maturing deposit of 100 ether the accumulator equals that deposit (no decay in-block).
+    function test_currentInflow_tracksDeposit() public {
+        assertEq(c.currentInflow(), 0, "no inflow before any deposit");
+        Market storage m = _m();
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 100 ether);
+        m.supplyCollateral(borrower, 100 ether);
+        assertEq(c.currentInflow(), 100 ether, "inflow == the activating deposit (no decay in-block)");
+    }
+
+    /// @dev `settlementConfig()` returns the policy set at deploy (`_defaultConfig`: 100/0/10e18/100).
+    function test_settlementConfig_returnsDeployedPolicy() public view {
+        SettlementConfig memory cfg = c.settlementConfig();
+        assertEq(cfg.sliceFloorBps, 100, "sliceFloorBps");
+        assertEq(cfg.sliceFloorAssets, 0, "sliceFloorAssets");
+        assertEq(cfg.fullCutBelowCollateral, 10 ether, "fullCutBelowCollateral");
+        assertEq(cfg.ltvStepBps, 100, "ltvStepBps");
+    }
+
+    /// @dev `settlementBorrowersCount()` is the queue size: 0 with no borrowers, 1 after one borrow enters.
+    function test_settlementBorrowersCount_tracksQueue() public {
+        assertEq(c.settlementBorrowersCount(), 0, "empty queue");
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
+        assertEq(c.settlementBorrowersCount(), 1, "one borrower queued after a borrow");
+        // Repay to zero drops the borrower out of the queue.
+        _fund(_m().loanToken, borrower, 100 ether);
+        uint256 shares = _m().core.position(_m().id, borrower).borrowShares;
+        _m().repay(borrower, shares);
+        assertEq(c.settlementBorrowersCount(), 0, "queue empties when debt clears");
+    }
+
+    /// @dev `positionOf` dashboard: every field recomputed independently from the seeded position. A borrower
+    ///      with 100 ether active collateral and a 10 ether borrow, not banned, not yet settle-eligible until a
+    ///      personal LTV is set.
+    function test_positionOf_recomputesDashboard() public {
+        Market storage m = _m();
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
+
+        ILidoLendMarketController.BorrowerPosition memory d = c.positionOf(borrower);
+
+        // Collateral is fully matured (we warped past the delay before borrowing): active = 100, no activating/dust.
+        assertEq(d.active, 100 ether, "active == matured collateral");
+        assertEq(d.activating, 0, "no activating left after maturation");
+        assertEq(d.dust, 0, "no dust");
+        assertEq(d.unlockTime, 0, "no timer once matured");
+        assertEq(d.strikes, 0, "no guardian strikes");
+        assertEq(d.flagCount, 0, "no flags");
+        assertFalse(d.banned, "not banned");
+        // Fresh borrow with no interest accrued: debt assets == borrowed amount.
+        assertEq(d.debtAssets, 10 ether, "debt == borrow (no interest yet)");
+        assertEq(d.settlementLtv, 0, "no personal settle LTV");
+        // Sole borrower -> it is the queue root -> next to settle, and its allowed slice is non-empty.
+        assertTrue(d.isNextToSettle, "sole borrower is the queue root");
+        (, uint256 expectedSlice,) = c.nextSettlementBorrower();
+        assertEq(d.slice, expectedSlice, "dashboard slice == nextSettlementBorrower slice");
+    }
+
+    /// @dev `positionOf` reflects a banned borrower and a personal settlement LTV opt-in.
+    function test_positionOf_reflectsBanAndSettleLtv() public {
+        Market storage m = _m();
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
+        _ban(borrower); // quorum 1 -> Banned, 1 flag
+        vm.prank(borrower);
+        c.setSettlementLtv(0.5e18);
+
+        ILidoLendMarketController.BorrowerPosition memory d = c.positionOf(borrower);
+        assertTrue(d.banned, "banned reflected");
+        assertEq(d.flagCount, 1, "one flag recorded");
+        assertEq(d.settlementLtv, 0.5e18, "personal settle LTV reflected");
+        // A banned position never unlocks: getUnlockTime returns max. But active is already 100 (matured pre-ban),
+        // and the activating bucket is empty, so there is no live timer -> unlockTime is 0 (no activating lot).
+        assertEq(d.unlockTime, 0, "no activating lot -> no unlock time");
+    }
 }
 
 /// @notice Thin harness exposing `PausableUntil`'s internal helpers. The controller only routes through
@@ -820,6 +820,8 @@ contract PausableUntilTest is Test {
         vm.warp(1_000_000); // a non-zero base time so "in the past" is well-defined
         p = new PausableUntilHarness();
     }
+
+    // ── mutations ──
 
     /// @dev Pause until an absolute future timestamp: stays paused through it, resumes the second after.
     function test_pauseUntil_futureTimestamp() public {
@@ -855,6 +857,8 @@ contract PausableUntilTest is Test {
         vm.expectRevert(PausableUntil.ResumedExpected.selector);
         p.pauseUntil(block.timestamp + 2 hours);
     }
+
+    // ── views ──
 
     /// @dev `_checkPaused` reverts `PausedExpected` when the contract is resumed (the default state).
     function testRevert_checkPaused_whenResumed() public {

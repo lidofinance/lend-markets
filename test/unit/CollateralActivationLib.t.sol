@@ -124,75 +124,7 @@ contract CollateralActivationLibTest is Test {
             / c.maxDelayInflow;
     }
 
-    // ── delay ramp ──
-
-    function test_deposit_delay_recomputeFromInflow() public {
-        uint256 assets = 100 ether; // < cap, >= minActivationAmount -> enters activating
-        h.deposit(BOB, assets);
-        // First deposit: effectiveInflow = min(0 + assets, cap) = assets.
-        assertEq(h.getUnlockTime(BOB, _clean()), block.timestamp + _expectedDelay(assets), "unlock = now + ramp(delay)");
-    }
-
-    function test_deposit_inflowZero_givesMinDelay() public {
-        // A deposit equal to minActivationAmount with no prior inflow ramps from the floor.
-        h.deposit(BOB, 10 ether);
-        assertEq(h.getUnlockTime(BOB, _clean()), block.timestamp + _expectedDelay(10 ether), "ramp from floor");
-    }
-
-    function test_deposit_inflowAtCap_givesMaxDelay() public {
-        h.deposit(BOB, 20_000 ether); // >= maxDelayInflow -> delay clamps to maxActivationDelay
-        assertEq(h.getUnlockTime(BOB, _clean()), block.timestamp + _config().maxActivationDelay, "clamped to max");
-    }
-
-    // ── inflow decay ──
-
-    function test_inflowDecay_linearOverWindow() public {
-        // Decay drains a full `maxDelayInflow` over `maxActivationDelay` at an absolute rate, so the inflow
-        // must be large relative to the elapsed-window fraction to observe a PARTIAL (non-saturated) decay.
-        h.deposit(BOB, 8_000 ether);
-        uint256 inflow0 = h.getInflow();
-        assertEq(inflow0, 8_000 ether, "first deposit sets inflow to the lot (under cap)");
-
-        uint256 dt = 1800; // quarter of the 7200 window → decay = 2500e18 < 8000e18 (partial)
-        vm.warp(block.timestamp + dt);
-        uint256 decay = uint256(_config().maxDelayInflow) * dt / _config().maxActivationDelay;
-        assertEq(h.getInflow(), inflow0 - decay, "inflow decays linearly: cap*elapsed/maxActivationDelay");
-    }
-
-    function test_inflowDecay_flooredAtZero() public {
-        h.deposit(BOB, 100 ether);
-        vm.warp(block.timestamp + 10 * _config().maxActivationDelay); // well past the drain window
-        assertEq(h.getInflow(), 0, "inflow saturates to zero");
-    }
-
-    // ── unlockTime: snapshot, strikes, banned, instant ──
-
-    function test_unlockTime_delayIsSnapshottedAtDeposit() public {
-        h.deposit(BOB, 100 ether);
-        uint256 unlock = h.getUnlockTime(BOB, _clean());
-        // A later, larger deposit by ANOTHER borrower raises market inflow, but BOB's snapshot must not move.
-        h.deposit(ALICE, 5_000 ether);
-        assertEq(h.getUnlockTime(BOB, _clean()), unlock, "BOB's delay is frozen at his deposit");
-    }
-
-    function test_unlockTime_strikesSurchargeIsLive() public {
-        h.deposit(BOB, 100 ether);
-        uint256 base = h.getUnlockTime(BOB, _clean());
-        uint256 withStrikes = h.getUnlockTime(BOB, _opinion(Status.Normal, 2, 0));
-        assertEq(withStrikes, base + 2 * _config().delayPerStrike, "strikes add a live surcharge");
-    }
-
-    function test_unlockTime_banned_isInfinite() public {
-        h.deposit(BOB, 100 ether);
-        assertEq(h.getUnlockTime(BOB, _opinion(Status.Banned, 0, 0)), type(uint256).max, "banned never unlocks");
-    }
-
-    function test_unlockTime_instant_isZero() public {
-        h.setInstantActivation(BOB, true);
-        h.deposit(BOB, 100 ether); // instant deposit goes straight to active (no activating); unlock is 0
-        (uint256 active,,) = h.getBuckets(BOB);
-        assertEq(active, 100 ether, "instant deposit lands active immediately");
-    }
+    // ── mutations ──
 
     // ── maturation gate (syncActivation) ──
 
@@ -267,25 +199,6 @@ contract CollateralActivationLibTest is Test {
         assertEq(active, 100 ether, "stalled committee: fallback matures the lot");
     }
 
-    // ── deposit bucket routing (dust) ──
-
-    function test_deposit_belowMin_staysDust() public {
-        h.deposit(BOB, 4 ether); // < minActivationAmount (10) -> dust, no timer
-        (uint256 active, uint256 activating, uint256 dust) = h.getBuckets(BOB);
-        assertEq(dust, 4 ether, "below the minimum stays in dust");
-        assertEq(activating + active, 0, "nothing activating/active");
-        assertEq(h.getUnlockTime(BOB, _clean()), 0, "no timer for dust");
-    }
-
-    function test_deposit_dustCrossesThreshold_promotesWhole() public {
-        h.deposit(BOB, 4 ether); // dust = 4
-        h.deposit(BOB, 7 ether); // 4 + 7 = 11 >= 10 -> the WHOLE 11 promotes to activating
-        (uint256 active, uint256 activating, uint256 dust) = h.getBuckets(BOB);
-        assertEq(dust, 0, "dust cleared on promotion");
-        assertEq(activating, 11 ether, "the whole accumulated amount promotes");
-        assertEq(active, 0, "not yet matured");
-    }
-
     // ── withdrawal waterfall + hold + forced ──
 
     function test_withdraw_respectsHold_onActivating() public {
@@ -313,21 +226,6 @@ contract CollateralActivationLibTest is Test {
         (, uint256 activating, uint256 dust) = h.getBuckets(BOB);
         assertEq(dust, 0, "dust debited first");
         assertEq(activating, 104 ether, "activating untouched");
-    }
-
-    // ── flash-loan undo ──
-
-    function test_flashLoanUndo_sameTx_reversesInflow() public {
-        // hold = 0 so the whole activating lot is voluntarily withdrawable, isolating the flash-loan undo
-        // (the hold is exercised separately in test_withdraw_respectsHold_onActivating).
-        CollateralActivationLib.Config memory c = _config();
-        c.activatingHold = 0;
-        h.setConfig(c);
-
-        h.deposit(BOB, 100 ether);
-        assertEq(h.getInflow(), 100 ether, "deposit added exactly its lot to inflow");
-        h.withdraw(BOB, 100 ether); // same block -> inflow contribution fully reversed
-        assertEq(h.getInflow(), 0, "inflow back to pre-deposit (exactly 0)");
     }
 
     // ── setConfig BadConfig (each guarded field) ──
@@ -367,18 +265,6 @@ contract CollateralActivationLibTest is Test {
         h.setConfig(c); // both 0 are valid (no revert)
     }
 
-    // ── delay setter: no monotonicity constraint ──
-
-    /// @dev Current behaviour: `setMinActivationDelay` accepts any value in `(0, maxActivationDelay]` and is
-    ///      NOT increase-only — it can move the floor down as well as up. Pinned so a future monotonicity
-    ///      requirement would be an explicit change.
-    function test_setMinActivationDelay_movesEitherDirection() public {
-        h.setMinActivationDelay(1200); // raise
-        assertEq(h.getConfig().minActivationDelay, 1200, "raised");
-        h.setMinActivationDelay(700); // then lower -- accepted
-        assertEq(h.getConfig().minActivationDelay, 700, "floor lowered (setter is not increase-only)");
-    }
-
     /// @dev `maxGuardiansQuorumDelay` is an independent parameter — there is no cross-field validation against
     ///      the base delay. A value at or below the base delay is accepted, and a lot then matures on the
     ///      timer alone (the quorum gate is effectively skipped). Pinned as accepted config behaviour:
@@ -392,34 +278,6 @@ contract CollateralActivationLibTest is Test {
         h.syncActivation(false, BOB, _clean());
         (uint256 active,,) = h.getBuckets(BOB);
         assertEq(active, 10 ether, "sub-base fallback matures on the timer alone (gate skipped)");
-    }
-
-    // -- extend / saturated undo / hold reverts / config bounds / fuzz --
-
-    function test_deposit_whileActivating_extendsWholeBucket() public {
-        h.deposit(BOB, 10 ether); // small inflow -> small delay -> unlock = now + ~606
-        h.deposit(BOB, 9_000 ether); // same block: inflow 9010 -> larger delay -> extends the whole bucket
-        assertEq(
-            h.getUnlockTime(BOB, _clean()),
-            block.timestamp + _expectedDelay(9_010 ether),
-            "later larger deposit re-bases the whole bucket's unlock"
-        );
-        (, uint256 activating,) = h.getBuckets(BOB);
-        assertEq(activating, 9_010 ether, "both lots share one activating bucket under the extended timer");
-    }
-
-    function test_flashLoanUndo_saturated_cannotPushInflowBelowZero() public {
-        // Anti-suppression: the same-tx inflow that can be reversed is capped at what was actually ADDED
-        // (`txInflowAdded`), not at the activating that leaves. Two deposits add 13000e of activating but
-        // only 10000e of inflow (cap), recorded as applied deltas 8000e + 2000e = 10000e. Withdrawing the
-        // whole 13000e therefore reverses only 10000e -> inflow lands exactly at 0, never negative.
-        CollateralActivationLib.Config memory c = _config();
-        c.activatingHold = 0;
-        h.setConfig(c);
-        h.deposit(BOB, 8_000 ether);
-        h.deposit(BOB, 5_000 ether); // inflow capped at 10000e; activating now 13000e
-        h.withdraw(BOB, 13_000 ether); // undo reverses min(txInflowAdded=10000e, 13000e) = 10000e
-        assertEq(h.getInflow(), 0, "activating-out beyond inflow-added cannot suppress inflow below pre-tx");
     }
 
     function testRevert_withdraw_intoHeldActivating_reverts() public {
@@ -449,6 +307,152 @@ contract CollateralActivationLibTest is Test {
         c.delayPerStrike = uint40(7 days + 1);
         vm.expectRevert(CollateralActivationLib.BadConfig.selector);
         h.setConfig(c);
+    }
+
+    // ── views ──
+
+    // ── delay ramp ──
+
+    function test_deposit_delay_recomputeFromInflow() public {
+        uint256 assets = 100 ether; // < cap, >= minActivationAmount -> enters activating
+        h.deposit(BOB, assets);
+        // First deposit: effectiveInflow = min(0 + assets, cap) = assets.
+        assertEq(h.getUnlockTime(BOB, _clean()), block.timestamp + _expectedDelay(assets), "unlock = now + ramp(delay)");
+    }
+
+    function test_deposit_inflowZero_givesMinDelay() public {
+        // A deposit equal to minActivationAmount with no prior inflow ramps from the floor.
+        h.deposit(BOB, 10 ether);
+        assertEq(h.getUnlockTime(BOB, _clean()), block.timestamp + _expectedDelay(10 ether), "ramp from floor");
+    }
+
+    function test_deposit_inflowAtCap_givesMaxDelay() public {
+        h.deposit(BOB, 20_000 ether); // >= maxDelayInflow -> delay clamps to maxActivationDelay
+        assertEq(h.getUnlockTime(BOB, _clean()), block.timestamp + _config().maxActivationDelay, "clamped to max");
+    }
+
+    // ── inflow decay ──
+
+    function test_inflowDecay_linearOverWindow() public {
+        // Decay drains a full `maxDelayInflow` over `maxActivationDelay` at an absolute rate, so the inflow
+        // must be large relative to the elapsed-window fraction to observe a PARTIAL (non-saturated) decay.
+        h.deposit(BOB, 8_000 ether);
+        uint256 inflow0 = h.getInflow();
+        assertEq(inflow0, 8_000 ether, "first deposit sets inflow to the lot (under cap)");
+
+        uint256 dt = 1800; // quarter of the 7200 window → decay = 2500e18 < 8000e18 (partial)
+        vm.warp(block.timestamp + dt);
+        uint256 decay = uint256(_config().maxDelayInflow) * dt / _config().maxActivationDelay;
+        assertEq(h.getInflow(), inflow0 - decay, "inflow decays linearly: cap*elapsed/maxActivationDelay");
+    }
+
+    function test_inflowDecay_flooredAtZero() public {
+        h.deposit(BOB, 100 ether);
+        vm.warp(block.timestamp + 10 * _config().maxActivationDelay); // well past the drain window
+        assertEq(h.getInflow(), 0, "inflow saturates to zero");
+    }
+
+    // ── unlockTime: snapshot, strikes, banned, instant ──
+
+    function test_unlockTime_delayIsSnapshottedAtDeposit() public {
+        h.deposit(BOB, 100 ether);
+        uint256 unlock = h.getUnlockTime(BOB, _clean());
+        // A later, larger deposit by ANOTHER borrower raises market inflow, but BOB's snapshot must not move.
+        h.deposit(ALICE, 5_000 ether);
+        assertEq(h.getUnlockTime(BOB, _clean()), unlock, "BOB's delay is frozen at his deposit");
+    }
+
+    function test_unlockTime_strikesSurchargeIsLive() public {
+        h.deposit(BOB, 100 ether);
+        uint256 base = h.getUnlockTime(BOB, _clean());
+        uint256 withStrikes = h.getUnlockTime(BOB, _opinion(Status.Normal, 2, 0));
+        assertEq(withStrikes, base + 2 * _config().delayPerStrike, "strikes add a live surcharge");
+    }
+
+    function test_unlockTime_banned_isInfinite() public {
+        h.deposit(BOB, 100 ether);
+        assertEq(h.getUnlockTime(BOB, _opinion(Status.Banned, 0, 0)), type(uint256).max, "banned never unlocks");
+    }
+
+    function test_unlockTime_instant_isZero() public {
+        h.setInstantActivation(BOB, true);
+        h.deposit(BOB, 100 ether); // instant deposit goes straight to active (no activating); unlock is 0
+        (uint256 active,,) = h.getBuckets(BOB);
+        assertEq(active, 100 ether, "instant deposit lands active immediately");
+    }
+
+    // ── deposit bucket routing (dust) ──
+
+    function test_deposit_belowMin_staysDust() public {
+        h.deposit(BOB, 4 ether); // < minActivationAmount (10) -> dust, no timer
+        (uint256 active, uint256 activating, uint256 dust) = h.getBuckets(BOB);
+        assertEq(dust, 4 ether, "below the minimum stays in dust");
+        assertEq(activating + active, 0, "nothing activating/active");
+        assertEq(h.getUnlockTime(BOB, _clean()), 0, "no timer for dust");
+    }
+
+    function test_deposit_dustCrossesThreshold_promotesWhole() public {
+        h.deposit(BOB, 4 ether); // dust = 4
+        h.deposit(BOB, 7 ether); // 4 + 7 = 11 >= 10 -> the WHOLE 11 promotes to activating
+        (uint256 active, uint256 activating, uint256 dust) = h.getBuckets(BOB);
+        assertEq(dust, 0, "dust cleared on promotion");
+        assertEq(activating, 11 ether, "the whole accumulated amount promotes");
+        assertEq(active, 0, "not yet matured");
+    }
+
+    // ── flash-loan undo ──
+
+    function test_flashLoanUndo_sameTx_reversesInflow() public {
+        // hold = 0 so the whole activating lot is voluntarily withdrawable, isolating the flash-loan undo
+        // (the hold is exercised separately in test_withdraw_respectsHold_onActivating).
+        CollateralActivationLib.Config memory c = _config();
+        c.activatingHold = 0;
+        h.setConfig(c);
+
+        h.deposit(BOB, 100 ether);
+        assertEq(h.getInflow(), 100 ether, "deposit added exactly its lot to inflow");
+        h.withdraw(BOB, 100 ether); // same block -> inflow contribution fully reversed
+        assertEq(h.getInflow(), 0, "inflow back to pre-deposit (exactly 0)");
+    }
+
+    // ── delay setter: no monotonicity constraint ──
+
+    /// @dev Current behaviour: `setMinActivationDelay` accepts any value in `(0, maxActivationDelay]` and is
+    ///      NOT increase-only — it can move the floor down as well as up. Pinned so a future monotonicity
+    ///      requirement would be an explicit change.
+    function test_setMinActivationDelay_movesEitherDirection() public {
+        h.setMinActivationDelay(1200); // raise
+        assertEq(h.getConfig().minActivationDelay, 1200, "raised");
+        h.setMinActivationDelay(700); // then lower -- accepted
+        assertEq(h.getConfig().minActivationDelay, 700, "floor lowered (setter is not increase-only)");
+    }
+
+    // -- extend / saturated undo / hold reverts / config bounds / fuzz --
+
+    function test_deposit_whileActivating_extendsWholeBucket() public {
+        h.deposit(BOB, 10 ether); // small inflow -> small delay -> unlock = now + ~606
+        h.deposit(BOB, 9_000 ether); // same block: inflow 9010 -> larger delay -> extends the whole bucket
+        assertEq(
+            h.getUnlockTime(BOB, _clean()),
+            block.timestamp + _expectedDelay(9_010 ether),
+            "later larger deposit re-bases the whole bucket's unlock"
+        );
+        (, uint256 activating,) = h.getBuckets(BOB);
+        assertEq(activating, 9_010 ether, "both lots share one activating bucket under the extended timer");
+    }
+
+    function test_flashLoanUndo_saturated_cannotPushInflowBelowZero() public {
+        // Anti-suppression: the same-tx inflow that can be reversed is capped at what was actually ADDED
+        // (`txInflowAdded`), not at the activating that leaves. Two deposits add 13000e of activating but
+        // only 10000e of inflow (cap), recorded as applied deltas 8000e + 2000e = 10000e. Withdrawing the
+        // whole 13000e therefore reverses only 10000e -> inflow lands exactly at 0, never negative.
+        CollateralActivationLib.Config memory c = _config();
+        c.activatingHold = 0;
+        h.setConfig(c);
+        h.deposit(BOB, 8_000 ether);
+        h.deposit(BOB, 5_000 ether); // inflow capped at 10000e; activating now 13000e
+        h.withdraw(BOB, 13_000 ether); // undo reverses min(txInflowAdded=10000e, 13000e) = 10000e
+        assertEq(h.getInflow(), 0, "activating-out beyond inflow-added cannot suppress inflow below pre-tx");
     }
 
     function testFuzz_firstDeposit_delayMatchesRamp(uint256 amount) public {

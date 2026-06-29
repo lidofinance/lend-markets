@@ -149,6 +149,27 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(lenderGot + fillerGot + feeGot, s.assetsOut, "three-way conservation == assetsOut");
     }
 
+    /// @dev Lender deposits and approves the book for `approveShares` of the resulting shares.
+    function _depositAndApprove(uint256 depositAmt, uint256 approveShares) internal returns (uint256 shares) {
+        asset.mint(lender, depositAmt);
+        vm.startPrank(lender);
+        asset.approve(address(vault), depositAmt);
+        shares = vault.deposit(depositAmt, lender);
+        vault.approve(address(book), approveShares);
+        vm.stopPrank();
+    }
+
+    function _place(uint256 shares, PriorityRamp memory ramp, uint256 deadline) internal returns (uint256) {
+        vm.prank(lender);
+        return book.placeExitRequest(IERC4626(address(vault)), shares, ramp, deadline, false);
+    }
+
+    function _status(uint256 id) internal view returns (uint8) {
+        return uint8(book.getExitRequest(id).status);
+    }
+
+    // ── mutations ──
+
     // ── concrete ──
 
     function test_fill_conservation_withYieldAndFee() public {
@@ -224,27 +245,6 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(lenderGot, owed - expectedFee, "lender leg = owed - fee(rate) at this ramp regime");
     }
 
-    // ── helpers for the contract-behaviour gaps ──
-
-    /// @dev Lender deposits and approves the book for `approveShares` of the resulting shares.
-    function _depositAndApprove(uint256 depositAmt, uint256 approveShares) internal returns (uint256 shares) {
-        asset.mint(lender, depositAmt);
-        vm.startPrank(lender);
-        asset.approve(address(vault), depositAmt);
-        shares = vault.deposit(depositAmt, lender);
-        vault.approve(address(book), approveShares);
-        vm.stopPrank();
-    }
-
-    function _place(uint256 shares, PriorityRamp memory ramp, uint256 deadline) internal returns (uint256) {
-        vm.prank(lender);
-        return book.placeExitRequest(IERC4626(address(vault)), shares, ramp, deadline, false);
-    }
-
-    function _status(uint256 id) internal view returns (uint8) {
-        return uint8(book.getExitRequest(id).status);
-    }
-
     // ── G1: partial fill (Open) then final (Filled) — multi-fill state machine ──
 
     function test_fill_partialThenFinal() public {
@@ -303,48 +303,6 @@ contract ExitBookFeeSplitTest is Test {
         vm.prank(filler);
         book.fillExitRequest(id, 0, out); // satisfiable floor
         assertEq(_status(id), uint8(ExitStatus.Filled), "fills at a satisfiable floor");
-    }
-
-    // ── G4: view functions ──
-
-    function test_views_previewAndListing() public {
-        _setServiceFee(0);
-        (uint256 id1, uint256 shares1) = _lenderPlace(100 ether, _ramp());
-        (uint256 id2,) = _lenderPlace(50 ether, _ramp());
-        // The book allowance is shared across an owner's requests (and the per-place approve overwrites it);
-        // approve the full backing so both requests preview as fully fillable.
-        vm.prank(lender);
-        vault.approve(address(book), type(uint256).max);
-
-        // previewFill: exact fillable + assetsOut
-        RequestPreview memory p = book.previewFill(id1);
-        assertEq(p.id, id1, "preview id");
-        assertEq(p.filledShares, shares1, "fully fillable (ample liquidity)");
-        assertEq(p.assetsOut, vault.previewRedeem(shares1), "preview assetsOut == previewRedeem");
-
-        // owner listing + pagination clamp
-        assertEq(book.getOwnerRequestCount(lender), 2, "two requests for the lender");
-        uint256[] memory ids = book.getOwnerRequestIds(lender, 0, 10);
-        assertEq(ids.length, 2, "clamped to the count");
-        assertEq(ids[0], id1);
-        assertEq(ids[1], id2);
-        assertEq(book.getOwnerRequestIds(lender, 1, 10).length, 1, "offset trims the head");
-        assertEq(book.getOwnerRequestIds(lender, 5, 10).length, 0, "offset past end -> empty");
-        assertEq(book.getOwnerRequestCount(filler), 0, "filler placed nothing");
-
-        // batch reads, including an unknown id -> zeroed row, no revert
-        uint256[] memory query = new uint256[](3);
-        (query[0], query[1], query[2]) = (id1, id2, 999);
-        Request[] memory rs = book.getRequests(query);
-        assertEq(rs.length, 3);
-        assertEq(rs[0].owner, lender);
-        assertEq(rs[2].owner, address(0), "unknown id -> zeroed Request");
-
-        RequestPreview[] memory ps = book.getRequestPreviews(query);
-        assertEq(ps.length, 3);
-        assertEq(ps[0].id, id1);
-        assertEq(ps[2].filledShares, 0, "unknown id -> zero fillable");
-        assertEq(ps[2].assetsOut, 0, "unknown id -> zero assetsOut");
     }
 
     // ── G5: placement validation reverts ──
@@ -517,16 +475,6 @@ contract ExitBookFeeSplitTest is Test {
         book.cancelExitRequest(id);
     }
 
-    // ── G11: lastRequestId view ──
-
-    function test_lastRequestId_tracksLatest() public {
-        assertEq(book.lastRequestId(), 0, "no requests issued yet");
-        (uint256 id1,) = _lenderPlace(100 ether, _ramp());
-        assertEq(book.lastRequestId(), id1, "tracks the first id");
-        (uint256 id2,) = _lenderPlace(50 ether, _ramp());
-        assertEq(book.lastRequestId(), id2, "tracks the latest id");
-    }
-
     // ── G12: remaining placement-validation reverts ──
 
     function testRevert_place_rampStartAfterEnd() public {
@@ -566,5 +514,59 @@ contract ExitBookFeeSplitTest is Test {
             block.timestamp + 365 days + 1, // > now + MAX_REQUEST_LIFETIME
             false
         );
+    }
+
+    // ── views ──
+
+    // ── G4: view functions ──
+
+    function test_views_previewAndListing() public {
+        _setServiceFee(0);
+        (uint256 id1, uint256 shares1) = _lenderPlace(100 ether, _ramp());
+        (uint256 id2,) = _lenderPlace(50 ether, _ramp());
+        // The book allowance is shared across an owner's requests (and the per-place approve overwrites it);
+        // approve the full backing so both requests preview as fully fillable.
+        vm.prank(lender);
+        vault.approve(address(book), type(uint256).max);
+
+        // previewFill: exact fillable + assetsOut
+        RequestPreview memory p = book.previewFill(id1);
+        assertEq(p.id, id1, "preview id");
+        assertEq(p.filledShares, shares1, "fully fillable (ample liquidity)");
+        assertEq(p.assetsOut, vault.previewRedeem(shares1), "preview assetsOut == previewRedeem");
+
+        // owner listing + pagination clamp
+        assertEq(book.getOwnerRequestCount(lender), 2, "two requests for the lender");
+        uint256[] memory ids = book.getOwnerRequestIds(lender, 0, 10);
+        assertEq(ids.length, 2, "clamped to the count");
+        assertEq(ids[0], id1);
+        assertEq(ids[1], id2);
+        assertEq(book.getOwnerRequestIds(lender, 1, 10).length, 1, "offset trims the head");
+        assertEq(book.getOwnerRequestIds(lender, 5, 10).length, 0, "offset past end -> empty");
+        assertEq(book.getOwnerRequestCount(filler), 0, "filler placed nothing");
+
+        // batch reads, including an unknown id -> zeroed row, no revert
+        uint256[] memory query = new uint256[](3);
+        (query[0], query[1], query[2]) = (id1, id2, 999);
+        Request[] memory rs = book.getRequests(query);
+        assertEq(rs.length, 3);
+        assertEq(rs[0].owner, lender);
+        assertEq(rs[2].owner, address(0), "unknown id -> zeroed Request");
+
+        RequestPreview[] memory ps = book.getRequestPreviews(query);
+        assertEq(ps.length, 3);
+        assertEq(ps[0].id, id1);
+        assertEq(ps[2].filledShares, 0, "unknown id -> zero fillable");
+        assertEq(ps[2].assetsOut, 0, "unknown id -> zero assetsOut");
+    }
+
+    // ── G11: lastRequestId view ──
+
+    function test_lastRequestId_tracksLatest() public {
+        assertEq(book.lastRequestId(), 0, "no requests issued yet");
+        (uint256 id1,) = _lenderPlace(100 ether, _ramp());
+        assertEq(book.lastRequestId(), id1, "tracks the first id");
+        (uint256 id2,) = _lenderPlace(50 ether, _ramp());
+        assertEq(book.lastRequestId(), id2, "tracks the latest id");
     }
 }

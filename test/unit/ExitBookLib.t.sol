@@ -79,6 +79,8 @@ contract ExitBookLibTest is Test {
         return h.add(owner, ASSET, shares, 1e18, _ramp(), block.timestamp + 1 days, false);
     }
 
+    // ── mutations ──
+
     // ── add / ids ──
 
     function test_add_createsOpenRequest() public {
@@ -144,33 +146,6 @@ contract ExitBookLibTest is Test {
         h.cancel(id, ALICE);
     }
 
-    // ── requireFillable (3 reverts + boundary) ──
-
-    function test_requireFillable_atDeadline_ok() public {
-        uint256 id = _add(ALICE, 100 ether);
-        vm.warp(block.timestamp + 1 days); // now == deadline; `>` is strict so still fillable
-        h.requireFillable(id);
-    }
-
-    function testRevert_requireFillable_pastDeadline() public {
-        uint256 id = _add(ALICE, 100 ether);
-        vm.warp(block.timestamp + 1 days + 1);
-        vm.expectRevert(ExitBookLib.RequestExpired.selector);
-        h.requireFillable(id);
-    }
-
-    function testRevert_requireFillable_closed() public {
-        uint256 id = _add(ALICE, 100 ether);
-        h.cancel(id, ALICE);
-        vm.expectRevert(ExitBookLib.RequestClosed.selector);
-        h.requireFillable(id);
-    }
-
-    function testRevert_requireFillable_uncreated() public {
-        vm.expectRevert(ExitBookLib.RequestClosed.selector);
-        h.requireFillable(999);
-    }
-
     /// @dev `recordFill` only fills an OPEN request: on a cancelled (or filled) request it reverts
     ///      `RequestClosed` rather than re-closing it. This guards the status from corruption (a zero-share
     ///      call on a cancelled request would otherwise flip Cancelled → Filled). Both a zero and a positive
@@ -228,5 +203,34 @@ contract ExitBookLibTest is Test {
             assertLe(h.sizeRemaining(id), 100 ether, "remaining <= total");
         }
         assertEq(h.nextId(), n, "nextId == count issued");
+    }
+
+    // ── views ──
+
+    // ── requireFillable (3 reverts + boundary) ──
+
+    function test_requireFillable_atDeadline_ok() public {
+        uint256 id = _add(ALICE, 100 ether);
+        vm.warp(block.timestamp + 1 days); // now == deadline; `>` is strict so still fillable
+        h.requireFillable(id);
+    }
+
+    function testRevert_requireFillable_pastDeadline() public {
+        uint256 id = _add(ALICE, 100 ether);
+        vm.warp(block.timestamp + 1 days + 1);
+        vm.expectRevert(ExitBookLib.RequestExpired.selector);
+        h.requireFillable(id);
+    }
+
+    function testRevert_requireFillable_closed() public {
+        uint256 id = _add(ALICE, 100 ether);
+        h.cancel(id, ALICE);
+        vm.expectRevert(ExitBookLib.RequestClosed.selector);
+        h.requireFillable(id);
+    }
+
+    function testRevert_requireFillable_uncreated() public {
+        vm.expectRevert(ExitBookLib.RequestClosed.selector);
+        h.requireFillable(999);
     }
 }

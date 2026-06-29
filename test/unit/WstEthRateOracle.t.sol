@@ -31,16 +31,20 @@ contract WstEthRateOracleTest is Test {
         oracle = new WstEthRateOracle(address(wsteth));
     }
 
+    // ── mutations ──
+
+    function testRevert_constructor_zeroAddress() public {
+        vm.expectRevert(WstEthRateOracle.ZeroAddress.selector);
+        new WstEthRateOracle(address(0));
+    }
+
+    // ── views ──
+
     function test_price_recomputeFromRate() public {
         wsteth.setStEthPerToken(1.15e18);
         // price = getStETHByWstETH(1e36) = 1e36 * 1.15e18 / 1e18 = 1.15e36.
         assertEq(oracle.price(), uint256(1e36) * 1.15e18 / 1e18, "price = rate scaled to 1e36");
         assertEq(oracle.price(), 1.15e36, "explicit value");
-    }
-
-    function testRevert_constructor_zeroAddress() public {
-        vm.expectRevert(WstEthRateOracle.ZeroAddress.selector);
-        new WstEthRateOracle(address(0));
     }
 
     function testFuzz_price_equalsScaledRate(uint256 ratePerToken) public {

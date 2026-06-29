@@ -56,6 +56,47 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.accrueInterest();
     }
 
+    /// @dev Borrower posts large collateral and borrows the WHOLE lender supply (idle -> 0), then a crash to
+    ///      a solvent-but-unhealthy point. Borrowing the full supply is seed-safe: 1000 collateral values at
+    ///      >= 300 at any seed, so max borrow >= 240 > the 100 supply.
+    function _distressFull(Market storage m, uint256 lenderLiquidity)
+        internal
+        returns (address lender, address borrower)
+    {
+        lender = _actor("lender");
+        _fund(m.loanToken, lender, lenderLiquidity);
+        m.vaultDeposit(lender, lenderLiquidity);
+
+        borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 1_000 ether);
+        m.supplyCollateral(borrower, 1_000 ether);
+        m.activateCollateral();
+        m.borrow(borrower, lenderLiquidity); // borrow all supply -> idle 0
+
+        // debt == lenderLiquidity; value = 1000·price/1e36 must be in (debt, debt/LLTV).
+        // For lenderLiquidity == 100: value in (100, 125) -> price in (0.1e36, 0.125e36).
+        MockPriceOracle(address(m.oracle)).setPrice(0.11e36);
+        m.accrueInterest();
+    }
+
+    function _deployVaultProxy(MarketParams memory p, address controller) internal returns (address) {
+        return address(
+            new OssifiableProxy(
+                vaultImpl,
+                address(this),
+                abi.encodeWithSignature(
+                    "initialize((address,address,address,address,uint256),address,string,string)",
+                    p,
+                    controller,
+                    "n",
+                    "s"
+                )
+            )
+        );
+    }
+
+    // ── mutations ──
+
     // ── ERC-4626 round-trips ──
 
     function test_depositWithdraw_roundTrip() public {
@@ -76,24 +117,6 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.vaultMint(lender, 50 ether);
         m.vaultRedeem(lender, m.vault.balanceOf(lender));
         assertEq(m.vault.balanceOf(lender), 0, "all shares redeemed");
-    }
-
-    // ── maxWithdraw / maxRedeem are capped by free liquidity ──
-
-    function test_maxWithdraw_cappedByFreeLiquidity() public {
-        Market storage m = _market();
-        address lender = _actor("lender");
-        _fund(m.loanToken, lender, 100 ether);
-        m.vaultDeposit(lender, 100 ether);
-
-        address borrower = _actor("borrower");
-        _fund(m.collateralToken, borrower, 100 ether);
-        m.supplyCollateral(borrower, 100 ether);
-        m.activateCollateral();
-        m.borrow(borrower, 20 ether); // 20 of the 100 supplied is borrowed out (safe at any seeded price)
-
-        // Free liquidity = totalSupply - totalBorrow = 100 - 20 = 80; the 100-asset position caps to it.
-        assertEq(m.vault.maxWithdraw(lender), 80 ether, "maxWithdraw == free liquidity (100 - 20)");
     }
 
     // ── fallbackExit: redeem-first, then settle ──
@@ -163,29 +186,6 @@ contract LidoLendERC4626Test is LidoLendSetup {
         (,, uint256 collateralSeized, uint256 debtCanceled) = m.settle(lender, m.vault.balanceOf(lender), bs, lender);
         assertEq(debtCanceled, sliceAssets, "settle cut == settlementFor prediction (exact)");
         assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");
-    }
-
-    /// @dev Borrower posts large collateral and borrows the WHOLE lender supply (idle -> 0), then a crash to
-    ///      a solvent-but-unhealthy point. Borrowing the full supply is seed-safe: 1000 collateral values at
-    ///      >= 300 at any seed, so max borrow >= 240 > the 100 supply.
-    function _distressFull(Market storage m, uint256 lenderLiquidity)
-        internal
-        returns (address lender, address borrower)
-    {
-        lender = _actor("lender");
-        _fund(m.loanToken, lender, lenderLiquidity);
-        m.vaultDeposit(lender, lenderLiquidity);
-
-        borrower = _actor("borrower");
-        _fund(m.collateralToken, borrower, 1_000 ether);
-        m.supplyCollateral(borrower, 1_000 ether);
-        m.activateCollateral();
-        m.borrow(borrower, lenderLiquidity); // borrow all supply -> idle 0
-
-        // debt == lenderLiquidity; value = 1000·price/1e36 must be in (debt, debt/LLTV).
-        // For lenderLiquidity == 100: value in (100, 125) -> price in (0.1e36, 0.125e36).
-        MockPriceOracle(address(m.oracle)).setPrice(0.11e36);
-        m.accrueInterest();
     }
 
     function test_fallbackExit_pureSettle_whenNoIdle() public {
@@ -314,6 +314,50 @@ contract LidoLendERC4626Test is LidoLendSetup {
         assertEq(m.collateralToken.balanceOf(receiver), before + collateralSeized, "collateral to receiver");
     }
 
+    // ── initialize guards ──
+
+    function testRevert_initialize_zeroController() public {
+        vm.expectRevert(ILidoLendERC4626.ZeroController.selector);
+        _deployVaultProxy(_market().params, address(0));
+    }
+
+    function testRevert_initialize_zeroLoanToken() public {
+        MarketParams memory p = _market().params;
+        p.loanToken = address(0);
+        vm.expectRevert(ILidoLendERC4626.ZeroLoanToken.selector);
+        _deployVaultProxy(p, address(_market().controller));
+    }
+
+    function testRevert_initialize_zeroCollateralToken() public {
+        MarketParams memory p = _market().params;
+        p.collateralToken = address(0);
+        vm.expectRevert(ILidoLendERC4626.ZeroCollateralToken.selector);
+        _deployVaultProxy(p, address(_market().controller));
+    }
+
+    function testRevert_constructor_zeroLidoLend() public {
+        vm.expectRevert(ILidoLendERC4626.ZeroLidoLend.selector);
+        new LidoLendERC4626(address(0));
+    }
+
+    // ── views ──
+
+    function test_maxWithdraw_cappedByFreeLiquidity() public {
+        Market storage m = _market();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 100 ether);
+        m.vaultDeposit(lender, 100 ether);
+
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 100 ether);
+        m.supplyCollateral(borrower, 100 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 20 ether); // 20 of the 100 supplied is borrowed out (safe at any seeded price)
+
+        // Free liquidity = totalSupply - totalBorrow = 100 - 20 = 80; the 100-asset position caps to it.
+        assertEq(m.vault.maxWithdraw(lender), 80 ether, "maxWithdraw == free liquidity (100 - 20)");
+    }
+
     // NOTE: the core settle gate ("ordinary liquidity available", debtCanceled > settleableSupply) cannot
     // be strictly tripped through the vault: the core takes `_settleableSupply(id, onBehalf=vault)`, and the
     // vault's Morpho supply is the whole market supply, so settleableSupply == totalBorrow while any cut is
@@ -356,48 +400,6 @@ contract LidoLendERC4626Test is LidoLendSetup {
         _fund(m.loanToken, lender, 100 ether);
         m.vaultDeposit(lender, 100 ether);
         assertEq(m.vault.totalAssets(), before + 100 ether, "totalAssets rose by the deposit");
-    }
-
-    // ── initialize guards ──
-
-    function _deployVaultProxy(MarketParams memory p, address controller) internal returns (address) {
-        return address(
-            new OssifiableProxy(
-                vaultImpl,
-                address(this),
-                abi.encodeWithSignature(
-                    "initialize((address,address,address,address,uint256),address,string,string)",
-                    p,
-                    controller,
-                    "n",
-                    "s"
-                )
-            )
-        );
-    }
-
-    function testRevert_initialize_zeroController() public {
-        vm.expectRevert(ILidoLendERC4626.ZeroController.selector);
-        _deployVaultProxy(_market().params, address(0));
-    }
-
-    function testRevert_initialize_zeroLoanToken() public {
-        MarketParams memory p = _market().params;
-        p.loanToken = address(0);
-        vm.expectRevert(ILidoLendERC4626.ZeroLoanToken.selector);
-        _deployVaultProxy(p, address(_market().controller));
-    }
-
-    function testRevert_initialize_zeroCollateralToken() public {
-        MarketParams memory p = _market().params;
-        p.collateralToken = address(0);
-        vm.expectRevert(ILidoLendERC4626.ZeroCollateralToken.selector);
-        _deployVaultProxy(p, address(_market().controller));
-    }
-
-    function testRevert_constructor_zeroLidoLend() public {
-        vm.expectRevert(ILidoLendERC4626.ZeroLidoLend.selector);
-        new LidoLendERC4626(address(0));
     }
 
     function test_marketParams_returnsConfigured() public view {

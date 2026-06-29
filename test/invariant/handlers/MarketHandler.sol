@@ -138,7 +138,12 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         if (pos.borrowShares == 0) return;
         MorphoMarket memory mk = CORE.market(ID);
         uint256 shares = bound(amount, 1, pos.borrowShares);
-        uint256 owed = Math.mulDiv(shares, mk.totalBorrowAssets, mk.totalBorrowShares) + 1; // round up
+        // Match the core's repay pull EXACTLY: SharesMathLib.toAssetsUp = mulDivUp(shares, tBA + 1, tBS + 1e6)
+        // with the virtual offsets. The old `mulDiv(.,tBA,tBS)+1` omitted them and could under-fund by 1 wei
+        // (ERC20InsufficientAllowance) once the assets/shares ratio drifted under interest.
+        uint256 owed = Math.mulDiv(
+            shares, uint256(mk.totalBorrowAssets) + 1, uint256(mk.totalBorrowShares) + 1e6, Math.Rounding.Ceil
+        );
         _mintTo(LOAN, a, owed);
         vm.startPrank(a);
         LOAN.approve(address(CORE), owed);

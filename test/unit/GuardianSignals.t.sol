@@ -81,6 +81,8 @@ contract GuardianSignalsTest is Test {
         return gs.getOpinion(MARKET, account).strikes;
     }
 
+    // ── mutations ──
+
     // ── escalation ladder & latch ──
 
     function test_flag_belowQuorum_isNormalWithStrikes() public {
@@ -291,7 +293,7 @@ contract GuardianSignalsTest is Test {
         gs.heartbeat(b);
     }
 
-    // ── events / batch / getFlaggedBy ──
+    // ── events / batch ──
 
     event Flagged(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
     event Banned(Id indexed market, address indexed account);
@@ -330,13 +332,6 @@ contract GuardianSignalsTest is Test {
         gs.grantImmunity(MARKET, BOB);
         assertEq(uint8(_status(BOB)), uint8(Status.Immune), "immunity overrides a forced ban");
         assertEq(_strikes(BOB), 0, "strikes 0 under immunity");
-    }
-
-    function test_getFlaggedBy_returnsFlaggerSet() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB);
-        address[] memory flaggers = gs.getFlaggedBy(MARKET, BOB);
-        assertEq(flaggers.length, 2, "two flaggers");
     }
 
     function test_flag_batch_multipleAccounts() public {
@@ -398,7 +393,7 @@ contract GuardianSignalsTest is Test {
         gs.addGuardian(address(0x4000 + 33));
     }
 
-    // ── guardian set management: views & removal ──
+    // ── guardian set management: removal ──
 
     event GuardianRemoved(address indexed guardian);
 
@@ -423,61 +418,6 @@ contract GuardianSignalsTest is Test {
         vm.expectRevert(IGuardianSignals.NotGuardian.selector);
         gs.removeGuardian(BOB); // never a guardian
         assertEq(gs.getGuardianCount(), 3, "set unchanged after the revert");
-    }
-
-    /// @dev `isGuardian` is a direct membership read: true for a seeded guardian, false for a non-guardian.
-    function test_isGuardian_reflectsMembership() public view {
-        assertTrue(gs.isGuardian(G1), "seeded guardian reads true");
-        assertFalse(gs.isGuardian(BOB), "non-guardian reads false");
-    }
-
-    /// @dev `getGuardians` returns the full set; with the seeded 3 it is exactly {G1, G2, G3} (insertion order
-    ///      for an untouched EnumerableSet).
-    function test_getGuardians_returnsFullSet() public view {
-        address[] memory set = gs.getGuardians();
-        assertEq(set.length, 3, "three guardians");
-        assertEq(set[0], G1, "index 0 is G1");
-        assertEq(set[1], G2, "index 1 is G2");
-        assertEq(set[2], G3, "index 2 is G3");
-    }
-
-    // ── liveness reads: getHeartbeat / getHeartbeats ──
-
-    /// @dev `getHeartbeat` returns the exact `(number, timestamp)` last recorded for a guardian; a guardian
-    ///      that never heartbeated reads the zero `BlockInfo`.
-    function test_getHeartbeat_recordedAndZero() public {
-        _heartbeat(G1, 997); // _block packs timestamp == number == 997
-
-        assertEq(gs.getHeartbeat(G1).number, 997, "recorded block number");
-        assertEq(gs.getHeartbeat(G1).timestamp, 997, "recorded timestamp");
-
-        assertEq(gs.getHeartbeat(G2).number, 0, "never heartbeated -> zero number");
-        assertEq(gs.getHeartbeat(G2).timestamp, 0, "never heartbeated -> zero timestamp");
-    }
-
-    /// @dev `getHeartbeats` pairs the guardian set with each guardian's last-scanned block (exercising
-    ///      `_getHeartbeats`). Order matches `getGuardians`; an un-heartbeated guardian carries a zero block.
-    function test_getHeartbeats_pairsSetWithBlocks() public {
-        _heartbeat(G1, 999);
-        _heartbeat(G3, 990);
-        // G2 deliberately left without a heartbeat.
-
-        (address[] memory guardians, BlockInfo[] memory heartbeats) = gs.getHeartbeats();
-
-        assertEq(guardians.length, 3, "three guardians returned");
-        assertEq(heartbeats.length, 3, "one block per guardian");
-
-        assertEq(guardians[0], G1, "index 0 guardian G1");
-        assertEq(heartbeats[0].number, 999, "G1 heartbeat number");
-        assertEq(heartbeats[0].timestamp, 999, "G1 heartbeat timestamp");
-
-        assertEq(guardians[1], G2, "index 1 guardian G2");
-        assertEq(heartbeats[1].number, 0, "G2 never heartbeated -> zero");
-        assertEq(heartbeats[1].timestamp, 0, "G2 never heartbeated -> zero");
-
-        assertEq(guardians[2], G3, "index 2 guardian G3");
-        assertEq(heartbeats[2].number, 990, "G3 heartbeat number");
-        assertEq(heartbeats[2].timestamp, 990, "G3 heartbeat timestamp");
     }
 
     // ── unflag on an immune account is a no-op ──
@@ -534,5 +474,73 @@ contract GuardianSignalsTest is Test {
         _heartbeat(G3, b3);
         gs.syncQuorumBlock();
         assertEq(gs.getLastScannedQuorumBlock().number, _sort3(b1, b2, b3), "frontier = quorum-th largest heartbeat");
+    }
+
+    // ── views ──
+
+    // ── guardian set management: views ──
+
+    /// @dev `isGuardian` is a direct membership read: true for a seeded guardian, false for a non-guardian.
+    function test_isGuardian_reflectsMembership() public view {
+        assertTrue(gs.isGuardian(G1), "seeded guardian reads true");
+        assertFalse(gs.isGuardian(BOB), "non-guardian reads false");
+    }
+
+    /// @dev `getGuardians` returns the full set; with the seeded 3 it is exactly {G1, G2, G3} (insertion order
+    ///      for an untouched EnumerableSet).
+    function test_getGuardians_returnsFullSet() public view {
+        address[] memory set = gs.getGuardians();
+        assertEq(set.length, 3, "three guardians");
+        assertEq(set[0], G1, "index 0 is G1");
+        assertEq(set[1], G2, "index 1 is G2");
+        assertEq(set[2], G3, "index 2 is G3");
+    }
+
+    // ── events / batch / getFlaggedBy ──
+
+    function test_getFlaggedBy_returnsFlaggerSet() public {
+        _flag(G1, BOB);
+        _flag(G2, BOB);
+        address[] memory flaggers = gs.getFlaggedBy(MARKET, BOB);
+        assertEq(flaggers.length, 2, "two flaggers");
+    }
+
+    // ── liveness reads: getHeartbeat / getHeartbeats ──
+
+    /// @dev `getHeartbeat` returns the exact `(number, timestamp)` last recorded for a guardian; a guardian
+    ///      that never heartbeated reads the zero `BlockInfo`.
+    function test_getHeartbeat_recordedAndZero() public {
+        _heartbeat(G1, 997); // _block packs timestamp == number == 997
+
+        assertEq(gs.getHeartbeat(G1).number, 997, "recorded block number");
+        assertEq(gs.getHeartbeat(G1).timestamp, 997, "recorded timestamp");
+
+        assertEq(gs.getHeartbeat(G2).number, 0, "never heartbeated -> zero number");
+        assertEq(gs.getHeartbeat(G2).timestamp, 0, "never heartbeated -> zero timestamp");
+    }
+
+    /// @dev `getHeartbeats` pairs the guardian set with each guardian's last-scanned block (exercising
+    ///      `_getHeartbeats`). Order matches `getGuardians`; an un-heartbeated guardian carries a zero block.
+    function test_getHeartbeats_pairsSetWithBlocks() public {
+        _heartbeat(G1, 999);
+        _heartbeat(G3, 990);
+        // G2 deliberately left without a heartbeat.
+
+        (address[] memory guardians, BlockInfo[] memory heartbeats) = gs.getHeartbeats();
+
+        assertEq(guardians.length, 3, "three guardians returned");
+        assertEq(heartbeats.length, 3, "one block per guardian");
+
+        assertEq(guardians[0], G1, "index 0 guardian G1");
+        assertEq(heartbeats[0].number, 999, "G1 heartbeat number");
+        assertEq(heartbeats[0].timestamp, 999, "G1 heartbeat timestamp");
+
+        assertEq(guardians[1], G2, "index 1 guardian G2");
+        assertEq(heartbeats[1].number, 0, "G2 never heartbeated -> zero");
+        assertEq(heartbeats[1].timestamp, 0, "G2 never heartbeated -> zero");
+
+        assertEq(guardians[2], G3, "index 2 guardian G3");
+        assertEq(heartbeats[2].number, 990, "G3 heartbeat number");
+        assertEq(heartbeats[2].timestamp, 990, "G3 heartbeat timestamp");
     }
 }

@@ -78,20 +78,7 @@ contract UsdyStableOracleTest is Test {
         return getPrice * SCALE / uint256(answer); // in-domain, equals mulDiv
     }
 
-    function test_price_recompute() public {
-        usdy.setPrice(1.08e18); // USDY ≈ $1.08
-        feed.setAnswer(1e8); // stablecoin ≈ $1.00
-        // price = 1.08e18 * 1e14 / 1e8 = 1.08e24 (Morpho scale 24 for 18-dec collateral / 6-dec loan).
-        assertEq(oracle.price(), _expected(1.08e18, 1e8), "mulDiv recompute");
-        assertEq(oracle.price(), 1.08e24, "explicit value");
-    }
-
-    function test_price_stablecoinDepeg_raisesCollateralPrice() public {
-        usdy.setPrice(1.08e18);
-        feed.setAnswer(0.98e8); // stablecoin de-pegs below $1 -> USDY worth more stablecoin units
-        // Exact recompute; the depeg (feed < 1e8) makes this strictly larger than the $1.00 peg value 1.08e24.
-        assertEq(oracle.price(), _expected(1.08e18, 0.98e8), "exact recompute under depeg");
-    }
+    // ── mutations ──
 
     function testRevert_constructor_zeroUsdyOracle() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
@@ -106,6 +93,23 @@ contract UsdyStableOracleTest is Test {
     function testRevert_constructor_zeroLoanToken() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
         new UsdyStableOracle(address(usdy), address(feed), address(0));
+    }
+
+    // ── views ──
+
+    function test_price_recompute() public {
+        usdy.setPrice(1.08e18); // USDY ≈ $1.08
+        feed.setAnswer(1e8); // stablecoin ≈ $1.00
+        // price = 1.08e18 * 1e14 / 1e8 = 1.08e24 (Morpho scale 24 for 18-dec collateral / 6-dec loan).
+        assertEq(oracle.price(), _expected(1.08e18, 1e8), "mulDiv recompute");
+        assertEq(oracle.price(), 1.08e24, "explicit value");
+    }
+
+    function test_price_stablecoinDepeg_raisesCollateralPrice() public {
+        usdy.setPrice(1.08e18);
+        feed.setAnswer(0.98e8); // stablecoin de-pegs below $1 -> USDY worth more stablecoin units
+        // Exact recompute; the depeg (feed < 1e8) makes this strictly larger than the $1.00 peg value 1.08e24.
+        assertEq(oracle.price(), _expected(1.08e18, 0.98e8), "exact recompute under depeg");
     }
 
     function test_scale_isDerivedFromDecimals() public view {
