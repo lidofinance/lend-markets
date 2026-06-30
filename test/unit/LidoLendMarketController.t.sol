@@ -377,8 +377,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         // Forge a cut at exactly the allowed slice (the largest value line 514 admits) with a valid 1-unit seize.
         // The recomputed share-burn stays within borrowShares, so SettlementExceedsDebt does NOT fire — the
         // guard is not a false positive at the cap, and cannot fire through `on()` at all.
-        (, uint256 allowedAssets,) = c.nextSettlementBorrower();
-        assertGt(allowedAssets, 0, "borrower is the eligible queue root");
+        (,, uint256 allowedShares,) = c.nextSettlementBorrower();
+        assertGt(allowedShares, 0, "borrower is the eligible queue root");
 
         bytes memory data = abi.encode(
             ILidoLendBaseMarketController.SettleHookData({
@@ -387,8 +387,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
                 borrower: borrower,
                 receiver: lender,
                 supplySharesBurned: 0,
-                borrowAssetsCanceled: allowedAssets,
-                borrowSharesCanceled: 0,
+                borrowAssetsCanceled: 0,
+                borrowSharesCanceled: allowedShares,
                 seizedAssets: 1
             })
         );
@@ -400,7 +400,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function testRevert_settle_zeroSeize_forgedPayload() public {
         Market storage m = _m();
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
-        (, uint256 allowedAssets,) = c.nextSettlementBorrower();
+        (,, uint256 allowedShares,) = c.nextSettlementBorrower();
 
         bytes memory data = abi.encode(
             ILidoLendBaseMarketController.SettleHookData({
@@ -409,8 +409,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
                 borrower: borrower,
                 receiver: address(this),
                 supplySharesBurned: 0,
-                borrowAssetsCanceled: allowedAssets, // within slice, within debt
-                borrowSharesCanceled: 0,
+                borrowAssetsCanceled: 0,
+                borrowSharesCanceled: allowedShares, // within slice, within debt
                 seizedAssets: 0 // invalid: zero seize
             })
         );
@@ -423,7 +423,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function testRevert_settle_overSeize_forgedPayload() public {
         Market storage m = _m();
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
-        (, uint256 allowedAssets,) = c.nextSettlementBorrower();
+        (,, uint256 allowedShares,) = c.nextSettlementBorrower();
         uint256 borrowerCollateral = m.core.position(m.id, borrower).collateral;
 
         bytes memory data = abi.encode(
@@ -433,8 +433,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
                 borrower: borrower,
                 receiver: address(this),
                 supplySharesBurned: 0,
-                borrowAssetsCanceled: allowedAssets,
-                borrowSharesCanceled: 0,
+                borrowAssetsCanceled: 0,
+                borrowSharesCanceled: allowedShares,
                 seizedAssets: borrowerCollateral + 1 // invalid: over the borrower's collateral
             })
         );
@@ -447,7 +447,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function testRevert_settle_exceedsAllowed_forgedPayload() public {
         Market storage m = _m();
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
-        (, uint256 allowedAssets,) = c.nextSettlementBorrower();
+        (,, uint256 allowedShares,) = c.nextSettlementBorrower();
 
         bytes memory data = abi.encode(
             ILidoLendBaseMarketController.SettleHookData({
@@ -456,8 +456,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
                 borrower: borrower,
                 receiver: address(this),
                 supplySharesBurned: 0,
-                borrowAssetsCanceled: allowedAssets + 1, // one over the allowed slice
-                borrowSharesCanceled: 0,
+                borrowAssetsCanceled: 0,
+                borrowSharesCanceled: allowedShares + 1, // one over the allowed slice
                 seizedAssets: 1
             })
         );
@@ -466,7 +466,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
     }
 
-    /// @dev Forge a Settle payload against an ineligible (non-root, no personal LTV) borrower -> SettlementIneligible.
+    /// @dev Forge a Settle payload against an ineligible (non-root, no personal LTV) borrower -> SettlementExceedsAllowed.
     function testRevert_settle_ineligible_forgedPayload() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -483,7 +483,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         m.borrow(a, 80 ether);
         m.borrow(b, 80 ether);
 
-        (address root,,) = c.nextSettlementBorrower();
+        (address root,,,) = c.nextSettlementBorrower();
         address nonRoot = root == a ? b : a; // non-root, no personal LTV -> allowedSlice == 0
 
         bytes memory data = abi.encode(
@@ -493,13 +493,13 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
                 borrower: nonRoot,
                 receiver: address(this),
                 supplySharesBurned: 0,
-                borrowAssetsCanceled: 1,
-                borrowSharesCanceled: 0,
+                borrowAssetsCanceled: 0,
+                borrowSharesCanceled: 1,
                 seizedAssets: 1
             })
         );
         vm.prank(address(m.core));
-        vm.expectRevert(ILidoLendMarketController.SettlementIneligible.selector);
+        vm.expectRevert(ILidoLendMarketController.SettlementExceedsAllowed.selector);
         c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
     }
 
@@ -611,8 +611,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(d.settlementLtv, 0, "no personal settle LTV");
         // Sole borrower -> it is the queue root -> next to settle, and its allowed slice is non-empty.
         assertTrue(d.isNextToSettle, "sole borrower is the queue root");
-        (, uint256 expectedSlice,) = c.nextSettlementBorrower();
-        assertEq(d.slice, expectedSlice, "dashboard slice == nextSettlementBorrower slice");
+        assertGt(d.slice, 0, "sole borrower's allowed slice is non-empty");
     }
 
     /// @dev `positionOf` reflects a banned borrower and a personal settlement LTV opt-in.

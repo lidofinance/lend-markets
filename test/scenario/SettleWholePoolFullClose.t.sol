@@ -218,8 +218,8 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
         return _deployOut("OssifiableProxy.sol", "OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
-    function _deployIrm(address core_) internal override returns (address) {
-        return _deployOut("AdaptiveCurveIrm.sol", "AdaptiveCurveIrm", abi.encode(core_));
+    function _deployIrm(address core, address owner) internal override returns (address) {
+        return _deployOut("AdaptiveCurveIrm.sol", "AdaptiveCurveIrm", abi.encode(core, owner));
     }
 
     function _deployController(

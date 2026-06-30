@@ -274,7 +274,7 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.borrow(a, 80 ether);
         m.borrow(b, 80 ether);
 
-        (address root,,) = m.controller.nextSettlementBorrower();
+        (address root,,,) = m.controller.nextSettlementBorrower();
         address nonRoot = root == a ? b : a;
         address[] memory bs = new address[](1);
         bs[0] = nonRoot;
@@ -287,7 +287,7 @@ contract SettlementSafetyTest is LidoLendSetup {
         // It opts into a settlement LTV below its current LTV -> eligible -> cancels exactly the slice.
         vm.prank(nonRoot);
         m.controller.setSettlementLtv(0.05e18);
-        (uint256 sliceAssets,) = m.controller.settlementFor(nonRoot);
+        uint256 sliceAssets = m.controller.positionOf(nonRoot).slice;
         vm.prank(lender);
         (,,, uint256 cancelledAfter) = m.vault.settle(shares, bs, lender, lender);
         assertEq(cancelledAfter, sliceAssets, "after opt-in: eligible, cancels the personal-LTV slice exactly");
