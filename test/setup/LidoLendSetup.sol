@@ -188,13 +188,14 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
             AdaptiveCurveIrm(irm).setConfig(IrmId.wrap(Id.unwrap(id)), marketConfig);
         }
 
-        address controllerImpl = address(new LidoLendMarketController(IMorpho(core), id));
+        address controllerImpl = address(new LidoLendMarketController(IMorpho(core)));
         address controller = address(
             new OssifiableProxy(
                 controllerImpl,
                 admin,
                 abi.encodeWithSignature(
-                    "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
+                    "initialize(bytes32,address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
+                    Id.unwrap(id),
                     admin,
                     address(protocol.guardianSignals),
                     cfg.activation
