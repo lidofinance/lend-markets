@@ -75,6 +75,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     ///      Keyed on the supply `caller`, not the position owner, so a trusted router activating on behalf of
     ///      users qualifies. Must only ever hold access-gated contracts, never a permissionless helper.
     mapping(address caller => bool) private _instantActivationCallers;
+    /// @dev Ceiling on total supplied loan assets (principal plus accrued interest), enforced on the Supply
+    ///      hook against the market total. 0 means no cap — the upgrade-safe default for the zeroed slot.
+    uint256 private _supplyCap;
 
     // ---
     // MODIFIERS
@@ -121,7 +124,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     function on(Id id, HookEvent hookEvent, bytes calldata data) external onlyControlledMarket(id) {
         _checkResumed();
 
-        if (hookEvent == HookEvent.SupplyCollateral) {
+        if (hookEvent == HookEvent.Supply) {
+            _handleSupply(id, abi.decode(data, (SupplyHookData)));
+        } else if (hookEvent == HookEvent.SupplyCollateral) {
             _handleSupplyCollateral(id, abi.decode(data, (SupplyCollateralHookData)));
         } else if (hookEvent == HookEvent.WithdrawCollateral) {
             _handleWithdrawCollateral(id, abi.decode(data, (WithdrawCollateralHookData)));
@@ -133,9 +138,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
             _handleLiquidate(id, abi.decode(data, (LiquidateHookData)));
         } else if (hookEvent == HookEvent.Settle) {
             _handleSettle(id, abi.decode(data, (SettleHookData)));
-        } else if (
-            hookEvent != HookEvent.Supply && hookEvent != HookEvent.Withdraw && hookEvent != HookEvent.AccrueInterest
-        ) {
+        } else if (hookEvent != HookEvent.Withdraw && hookEvent != HookEvent.AccrueInterest) {
             revert UnknownHookEvent();
         }
     }
@@ -184,6 +187,21 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     /// @inheritdoc ILidoLendMarketController
     function hasInstantActivation(address caller) external view returns (bool) {
         return _instantActivationCallers[caller];
+    }
+
+    // ---
+    // SUPPLY CAP
+    // ---
+
+    /// @inheritdoc ILidoLendMarketConfigurator
+    function setSupplyCap(uint256 cap) external onlyRole(MANAGER_ROLE) {
+        _supplyCap = cap;
+        emit SupplyCapSet(cap, msg.sender);
+    }
+
+    /// @inheritdoc ILidoLendMarketConfigurator
+    function supplyCap() external view returns (uint256) {
+        return _supplyCap;
     }
 
     // ---
@@ -315,6 +333,17 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // ---
     // HOOK HANDLERS
     // ---
+
+    /// @dev Supply hook: enforce the market supply cap on the post-deposit total. The core has already accrued
+    ///      interest but not yet booked this deposit, so `totalSupplyAssets` is the post-accrue, pre-supply
+    ///      figure and the incoming `assets` is added here.
+    function _handleSupply(Id id, SupplyHookData memory hookData) internal view {
+        uint256 cap = _supplyCap;
+        if (cap == 0) return;
+
+        uint256 attempted = LIDO_LEND.market(id).totalSupplyAssets + hookData.assets;
+        if (attempted > cap) revert SupplyCapExceeded(cap, attempted);
+    }
 
     /// @dev Supply hook: settle any matured activation, book the deposit into the activation pipeline, and
     ///      re-key the settlement queue on the post-deposit position.
