@@ -177,12 +177,13 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
         });
         ctx.marketId = AdapterId.unwrap(ctx.adapterParams.id());
 
-        ctx.vault = IVaultV2(
-            _deployArtifact("lib/vault-v2/src/VaultV2.sol:VaultV2", abi.encode(address(this), address(ctx.loanToken)))
-        );
+        // vault-v2 compiles at 0.8.28, this suite at 0.8.35, so `vm.getCode` finds no same-version artifact.
+        // Read the bytecode straight from `out/` instead (version-agnostic), the way the other scenario suites do.
+        ctx.vault = IVaultV2(_deployOut("VaultV2.sol", "VaultV2", abi.encode(address(this), address(ctx.loanToken))));
         ctx.adapter = IMorphoMarketV1AdapterLike(
-            _deployArtifact(
-                "lib/vault-v2/src/adapters/MorphoMarketV1AdapterV2.sol:MorphoMarketV1AdapterV2",
+            _deployOut(
+                "MorphoMarketV1AdapterV2.sol",
+                "MorphoMarketV1AdapterV2",
                 abi.encode(address(ctx.vault), address(ctx.market), d.irm)
             )
         );
@@ -335,5 +336,17 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
                 revert(add(returnData, 0x20), mload(returnData))
             }
         }
+    }
+
+    /// @dev Deploy a contract from its compiled artifact in `out/`, reading the bytecode directly. vault-v2
+    ///      compiles at 0.8.28 while this suite is 0.8.35, so `vm.getCode` finds no same-version artifact;
+    ///      reading the JSON is version-agnostic.
+    function _deployOut(string memory file, string memory name, bytes memory args) internal returns (address a) {
+        string memory json = vm.readFile(string.concat("out/", file, "/", name, ".json"));
+        bytes memory code = bytes.concat(vm.parseJsonBytes(json, ".bytecode.object"), args);
+        assembly ("memory-safe") {
+            a := create(0, add(code, 0x20), mload(code))
+        }
+        require(a != address(0) && a.code.length != 0, "MetaMorphoV2Integration: deploy failed");
     }
 }
