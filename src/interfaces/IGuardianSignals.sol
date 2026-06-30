@@ -104,8 +104,8 @@ interface IGuardianSignals {
     ///        current block or if `hash` does not match `blockhash(number)`. Only the caller (a guardian) is recorded.
     function heartbeat(BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless
-    ///         and monotonic — anyone may advance it (a keeper per scan frame, or a borrower whose activation
-    ///         depends on it). Decoupled from `heartbeat` so heartbeats stay O(1).
+    ///         and monotonic — anyone may advance it (an off-chain agent per scan frame, or a borrower whose
+    ///         activation depends on it). Decoupled from `heartbeat` so heartbeats stay O(1).
     function syncQuorumBlock() external;
     /// @notice The last block `guardian` reported scanning.
     /// @param guardian The guardian to query.

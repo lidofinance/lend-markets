@@ -48,41 +48,59 @@ The interest-rate model (`AdaptiveCurveIRM`) is the one contract deployed bare �
 
 ### `LidoLend` core
 
+The core authorizes its admin surface against a single in-contract `owner`. The deployed owner is the `LidoLendOwner` facade, wired in through the core's `setOwner`, which re-exposes each owner-only call behind a distinct role so the capabilities delegate independently. The core's `onlyOwner` is held by the facade, not the DAO directly.
+
 | Role | Powers | Class | Holder |
 |---|---|---|---|
-| owner | `createMarket`, `setFee` (≤ `MAX_FEE` = 25%), `setFeeRecipient`, `setOwner` | C4 / C1 | Lido DAO |
+| `MARKET_CREATOR_ROLE` | `createMarket` (controller-less and controlled) | C4 / C1 | Lido DAO |
+| `FEE_MANAGER_ROLE` | `setFee` (≤ `MAX_FEE` = 25%), `setFeeRecipient` | C4 | Lido DAO |
+| `DEFAULT_ADMIN_ROLE` | `transferLidoLendOwnership` (the only path to the core's `setOwner`), plus administers the two roles above | C1 | Lido DAO |
 
 ### Market controller
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | `setConfig`, `setSettlementConfig`, `setBorrowUtilizationGap`, `grantInstantActivation` | C4 | routine delay mechanism |
-| `RISK_STEWARD_ROLE` | `increaseMinActivationDelay`, `increaseMaxActivationDelay`, `setActivatingHold`, `increaseBorrowUtilizationGap`, `revokeInstantActivation` | C3 | risk steward committee |
+| `MANAGER_ROLE` | `setCollateralActivationConfig`, `setSettlementConfig`, `grantInstantActivation`, `revokeInstantActivation` | C4 | routine delay mechanism |
 | `FREEZER_ROLE` | `freeze` | C3 | risk steward committee |
 | `UNFREEZER_ROLE` | `unfreeze` | C3 | risk steward committee (splittable from the freezer) |
 | `PAUSER_ROLE` | `pauseFor` (stops every controller hook) | C2 | emergency-seal committee, bounded |
 | `RESUMER_ROLE` | `resume` | C2 | Lido DAO, slow |
 
-Every `MANAGER_ROLE` lever is risk-increasing, so it takes the delay mechanism. Every `RISK_STEWARD_ROLE` lever is one-directional toward tighter policy, so the committee can act fast. `pauseFor` accepts an indefinite duration at the contract level, but the fast holder is an emergency-seal committee bounded to a finite pause — extending it or pausing indefinitely is a DAO action. Pause and resume sit on separate roles so the fast pauser can never resume.
+Every `MANAGER_ROLE` lever is risk-increasing, so it takes the delay mechanism. `pauseFor` accepts an indefinite duration at the contract level, but the fast holder is an emergency-seal committee bounded to a finite pause — extending it or pausing indefinitely is a DAO action. Pause and resume sit on separate roles so the fast pauser can never resume.
+
+### `RiskStewardDashboard`
+
+One dashboard serves every market of a core, with the tighten-only risk levers gathered behind per-market stewards. Each lever reads a market's current activation config, enforces a one-directional change toward tighter policy, and writes the full config back through the controller's `MANAGER_ROLE` surface, which the dashboard holds.
+
+| Role | Powers | Class | Holder |
+|---|---|---|---|
+| `DEFAULT_ADMIN_ROLE` | grant and revoke `STEWARD_ADMIN_ROLE` | C1 | Lido DAO |
+| `STEWARD_ADMIN_ROLE` | `addMarketSteward`, `removeMarketSteward` | C3 | Lido DAO |
+| per-market steward | `increaseActivationDelays`, `increaseActivatingLock`, `revokeInstantActivation` | C3 | risk steward committee |
+
+`STEWARD_ADMIN_ROLE` administers only the tighten-only C3 levers and cannot introduce a C0 or upgrade power, so its class follows a role-admin-tier convention over the bare impact definition.
+
+A steward is appointed per market id, not as an AccessControl role, so the set scopes to one market. Every steward lever is one-directional toward tighter policy, so the committee can act fast.
 
 ### `GuardianSignals`
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
-| `DEFAULT_ADMIN_ROLE` | guardian set and quorum (`addGuardian`, `removeGuardian`, `setQuorum`), grant and revoke the roles below | C1 / C3 | Lido DAO |
+| `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
+| `GUARDIANS_MANAGER_ROLE` | guardian set and quorum (`addGuardian`, `removeGuardian`, `setQuorum`) | C1 / C3 | Lido DAO |
 | `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum), `revokeImmunity` | C3 | risk steward committee |
 | `ACCESS_RESTORER_ROLE` | `unban`, `grantImmunity` | C4 | Lido DAO, timelocked |
 
 The committee holds the fast risk-reducing side (`ban`, `revokeImmunity`) and governance the slow risk-increasing side (`unban`, `grantImmunity`). Guardian-set membership stays DAO-only: a fast authority to shrink the set could quietly disable detection, and a bare count floor cannot tell a legitimate excision from sabotage.
 
-### `LenderExitBook`
+### `ExitBookBase`
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
-| owner | `setProtocolFee` (fee recipient and rate, capped at `MAX_PROTOCOL_FEE_BPS` = 1%) | C4 | Lido DAO (Voting + Dual Governance) |
+| owner | `setServiceFee` (fee recipient and rate, capped at `MAX_SERVICE_FEE` = 25%), `transferOwnership`, `renounceOwnership`, plus the concrete book's source allow-list (`setVaultAllowed` / `setMarketAllowed`) | C4 | Lido DAO (Voting + Dual Governance) |
 
-The exit book is plain `Ownable` set at construction, not behind an `OssifiableProxy` — the owner is its only privileged surface, with no separate upgrade authority. `setProtocolFee` directs the protocol's cut of the keeper priority fee within the 1% cap, and cannot reach lender or borrower funds.
+The exit book is plain `Ownable` set at construction, not behind an `OssifiableProxy` — the owner is its only privileged surface, with no separate upgrade authority. `setServiceFee` directs the service's cut of the filler's gross reward within the 25% cap, and cannot reach lender or borrower funds. Ownership transfers and renounces through `Ownable`, and `renounceOwnership` permanently abandons `setServiceFee` and allow-list control. A concrete book additionally gates which sources it serves through an owner allow-list.
 
 ## Non-role actors
 
@@ -94,15 +112,14 @@ The exit book is plain `Ownable` set at construction, not behind an `OssifiableP
 
 ## Routine risk-increasing actions
 
-Each routine risk-increasing action is meant to run through a dedicated factory on the delay mechanism: an initiator opens a motion, and execution follows an objection window. The controller itself only sanity-checks the arguments — non-zero and ordered, bounded delays for `setConfig`, the basis-point ceilings (`sliceFloorBps ≤ BPS`, `ltvStepBps ≤ BPS`) for `setSettlementConfig`, and a sub-`WAD` gap for `setBorrowUtilizationGap`. The governance envelope — per-field bounds and no multi-field loosening in a single motion — lives on the factory, which decodes and checks the arguments before queueing.
+Each routine risk-increasing action is meant to run through a dedicated factory on the delay mechanism: an initiator opens a motion, and execution follows an objection window. The controller itself only sanity-checks the arguments — non-zero and ordered, bounded delays for `setCollateralActivationConfig`, and the basis-point ceilings (`sliceFloorBps ≤ BPS`, `ltvStepBps ≤ BPS`) for `setSettlementConfig`. The governance envelope — per-field bounds and no multi-field loosening in a single motion — lives on the factory, which decodes and checks the arguments before queueing.
 
 Factory-gated actions and their parameters:
 
-- **setConfig** — `minActivationDelay`, `maxActivationDelay`, `maxDelayInflow`, `delayPerStrike`, `activatingHold`, `minActivationAmount`, `maxGuardiansQuorumDelay`.
-- **setSettlementConfig** — `sliceFloorBps`, `sliceFloorAssets`, `fullCutBelowCollateral`, `ltvStepBps`.
-- **setBorrowUtilizationGap** — `borrowUtilizationGap` (minimum gap kept below 100% utilization, WAD — 0 disables the gap).
+- **setCollateralActivationConfig** — `minActivationDelay`, `maxActivationDelay`, `maxDelayInflow`, `delayPerStrike`, `activatingLockAmount`, `activatingLockDuration`, `minActivationAmount`, `maxGuardiansQuorumDelay`.
+- **setSettlementConfig** — `sliceFloorBps`, `sliceFloorAssets`, `fullCutBelowCollateral`, `ltvStepBps`, `minBorrowCollateral`.
 
-The fast risk-reducing levers run with no objection window: the controller's `increaseMinActivationDelay`, `increaseMaxActivationDelay`, `setActivatingHold`, `increaseBorrowUtilizationGap`, `revokeInstantActivation`, `freeze`, and `unfreeze`, and the registry's `ban` and `revokeImmunity`.
+The fast risk-reducing levers run with no objection window: the dashboard's `increaseActivationDelays`, `increaseActivatingLock`, and `revokeInstantActivation`, the controller's `freeze` and `unfreeze`, and the registry's `ban` and `revokeImmunity`.
 
 ## Role manifest
 

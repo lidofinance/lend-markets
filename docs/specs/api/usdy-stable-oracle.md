@@ -2,9 +2,9 @@
 
 # UsdyStableOracle
 
-Morpho oracle for USDY collateral quoted in a USD stablecoin (USDC/USDT) loan asset.
+Morpho oracle for USDY collateral quoted in any USD-stablecoin loan asset with a Chainlink feed.
 
-USDY is valued by its redemption value (NAV) from Ondo's dynamic-rate oracle, not a market price: USDY is transfer-gated and its secondary market is thin, so the NAV is the only sound basis and is not gameable. The stablecoin leg divides by its Chainlink USD feed, so a stablecoin depeg is reflected in the collateral valuation. No staleness/bounds guards (matches Morpho's stock oracle behaviour, which avoids bricking the market on a transient feed condition). price() = getPrice() * SCALE / stableUsdPrice SCALE   = 10^(36 + loanDecimals + feedDecimals - collateralDecimals - usdyOracleDecimals) = 10^(36 + 6 + 8 - 18 - 18) = 1e14 for USDY collateral (18 dec), USDC/USDT loan (6 dec), Ondo oracle (1e18), Chainlink (1e8). This matches Morpho's IOracle convention: price of 1 collateral asset (USDY) quoted in 1 loan asset (stablecoin), scaled by 1e36.
+USDY is valued by its redemption value (NAV) from Ondo's dynamic-rate oracle, not a market price: USDY is transfer-gated and its secondary market is thin, so the NAV is the only sound basis and is not gameable. The stablecoin leg divides by its Chainlink USD feed, so a stablecoin depeg is reflected in the collateral valuation. No staleness/bounds guards (matches Morpho's stock oracle behaviour, which avoids bricking the market on a transient feed condition). price() = getPrice() * SCALE / stableUsdPrice SCALE   = 10^(36 + loanDecimals + feedDecimals - USDY_DECIMALS - NAV_DECIMALS) USDY is the only collateral (18 dec, NAV scaled 1e18), but the loan stablecoin is free: its token decimals and its Chainlink feed decimals are read at construction, so the same contract serves any Chainlink-priced stablecoin (USDC, USDT, DAI, ...). Matches Morpho's IOracle convention: price of 1 collateral asset quoted in 1 loan asset, scaled by 1e36.
 
 ## Errors
 
@@ -14,14 +14,30 @@ USDY is valued by its redemption value (NAV) from Ondo's dynamic-rate oracle, no
 error ZeroAddress();
 ```
 
-A constructor argument (USDY oracle or stablecoin feed) was the zero address.
+A constructor address argument was the zero address.
+
+### `InvalidStablePrice`
+
+```solidity
+error InvalidStablePrice();
+```
+
+The stablecoin USD feed returned a non-positive answer (zero would brick `price()` on a division by zero; a negative cast would silently collapse the price toward zero).
+
+### `InvalidNavPrice`
+
+```solidity
+error InvalidNavPrice();
+```
+
+The USDY NAV oracle returned zero, which would collapse the collateral price to zero.
 
 ## Functions
 
 ### `constructor`
 
 ```solidity
-constructor(address usdyOracle, address stableUsdFeed);
+constructor(address usdyOracle, address stableUsdFeed, address loanToken);
 ```
 
 **Parameters**
@@ -29,15 +45,8 @@ constructor(address usdyOracle, address stableUsdFeed);
 | Name | Type | Description |
 | --- | --- | --- |
 | `usdyOracle` | `address` | Ondo USDY dynamic-rate (NAV) oracle; `getPrice()` scaled by 1e18. |
-| `stableUsdFeed` | `address` | Chainlink USD feed for the loan stablecoin (USDC/USD or USDT/USD), 8 dec. |
-
-### `initialize`
-
-```solidity
-function initialize() external;
-```
-
-No-op that satisfies the proxy's mandatory init call; the config is immutable in the impl.
+| `stableUsdFeed` | `address` | Chainlink USD feed for the loan stablecoin; its `decimals()` set the feed leg. |
+| `loanToken` | `address` | Loan stablecoin token; its `decimals()` set the loan leg. |
 
 ### `price`
 
@@ -45,17 +54,10 @@ No-op that satisfies the proxy's mandatory init call; the config is immutable in
 function price() external view returns (uint256);
 ```
 
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `uint256` | Price of 1 USDY collateral quoted in 1 stablecoin loan asset, scaled by 1e36. |
-
-USDY value in the loan stablecoin: the USDY NAV (USD, from the Ondo oracle) divided by the stablecoin's USD price (Chainlink), so a stablecoin depeg flows through. Scaled to `1e36`.
-
 ## State variables
 
 | Name | Type | Description |
 | --- | --- | --- |
 | `USDY_ORACLE` | `IRWADynamicOracle` (immutable) | Ondo USDY dynamic-rate (NAV) oracle; `getPrice()` is the redemption value scaled by 1e18. |
-| `STABLE_USD_FEED` | `IChainlinkAggregator` (immutable) | Chainlink USD feed for the loan stablecoin (USDC/USD or USDT/USD), 8 decimals. The collateral valuation divides by it, so a stablecoin depeg flows through. |
+| `STABLE_USD_FEED` | `IChainlinkAggregator` (immutable) | Chainlink USD feed for the loan stablecoin. The valuation divides by it, so a depeg flows through. |
+| `SCALE` | `uint256` (immutable) | 10^(36 + loanDec + feedDec - 18 - 18): the 1e36 scaling for the loan token and feed decimals. |

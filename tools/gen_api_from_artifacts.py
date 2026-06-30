@@ -23,6 +23,12 @@ BASE = 2  # contract sections sit at `##`, members at `###`, under the page's `#
 
 IMORPHO = "IMorpho.sol/IMorpho.json"
 CONTROLLER = "ILidoLendMarketController.sol/ILidoLendMarketController.json"
+# Concrete controller impl: its on/marketId carry richer natspec than the fork base interface declares.
+CONTROLLER_IMPL = "LidoLendMarketController.sol/LidoLendMarketController.json"
+CONFIGURATOR = "ILidoLendMarketConfigurator.sol/ILidoLendMarketConfigurator.json"
+# Fork core base controller interface, source of the hook types (HookEvent + *HookData). Same file name as the
+# project's interface, so forge disambiguates its artifact under interfaces/.
+BASE_CONTROLLER = "interfaces/ILidoLendMarketController.sol/ILidoLendMarketController.json"
 
 # solc does not emit natspec for `type X is Y` into any artifact, so supply Id's line by hand.
 ID_FALLBACK = "A market identifier, the `keccak256` hash of a `MarketParams`."
@@ -318,23 +324,30 @@ def render_event_or_error(node, keyword, level) -> list:
     return out
 
 
-def render_contract(rel, name, reg, level, extra_enums=(), extra_structs=()) -> list:
+def render_contract(rel, name, reg, level, extra_enums=(), extra_structs=(), extra_events=(), extra_errors=(),
+                    extra_funcs=(), bases=()) -> list:
     """Render a contract's members with types and events first, functions after. No entity heading — the
     page title (one level up) owns the name, so sections sit at `level` and members at `level + 1`.
-    extra_enums/extra_structs are file-scope types (no standalone artifact) folded into the type sections."""
+    extra_enums/extra_structs/extra_events/extra_errors/extra_funcs are members declared elsewhere (file-scope
+    types, events and errors that live on the implemented interface, or functions whose richer natspec lives on
+    the concrete contract rather than the interface) folded into the sections.
+    bases is a list of (rel, name) base interfaces whose members are merged in (a member declared on a Lido base
+    interface the rendered one inherits is part of this contract's surface)."""
     node = find(ast_of(rel), "ContractDefinition", name)
     nd = parse_natspec(doc_text(node))  # contract-level natspec has no @inheritdoc
     out = list(paras(nd["notice"], *nd["dev"]))
 
-    members = node["nodes"]
+    members = list(node["nodes"])
+    for brel, bname in bases:
+        members += find(ast_of(brel), "ContractDefinition", bname)["nodes"]
     statevars = [n for n in members if n.get("nodeType") == "VariableDeclaration"
                  and n.get("stateVariable") and n.get("visibility") == "public"]
     funcs = [n for n in members if n.get("nodeType") == "FunctionDefinition"
-             and (n.get("kind") == "constructor" or n.get("visibility") in ("public", "external"))]
+             and (n.get("kind") == "constructor" or n.get("visibility") in ("public", "external"))] + list(extra_funcs)
     enums = [n for n in members if n.get("nodeType") == "EnumDefinition"] + list(extra_enums)
     structs = [n for n in members if n.get("nodeType") == "StructDefinition"] + list(extra_structs)
-    events = [n for n in members if n.get("nodeType") == "EventDefinition"]
-    errors = [n for n in members if n.get("nodeType") == "ErrorDefinition"]
+    events = [n for n in members if n.get("nodeType") == "EventDefinition"] + list(extra_events)
+    errors = [n for n in members if n.get("nodeType") == "ErrorDefinition"] + list(extra_errors)
 
     if enums:
         out += [f"{'#' * level} Enums", ""]
@@ -383,11 +396,27 @@ HEADER = "<!-- GENERATED FROM NatSpec by tools/gen_api_from_artifacts.py — do 
 
 VAULT = "LidoLendERC4626.sol/LidoLendERC4626.json"
 GATEWAY = "LidoLendDepositGateway.sol/LidoLendDepositGateway.json"
+GATEWAY_IFACE = "ILidoLendDepositGateway.sol/ILidoLendDepositGateway.json"
+VAULT_IFACE = "ILidoLendERC4626.sol/ILidoLendERC4626.json"
 GUARDIAN = "IGuardianSignals.sol/IGuardianSignals.json"
 GUARDIAN_TYPES = "GuardianSignalsTypes.sol/GuardianSignalsTypes.json"
 WSTETH_ORACLE = "WstEthRateOracle.sol/WstEthRateOracle.json"
 USDY_ORACLE = "UsdyStableOracle.sol/UsdyStableOracle.json"
-EXIT_BOOK = "WithdrawalQueue.sol/WithdrawalQueue.json"
+EXIT_BOOK_BASE = "IExitBook.sol/IExitBook.json"
+EXIT_BOOK_4626 = "IErc4626ExitBook.sol/IErc4626ExitBook.json"
+EXIT_BOOK_MORPHO = "IMorphoExitBook.sol/IMorphoExitBook.json"
+DASHBOARD = "IRiskStewardDashboard.sol/IRiskStewardDashboard.json"
+EXIT_BOOK_BASE_C = "ExitBookBase.sol/ExitBookBase.json"
+EXIT_BOOK_4626_C = "Erc4626ExitBook.sol/Erc4626ExitBook.json"
+EXIT_BOOK_MORPHO_C = "MorphoExitBook.sol/MorphoExitBook.json"
+EXIT_BOOK_TYPES = "ExitBookTypes.sol/ExitBookTypes.json"
+
+def iface_members(rel, name, node_type):
+    """Events and errors of a contract often live on its interface, not the contract itself. Pull them by node
+    type from the interface artifact so the page that renders the contract still lists them."""
+    node = find(ast_of(rel), "ContractDefinition", name)
+    return [n for n in node["nodes"] if n.get("nodeType") == node_type]
+
 
 def write_page(filename: str, title: str, body: list) -> str:
     API_DIR.mkdir(parents=True, exist_ok=True)
@@ -398,14 +427,27 @@ def write_page(filename: str, title: str, body: list) -> str:
 
 
 def main() -> int:
-    reg = build_registry([ast_of(CONTROLLER), ast_of(GUARDIAN)])
+    reg = build_registry([ast_of(CONTROLLER), ast_of(GUARDIAN), ast_of(EXIT_BOOK_BASE)])
     written = []
 
-    # One file per contract, named in kebab-case after the contract it documents.
+    # One file per contract, named in kebab-case after the contract it documents. The controller page folds in the
+    # fork hook types (HookEvent + *HookData) and renders on/marketId from the concrete impl, which docs them richer.
+    hook_enums = iface_members(BASE_CONTROLLER, "ILidoLendMarketController", "EnumDefinition")
+    hook_structs = iface_members(BASE_CONTROLLER, "ILidoLendMarketController", "StructDefinition")
+    activation_cfg = struct_from_source("src/types/CollateralActivationTypes.sol", "CollateralActivationConfig")
+    hook_funcs = [f for f in iface_members(CONTROLLER_IMPL, "LidoLendMarketController", "FunctionDefinition")
+                  if f["name"] in ("on", "marketId")]
     written.append(write_page("lido-lend-market-controller.md", "LidoLendMarketController",
-                              render_contract(CONTROLLER, "ILidoLendMarketController", reg, BASE)))
+                              render_contract(CONTROLLER, "ILidoLendMarketController", reg, BASE,
+                                              bases=[(CONFIGURATOR, "ILidoLendMarketConfigurator")],
+                                              extra_enums=hook_enums,
+                                              extra_structs=hook_structs + [activation_cfg],
+                                              extra_funcs=hook_funcs)))
+    vault_events = iface_members(VAULT_IFACE, "ILidoLendERC4626", "EventDefinition")
+    vault_errors = iface_members(VAULT_IFACE, "ILidoLendERC4626", "ErrorDefinition")
     written.append(write_page("lido-lend-erc4626.md", "LidoLendERC4626",
-                              render_contract(VAULT, "LidoLendERC4626", reg, BASE)))
+                              render_contract(VAULT, "LidoLendERC4626", reg, BASE,
+                                              extra_events=vault_events, extra_errors=vault_errors)))
 
     gt = ast_of(GUARDIAN_TYPES)
     gbody = render_contract(GUARDIAN, "IGuardianSignals", reg, BASE,
@@ -414,12 +456,35 @@ def main() -> int:
                                            for s in ("BlockInfo", "BlockInfoWithHash", "GuardiansOpinion")])
     written.append(write_page("guardian-signals.md", "GuardianSignals", gbody))
 
+    gw_events = iface_members(GATEWAY_IFACE, "ILidoLendDepositGateway", "EventDefinition")
+    gw_errors = iface_members(GATEWAY_IFACE, "ILidoLendDepositGateway", "ErrorDefinition")
     written.append(write_page("lido-lend-deposit-gateway.md", "LidoLendDepositGateway",
-                              render_contract(GATEWAY, "LidoLendDepositGateway", reg, BASE)))
+                              render_contract(GATEWAY, "LidoLendDepositGateway", reg, BASE,
+                                              extra_events=gw_events, extra_errors=gw_errors)))
 
-    # The lender exit book — still named WithdrawalQueue in code, so the page follows the code until a rename.
-    written.append(write_page("withdrawal-queue.md", "WithdrawalQueue",
-                              render_contract(EXIT_BOOK, "WithdrawalQueue", reg, BASE)))
+    # The lender exit-book layer: an abstract base plus two source-specific concrete books.
+    exit_body = ["The lender exit-book layer. An abstract `ExitBookBase` holds the shared fill, cancel, and "
+                 "fee surface, and a concrete book binds it to a source — `Erc4626ExitBook` over a vault, "
+                 "`MorphoExitBook` over a market.", ""]
+    ebt = ast_of(EXIT_BOOK_TYPES)
+    exit_body += [f"{'#' * BASE} ExitBookBase", ""] + render_contract(
+        EXIT_BOOK_BASE, "IExitBook", reg, BASE + 1,
+        extra_enums=[find(ebt, "EnumDefinition", "ExitStatus")],
+        extra_structs=[find(ebt, "StructDefinition", s) for s in ("PriorityRamp", "Request", "RequestPreview")],
+        extra_events=iface_members(EXIT_BOOK_BASE_C, "ExitBookBase", "EventDefinition"),
+        extra_errors=iface_members(EXIT_BOOK_BASE_C, "ExitBookBase", "ErrorDefinition"))
+    exit_body += [f"{'#' * BASE} Erc4626ExitBook", ""] + render_contract(
+        EXIT_BOOK_4626, "IErc4626ExitBook", reg, BASE + 1,
+        extra_events=iface_members(EXIT_BOOK_4626_C, "Erc4626ExitBook", "EventDefinition"),
+        extra_errors=iface_members(EXIT_BOOK_4626_C, "Erc4626ExitBook", "ErrorDefinition"))
+    exit_body += [f"{'#' * BASE} MorphoExitBook", ""] + render_contract(
+        EXIT_BOOK_MORPHO, "IMorphoExitBook", reg, BASE + 1,
+        extra_events=iface_members(EXIT_BOOK_MORPHO_C, "MorphoExitBook", "EventDefinition"),
+        extra_errors=iface_members(EXIT_BOOK_MORPHO_C, "MorphoExitBook", "ErrorDefinition"))
+    written.append(write_page("exit-book.md", "Exit Books", exit_body))
+
+    written.append(write_page("risk-steward-dashboard.md", "RiskStewardDashboard",
+                              render_contract(DASHBOARD, "IRiskStewardDashboard", reg, BASE)))
 
     written.append(write_page("wst-eth-rate-oracle.md", "WstEthRateOracle",
                               render_contract(WSTETH_ORACLE, "WstEthRateOracle", reg, BASE)))

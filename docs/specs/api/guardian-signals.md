@@ -402,7 +402,7 @@ Record the caller's last-scanned block, validated against its block hash. O(1): 
 function syncQuorumBlock() external;
 ```
 
-Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and monotonic — anyone may advance it (a keeper per scan frame, or a borrower whose activation depends on it). Decoupled from `heartbeat` so heartbeats stay O(1).
+Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and monotonic — anyone may advance it (an off-chain agent per scan frame, or a borrower whose activation depends on it). Decoupled from `heartbeat` so heartbeats stay O(1).
 
 ### `getHeartbeat`
 

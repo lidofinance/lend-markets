@@ -30,14 +30,6 @@ constructor(address wstETH_);
 | --- | --- | --- |
 | `wstETH_` | `address` | wstETH token whose stETH-per-wstETH rate this oracle returns. |
 
-### `initialize`
-
-```solidity
-function initialize() external;
-```
-
-No-op that satisfies the proxy's mandatory init call. The config is immutable in the impl.
-
 ### `price`
 
 ```solidity

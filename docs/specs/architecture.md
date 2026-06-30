@@ -13,7 +13,8 @@ A single `LidoLend` core hosts many markets, as in Morpho. To each market the Li
 - **[GuardianSignals](#guardiansignals)** is the registry the controller reads for gating.
 - **[LidoLendERC4626](#lidolenderc4626)** is the tokenized lender position and the fallback-exit entrypoint.
 - **[LidoLendDepositGateway](#lidolenddepositgateway)** is a stateless convenience zap (ETH/WETH, stETH/wstETH).
-- **[LenderExitBook](#lenderexitbook)** is the keeper-filled exit registry: lenders post exit requests, keepers fill them from market liquidity for a Dutch-auction priority fee.
+- **[RiskStewardDashboard](#riskstewarddashboard)** is the per-core tighten-only risk console: appointed stewards ratchet a market's activation levers in the safe direction.
+- **[Exit books](#exit-books)** are the filler-served exit registry: lenders post exit requests, fillers close them from market liquidity for a Dutch-auction priority fee.
 
 > [!NOTE]
 > Each market's assets, oracle, and risk parameters live in [markets/](markets/), the privileged-role catalogue in [roles.md](roles.md), and the design rationale behind it all in the ADRs.
@@ -29,10 +30,12 @@ The Morpho Blue fork that holds the canonical accounting for every market — su
 
 - **Controller binding.** `createMarket(params, controller, enableSettlement)` binds one controller per market at creation, immutable afterwards. A market with no controller is vanilla Morpho.
 - **Hooks.** With the action's amounts resolved but before the state change is applied, the core calls `controller.on(id, event, payload)` under a reentrancy lock. The hook may revert (aborting the action) but cannot rewrite the resolved amounts.
-- **`settle`.** Cancels borrower debt against lender supply shares at the oracle price, with no liquidation incentive and **no borrower health check** — excluding bad-debt borrowers is the controller's duty. This is the primitive behind the fallback exit and the settlement queue.
+- **`settle`.** Cancels borrower debt against lender supply at the oracle price, with no liquidation incentive and **no borrower health check** — excluding bad-debt borrowers is the controller's duty. The cut is anchored on one of two share amounts — burned supply shares or canceled borrow shares, one set and the other zero — and a borrow-anchored cut closes a position to exactly zero debt with no dust. Settlement is a per-market opt-in: `settle` needs both a controller and `enableSettlement` set at creation, otherwise it reverts `SETTLEMENT_DISABLED`. This is the primitive behind the fallback exit and the settlement queue.
 - **Proxy.** `OssifiableProxy`, upgradeable until ossified.
 
-Full surface: [`FORK_NOTES.md`](https://github.com/lidofinance/lido-lend/FORK_NOTES.md).
+`flashLoan` sits outside controller policy: it is token-global with no market id, no hook or reentrancy lock, not owner-gated, and uncollateralized — the core transfers the tokens out and pulls them back in the same call, reverting only on zero assets.
+
+Full surface: [`FORK_NOTES.md`](../../lib/lido-lend/FORK_NOTES.md).
 
 ### LidoLendMarketController
 
@@ -41,7 +44,6 @@ The market's policy layer — the safeguards Lido adds on top of Morpho, which o
 - **Collateral activation** — fresh collateral matures through a timer before it can back a loan, leaving a window to catch bad collateral before it is borrowed against.
 - **Guardian signals** — an automated guardian system watches each market and reports accounts that look malicious. At a quorum, a flagged borrower (typically a hijacked account) is stopped from borrowing against lender funds.
 - **Active-only borrow capacity** — fresh collateral can't be borrowed against until it matures, but it still counts toward solvency, so it shields the position from liquidation at once.
-- **Borrow-utilization gap** — keeps a slice of supply non-borrowable, reserved for lender withdrawals.
 - **Freeze** — halts new borrows and debt-bearing collateral withdrawals.
 - **Pause** — a last-resort circuit breaker that halts every hook in an emergency.
 
@@ -51,27 +53,33 @@ Full surface: [API reference](api/lido-lend-market-controller.md).
 
 ### GuardianSignals
 
-The shared registry of guardian opinions per `(market, account)` — how the controller learns which borrowers the guardians have flagged as malicious. It holds the guardian set and quorum, each account's strike count and flagged/immune status, and per-guardian liveness heartbeats. One registry can serve many markets, and a deployment runs several only when markets need different guardian sets or quorums.
+The shared registry of guardian opinions per `(market, account)` — how the controller learns which borrowers the guardians have flagged as malicious. It holds the guardian set (capped at `MAX_GUARDIANS_COUNT = 32`) and quorum, each account's strike count and flagged/immune status, and per-guardian liveness heartbeats. `GUARDIANS_MANAGER_ROLE` manages the guardian set and quorum — `addGuardian`, `removeGuardian`, `setQuorum`. One registry can serve many markets, and a deployment runs several only when markets need different guardian sets or quorums.
 
 Full surface: [API reference](api/guardian-signals.md).
 
 ### LidoLendERC4626
 
-The tokenized lender position for one market — a standard ERC-4626 vault over the market's supply, freely transferable and ungated, plus the griefing-resistant fallback exit for when pool liquidity is short.
+The tokenized lender position for one market — a standard ERC-4626 vault over the market's supply, freely transferable and ungated, plus the griefing-resistant fallback exit for when pool liquidity is short. `totalAssets` counts only the Morpho supply position, so idle or donated loan tokens stay inert, and a virtual-share decimals offset hardens the share price against inflation.
 
 Full surface: [API reference](api/lido-lend-erc4626.md).
 
 ### LidoLendDepositGateway
 
-A stateless convenience layer so lenders and borrowers can enter with raw ETH/WETH or stETH/wstETH instead of pre-wrapping. It wraps and forwards to the core or the vault in one call.
+A stateless convenience layer so lenders and borrowers can enter with raw ETH/WETH or stETH/wstETH instead of pre-wrapping. It forwards to the core or the vault in one call, wrapping where needed — the ETH paths wrap to WETH and the stETH path wraps to wstETH, while the WETH supply and vault paths only forward.
 
 Full surface: [API reference](api/lido-lend-deposit-gateway.md).
 
-### LenderExitBook
+### RiskStewardDashboard
 
-The keeper-filled exit registry. A lender posts a request to exit a fixed slice of their supply, then any keeper drains whatever liquidity the market has into it, earning a priority fee that ramps from zero to a cap over the request's life (a Dutch auction). A large exit completes over time without the lender chasing liquidity transaction by transaction.
+The per-core risk console. One instance configures every market of a core, resolving each market's controller by id. `STEWARD_ADMIN_ROLE` appoints and removes per-market stewards, who hold three tighten-only levers — `increaseActivationDelays`, `increaseActivatingLock`, `revokeInstantActivation`. Each lever reads the market's current activation config, rejects any change that loosens it, and writes the full config back, so a steward can only ratchet risk down.
 
-Full surface: [API reference](api/withdrawal-queue.md).
+Full surface: [API reference](api/risk-steward-dashboard.md).
+
+### Exit books
+
+The filler-served exit registry. A lender posts a request to exit a fixed slice of their supply, then any filler drains whatever liquidity the market has into it, earning a `PriorityRamp` priority fee that holds at `startRate` through `rampStart`, climbs linearly to the request's `endRate` by `rampEnd`, then holds at `endRate` to the deadline (a Dutch auction). Each rate is capped at the global `MAX_PRIORITY_FEE = 10%`. A large exit completes over time without the lender chasing liquidity transaction by transaction. An abstract `ExitBookBase` (with `ExitBookLib`) holds the shared `placeExitRequest` / `fillExitRequest` / `cancelExitRequest` surface, and a concrete book binds it to a source — `Erc4626ExitBook` over a vault, `MorphoExitBook` over a market.
+
+Full surface: [API reference](api/exit-book.md).
 
 ## Mechanics
 
@@ -79,12 +87,12 @@ Every market action runs through the controller — the core resolves the amount
 
 | Hook | Controller action |
 |---|---|
-| SupplyCollateral | sync activation, book the supplied collateral into the activation pipeline |
-| WithdrawCollateral | freeze gate (only with open debt), sync activation, debit buckets, active-health check |
-| Borrow | freeze gate, guardian check (caller, onBehalf, receiver), active-only health check, borrow-utilization gap |
+| SupplyCollateral | sync activation, book the supplied collateral into the activation pipeline, re-key the settlement queue |
+| WithdrawCollateral | freeze gate (only with open debt), sync activation, debit buckets, active-health check, minBorrowCollateral floor (with open debt), re-key |
+| Borrow | freeze gate, guardian check (caller, onBehalf, receiver), active-only health check, minBorrowCollateral floor |
 | Repay | re-key the borrower in the settlement queue |
 | Liquidate | debit seized collateral from buckets, re-key |
-| Settle | bad-debt gate, slice bound, debit seized collateral, re-key |
+| Settle | bad-debt gate, eligibility gate, slice bound, sync activation, debit seized collateral, re-key |
 | Supply / Withdraw / AccrueInterest | no policy (lender flows and interest) |
 
 ### Borrower gating
@@ -99,9 +107,9 @@ The controller adds the missing judgment as two linked safeguards, keyed per `(m
 
 Freshly supplied collateral cannot back a new borrow until it has matured through a timed gate. Activation runs on every collateral supply, sorting each borrower's collateral into three buckets:
 
-- `dust` — collateral supplied below the activation minimum (`minActivationAmount`). It accumulates here until a supply pushes the total over the minimum, when the whole amount moves into `activating`. Freely withdrawable, and outside the timer.
-- `activating` — in the timer, maturing toward `active`. A configurable share can be held back from withdrawal until it matures.
-- `active` — matured, the only bucket that backs a new loan. Freely withdrawable.
+- `dust` — collateral supplied below the activation minimum (`minActivationAmount`). It accumulates here until a supply lifts the total to or past the minimum, when the whole amount moves into `activating`. Freely withdrawable, and outside the timer.
+- `activating` — in the timer, maturing toward `active`. An `activatingLockAmount` portion can be held back from withdrawal for `activatingLockDuration`.
+- `active` — matured collateral, the only kind that backs a new loan, derived as `total` minus the un-matured buckets rather than stored on its own. Freely withdrawable.
 
 All supplied collateral counts toward the core's solvency the moment it lands, whatever bucket it sits in — so a supply protects the position from liquidation at once. Only borrowing waits for `active`.
 
@@ -109,17 +117,18 @@ All supplied collateral counts toward the core's solvency the moment it lands, w
 
 #### The maturation gate
 
-Collateral in `activating` becomes `active` through a gate. How long that takes — and whether it happens at all — is set by five inputs:
+Collateral in `activating` becomes `active` through a gate. How long that takes — and whether it happens at all — is set by four inputs:
 
 - **Inflow delay** — recent supply volume sets the base timer.
 - **Guardian strikes** — each one lengthens the timer; a quorum bans the account, which then never matures (see [Guardian signals](#guardian-signals)).
 - **Liveness frontier** — a guardian quorum must scan past the unlock before a lot can mature (see [Guardian signals](#guardian-signals)).
-- **Instant activation** — a trusted borrower skips the wait entirely.
 - **Freeze** — maturation is suspended while the market is frozen (see [Freeze & pause](#freeze--pause)).
+
+A supply routed through a trusted caller skips the gate entirely — instant activation matures it at supply, so the lot never enters `activating` (see [Instant activation](#instant-activation)).
 
 A `maxGuardiansQuorumDelay` fallback matures a lot anyway if the committee stalls, so a slow watch cannot freeze maturation forever. Set to `0` it drops the scan requirement, and the lot matures on the timer alone.
 
-> **Example.** The timer elapses but the quorum frontier is still behind the supplied lot, so the lot waits. When a guardian heartbeats past it and `syncQuorumBlock` advances the frontier past `unlockTime`, the next `syncActivation` matures it. If the committee stalls, the lot matures anyway once `maxGuardiansQuorumDelay` from its start has passed.
+> **Example.** The timer elapses but the quorum frontier's timestamp is still behind the supplied lot's `unlockTime`, so the lot waits. When a guardian heartbeats past it and `syncQuorumBlock` advances the frontier so its timestamp clears `unlockTime`, the next `syncActivation` matures it. If the committee stalls, the lot matures anyway once `maxGuardiansQuorumDelay` from its start has passed.
 
 #### Inflow delay
 
@@ -151,13 +160,13 @@ unlockTime = activatingStart + delay + strikes × delayPerStrike
 
 #### Instant activation
 
-A borrower on the instant-activation whitelist matures at supply — `unlockTime = 0`, skipping both the timer and the gate. Governance grants it mainly to looping contracts that help borrowers build leveraged positions: for these the delay would only hurt the looping UX without adding safety, since a loop position does not pull lender funds out of the market.
+A supply whose caller is on the instant-activation allowlist matures at supply — `unlockTime = 0`, skipping both the timer and the gate. The allowlist is keyed on the supply caller, not the position owner, so a trusted router activating on behalf of users qualifies while the users themselves stay on the timer. Governance grants it mainly to looping contracts that help borrowers build leveraged positions: for these the delay would only hurt the looping UX without adding safety, since a loop position does not pull lender funds out of the market.
 
 #### Withdrawal & holds
 
-Voluntary withdrawal debits the buckets in waterfall order: dust, then `activating` above a configurable hold (`activatingHold`), then `active`. That hold keeps a share of maturing collateral unwithdrawable until it matures — an anti-Sybil measure, so while it is set a borrower cannot pull a maturing position all the way back out. Forced paths (liquidation, settle) ignore it and reach all collateral. A same-tx supply then withdraw reverses its own inflow contribution (flash-loan undo, via transient storage).
+Voluntary withdrawal comes off the collateral in waterfall order: dust first, then `activating` above a configurable lock, then `active`. Only `dust` and `activating` are drained as stored buckets — `active` is the matured remainder, which the rest of the withdrawal simply reduces. The lock keeps an `activatingLockAmount` portion of maturing collateral unwithdrawable for `activatingLockDuration` from the lot's start — an anti-Sybil measure, so while it holds a borrower cannot pull a maturing position all the way back out. Once the duration elapses the locked portion becomes withdrawable even if the lot has not matured. A withdrawal that drops the `activating` remainder below `minActivationAmount` folds it back into `dust` and clears its timer, the mirror of a sub-threshold deposit staying dust. This demotion is skipped while a lock holds, since moving a locked remainder into freely-withdrawable dust would bypass the lock. Forced paths (liquidation, settle) pass lock 0 and reach all collateral. A same-tx supply then withdraw reverses its own inflow contribution (flash-loan undo, via transient storage).
 
-A borrower with open debt cannot withdraw all of its collateral: a withdrawal must leave the remaining `active` covering the debt at LLTV, and raw collateral cannot fall below the activation minimum — so a borrower cannot strand a tiny high-LTV position at the head of the settlement queue. To pull everything out, repay the debt to zero first.
+A borrower with open debt cannot withdraw all of its collateral: a withdrawal must leave the remaining `active` covering the debt at LLTV, and raw collateral cannot fall below `minBorrowCollateral`, the minimum borrowable size — so a borrower cannot strand a tiny high-LTV position at the head of the settlement queue. To pull everything out, repay the debt to zero first.
 
 ### Guardian signals
 
@@ -177,9 +186,9 @@ stateDiagram-v2
     Normal --> Normal: flag / unflag (strike count moves)
     Normal --> Banned: quorum of strikes, or forced ban
     Banned --> Normal: unban (clears the flag set)
-    Normal --> Immune: grantImmunity
-    Immune --> Normal: revokeImmunity
-    Immune --> Banned: forced ban
+    Banned --> Immune: grantImmunity
+    Immune --> Normal: unban, or revokeImmunity below quorum
+    Immune --> Banned: forced ban, or revokeImmunity at quorum
     note right of Immune
         flag / unflag are no-ops
         the account reads as clean
@@ -189,13 +198,13 @@ stateDiagram-v2
     end note
 ```
 
-Two override pairs sit above the guardians, split by risk direction. The committee acts fast to reduce risk — `ban` forces a block past the quorum, `revokeImmunity` strips an account's protection. Governance moves slowly to increase it — `unban` lifts a ban and clears the flag set so guardians re-evaluate from scratch, `grantImmunity` exempts an account they keep misjudging.
+Two override pairs sit above the guardians, split by risk direction. The committee acts fast to reduce risk — `ban` forces a block past the quorum, `revokeImmunity` re-derives status from the live flag set, re-latching `Banned` if the account still carries a quorum of flags and dropping to `Normal` otherwise. Governance moves slowly to increase it — `unban` lifts a ban (or immunity) and clears the flag set so guardians re-evaluate from scratch, `grantImmunity` exempts an account they keep misjudging.
 
 The controller reads `getOpinion(market, account) → GuardiansOpinion{status, strikes, flagCount, quorumBlock}`. `strikes` is effective — forced to 0 while `Immune`, so an exempt account carries no surcharge — while `flagCount` is the raw guardian-flag count, still visible under immunity. These three are what the activation gate consumes: `strikes` lengthen the delay, `Banned` blocks borrowing, and `quorumBlock` is the liveness frontier that gates maturation.
 
 **Heartbeats.** Guardians also report how far they have scanned, which tells whether the watch is keeping up with the chain. Each `heartbeat` carries `{number, hash, timestamp}`, recorded only if `hash` matches `blockhash(number)` — so the reported block must be on the canonical chain. A block the guardian scanned on a fork that later reorged out no longer matches and is rejected. `syncQuorumBlock` then takes the quorum-th highest reported block as the frontier and ratchets it up — monotonic, so a guardian rotation cannot pull it back.
 
-> **Example (frontier).** Five guardians, quorum 3, last-scanned blocks `{100, 95, 90, 80, 70}`. The 3rd-highest is `90`, so the frontier is block 90 — at least a quorum have scanned everything up to it. A later report below 90 cannot lower it.
+> **Example (frontier).** Five guardians, quorum 3, last-scanned blocks `{100, 95, 90, 80, 70}`. The 3rd-highest is `90`, so the frontier is block 90 — at least a quorum have scanned everything up to it. A later report below 90 cannot lower it. The maturation gate compares that block's recorded timestamp against a lot's `unlockTime`, so a lot matures once block 90's time has passed its unlock.
 
 ### Settlement queue
 
@@ -219,7 +228,7 @@ flowchart LR
     P -->|target shares freed<br/>or queue dry| D[collateral to lender]
 ```
 
-**Slice sizing.** A single cut is bounded by the slice — the largest limit any applicable rule grants — and runs at **par**: the canceled debt equals the value of the seized collateral, so the borrower keeps its equity and loses only leverage. There is no liquidation penalty.
+**Slice sizing.** A single cut is bounded by the slice — the largest limit any applicable rule grants — and runs at **par**: the seized collateral is the canceled debt converted at the oracle price, rounded down, so its value is at most the canceled debt and can be one unit less, slightly favoring the borrower. The borrower keeps its equity and loses only leverage. There is no liquidation penalty.
 
 For the queue root, the bound is the largest of three rules:
 
@@ -260,14 +269,14 @@ flowchart LR
 
 ### Tokenized lender layer & fallback exit
 
-Lenders hold an ERC-4626 vault share (`LidoLendERC4626`), one vault per market, freely transferable and ungated. `deposit`/`mint`/`withdraw`/`redeem` are standard; `withdraw`/`redeem` are bounded by available pool liquidity.
+Lenders hold an ERC-4626 vault share (`LidoLendERC4626`), one vault per market, freely transferable and ungated. `deposit`/`mint`/`withdraw`/`redeem` are standard. `maxWithdraw`/`maxRedeem` are bounded by the lesser of the owner's position value and the market's free pool liquidity, so withdrawing past available liquidity reverts in the core.
 
 When liquidity is short, lenders use the settlement exit:
 
-- `fallbackExit(shares, receiver, owner, maxIterations)` — two legs: first a normal redeem of whatever pool liquidity covers (paid out as loan assets), then a settle of the remainder against the risk heap, riskiest-first (paid out as seized collateral). Best-effort, no revert on a shortfall; `maxIterations` caps the borrowers the settle leg cuts (`0` = `DEFAULT_MAX_SETTLEMENT_ITERATIONS`, 150). Redeeming the liquid part first also closes a griefing vector — idle liquidity flows to the owner instead of blocking the settle.
+- `fallbackExit(shares, receiver, owner, maxIterations)` — two legs: first a normal redeem of whatever pool liquidity covers (paid out as loan assets), then a settle of the remainder against the risk heap, riskiest-first (paid out as seized collateral). Best-effort, no revert on a shortfall. `maxIterations` caps the borrowers the settle leg cuts (`0` = `DEFAULT_MAX_SETTLEMENT_ITERATIONS`, 150). Redeeming the liquid part first also closes a griefing vector — idle liquidity flows to the owner instead of blocking the settle.
 - `settle(shares, borrowers[], receiver, owner)` — settles a caller-chosen borrower list in order, collateral only (no redeem leg).
 
-Both burn lender shares against the cancelled debt, and the vault never custodies collateral — `fallbackExit`'s redeem leg pays loan assets, the settle path pays seized collateral straight to the receiver. `previewFallbackExit` reports the loan assets and core supply shares a given exit would consume.
+Both burn lender shares against the cancelled debt, and the vault never custodies collateral — `fallbackExit`'s redeem leg pays loan assets, the settle path pays seized collateral straight to the receiver. When the cuts fall short of the target, the vault burns shares pro-rata to the supply-share budget actually consumed, rounded up so remaining holders are not diluted. `previewFallbackExit` reports the loan assets and core supply shares a given exit would consume.
 
 ### Freeze & pause
 
@@ -299,7 +308,8 @@ Trust within the policy layer. Core-level actors — proxy admin, owner, oracle,
 | Borrower | — | bypass activation, borrow against immature collateral |
 | Guardian | flag malicious accounts, report honest last-scanned blocks | single-handedly force a borrow block or move the liveness frontier (quorum required) |
 | Committee / governance | force or lift a borrow block, or exempt accounts | move funds |
-| Risk steward / committee | freeze, tighten config, pause | loosen risk, move funds |
+| Risk steward / committee | freeze, tighten config | loosen risk, move funds |
+| Emergency-seal committee | pause every hook for a finite time | resume, change parameters, move funds |
 | Governance | set parameters and roles within bounds | bypass timelocks for risk-increasing changes, take custody |
 
 Each invariant here maps to a scenario or integration test in `test/`.
