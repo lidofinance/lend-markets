@@ -278,9 +278,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, 75 ether));
         _logSettlementResult(res);
 
-        Position memory _pos = ctx.market.position(ctx.id, _borrowerAddr(0));
-        uint128 whaleBorrowAfter = _pos.borrowShares;
-        uint128 whaleColAfter = _pos.collateral;
+        Position memory _whalePos = ctx.market.position(ctx.id, _borrowerAddr(0));
+        (uint128 whaleBorrowAfter, uint128 whaleColAfter) = (_whalePos.borrowShares, _whalePos.collateral);
         console2.log("  whale_debt_remaining:", uint256(whaleBorrowAfter));
         console2.log("  whale_col_remaining:", uint256(whaleColAfter));
         console2.log("  heap_size:", ctx.controller.settlementBorrowersCount());
@@ -459,22 +458,13 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         for (uint256 i; i < MAX_ITERATIONS; ++i) {
             if (remaining == 0 || ctx.controller.settlementBorrowersCount() == 0) break;
 
-            (address top, uint256 sliceAssets,) = ctx.controller.nextSettlementBorrower();
+            (address top,,,) = ctx.controller.nextSettlementBorrower();
             if (top == address(0)) break;
-            uint128 topBorrowShares;
-            uint128 topCol;
-            {
-                Position memory _pos = ctx.market.position(ctx.id, top);
-                topBorrowShares = _pos.borrowShares;
-                topCol = _pos.collateral;
-            }
-            uint128 totalBorrowAssets;
-            uint128 totalBorrowShares;
-            {
-                Market memory _mkt = ctx.market.market(ctx.id);
-                totalBorrowAssets = _mkt.totalBorrowAssets;
-                totalBorrowShares = _mkt.totalBorrowShares;
-            }
+            uint256 sliceAssets = ctx.controller.positionOf(top).slice;
+            uint128 topBorrowShares = ctx.market.position(ctx.id, top).borrowShares;
+            uint128 topCol = ctx.market.position(ctx.id, top).collateral;
+            uint128 totalBorrowAssets = ctx.market.market(ctx.id).totalBorrowAssets;
+            uint128 totalBorrowShares = ctx.market.market(ctx.id).totalBorrowShares;
 
             // Single-borrower sentinel: size the cut to the whole position.
             if (sliceAssets == type(uint256).max) {
@@ -669,8 +659,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     function _countDust(Ctx memory ctx, uint256 from, uint256 to) internal view returns (uint256 count) {
         for (uint256 i = from; i < to; ++i) {
             Position memory _pos = ctx.market.position(ctx.id, _borrowerAddr(i));
-            uint128 bs = _pos.borrowShares;
-            uint128 col = _pos.collateral;
+            (uint128 bs, uint128 col) = (_pos.borrowShares, _pos.collateral);
             if (bs > 0 && col < uint128(DUST_THRESHOLD)) count++;
         }
     }
@@ -681,7 +670,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     function _assetsToSupplyShares(Ctx memory ctx, uint256 assets) internal view returns (uint256) {
         Market memory _mkt = ctx.market.market(ctx.id);
-        return SharesMathLib.toSharesDown(assets, uint256(_mkt.totalSupplyAssets), uint256(_mkt.totalSupplyShares));
+        (uint128 totalSupplyAssets, uint128 totalSupplyShares) = (_mkt.totalSupplyAssets, _mkt.totalSupplyShares);
+        return SharesMathLib.toSharesDown(assets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
     }
 
     function _mintWETH(ILidoLend market, address user, uint256 amount) internal {

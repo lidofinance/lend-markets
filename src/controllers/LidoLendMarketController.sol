@@ -231,20 +231,22 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     function nextSettlementBorrower()
         external
         view
-        returns (address borrower, uint256 sliceAssets, uint256 sliceShares)
+        returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares)
     {
         borrower = _settlementQueue.peekRoot();
-        if (borrower == address(0)) return (address(0), 0, 0);
-        MarketView memory marketView = _marketView(_MARKET_ID);
-        sliceAssets = _settlementQueue.allowedSlice(marketView, borrower, _positionView(_MARKET_ID, borrower));
-        sliceShares = sliceAssets.toSharesDown(marketView.totalSupplyAssets, marketView.totalSupplyShares);
+        (supplyShares, borrowShares, remainingBorrowShares) =
+            _settlementQueue.settlementSlice(_marketView(_MARKET_ID), borrower, _positionView(_MARKET_ID, borrower));
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function settlementFor(address borrower) external view returns (uint256 sliceAssets, uint256 sliceShares) {
-        MarketView memory marketView = _marketView(_MARKET_ID);
-        sliceAssets = _settlementQueue.allowedSlice(marketView, borrower, _positionView(_MARKET_ID, borrower));
-        sliceShares = sliceAssets.toSharesDown(marketView.totalSupplyAssets, marketView.totalSupplyShares);
+    function settlementFor(address borrower)
+        external
+        view
+        returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares)
+    {
+        (supplyShares, borrowShares, remainingBorrowShares) = _settlementQueue.settlementSlice(
+            _marketView(_MARKET_ID), borrower, _positionView(_MARKET_ID, borrower)
+        );
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -459,15 +461,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
             revert SettlementBadDebt();
         }
 
-        // eligibility + cut bound: only the queue root or a borrower with a settlement LTV may be cut, capped at the
-        // policy slice.
-        uint256 allowed = _settlementQueue.allowedSlice(marketView, borrower, position);
-        if (allowed == 0) revert SettlementIneligible();
-        if (hookData.borrowAssetsCanceled > allowed) revert SettlementExceedsAllowed();
+        // Cap the cut at the policy slice, in borrow shares (a zero slice means ineligible).
+        uint256 allowedShares = _settlementQueue.allowedSlice(marketView, borrower, position)
+            .toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+        if (hookData.borrowSharesCanceled > allowedShares) revert SettlementExceedsAllowed();
 
-        // payload consistency (core already enforces these; cheap to re-check on the trusted values, no reads)
-        uint256 sharesToBurn =
-            hookData.borrowAssetsCanceled.toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+        // payload consistency: the core already enforces these; re-check on the exact hook values (no reads).
+        uint256 sharesToBurn = hookData.borrowSharesCanceled;
         if (sharesToBurn > position.borrowShares) revert SettlementExceedsDebt();
         if (hookData.seizedAssets == 0 || hookData.seizedAssets > position.collateral) {
             revert SettlementInvalidSeize();

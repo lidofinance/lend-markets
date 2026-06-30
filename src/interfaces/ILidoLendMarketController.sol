@@ -57,10 +57,7 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Thrown when a tracked borrower is bad debt, blocking settlement.
     error SettlementBadDebt();
 
-    /// @notice Thrown when the settle target is neither next in line to settle nor has a settlement LTV set.
-    error SettlementIneligible();
-
-    /// @notice Thrown when the requested cut exceeds the policy-allowed slice.
+    /// @notice Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
     error SettlementExceedsAllowed();
 
     /// @notice Thrown when the cut's shares exceed the borrower's debt.
@@ -167,15 +164,21 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     ///      implies every tracked position is solvent, so the settle gate need only check that one.
     function hasBadDebt() external view returns (bool);
 
-    /// @notice The next borrower the settlement would cut and the max slice allowed for it (the larger of the
-    ///         config slice and the borrower's settlement-LTV slice, the bound the hook caps at), as both loan
-    ///         assets and the equivalent Morpho supply shares. `borrower` is address(0) when the queue is empty.
-    function nextSettlementBorrower() external view returns (address borrower, uint256 sliceAssets, uint256 sliceShares);
+    /// @notice The settle cut the policy allows against the queue root (the borrower a head-first settle cuts
+    ///         first): `settlementFor` applied to it, with the root address. `borrower` is address(0) when empty.
+    function nextSettlementBorrower()
+        external
+        view
+        returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
 
-    /// @notice Maximum slice allowed for a single settle cut against `borrower` (the larger of the config
-    ///         slice and the borrower's settlement-LTV slice), as both loan assets and the equivalent Morpho
-    ///         supply shares. Zero means ineligible.
-    function settlementFor(address borrower) external view returns (uint256 sliceAssets, uint256 sliceShares);
+    /// @notice The settle cut the policy allows against `borrower`, as the two anchors a core `settle` accepts:
+    ///         the caller passes one and 0 for the other — `supplyShares` to settle supply-anchored, `borrowShares`
+    ///         borrow-anchored. `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All
+    ///         zero when ineligible.
+    function settlementFor(address borrower)
+        external
+        view
+        returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
 
     /// @notice A window of queued borrowers (approximate top-down order) and their risk keys: up to
     ///         `maxCount` starting at `offset`. Past the end the arrays are empty, so callers can page.

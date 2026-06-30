@@ -52,7 +52,7 @@ contract SettlementTest is LidoLendSetup {
 
         // Ordinary leg redeems exactly the idle (100 - 80); one settle cut (maxIterations=1) then follows,
         // which must equal the controller's predicted slice — so every magnitude is pinned exactly.
-        (uint256 sliceAssets,) = m.controller.settlementFor(borrower);
+        uint256 sliceAssets = m.controller.positionOf(borrower).slice;
         uint128 colBefore = m.core.position(m.id, borrower).collateral;
 
         (, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
@@ -70,7 +70,7 @@ contract SettlementTest is LidoLendSetup {
         uint256 shares = _seedShortLiquidity(_actor("lender"), borrower);
 
         // The controller predicts the exact slice it will cut; the action must match it.
-        (uint256 sliceAssets,) = m.controller.settlementFor(borrower);
+        uint256 sliceAssets = m.controller.positionOf(borrower).slice;
         uint128 colBefore = m.core.position(m.id, borrower).collateral;
 
         address[] memory borrowers = new address[](1);
@@ -113,7 +113,7 @@ contract SettlementTest is LidoLendSetup {
         }
         assertEq(riskyKey, 2 * safeKey, "risky key == 2x safe (equal shares, half the collateral)");
 
-        (address root,,) = m.controller.nextSettlementBorrower();
+        (address root,,,) = m.controller.nextSettlementBorrower();
         assertEq(root, risky, "queue root == riskiest (highest shares/collateral)");
     }
 }

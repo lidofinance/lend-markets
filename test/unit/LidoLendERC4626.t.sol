@@ -180,7 +180,7 @@ contract LidoLendERC4626Test is LidoLendSetup {
         (address lender, address borrower) = _distress(m, 100 ether, 20 ether, 0.22e36);
         address[] memory bs = new address[](1);
         bs[0] = borrower;
-        (uint256 sliceAssets,) = m.controller.settlementFor(borrower);
+        uint256 sliceAssets = m.controller.positionOf(borrower).slice;
         uint128 colBefore = m.core.position(m.id, borrower).collateral;
         // The helper asserts loanAssets == 0 (no redeem leg) and the receiver/share deltas.
         (,, uint256 collateralSeized, uint256 debtCanceled) = m.settle(lender, m.vault.balanceOf(lender), bs, lender);
@@ -216,7 +216,7 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
         // One settle cut == the controller's predicted slice; total shares burned == the shares for the
         // 80 idle redeemed PLUS the shares for that one cut — both recomputed before the exit.
-        (uint256 sliceAssets,) = m.controller.settlementFor(borrower);
+        uint256 sliceAssets = m.controller.positionOf(borrower).slice;
         uint256 shares = m.vault.balanceOf(lender);
         uint256 expectedBurned = m.vault.previewWithdraw(80 ether) + m.vault.previewWithdraw(sliceAssets);
         vm.prank(lender);
