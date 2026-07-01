@@ -212,8 +212,8 @@ abstract contract LidoLendDeployer {
         require(ok, "LidoLendDeployer: irm setConfig failed");
     }
 
-    /// @dev Controller behind a proxy. The impl bakes `(lidoLend, marketId)` into immutables at deploy,
-    ///      then `initialize(admin, guardianSignals, activationConfig)` runs through the proxy.
+    /// @dev Controller behind a proxy. The impl bakes `lidoLend` into an immutable; `initialize(marketId,
+    ///      admin, guardianSignals, activationConfig)` runs through the proxy.
     function _deployController(
         address core,
         Id marketId,
@@ -222,10 +222,11 @@ abstract contract LidoLendDeployer {
         CollateralActivationConfigParams memory activation
     ) internal virtual returns (address proxy, address impl) {
         impl = _deployArtifact(
-            "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core, marketId)
+            "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
+            "initialize(bytes32,address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
+            Id.unwrap(marketId),
             admin,
             guardianSignals,
             activation
