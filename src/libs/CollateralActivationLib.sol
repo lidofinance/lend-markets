@@ -48,9 +48,11 @@ library CollateralActivationLib {
     // EVENTS
     // ---
 
-    /// @notice Emitted when a deposit enters or extends the activation timer. `unlockTime` is the base unlock
-    ///         (`activatingStart + delay`), before any strike surcharge.
-    event CollateralActivating(address indexed borrower, uint256 amount, uint256 unlockTime);
+    /// @notice Emitted when a deposit enters or extends the activation timer. The base unlock is
+    ///         `activatingStart + activatingDelay`, before any strike surcharge.
+    event CollateralActivating(
+        address indexed borrower, uint256 amount, uint256 activatingStart, uint256 activatingDelay
+    );
 
     /// @notice Emitted when an activating lot matures (or an instant deposit lands) into borrowable collateral.
     event CollateralActivated(address indexed borrower, uint256 amount);
@@ -187,7 +189,7 @@ library CollateralActivationLib {
             position.activatingDelay = delay.toUint32();
         }
 
-        emit CollateralActivating(borrower, assetsWithDust, position.activatingStart + position.activatingDelay);
+        emit CollateralActivating(borrower, assetsWithDust, position.activatingStart, position.activatingDelay);
     }
 
     /// @notice Voluntary withdrawal: drain `amount` from the un-matured buckets honoring the activating lock,
@@ -285,10 +287,10 @@ library CollateralActivationLib {
         return Math.saturatingSub($.inflow, decayAmount);
     }
 
-    /// @notice Base activation delay a deposit incurs at the current inflow, before the deposit's own inflow
-    ///         contribution. A larger deposit folds into the inflow and may incur more, up to the cap.
-    function getCurrentActivationDelay(State storage $) internal view returns (uint256) {
-        return _computeDelay($, calcDecayedInflow($));
+    /// @notice Activation delay a deposit of `inflowIncrement` would incur at the current inflow: its size folds
+    ///         into the inflow (as on credit), lengthening the delay up to the cap.
+    function getCurrentActivationDelay(State storage $, uint256 inflowIncrement) internal view returns (uint256) {
+        return _computeDelay($, Math.saturatingAdd(calcDecayedInflow($), inflowIncrement));
     }
 
     // ---
@@ -375,7 +377,7 @@ library CollateralActivationLib {
         }
 
         uint256 delaySpan = cfg.maxActivationDelay - cfg.minActivationDelay;
-        return cfg.minActivationDelay + delaySpan * effectiveInflow / cfg.maxDelayInflow;
+        return cfg.minActivationDelay + Math.mulDiv(delaySpan, effectiveInflow, cfg.maxDelayInflow);
     }
 
     /// @dev Per-tx, per-borrower transient slot for the inflow added this tx (same-tx undo).

@@ -227,10 +227,10 @@ library SettlementQueueLib {
         returns (uint256)
     {
         if (targetLtv >= WAD) return 0;
-        uint256 debtScaledWad = debtAssets * WAD;
-        uint256 targetTermWad = targetLtv * collateralValue;
-        if (debtScaledWad <= targetTermWad) return 0;
-        return (debtScaledWad - targetTermWad) / (WAD - targetLtv);
+        uint256 debtScaled = debtAssets * WAD;
+        uint256 targetTerm = targetLtv * collateralValue;
+        if (debtScaled <= targetTerm) return 0;
+        return (debtScaled - targetTerm) / (WAD - targetLtv);
     }
 
     // ---
@@ -264,8 +264,7 @@ library SettlementQueueLib {
         if (config.ltvStepBps != 0) {
             uint256 currentLtv = Math.mulDiv(debtAssets, WAD, collateralValue);
             uint256 ltvReduction = Math.mulDiv(config.ltvStepBps, WAD, BPS);
-            byLtvReductionAssets =
-                sliceToLtv(debtAssets, collateralValue, currentLtv > ltvReduction ? currentLtv - ltvReduction : 0);
+            byLtvReductionAssets = sliceToLtv(debtAssets, collateralValue, Math.saturatingSub(currentLtv, ltvReduction));
         }
 
         return Math.max(config.sliceFloorAssets, Math.max(byDebtFractionAssets, byLtvReductionAssets));

@@ -130,8 +130,9 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
     function currentInflow() external view returns (uint256);
 
-    /// @notice Base activation delay a deposit incurs at the current inflow — for borrowers gauging the wait.
-    function currentActivationDelay() external view returns (uint256);
+    /// @notice Activation delay a deposit of `inflowIncrement` would incur at the current inflow — for
+    ///         borrowers gauging the wait.
+    function currentActivationDelay(uint256 inflowIncrement) external view returns (uint256);
 
     /// @notice Whitelist a trusted caller contract (e.g. a router supplying on behalf of users) so its supplies
     ///         cross straight into `active`, skipping the activation timer and inflow throttle. Risk-increasing

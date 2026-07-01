@@ -911,6 +911,17 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(c.currentInflow(), 100 ether, "inflow == the activating deposit (no decay in-block)");
     }
 
+    /// @dev `currentActivationDelay(inflowIncrement)` previews the delay a deposit of that size would incur at
+    ///      the current (fresh: zero) inflow. `_defaultConfig`: min 10m, max 2h, maxDelayInflow 10_000 ether ->
+    ///      base at 0, linear in between, clamped to the max at or above the cap.
+    function test_currentActivationDelay_scalesWithIncrement() public view {
+        assertEq(c.currentActivationDelay(0), 10 minutes, "zero increment -> base delay");
+        // 10m + (2h - 10m) * 5_000/10_000 = 10m + 110m/2 = 65m
+        assertEq(c.currentActivationDelay(5_000 ether), 65 minutes, "half the cap -> linear midpoint");
+        assertEq(c.currentActivationDelay(10_000 ether), 2 hours, "at the cap -> max delay");
+        assertEq(c.currentActivationDelay(20_000 ether), 2 hours, "above the cap -> clamped to max");
+    }
+
     /// @dev `settlementConfig()` returns the policy set at deploy (`_defaultConfig`: 100/0/10e18/100).
     function test_settlementConfig_returnsDeployedPolicy() public view {
         SettlementConfig memory cfg = c.settlementConfig();
