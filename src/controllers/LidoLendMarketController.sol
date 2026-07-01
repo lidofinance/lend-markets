@@ -62,6 +62,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // STORAGE
     // ---
 
+    /// @dev Ceiling on total supplied loan assets (principal plus accrued interest), enforced on the Supply
+    ///      hook against the market total. 0 means no cap.
+    uint256 public supplyCap;
     /// @dev When set, new borrows and debt-bearing collateral withdrawals revert and activation maturation
     ///      defers. Debt-free positions can still withdraw.
     bool private _isFrozen;
@@ -75,9 +78,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     ///      Keyed on the supply `caller`, not the position owner, so a trusted router activating on behalf of
     ///      users qualifies. Must only ever hold access-gated contracts, never a permissionless helper.
     mapping(address caller => bool) private _instantActivationCallers;
-    /// @dev Ceiling on total supplied loan assets (principal plus accrued interest), enforced on the Supply
-    ///      hook against the market total. 0 means no cap — the upgrade-safe default for the zeroed slot.
-    uint256 private _supplyCap;
 
     // ---
     // MODIFIERS
@@ -195,13 +195,8 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
     /// @inheritdoc ILidoLendMarketConfigurator
     function setSupplyCap(uint256 cap) external onlyRole(MANAGER_ROLE) {
-        _supplyCap = cap;
+        supplyCap = cap;
         emit SupplyCapSet(cap, msg.sender);
-    }
-
-    /// @inheritdoc ILidoLendMarketConfigurator
-    function supplyCap() external view returns (uint256) {
-        return _supplyCap;
     }
 
     // ---
@@ -338,7 +333,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     ///      interest but not yet booked this deposit, so `totalSupplyAssets` is the post-accrue, pre-supply
     ///      figure and the incoming `assets` is added here.
     function _handleSupply(Id id, SupplyHookData memory hookData) internal view {
-        uint256 cap = _supplyCap;
+        uint256 cap = supplyCap;
         if (cap == 0) return;
 
         uint256 attempted = LIDO_LEND.market(id).totalSupplyAssets + hookData.assets;
