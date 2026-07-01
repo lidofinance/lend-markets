@@ -37,7 +37,7 @@ import {
 ///
 ///      The override splits into two opposing pairs by risk direction. The fast risk-reducing side sits at
 ///      the committee (`ACCESS_LIMITER_ROLE`: `ban`, `revokeImmunity`), the slow risk-increasing side at
-///      governance (`ACCESS_RESTORER_ROLE`: `unban`, `grantImmunity`). `DEFAULT_ADMIN_ROLE` manages the
+///      governance (`ACCESS_RESTORER_ROLE`: `unban`, `grantImmunity`). `GUARDIANS_MANAGER_ROLE` manages the
 ///      guardian set and quorum. The guardian set is a plain enumerable set, not a role.
 ///
 ///      Guardians report liveness: `flag`, `unflag`, and `heartbeat` each record a last-scanned block (O(1)).

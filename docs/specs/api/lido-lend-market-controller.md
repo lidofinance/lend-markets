@@ -1,0 +1,660 @@
+<!-- GENERATED FROM NatSpec by tools/gen_api_from_artifacts.py — do not edit by hand; run `make doc`. -->
+
+# LidoLendMarketController
+
+Full external surface of `LidoLendMarketController`: the core hook interface and AccessControl (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the borrower dashboard. The controller implements this interface, so it is the single source for the dashboard struct, events, errors, and the function docs the contract inherits.
+
+## Enums
+
+### `HookEvent`
+
+```solidity
+enum HookEvent {
+    Supply,
+    Withdraw,
+    Borrow,
+    Repay,
+    SupplyCollateral,
+    WithdrawCollateral,
+    Liquidate,
+    AccrueInterest,
+    Settle
+}
+```
+
+## Structs
+
+### `BorrowerPosition`
+
+```solidity
+struct BorrowerPosition {
+    uint256 active;
+    uint256 activating;
+    uint256 dust;
+    uint256 unlockTime;
+    uint256 strikes;
+    uint256 flagCount;
+    bool banned;
+    uint256 debtAssets;
+    uint256 settlementLtv;
+    bool isNextToSettle;
+    uint256 slice;
+}
+```
+
+One-read borrower snapshot for off-chain dashboards: collateral split, activation timer, guardian signal, debt, personal settle-down LTV, and live settle exposure.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `active` | `uint256` | Matured collateral, borrowable. |
+| `activating` | `uint256` | Collateral inside the activation timer, not yet borrowable. |
+| `dust` | `uint256` | Collateral below the activation threshold, withdrawable. |
+| `unlockTime` | `uint256` | Activation unlock timestamp, 0 when there is no timer. |
+| `strikes` | `uint256` | Effective guardian strike count driving the activation surcharge (0 while immune). |
+| `flagCount` | `uint256` | Raw guardian flags on the account, regardless of status (visible even while immune). |
+| `banned` | `bool` | Hard-blocked by a latched guardian ban. |
+| `debtAssets` | `uint256` | Current borrow debt, in loan assets. |
+| `settlementLtv` | `uint256` | Borrower's personal settle-down target LTV (WAD), 0 when unset. |
+| `isNextToSettle` | `bool` | The borrower is next in line to be settled. |
+| `slice` | `uint256` | Loan assets that may be cut from this position in one settle now. |
+
+### `SupplyHookData`
+
+```solidity
+struct SupplyHookData {
+    address caller;
+    address onBehalf;
+    uint256 assets;
+    uint256 shares;
+}
+```
+
+Payload for the `Supply` hook.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The supply call's msg.sender. |
+| `onBehalf` | `address` | The address whose supply position grows. |
+| `assets` | `uint256` | The loan-token amount supplied, after resolution. |
+| `shares` | `uint256` | The supply shares minted, after resolution. |
+
+### `WithdrawHookData`
+
+```solidity
+struct WithdrawHookData {
+    address caller;
+    address onBehalf;
+    address receiver;
+    uint256 assets;
+    uint256 shares;
+}
+```
+
+Payload for the `Withdraw` hook.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The withdraw call's msg.sender. |
+| `onBehalf` | `address` | The address whose supply position shrinks. |
+| `receiver` | `address` | The address receiving the withdrawn loan tokens. |
+| `assets` | `uint256` | The loan-token amount withdrawn, after resolution. |
+| `shares` | `uint256` | The supply shares burned, after resolution. |
+
+### `AccrueInterestHookData`
+
+```solidity
+struct AccrueInterestHookData {
+    address caller;
+}
+```
+
+Payload for the `AccrueInterest` hook.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The accrueInterest call's msg.sender. |
+
+### `SupplyCollateralHookData`
+
+```solidity
+struct SupplyCollateralHookData {
+    address caller;
+    address onBehalf;
+    uint256 assets;
+}
+```
+
+Payload for the `SupplyCollateral` hook.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The supplyCollateral call's msg.sender. |
+| `onBehalf` | `address` | The address whose collateral grows. |
+| `assets` | `uint256` | The collateral-token amount supplied. |
+
+### `BorrowHookData`
+
+```solidity
+struct BorrowHookData {
+    address caller;
+    address onBehalf;
+    address receiver;
+    uint256 assets;
+    uint256 shares;
+}
+```
+
+Payload for the `Borrow` hook.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The borrow call's msg.sender. |
+| `onBehalf` | `address` | The address whose borrow position grows. |
+| `receiver` | `address` | The address receiving the borrowed loan tokens. |
+| `assets` | `uint256` | The loan-token amount borrowed, after resolution. |
+| `shares` | `uint256` | The borrow shares minted, after resolution. |
+
+### `WithdrawCollateralHookData`
+
+```solidity
+struct WithdrawCollateralHookData {
+    address caller;
+    address onBehalf;
+    address receiver;
+    uint256 assets;
+}
+```
+
+Payload for the `WithdrawCollateral` hook.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The withdrawCollateral call's msg.sender. |
+| `onBehalf` | `address` | The address whose collateral shrinks. |
+| `receiver` | `address` | The address receiving the collateral. |
+| `assets` | `uint256` | The collateral-token amount withdrawn. |
+
+### `RepayHookData`
+
+```solidity
+struct RepayHookData {
+    address caller;
+    address onBehalf;
+    uint256 assets;
+    uint256 shares;
+}
+```
+
+Payload for the `Repay` hook.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The repay call's msg.sender. |
+| `onBehalf` | `address` | The address whose borrow position shrinks. |
+| `assets` | `uint256` | The loan-token amount repaid, after resolution. |
+| `shares` | `uint256` | The borrow shares burned, after resolution. |
+
+### `LiquidateHookData`
+
+```solidity
+struct LiquidateHookData {
+    address caller;
+    address borrower;
+    uint256 seizedAssets;
+    uint256 repaidAssets;
+    uint256 repaidShares;
+}
+```
+
+Payload for the `Liquidate` hook.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The liquidator, and the address the seized collateral goes to. |
+| `borrower` | `address` | The position being liquidated. |
+| `seizedAssets` | `uint256` | The collateral-token amount seized, after resolution. |
+| `repaidAssets` | `uint256` | The loan-token debt repaid, after resolution. |
+| `repaidShares` | `uint256` | The borrow shares repaid, after resolution. |
+
+### `SettleHookData`
+
+```solidity
+struct SettleHookData {
+    address caller;
+    address onBehalf;
+    address borrower;
+    address receiver;
+    uint256 supplySharesBurned;
+    uint256 borrowAssetsCanceled;
+    uint256 borrowSharesCanceled;
+    uint256 seizedAssets;
+}
+```
+
+Payload for the `Settle` hook.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The settle call's msg.sender. |
+| `onBehalf` | `address` | The address whose supply shares are burned. |
+| `borrower` | `address` | The address whose debt is canceled and collateral seized. |
+| `receiver` | `address` | The address receiving the seized collateral. |
+| `supplySharesBurned` | `uint256` | The supply shares burned from onBehalf, after resolution. |
+| `borrowAssetsCanceled` | `uint256` | The loan-token debt canceled, computed in core. |
+| `borrowSharesCanceled` | `uint256` | The borrow shares burned from borrower, computed in core. |
+| `seizedAssets` | `uint256` | The collateral-token amount seized, computed in core. |
+
+### `CollateralActivationConfig`
+
+```solidity
+struct CollateralActivationConfig {
+    uint40 minActivationDelay;
+    uint40 maxActivationDelay;
+    uint128 maxDelayInflow;
+    uint40 delayPerStrike;
+    uint128 activatingLockAmount;
+    uint40 activatingLockDuration;
+    uint128 minActivationAmount;
+    uint40 maxGuardiansQuorumDelay;
+}
+```
+
+Governance-tunable activation parameters, validated by `CollateralActivationLib.setConfig`.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `minActivationDelay` | `uint40` | Base delay floor, at zero inflow. |
+| `maxActivationDelay` | `uint40` | Base delay cap, reached at inflow >= maxDelayInflow. Also the inflow decay horizon: the accumulator drains from `maxDelayInflow` to zero over this duration. |
+| `maxDelayInflow` | `uint128` | Inflow reference at which the base delay reaches the cap, and the ceiling the inflow accumulator saturates at. |
+| `delayPerStrike` | `uint40` | Activation-delay surcharge added per strike. 0 disables the surcharge, so strikes do not slow activation and only the ban gates a flagged borrower. |
+| `activatingLockAmount` | `uint128` | Lock on activating collateral, honored by `withdraw`. 0 disables it. Forced paths pass floor 0. |
+| `activatingLockDuration` | `uint40` | How long, from `activatingStart`, the `activatingLockAmount` portion stays unwithdrawable. Once it elapses the locked collateral becomes withdrawable even if the lot has not matured. 0 disables the lock. |
+| `minActivationAmount` | `uint128` | Dust threshold. Collateral below it does not enter activation. |
+| `maxGuardiansQuorumDelay` | `uint40` | Liveness fallback for the quorum gate, measured from the lot's start. Once it elapses the lot matures even if the guardian quorum has not scanned past the unlock. Must exceed the base-delay cap (maxActivationDelay), else it fires at the unlock and the quorum gets no window. 0 matures at the base unlock (no gate). |
+
+## Events
+
+### `FrozenSet`
+
+```solidity
+event FrozenSet(bool frozen, address indexed account);
+```
+
+Emitted when the market is frozen or unfrozen.
+
+### `InstantActivationSet`
+
+```solidity
+event InstantActivationSet(address indexed caller, bool enabled);
+```
+
+Emitted when a trusted caller's instant-activation status is set.
+
+## Errors
+
+### `Unauthorized`
+
+```solidity
+error Unauthorized();
+```
+
+Thrown when the hook caller is not the core.
+
+### `InvalidMarketId`
+
+```solidity
+error InvalidMarketId();
+```
+
+Thrown when the hook id is not this controller's market.
+
+### `UnknownHookEvent`
+
+```solidity
+error UnknownHookEvent();
+```
+
+Thrown when the hook event is unrecognized.
+
+### `MarketIsFrozen`
+
+```solidity
+error MarketIsFrozen();
+```
+
+Thrown when a freeze blocks the action.
+
+### `AddressBanned`
+
+```solidity
+error AddressBanned();
+```
+
+Thrown when a banned address borrows, receives a borrow, or initiates one.
+
+### `InsufficientActiveCollateral`
+
+```solidity
+error InsufficientActiveCollateral();
+```
+
+Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
+
+### `CollateralFloorBreached`
+
+```solidity
+error CollateralFloorBreached();
+```
+
+Thrown when a withdrawal would draw a borrower's collateral below the activation minimum while it still owes debt. Repaying to zero lifts the floor.
+
+### `PositionAccountingMismatch`
+
+```solidity
+error PositionAccountingMismatch();
+```
+
+Thrown when a core-applied position delta exceeds the controller's read of that position. The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
+
+### `SettlementBadDebt`
+
+```solidity
+error SettlementBadDebt();
+```
+
+Thrown when a tracked borrower is bad debt, blocking settlement.
+
+### `SettlementExceedsAllowed`
+
+```solidity
+error SettlementExceedsAllowed();
+```
+
+Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
+
+### `SettlementExceedsDebt`
+
+```solidity
+error SettlementExceedsDebt();
+```
+
+Thrown when the cut's shares exceed the borrower's debt.
+
+### `SettlementInvalidSeize`
+
+```solidity
+error SettlementInvalidSeize();
+```
+
+Thrown when the seized collateral is zero or exceeds the borrower's collateral.
+
+## Functions
+
+### `MANAGER_ROLE`
+
+```solidity
+function MANAGER_ROLE() external view returns (bytes32);
+```
+
+The single governance role: full activation and settlement config, grant and revoke instant activation.
+
+### `FREEZER_ROLE`
+
+```solidity
+function FREEZER_ROLE() external view returns (bytes32);
+```
+
+Role allowed to freeze the market.
+
+### `UNFREEZER_ROLE`
+
+```solidity
+function UNFREEZER_ROLE() external view returns (bytes32);
+```
+
+Role allowed to lift a freeze.
+
+### `PAUSER_ROLE`
+
+```solidity
+function PAUSER_ROLE() external view returns (bytes32);
+```
+
+Role allowed to pause the hooks.
+
+### `RESUMER_ROLE`
+
+```solidity
+function RESUMER_ROLE() external view returns (bytes32);
+```
+
+Role allowed to lift a pause.
+
+### `currentInflow`
+
+```solidity
+function currentInflow() external view returns (uint256);
+```
+
+Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
+
+### `currentActivationDelay`
+
+```solidity
+function currentActivationDelay() external view returns (uint256);
+```
+
+Base activation delay a deposit incurs at the current inflow — for borrowers gauging the wait.
+
+### `grantInstantActivation`
+
+```solidity
+function grantInstantActivation(address caller) external;
+```
+
+Whitelist a trusted caller contract (e.g. a router supplying on behalf of users) so its supplies cross straight into `active`, skipping the activation timer and inflow throttle. Risk-increasing path (waives the anti-flash/Sybil delay): reserved for trusted, access-gated callers — never a permissionless helper, which would waive the throttle for everyone routing through it. Keyed on the supply caller, not the position owner. Ban and freeze still gate as usual.
+
+### `hasInstantActivation`
+
+```solidity
+function hasInstantActivation(address caller) external view returns (bool);
+```
+
+Whether `caller`'s supplies skip the activation timer.
+
+### `setSettlementConfig`
+
+```solidity
+function setSettlementConfig(SettlementConfig calldata config) external;
+```
+
+Set the settlement config in one shot — the knobs size the same cut and move together. A cut is the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the cut that lowers the borrower's LTV by `ltvStepBps`. `fullCutBelowCollateral` lifts the cut to the full debt when the post-cut collateral would be dust.
+
+### `settlementConfig`
+
+```solidity
+function settlementConfig() external view returns (SettlementConfig memory);
+```
+
+The current settlement config.
+
+### `setSettlementLtv`
+
+```solidity
+function setSettlementLtv(uint256 ltv) external;
+```
+
+Borrower opts into auto-settle down to a target post-cut LTV (WAD). 0 clears it.
+
+### `settlementLtv`
+
+```solidity
+function settlementLtv(
+    address borrower
+) external view returns (uint256 ltv, uint256 sliceAssets);
+```
+
+Borrower's personal settle-down target LTV (WAD) and the slice it currently implies.
+
+### `settlementBorrowersCount`
+
+```solidity
+function settlementBorrowersCount() external view returns (uint256);
+```
+
+Number of borrowers tracked in the settlement queue.
+
+### `hasBadDebt`
+
+```solidity
+function hasBadDebt() external view returns (bool);
+```
+
+True if any tracked borrower is bad debt — its debt value exceeds its collateral value.
+
+O(1): it checks the riskiest tracked position (the highest debt/collateral), whose solvency implies every tracked position is solvent, so the settle gate need only check that one.
+
+### `nextSettlementBorrower`
+
+```solidity
+function nextSettlementBorrower() external view returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
+```
+
+The settle cut the policy allows against the queue root (the borrower a head-first settle cuts first): `settlementFor` applied to it, with the root address. `borrower` is address(0) when empty.
+
+### `settlementFor`
+
+```solidity
+function settlementFor(
+    address borrower
+) external view returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
+```
+
+The settle cut the policy allows against `borrower`, as the two anchors a core `settle` accepts: the caller passes one and 0 for the other — `supplyShares` to settle supply-anchored, `borrowShares` borrow-anchored. `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All zero when ineligible.
+
+### `settlementBorrowers`
+
+```solidity
+function settlementBorrowers(
+    uint256 offset,
+    uint256 maxCount
+) external view returns (address[] memory borrowers, uint256[] memory keys);
+```
+
+A window of queued borrowers (approximate top-down order) and their risk keys: up to `maxCount` starting at `offset`. Past the end the arrays are empty, so callers can page.
+
+### `freeze`
+
+```solidity
+function freeze() external;
+```
+
+Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation settlement is deferred. Debt-free positions can still withdraw their collateral.
+
+### `unfreeze`
+
+```solidity
+function unfreeze() external;
+```
+
+Lift the freeze.
+
+### `pauseFor`
+
+```solidity
+function pauseFor(uint256 duration) external;
+```
+
+Pause every hook for `duration` seconds. Pass PAUSE_INFINITELY for an indefinite pause.
+
+### `resume`
+
+```solidity
+function resume() external;
+```
+
+Lift the pause.
+
+### `isFrozen`
+
+```solidity
+function isFrozen() external view returns (bool);
+```
+
+Whether the market is frozen.
+
+### `positionOf`
+
+```solidity
+function positionOf(
+    address borrower
+) external view returns (BorrowerPosition memory);
+```
+
+One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt, personal settle-down LTV, and live settle exposure (next-to-settle flag + slice).
+
+### `collateralActivationConfig`
+
+```solidity
+function collateralActivationConfig() external view returns (CollateralActivationConfig memory);
+```
+
+The market's current collateral-activation config.
+
+### `setCollateralActivationConfig`
+
+```solidity
+function setCollateralActivationConfig(
+    CollateralActivationConfig calldata cfg
+) external;
+```
+
+Replace the collateral-activation config.
+
+### `revokeInstantActivation`
+
+```solidity
+function revokeInstantActivation(address caller) external;
+```
+
+Remove a caller's instant activation, restoring the timer for its supplies.
+
+### `on`
+
+```solidity
+function on(Id id, HookEvent hookEvent, bytes calldata data) external;
+```
+
+Core hook entrypoint: dispatches each market action to its internal handler.
+
+Reverts on an unknown event so any future Morpho-fork-side change without a controller update fails closed instead of silently skipping policy.
+
+### `marketId`
+
+```solidity
+function marketId() external view returns (Id);
+```
+
+The market this controller is bound to, checked by the core when it binds at market creation.
