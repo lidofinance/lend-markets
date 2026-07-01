@@ -226,10 +226,10 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
         // Iterate a snapshot: removing from the live set (swap-and-pop) while looping the memory copy is safe.
         address[] memory flaggers = signal.flaggedBy.values();
         for (uint256 i; i < flaggers.length; ++i) {
-            address guardian = flaggers[i];
-            if (!_guardians.contains(guardian)) {
-                signal.flaggedBy.remove(guardian);
-                emit FlagPruned(market, account, guardian, uint16(signal.flaggedBy.length()));
+            address flagger = flaggers[i];
+            if (!_guardians.contains(flagger)) {
+                signal.flaggedBy.remove(flagger);
+                emit FlagPruned(market, account, flagger, uint16(signal.flaggedBy.length()));
             }
         }
     }

@@ -178,23 +178,23 @@ library SettlementQueueLib {
     // PURE MATH
     // ---
 
-    /// @notice Loan-asset slice that brings a position's LTV down to `targetLtvWAD`, cutting at the
+    /// @notice Loan-asset slice that brings a position's LTV down to `targetLtv` (WAD), cutting at the
     ///         oracle rate so equal-value collateral leaves with the debt. Backs both the settlement-LTV slice
     ///         and the root LTV-step rule.
     /// @param debtAssets      Borrower debt in loan-asset units.
     /// @param collateralValue Borrower collateral value in loan-asset units (rawCollateral × price / SCALE).
-    /// @dev c = (debtAssets × WAD − targetLtvWAD × collateralValue) / (WAD − targetLtvWAD); 0 when already at or
-    ///      below the target, or when `targetLtvWAD >= WAD`.
-    function sliceToLtv(uint256 debtAssets, uint256 collateralValue, uint256 targetLtvWAD)
+    /// @dev c = (debtAssets × WAD − targetLtv × collateralValue) / (WAD − targetLtv); 0 when already at or below
+    ///      the target, or when `targetLtv >= WAD`.
+    function sliceToLtv(uint256 debtAssets, uint256 collateralValue, uint256 targetLtv)
         internal
         pure
         returns (uint256)
     {
-        if (targetLtvWAD >= WAD) return 0;
-        uint256 debtScaledWad = debtAssets * WAD;
-        uint256 targetTermWad = targetLtvWAD * collateralValue;
-        if (debtScaledWad <= targetTermWad) return 0;
-        return (debtScaledWad - targetTermWad) / (WAD - targetLtvWAD);
+        if (targetLtv >= WAD) return 0;
+        uint256 debtScaled = debtAssets * WAD;
+        uint256 targetTerm = targetLtv * collateralValue;
+        if (debtScaled <= targetTerm) return 0;
+        return (debtScaled - targetTerm) / (WAD - targetLtv);
     }
 
     // ---
