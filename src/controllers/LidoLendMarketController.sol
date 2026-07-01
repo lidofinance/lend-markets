@@ -61,13 +61,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // ---
 
     /// @dev The single market this controller is bound to. Hooks for any other id revert.
-    Id internal _marketId;
+    Id public marketId;
     /// @dev Ceiling on total supplied loan assets (principal plus accrued interest), enforced on the Supply
     ///      hook against the market total. 0 means no cap.
     uint256 public supplyCap;
     /// @dev When set, new borrows and debt-bearing collateral withdrawals revert and activation maturation
     ///      defers. Debt-free positions can still withdraw.
-    bool private _isFrozen;
+    bool public isFrozen;
     /// @dev Guardian-signal registry read on every hook to gate borrowing (ban) and scale activation (strikes).
     IGuardianSignals private _guardianSignals;
     /// @dev Config + inflow accumulator + per-borrower activation pipeline.
@@ -84,10 +84,10 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     // ---
 
     /// @dev Restricts a hook to the core acting on this controller's own market: the caller must be the core
-    ///      and the id must match `_marketId`.
+    ///      and the id must match `marketId`.
     modifier onlyControlledMarket(Id id) {
         if (msg.sender != address(LIDO_LEND)) revert Unauthorized();
-        if (Id.unwrap(id) != Id.unwrap(_marketId)) revert InvalidMarketId();
+        if (Id.unwrap(id) != Id.unwrap(marketId)) revert InvalidMarketId();
         _;
     }
 
@@ -111,7 +111,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     ) external initializer {
         __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _marketId = marketId_;
+        marketId = marketId_;
         _guardianSignals = guardianSignals;
         _settlementQueue.init();
         _activation.setConfig(cfg);
@@ -144,11 +144,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         } else if (hookEvent != HookEvent.Withdraw && hookEvent != HookEvent.AccrueInterest) {
             revert UnknownHookEvent();
         }
-    }
-
-    /// @notice The market this controller is bound to, checked by the core when it binds at market creation.
-    function marketId() external view returns (Id) {
-        return _marketId;
     }
 
     // ---
@@ -228,7 +223,8 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         SettlementQueueLib.State storage queue = _settlementQueue;
         ltv = queue.settlementLtvOf(borrower);
         if (ltv == 0) return (0, 0);
-        sliceAssets = queue.settlementLtvSlice(_marketView(_marketId), borrower, _positionView(_marketId, borrower));
+        Id id = marketId;
+        sliceAssets = queue.settlementLtvSlice(_marketView(id), borrower, _positionView(id, borrower));
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -240,7 +236,8 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     function hasBadDebt() external view returns (bool) {
         address top = _settlementQueue.peekRoot();
         if (top == address(0)) return false;
-        return _isBadDebt(_marketView(_marketId), _positionView(_marketId, top));
+        Id id = marketId;
+        return _isBadDebt(_marketView(id), _positionView(id, top));
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -250,8 +247,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares)
     {
         borrower = _settlementQueue.peekRoot();
+        Id id = marketId;
         (supplyShares, borrowShares, remainingBorrowShares) =
-            _settlementQueue.settlementSlice(_marketView(_marketId), borrower, _positionView(_marketId, borrower));
+            _settlementQueue.settlementSlice(_marketView(id), borrower, _positionView(id, borrower));
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -260,9 +258,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         view
         returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares)
     {
-        (supplyShares, borrowShares, remainingBorrowShares) = _settlementQueue.settlementSlice(
-            _marketView(_marketId), borrower, _positionView(_marketId, borrower)
-        );
+        Id id = marketId;
+        (supplyShares, borrowShares, remainingBorrowShares) =
+            _settlementQueue.settlementSlice(_marketView(id), borrower, _positionView(id, borrower));
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -280,13 +278,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
     /// @inheritdoc ILidoLendMarketController
     function freeze() external onlyRole(FREEZER_ROLE) {
-        _isFrozen = true;
+        isFrozen = true;
         emit FrozenSet(true, msg.sender);
     }
 
     /// @inheritdoc ILidoLendMarketController
     function unfreeze() external onlyRole(UNFREEZER_ROLE) {
-        _isFrozen = false;
+        isFrozen = false;
         emit FrozenSet(false, msg.sender);
     }
 
@@ -300,11 +298,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         _resume();
     }
 
-    /// @inheritdoc ILidoLendMarketController
-    function isFrozen() external view returns (bool) {
-        return _isFrozen;
-    }
-
     // ---
     // POSITION VIEW
     // ---
@@ -315,9 +308,10 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         view
         returns (ILidoLendMarketController.BorrowerPosition memory dashboard)
     {
-        PositionView memory position = _positionView(_marketId, borrower);
-        MarketView memory marketView = _marketView(_marketId);
-        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(_marketId, borrower);
+        Id id = marketId;
+        PositionView memory position = _positionView(id, borrower);
+        MarketView memory marketView = _marketView(id);
+        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(id, borrower);
         dashboard.banned = opinion.status == Status.Banned;
         dashboard.strikes = opinion.strikes;
         dashboard.flagCount = opinion.flagCount;
@@ -355,7 +349,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
         // settle anything already matured, then book the deposit. A sub-threshold deposit stays dust, and only
         // once it crosses the threshold does the lot enter the activation timer. A freeze or ban defers maturation.
-        _activation.sync(_isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
+        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
         _activation.credit(borrower, hookData.assets, _instantActivationCallers[hookData.caller]);
 
         position.collateral += hookData.assets;
@@ -372,12 +366,12 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
         // Freeze blocks withdraw only while there is open debt. A zero-debt withdraw is always allowed
         // as a non-custody exit, and a banned address may still pull its own collateral.
-        if (_isFrozen && position.borrowShares != 0) revert MarketIsFrozen();
+        if (isFrozen && position.borrowShares != 0) revert MarketIsFrozen();
 
         // settle activation, then drain the un-matured buckets (dust, then activating above the lock) and reverse
         // any same-tx flash addition to the inflow (the lib owns the undo); a revert below rolls this back. The
         // lib returns the post-debit inactive, so active is the post-withdraw raw minus it.
-        _activation.sync(_isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
+        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
         uint256 inactive = _activation.debit(borrower, hookData.assets);
 
         if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
@@ -404,7 +398,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     /// @dev Borrow hook: blocked by a freeze or a ban on caller/receiver/borrower. Capacity uses active
     ///      (matured) collateral only.
     function _handleBorrow(Id id, BorrowHookData memory hookData) internal {
-        if (_isFrozen) revert MarketIsFrozen();
+        if (isFrozen) revert MarketIsFrozen();
 
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
         // borrow (caller). Soft strikes only delay activation; a ban hard-blocks the borrow.
@@ -424,7 +418,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
         // Borrow capacity uses active (matured) collateral only. `sync` matures any ready lot, subject to the
         // quorum-scan gate, and returns the post-mature inactive total. Active is the raw collateral minus that.
-        uint256 inactive = _activation.sync(_isFrozen, hookData.onBehalf, borrowerOpinion);
+        uint256 inactive = _activation.sync(isFrozen, hookData.onBehalf, borrowerOpinion);
 
         PositionView memory position = _positionView(id, hookData.onBehalf);
         uint256 activeCollateral = position.collateral - inactive;
@@ -502,7 +496,7 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
         // settle activation, then drain buckets by the exact amount core seizes from raw (lockstep).
         // A freeze or ban defers maturation, and `seize` drains all buckets regardless of maturation state.
-        _activation.sync(_isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
+        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
 
         _activation.seize(borrower, hookData.seizedAssets);
 
