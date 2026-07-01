@@ -514,9 +514,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         Market storage m = _m();
         vm.startPrank(address(m.core));
         c.on(m.id, ILidoLendBaseMarketController.HookEvent.AccrueInterest, "");
-        c.on(m.id, ILidoLendBaseMarketController.HookEvent.Supply, "");
         c.on(m.id, ILidoLendBaseMarketController.HookEvent.Withdraw, "");
-        vm.stopPrank(); // all three fell through with no revert
+        vm.stopPrank(); // both fell through with no revert (Supply is now a handled hook)
     }
 
     /// @dev Empty queue: with no borrowers tracked the root is address(0), the bad-debt gate falls through, and an
@@ -1042,16 +1041,12 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(ltv, 0.3e18, "non-role actor set its own personal LTV");
     }
 
-    /// @dev `setSettlementConfig` writes the full 5-knob policy in one shot (the test holds MANAGER_ROLE from
-    ///      deploy) and emits `SettlementConfigSet`. We write a non-default config, read every field back through
-    ///      the view, then confirm a random actor is rejected with `AccessControlUnauthorizedAccount`.
+    /// @dev `setSettlementConfig` writes the full 4-knob slice policy in one shot (the test holds MANAGER_ROLE
+    ///      from deploy) and emits `SettlementConfigSet`. We write a non-default config, read every field back
+    ///      through the view, then confirm a random actor is rejected with `AccessControlUnauthorizedAccount`.
     function test_setSettlementConfig_storesAndRoleGated() public {
         SettlementConfig memory cfg = SettlementConfig({
-            sliceFloorBps: 250,
-            sliceFloorAssets: 3 ether,
-            fullCutBelowCollateral: 7 ether,
-            ltvStepBps: 50,
-            minBorrowCollateral: 2 ether
+            sliceFloorBps: 250, sliceFloorAssets: 3 ether, fullCutBelowCollateral: 7 ether, ltvStepBps: 50
         });
 
         vm.expectEmit(address(c));
@@ -1063,7 +1058,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(stored.sliceFloorAssets, 3 ether, "sliceFloorAssets");
         assertEq(stored.fullCutBelowCollateral, 7 ether, "fullCutBelowCollateral");
         assertEq(stored.ltvStepBps, 50, "ltvStepBps");
-        assertEq(stored.minBorrowCollateral, 2 ether, "minBorrowCollateral");
 
         address nobody = _actor("nobody");
         bytes32 role = c.MANAGER_ROLE();
@@ -1077,31 +1071,19 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     ///      admitted boundary (no revert).
     function testRevert_setSettlementConfig_outOfRange() public {
         SettlementConfig memory overFloor = SettlementConfig({
-            sliceFloorBps: uint16(BPS + 1),
-            sliceFloorAssets: 0,
-            fullCutBelowCollateral: 10 ether,
-            ltvStepBps: 100,
-            minBorrowCollateral: 0
+            sliceFloorBps: uint16(BPS + 1), sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
         });
         vm.expectRevert(SettlementQueueLib.SettlementConfigOutOfRange.selector);
         c.setSettlementConfig(overFloor);
 
         SettlementConfig memory overStep = SettlementConfig({
-            sliceFloorBps: 100,
-            sliceFloorAssets: 0,
-            fullCutBelowCollateral: 10 ether,
-            ltvStepBps: uint16(BPS + 1),
-            minBorrowCollateral: 0
+            sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: uint16(BPS + 1)
         });
         vm.expectRevert(SettlementQueueLib.SettlementConfigOutOfRange.selector);
         c.setSettlementConfig(overStep);
 
         SettlementConfig memory atBoundary = SettlementConfig({
-            sliceFloorBps: uint16(BPS),
-            sliceFloorAssets: 0,
-            fullCutBelowCollateral: 10 ether,
-            ltvStepBps: uint16(BPS),
-            minBorrowCollateral: 0
+            sliceFloorBps: uint16(BPS), sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: uint16(BPS)
         });
         c.setSettlementConfig(atBoundary); // both == BPS -> admitted boundary, no revert
         SettlementConfig memory stored = c.settlementConfig();

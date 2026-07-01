@@ -98,13 +98,7 @@ contract SettlementQueueLibTest is Test {
 
     function _setFloor(uint16 bps, uint96 fullCut) internal {
         q.setSettlementConfig(
-            SettlementConfig({
-                sliceFloorBps: bps,
-                sliceFloorAssets: 0,
-                fullCutBelowCollateral: fullCut,
-                ltvStepBps: 0,
-                minBorrowCollateral: 0
-            })
+            SettlementConfig({sliceFloorBps: bps, sliceFloorAssets: 0, fullCutBelowCollateral: fullCut, ltvStepBps: 0})
         );
     }
 
@@ -120,11 +114,7 @@ contract SettlementQueueLibTest is Test {
     function test_setSettlementConfig_bpsBoundaryAllowed() public {
         q.setSettlementConfig(
             SettlementConfig({
-                sliceFloorBps: 10_000,
-                sliceFloorAssets: 1,
-                fullCutBelowCollateral: 1,
-                ltvStepBps: 10_000,
-                minBorrowCollateral: 0
+                sliceFloorBps: 10_000, sliceFloorAssets: 1, fullCutBelowCollateral: 1, ltvStepBps: 10_000
             })
         );
     }
@@ -132,26 +122,14 @@ contract SettlementQueueLibTest is Test {
     function testRevert_setSettlementConfig_sliceFloorBpsOver() public {
         vm.expectRevert(SettlementQueueLib.SettlementConfigOutOfRange.selector);
         q.setSettlementConfig(
-            SettlementConfig({
-                sliceFloorBps: 10_001,
-                sliceFloorAssets: 0,
-                fullCutBelowCollateral: 0,
-                ltvStepBps: 0,
-                minBorrowCollateral: 0
-            })
+            SettlementConfig({sliceFloorBps: 10_001, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 0})
         );
     }
 
     function testRevert_setSettlementConfig_ltvStepBpsOver() public {
         vm.expectRevert(SettlementQueueLib.SettlementConfigOutOfRange.selector);
         q.setSettlementConfig(
-            SettlementConfig({
-                sliceFloorBps: 0,
-                sliceFloorAssets: 0,
-                fullCutBelowCollateral: 0,
-                ltvStepBps: 10_001,
-                minBorrowCollateral: 0
-            })
+            SettlementConfig({sliceFloorBps: 0, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 10_001})
         );
     }
 
@@ -201,13 +179,8 @@ contract SettlementQueueLibTest is Test {
     // ── events ──
 
     function test_setSettlementConfig_emitsEvent() public {
-        SettlementConfig memory expected = SettlementConfig({
-            sliceFloorBps: 2_000,
-            sliceFloorAssets: 5,
-            fullCutBelowCollateral: 7,
-            ltvStepBps: 1_000,
-            minBorrowCollateral: 0
-        });
+        SettlementConfig memory expected =
+            SettlementConfig({sliceFloorBps: 2_000, sliceFloorAssets: 5, fullCutBelowCollateral: 7, ltvStepBps: 1_000});
         vm.expectEmit(false, false, false, true, address(q));
         emit SettlementConfigSet(expected);
         q.setSettlementConfig(expected);
@@ -334,8 +307,7 @@ contract SettlementQueueLibTest is Test {
                 sliceFloorBps: 10_000, // 100% of debt
                 sliceFloorAssets: 1e9, // absurd absolute floor
                 fullCutBelowCollateral: 0,
-                ltvStepBps: 0,
-                minBorrowCollateral: 0
+                ltvStepBps: 0
             })
         );
         q.sync(_b(1), _pos(100, 1_000)); // root
@@ -348,13 +320,7 @@ contract SettlementQueueLibTest is Test {
         // Two borrowers; _b(1) is riskier (root). A non-root borrower with NO settlement-LTV opt-in gets
         // neither the root cut nor a settlement cut -> allowedSlice is 0 (floor terms apply to root only).
         q.setSettlementConfig(
-            SettlementConfig({
-                sliceFloorBps: 5_000,
-                sliceFloorAssets: 50,
-                fullCutBelowCollateral: 0,
-                ltvStepBps: 1_000,
-                minBorrowCollateral: 0
-            })
+            SettlementConfig({sliceFloorBps: 5_000, sliceFloorAssets: 50, fullCutBelowCollateral: 0, ltvStepBps: 1_000})
         );
         q.sync(_b(1), _pos(90, 100)); // root (riskier)
         q.sync(_b(2), _pos(40, 100)); // non-root
@@ -368,8 +334,7 @@ contract SettlementQueueLibTest is Test {
                 sliceFloorBps: 2_000, // 20% of debt = 20
                 sliceFloorAssets: 0,
                 fullCutBelowCollateral: 0,
-                ltvStepBps: 0,
-                minBorrowCollateral: 0
+                ltvStepBps: 0
             })
         );
         q.sync(_b(1), _pos(100, 10_000)); // root, very low LTV so only the floor applies
@@ -393,13 +358,7 @@ contract SettlementQueueLibTest is Test {
     function test_allowedSlice_ltvStepTerm_winsForRoot() public {
         // Root, 10% LTV step, negligible debt-fraction floor → the LTV-step term is the root cut.
         q.setSettlementConfig(
-            SettlementConfig({
-                sliceFloorBps: 1,
-                sliceFloorAssets: 0,
-                fullCutBelowCollateral: 0,
-                ltvStepBps: 1_000,
-                minBorrowCollateral: 0
-            })
+            SettlementConfig({sliceFloorBps: 1, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 1_000})
         );
         q.sync(_b(1), _pos(80, 100)); // root
         // debtAssets=80, collateralValue=150; target = currentLtv − ltvStepBps·WAD/BPS.

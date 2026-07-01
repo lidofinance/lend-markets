@@ -97,8 +97,7 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
                     // Above the borrower's post-close collateral remainder, so a full-debt slice strands "dust"
                     // and the queue lifts it to a whole close — letting the borrow-anchored close cancel all debt.
                     fullCutBelowCollateral: 150e18,
-                    ltvStepBps: 100,
-                    minBorrowCollateral: 0
+                    ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,

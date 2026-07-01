@@ -102,11 +102,7 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
                 // fullCutBelowCollateral above both collaterals, so any partial slice strands dust and the queue
                 // lifts every cut to a whole close.
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100,
-                    sliceFloorAssets: 0,
-                    fullCutBelowCollateral: 200e18,
-                    ltvStepBps: 100,
-                    minBorrowCollateral: 0
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 200e18, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,

@@ -52,10 +52,6 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
 
-    /// @notice Thrown when a withdrawal would draw a borrower's collateral below the activation minimum
-    ///         while it still owes debt. Repaying to zero lifts the floor.
-    error CollateralFloorBreached();
-
     /// @notice Thrown when a core-applied position delta exceeds the controller's read of that position.
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
     error PositionAccountingMismatch();

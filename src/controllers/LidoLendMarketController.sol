@@ -378,15 +378,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         position.collateral -= hookData.assets;
         uint256 activeCollateral = position.collateral - inactive;
 
-        // With open debt: the remaining active collateral must still cover the debt at LLTV, and raw collateral
-        // may not fall below the minimum borrowable size (repay the debt to zero to exit below the floor).
+        // With open debt, the remaining active collateral must still cover the debt at LLTV. `_getMaxBorrow`
+        // returns 0 for sub-threshold dust, so a debt-bearing position cannot be drained below the borrowable
+        // floor — to exit below it, repay the debt to zero first (a zero-debt withdraw is unconstrained here).
         if (position.borrowShares != 0) {
             MarketView memory marketView = _marketView(id);
             if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, activeCollateral)) {
                 revert InsufficientActiveCollateral();
-            }
-            if (position.collateral < _settlementQueue.config.minBorrowCollateral) {
-                revert CollateralFloorBreached();
             }
         }
 
@@ -421,11 +419,9 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         PositionView memory position = _positionView(id, hookData.onBehalf);
         uint256 activeCollateral = position.collateral - inactive;
 
-        // Position floor: a borrow may not open or grow debt against a position whose raw collateral is below
-        // the minimum borrowable size, keeping debt positions economical to liquidate and settle. The check
-        // reads the live config value, so a raised floor applies to subsequent borrows immediately.
-        if (position.collateral < _settlementQueue.config.minBorrowCollateral) revert CollateralFloorBreached();
-
+        // Capacity check: active collateral must cover the post-borrow debt at LLTV. `_getMaxBorrow` returns 0
+        // when active collateral is sub-threshold dust, so a sub-floor position cannot open or grow debt — the
+        // position floor is folded in here rather than a separate raw-collateral revert.
         MarketView memory marketView = _marketView(id);
         if (_debtAssets(marketView, position) + hookData.assets > _getMaxBorrow(marketView, activeCollateral)) {
             revert InsufficientActiveCollateral();
@@ -517,8 +513,12 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         return Math.mulDiv(collateral, marketView.price, ORACLE_PRICE_SCALE);
     }
 
-    /// @dev Max loan assets `collateral` can back at the market LLTV.
-    function _getMaxBorrow(MarketView memory marketView, uint256 collateral) internal pure returns (uint256) {
+    /// @dev Max loan assets `collateral` can back at the market LLTV. Active collateral below the activation
+    ///      dust threshold (`minActivationAmount`) backs no borrow and returns 0, so a sub-threshold position has
+    ///      no capacity — this folds the old raw-collateral position floor into the capacity check, keeping debt
+    ///      positions above the minimum borrowable size without a separate revert.
+    function _getMaxBorrow(MarketView memory marketView, uint256 collateral) internal view returns (uint256) {
+        if (collateral < _activation.config.minActivationAmount) return 0;
         return Math.mulDiv(_collateralValue(marketView, collateral), marketView.lltv, WAD);
     }
 

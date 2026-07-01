@@ -99,11 +99,7 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
                     maxGuardiansQuorumDelay: 0
                 }),
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100,
-                    sliceFloorAssets: 0,
-                    fullCutBelowCollateral: 0,
-                    ltvStepBps: 100,
-                    minBorrowCollateral: 0
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -149,13 +145,7 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
     function _setFullCut() internal {
         // Above the root's collateral, so any slice strands "dust" and the queue lifts it to a whole close.
         controller.setSettlementConfig(
-            SettlementConfig({
-                sliceFloorBps: 100,
-                sliceFloorAssets: 0,
-                fullCutBelowCollateral: 100e18,
-                ltvStepBps: 100,
-                minBorrowCollateral: 0
-            })
+            SettlementConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 100e18, ltvStepBps: 100})
         );
     }
 

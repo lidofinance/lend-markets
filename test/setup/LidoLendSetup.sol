@@ -86,11 +86,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 maxGuardiansQuorumDelay: 0
             }),
             settlementConfig: SettlementConfigParams({
-                sliceFloorBps: 100,
-                sliceFloorAssets: 0,
-                fullCutBelowCollateral: 10 ether,
-                ltvStepBps: 100,
-                minBorrowCollateral: 0
+                sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
             }),
             guardians: guardians,
             quorum: 1,
@@ -227,8 +223,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 sliceFloorBps: cfg.settlementConfig.sliceFloorBps,
                 sliceFloorAssets: cfg.settlementConfig.sliceFloorAssets,
                 fullCutBelowCollateral: cfg.settlementConfig.fullCutBelowCollateral,
-                ltvStepBps: cfg.settlementConfig.ltvStepBps,
-                minBorrowCollateral: cfg.settlementConfig.minBorrowCollateral
+                ltvStepBps: cfg.settlementConfig.ltvStepBps
             })
         );
 
