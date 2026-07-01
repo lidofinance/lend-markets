@@ -544,4 +544,85 @@ contract GuardianSignalsTest is Test {
         assertEq(heartbeats[2].number, 990, "G3 heartbeat number");
         assertEq(heartbeats[2].timestamp, 990, "G3 heartbeat timestamp");
     }
+
+    // ── prune (permissionless) ──
+
+    event FlagPruned(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
+
+    address internal constant CLEANER = address(0xC1EA); // not a guardian, holds no roles
+
+    /// @dev A flag left behind by a removed guardian is pruned by anyone; the flag count drops and the account
+    ///      is clean again. Emits `FlagPruned`.
+    function test_prune_removesRemovedGuardianFlag() public {
+        _flag(G1, BOB); // 1 flag, below quorum -> Normal
+        gs.removeGuardian(G1); // G1 no longer a guardian, but still in BOB's flagger set
+        assertEq(_flagCount(BOB), 1, "stale flag still counts before prune");
+
+        vm.expectEmit(true, true, true, true, address(gs));
+        emit FlagPruned(MARKET, BOB, G1, 0);
+        vm.prank(CLEANER); // permissionless
+        gs.prune(MARKET, BOB);
+
+        assertEq(_flagCount(BOB), 0, "stale flag pruned");
+        assertEq(_strikes(BOB), 0, "no strikes");
+        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "stays Normal");
+        assertEq(gs.getFlaggedBy(MARKET, BOB).length, 0, "flagger set empty");
+    }
+
+    /// @dev Security: prune lowers the flag count but NEVER lifts a latched ban — else it would be a
+    ///      permissionless unban. Only `unban` clears the status.
+    function test_prune_doesNotLiftBan() public {
+        _flag(G1, BOB);
+        _flag(G2, BOB); // reaches quorum 2 -> Banned
+        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "banned at quorum");
+
+        gs.removeGuardian(G1); // 3 -> 2, still >= quorum
+        vm.prank(CLEANER);
+        gs.prune(MARKET, BOB);
+
+        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "prune does not lift the latched ban");
+        assertEq(_flagCount(BOB), 1, "only the current-guardian flag remains");
+    }
+
+    /// @dev Prune touches only ex-guardian flags: a flag from a still-active guardian is untouched.
+    function test_prune_keepsCurrentGuardianFlags() public {
+        _flag(G1, BOB);
+        _flag(G2, BOB); // both still guardians
+        vm.prank(CLEANER);
+        gs.prune(MARKET, BOB); // nothing stale
+
+        assertEq(_flagCount(BOB), 2, "current-guardian flags kept");
+        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "status unchanged");
+    }
+
+    /// @dev Prune runs on an immune account too — it never changes status, so the ex-guardian flag is removed
+    ///      while the `Immune` status is preserved.
+    function test_prune_immune_removesFlagKeepsStatus() public {
+        _flag(G1, BOB);
+        gs.grantImmunity(MARKET, BOB);
+        gs.removeGuardian(G1); // G1 now stale
+
+        vm.prank(CLEANER);
+        gs.prune(MARKET, BOB);
+
+        assertEq(gs.getFlaggedBy(MARKET, BOB).length, 0, "ex-guardian flag pruned even while immune");
+        assertEq(uint8(_status(BOB)), uint8(Status.Immune), "status stays Immune");
+    }
+
+    /// @dev Why prune must work while immune: pruning an ex-guardian flag before `revokeImmunity` stops the
+    ///      re-derivation from re-banning on a former guardian's flag. Without the prune, `revokeImmunity` would
+    ///      count the removed guardian's flag toward quorum and re-latch `Banned`.
+    function test_prune_immune_thenRevoke_noRebanFromExGuardian() public {
+        _flag(G1, BOB);
+        _flag(G2, BOB); // quorum 2 -> Banned
+        gs.grantImmunity(MARKET, BOB);
+        gs.removeGuardian(G1); // G1 stale; without a prune, revoke would still count it toward quorum
+
+        vm.prank(CLEANER);
+        gs.prune(MARKET, BOB); // flaggedBy -> {G2}, length 1 < quorum
+
+        gs.revokeImmunity(MARKET, BOB);
+        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "revoke does not re-ban on a former guardian's flag");
+        assertEq(_flagCount(BOB), 1, "only the current-guardian flag remains");
+    }
 }

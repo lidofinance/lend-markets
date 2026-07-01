@@ -16,6 +16,11 @@ import {MockERC20} from "../setup/Mocks.sol";
 contract ActivationTest is LidoLendSetup {
     using MarketActions for Market;
 
+    /// @dev Local mirror of `CollateralActivationLib.CollateralActivating` for `vm.expectEmit`.
+    event CollateralActivating(
+        address indexed borrower, uint256 amount, uint256 activatingStart, uint256 activatingDelay
+    );
+
     function setUp() public {
         vm.roll(1000);
         MockERC20 loan = new MockERC20("Loan", "LOAN", 18);
@@ -86,5 +91,28 @@ contract ActivationTest is LidoLendSetup {
         uint256 borrowAmt = _safeBorrow(100 ether);
         m.borrow(borrower, borrowAmt);
         assertEq(m.loanToken.balanceOf(borrower), borrowAmt, "instant activation skips the timer");
+    }
+
+    /// @dev A fresh activating deposit emits `CollateralActivating` with the split start/delay: the start is the
+    ///      current block time and the delay is previewed independently via `currentActivationDelay(amount)`.
+    function test_supplyCollateral_emitsActivatingStartAndDelay() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        m.vaultDeposit(lender, 1000 ether);
+
+        address borrower = _actor("borrower");
+        uint256 amount = 100 ether; // >= minActivationAmount -> enters the timer, not dust
+        _fund(m.collateralToken, borrower, amount);
+
+        uint256 expectedDelay = m.controller.currentActivationDelay(amount); // independent delay preview
+        uint256 expectedStart = block.timestamp;
+
+        vm.prank(borrower);
+        m.collateralToken.approve(address(m.core), amount);
+        vm.expectEmit(true, false, false, true, address(m.controller));
+        emit CollateralActivating(borrower, amount, expectedStart, expectedDelay);
+        vm.prank(borrower);
+        m.core.supplyCollateral(m.params, amount, borrower, "");
     }
 }

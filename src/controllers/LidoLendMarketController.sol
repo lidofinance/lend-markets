@@ -165,8 +165,8 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function currentActivationDelay() external view returns (uint256) {
-        return _activation.getCurrentActivationDelay();
+    function currentActivationDelay(uint256 inflowIncrement) external view returns (uint256) {
+        return _activation.getCurrentActivationDelay(inflowIncrement);
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -355,18 +355,16 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         position.collateral -= hookData.assets;
         uint256 activeCollateral = position.collateral - inactive;
 
-        // with open debt, the remaining active collateral must still cover the debt at LLTV
+        // With open debt: the remaining active collateral must still cover the debt at LLTV, and raw collateral
+        // may not fall below the minimum borrowable size (repay the debt to zero to exit below the floor).
         if (position.borrowShares != 0) {
             MarketView memory marketView = _marketView(id);
             if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, activeCollateral)) {
                 revert InsufficientActiveCollateral();
             }
-        }
-
-        // Open-debt position floor: while a borrower owes debt, raw collateral may not be drawn below the
-        // minimum borrowable size. To exit below the floor, repay the debt to zero first.
-        if (position.borrowShares != 0 && position.collateral < _settlementQueue.config.minBorrowCollateral) {
-            revert CollateralFloorBreached();
+            if (position.collateral < _settlementQueue.config.minBorrowCollateral) {
+                revert CollateralFloorBreached();
+            }
         }
 
         _settlementQueue.sync(borrower, position);
@@ -490,7 +488,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
     /// @dev Borrower debt in loan assets, rounded up. 0 when the position carries no debt.
     function _debtAssets(MarketView memory marketView, PositionView memory position) internal pure returns (uint256) {
-        if (position.borrowShares == 0) return 0;
         return position.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
     }
 
@@ -507,7 +504,6 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
     /// @dev Bad debt over a position+market snapshot: debt value exceeds collateral value. Pure.
     function _isBadDebt(MarketView memory marketView, PositionView memory position) internal pure returns (bool) {
         if (position.borrowShares == 0) return false;
-        if (position.collateral == 0) return true;
         return _debtAssets(marketView, position) > _collateralValue(marketView, position.collateral);
     }
 

@@ -216,6 +216,24 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
         _heartbeat(lastScannedBlock);
     }
 
+    /// @inheritdoc IGuardianSignals
+    /// @dev Permissionless cleanup: removes flags left behind by removed guardians. Status is never touched —
+    ///      the ban latch means a permissionless caller can lower the flag count but cannot unban. Runs on any
+    ///      status, Immune included, so stale flags can be cleared before `revokeImmunity` re-derives status.
+    function prune(Id market, address account) external {
+        GuardiansSignal storage signal = _signalsByMarket[market][account];
+
+        // Iterate a snapshot: removing from the live set (swap-and-pop) while looping the memory copy is safe.
+        address[] memory flaggers = signal.flaggedBy.values();
+        for (uint256 i; i < flaggers.length; ++i) {
+            address guardian = flaggers[i];
+            if (!_guardians.contains(guardian)) {
+                signal.flaggedBy.remove(guardian);
+                emit FlagPruned(market, account, guardian, uint16(signal.flaggedBy.length()));
+            }
+        }
+    }
+
     // ---
     // COMMITTEE / GOVERNANCE OVERRIDE
     // ---

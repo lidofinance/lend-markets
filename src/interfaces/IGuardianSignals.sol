@@ -34,6 +34,12 @@ interface IGuardianSignals {
     /// @param guardian The retracting guardian.
     /// @param strikes  The account's flag count after the retraction.
     event Unflagged(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
+    /// @notice Emitted when a flag cast by an address that is no longer a guardian is pruned.
+    /// @param market   The market id.
+    /// @param account  The account.
+    /// @param guardian The former guardian whose flag was pruned.
+    /// @param strikes  The account's flag count after this flag was pruned.
+    event FlagPruned(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
     /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
     event Banned(Id indexed market, address indexed account);
     /// @notice Emitted when an account's ban is lifted.
@@ -115,6 +121,10 @@ interface IGuardianSignals {
     /// @notice Retract the caller's flags on `accounts` in `market`, then heartbeat. Per account a no-op when
     ///         the caller does not flag it or it is immune. Never lifts a latched ban.
     function unflag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
+    /// @notice Permissionless: prune `account`'s flags cast by addresses that are no longer guardians. Lowers
+    ///         the flag count (and, below quorum, the activation surcharge) but never changes status — a latched
+    ///         ban lifts only through `unban`, so this is not a permissionless unban.
+    function prune(Id market, address account) external;
 
     // ---
     // OVERRIDE (committee / governance)
