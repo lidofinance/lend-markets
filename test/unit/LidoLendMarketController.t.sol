@@ -664,6 +664,235 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.unfreeze();
     }
 
+    // ── supply cap (MANAGER_ROLE) ──
+
+    /// @dev Local mirror of `ILidoLendMarketController.SupplyCapSet` for `vm.expectEmit`.
+    event SupplyCapSet(uint256 cap, address indexed account);
+
+    /// @dev `setSupplyCap` stores the value, exposes it through `supplyCap()`, and emits `SupplyCapSet`.
+    function test_setSupplyCap_storesAndEmits() public {
+        assertEq(c.supplyCap(), 0, "default cap is 0 (no cap)");
+        vm.expectEmit(true, false, false, true, address(c));
+        emit SupplyCapSet(500 ether, address(this));
+        c.setSupplyCap(500 ether);
+        assertEq(c.supplyCap(), 500 ether, "cap stored");
+    }
+
+    function testRevert_setSupplyCap_wrongRole() public {
+        address nobody = _actor("nobody");
+        bytes32 role = c.MANAGER_ROLE();
+        vm.prank(nobody);
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
+        c.setSupplyCap(1 ether);
+    }
+
+    /// @dev With the default cap of 0 the market is uncapped: a large supply goes through unimpeded.
+    function test_supplyCap_zeroMeansNoCap() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1_000_000 ether);
+        m.vaultDeposit(lender, 1_000_000 ether); // helper asserts the deposit succeeded
+    }
+
+    /// @dev A deposit landing exactly on the cap is allowed; the next wei is not. Total starts at 0 (fresh
+    ///      market, no borrow → no interest), so the attempted total the gate sees is exactly the cumulative
+    ///      assets supplied.
+    function test_supplyCap_allowsUpToCapBlocksAbove() public {
+        Market storage m = _m();
+        c.setSupplyCap(100 ether);
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 100 ether);
+        m.vaultDeposit(lender, 100 ether); // total == cap exactly: allowed
+
+        // One more wei would push the total to cap + 1.
+        address lender2 = _actor("lender2");
+        _fund(m.loanToken, lender2, 1);
+        vm.prank(lender2);
+        m.loanToken.approve(address(m.vault), 1);
+        vm.prank(lender2);
+        vm.expectRevert(
+            abi.encodeWithSelector(ILidoLendMarketController.SupplyCapExceeded.selector, 100 ether, 100 ether + 1)
+        );
+        m.vault.deposit(1, lender2);
+    }
+
+    /// @dev The cap gates the core supply path, not just the vault: a direct `core.supply` over the cap reverts
+    ///      with the same error. This is why the cap lives on the controller hook, not in the vault's maxDeposit.
+    function testRevert_supplyCap_blocksDirectCoreSupply() public {
+        Market storage m = _m();
+        c.setSupplyCap(50 ether);
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 60 ether);
+        vm.prank(lender);
+        m.loanToken.approve(address(m.core), 60 ether);
+        vm.prank(lender);
+        vm.expectRevert(
+            abi.encodeWithSelector(ILidoLendMarketController.SupplyCapExceeded.selector, 50 ether, 60 ether)
+        );
+        m.core.supply(m.params, 60 ether, 0, lender, "");
+    }
+
+    /// @dev The cap gates entry only: lowering it below the current total never blocks a withdrawal of existing
+    ///      liquidity (the non-custody exit must always work).
+    function test_supplyCap_doesNotGateWithdraw() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 100 ether);
+        m.vaultDeposit(lender, 100 ether);
+        c.setSupplyCap(10 ether); // below the 100 ether already supplied
+        m.vaultWithdraw(lender, 40 ether); // helper asserts the withdrawal succeeded despite the cap
+    }
+
+    /// @dev The gate fires iff the post-supply market total would exceed the cap, over any seed/incoming
+    ///      split. The expectation is built from observed state, not the inputs: `attempted` uses the core's
+    ///      live `totalSupplyAssets` (no borrow here → no pending interest, so the stored total matches what
+    ///      the hook reads post-accrue), and the success path re-reads the total to confirm the deposit
+    ///      supplied exactly `incoming`. This keeps the assertion from echoing the contract's own
+    ///      `total + assets` arithmetic.
+    function testFuzz_supplyCap_enforcedAtBoundary(uint256 cap, uint256 existing, uint256 incoming) public {
+        cap = bound(cap, 1, 1e30);
+        existing = bound(existing, 0, cap); // seed must itself fit under the cap
+        incoming = bound(incoming, 1, 1e30);
+        c.setSupplyCap(cap);
+
+        Market storage m = _m();
+        address lender = _actor("lender");
+        if (existing > 0) {
+            _fund(m.loanToken, lender, existing);
+            m.vaultDeposit(lender, existing);
+        }
+
+        _fund(m.loanToken, lender, incoming);
+        vm.prank(lender);
+        m.loanToken.approve(address(m.vault), incoming);
+
+        uint256 totalBefore = m.core.market(m.id).totalSupplyAssets; // observed, not assumed from `existing`
+        uint256 attempted = totalBefore + incoming;
+
+        if (attempted > cap) {
+            vm.prank(lender);
+            vm.expectRevert(
+                abi.encodeWithSelector(ILidoLendMarketController.SupplyCapExceeded.selector, cap, attempted)
+            );
+            m.vault.deposit(incoming, lender);
+        } else {
+            vm.prank(lender);
+            m.vault.deposit(incoming, lender); // within cap: succeeds
+            // Independently confirm the supplied amount: the market total grew by exactly `incoming`.
+            assertEq(m.core.market(m.id).totalSupplyAssets, totalBefore + incoming, "supplied != incoming");
+        }
+    }
+
+    /// @dev Supply denominated in shares (vault `mint`) is gated on the loan assets it resolves to, not the
+    ///      share count: the hook reads `SupplyHookData.assets`, which the core sets to `toAssetsUp(shares)`.
+    ///      `previewMint` is the independent oracle for the assets the mint will supply, and the cap rejects
+    ///      when those exceed it — reporting that resolved asset figure as `attempted`.
+    function testRevert_supplyCap_blocksMintByResolvedAssets() public {
+        Market storage m = _m();
+        c.setSupplyCap(50 ether);
+        address lender = _actor("lender");
+
+        uint256 shares = m.vault.previewDeposit(60 ether); // shares worth ~60 ether of assets
+        uint256 assetsForMint = m.vault.previewMint(shares); // assets the mint supplies (independent of cap code)
+        assertGt(assetsForMint, 50 ether, "mint must resolve above the cap for this case");
+
+        _fund(m.loanToken, lender, assetsForMint);
+        vm.prank(lender);
+        m.loanToken.approve(address(m.vault), assetsForMint);
+        vm.prank(lender);
+        vm.expectRevert(
+            abi.encodeWithSelector(ILidoLendMarketController.SupplyCapExceeded.selector, 50 ether, assetsForMint)
+        );
+        m.vault.mint(shares, lender);
+    }
+
+    // ── supply cap scenarios ──
+
+    /// @dev Scenario 1: filling the cap over several deposits never breaches it. Each iteration stays within
+    ///      the cap, the last lands exactly on it, and one further wei reverts. No borrow → no interest, so
+    ///      the total moves only through these supplies.
+    function test_supplyCap_multiStepFillNeverBreaches() public {
+        Market storage m = _m();
+        uint256 cap = 100 ether;
+        c.setSupplyCap(cap);
+        address lender = _actor("lender");
+
+        uint256[4] memory steps = [uint256(30 ether), 30 ether, 30 ether, 10 ether]; // sums to the cap
+        for (uint256 i; i < steps.length; ++i) {
+            _fund(m.loanToken, lender, steps[i]);
+            m.vaultDeposit(lender, steps[i]); // helper asserts the deposit succeeded
+            assertLe(m.core.market(m.id).totalSupplyAssets, cap, "never breach the cap while filling");
+        }
+        assertEq(m.core.market(m.id).totalSupplyAssets, cap, "filled exactly to the cap");
+
+        _fund(m.loanToken, lender, 1);
+        vm.prank(lender);
+        m.loanToken.approve(address(m.vault), 1);
+        vm.prank(lender);
+        vm.expectRevert(abi.encodeWithSelector(ILidoLendMarketController.SupplyCapExceeded.selector, cap, cap + 1));
+        m.vault.deposit(1, lender);
+    }
+
+    /// @dev Scenario 2: supply just under the cap, then accrued interest consumes the headroom — a further
+    ///      deposit is rejected because the gate measures the grown total, not the supplied principal.
+    function test_supplyCap_interestEatsHeadroom_blocksDeposit() public {
+        Market storage m = _m();
+        MockPriceOracle(address(m.oracle)).setPrice(1e36); // deterministic borrow capacity
+        uint256 cap = 100 ether;
+
+        // Supply 99 (1 ether under the cap); borrow drives utilization so interest accrues.
+        (address lender,) = _seedBorrower(99 ether, 200 ether, 90 ether);
+        c.setSupplyCap(cap);
+
+        vm.warp(block.timestamp + 365 days);
+        m.core.accrueInterest(m.params);
+        uint256 total = m.core.market(m.id).totalSupplyAssets;
+        assertGt(total, cap, "interest must have consumed the headroom and passed the cap");
+
+        _fund(m.loanToken, lender, 1);
+        vm.prank(lender);
+        m.loanToken.approve(address(m.vault), 1);
+        vm.prank(lender);
+        vm.expectRevert(abi.encodeWithSelector(ILidoLendMarketController.SupplyCapExceeded.selector, cap, total + 1));
+        m.vault.deposit(1, lender);
+    }
+
+    /// @dev Scenario 3: fill to the cap, let interest carry the total above it (deposits blocked), then a
+    ///      withdrawal reopens headroom and a fresh deposit within it succeeds.
+    function test_supplyCap_withdrawReopensHeadroom() public {
+        Market storage m = _m();
+        MockPriceOracle(address(m.oracle)).setPrice(1e36);
+        uint256 cap = 100 ether;
+
+        // Supply exactly to the cap; a modest borrow leaves ample idle liquidity for the later withdraw.
+        (address lender,) = _seedBorrower(100 ether, 200 ether, 60 ether);
+        c.setSupplyCap(cap);
+
+        vm.warp(block.timestamp + 30 days);
+        m.core.accrueInterest(m.params);
+        uint256 grown = m.core.market(m.id).totalSupplyAssets;
+        assertGt(grown, cap, "interest carried the total above the cap");
+
+        // Over the cap: even one wei reverts.
+        _fund(m.loanToken, lender, 1);
+        vm.prank(lender);
+        m.loanToken.approve(address(m.vault), 1);
+        vm.prank(lender);
+        vm.expectRevert(abi.encodeWithSelector(ILidoLendMarketController.SupplyCapExceeded.selector, cap, grown + 1));
+        m.vault.deposit(1, lender);
+
+        // Withdraw frees room (idle liquidity covers it: only 60 of ~100 is borrowed).
+        m.vaultWithdraw(lender, 20 ether); // helper asserts the withdrawal succeeded
+        uint256 afterWithdraw = m.core.market(m.id).totalSupplyAssets;
+        assertLt(afterWithdraw, cap, "withdraw reopened headroom below the cap");
+
+        // A deposit within the reopened headroom goes through, landing back on the cap.
+        uint256 room = cap - afterWithdraw;
+        _fund(m.loanToken, lender, room);
+        m.vaultDeposit(lender, room); // helper asserts the deposit succeeded
+        assertLe(m.core.market(m.id).totalSupplyAssets, cap, "still within the cap after re-deposit");
+    }
+
     // ── views ──
 
     function test_views_defaults() public view {

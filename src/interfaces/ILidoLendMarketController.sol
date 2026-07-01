@@ -24,6 +24,9 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Emitted when a trusted caller's instant-activation status is set.
     event InstantActivationSet(address indexed caller, bool enabled);
 
+    /// @notice Emitted when the supply cap is set.
+    event SupplyCapSet(uint256 cap, address indexed account);
+
     // ---
     // ERRORS
     // ---
@@ -42,6 +45,9 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
 
     /// @notice Thrown when a banned address borrows, receives a borrow, or initiates one.
     error AddressBanned();
+
+    /// @notice Thrown when a supply would push the market's total supplied loan assets above the cap.
+    error SupplyCapExceeded(uint256 cap, uint256 attempted);
 
     /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
