@@ -11,7 +11,7 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {ControllerMock} from "@lido-lend/src/mocks/ControllerMock.sol";
 import {IrmMock} from "@lido-lend/src/mocks/IrmMock.sol";
 
-import {LidoLendOwner} from "../../src/LidoLendOwner.sol";
+import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {ILidoLendOwner} from "../../src/interfaces/ILidoLendOwner.sol";
 
 /// @notice Unit tests for the role-gated core owner facade on a freshly deployed core (no fork needed: the

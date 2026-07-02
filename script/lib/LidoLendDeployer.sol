@@ -118,7 +118,7 @@ abstract contract LidoLendDeployer {
         _configureAdaptiveIrm(d.irm, d.marketId);
 
         (d.controllerProxy, d.controllerImpl) =
-            _deployController(d.core, d.marketId, d.guardianSignals, cfg.admin, cfg.activation);
+            _deployController(d.core, d.marketId, d.guardianSignals, cfg.admin, cfg.activation, cfg.settlementConfig);
 
         // Market creation is owner-gated on the core (it auto-enables the IRM and LLTV — standalone
         // enableIrm/enableLltv were removed) and the bool gates whether settle is enabled. The facade owns
@@ -127,11 +127,10 @@ abstract contract LidoLendDeployer {
 
         d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
-        // Seed the slice policy. `admin` holds DEFAULT_ADMIN_ROLE from the initializer, the default admin of
-        // MANAGER_ROLE, so it grants itself MANAGER_ROLE to set the policy now.
+        // The settlement config is set in `initialize`. Grant `admin` MANAGER_ROLE as a placeholder holder for
+        // later policy changes; `admin` holds DEFAULT_ADMIN_ROLE (the MANAGER_ROLE admin), so it self-grants.
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
-        controller.setSettlementConfig(cfg.settlementConfig);
     }
 
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so
@@ -150,7 +149,7 @@ abstract contract LidoLendDeployer {
         returns (address)
     {
         return _deployArtifact(
-            "src/LidoLendOwner.sol:LidoLendOwner", abi.encode(core, admin, marketCreator, feeManager)
+            "src/periphery/LidoLendOwner.sol:LidoLendOwner", abi.encode(core, admin, marketCreator, feeManager)
         );
     }
 
@@ -212,23 +211,25 @@ abstract contract LidoLendDeployer {
     }
 
     /// @dev Controller behind a proxy. The impl bakes `lidoLend` into an immutable; `initialize(marketId,
-    ///      admin, guardianSignals, activationConfig)` runs through the proxy.
+    ///      admin, guardianSignals, activationConfig, settlementConfig)` runs through the proxy.
     function _deployController(
         address core,
         Id marketId,
         address guardianSignals,
         address admin,
-        CollateralActivationConfigParams memory activation
+        CollateralActivationConfigParams memory activation,
+        SettlementConfigParams memory settlement
     ) internal virtual returns (address proxy, address impl) {
         impl = _deployArtifact(
             "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(bytes32,address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
+            "initialize(bytes32,address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40),(uint16,uint96,uint96,uint16))",
             Id.unwrap(marketId),
             admin,
             guardianSignals,
-            activation
+            activation,
+            settlement
         );
         proxy = _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }

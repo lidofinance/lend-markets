@@ -5,7 +5,7 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 
-import {ILidoLendOwner} from "./interfaces/ILidoLendOwner.sol";
+import {ILidoLendOwner} from "../interfaces/ILidoLendOwner.sol";
 
 /// @title LidoLendOwner
 /// @author Lido Lending contributors.

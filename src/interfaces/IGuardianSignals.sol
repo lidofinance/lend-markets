@@ -23,34 +23,34 @@ interface IGuardianSignals {
     /// @notice Emitted when a guardian reports liveness, directly or via `flag`/`unflag`.
     event Heartbeat(address indexed guardian);
     /// @notice Emitted when a guardian flags an account.
-    /// @param market   The market id.
+    /// @param marketId   The market id.
     /// @param account  The flagged account.
     /// @param guardian The flagging guardian.
     /// @param strikes  The account's flag count after the flag.
-    event Flagged(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
+    event Flagged(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
     /// @notice Emitted when a guardian retracts a flag.
-    /// @param market   The market id.
+    /// @param marketId   The market id.
     /// @param account  The account.
     /// @param guardian The retracting guardian.
     /// @param strikes  The account's flag count after the retraction.
-    event Unflagged(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
+    event Unflagged(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
     /// @notice Emitted when a flag cast by an address that is no longer a guardian is pruned.
-    /// @param market   The market id.
+    /// @param marketId   The market id.
     /// @param account  The account.
     /// @param guardian The former guardian whose flag was pruned.
     /// @param strikes  The account's flag count after this flag was pruned.
-    event FlagPruned(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
+    event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
     /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
-    event Banned(Id indexed market, address indexed account);
+    event Banned(Id indexed marketId, address indexed account);
     /// @notice Emitted when an account's ban is lifted.
     /// @param by The `ACCESS_RESTORER_ROLE` holder that unbanned.
-    event Unbanned(Id indexed market, address indexed account, address indexed by);
+    event Unbanned(Id indexed marketId, address indexed account, address indexed by);
     /// @notice Emitted when an account is exempted.
     /// @param by The `ACCESS_RESTORER_ROLE` holder that granted immunity.
-    event ImmunityGranted(Id indexed market, address indexed account, address indexed by);
+    event ImmunityGranted(Id indexed marketId, address indexed account, address indexed by);
     /// @notice Emitted when an account's immunity is removed.
     /// @param by The `ACCESS_LIMITER_ROLE` holder that revoked immunity.
-    event ImmunityRevoked(Id indexed market, address indexed account, address indexed by);
+    event ImmunityRevoked(Id indexed marketId, address indexed account, address indexed by);
 
     // ---
     // ERRORS
@@ -130,62 +130,62 @@ interface IGuardianSignals {
     // FLAGGING (guardians)
     // ---
 
-    /// @notice Flag `accounts` in `market`, then heartbeat. Per account a no-op when the caller already flags
+    /// @notice Flag `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller already flags
     ///         it or it is immune, so a batch never reverts on a skip.
-    /// @param market           The market id the accounts are flagged in.
+    /// @param marketId           The market id the accounts are flagged in.
     /// @param accounts         The accounts to flag. A zero address in the batch reverts. Each one a no-op when
     ///        already flagged by the caller or immune.
     /// @param lastScannedBlock The heartbeat recorded for the caller after flagging, validated like `heartbeat`.
-    function flag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
-    /// @notice Retract the caller's flags on `accounts` in `market`, then heartbeat. Per account a no-op when
+    function flag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
+    /// @notice Retract the caller's flags on `accounts` in `marketId`, then heartbeat. Per account a no-op when
     ///         the caller does not flag it or it is immune. Never lifts a latched ban.
-    /// @param market           The market id the flags are retracted in.
+    /// @param marketId           The market id the flags are retracted in.
     /// @param accounts         The accounts to unflag. Each one a no-op when not flagged by the caller or immune.
     /// @param lastScannedBlock The heartbeat recorded for the caller after retracting, validated like `heartbeat`.
-    function unflag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
+    function unflag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Permissionless: prune `account`'s flags cast by addresses that are no longer guardians. Lowers
     ///         the flag count (and, below quorum, the activation surcharge) but never changes status — a latched
     ///         ban lifts only through `unban`, so this is not a permissionless unban.
-    function prune(Id market, address account) external;
+    function prune(Id marketId, address account) external;
 
     // ---
     // OVERRIDE (committee / governance)
     // ---
 
-    /// @notice Force a ban on `account` in `market`, bypassing the quorum. Clears any immunity.
-    /// @param market  The market id the ban applies in.
+    /// @notice Force a ban on `account` in `marketId`, bypassing the quorum. Clears any immunity.
+    /// @param marketId  The market id the ban applies in.
     /// @param account The account to ban. Reverts on the zero address.
-    function ban(Id market, address account) external;
-    /// @notice Lift the ban on `account` in `market`: reset its status to `Normal` and clear its flags, so
+    function ban(Id marketId, address account) external;
+    /// @notice Lift the ban on `account` in `marketId`: reset its status to `Normal` and clear its flags, so
     ///         guardians re-evaluate from scratch and can re-ban it. Resetting to `Normal` also clears a
     ///         standing immunity, so manage immunity with `grantImmunity` / `revokeImmunity`.
-    /// @param market  The market id the ban is lifted in.
+    /// @param marketId  The market id the ban is lifted in.
     /// @param account The account to unban. Its status returns to `Normal` and its flagger set is cleared.
-    function unban(Id market, address account) external;
-    /// @notice Exempt `account` in `market` from guardian signals. While immune, `flag`/`unflag` no-op and
+    function unban(Id marketId, address account) external;
+    /// @notice Exempt `account` in `marketId` from guardian signals. While immune, `flag`/`unflag` no-op and
     ///         `getOpinion` reads it as clean. Cleared by `revokeImmunity` or `ban`.
-    /// @param market  The market id the immunity applies in.
+    /// @param marketId  The market id the immunity applies in.
     /// @param account The account to exempt. Reverts on the zero address. Its status is set to `Immune`.
-    function grantImmunity(Id market, address account) external;
-    /// @notice Remove `account`'s immunity in `market`, re-subjecting it to guardian signals.
-    /// @param market  The market id the immunity is revoked in.
+    function grantImmunity(Id marketId, address account) external;
+    /// @notice Remove `account`'s immunity in `marketId`, re-subjecting it to guardian signals.
+    /// @param marketId  The market id the immunity is revoked in.
     /// @param account The account whose immunity is removed. Its status returns to `Normal`.
-    function revokeImmunity(Id market, address account) external;
+    function revokeImmunity(Id marketId, address account) external;
 
     // ---
     // VIEWS
     // ---
 
-    /// @notice Guardian opinion on `account` in `market`: status, strike count, and the quorum-scan frontier.
+    /// @notice Guardian opinion on `account` in `marketId`: status, strike count, and the quorum-scan frontier.
     ///         The view the controller's activation gate consumes.
-    /// @param market  The market id to read.
+    /// @param marketId  The market id to read.
     /// @param account The account to read.
     /// @return The opinion: latched status, effective strikes (forced to 0 while `Immune`), raw flag count, and
     ///         the quorum-scan frontier.
-    function getOpinion(Id market, address account) external view returns (GuardiansOpinion memory);
-    /// @notice The guardians currently flagging `account` in `market`.
-    /// @param market  The market id to read.
+    function getOpinion(Id marketId, address account) external view returns (GuardiansOpinion memory);
+    /// @notice The guardians currently flagging `account` in `marketId`.
+    /// @param marketId  The market id to read.
     /// @param account The account to read.
     /// @return The addresses of guardians currently flagging the account.
-    function getFlaggedBy(Id market, address account) external view returns (address[] memory);
+    function getFlaggedBy(Id marketId, address account) external view returns (address[] memory);
 }

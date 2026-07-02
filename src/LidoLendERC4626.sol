@@ -21,7 +21,7 @@ import {ILidoLendERC4626} from "./interfaces/ILidoLendERC4626.sol";
 /// @notice Single-market ERC-4626 wrapper for a Morpho Blue fork market with settle exit support.
 /// @dev    Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer
 ///         callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
-contract LidoLendERC4626 layout at erc7201("lido.lending.storage.LidoLendERC4626")
+contract LidoLendERC4626 layout at erc7201("lido.lend.markets.storage.LidoLendERC4626")
     is
     Initializable,
     ERC4626Upgradeable,
