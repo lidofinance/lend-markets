@@ -15,16 +15,9 @@ enum Status {
     Banned
 }
 
-/// @notice A scanned block recorded by a guardian heartbeat.
-/// @param number    The block number.
-/// @param timestamp The block timestamp, carried so readers can gate on time without a second lookup.
-struct BlockInfo {
-    uint40 number;
-    uint40 timestamp;
-}
-
-/// @notice Heartbeat payload: a scanned block plus its hash, validated against `blockhash(number)` before
-///         the registry records it as a `BlockInfo`.
+/// @notice Heartbeat payload: a scanned block plus its hash, validated against `blockhash(number)`. Only the
+///         `timestamp` is kept in storage (the frontier gates on time); `number` + `hash` prove the block is
+///         real and un-reorged, and `number` is re-emitted in the `Heartbeat` event for off-chain tooling.
 /// @param hash      The reported block hash, checked against `blockhash(number)`.
 /// @param number    The block number, which may not exceed the current block.
 /// @param timestamp The block timestamp.
@@ -59,13 +52,26 @@ struct GuardiansSignal {
 /// @param maxDelay        Cap on the total guardian activation-delay surcharge (flags + suspects). 0 means uncapped.
 /// @param suspectWindow   Freshness horizon within which a suspect report still counts. Must not exceed
 ///        `MAX_SUSPECT_WINDOW`.
-struct GuardianMarketConfig {
+struct GuardianConfig {
     address[] guardians;
     uint256 quorum;
     uint256 delayPerStrike;
     uint256 delayPerSuspect;
     uint256 maxDelay;
     uint256 suspectWindow;
+}
+
+/// @notice Everything the controller reads about an account in one call: the ban gate plus the activation-gate
+///         inputs. Returned by `getAccountSignals`.
+/// @param banned              Whether the account is banned (hard-blocks borrowing).
+/// @param flagCount           Raw number of guardians currently flagging the account.
+/// @param activationDelay     The activation-delay surcharge (`type(uint256).max` when banned, 0 when immune).
+/// @param quorumBlockTimestamp The market's quorum-scan frontier timestamp.
+struct AccountSignals {
+    bool banned;
+    uint256 flagCount;
+    uint256 activationDelay;
+    uint256 quorumBlockTimestamp;
 }
 
 /// @notice Read model of an account's signal, returned by `getOpinion` and consumed by the controller's
@@ -75,10 +81,11 @@ struct GuardianMarketConfig {
 ///        while `Immune` so an exempt account carries no surcharge.
 /// @param flagCount   Raw number of guardians currently flagging the account, regardless of status. Equals
 ///        `strikes` except while `Immune`, where it stays visible while `strikes` reads 0.
-/// @param quorumBlock The quorum-scan frontier: the highest block a quorum of guardians have scanned past.
+/// @param quorumFrontierTimestamp The quorum-scan frontier: the highest timestamp a quorum of guardians have
+///        scanned past.
 struct GuardiansOpinion {
     Status status;
     uint256 strikes;
     uint256 flagCount;
-    BlockInfo quorumBlock;
+    uint256 quorumFrontierTimestamp;
 }

@@ -11,6 +11,7 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
 import {IGuardianSignalsView} from "../interfaces/IGuardianSignalsView.sol";
+import {AccountSignals} from "../types/GuardianSignalsTypes.sol";
 import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 import {ILidoLendMarketConfigurator} from "../interfaces/ILidoLendMarketConfigurator.sol";
 import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
@@ -312,11 +313,12 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         Id id = marketId;
         PositionView memory position = _positionView(id, borrower);
         MarketView memory marketView = _marketView(id);
-        dashboard.banned = _guardianSignals.isBanned(id, borrower);
-        dashboard.flagCount = _guardianSignals.getFlagCount(id, borrower);
+        AccountSignals memory signals = _guardianSignals.getAccountSignals(borrower);
+        dashboard.banned = signals.banned;
+        dashboard.flagCount = signals.flagCount;
         (dashboard.activating, dashboard.dust) = _activation.getActivationState(borrower);
         dashboard.active = position.collateral - dashboard.activating - dashboard.dust;
-        dashboard.unlockTime = _activation.getUnlockTime(borrower, _guardianSignals.getActivationDelay(id, borrower));
+        dashboard.unlockTime = _activation.getUnlockTime(borrower, signals.activationDelay);
         dashboard.debtAssets = _debtAssets(marketView, position);
         dashboard.settlementLtv = _settlementQueue.settlementLtvOf(borrower);
         dashboard.isNextToSettle = _settlementQueue.peekRoot() == borrower;
@@ -348,7 +350,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // settle anything already matured, then book the deposit. A sub-threshold deposit stays dust, and only
         // once it crosses the threshold does the lot enter the activation timer. A freeze or ban defers maturation.
-        _syncActivation(id, borrower);
+        _syncActivation(borrower);
         _activation.credit(borrower, hookData.assets, _instantActivationCallers[hookData.caller]);
 
         position.collateral += hookData.assets;
@@ -370,7 +372,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         // settle activation, then drain the un-matured buckets (dust, then activating above the lock) and reverse
         // any same-tx flash addition to the inflow (the lib owns the undo); a revert below rolls this back. The
         // lib returns the post-debit inactive, so active is the post-withdraw raw minus it.
-        _syncActivation(id, borrower);
+        _syncActivation(borrower);
         uint256 inactive = _activation.debit(borrower, hookData.assets);
 
         if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
@@ -397,20 +399,19 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
         // borrow (caller). Soft strikes only delay activation; a ban hard-blocks the borrow.
-        if (_guardianSignals.isBanned(id, hookData.caller)) revert AddressBanned();
+        if (_guardianSignals.isBanned(hookData.caller)) revert AddressBanned();
 
-        if (_guardianSignals.isBanned(id, hookData.receiver)) revert AddressBanned();
+        if (_guardianSignals.isBanned(hookData.receiver)) revert AddressBanned();
 
-        // One combined read for the borrower gives the activation-delay surcharge and the quorum-scan frontier;
-        // a banned borrower is signalled by a `max` surcharge, which both hard-blocks the borrow and pins the
-        // unlock at infinity.
-        (uint256 activationDelay, uint256 quorumBlockTimestamp) =
-            _guardianSignals.getActivationSyncInputs(id, hookData.onBehalf);
-        if (activationDelay == type(uint256).max) revert AddressBanned();
+        // One combined read for the borrower gives the ban bit, the activation-delay surcharge and the quorum-scan
+        // frontier. A banned borrower carries a `max` surcharge, which also pins the unlock at infinity.
+        AccountSignals memory signals = _guardianSignals.getAccountSignals(hookData.onBehalf);
+        if (signals.banned) revert AddressBanned();
 
         // Borrow capacity uses active (matured) collateral only. `sync` matures any ready lot, subject to the
         // quorum-scan gate, and returns the post-mature inactive total. Active is the raw collateral minus that.
-        uint256 inactive = _activation.sync(isFrozen, hookData.onBehalf, activationDelay, quorumBlockTimestamp);
+        uint256 inactive =
+            _activation.sync(isFrozen, hookData.onBehalf, signals.activationDelay, signals.quorumBlockTimestamp);
 
         PositionView memory position = _positionView(id, hookData.onBehalf);
         uint256 activeCollateral = position.collateral - inactive;
@@ -482,7 +483,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // settle activation, then drain buckets by the exact amount core seizes from raw (lockstep).
         // A freeze or ban defers maturation, and `seize` drains all buckets regardless of maturation state.
-        _syncActivation(id, borrower);
+        _syncActivation(borrower);
 
         _activation.seize(borrower, hookData.seizedAssets);
 
@@ -497,9 +498,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
     /// @dev Mature the borrower's activating lot, feeding the guardian-owned activation-delay surcharge and the
     ///      quorum-scan frontier into the timer. Returns the post-mature inactive total.
-    function _syncActivation(Id id, address borrower) internal returns (uint256) {
-        (uint256 activationDelay, uint256 quorumBlockTimestamp) = _guardianSignals.getActivationSyncInputs(id, borrower);
-        return _activation.sync(isFrozen, borrower, activationDelay, quorumBlockTimestamp);
+    function _syncActivation(address borrower) internal returns (uint256) {
+        AccountSignals memory signals = _guardianSignals.getAccountSignals(borrower);
+        return _activation.sync(isFrozen, borrower, signals.activationDelay, signals.quorumBlockTimestamp);
     }
 
     /// @dev Borrower debt in loan assets, rounded up. 0 when the position carries no debt.
