@@ -2,26 +2,55 @@
 pragma solidity 0.8.35;
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {BlockInfo, BlockInfoWithHash, GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
+import {BlockInfo, BlockInfoWithHash, GuardianMarketConfig, GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
+import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
-/// @notice Guardian-committee signal layer over accounts, keyed per market. Guardians flag accounts they
-///         detect as malicious. A `quorum` of distinct flags latches a ban. The market controller reads
-///         `getOpinion` to scale collateral activation and to hard-block borrowing.
-interface IGuardianSignals {
+/// @notice Guardian-committee signal layer over accounts, keyed per market. Each market has its own guardian
+///         set, quorum, and liveness frontier, configured per market. Guardians flag accounts they detect as
+///         malicious. A `quorum` of distinct flags latches a ban. The minimal read surface the market controller
+///         depends on (`isBanned`, `getActivationSyncInputs`, ...) is {IGuardianSignalsView}; this interface adds
+///         the full guardian/committee/governance surface on top.
+interface IGuardianSignals is IGuardianSignalsView {
     // ---
     // EVENTS
     // ---
 
-    /// @notice Emitted when a guardian joins the set.
-    event GuardianAdded(address indexed guardian);
-    /// @notice Emitted when a guardian leaves the set.
-    event GuardianRemoved(address indexed guardian);
-    /// @notice Emitted when the quorum changes.
-    /// @param quorum The number of distinct flags that latches a ban.
-    event QuorumSet(uint256 quorum);
-    /// @notice Emitted when a guardian reports liveness, directly or via `flag`/`unflag`.
-    event Heartbeat(address indexed guardian);
+    /// @notice Emitted when a guardian joins a market's set.
+    event GuardianAdded(Id indexed marketId, address indexed guardian);
+    /// @notice Emitted when a guardian leaves a market's set.
+    event GuardianRemoved(Id indexed marketId, address indexed guardian);
+    /// @notice Emitted when a market's guardian configuration is set via `setMarketConfig`.
+    /// @param marketId       The market id.
+    /// @param quorum         The distinct flags that latch a ban.
+    /// @param delayPerStrike  The activation-delay surcharge per flag.
+    /// @param delayPerSuspect The activation-delay surcharge per fresh suspect report.
+    /// @param maxDelay        The cap on the total guardian activation-delay surcharge (0 = uncapped).
+    /// @param suspectWindow   The freshness horizon within which a suspect report still counts.
+    event MarketConfigSet(
+        Id indexed marketId,
+        uint256 quorum,
+        uint256 delayPerStrike,
+        uint256 delayPerSuspect,
+        uint256 maxDelay,
+        uint256 suspectWindow
+    );
+    /// @notice Emitted when a guardian reports liveness for a market, directly or via `flag`/`unflag`.
+    /// @param marketId    The market id.
+    /// @param guardian    The guardian that reported.
+    /// @param blockNumber The block number the guardian reports scanning past (carried for off-chain tooling).
+    /// @param timestamp   The reported block's timestamp; the quorum-scan frontier orders guardians by this value.
+    event Heartbeat(Id indexed marketId, address indexed guardian, uint40 blockNumber, uint40 timestamp);
+    /// @notice Emitted when a guardian reports an account as suspect (raises the activation delay, never bans).
+    /// @param marketId    The market id.
+    /// @param account   The suspected account.
+    /// @param guardian  The reporting guardian.
+    /// @param timestamp The report time, recorded so the report can be aged out of the suspect window.
+    event Suspected(Id indexed marketId, address indexed account, address indexed guardian, uint256 timestamp);
+    /// @notice Emitted when a guardian retracts its suspect report on an account.
+    event SuspectCleared(Id indexed marketId, address indexed account, address indexed guardian);
+    /// @notice Emitted when a suspect report cast by an address that is no longer a guardian is pruned.
+    event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
     /// @notice Emitted when a guardian flags an account.
     /// @param marketId   The market id.
     /// @param account  The flagged account.
@@ -43,13 +72,13 @@ interface IGuardianSignals {
     /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
     event Banned(Id indexed marketId, address indexed account);
     /// @notice Emitted when an account's ban is lifted.
-    /// @param by The `ACCESS_RESTORER_ROLE` holder that unbanned.
+    /// @param by The `UNBAN_ROLE` holder that unbanned.
     event Unbanned(Id indexed marketId, address indexed account, address indexed by);
     /// @notice Emitted when an account is exempted.
-    /// @param by The `ACCESS_RESTORER_ROLE` holder that granted immunity.
+    /// @param by The `IMMUNITY_GRANTER_ROLE` holder that granted immunity.
     event ImmunityGranted(Id indexed marketId, address indexed account, address indexed by);
     /// @notice Emitted when an account's immunity is removed.
-    /// @param by The `ACCESS_LIMITER_ROLE` holder that revoked immunity.
+    /// @param by The `IMMUNITY_REVOKER_ROLE` holder that revoked immunity.
     event ImmunityRevoked(Id indexed marketId, address indexed account, address indexed by);
 
     // ---
@@ -70,61 +99,100 @@ interface IGuardianSignals {
     error MaxGuardiansReached();
     /// @notice Thrown when a heartbeat reports a block number ahead of the current block.
     error BlockInTheFuture();
+    /// @notice Thrown when a heartbeat reports a timestamp ahead of the current block.
+    error TimestampInTheFuture();
+    /// @notice Thrown when a heartbeat reports a timestamp below the guardian's previous heartbeat.
+    error HeartbeatTimestampRegressed();
     /// @notice Thrown when a heartbeat's reported hash does not match the block's hash.
     error InvalidBlockHash();
+    /// @notice Thrown when a market's per-flag activation delay exceeds `MAX_DELAY_PER_STRIKE`.
+    error DelayPerStrikeTooHigh();
+    /// @notice Thrown when a market's per-suspect activation delay exceeds `MAX_DELAY_PER_STRIKE`.
+    error DelayPerSuspectTooHigh();
+    /// @notice Thrown when a market's suspect window exceeds `MAX_SUSPECT_WINDOW`.
+    error SuspectWindowTooHigh();
 
     // ---
-    // MEMBERSHIP & QUORUM (admin)
+    // MEMBERSHIP & QUORUM (admin, per market)
     // ---
 
-    /// @notice The number of distinct flags that latches a ban.
-    /// @return The current quorum.
-    function getQuorum() external view returns (uint256);
-    /// @notice Add a guardian to the set.
+    /// @notice The per-market instance of a base role. Granting it to an account authorizes that account for
+    ///         `marketId` only; the global base role authorizes every market. The override calls (`ban` →
+    ///         `BAN_ROLE`, `unban` → `UNBAN_ROLE`, `grantImmunity` → `IMMUNITY_GRANTER_ROLE`, `revokeImmunity` →
+    ///         `IMMUNITY_REVOKER_ROLE`) and the guardian-config calls (`GUARDIANS_MANAGER_ROLE`) all accept the
+    ///         global base role or its per-market instance.
+    /// @param baseRole The base role (one of the override roles or `GUARDIANS_MANAGER_ROLE`).
+    /// @param marketId The market to scope the role to.
+    /// @return The derived role id to grant/revoke via `grantRole`/`revokeRole`.
+    function marketRole(bytes32 baseRole, Id marketId) external pure returns (bytes32);
+    /// @notice Set a market's full guardian configuration in one call: replace the guardian set, then set the
+    ///         quorum, the per-flag and per-suspect activation delays, the total-delay cap, and the suspect
+    ///         window. Reverts if a per-signal delay exceeds `MAX_DELAY_PER_STRIKE`, the window exceeds
+    ///         `MAX_SUSPECT_WINDOW`, or the quorum is out of range for the new roster.
+    /// @param marketId The market id to configure.
+    /// @param config   The full per-market guardian configuration.
+    function setMarketConfig(Id marketId, GuardianMarketConfig calldata config) external;
+    /// @notice A market's full guardian configuration.
+    /// @param marketId The market id to read.
+    /// @return The market's guardian set, quorum, per-flag and per-suspect delays, and suspect window.
+    function getMarketConfig(Id marketId) external view returns (GuardianMarketConfig memory);
+    /// @notice Add a guardian to a market's set.
+    /// @param marketId The market id to add to.
     /// @param guardian The address to add. Must be non-zero, not already a guardian, and within `MAX_GUARDIANS_COUNT`.
-    function addGuardian(address guardian) external;
-    /// @notice Remove a guardian from the set. Reverts if it would drop the set below the quorum.
-    /// @param guardian The guardian to remove. Reverts if not currently a guardian.
-    function removeGuardian(address guardian) external;
-    /// @notice Set the quorum. Reverts unless `1 <= newQuorum <= guardian count`.
-    /// @param newQuorum The new number of distinct flags that latches a ban.
-    function setQuorum(uint256 newQuorum) external;
-    /// @notice Whether `account` is a guardian.
+    function addGuardian(Id marketId, address guardian) external;
+    /// @notice Remove a guardian from a market's set. Reverts if it would drop the set below the market's quorum.
+    /// @param marketId The market id to remove from.
+    /// @param guardian The guardian to remove. Reverts if not currently a guardian of the market.
+    function removeGuardian(Id marketId, address guardian) external;
+    /// @notice Whether `account` is a guardian of `marketId`.
+    /// @param marketId  The market id to check.
     /// @param account The address to check.
-    /// @return True if `account` is in the guardian set.
-    function isGuardian(address account) external view returns (bool);
-    /// @notice The number of guardians in the set.
-    /// @return The guardian count.
-    function getGuardianCount() external view returns (uint256);
-    /// @notice The current guardian set.
-    /// @return The list of guardian addresses.
-    function getGuardians() external view returns (address[] memory);
+    /// @return True if `account` is in the market's guardian set.
+    function isGuardian(Id marketId, address account) external view returns (bool);
+    /// @notice The number of guardians in a market's set.
+    /// @param marketId The market id to read.
+    /// @return The market's guardian count.
+    function getGuardianCount(Id marketId) external view returns (uint256);
+    /// @notice A market's current guardian set.
+    /// @param marketId The market id to read.
+    /// @return The list of guardian addresses for the market.
+    function getGuardians(Id marketId) external view returns (address[] memory);
 
     // ---
     // LIVENESS
     // ---
 
-    /// @notice Record the caller's last-scanned block, validated against its block hash. O(1): the quorum
-    ///         frontier is recomputed separately by `syncQuorumBlock`.
-    /// @param lastScannedBlock The block the caller reports scanning past. Reverts if `number` exceeds the
-    ///        current block or if `hash` does not match `blockhash(number)`. Only the caller (a guardian) is recorded.
-    function heartbeat(BlockInfoWithHash calldata lastScannedBlock) external;
-    /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless
+    /// @notice Record the caller's last-scanned block for `marketId`, validated against its block hash and
+    ///         timestamp. O(1): the quorum frontier is recomputed separately by `syncQuorumBlock`. Caller must be
+    ///         a market guardian.
+    /// @param marketId         The market id the caller reports liveness for.
+    /// @param lastScannedBlock The block the caller reports scanning past. Reverts if `number` exceeds the current
+    ///        block, if `hash` does not match `blockhash(number)`, if `timestamp` exceeds the current block, or if
+    ///        `timestamp` is below the caller's previous heartbeat. Only the caller (a guardian) is recorded.
+    function heartbeat(Id marketId, BlockInfoWithHash calldata lastScannedBlock) external;
+    /// @notice Recompute a market's quorum-scan frontier from current heartbeats and ratchet it up. Permissionless
     ///         and monotonic — anyone may advance it (an off-chain agent per scan frame, or a borrower whose
     ///         activation depends on it). Decoupled from `heartbeat` so heartbeats stay O(1).
-    function syncQuorumBlock() external;
-    /// @notice The last block `guardian` reported scanning.
+    /// @param marketId The market id whose frontier is recomputed.
+    function syncQuorumBlock(Id marketId) external;
+    /// @notice The last block `guardian` reported scanning for `marketId`.
+    /// @param marketId   The market id to read.
     /// @param guardian The guardian to query.
     /// @return The guardian's last-scanned block. Zero-valued if the guardian has never reported a heartbeat.
-    function getHeartbeat(address guardian) external view returns (BlockInfo memory);
-    /// @notice The guardian set paired with each guardian's last-scanned block.
-    /// @return guardians  The current guardian set.
+    function getHeartbeat(Id marketId, address guardian) external view returns (BlockInfo memory);
+    /// @notice A market's guardian set paired with each guardian's last-scanned block.
+    /// @param marketId The market id to read.
+    /// @return guardians  The market's current guardian set.
     /// @return heartbeats The last-scanned block of each guardian, aligned by index with `guardians`.
-    function getHeartbeats() external view returns (address[] memory guardians, BlockInfo[] memory heartbeats);
-    /// @notice Highest block at least a quorum of guardians have ever scanned past. Monotonic: a guardian
-    ///         rotation cannot lower it.
-    /// @return The quorum-scan frontier as last ratcheted by `syncQuorumBlock`.
-    function getLastScannedQuorumBlock() external view returns (BlockInfo memory);
+    function getHeartbeats(Id marketId)
+        external
+        view
+        returns (address[] memory guardians, BlockInfo[] memory heartbeats);
+    /// @notice Highest block at least a quorum of a market's guardians have ever scanned past. Monotonic: a
+    ///         guardian rotation cannot lower it.
+    /// @param marketId The market id to read.
+    /// @return The market's quorum-scan frontier as last ratcheted by `syncQuorumBlock`.
+    function getLastScannedQuorumBlock(Id marketId) external view returns (BlockInfo memory);
 
     // ---
     // FLAGGING (guardians)
@@ -143,9 +211,24 @@ interface IGuardianSignals {
     /// @param accounts         The accounts to unflag. Each one a no-op when not flagged by the caller or immune.
     /// @param lastScannedBlock The heartbeat recorded for the caller after retracting, validated like `heartbeat`.
     function unflag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
-    /// @notice Permissionless: prune `account`'s flags cast by addresses that are no longer guardians. Lowers
-    ///         the flag count (and, below quorum, the activation surcharge) but never changes status — a latched
-    ///         ban lifts only through `unban`, so this is not a permissionless unban.
+    /// @notice Report `accounts` in `marketId` as suspect, then heartbeat. A suspect report never latches a ban;
+    ///         it raises the activation delay like a flag, but only while inside the market's suspect window.
+    ///         Records (or refreshes) the caller's report timestamp. Per account a no-op when immune.
+    /// @param marketId           The market id the accounts are reported in.
+    /// @param accounts         The accounts to report. A zero address in the batch reverts.
+    /// @param lastScannedBlock The heartbeat recorded for the caller after reporting, validated like `heartbeat`.
+    function reportSuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
+        external;
+    /// @notice Retract the caller's suspect reports on `accounts` in `marketId`, then heartbeat. Per account a
+    ///         no-op when the caller has no live report on it.
+    /// @param marketId           The market id the reports are retracted in.
+    /// @param accounts         The accounts to clear.
+    /// @param lastScannedBlock The heartbeat recorded for the caller after clearing, validated like `heartbeat`.
+    function clearSuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
+        external;
+    /// @notice Permissionless: prune `account`'s flags and suspect reports cast by addresses that are no longer
+    ///         guardians. Lowers the flag/suspect count (and, below quorum, the activation surcharge) but never
+    ///         changes status — a latched ban lifts only through `unban`, so this is not a permissionless unban.
     function prune(Id marketId, address account) external;
 
     // ---
@@ -188,4 +271,14 @@ interface IGuardianSignals {
     /// @param account The account to read.
     /// @return The addresses of guardians currently flagging the account.
     function getFlaggedBy(Id marketId, address account) external view returns (address[] memory);
+    /// @notice The guardians with a live suspect report on `account` in `marketId`, paired with each report's
+    ///         timestamp, regardless of window freshness.
+    /// @param marketId The market id to read.
+    /// @param account  The account to read.
+    /// @return guardians  The addresses of guardians currently reporting the account as suspect.
+    /// @return reportedAt The timestamp of each guardian's last suspect report, aligned by index with `guardians`.
+    function getSuspectedBy(Id marketId, address account)
+        external
+        view
+        returns (address[] memory guardians, uint40[] memory reportedAt);
 }

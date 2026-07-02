@@ -84,7 +84,6 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
         uint256 activating;
         uint256 dust;
         uint256 unlockTime;
-        uint256 strikes;
         uint256 flagCount;
         bool banned;
         uint256 debtAssets;

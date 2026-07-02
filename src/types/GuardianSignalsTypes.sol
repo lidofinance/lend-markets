@@ -35,13 +35,37 @@ struct BlockInfoWithHash {
 }
 
 /// @notice Per-account guardian signal, stored per `(market, account)`.
-/// @param status    Latched status. A quorum of flags or a forced `ban` latches `Banned`, held until `unban`.
+/// @param status      Latched status. A quorum of flags or a forced `ban` latches `Banned`, held until `unban`.
 ///        While `Immune`, `flag`/`unflag` no-op and readers see the account as clean.
-/// @param flaggedBy Live set of guardians currently flagging the account. Its size is the raw flag count,
+/// @param flaggedBy   Live set of guardians currently flagging the account. Its size is the raw flag count,
 ///        which becomes the effective strikes unless the account is `Immune`. `unban` clears it in one call.
+/// @param suspectedBy Live set of guardians who reported the account as suspect. Unlike a flag, a suspect
+///        report never latches a ban; it scales the activation delay like a strike, but only while fresh —
+///        counted only when its `suspectedAt` timestamp falls inside the market's suspect window.
+/// @param suspectedAt Per-guardian timestamp of the last suspect report, kept so stale reports can be excluded.
 struct GuardiansSignal {
     Status status;
     EnumerableSet.AddressSet flaggedBy;
+    EnumerableSet.AddressSet suspectedBy;
+    mapping(address guardian => uint40 timestamp) suspectedAt;
+}
+
+/// @notice Full per-market guardian configuration, set (and read) in one shot via `setMarketConfig` /
+///         `getMarketConfig`.
+/// @param guardians       The market's guardian set. Each must be non-zero, unique, and within `MAX_GUARDIANS_COUNT`.
+/// @param quorum          Distinct flags that latch a ban. Must satisfy `1 <= quorum <= guardians.length`.
+/// @param delayPerStrike  Activation-delay surcharge per flag. Must not exceed `MAX_DELAY_PER_STRIKE`.
+/// @param delayPerSuspect Activation-delay surcharge per fresh suspect report. Must not exceed `MAX_DELAY_PER_STRIKE`.
+/// @param maxDelay        Cap on the total guardian activation-delay surcharge (flags + suspects). 0 means uncapped.
+/// @param suspectWindow   Freshness horizon within which a suspect report still counts. Must not exceed
+///        `MAX_SUSPECT_WINDOW`.
+struct GuardianMarketConfig {
+    address[] guardians;
+    uint256 quorum;
+    uint256 delayPerStrike;
+    uint256 delayPerSuspect;
+    uint256 maxDelay;
+    uint256 suspectWindow;
 }
 
 /// @notice Read model of an account's signal, returned by `getOpinion` and consumed by the controller's

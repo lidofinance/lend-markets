@@ -31,7 +31,6 @@ struct CollateralActivationConfig {
     uint40 minActivationDelay;
     uint40 maxActivationDelay;
     uint128 maxDelayInflow;
-    uint40 delayPerStrike;
     uint128 activatingLockAmount;
     uint40 activatingLockDuration;
     uint128 minActivationAmount;

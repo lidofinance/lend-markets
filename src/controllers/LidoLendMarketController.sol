@@ -10,8 +10,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
-import {IGuardianSignals} from "../interfaces/IGuardianSignals.sol";
-import {GuardiansOpinion, Status} from "../types/GuardianSignalsTypes.sol";
+import {IGuardianSignalsView} from "../interfaces/IGuardianSignalsView.sol";
 import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 import {ILidoLendMarketConfigurator} from "../interfaces/ILidoLendMarketConfigurator.sol";
 import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
@@ -69,7 +68,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     ///      defers. Debt-free positions can still withdraw.
     bool public isFrozen;
     /// @dev Guardian-signal registry read on every hook to gate borrowing (ban) and scale activation (strikes).
-    IGuardianSignals private _guardianSignals;
+    IGuardianSignalsView private _guardianSignals;
     /// @dev Config + inflow accumulator + per-borrower activation pipeline.
     CollateralActivationLib.State private _activation;
     /// @dev Risk queue + settlement LTVs + settlement config.
@@ -106,7 +105,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     function initialize(
         Id marketId_,
         address admin,
-        IGuardianSignals guardianSignals,
+        IGuardianSignalsView guardianSignals,
         CollateralActivationConfig calldata activationConfig,
         SettlementConfig calldata settlementConfig
     ) external initializer {
@@ -313,13 +312,11 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         Id id = marketId;
         PositionView memory position = _positionView(id, borrower);
         MarketView memory marketView = _marketView(id);
-        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(id, borrower);
-        dashboard.banned = opinion.status == Status.Banned;
-        dashboard.strikes = opinion.strikes;
-        dashboard.flagCount = opinion.flagCount;
+        dashboard.banned = _guardianSignals.isBanned(id, borrower);
+        dashboard.flagCount = _guardianSignals.getFlagCount(id, borrower);
         (dashboard.activating, dashboard.dust) = _activation.getActivationState(borrower);
         dashboard.active = position.collateral - dashboard.activating - dashboard.dust;
-        dashboard.unlockTime = _activation.getUnlockTime(borrower, opinion);
+        dashboard.unlockTime = _activation.getUnlockTime(borrower, _guardianSignals.getActivationDelay(id, borrower));
         dashboard.debtAssets = _debtAssets(marketView, position);
         dashboard.settlementLtv = _settlementQueue.settlementLtvOf(borrower);
         dashboard.isNextToSettle = _settlementQueue.peekRoot() == borrower;
@@ -351,7 +348,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // settle anything already matured, then book the deposit. A sub-threshold deposit stays dust, and only
         // once it crosses the threshold does the lot enter the activation timer. A freeze or ban defers maturation.
-        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
+        _syncActivation(id, borrower);
         _activation.credit(borrower, hookData.assets, _instantActivationCallers[hookData.caller]);
 
         position.collateral += hookData.assets;
@@ -373,7 +370,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         // settle activation, then drain the un-matured buckets (dust, then activating above the lock) and reverse
         // any same-tx flash addition to the inflow (the lib owns the undo); a revert below rolls this back. The
         // lib returns the post-debit inactive, so active is the post-withdraw raw minus it.
-        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
+        _syncActivation(id, borrower);
         uint256 inactive = _activation.debit(borrower, hookData.assets);
 
         if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
@@ -400,17 +397,20 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
         // borrow (caller). Soft strikes only delay activation; a ban hard-blocks the borrow.
-        if (_guardianSignals.getOpinion(id, hookData.caller).status == Status.Banned) revert AddressBanned();
+        if (_guardianSignals.isBanned(id, hookData.caller)) revert AddressBanned();
 
-        if (_guardianSignals.getOpinion(id, hookData.receiver).status == Status.Banned) revert AddressBanned();
+        if (_guardianSignals.isBanned(id, hookData.receiver)) revert AddressBanned();
 
-        GuardiansOpinion memory borrowerOpinion = _guardianSignals.getOpinion(id, hookData.onBehalf);
-
-        if (borrowerOpinion.status == Status.Banned) revert AddressBanned();
+        // One combined read for the borrower gives the activation-delay surcharge and the quorum-scan frontier;
+        // a banned borrower is signalled by a `max` surcharge, which both hard-blocks the borrow and pins the
+        // unlock at infinity.
+        (uint256 activationDelay, uint256 quorumBlockTimestamp) =
+            _guardianSignals.getActivationSyncInputs(id, hookData.onBehalf);
+        if (activationDelay == type(uint256).max) revert AddressBanned();
 
         // Borrow capacity uses active (matured) collateral only. `sync` matures any ready lot, subject to the
         // quorum-scan gate, and returns the post-mature inactive total. Active is the raw collateral minus that.
-        uint256 inactive = _activation.sync(isFrozen, hookData.onBehalf, borrowerOpinion);
+        uint256 inactive = _activation.sync(isFrozen, hookData.onBehalf, activationDelay, quorumBlockTimestamp);
 
         PositionView memory position = _positionView(id, hookData.onBehalf);
         uint256 activeCollateral = position.collateral - inactive;
@@ -482,7 +482,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // settle activation, then drain buckets by the exact amount core seizes from raw (lockstep).
         // A freeze or ban defers maturation, and `seize` drains all buckets regardless of maturation state.
-        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
+        _syncActivation(id, borrower);
 
         _activation.seize(borrower, hookData.seizedAssets);
 
@@ -494,6 +494,13 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     // ---
     // INTERNAL HELPERS
     // ---
+
+    /// @dev Mature the borrower's activating lot, feeding the guardian-owned activation-delay surcharge and the
+    ///      quorum-scan frontier into the timer. Returns the post-mature inactive total.
+    function _syncActivation(Id id, address borrower) internal returns (uint256) {
+        (uint256 activationDelay, uint256 quorumBlockTimestamp) = _guardianSignals.getActivationSyncInputs(id, borrower);
+        return _activation.sync(isFrozen, borrower, activationDelay, quorumBlockTimestamp);
+    }
 
     /// @dev Borrower debt in loan assets, rounded up. 0 when the position carries no debt.
     function _debtAssets(MarketView memory marketView, PositionView memory position) internal pure returns (uint256) {

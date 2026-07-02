@@ -3,7 +3,6 @@ pragma solidity 0.8.35;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {GuardiansOpinion, Status} from "../types/GuardianSignalsTypes.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 
 /// @title CollateralActivationLib
@@ -28,8 +27,9 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 /// @dev The base delay is frozen at deposit from the market-wide recent inflow, the same for every position
 ///      regardless of the depositing address. The inflow is capped at `maxDelayInflow` and decays at a fixed
 ///      rate, draining from the cap to zero over `maxActivationDelay`.
-/// @dev The caller embeds `State`, forwards calls, and supplies the one external read the lib cannot make (the
-///      guardian opinion). The only state outside `State` is the per-tx transient same-tx-undo counter.
+/// @dev The caller embeds `State`, forwards calls, and supplies the external reads the lib cannot make (the
+///      guardian-owned activation delay surcharge and quorum-scan frontier). The only state outside `State` is
+///      the per-tx transient same-tx-undo counter.
 library CollateralActivationLib {
     using SafeCast for uint256;
 
@@ -84,9 +84,6 @@ library CollateralActivationLib {
     /// @notice The activation delay cap exceeds `MAX_DELAY_DURATION`.
     error MaxActivationDelayExceeded();
 
-    /// @notice The per-strike delay surcharge exceeds `MAX_DELAY_DURATION`.
-    error DelayPerStrikeExceeded();
-
     /// @notice The activating-lock duration exceeds `MAX_DELAY_DURATION`.
     error MaxActivatingLockDurationExceeded();
 
@@ -138,7 +135,6 @@ library CollateralActivationLib {
         if (cfg.minActivationDelay == 0) revert ZeroMinActivationDelay();
         if (cfg.minActivationDelay > cfg.maxActivationDelay) revert InvalidActivationDelays();
         if (cfg.maxActivationDelay > MAX_DELAY_DURATION) revert MaxActivationDelayExceeded();
-        if (cfg.delayPerStrike > MAX_DELAY_DURATION) revert DelayPerStrikeExceeded();
         if (cfg.activatingLockDuration > MAX_DELAY_DURATION) revert MaxActivatingLockDurationExceeded();
         if (cfg.maxGuardiansQuorumDelay != 0 && cfg.maxGuardiansQuorumDelay <= cfg.maxActivationDelay) {
             revert InvalidMaxGuardiansQuorumDelay();
@@ -225,16 +221,19 @@ library CollateralActivationLib {
     ///         `activating`, lowering the inactive total, so the caller's `total - inactive` counts it as active.
     ///         Returns the post-mature `inactive` (`activating + dust`). A freeze skips maturation, and a banned
     ///         borrower's unlock is pushed to infinity so it never matures.
-    function sync(State storage $, bool isFrozen, address borrower, GuardiansOpinion memory opinion)
-        internal
-        returns (uint256 inactive)
-    {
+    function sync(
+        State storage $,
+        bool isFrozen,
+        address borrower,
+        uint256 activationDelay,
+        uint256 quorumBlockTimestamp
+    ) internal returns (uint256 inactive) {
         Position storage position = $.positions[borrower];
 
         if (!isFrozen && position.activatingStart > 0) {
-            uint256 unlockTime = _getUnlockTime($, borrower, opinion);
+            uint256 unlockTime = _getUnlockTime($, borrower, activationDelay);
             bool isUnlockTimePassed = block.timestamp >= unlockTime;
-            bool hasGuardiansQuorum = unlockTime <= opinion.quorumBlock.timestamp;
+            bool hasGuardiansQuorum = unlockTime <= quorumBlockTimestamp;
             bool maxQuorumDelayElapsed = block.timestamp >= position.activatingStart + $.config.maxGuardiansQuorumDelay;
 
             if (isUnlockTimePassed && (hasGuardiansQuorum || maxQuorumDelayElapsed)) {
@@ -258,14 +257,11 @@ library CollateralActivationLib {
     // GETTERS
     // ---
 
-    /// @notice Unlock timestamp of the borrower's activating lot, 0 if none.
-    function getUnlockTime(State storage $, address borrower, GuardiansOpinion memory opinion)
-        internal
-        view
-        returns (uint256)
-    {
+    /// @notice Unlock timestamp of the borrower's activating lot, 0 if none. `activationDelay` is the
+    ///         guardian-owned surcharge (`type(uint256).max` for a banned borrower).
+    function getUnlockTime(State storage $, address borrower, uint256 activationDelay) internal view returns (uint256) {
         if ($.positions[borrower].activatingStart == 0) return 0;
-        return _getUnlockTime($, borrower, opinion);
+        return _getUnlockTime($, borrower, activationDelay);
     }
 
     /// @notice The borrower's activation state: how much collateral is activating (timed) versus dust (untimed).
@@ -353,18 +349,13 @@ library CollateralActivationLib {
         _storeTransientInflowIncrease(borrower, inflowInTx - inflowDecrement);
     }
 
-    /// @dev Unlock = start + frozen base delay + strike surcharge (strikes * delayPerStrike). A banned borrower
-    ///      never unlocks (returns max).
-    function _getUnlockTime(State storage $, address borrower, GuardiansOpinion memory opinion)
-        private
-        view
-        returns (uint256)
-    {
-        if (opinion.status == Status.Banned) return type(uint256).max;
+    /// @dev Unlock = start + frozen base delay + the guardian-owned `activationDelay` surcharge. A banned
+    ///      borrower is signalled by `activationDelay == type(uint256).max`, which never unlocks (returns max).
+    function _getUnlockTime(State storage $, address borrower, uint256 activationDelay) private view returns (uint256) {
+        if (activationDelay == type(uint256).max) return type(uint256).max;
 
         Position storage position = $.positions[borrower];
-        uint256 delaySurcharge = opinion.strikes * $.config.delayPerStrike;
-        return position.activatingStart + position.activatingDelay + delaySurcharge;
+        return position.activatingStart + position.activatingDelay + activationDelay;
     }
 
     /// @dev Base delay scales linearly with the inflow, clamped at both ends. The dormant lot's size is folded
