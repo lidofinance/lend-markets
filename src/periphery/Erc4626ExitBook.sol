@@ -7,6 +7,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ExitBookBase} from "./ExitBookBase.sol";
+import {AssetRecoverer} from "../utils/AssetRecoverer.sol";
 import {IErc4626ExitBook} from "../interfaces/IErc4626ExitBook.sol";
 import {Request, PriorityRamp} from "../types/ExitBookTypes.sol";
 import {WAD} from "../libs/Constants.sol";
@@ -15,7 +16,7 @@ import {WAD} from "../libs/Constants.sol";
 /// @author Lido
 /// @notice The ERC-4626 exit book: a request is backed by the lender's vault shares, and a fill redeems
 ///         them. Governance picks the allowed vaults. Works with any ERC-4626 vault — no Morpho dependency.
-contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
+contract Erc4626ExitBook is ExitBookBase, AssetRecoverer, IErc4626ExitBook {
     using SafeERC20 for IERC20;
 
     // ---

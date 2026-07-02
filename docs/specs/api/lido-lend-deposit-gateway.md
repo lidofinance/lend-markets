@@ -188,10 +188,16 @@ The vault's underlying asset is not WETH, so it cannot back the gateway's lender
 ### `constructor`
 
 ```solidity
-constructor(address morpho, address weth, address wstEth, address vault);
+constructor(
+    address morpho,
+    address owner,
+    address weth,
+    address wstEth,
+    address vault
+);
 ```
 
-Pin the gateway to the `weth` / `wstEth` token pair and to `vault`, and grant the unlimited approvals the zaps rely on: WETH and wstETH to the core, stETH to wstETH for wrapping, WETH to the vault. stETH is read from `wstEth`. Reverts on any zero address or a vault whose asset is not WETH.
+Pin the gateway to the `weth` / `wstEth` token pair and to `vault`, set the `owner` (asset recovery only — the zaps are permissionless), and grant the unlimited approvals the zaps rely on: WETH and wstETH to the core, stETH to wstETH for wrapping, WETH to the vault. stETH is read from `wstEth`. Reverts on any zero address or a vault whose asset is not WETH.
 
 ### `supplyCollateralWithStEth`
 

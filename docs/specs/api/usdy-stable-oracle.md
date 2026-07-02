@@ -80,5 +80,5 @@ USDY NAV divided by the stablecoin feed and scaled to 1e36: `getPrice() * scale 
 | Name | Type | Description |
 | --- | --- | --- |
 | `USDY_ORACLE` | `IRWADynamicOracle` (immutable) | Ondo USDY dynamic-rate (NAV) oracle; `getPrice()` is the redemption value scaled by 1e18. |
-| `stableUsdFeed` | `IChainlinkAggregator` | Chainlink USD feed for the loan stablecoin (per market, set in `initialize`). The valuation divides by it, so a depeg flows through. |
+| `stableUsdFeed` | `IChainlinkAggregator` | Chainlink USD feed for the loan stablecoin. |
 | `scale` | `uint256` | 10^(36 + loanDec + feedDec - 18 - 18): the 1e36 scaling for the loan token and feed decimals. |

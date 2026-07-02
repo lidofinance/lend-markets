@@ -93,7 +93,9 @@ contract DepositGatewayTest is LidoLendSetup {
         wsteth = new MockWstETH(steth);
         _deployProtocol(_defaultConfig(address(weth), address(wsteth), address(wsteth)));
         Market storage m = protocol.markets[0];
-        gw = new LidoLendDepositGateway(address(m.core), address(weth), address(wsteth), address(m.vault));
+        gw = new LidoLendDepositGateway(
+            address(m.core), address(this), address(weth), address(wsteth), address(m.vault)
+        );
     }
 
     function _m() internal view returns (Market storage) {
@@ -104,22 +106,22 @@ contract DepositGatewayTest is LidoLendSetup {
 
     function testRevert_constructor_zeroMorpho() public {
         vm.expectRevert(ILidoLendDepositGateway.ZeroMorpho.selector);
-        new LidoLendDepositGateway(address(0), address(weth), address(wsteth), address(_m().vault));
+        new LidoLendDepositGateway(address(0), address(this), address(weth), address(wsteth), address(_m().vault));
     }
 
     function testRevert_constructor_zeroWeth() public {
         vm.expectRevert(ILidoLendDepositGateway.ZeroWeth.selector);
-        new LidoLendDepositGateway(address(_m().core), address(0), address(wsteth), address(_m().vault));
+        new LidoLendDepositGateway(address(_m().core), address(this), address(0), address(wsteth), address(_m().vault));
     }
 
     function testRevert_constructor_zeroWstEth() public {
         vm.expectRevert(ILidoLendDepositGateway.ZeroWstEth.selector);
-        new LidoLendDepositGateway(address(_m().core), address(weth), address(0), address(_m().vault));
+        new LidoLendDepositGateway(address(_m().core), address(this), address(weth), address(0), address(_m().vault));
     }
 
     function testRevert_constructor_zeroVault() public {
         vm.expectRevert(ILidoLendDepositGateway.ZeroVault.selector);
-        new LidoLendDepositGateway(address(_m().core), address(weth), address(wsteth), address(0));
+        new LidoLendDepositGateway(address(_m().core), address(this), address(weth), address(wsteth), address(0));
     }
 
     function testRevert_constructor_vaultAssetMismatch() public {
@@ -130,7 +132,7 @@ contract DepositGatewayTest is LidoLendSetup {
         Market storage m2 = _addMarket(_defaultConfig(address(otherLoan), address(otherColl), address(otherColl)));
         // m2's vault has asset == otherLoan != weth -> VaultAssetMismatch.
         vm.expectRevert(ILidoLendDepositGateway.VaultAssetMismatch.selector);
-        new LidoLendDepositGateway(address(_m().core), address(weth), address(wsteth), address(m2.vault));
+        new LidoLendDepositGateway(address(_m().core), address(this), address(weth), address(wsteth), address(m2.vault));
     }
 
     // ── per-call market validation ──
@@ -172,7 +174,7 @@ contract DepositGatewayTest is LidoLendSetup {
     function testRevert_depositEthToVault_zeroShares() public {
         MockZeroShareVault zv = new MockZeroShareVault(address(weth));
         LidoLendDepositGateway gw2 =
-            new LidoLendDepositGateway(address(_m().core), address(weth), address(wsteth), address(zv));
+            new LidoLendDepositGateway(address(_m().core), address(this), address(weth), address(wsteth), address(zv));
         vm.deal(user, 1 ether);
         vm.prank(user);
         vm.expectRevert(ILidoLendDepositGateway.ZeroShares.selector);

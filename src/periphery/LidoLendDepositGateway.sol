@@ -4,9 +4,11 @@ pragma solidity 0.8.35;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 import {IMorpho, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 
+import {AssetRecoverer} from "../utils/AssetRecoverer.sol";
 import {ILidoLendDepositGateway, IWETH, IWstETH} from "../interfaces/ILidoLendDepositGateway.sol";
 
 /// @title LidoLendDepositGateway
@@ -21,7 +23,7 @@ import {ILidoLendDepositGateway, IWETH, IWstETH} from "../interfaces/ILidoLendDe
 ///      checks the one token it actually moves — the WETH supply zaps require the loan token to be WETH, the
 ///      stETH collateral zap requires the collateral token to be wstETH — so the gateway only ever supplies
 ///      the token it just wrapped; the market identity itself is never stored.
-contract LidoLendDepositGateway is ILidoLendDepositGateway {
+contract LidoLendDepositGateway is ILidoLendDepositGateway, AssetRecoverer {
     using SafeERC20 for IERC20;
     using SafeERC20 for IWETH;
     using SafeERC20 for IWstETH;
@@ -49,11 +51,11 @@ contract LidoLendDepositGateway is ILidoLendDepositGateway {
     // CONSTRUCTOR
     // ---
 
-    /// @notice Pin the gateway to the `weth` / `wstEth` token pair and to `vault`, and grant the unlimited
-    ///         approvals the zaps rely on: WETH and wstETH to the core, stETH to wstETH for wrapping, WETH to
-    ///         the vault. stETH is read from `wstEth`. Reverts on any zero address or a vault whose asset is
-    ///         not WETH.
-    constructor(address morpho, address weth, address wstEth, address vault) {
+    /// @notice Pin the gateway to the `weth` / `wstEth` token pair and to `vault`, set the `owner` (asset
+    ///         recovery only — the zaps are permissionless), and grant the unlimited approvals the zaps rely
+    ///         on: WETH and wstETH to the core, stETH to wstETH for wrapping, WETH to the vault. stETH is read
+    ///         from `wstEth`. Reverts on any zero address or a vault whose asset is not WETH.
+    constructor(address morpho, address owner, address weth, address wstEth, address vault) Ownable(owner) {
         if (weth == address(0)) revert ZeroWeth();
         if (wstEth == address(0)) revert ZeroWstEth();
         if (morpho == address(0)) revert ZeroMorpho();
