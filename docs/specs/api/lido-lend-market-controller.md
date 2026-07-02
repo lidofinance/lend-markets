@@ -312,6 +312,14 @@ event InstantActivationSet(address indexed caller, bool enabled);
 
 Emitted when a trusted caller's instant-activation status is set.
 
+### `SupplyCapSet`
+
+```solidity
+event SupplyCapSet(uint256 cap, address indexed account);
+```
+
+Emitted when the supply cap is set.
+
 ## Errors
 
 ### `Unauthorized`
@@ -354,6 +362,14 @@ error AddressBanned();
 
 Thrown when a banned address borrows, receives a borrow, or initiates one.
 
+### `SupplyCapExceeded`
+
+```solidity
+error SupplyCapExceeded(uint256 cap, uint256 attempted);
+```
+
+Thrown when a supply would push the market's total supplied loan assets above the cap.
+
 ### `InsufficientActiveCollateral`
 
 ```solidity
@@ -393,22 +409,6 @@ error SettlementExceedsAllowed();
 ```
 
 Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
-
-### `SettlementExceedsDebt`
-
-```solidity
-error SettlementExceedsDebt();
-```
-
-Thrown when the cut's shares exceed the borrower's debt.
-
-### `SettlementInvalidSeize`
-
-```solidity
-error SettlementInvalidSeize();
-```
-
-Thrown when the seized collateral is zero or exceeds the borrower's collateral.
 
 ## Functions
 
@@ -463,10 +463,12 @@ Current decayed activation inflow (the throttle accumulator) — for monitoring 
 ### `currentActivationDelay`
 
 ```solidity
-function currentActivationDelay() external view returns (uint256);
+function currentActivationDelay(
+    uint256 inflowIncrement
+) external view returns (uint256);
 ```
 
-Base activation delay a deposit incurs at the current inflow — for borrowers gauging the wait.
+Activation delay a deposit of `inflowIncrement` would incur at the current inflow — for borrowers gauging the wait.
 
 ### `grantInstantActivation`
 
@@ -641,6 +643,22 @@ function revokeInstantActivation(address caller) external;
 
 Remove a caller's instant activation, restoring the timer for its supplies.
 
+### `supplyCap`
+
+```solidity
+function supplyCap() external view returns (uint256);
+```
+
+The market's supply cap.
+
+### `setSupplyCap`
+
+```solidity
+function setSupplyCap(uint256 cap) external;
+```
+
+Set the supply cap. 0 disables it.
+
 ### `on`
 
 ```solidity
@@ -650,11 +668,3 @@ function on(Id id, HookEvent hookEvent, bytes calldata data) external;
 Core hook entrypoint: dispatches each market action to its internal handler.
 
 Reverts on an unknown event so any future Morpho-fork-side change without a controller update fails closed instead of silently skipping policy.
-
-### `marketId`
-
-```solidity
-function marketId() external view returns (Id);
-```
-
-The market this controller is bound to, checked by the core when it binds at market creation.
