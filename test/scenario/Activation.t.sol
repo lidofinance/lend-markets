@@ -47,11 +47,11 @@ contract ActivationTest is LidoLendSetup {
     }
 
     function _ban(address account) internal {
-        Market storage m = _m();
         uint40 n = uint40(block.number - 1);
         address[] memory a = new address[](1);
         a[0] = account;
-        protocol.guardianSignals.flag(m.id, a, BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: n}));
+        protocol.guardianSignals
+            .flag(_m().id, a, BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)}));
     }
 
     function test_freshCollateral_isLockedUntilMatured() public {

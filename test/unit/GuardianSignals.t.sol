@@ -9,7 +9,7 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
-import {Status, BlockInfo, BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
+import {Status, BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 /// @notice Unit suite for `GuardianSignals`, modelled from the "Guardian signals" spec:
@@ -20,30 +20,43 @@ import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 contract GuardianSignalsTest is Test {
     GuardianSignals internal gs;
 
-    Id internal constant MARKET = Id.wrap(bytes32(uint256(0xA11CE)));
     address internal constant G1 = address(0x4001);
     address internal constant G2 = address(0x4002);
     address internal constant G3 = address(0x4003);
     address internal constant BOB = address(0x5001);
 
+    /// @dev The market all signals in this suite are keyed under. GuardianSignals is committee-wide over many
+    ///      markets; the unit suite exercises one arbitrary market id.
+    Id internal constant MARKET = Id.wrap(bytes32(uint256(0xA11CE)));
+
     function setUp() public {
         vm.roll(1000);
         vm.warp(1_000_000);
 
-        address[] memory guardians = new address[](3);
-        guardians[0] = G1;
-        guardians[1] = G2;
-        guardians[2] = G3;
-
+        // `initialize` seeds the default three-guardian committee at quorum 2.
         address impl = address(new GuardianSignals());
-        bytes memory initData =
-            abi.encodeWithSignature("initialize(address,address[],uint256)", address(this), guardians, uint256(2));
+        bytes memory initData = abi.encodeWithSignature(
+            "initialize(address,address[],uint256)", address(this), _defaultGuardians(), uint256(2)
+        );
         gs = GuardianSignals(address(new OssifiableProxy(impl, address(this), initData)));
 
         // Governance roles (not granted by initialize).
         gs.grantRole(gs.GUARDIANS_MANAGER_ROLE(), address(this));
-        gs.grantRole(gs.ACCESS_LIMITER_ROLE(), address(this));
-        gs.grantRole(gs.ACCESS_RESTORER_ROLE(), address(this));
+        gs.grantRole(gs.BAN_ROLE(), address(this));
+        gs.grantRole(gs.UNBAN_ROLE(), address(this));
+        gs.grantRole(gs.IMMUNITY_GRANTER_ROLE(), address(this));
+        gs.grantRole(gs.IMMUNITY_REVOKER_ROLE(), address(this));
+
+        // Activation delays left at 0 for these tests.
+        gs.setDelayParams(0, 0, 0, 0);
+    }
+
+    /// @dev The default three-guardian roster used across the suite.
+    function _defaultGuardians() internal pure returns (address[] memory g) {
+        g = new address[](3);
+        g[0] = G1;
+        g[1] = G2;
+        g[2] = G3;
     }
 
     // ── helpers ──
@@ -71,15 +84,17 @@ contract GuardianSignalsTest is Test {
     }
 
     function _status(address account) internal view returns (Status) {
-        return gs.getOpinion(MARKET, account).status;
+        if (gs.isBanned(MARKET, account)) return Status.Banned;
+        if (gs.isImmune(MARKET, account)) return Status.Immune;
+        return Status.Normal;
     }
 
     function _flagCount(address account) internal view returns (uint256) {
-        return gs.getOpinion(MARKET, account).flagCount;
+        return gs.getFlagCount(MARKET, account);
     }
 
     function _strikes(address account) internal view returns (uint256) {
-        return gs.getOpinion(MARKET, account).strikes;
+        return gs.isImmune(MARKET, account) ? 0 : gs.getFlagCount(MARKET, account);
     }
 
     // ── mutations ──
@@ -203,7 +218,7 @@ contract GuardianSignalsTest is Test {
     function test_frontier_belowQuorumHeartbeats_noAdvance() public {
         _heartbeat(G1, 999); // only one guardian heartbeated; quorum is 2
         gs.syncQuorumBlock();
-        assertEq(gs.getLastScannedQuorumBlock().number, 0, "fewer than quorum heartbeats -> frontier stays 0");
+        assertEq(gs.getQuorumFrontier(), 0, "fewer than quorum heartbeats -> frontier stays 0");
     }
 
     function test_frontier_atQuorum_advancesToQuorumthLargest() public {
@@ -212,7 +227,7 @@ contract GuardianSignalsTest is Test {
         _heartbeat(G3, 997);
         gs.syncQuorumBlock();
         // quorum-th largest of {999,998,997} (quorum 2) = 2nd largest = 998 (min of the top-2).
-        assertEq(gs.getLastScannedQuorumBlock().number, 998, "frontier = quorum-th largest heartbeat");
+        assertEq(gs.getQuorumFrontier(), 998, "frontier = quorum-th largest heartbeat");
     }
 
     function test_frontier_monotonic_doesNotRegress() public {
@@ -222,7 +237,7 @@ contract GuardianSignalsTest is Test {
         // Now a lagging guardian heartbeats at a lower block; the frontier must not move backward.
         _heartbeat(G3, 990);
         gs.syncQuorumBlock();
-        assertEq(gs.getLastScannedQuorumBlock().number, 998, "monotonic ratchet: frontier stays at 998, no regress");
+        assertEq(gs.getQuorumFrontier(), 998, "monotonic ratchet: frontier stays at 998, no regress");
     }
 
     function test_syncQuorumBlock_isPermissionless() public {
@@ -230,7 +245,7 @@ contract GuardianSignalsTest is Test {
         _heartbeat(G2, 998);
         vm.prank(BOB); // a non-guardian
         gs.syncQuorumBlock();
-        assertEq(gs.getLastScannedQuorumBlock().number, 998, "anyone can advance the frontier");
+        assertEq(gs.getQuorumFrontier(), 998, "anyone can advance the frontier");
     }
 
     // ── set / quorum / roles ──
@@ -270,8 +285,8 @@ contract GuardianSignalsTest is Test {
     }
 
     function testRevert_ban_wrongRole() public {
-        bytes32 role = gs.ACCESS_LIMITER_ROLE();
-        vm.prank(BOB); // lacks ACCESS_LIMITER_ROLE
+        bytes32 role = gs.BAN_ROLE();
+        vm.prank(BOB); // lacks BAN_ROLE
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
         gs.ban(MARKET, BOB);
     }
@@ -296,9 +311,25 @@ contract GuardianSignalsTest is Test {
 
     // ── events / batch ──
 
-    event Flagged(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
-    event Banned(Id indexed market, address indexed account);
-    event ImmunityGranted(Id indexed market, address indexed account, address indexed by);
+    event Flagged(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
+    event Banned(Id indexed marketId, address indexed account);
+    event ImmunityGranted(Id indexed marketId, address indexed account, address indexed by);
+    event QuorumSet(uint256 quorum);
+
+    /// @dev `initialize` seeds the quorum and emits `QuorumSet` for off-chain indexers (guardians emit
+    ///      `GuardianAdded` in the same call). The event fires from the proxy during construction.
+    function test_initialize_emitsQuorumSet() public {
+        address impl = address(new GuardianSignals());
+        vm.expectEmit(false, false, false, true);
+        emit QuorumSet(2);
+        new OssifiableProxy(
+            impl,
+            address(this),
+            abi.encodeWithSignature(
+                "initialize(address,address[],uint256)", address(this), _defaultGuardians(), uint256(2)
+            )
+        );
+    }
 
     function test_flag_emitsFlaggedAndBannedAtQuorum() public {
         address[] memory a = new address[](1);
@@ -353,21 +384,21 @@ contract GuardianSignalsTest is Test {
         gs.syncQuorumBlock(); // frontier 998
         gs.addGuardian(address(0x4099)); // a 4th, never heartbeated (packs as 0)
         gs.syncQuorumBlock();
-        assertEq(gs.getLastScannedQuorumBlock().number, 998, "fresh guardian stalls, never regresses the frontier");
+        assertEq(gs.getQuorumFrontier(), 998, "fresh guardian stalls, never regresses the frontier");
     }
 
     // ── wrong-role reverts (each gated mutator) ──
 
     function testRevert_grantImmunity_wrongRole() public {
-        bytes32 role = gs.ACCESS_RESTORER_ROLE();
-        vm.prank(BOB); // lacks ACCESS_RESTORER
+        bytes32 role = gs.IMMUNITY_GRANTER_ROLE();
+        vm.prank(BOB); // lacks IMMUNITY_GRANTER_ROLE
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
         gs.grantImmunity(MARKET, BOB);
     }
 
     function testRevert_revokeImmunity_wrongRole() public {
-        bytes32 role = gs.ACCESS_LIMITER_ROLE();
-        vm.prank(BOB); // lacks ACCESS_LIMITER
+        bytes32 role = gs.IMMUNITY_REVOKER_ROLE();
+        vm.prank(BOB); // lacks IMMUNITY_REVOKER_ROLE
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
         gs.revokeImmunity(MARKET, BOB);
     }
@@ -474,7 +505,7 @@ contract GuardianSignalsTest is Test {
         _heartbeat(G2, b2);
         _heartbeat(G3, b3);
         gs.syncQuorumBlock();
-        assertEq(gs.getLastScannedQuorumBlock().number, _sort3(b1, b2, b3), "frontier = quorum-th largest heartbeat");
+        assertEq(gs.getQuorumFrontier(), _sort3(b1, b2, b3), "frontier = quorum-th largest heartbeat");
     }
 
     // ── views ──
@@ -508,46 +539,41 @@ contract GuardianSignalsTest is Test {
 
     // ── liveness reads: getHeartbeat / getHeartbeats ──
 
-    /// @dev `getHeartbeat` returns the exact `(number, timestamp)` last recorded for a guardian; a guardian
-    ///      that never heartbeated reads the zero `BlockInfo`.
+    /// @dev `getHeartbeat` returns the exact last-scanned timestamp recorded for a guardian; a guardian
+    ///      that never heartbeated reads zero.
     function test_getHeartbeat_recordedAndZero() public {
         _heartbeat(G1, 997); // _block packs timestamp == number == 997
 
-        assertEq(gs.getHeartbeat(G1).number, 997, "recorded block number");
-        assertEq(gs.getHeartbeat(G1).timestamp, 997, "recorded timestamp");
+        assertEq(gs.getHeartbeat(G1), 997, "recorded timestamp");
 
-        assertEq(gs.getHeartbeat(G2).number, 0, "never heartbeated -> zero number");
-        assertEq(gs.getHeartbeat(G2).timestamp, 0, "never heartbeated -> zero timestamp");
+        assertEq(gs.getHeartbeat(G2), 0, "never heartbeated -> zero timestamp");
     }
 
-    /// @dev `getHeartbeats` pairs the guardian set with each guardian's last-scanned block (exercising
-    ///      `_getHeartbeats`). Order matches `getGuardians`; an un-heartbeated guardian carries a zero block.
+    /// @dev `getHeartbeats` pairs the guardian set with each guardian's last-scanned timestamp.
+    ///      Order matches `getGuardians`; an un-heartbeated guardian carries a zero timestamp.
     function test_getHeartbeats_pairsSetWithBlocks() public {
         _heartbeat(G1, 999);
         _heartbeat(G3, 990);
         // G2 deliberately left without a heartbeat.
 
-        (address[] memory guardians, BlockInfo[] memory heartbeats) = gs.getHeartbeats();
+        (address[] memory guardians, uint40[] memory heartbeats) = gs.getHeartbeats();
 
         assertEq(guardians.length, 3, "three guardians returned");
-        assertEq(heartbeats.length, 3, "one block per guardian");
+        assertEq(heartbeats.length, 3, "one timestamp per guardian");
 
         assertEq(guardians[0], G1, "index 0 guardian G1");
-        assertEq(heartbeats[0].number, 999, "G1 heartbeat number");
-        assertEq(heartbeats[0].timestamp, 999, "G1 heartbeat timestamp");
+        assertEq(heartbeats[0], 999, "G1 heartbeat timestamp");
 
         assertEq(guardians[1], G2, "index 1 guardian G2");
-        assertEq(heartbeats[1].number, 0, "G2 never heartbeated -> zero");
-        assertEq(heartbeats[1].timestamp, 0, "G2 never heartbeated -> zero");
+        assertEq(heartbeats[1], 0, "G2 never heartbeated -> zero");
 
         assertEq(guardians[2], G3, "index 2 guardian G3");
-        assertEq(heartbeats[2].number, 990, "G3 heartbeat number");
-        assertEq(heartbeats[2].timestamp, 990, "G3 heartbeat timestamp");
+        assertEq(heartbeats[2], 990, "G3 heartbeat timestamp");
     }
 
     // ── prune (permissionless) ──
 
-    event FlagPruned(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
+    event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
 
     address internal constant CLEANER = address(0xC1EA); // not a guardian, holds no roles
 

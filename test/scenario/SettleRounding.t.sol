@@ -84,7 +84,6 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
                 activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    delayPerStrike: 2 hours,
                     activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     maxDelayInflow: 100_000 ether,
@@ -101,6 +100,7 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
                 }),
                 guardians: guardians,
                 quorum: 1,
+                guardianConfig: GuardianConfigParams({delayPerStrike: 2 hours, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0}),
                 vaultName: "Lido WETH Vault",
                 vaultSymbol: "lidoWETH"
             })

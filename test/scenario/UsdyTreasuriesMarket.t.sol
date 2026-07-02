@@ -99,7 +99,6 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     maxDelayInflow: 10_000 ether,
-                    delayPerStrike: 2 hours,
                     activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     minActivationAmount: 10 ether,
@@ -110,6 +109,7 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
                 }),
                 guardians: guardians,
                 quorum: 1,
+                guardianConfig: GuardianConfigParams({delayPerStrike: 2 hours, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0}),
                 vaultName: "Lido USDY/USDT Vault",
                 vaultSymbol: "lidoUSDY-USDT"
             })

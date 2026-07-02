@@ -4,16 +4,21 @@ pragma solidity 0.8.35;
 import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
-import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {BlockInfoWithHash, GuardiansOpinion, Status} from "../../src/types/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 
-/// @notice Unit tests for the guardian liveness frontier: heartbeats are O(1) and do not move the frontier,
-///         `syncQuorumBlock` recomputes the quorum-th-largest and ratchets it up, and the guardian set is capped.
+/// @notice Scenario tests for the guardian liveness frontier: heartbeats are O(1) and do not move the frontier,
+///         `syncQuorumBlock` recomputes the quorum-th-largest timestamp and ratchets it up, and the guardian set
+///         is capped. GuardianSignals is committee-wide; the committee is seeded via `addGuardian` / `setQuorum`.
 contract GuardianSignalsTest is Test {
     IGuardianSignals internal gs;
     address[] internal guardians;
+
+    /// @dev The market signals in this suite are keyed under (the committee is shared across markets).
+    Id internal constant MARKET = Id.wrap(bytes32(uint256(0xA11CE)));
 
     function _deploy(uint256 n, uint256 quorum) internal {
         guardians = new address[](n);
@@ -23,44 +28,51 @@ contract GuardianSignalsTest is Test {
         GuardianSignals impl = new GuardianSignals();
         bytes memory data = abi.encodeCall(GuardianSignals.initialize, (address(this), guardians, quorum));
         gs = IGuardianSignals(address(new ERC1967Proxy(address(impl), data)));
+
+        GuardianSignals gsImpl = GuardianSignals(address(gs));
+        gsImpl.grantRole(gsImpl.GUARDIANS_MANAGER_ROLE(), address(this));
     }
 
-    /// @dev A heartbeat for block `n` carrying the block hash the registry validates against.
+    /// @dev A heartbeat for block `n` carrying the block hash the registry validates against. The frontier orders
+    ///      guardians by the reported timestamp, so it carries the current block timestamp.
     function _hb(uint256 n) internal view returns (BlockInfoWithHash memory) {
         return BlockInfoWithHash({hash: blockhash(n), number: uint40(n), timestamp: uint40(block.timestamp)});
     }
 
-    /// @notice A heartbeat only records the caller's block. The quorum frontier stays put until `syncQuorumBlock`.
+    /// @notice A heartbeat only records the caller's timestamp. The quorum frontier stays put until `syncQuorumBlock`.
     function test_heartbeat_isLazy_pokeAdvancesFrontier() public {
         _deploy(3, 2); // quorum 2 of 3
         vm.roll(1000);
+        vm.warp(5000);
 
         vm.prank(guardians[0]);
         gs.heartbeat(_hb(block.number));
         vm.prank(guardians[1]);
         gs.heartbeat(_hb(block.number));
-        assertEq(gs.getLastScannedQuorumBlock().number, 0, "heartbeat alone does not move the frontier");
+        assertEq(gs.getQuorumFrontier(), 0, "heartbeat alone does not move the frontier");
 
         gs.syncQuorumBlock(); // permissionless
-        assertEq(gs.getLastScannedQuorumBlock().number, 1000, "poke advances to the quorum-th largest block");
+        assertEq(gs.getQuorumFrontier(), 5000, "poke advances to the quorum-th largest timestamp");
     }
 
-    /// @notice The frontier is monotonic: a guardian later reporting a lower block cannot pull it back.
+    /// @notice The frontier is monotonic: with only one guardian ahead of it, the quorum-th largest stays behind.
     function test_frontier_monotonic() public {
         _deploy(3, 2);
         vm.roll(1000);
+        vm.warp(5000);
         vm.prank(guardians[0]);
         gs.heartbeat(_hb(block.number));
         vm.prank(guardians[1]);
         gs.heartbeat(_hb(block.number));
         gs.syncQuorumBlock();
-        assertEq(gs.getLastScannedQuorumBlock().number, 1000, "frontier at 1000");
+        assertEq(gs.getQuorumFrontier(), 5000, "frontier at 5000");
 
-        // A guardian regresses to an earlier block; the quorum-th largest drops, but the frontier ratchets.
-        vm.prank(guardians[1]);
-        gs.heartbeat(_hb(500));
+        // A single guardian moves ahead; the quorum-th largest (2nd) is still 5000, so the frontier holds.
+        vm.warp(6000);
+        vm.prank(guardians[0]);
+        gs.heartbeat(_hb(block.number));
         gs.syncQuorumBlock();
-        assertEq(gs.getLastScannedQuorumBlock().number, 1000, "frontier never decreases");
+        assertEq(gs.getQuorumFrontier(), 5000, "frontier never decreases and needs a quorum to advance");
     }
 
     /// @notice The guardian set is capped at 32: adding the 33rd reverts.
@@ -68,57 +80,51 @@ contract GuardianSignalsTest is Test {
         _deploy(32, 1);
         GuardianSignals gsImpl = GuardianSignals(address(gs));
         assertEq(gsImpl.MAX_GUARDIANS_COUNT(), 32, "cap is 32");
-        gsImpl.grantRole(gsImpl.GUARDIANS_MANAGER_ROLE(), address(this));
 
         vm.expectRevert(IGuardianSignals.MaxGuardiansReached.selector);
         gs.addGuardian(address(0xBEEF));
     }
 
-    /// @dev Flag `account` in `market` as `guardian`, carrying a valid heartbeat.
-    function _flag(address guardian, Id market, address account) internal {
+    /// @dev Flag `account` as `guardian`, carrying a valid heartbeat.
+    function _flag(address guardian, address account) internal {
         address[] memory accounts = new address[](1);
         accounts[0] = account;
         vm.prank(guardian);
-        gs.flag(market, accounts, _hb(block.number));
+        gs.flag(MARKET, accounts, _hb(block.number));
     }
 
-    /// @notice Immunity exempts an account from its strike surcharge without erasing the raw flags: `getOpinion`
-    ///         zeroes effective `strikes` while `Immune`, keeps `flagCount` visible, and restores `strikes` on
-    ///         revoke. A further flag is a no-op while immune, so an immune account can never latch a ban.
+    /// @notice Immunity exempts an account from its flag surcharge without erasing the raw flags: `getFlagCount`
+    ///         keeps the raw flags visible, the activation delay drops to 0 while `Immune`, and a further flag is a
+    ///         no-op, so an immune account can never latch a ban. Revoking immunity re-subjects it to the flags.
     function test_immunity_zeroesEffectiveStrikesButKeepsFlagCount() public {
         _deploy(3, 3); // quorum 3, so two flags stay below the ban threshold
         GuardianSignals gsImpl = GuardianSignals(address(gs));
-        gsImpl.grantRole(gsImpl.ACCESS_RESTORER_ROLE(), address(this));
-        gsImpl.grantRole(gsImpl.ACCESS_LIMITER_ROLE(), address(this));
+        gsImpl.grantRole(gsImpl.IMMUNITY_GRANTER_ROLE(), address(this));
+        gsImpl.grantRole(gsImpl.IMMUNITY_REVOKER_ROLE(), address(this));
         vm.roll(1000);
 
-        Id market = Id.wrap(bytes32(uint256(1)));
         address account = address(0xCAFE);
 
-        _flag(guardians[0], market, account);
-        _flag(guardians[1], market, account);
+        _flag(guardians[0], account);
+        _flag(guardians[1], account);
 
-        GuardiansOpinion memory op = gs.getOpinion(market, account);
-        assertTrue(op.status == Status.Normal, "not banned below quorum");
-        assertEq(op.strikes, 2, "effective strikes = flags when normal");
-        assertEq(op.flagCount, 2, "raw flag count");
+        assertFalse(gs.isBanned(MARKET, account), "not banned below quorum");
+        assertFalse(gs.isImmune(MARKET, account), "not immune yet");
+        assertEq(gs.getFlagCount(MARKET, account), 2, "raw flag count");
 
-        gs.grantImmunity(market, account);
-        op = gs.getOpinion(market, account);
-        assertTrue(op.status == Status.Immune, "immune");
-        assertEq(op.strikes, 0, "immune zeroes effective strikes");
-        assertEq(op.flagCount, 2, "immune keeps the raw flag count");
+        gs.grantImmunity(MARKET, account);
+        assertTrue(gs.isImmune(MARKET, account), "immune");
+        assertEq(gs.getFlagCount(MARKET, account), 2, "immune keeps the raw flag count");
+        assertEq(gs.getActivationDelay(MARKET, account), 0, "immune zeroes the activation-delay surcharge");
 
-        _flag(guardians[2], market, account); // no-op while immune
-        op = gs.getOpinion(market, account);
-        assertTrue(op.status == Status.Immune, "still immune, never banned");
-        assertEq(op.flagCount, 2, "flag is a no-op while immune");
-        assertEq(op.strikes, 0, "effective strikes stay zero");
+        _flag(guardians[2], account); // no-op while immune
+        assertTrue(gs.isImmune(MARKET, account), "still immune, never banned");
+        assertFalse(gs.isBanned(MARKET, account), "immune account never latches a ban");
+        assertEq(gs.getFlagCount(MARKET, account), 2, "flag is a no-op while immune");
 
-        gs.revokeImmunity(market, account);
-        op = gs.getOpinion(market, account);
-        assertTrue(op.status == Status.Normal, "normal after revoke");
-        assertEq(op.strikes, 2, "strikes restored on revoke");
-        assertEq(op.flagCount, 2, "flag count unchanged");
+        gs.revokeImmunity(MARKET, account);
+        assertFalse(gs.isImmune(MARKET, account), "normal after revoke");
+        assertFalse(gs.isBanned(MARKET, account), "still below quorum after revoke");
+        assertEq(gs.getFlagCount(MARKET, account), 2, "flag count unchanged");
     }
 }

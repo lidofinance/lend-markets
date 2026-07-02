@@ -78,7 +78,6 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 minActivationDelay: 10 minutes,
                 maxActivationDelay: 2 hours,
                 maxDelayInflow: 10_000 ether,
-                delayPerStrike: 2 hours,
                 activatingLockAmount: 0,
                 activatingLockDuration: 0,
                 minActivationAmount: 10 ether,
@@ -89,6 +88,9 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
             }),
             guardians: guardians,
             quorum: 1,
+            guardianConfig: GuardianConfigParams({
+                delayPerStrike: 2 hours, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0
+            }),
             vaultName: "Lido Loan Vault",
             vaultSymbol: "lidoLOAN"
         });
@@ -135,25 +137,41 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
     function _deployProtocol(DeployConfig memory cfg) internal returns (Market storage) {
         if (address(protocol.core) == address(0)) {
             protocol.config = cfg;
-            _deployCoreAndGuardian(cfg.admin, cfg.guardians, cfg.quorum);
+            _deployCore(cfg.admin);
         }
         return _addMarket(cfg);
     }
 
-    /// @notice Deploy the singleton core and guardian registry (both behind `OssifiableProxy`).
-    function _deployCoreAndGuardian(address admin, address[] memory guardians, uint256 quorum) internal {
-        address core = address(
+    /// @notice Deploy the singleton core (behind `OssifiableProxy`). Each market gets its own guardian registry
+    ///         in `_addMarket`.
+    function _deployCore(address admin) internal override returns (address core) {
+        core = address(
             new OssifiableProxy(address(new LidoLend()), admin, abi.encodeWithSignature("initialize(address)", admin))
         );
         protocol.core = ILidoLend(core);
         protocol.coreProxy = IOssifiableProxy(core);
+    }
 
-        address guardian = address(
+    /// @dev Deploy and seed this market's guardian registry (one GuardianSignals per market). `initialize` seeds
+    ///      the admin, guardian set, and quorum; `admin` holds DEFAULT_ADMIN_ROLE, so it self-grants
+    ///      GUARDIANS_MANAGER_ROLE and sets the delay parameters. Split out of `_addMarket` to keep its frame under
+    ///      the stack limit. Also mirrors it to `protocol` so single-market tests can read
+    ///      `protocol.guardianSignals`.
+    function _deployMarketGuardian(DeployConfig memory cfg, address admin) private returns (address guardian) {
+        guardian = address(
             new OssifiableProxy(
                 address(new GuardianSignals()),
                 admin,
-                abi.encodeWithSignature("initialize(address,address[],uint256)", admin, guardians, quorum)
+                abi.encodeWithSignature("initialize(address,address[],uint256)", admin, cfg.guardians, cfg.quorum)
             )
+        );
+        GuardianSignals gs = GuardianSignals(guardian);
+        gs.grantRole(gs.GUARDIANS_MANAGER_ROLE(), admin);
+        gs.setDelayParams(
+            cfg.guardianConfig.delayPerStrike,
+            cfg.guardianConfig.delayPerSuspect,
+            cfg.guardianConfig.maxDelay,
+            cfg.guardianConfig.suspectWindow
         );
         protocol.guardianSignals = IGuardianSignals(guardian);
         protocol.guardianSignalsProxy = IOssifiableProxy(guardian);
@@ -183,37 +201,14 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
             AdaptiveCurveIrm(irm).setConfig(IrmId.wrap(Id.unwrap(id)), marketConfig);
         }
 
-        address controllerImpl = address(new LidoLendMarketController(IMorpho(core)));
-        address controller = address(
-            new OssifiableProxy(
-                controllerImpl,
-                admin,
-                abi.encodeWithSignature(
-                    "initialize(bytes32,address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40),(uint16,uint96,uint96,uint16))",
-                    Id.unwrap(id),
-                    admin,
-                    address(protocol.guardianSignals),
-                    cfg.activation,
-                    cfg.settlementConfig
-                )
-            )
-        );
+        // One GuardianSignals per market, deployed and seeded before the controller (which binds to it).
+        address guardian = _deployMarketGuardian(cfg, admin);
+
+        (address controllerImpl, address controller) = _deployController(cfg, core, admin, id, guardian);
 
         protocol.core.createMarket(params, controller, cfg.enableSettlement);
 
-        address vault = address(
-            new OssifiableProxy(
-                address(new LidoLendERC4626(core)),
-                admin,
-                abi.encodeWithSignature(
-                    "initialize((address,address,address,address,uint256),address,string,string)",
-                    params,
-                    controller,
-                    cfg.vaultName,
-                    cfg.vaultSymbol
-                )
-            )
-        );
+        address vault = _deployVault(cfg, core, admin, params, controller);
 
         // The settlement config is set in `initialize`. Grant `admin` MANAGER_ROLE for later policy changes
         // (tests act as `admin`); `admin` holds DEFAULT_ADMIN_ROLE, the MANAGER_ROLE admin.
@@ -229,6 +224,8 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         m.controller = ILidoLendMarketController(controller);
         m.controllerProxy = IOssifiableProxy(controller);
         m.controllerImpl = controllerImpl;
+        m.guardianSignals = IGuardianSignals(guardian);
+        m.guardianSignalsProxy = IOssifiableProxy(guardian);
         m.vault = ILidoLendERC4626(vault);
         m.vaultProxy = IOssifiableProxy(vault);
         m.oracle = IOracle(oracle);
@@ -236,6 +233,53 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         m.irm = irm;
         m.loanToken = IERC20(cfg.loanToken);
         m.collateralToken = IERC20(cfg.collateralToken);
+    }
+
+    /// @dev Deploy the controller impl + `OssifiableProxy`, running `initialize`. Split out of `_addMarket` to
+    ///      keep its frame under the stack limit.
+    function _deployController(DeployConfig memory cfg, address core, address admin, Id id, address guardian)
+        private
+        returns (address controllerImpl, address controller)
+    {
+        controllerImpl = address(new LidoLendMarketController(IMorpho(core)));
+        controller = address(
+            new OssifiableProxy(
+                controllerImpl,
+                admin,
+                abi.encodeWithSignature(
+                    "initialize(bytes32,address,address,(uint40,uint40,uint128,uint128,uint40,uint128,uint40),(uint16,uint96,uint96,uint16))",
+                    Id.unwrap(id),
+                    admin,
+                    guardian,
+                    cfg.activation,
+                    cfg.settlementConfig
+                )
+            )
+        );
+    }
+
+    /// @dev Deploy the vault impl + `OssifiableProxy`, running `initialize`. Split out of `_addMarket` to keep
+    ///      its frame under the stack limit.
+    function _deployVault(
+        DeployConfig memory cfg,
+        address core,
+        address admin,
+        MarketParams memory params,
+        address controller
+    ) private returns (address vault) {
+        vault = address(
+            new OssifiableProxy(
+                address(new LidoLendERC4626(core)),
+                admin,
+                abi.encodeWithSignature(
+                    "initialize((address,address,address,address,uint256),address,string,string)",
+                    params,
+                    controller,
+                    cfg.vaultName,
+                    cfg.vaultSymbol
+                )
+            )
+        );
     }
 
     /// @notice Oracle deployment: seeded mock behind a proxy. Override for a fork oracle (real feeds).
