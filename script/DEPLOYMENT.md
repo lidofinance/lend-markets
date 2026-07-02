@@ -13,7 +13,7 @@ activation parameters and suspects-registry bootstrap in the script are placehol
 3. `WstEthRateOracle` — wraps Lido's `stEthPerToken` as a Morpho-style oracle.
 4. `AdaptiveCurveIrm` — Morpho Blue's adaptive-curve IRM (unmodified upstream).
 5. `LidoLendMarketController` implementation (constructor bakes in `core`; market id lives in storage) +
-   `OssifiableProxy`; `initialize(marketId, admin, suspectsRegistry, activationConfig)`.
+   `OssifiableProxy`; `initialize(marketId, admin, suspectsRegistry, activationConfig, settlementConfig)`.
 6. `createMarket(params, controllerProxy, enableSettlement = true)` on the core. This owner-gated
    call auto-enables the IRM and LLTV (the standalone `enableIrm`/`enableLltv` steps were removed).
    The controller binding is immutable for the market.

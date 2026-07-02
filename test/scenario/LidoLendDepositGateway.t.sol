@@ -82,7 +82,7 @@ contract LidoLendDepositGatewayTest is Test, LidoLendDeployer {
             })
         );
 
-        gateway = new LidoLendDepositGateway(d.core, WETH_ADDRESS, WSTETH_ADDRESS, d.vault);
+        gateway = new LidoLendDepositGateway(d.core, address(this), WETH_ADDRESS, WSTETH_ADDRESS, d.vault);
     }
 
     function test_supplyCollateralWithStEth_wrapsAndPostsCollateral() public {

@@ -22,7 +22,7 @@ import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTyp
 
 /// @notice Lido-policy controller for a Lido Lend market: collateral activation, freeze and pause,
 ///         address gating, and the settlement queue. All hook policy enters through `on`.
-contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLendMarketController")
+contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendMarketController")
     is
     Initializable,
     AccessControlUpgradeable,
@@ -101,20 +101,22 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
         _disableInitializers();
     }
 
-    /// @notice One-shot initializer: binds the market, grants roles, and wires the guardian-signals registry
-    ///         and config.
+    /// @notice One-shot initializer: binds the market, grants roles, wires the guardian-signals registry, and
+    ///         sets the activation and settlement configs.
     function initialize(
         Id marketId_,
         address admin,
         IGuardianSignals guardianSignals,
-        CollateralActivationConfig calldata cfg
+        CollateralActivationConfig calldata activationConfig,
+        SettlementConfig calldata settlementConfig
     ) external initializer {
         __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         marketId = marketId_;
         _guardianSignals = guardianSignals;
         _settlementQueue.init();
-        _activation.setConfig(cfg);
+        _settlementQueue.setSettlementConfig(settlementConfig);
+        _activation.setConfig(activationConfig);
     }
 
     // ---
@@ -398,19 +400,13 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
 
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
         // borrow (caller). Soft strikes only delay activation; a ban hard-blocks the borrow.
-        if (_guardianSignals.getOpinion(id, hookData.caller).status == Status.Banned) {
-            revert AddressBanned();
-        }
+        if (_guardianSignals.getOpinion(id, hookData.caller).status == Status.Banned) revert AddressBanned();
 
-        if (_guardianSignals.getOpinion(id, hookData.receiver).status == Status.Banned) {
-            revert AddressBanned();
-        }
+        if (_guardianSignals.getOpinion(id, hookData.receiver).status == Status.Banned) revert AddressBanned();
 
         GuardiansOpinion memory borrowerOpinion = _guardianSignals.getOpinion(id, hookData.onBehalf);
 
-        if (borrowerOpinion.status == Status.Banned) {
-            revert AddressBanned();
-        }
+        if (borrowerOpinion.status == Status.Banned) revert AddressBanned();
 
         // Borrow capacity uses active (matured) collateral only. `sync` matures any ready lot, subject to the
         // quorum-scan gate, and returns the post-mature inactive total. Active is the raw collateral minus that.
@@ -481,12 +477,8 @@ contract LidoLendMarketController layout at erc7201("lido.lending.storage.LidoLe
             .toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
         if (hookData.borrowSharesCanceled > allowedShares) revert SettlementExceedsAllowed();
 
-        // payload consistency: the core already enforces these; re-check on the exact hook values (no reads).
+        // The core enforces payload consistency before this hook — shares <= debt and 0 < seize <= collateral.
         uint256 sharesToBurn = hookData.borrowSharesCanceled;
-        if (sharesToBurn > position.borrowShares) revert SettlementExceedsDebt();
-        if (hookData.seizedAssets == 0 || hookData.seizedAssets > position.collateral) {
-            revert SettlementInvalidSeize();
-        }
 
         // settle activation, then drain buckets by the exact amount core seizes from raw (lockstep).
         // A freeze or ban defers maturation, and `seize` drains all buckets regardless of maturation state.

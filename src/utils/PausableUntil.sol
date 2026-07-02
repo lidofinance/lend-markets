@@ -68,16 +68,12 @@ abstract contract PausableUntil {
 
     /// @dev Reverts unless the contract is currently paused.
     function _checkPaused() internal view {
-        if (!isPaused()) {
-            revert PausedExpected();
-        }
+        if (!isPaused()) revert PausedExpected();
     }
 
     /// @dev Reverts unless the contract is currently resumed.
     function _checkResumed() internal view {
-        if (isPaused()) {
-            revert ResumedExpected();
-        }
+        if (isPaused()) revert ResumedExpected();
     }
 
     /// @dev Resume a paused contract by moving the resume timestamp to now. Reverts if already resumed.
@@ -94,11 +90,8 @@ abstract contract PausableUntil {
         if (_duration == 0) revert ZeroPauseDuration();
 
         uint256 resumeSince;
-        if (_duration == PAUSE_INFINITELY) {
-            resumeSince = PAUSE_INFINITELY;
-        } else {
-            resumeSince = block.timestamp + _duration;
-        }
+        if (_duration == PAUSE_INFINITELY) resumeSince = PAUSE_INFINITELY;
+        else resumeSince = block.timestamp + _duration;
         _setPausedState(resumeSince);
     }
 
@@ -110,11 +103,8 @@ abstract contract PausableUntil {
         if (_pauseUntilInclusive < block.timestamp) revert PauseUntilMustBeInFuture();
 
         uint256 resumeSince;
-        if (_pauseUntilInclusive != PAUSE_INFINITELY) {
-            resumeSince = _pauseUntilInclusive + 1;
-        } else {
-            resumeSince = PAUSE_INFINITELY;
-        }
+        if (_pauseUntilInclusive != PAUSE_INFINITELY) resumeSince = _pauseUntilInclusive + 1;
+        else resumeSince = PAUSE_INFINITELY;
         _setPausedState(resumeSince);
     }
 
@@ -122,10 +112,7 @@ abstract contract PausableUntil {
     ///      for an indefinite pause.
     function _setPausedState(uint256 _resumeSince) internal {
         RESUME_SINCE_TIMESTAMP_POSITION.getUint256Slot().value = _resumeSince;
-        if (_resumeSince == PAUSE_INFINITELY) {
-            emit Paused(PAUSE_INFINITELY);
-        } else {
-            emit Paused(_resumeSince - block.timestamp);
-        }
+        if (_resumeSince == PAUSE_INFINITELY) emit Paused(PAUSE_INFINITELY);
+        else emit Paused(_resumeSince - block.timestamp);
     }
 }

@@ -42,7 +42,7 @@ library CollateralActivationLib {
 
     /// @dev Transient-storage namespace for the inflow a position added in the current tx (same-tx undo).
     bytes32 private constant TRANSIENT_INFLOW_INCREASE_NAMESPACE =
-        keccak256("lido.lending.CollateralActivationLib.TransientInflowIncrease");
+        keccak256("lido.lend.CollateralActivationLib.TransientInflowIncrease");
 
     // ---
     // EVENTS
@@ -372,9 +372,7 @@ library CollateralActivationLib {
     function _computeDelay(State storage $, uint256 effectiveInflow) private view returns (uint256) {
         CollateralActivationConfig memory cfg = $.config;
 
-        if (effectiveInflow >= cfg.maxDelayInflow) {
-            return cfg.maxActivationDelay;
-        }
+        if (effectiveInflow >= cfg.maxDelayInflow) return cfg.maxActivationDelay;
 
         uint256 delaySpan = cfg.maxActivationDelay - cfg.minActivationDelay;
         return cfg.minActivationDelay + Math.mulDiv(delaySpan, effectiveInflow, cfg.maxDelayInflow);

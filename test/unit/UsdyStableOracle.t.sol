@@ -4,6 +4,7 @@ pragma solidity 0.8.35;
 import {Test} from "forge-std/Test.sol";
 
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 /// @dev Ondo RWA dynamic oracle stub (USDY/USD, 1e18).
 contract MockRWAOracle {
@@ -70,8 +71,16 @@ contract UsdyStableOracleTest is Test {
         usdy = new MockRWAOracle();
         feed = new MockChainlinkFeed();
         loan = new MockLoanToken();
-        // SCALE is now derived from decimals: loan 6 + feed 8 -> 10^(36+6+8-18-18) = 1e14 (unchanged).
-        oracle = new UsdyStableOracle(address(usdy), address(feed), address(loan));
+        // SCALE is derived from decimals in initialize: loan 6 + feed 8 -> 10^(36+6+8-18-18) = 1e14.
+        oracle = _deploy(address(usdy), address(feed), address(loan));
+    }
+
+    /// @dev Deploy as in production: shared impl (USDY oracle immutable) behind an OssifiableProxy, with the
+    ///      per-market stable feed + scale bound via `initialize`.
+    function _deploy(address usdyOracle, address stableFeed, address loanToken) internal returns (UsdyStableOracle) {
+        address impl = address(new UsdyStableOracle(usdyOracle));
+        bytes memory initData = abi.encodeCall(UsdyStableOracle.initialize, (stableFeed, loanToken));
+        return UsdyStableOracle(address(new OssifiableProxy(impl, address(this), initData)));
     }
 
     function _expected(uint256 getPrice, int256 answer) internal pure returns (uint256) {
@@ -82,17 +91,23 @@ contract UsdyStableOracleTest is Test {
 
     function testRevert_constructor_zeroUsdyOracle() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new UsdyStableOracle(address(0), address(feed), address(loan));
+        new UsdyStableOracle(address(0));
     }
 
-    function testRevert_constructor_zeroStableFeed() public {
+    function testRevert_initialize_zeroStableFeed() public {
+        address impl = address(new UsdyStableOracle(address(usdy)));
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new UsdyStableOracle(address(usdy), address(0), address(loan));
+        new OssifiableProxy(
+            impl, address(this), abi.encodeCall(UsdyStableOracle.initialize, (address(0), address(loan)))
+        );
     }
 
-    function testRevert_constructor_zeroLoanToken() public {
+    function testRevert_initialize_zeroLoanToken() public {
+        address impl = address(new UsdyStableOracle(address(usdy)));
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new UsdyStableOracle(address(usdy), address(feed), address(0));
+        new OssifiableProxy(
+            impl, address(this), abi.encodeCall(UsdyStableOracle.initialize, (address(feed), address(0)))
+        );
     }
 
     // ── views ──
@@ -113,13 +128,13 @@ contract UsdyStableOracleTest is Test {
     }
 
     function test_scale_isDerivedFromDecimals() public view {
-        assertEq(oracle.SCALE(), 1e14, "SCALE = 10^(36+6+8-18-18) from loan/feed decimals");
+        assertEq(oracle.scale(), 1e14, "scale = 10^(36+6+8-18-18) from loan/feed decimals");
     }
 
     /// @dev An 18-decimal stablecoin loan (DAI-like) sizes SCALE differently: 10^(36+18+8-18-18) = 1e26.
     function test_price_eighteenDecimalStable() public {
-        UsdyStableOracle o = new UsdyStableOracle(address(usdy), address(feed), address(new MockLoanToken18()));
-        assertEq(o.SCALE(), 1e26, "18-dec loan / 8-dec feed -> SCALE 1e26");
+        UsdyStableOracle o = _deploy(address(usdy), address(feed), address(new MockLoanToken18()));
+        assertEq(o.scale(), 1e26, "18-dec loan / 8-dec feed -> scale 1e26");
 
         usdy.setPrice(1.08e18);
         feed.setAnswer(1e8);

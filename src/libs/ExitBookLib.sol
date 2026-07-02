@@ -76,28 +76,20 @@ library ExitBookLib {
 
         // Only an open request can be filled — guards against re-closing a cancelled/filled request (a
         // zero-share call would otherwise corrupt its status to `Filled`).
-        if (request.status != ExitStatus.Open) {
-            revert RequestClosed();
-        }
+        if (request.status != ExitStatus.Open) revert RequestClosed();
 
         request.sizeRemaining -= SafeCast.toUint128(filledShares);
 
-        if (request.sizeRemaining == 0) {
-            request.status = ExitStatus.Filled;
-        }
+        if (request.sizeRemaining == 0) request.status = ExitStatus.Filled;
     }
 
     /// @notice Cancel `id` on behalf of `caller` (must be the owner). Marks `Cancelled`; nothing to refund.
     function cancel(State storage self, uint256 id, address caller) internal {
         Request storage request = self.requests[id];
 
-        if (request.owner != caller) {
-            revert NotOwner();
-        }
+        if (request.owner != caller) revert NotOwner();
 
-        if (request.status != ExitStatus.Open) {
-            revert RequestClosed();
-        }
+        if (request.status != ExitStatus.Open) revert RequestClosed();
 
         request.sizeRemaining = 0;
         request.status = ExitStatus.Cancelled;
@@ -111,12 +103,8 @@ library ExitBookLib {
     function requireFillable(State storage self, uint256 id) internal view returns (Request storage request) {
         request = self.requests[id];
 
-        if (request.owner == address(0) || request.status != ExitStatus.Open) {
-            revert RequestClosed();
-        }
+        if (request.owner == address(0) || request.status != ExitStatus.Open) revert RequestClosed();
 
-        if (block.timestamp > request.deadline) {
-            revert RequestExpired();
-        }
+        if (block.timestamp > request.deadline) revert RequestExpired();
     }
 }

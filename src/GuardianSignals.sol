@@ -24,7 +24,7 @@ import {
 ///         Guardians are bots run by trusted actors. The market controller reads `getOpinion` to scale
 ///         collateral activation and to hard-block borrowing.
 /// @dev Upgradeable behind a proxy (`initialize`, not a constructor), with ERC-7201 namespaced storage.
-///      State is per `(market, account)`, where `strikes` is the size of the flagger set `flaggedBy`. The
+///      State is per `(marketId, account)`, where `strikes` is the size of the flagger set `flaggedBy`. The
 ///      escalation ladder, read through `getOpinion`:
 ///        - strikes == 0           : clean, normal activation.
 ///        - 0 < strikes < quorum   : the reader scales the activation delay up by the strike count.
@@ -45,7 +45,7 @@ import {
 ///      block a quorum have scanned past (monotonic) — decoupled from the heartbeat so heartbeats stay cheap.
 ///
 ///      Events and errors are declared in {IGuardianSignals}.
-contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals")
+contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     is
     Initializable,
     AccessControlEnumerableUpgradeable,
@@ -82,7 +82,7 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     BlockInfo private _quorumBlock;
     EnumerableSet.AddressSet private _guardians;
     mapping(address guardian => BlockInfo) private _heartbeats;
-    mapping(Id market => mapping(address account => GuardiansSignal)) private _signalsByMarket;
+    mapping(Id marketId => mapping(address account => GuardiansSignal)) private _signalsByMarket;
 
     // ---
     // MODIFIERS
@@ -195,23 +195,23 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function flag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
+    function flag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
         external
         onlyGuardian
     {
         for (uint256 i; i < accounts.length; ++i) {
-            _flag(market, accounts[i]);
+            _flag(marketId, accounts[i]);
         }
         _heartbeat(lastScannedBlock);
     }
 
     /// @inheritdoc IGuardianSignals
-    function unflag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
+    function unflag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
         external
         onlyGuardian
     {
         for (uint256 i; i < accounts.length; ++i) {
-            _unflag(market, accounts[i]);
+            _unflag(marketId, accounts[i]);
         }
         _heartbeat(lastScannedBlock);
     }
@@ -220,8 +220,8 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     /// @dev Permissionless cleanup: removes flags left behind by removed guardians. Status is never touched —
     ///      the ban latch means a permissionless caller can lower the flag count but cannot unban. Runs on any
     ///      status, Immune included, so stale flags can be cleared before `revokeImmunity` re-derives status.
-    function prune(Id market, address account) external {
-        GuardiansSignal storage signal = _signalsByMarket[market][account];
+    function prune(Id marketId, address account) external {
+        GuardiansSignal storage signal = _signalsByMarket[marketId][account];
 
         // Iterate a snapshot: removing from the live set (swap-and-pop) while looping the memory copy is safe.
         address[] memory flaggers = signal.flaggedBy.values();
@@ -229,7 +229,7 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
             address flagger = flaggers[i];
             if (!_guardians.contains(flagger)) {
                 signal.flaggedBy.remove(flagger);
-                emit FlagPruned(market, account, flagger, uint16(signal.flaggedBy.length()));
+                emit FlagPruned(marketId, account, flagger, uint16(signal.flaggedBy.length()));
             }
         }
     }
@@ -240,36 +240,36 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
 
     /// @inheritdoc IGuardianSignals
     /// @dev Clears immunity so the block takes effect even on an exempt account.
-    function ban(Id market, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
+    function ban(Id marketId, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
         if (account == address(0)) revert ZeroAddress();
-        GuardiansSignal storage signal = _signalsByMarket[market][account];
+        GuardiansSignal storage signal = _signalsByMarket[marketId][account];
         signal.status = Status.Banned;
-        emit Banned(market, account);
+        emit Banned(marketId, account);
     }
 
     /// @inheritdoc IGuardianSignals
     /// @dev Clears the flagger set, so the freshly-unbanned account can be re-flagged and re-banned from
     ///      scratch. Immunity is left to `revokeImmunity`.
-    function unban(Id market, address account) external onlyRole(ACCESS_RESTORER_ROLE) {
-        GuardiansSignal storage signal = _signalsByMarket[market][account];
+    function unban(Id marketId, address account) external onlyRole(ACCESS_RESTORER_ROLE) {
+        GuardiansSignal storage signal = _signalsByMarket[marketId][account];
         signal.status = Status.Normal;
         signal.flaggedBy.clear();
-        emit Unbanned(market, account, msg.sender);
+        emit Unbanned(marketId, account, msg.sender);
     }
 
     /// @inheritdoc IGuardianSignals
-    function grantImmunity(Id market, address account) external onlyRole(ACCESS_RESTORER_ROLE) {
+    function grantImmunity(Id marketId, address account) external onlyRole(ACCESS_RESTORER_ROLE) {
         if (account == address(0)) revert ZeroAddress();
 
-        GuardiansSignal storage signal = _signalsByMarket[market][account];
+        GuardiansSignal storage signal = _signalsByMarket[marketId][account];
         signal.status = Status.Immune;
 
-        emit ImmunityGranted(market, account, msg.sender);
+        emit ImmunityGranted(marketId, account, msg.sender);
     }
 
     /// @inheritdoc IGuardianSignals
-    function revokeImmunity(Id market, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
-        GuardiansSignal storage signal = _signalsByMarket[market][account];
+    function revokeImmunity(Id marketId, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
+        GuardiansSignal storage signal = _signalsByMarket[marketId][account];
         // Only act on an actually-immune account: revoking is a no-op otherwise, so this never clears a
         // committee `ban` (a forced `Banned` carries no flags) nor disturbs a `Normal` account.
         if (signal.status != Status.Immune) return;
@@ -277,7 +277,7 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
         // quorum of flags re-latches to `Banned`, so revoking immunity never silently unbans it.
         signal.status = signal.flaggedBy.length() >= _quorum ? Status.Banned : Status.Normal;
 
-        emit ImmunityRevoked(market, account, msg.sender);
+        emit ImmunityRevoked(marketId, account, msg.sender);
     }
 
     // ---
@@ -285,8 +285,8 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function getOpinion(Id market, address account) external view returns (GuardiansOpinion memory opinion) {
-        GuardiansSignal storage signal = _signalsByMarket[market][account];
+    function getOpinion(Id marketId, address account) external view returns (GuardiansOpinion memory opinion) {
+        GuardiansSignal storage signal = _signalsByMarket[marketId][account];
 
         opinion.status = signal.status;
         opinion.quorumBlock = _quorumBlock;
@@ -297,8 +297,8 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     }
 
     /// @inheritdoc IGuardianSignals
-    function getFlaggedBy(Id market, address account) external view returns (address[] memory) {
-        return _signalsByMarket[market][account].flaggedBy.values();
+    function getFlaggedBy(Id marketId, address account) external view returns (address[] memory) {
+        return _signalsByMarket[marketId][account].flaggedBy.values();
     }
 
     // ---
@@ -310,13 +310,9 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
     ///      whole-set read and sort.
     function _heartbeat(BlockInfoWithHash calldata lastScannedBlock) internal {
         // a guardian cannot have scanned a block that does not exist yet
-        if (lastScannedBlock.number > block.number) {
-            revert BlockInTheFuture();
-        }
+        if (lastScannedBlock.number > block.number) revert BlockInTheFuture();
 
-        if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) {
-            revert InvalidBlockHash();
-        }
+        if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) revert InvalidBlockHash();
 
         _heartbeats[msg.sender] = BlockInfo(lastScannedBlock.number, lastScannedBlock.timestamp);
         emit Heartbeat(msg.sender);
@@ -364,26 +360,26 @@ contract GuardianSignals layout at erc7201("lido.lending.storage.GuardianSignals
 
     /// @dev Single-account flag, looped by `flag`. No-op (no state change, no event) when `account` is immune
     ///      or the caller already flags it, so a batch never reverts on a skip.
-    function _flag(Id market, address account) internal {
+    function _flag(Id marketId, address account) internal {
         if (account == address(0)) revert ZeroAddress();
 
-        GuardiansSignal storage signal = _signalsByMarket[market][account];
+        GuardiansSignal storage signal = _signalsByMarket[marketId][account];
         if (signal.status == Status.Immune || !signal.flaggedBy.add(msg.sender)) return;
 
         uint256 strikes = signal.flaggedBy.length();
         if (strikes >= _quorum && signal.status != Status.Banned) {
             signal.status = Status.Banned;
-            emit Banned(market, account);
+            emit Banned(marketId, account);
         }
-        emit Flagged(market, account, msg.sender, uint16(strikes));
+        emit Flagged(marketId, account, msg.sender, uint16(strikes));
     }
 
     /// @dev Single-account unflag, looped by `unflag`. No-op when `account` is immune or the caller does not
     ///      flag it. Does not lift a latched ban.
-    function _unflag(Id market, address account) internal {
-        GuardiansSignal storage signal = _signalsByMarket[market][account];
+    function _unflag(Id marketId, address account) internal {
+        GuardiansSignal storage signal = _signalsByMarket[marketId][account];
         if (signal.status == Status.Immune || !signal.flaggedBy.remove(msg.sender)) return;
 
-        emit Unflagged(market, account, msg.sender, uint16(signal.flaggedBy.length()));
+        emit Unflagged(marketId, account, msg.sender, uint16(signal.flaggedBy.length()));
     }
 }

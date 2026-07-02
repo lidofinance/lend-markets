@@ -7,6 +7,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IExitBook} from "../interfaces/IExitBook.sol";
+import {AssetRecoverer} from "../utils/AssetRecoverer.sol";
 import {ExitStatus, Request, PriorityRamp, RequestPreview} from "../types/ExitBookTypes.sol";
 import {ExitBookLib} from "../libs/ExitBookLib.sol";
 import {WAD} from "../libs/Constants.sol";
@@ -16,7 +17,7 @@ import {WAD} from "../libs/Constants.sol";
 /// @notice Shared base of the exit books. A lender posts a request to exit a position; a filler later
 ///         closes it against available liquidity for a fee. A concrete book binds it to a source by
 ///         implementing the source operations, so any position that supports them can reuse this primitive.
-abstract contract ExitBookBase is IExitBook, Ownable {
+abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     using SafeERC20 for IERC20;
     using ExitBookLib for ExitBookLib.State;
 
@@ -101,11 +102,18 @@ abstract contract ExitBookBase is IExitBook, Ownable {
     // ---
 
     constructor(address owner, uint256 maxLifetime_) Ownable(owner) {
-        if (maxLifetime_ == 0) {
-            revert ZeroMaxLifetime();
-        }
+        if (maxLifetime_ == 0) revert ZeroMaxLifetime();
 
         MAX_REQUEST_LIFETIME = maxLifetime_;
+    }
+
+    // ---
+    // PERMISSIONS
+    // ---
+
+    /// @dev Asset recovery is owner-only.
+    function _checkRecoverer() internal view override {
+        _checkOwner();
     }
 
     // ---
@@ -114,13 +122,9 @@ abstract contract ExitBookBase is IExitBook, Ownable {
 
     /// @inheritdoc IExitBook
     function setServiceFee(address recipient, uint256 fee) external onlyOwner {
-        if (fee > MAX_SERVICE_FEE) {
-            revert FeeTooHigh();
-        }
+        if (fee > MAX_SERVICE_FEE) revert FeeTooHigh();
 
-        if (recipient == address(0) && fee != 0) {
-            revert FeeRecipientRequired();
-        }
+        if (recipient == address(0) && fee != 0) revert FeeRecipientRequired();
 
         feeRecipient = recipient;
         serviceFee = fee;
@@ -145,9 +149,7 @@ abstract contract ExitBookBase is IExitBook, Ownable {
         }
 
         uint256 filledShares = _fillableShares(id, request);
-        if (filledShares == 0) {
-            revert NoFillableShares();
-        }
+        if (filledShares == 0) revert NoFillableShares();
 
         _book.recordFill(id, filledShares);
 
@@ -155,15 +157,11 @@ abstract contract ExitBookBase is IExitBook, Ownable {
         uint256 balanceBefore = asset.balanceOf(address(this));
         _redeem(id, request.owner, filledShares);
         uint256 assetsOut = asset.balanceOf(address(this)) - balanceBefore;
-        if (assetsOut == 0) {
-            revert NoAssetsRedeemed();
-        }
+        if (assetsOut == 0) revert NoAssetsRedeemed();
         // Filler's slippage floor (0 to skip): if the fill under-produced, revert and roll back the deposit.
         // Late by necessity — `assetsOut` exists only post-redeem — so a griefed fill still burns the redeem
         // gas, but the filler's deposited capital is never committed below their floor.
-        if (assetsOut < minAssetsOut) {
-            revert AssetsOutBelowMin();
-        }
+        if (assetsOut < minAssetsOut) revert AssetsOutBelowMin();
 
         // Split what arrived three ways with no remainder: the lender gets their fixed-price `owed` minus the
         // priority fee, the filler gets the accrued yield plus that fee, the service takes a cut of the
@@ -176,17 +174,11 @@ abstract contract ExitBookBase is IExitBook, Ownable {
         uint256 fillerFee = fillerGross - serviceCut;
         uint256 lenderAssets = owed - fee;
 
-        if (lenderAssets != 0) {
-            asset.safeTransfer(request.owner, lenderAssets);
-        }
+        if (lenderAssets != 0) asset.safeTransfer(request.owner, lenderAssets);
 
-        if (fillerFee != 0) {
-            asset.safeTransfer(msg.sender, fillerFee);
-        }
+        if (fillerFee != 0) asset.safeTransfer(msg.sender, fillerFee);
 
-        if (serviceCut != 0) {
-            asset.safeTransfer(feeRecipient, serviceCut);
-        }
+        if (serviceCut != 0) asset.safeTransfer(feeRecipient, serviceCut);
 
         emit ExitProcessed(id, msg.sender, address(asset), filledShares, lenderAssets, fillerFee, serviceCut);
     }
@@ -238,9 +230,7 @@ abstract contract ExitBookBase is IExitBook, Ownable {
         uint256[] storage all = _book.ownerRequestIds[owner];
         uint256 len = all.length;
 
-        if (offset >= len) {
-            return ids; // an unassigned named return is already an empty array
-        }
+        if (offset >= len) return ids; // an unassigned named return is already an empty array
 
         uint256 n = Math.min(count, len - offset);
 
@@ -279,13 +269,9 @@ abstract contract ExitBookBase is IExitBook, Ownable {
     ///      expired, or has no backing.
     function _previewFill(uint256 id) internal view returns (uint256 filledShares, uint256 assetsOut) {
         Request storage request = _book.requests[id];
-        if (request.status != ExitStatus.Open || block.timestamp > request.deadline) {
-            return (0, 0);
-        }
+        if (request.status != ExitStatus.Open || block.timestamp > request.deadline) return (0, 0);
         filledShares = _fillableShares(id, request);
-        if (filledShares == 0) {
-            return (0, 0);
-        }
+        if (filledShares == 0) return (0, 0);
         assetsOut = _previewAssets(id, filledShares);
     }
 
@@ -299,27 +285,13 @@ abstract contract ExitBookBase is IExitBook, Ownable {
         uint256 deadline,
         bool fullFillOnly
     ) internal returns (uint256 id) {
-        if (shares == 0) {
-            revert ZeroShares();
-        }
-        if (ramp.endRate > MAX_PRIORITY_FEE) {
-            revert PriorityFeeTooHigh();
-        }
-        if (ramp.startRate > ramp.endRate) {
-            revert StartFeeAboveEnd();
-        }
-        if (ramp.rampStart > ramp.rampEnd) {
-            revert RampStartAfterEnd();
-        }
-        if (deadline <= block.timestamp) {
-            revert DeadlineInPast();
-        }
-        if (deadline > block.timestamp + MAX_REQUEST_LIFETIME) {
-            revert DeadlineTooFar();
-        }
-        if (block.timestamp + ramp.rampEnd > deadline) {
-            revert RampPastDeadline();
-        }
+        if (shares == 0) revert ZeroShares();
+        if (ramp.endRate > MAX_PRIORITY_FEE) revert PriorityFeeTooHigh();
+        if (ramp.startRate > ramp.endRate) revert StartFeeAboveEnd();
+        if (ramp.rampStart > ramp.rampEnd) revert RampStartAfterEnd();
+        if (deadline <= block.timestamp) revert DeadlineInPast();
+        if (deadline > block.timestamp + MAX_REQUEST_LIFETIME) revert DeadlineTooFar();
+        if (block.timestamp + ramp.rampEnd > deadline) revert RampPastDeadline();
 
         id = _book.add(account, asset, shares, pricePerShare, ramp, deadline, fullFillOnly);
         emit ExitRequested(id, account, address(asset), shares, ramp, deadline, fullFillOnly);
@@ -328,9 +300,7 @@ abstract contract ExitBookBase is IExitBook, Ownable {
     /// @dev Source fillable shares with the `fullFillOnly` policy applied.
     function _fillableShares(uint256 id, Request storage request) internal view returns (uint256 fillableShares) {
         fillableShares = _availableShares(id, request);
-        if (request.fullFillOnly && fillableShares < request.sizeRemaining) {
-            fillableShares = 0;
-        }
+        if (request.fullFillOnly && fillableShares < request.sizeRemaining) fillableShares = 0;
     }
 
     /// @dev The priority-fee rate (WAD) in force now: `startRate` while within the `rampStart` hold, then
@@ -340,16 +310,12 @@ abstract contract ExitBookBase is IExitBook, Ownable {
         uint256 rampStart = request.rampStart;
         uint256 elapsed = block.timestamp - request.createdAt;
 
-        if (elapsed < rampStart) {
-            return startRate;
-        }
+        if (elapsed < rampStart) return startRate;
 
         uint256 endRate = request.endRate;
         uint256 rampEnd = request.rampEnd;
 
-        if (elapsed >= rampEnd) {
-            return endRate;
-        }
+        if (elapsed >= rampEnd) return endRate;
 
         return startRate + (endRate - startRate) * (elapsed - rampStart) / (rampEnd - rampStart);
     }

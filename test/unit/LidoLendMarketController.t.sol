@@ -346,104 +346,12 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.borrow(_m().params, 10 ether, 0, borrower, receiver);
     }
 
-    // ── settle hook defensive re-checks via a direct core-impersonated on() call ──
+    // ── settle hook policy gates via a direct core-impersonated on() call ──
     //
-    // The controller re-checks payload consistency the core already enforces (shares <= debt, 0 < seize <=
-    // collateral). The real core never emits an inconsistent payload, so these branches are reachable only by
-    // a forged payload. We impersonate the core and call `on(Settle, ...)` directly with a crafted payload, so
-    // the bad-debt and eligibility gates pass but the consistency re-check trips.
-
-    /// @dev `SettlementExceedsDebt` (line 519) is a defensive re-check: after the controller has already bounded
-    ///      `debtCanceled <= allowedSlice <= debtAssets` (lines 165 + 514), the recomputed share-burn
-    ///      `toSharesUp(debtCanceled)` can only exceed `position.borrowShares` via a double-round-up, and the
-    ///      virtual-shares offsets make `toSharesUp(toAssetsUp(borrowShares)) == borrowShares` in the standard
-    ///      accounting, so the guard never fires through `on()`. We document that here: a FULL-debt forged cut
-    ///      (debtCanceled == the strand-dust full slice, the largest value line 514 admits) passes the share
-    ///      check, i.e. the guard does not falsely fire. The branch is reachable only by a payload that bypasses
-    ///      the asset-side cap line 514 already enforces, hence unreachable in practice.
-    function test_settle_fullDebtCut_doesNotTripExceedsDebt() public {
-        Market storage m = _m();
-        MockPriceOracle(address(m.oracle)).setPrice(1.3e36); // fixed, seed-independent
-
-        address lender = _actor("lender");
-        _fund(m.loanToken, lender, 100_000 ether);
-        m.vaultDeposit(lender, 100_000 ether);
-
-        address borrower = _actor("borrower");
-        _fund(m.collateralToken, borrower, 11 ether); // at the floor -> strand-dust lifts the slice to full debt
-        m.supplyCollateral(borrower, 11 ether);
-        m.activateCollateral();
-        uint256 maxBorrow = 11 ether * 1.3e36 / 1e36 * 80 / 100;
-        m.borrow(borrower, maxBorrow * 90 / 100);
-
-        // Forge a cut at exactly the allowed slice (the largest value line 514 admits) with a valid 1-unit seize.
-        // The recomputed share-burn stays within borrowShares, so SettlementExceedsDebt does NOT fire — the
-        // guard is not a false positive at the cap, and cannot fire through `on()` at all.
-        (,, uint256 allowedShares,) = c.nextSettlementBorrower();
-        assertGt(allowedShares, 0, "borrower is the eligible queue root");
-
-        bytes memory data = abi.encode(
-            ILidoLendBaseMarketController.SettleHookData({
-                caller: lender,
-                onBehalf: lender,
-                borrower: borrower,
-                receiver: lender,
-                supplySharesBurned: 0,
-                borrowAssetsCanceled: 0,
-                borrowSharesCanceled: allowedShares,
-                seizedAssets: 1
-            })
-        );
-        vm.prank(address(m.core));
-        c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data); // no revert: no SettlementExceedsDebt
-    }
-
-    /// @dev Forge a Settle payload with seizedAssets == 0 -> SettlementInvalidSeize.
-    function testRevert_settle_zeroSeize_forgedPayload() public {
-        Market storage m = _m();
-        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
-        (,, uint256 allowedShares,) = c.nextSettlementBorrower();
-
-        bytes memory data = abi.encode(
-            ILidoLendBaseMarketController.SettleHookData({
-                caller: address(this),
-                onBehalf: address(this),
-                borrower: borrower,
-                receiver: address(this),
-                supplySharesBurned: 0,
-                borrowAssetsCanceled: 0,
-                borrowSharesCanceled: allowedShares, // within slice, within debt
-                seizedAssets: 0 // invalid: zero seize
-            })
-        );
-        vm.prank(address(m.core));
-        vm.expectRevert(ILidoLendMarketController.SettlementInvalidSeize.selector);
-        c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
-    }
-
-    /// @dev Forge a Settle payload with seizedAssets > the borrower's collateral -> SettlementInvalidSeize.
-    function testRevert_settle_overSeize_forgedPayload() public {
-        Market storage m = _m();
-        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
-        (,, uint256 allowedShares,) = c.nextSettlementBorrower();
-        uint256 borrowerCollateral = m.core.position(m.id, borrower).collateral;
-
-        bytes memory data = abi.encode(
-            ILidoLendBaseMarketController.SettleHookData({
-                caller: address(this),
-                onBehalf: address(this),
-                borrower: borrower,
-                receiver: address(this),
-                supplySharesBurned: 0,
-                borrowAssetsCanceled: 0,
-                borrowSharesCanceled: allowedShares,
-                seizedAssets: borrowerCollateral + 1 // invalid: over the borrower's collateral
-            })
-        );
-        vm.prank(address(m.core));
-        vm.expectRevert(ILidoLendMarketController.SettlementInvalidSeize.selector);
-        c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
-    }
+    // The controller-specific gates (bad debt, eligibility, allowed-slice cap) are NOT enforced by the core, so
+    // they are only reachable by impersonating the core and calling `on(Settle, ...)` with a crafted payload
+    // that clears the earlier gates. (Payload consistency — shares <= debt, 0 < seize <= collateral — is
+    // enforced by the core before the hook, so the controller does not re-check it.)
 
     /// @dev Forge a Settle payload whose borrowAssetsCanceled exceeds the allowed slice -> SettlementExceedsAllowed.
     function testRevert_settle_exceedsAllowed_forgedPayload() public {
@@ -1253,10 +1161,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     }
 
     /// @dev The bad-debt gate is not a false positive on a solvent root: a healthy sole root admits a
-    ///      cap-sized cut with a valid seize without reverting. Distinct from `test_settle_fullDebtCut_*`
-    ///      (which targets the SettlementExceedsDebt re-check at the cap): here the assertion is that the
-    ///      bad-debt branch passes for a comfortably-collateralized root, and the queue still tracks it after
-    ///      the partial cut.
+    ///      cap-sized cut with a valid seize without reverting — the bad-debt branch passes for a
+    ///      comfortably-collateralized root, and the queue still tracks it after the partial cut.
     function test_settle_healthyRoot_passesBadDebtGate() public {
         Market storage m = _m();
         MockPriceOracle(address(m.oracle)).setPrice(1.3e36); // fixed, seed-independent

@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 
 interface IRWADynamicOracle {
@@ -24,20 +25,18 @@ interface IChainlinkAggregator {
 /// @title UsdyStableOracle
 /// @author Lido
 /// @notice Morpho oracle for USDY collateral quoted in any USD-stablecoin loan asset with a Chainlink feed.
-/// @dev    USDY is valued by its redemption value (NAV) from Ondo's dynamic-rate oracle, not a market price:
-///         USDY is transfer-gated and its secondary market is thin, so the NAV is the only sound basis and is
-///         not gameable. The stablecoin leg divides by its Chainlink USD feed, so a stablecoin depeg is
-///         reflected in the collateral valuation. No staleness/bounds guards (matches Morpho's stock oracle
-///         behaviour, which avoids bricking the market on a transient feed condition).
+/// @dev    Values USDY by its NAV (Ondo dynamic-rate oracle), not a market price; the stablecoin leg divides
+///         by its Chainlink USD feed, so a stablecoin depeg flows into the collateral valuation. No
+///         staleness/bounds guards, matching Morpho's stock oracle.
 ///
-///         price() = getPrice() * SCALE / stableUsdPrice
-///         SCALE   = 10^(36 + loanDecimals + feedDecimals - USDY_DECIMALS - NAV_DECIMALS)
+///         price() = getPrice() * scale / stableUsdPrice
+///         scale   = 10^(36 + loanDecimals + feedDecimals - USDY_DECIMALS - NAV_DECIMALS)
 ///
-///         USDY is the only collateral (18 dec, NAV scaled 1e18), but the loan stablecoin is free: its token
-///         decimals and its Chainlink feed decimals are read at construction, so the same contract serves any
-///         Chainlink-priced stablecoin (USDC, USDT, DAI, ...). Matches Morpho's IOracle convention: price of
-///         1 collateral asset quoted in 1 loan asset, scaled by 1e36.
-contract UsdyStableOracle is IOracle {
+///         The USDY NAV oracle is shared across markets, so it stays immutable; the per-market stablecoin feed
+///         and decimal-derived `scale` are set in `initialize`, so one implementation behind per-market proxies
+///         serves any Chainlink-priced stablecoin. Matches Morpho's IOracle convention: price of 1 collateral
+///         asset quoted in 1 loan asset, scaled by 1e36.
+contract UsdyStableOracle layout at erc7201("lido.lend.storage.UsdyStableOracle") is Initializable, IOracle {
     // ---
     // CONSTANTS
     // ---
@@ -55,17 +54,21 @@ contract UsdyStableOracle is IOracle {
     /// @dev Ondo USDY dynamic-rate (NAV) oracle; `getPrice()` is the redemption value scaled by 1e18.
     IRWADynamicOracle public immutable USDY_ORACLE;
 
-    /// @dev Chainlink USD feed for the loan stablecoin. The valuation divides by it, so a depeg flows through.
-    IChainlinkAggregator public immutable STABLE_USD_FEED;
+    // ---
+    // STORAGE
+    // ---
+
+    /// @dev Chainlink USD feed for the loan stablecoin.
+    IChainlinkAggregator public stableUsdFeed;
 
     /// @dev 10^(36 + loanDec + feedDec - 18 - 18): the 1e36 scaling for the loan token and feed decimals.
-    uint256 public immutable SCALE;
+    uint256 public scale;
 
     // ---
     // ERRORS
     // ---
 
-    /// @notice A constructor address argument was the zero address.
+    /// @notice An address argument was the zero address.
     error ZeroAddress();
 
     /// @notice The stablecoin USD feed returned a non-positive answer (zero would brick `price()` on a
@@ -80,22 +83,31 @@ contract UsdyStableOracle is IOracle {
     // ---
 
     /// @param usdyOracle Ondo USDY dynamic-rate (NAV) oracle; `getPrice()` scaled by 1e18.
-    /// @param stableUsdFeed Chainlink USD feed for the loan stablecoin; its `decimals()` set the feed leg.
+    /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
+    constructor(address usdyOracle) {
+        if (usdyOracle == address(0)) revert ZeroAddress();
+        USDY_ORACLE = IRWADynamicOracle(usdyOracle);
+        _disableInitializers();
+    }
+
+    // ---
+    // INITIALIZATION
+    // ---
+
+    /// @notice Bind the per-market stablecoin leg: the Chainlink USD feed and the decimal-derived scale.
+    /// @param feed Chainlink USD feed for the loan stablecoin; its `decimals()` set the feed leg.
     /// @param loanToken Loan stablecoin token; its `decimals()` set the loan leg.
-    constructor(address usdyOracle, address stableUsdFeed, address loanToken) {
-        if (usdyOracle == address(0) || stableUsdFeed == address(0) || loanToken == address(0)) {
-            revert ZeroAddress();
-        }
+    function initialize(address feed, address loanToken) external initializer {
+        if (feed == address(0) || loanToken == address(0)) revert ZeroAddress();
 
         uint256 loanDecimals = IERC20Metadata(loanToken).decimals();
-        uint256 feedDecimals = IChainlinkAggregator(stableUsdFeed).decimals();
+        uint256 feedDecimals = IChainlinkAggregator(feed).decimals();
 
-        USDY_ORACLE = IRWADynamicOracle(usdyOracle);
-        STABLE_USD_FEED = IChainlinkAggregator(stableUsdFeed);
+        stableUsdFeed = IChainlinkAggregator(feed);
         // getPrice()/stableUsdPrice already carries (NAV_DECIMALS - feedDec) decimals, so the IOracle 1e36
         // value (1 USDY in 1 loan) needs 10^(36 + loanDec + feedDec - USDY_DECIMALS - NAV_DECIMALS). The
         // exponent is never negative: USDY_DECIMALS + NAV_DECIMALS == 36.
-        SCALE = 10 ** (36 + loanDecimals + feedDecimals - USDY_DECIMALS - NAV_DECIMALS);
+        scale = 10 ** (36 + loanDecimals + feedDecimals - USDY_DECIMALS - NAV_DECIMALS);
     }
 
     // ---
@@ -103,11 +115,14 @@ contract UsdyStableOracle is IOracle {
     // ---
 
     /// @inheritdoc IOracle
+    /// @dev USDY NAV divided by the stablecoin feed and scaled to 1e36: `getPrice() * scale / stableUsdPrice`.
+    ///      Reverts on a zero NAV or a non-positive feed answer (zero divisor / negative cast).
+    /// @return Price of 1 USDY quoted in the loan stablecoin, scaled by `1e36`.
     function price() external view override returns (uint256) {
         uint256 navPrice = USDY_ORACLE.getPrice();
         if (navPrice == 0) revert InvalidNavPrice();
-        (, int256 stableUsdPrice,,,) = STABLE_USD_FEED.latestRoundData();
+        (, int256 stableUsdPrice,,,) = stableUsdFeed.latestRoundData();
         if (stableUsdPrice <= 0) revert InvalidStablePrice();
-        return Math.mulDiv(navPrice, SCALE, uint256(stableUsdPrice));
+        return Math.mulDiv(navPrice, scale, uint256(stableUsdPrice));
     }
 }

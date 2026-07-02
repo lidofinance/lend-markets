@@ -25,7 +25,6 @@ import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 import {IOssifiableProxy} from "./IOssifiableProxy.sol";
@@ -190,11 +189,12 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 controllerImpl,
                 admin,
                 abi.encodeWithSignature(
-                    "initialize(bytes32,address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
+                    "initialize(bytes32,address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40),(uint16,uint96,uint96,uint16))",
                     Id.unwrap(id),
                     admin,
                     address(protocol.guardianSignals),
-                    cfg.activation
+                    cfg.activation,
+                    cfg.settlementConfig
                 )
             )
         );
@@ -215,17 +215,10 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
             )
         );
 
-        // Seed the settlement config (admin holds DEFAULT_ADMIN_ROLE; grant MANAGER_ROLE to set policy).
+        // The settlement config is set in `initialize`. Grant `admin` MANAGER_ROLE for later policy changes
+        // (tests act as `admin`); `admin` holds DEFAULT_ADMIN_ROLE, the MANAGER_ROLE admin.
         LidoLendMarketController c = LidoLendMarketController(controller);
         c.grantRole(c.MANAGER_ROLE(), admin);
-        c.setSettlementConfig(
-            SettlementConfig({
-                sliceFloorBps: cfg.settlementConfig.sliceFloorBps,
-                sliceFloorAssets: cfg.settlementConfig.sliceFloorAssets,
-                fullCutBelowCollateral: cfg.settlementConfig.fullCutBelowCollateral,
-                ltvStepBps: cfg.settlementConfig.ltvStepBps
-            })
-        );
 
         protocol.markets.push();
         m = protocol.markets[protocol.markets.length - 1];

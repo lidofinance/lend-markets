@@ -54,9 +54,7 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
 
     /// @inheritdoc IErc4626ExitBook
     function setVaultAllowed(IERC4626 vault, bool allowed) external onlyOwner {
-        if (address(vault) == address(0)) {
-            revert ZeroVault();
-        }
+        if (address(vault) == address(0)) revert ZeroVault();
         isVaultAllowed[vault] = allowed;
         emit VaultAllowedSet(address(vault), allowed);
     }
@@ -73,9 +71,7 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
         uint256 deadline,
         bool fullFillOnly
     ) external returns (uint256 id) {
-        if (!isVaultAllowed[vault]) {
-            revert VaultNotAllowed();
-        }
+        if (!isVaultAllowed[vault]) revert VaultNotAllowed();
 
         uint256 pricePerShare = vault.convertToAssets(WAD);
         // Permission-only: shares stay with the lender; sanity-check now, the fill re-checks live.

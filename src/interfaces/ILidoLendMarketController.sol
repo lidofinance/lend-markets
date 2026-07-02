@@ -62,12 +62,6 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
     error SettlementExceedsAllowed();
 
-    /// @notice Thrown when the cut's shares exceed the borrower's debt.
-    error SettlementExceedsDebt();
-
-    /// @notice Thrown when the seized collateral is zero or exceeds the borrower's collateral.
-    error SettlementInvalidSeize();
-
     // ---
     // TYPES
     // ---

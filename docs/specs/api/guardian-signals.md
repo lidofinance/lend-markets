@@ -123,14 +123,14 @@ Emitted when a guardian reports liveness, directly or via `flag`/`unflag`.
 ### `Flagged`
 
 ```solidity
-event Flagged(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
+event Flagged(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` | The market id. |
+| `marketId` | `Id` | The market id. |
 | `account` | `address` | The flagged account. |
 | `guardian` | `address` | The flagging guardian. |
 | `strikes` | `uint16` | The account's flag count after the flag. |
@@ -140,24 +140,41 @@ Emitted when a guardian flags an account.
 ### `Unflagged`
 
 ```solidity
-event Unflagged(Id indexed market, address indexed account, address indexed guardian, uint16 strikes);
+event Unflagged(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` | The market id. |
+| `marketId` | `Id` | The market id. |
 | `account` | `address` | The account. |
 | `guardian` | `address` | The retracting guardian. |
 | `strikes` | `uint16` | The account's flag count after the retraction. |
 
 Emitted when a guardian retracts a flag.
 
+### `FlagPruned`
+
+```solidity
+event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market id. |
+| `account` | `address` | The account. |
+| `guardian` | `address` | The former guardian whose flag was pruned. |
+| `strikes` | `uint16` | The account's flag count after this flag was pruned. |
+
+Emitted when a flag cast by an address that is no longer a guardian is pruned.
+
 ### `Banned`
 
 ```solidity
-event Banned(Id indexed market, address indexed account);
+event Banned(Id indexed marketId, address indexed account);
 ```
 
 Emitted when an account's ban latches, by quorum or by `ban`.
@@ -165,14 +182,14 @@ Emitted when an account's ban latches, by quorum or by `ban`.
 ### `Unbanned`
 
 ```solidity
-event Unbanned(Id indexed market, address indexed account, address indexed by);
+event Unbanned(Id indexed marketId, address indexed account, address indexed by);
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` |  |
+| `marketId` | `Id` |  |
 | `account` | `address` |  |
 | `by` | `address` | The `ACCESS_RESTORER_ROLE` holder that unbanned. |
 
@@ -181,14 +198,14 @@ Emitted when an account's ban is lifted.
 ### `ImmunityGranted`
 
 ```solidity
-event ImmunityGranted(Id indexed market, address indexed account, address indexed by);
+event ImmunityGranted(Id indexed marketId, address indexed account, address indexed by);
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` |  |
+| `marketId` | `Id` |  |
 | `account` | `address` |  |
 | `by` | `address` | The `ACCESS_RESTORER_ROLE` holder that granted immunity. |
 
@@ -197,14 +214,14 @@ Emitted when an account is exempted.
 ### `ImmunityRevoked`
 
 ```solidity
-event ImmunityRevoked(Id indexed market, address indexed account, address indexed by);
+event ImmunityRevoked(Id indexed marketId, address indexed account, address indexed by);
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` |  |
+| `marketId` | `Id` |  |
 | `account` | `address` |  |
 | `by` | `address` | The `ACCESS_LIMITER_ROLE` holder that revoked immunity. |
 
@@ -459,7 +476,7 @@ Highest block at least a quorum of guardians have ever scanned past. Monotonic: 
 
 ```solidity
 function flag(
-    Id market,
+    Id marketId,
     address[] calldata accounts,
     BlockInfoWithHash calldata lastScannedBlock
 ) external;
@@ -469,17 +486,17 @@ function flag(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` | The market id the accounts are flagged in. |
+| `marketId` | `Id` | The market id the accounts are flagged in. |
 | `accounts` | `address[]` | The accounts to flag. A zero address in the batch reverts. Each one a no-op when already flagged by the caller or immune. |
 | `lastScannedBlock` | `BlockInfoWithHash` | The heartbeat recorded for the caller after flagging, validated like `heartbeat`. |
 
-Flag `accounts` in `market`, then heartbeat. Per account a no-op when the caller already flags it or it is immune, so a batch never reverts on a skip.
+Flag `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller already flags it or it is immune, so a batch never reverts on a skip.
 
 ### `unflag`
 
 ```solidity
 function unflag(
-    Id market,
+    Id marketId,
     address[] calldata accounts,
     BlockInfoWithHash calldata lastScannedBlock
 ) external;
@@ -489,77 +506,85 @@ function unflag(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` | The market id the flags are retracted in. |
+| `marketId` | `Id` | The market id the flags are retracted in. |
 | `accounts` | `address[]` | The accounts to unflag. Each one a no-op when not flagged by the caller or immune. |
 | `lastScannedBlock` | `BlockInfoWithHash` | The heartbeat recorded for the caller after retracting, validated like `heartbeat`. |
 
-Retract the caller's flags on `accounts` in `market`, then heartbeat. Per account a no-op when the caller does not flag it or it is immune. Never lifts a latched ban.
+Retract the caller's flags on `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller does not flag it or it is immune. Never lifts a latched ban.
+
+### `prune`
+
+```solidity
+function prune(Id marketId, address account) external;
+```
+
+Permissionless: prune `account`'s flags cast by addresses that are no longer guardians. Lowers the flag count (and, below quorum, the activation surcharge) but never changes status — a latched ban lifts only through `unban`, so this is not a permissionless unban.
 
 ### `ban`
 
 ```solidity
-function ban(Id market, address account) external;
+function ban(Id marketId, address account) external;
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` | The market id the ban applies in. |
+| `marketId` | `Id` | The market id the ban applies in. |
 | `account` | `address` | The account to ban. Reverts on the zero address. |
 
-Force a ban on `account` in `market`, bypassing the quorum. Clears any immunity.
+Force a ban on `account` in `marketId`, bypassing the quorum. Clears any immunity.
 
 ### `unban`
 
 ```solidity
-function unban(Id market, address account) external;
+function unban(Id marketId, address account) external;
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` | The market id the ban is lifted in. |
+| `marketId` | `Id` | The market id the ban is lifted in. |
 | `account` | `address` | The account to unban. Its status returns to `Normal` and its flagger set is cleared. |
 
-Lift the ban on `account` in `market`: reset its status to `Normal` and clear its flags, so guardians re-evaluate from scratch and can re-ban it. Resetting to `Normal` also clears a standing immunity, so manage immunity with `grantImmunity` / `revokeImmunity`.
+Lift the ban on `account` in `marketId`: reset its status to `Normal` and clear its flags, so guardians re-evaluate from scratch and can re-ban it. Resetting to `Normal` also clears a standing immunity, so manage immunity with `grantImmunity` / `revokeImmunity`.
 
 ### `grantImmunity`
 
 ```solidity
-function grantImmunity(Id market, address account) external;
+function grantImmunity(Id marketId, address account) external;
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` | The market id the immunity applies in. |
+| `marketId` | `Id` | The market id the immunity applies in. |
 | `account` | `address` | The account to exempt. Reverts on the zero address. Its status is set to `Immune`. |
 
-Exempt `account` in `market` from guardian signals. While immune, `flag`/`unflag` no-op and `getOpinion` reads it as clean. Cleared by `revokeImmunity` or `ban`.
+Exempt `account` in `marketId` from guardian signals. While immune, `flag`/`unflag` no-op and `getOpinion` reads it as clean. Cleared by `revokeImmunity` or `ban`.
 
 ### `revokeImmunity`
 
 ```solidity
-function revokeImmunity(Id market, address account) external;
+function revokeImmunity(Id marketId, address account) external;
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` | The market id the immunity is revoked in. |
+| `marketId` | `Id` | The market id the immunity is revoked in. |
 | `account` | `address` | The account whose immunity is removed. Its status returns to `Normal`. |
 
-Remove `account`'s immunity in `market`, re-subjecting it to guardian signals.
+Remove `account`'s immunity in `marketId`, re-subjecting it to guardian signals.
 
 ### `getOpinion`
 
 ```solidity
 function getOpinion(
-    Id market,
+    Id marketId,
     address account
 ) external view returns (GuardiansOpinion memory);
 ```
@@ -568,7 +593,7 @@ function getOpinion(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` | The market id to read. |
+| `marketId` | `Id` | The market id to read. |
 | `account` | `address` | The account to read. |
 
 **Returns**
@@ -577,13 +602,13 @@ function getOpinion(
 | --- | --- | --- |
 | `<none>` | `GuardiansOpinion` | The opinion: latched status, effective strikes (forced to 0 while `Immune`), raw flag count, and the quorum-scan frontier. |
 
-Guardian opinion on `account` in `market`: status, strike count, and the quorum-scan frontier. The view the controller's activation gate consumes.
+Guardian opinion on `account` in `marketId`: status, strike count, and the quorum-scan frontier. The view the controller's activation gate consumes.
 
 ### `getFlaggedBy`
 
 ```solidity
 function getFlaggedBy(
-    Id market,
+    Id marketId,
     address account
 ) external view returns (address[] memory);
 ```
@@ -592,7 +617,7 @@ function getFlaggedBy(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `market` | `Id` | The market id to read. |
+| `marketId` | `Id` | The market id to read. |
 | `account` | `address` | The account to read. |
 
 **Returns**
@@ -601,4 +626,4 @@ function getFlaggedBy(
 | --- | --- | --- |
 | `<none>` | `address[]` | The addresses of guardians currently flagging the account. |
 
-The guardians currently flagging `account` in `market`.
+The guardians currently flagging `account` in `marketId`.
