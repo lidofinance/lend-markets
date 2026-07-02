@@ -372,9 +372,7 @@ library CollateralActivationLib {
     function _computeDelay(State storage $, uint256 effectiveInflow) private view returns (uint256) {
         CollateralActivationConfig memory cfg = $.config;
 
-        if (effectiveInflow >= cfg.maxDelayInflow) {
-            return cfg.maxActivationDelay;
-        }
+        if (effectiveInflow >= cfg.maxDelayInflow) return cfg.maxActivationDelay;
 
         uint256 delaySpan = cfg.maxActivationDelay - cfg.minActivationDelay;
         return cfg.minActivationDelay + Math.mulDiv(delaySpan, effectiveInflow, cfg.maxDelayInflow);

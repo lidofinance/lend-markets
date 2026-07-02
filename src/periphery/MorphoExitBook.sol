@@ -66,9 +66,7 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     // ---
 
     constructor(address morpho, address owner, uint256 maxLifetime_) ExitBookBase(owner, maxLifetime_) {
-        if (morpho == address(0)) {
-            revert ZeroMorpho();
-        }
+        if (morpho == address(0)) revert ZeroMorpho();
 
         MORPHO = IMorpho(morpho);
     }
@@ -81,9 +79,7 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     function setMarketAllowed(MarketParams calldata marketParams, bool allowed) external onlyOwner {
         Id marketId = marketParams.id();
 
-        if (MORPHO.market(marketId).lastUpdate == 0) {
-            revert MarketNotCreated();
-        }
+        if (MORPHO.market(marketId).lastUpdate == 0) revert MarketNotCreated();
 
         isMarketAllowed[marketId] = allowed;
         _marketParams[marketId] = marketParams;
@@ -112,18 +108,12 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
         uint256 deadline,
         bool fullFillOnly
     ) external returns (uint256 id) {
-        if (!isMarketAllowed[marketId]) {
-            revert MarketNotAllowed();
-        }
+        if (!isMarketAllowed[marketId]) revert MarketNotAllowed();
 
-        if (!MORPHO.isAuthorized(msg.sender, address(this))) {
-            revert NotAuthorizedOnMorpho();
-        }
+        if (!MORPHO.isAuthorized(msg.sender, address(this))) revert NotAuthorizedOnMorpho();
 
         // Permission-only: shares stay in the lender's position; sanity-check now, the fill re-checks live.
-        if (MORPHO.position(marketId, msg.sender).supplyShares < shares) {
-            revert InsufficientBacking();
-        }
+        if (MORPHO.position(marketId, msg.sender).supplyShares < shares) revert InsufficientBacking();
 
         MarketParams memory marketParams = _marketParams[marketId];
         uint256 pricePerShare = _supplySharesToAssets(marketParams, WAD);
@@ -147,9 +137,7 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     function _availableShares(uint256 id, Request storage request) internal view override returns (uint256) {
         // The withdraw pulls from the owner's position on their behalf — if they revoked authorization the
         // fill would revert, so report nothing fillable (keeps `previewFill` honest for fillers).
-        if (!MORPHO.isAuthorized(request.owner, address(this))) {
-            return 0;
-        }
+        if (!MORPHO.isAuthorized(request.owner, address(this))) return 0;
         MarketParams memory marketParams = _requestMarket(id);
 
         uint256 available = _assetsToSupplyShares(marketParams, _idleAssets(marketParams));

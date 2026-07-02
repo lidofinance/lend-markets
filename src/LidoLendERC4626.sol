@@ -72,9 +72,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.markets.storage.LidoLendER
 
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
     constructor(address lidoLend) {
-        if (lidoLend == address(0)) {
-            revert ZeroLidoLend();
-        }
+        if (lidoLend == address(0)) revert ZeroLidoLend();
 
         LIDO_LEND = ILidoLend(lidoLend);
 
@@ -88,17 +86,11 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.markets.storage.LidoLendER
         string memory name_,
         string memory symbol_
     ) external initializer {
-        if (controller_ == address(0)) {
-            revert ZeroController();
-        }
+        if (controller_ == address(0)) revert ZeroController();
 
-        if (marketParams_.loanToken == address(0)) {
-            revert ZeroLoanToken();
-        }
+        if (marketParams_.loanToken == address(0)) revert ZeroLoanToken();
 
-        if (marketParams_.collateralToken == address(0)) {
-            revert ZeroCollateralToken();
-        }
+        if (marketParams_.collateralToken == address(0)) revert ZeroCollateralToken();
 
         __ERC20_init(name_, symbol_);
         __ERC4626_init(IERC20(marketParams_.loanToken));

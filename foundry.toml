@@ -28,6 +28,7 @@ fail_on_revert = true
 [profile.default.fmt]
 wrap_comments = true
 line_length = 120
+single_line_statement_blocks = "single"
 
 [lint]
 exclude_lints = [

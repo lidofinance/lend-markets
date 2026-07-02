@@ -400,19 +400,13 @@ contract LidoLendMarketController layout at erc7201("lido.lend.markets.storage.L
 
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
         // borrow (caller). Soft strikes only delay activation; a ban hard-blocks the borrow.
-        if (_guardianSignals.getOpinion(id, hookData.caller).status == Status.Banned) {
-            revert AddressBanned();
-        }
+        if (_guardianSignals.getOpinion(id, hookData.caller).status == Status.Banned) revert AddressBanned();
 
-        if (_guardianSignals.getOpinion(id, hookData.receiver).status == Status.Banned) {
-            revert AddressBanned();
-        }
+        if (_guardianSignals.getOpinion(id, hookData.receiver).status == Status.Banned) revert AddressBanned();
 
         GuardiansOpinion memory borrowerOpinion = _guardianSignals.getOpinion(id, hookData.onBehalf);
 
-        if (borrowerOpinion.status == Status.Banned) {
-            revert AddressBanned();
-        }
+        if (borrowerOpinion.status == Status.Banned) revert AddressBanned();
 
         // Borrow capacity uses active (matured) collateral only. `sync` matures any ready lot, subject to the
         // quorum-scan gate, and returns the post-mature inactive total. Active is the raw collateral minus that.

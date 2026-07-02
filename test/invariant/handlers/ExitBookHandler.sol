@@ -109,9 +109,7 @@ contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
         for (uint256 k; k < n; ++k) {
             uint256 id = allIds[(start + k) % n];
             Request memory r = BOOK.getExitRequest(id);
-            if (r.status == ExitStatus.Open && block.timestamp <= r.deadline) {
-                return id;
-            }
+            if (r.status == ExitStatus.Open && block.timestamp <= r.deadline) return id;
         }
         return 0;
     }
@@ -124,12 +122,8 @@ contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
             allIds.push(id);
         }
         Request memory r = BOOK.getExitRequest(id);
-        if (r.sizeRemaining > sizeCeiling[id]) {
-            sizeCeiling[id] = r.sizeRemaining;
-        }
-        if (r.status != ExitStatus.Open) {
-            wasClosed[id] = true;
-        }
+        if (r.sizeRemaining > sizeCeiling[id]) sizeCeiling[id] = r.sizeRemaining;
+        if (r.status != ExitStatus.Open) wasClosed[id] = true;
     }
 
     // ---

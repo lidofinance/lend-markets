@@ -310,13 +310,9 @@ contract GuardianSignals layout at erc7201("lido.lend.markets.storage.GuardianSi
     ///      whole-set read and sort.
     function _heartbeat(BlockInfoWithHash calldata lastScannedBlock) internal {
         // a guardian cannot have scanned a block that does not exist yet
-        if (lastScannedBlock.number > block.number) {
-            revert BlockInTheFuture();
-        }
+        if (lastScannedBlock.number > block.number) revert BlockInTheFuture();
 
-        if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) {
-            revert InvalidBlockHash();
-        }
+        if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) revert InvalidBlockHash();
 
         _heartbeats[msg.sender] = BlockInfo(lastScannedBlock.number, lastScannedBlock.timestamp);
         emit Heartbeat(msg.sender);
