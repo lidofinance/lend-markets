@@ -120,14 +120,22 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         _disableInitializers();
     }
 
-    /// @notice Set the admin. The guardian set, quorum, and delay parameters are seeded afterwards via
-    ///         `addGuardian` / `setQuorum` / `setDelayParams`.
-    /// @param admin Holder of `DEFAULT_ADMIN_ROLE`, the default admin of the guardian and override roles.
-    function initialize(address admin) external initializer {
+    /// @notice Set the admin and seed the guardian set and quorum. The delay parameters are set afterwards via
+    ///         `setDelayParams`. Emits `GuardianAdded` per guardian and `QuorumSet`.
+    /// @param admin     Holder of `DEFAULT_ADMIN_ROLE`, the default admin of the guardian and override roles.
+    /// @param guardians The initial guardian set. Each must be non-zero, unique, and within `MAX_GUARDIANS_COUNT`.
+    /// @param quorum    The initial quorum. Must satisfy `1 <= quorum <= guardians.length`.
+    function initialize(address admin, address[] calldata guardians, uint256 quorum) external initializer {
         if (admin == address(0)) revert ZeroAddress();
 
         __AccessControlEnumerable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+
+        for (uint256 i; i < guardians.length; ++i) {
+            _addGuardian(guardians[i]);
+        }
+        _setQuorum(quorum);
+        emit QuorumSet(quorum);
     }
 
     // ---

@@ -111,7 +111,8 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Set the delay parameters. Reverts if a per-signal delay exceeds `MAX_DELAY_PER_STRIKE` or the
     ///         window exceeds `MAX_SUSPECT_WINDOW`. Never touches the guardian set.
     /// @param delayPerStrike  The activation-delay surcharge per flag.
-    /// @param delayPerSuspect The activation-delay surcharge per fresh suspect report.
+    /// @param delayPerSuspect The activation-delay surcharge per fresh suspect report. A non-zero value has no
+    ///        effect while `suspectWindow` is 0, since a report is then fresh only in its own block.
     /// @param maxDelay        The cap on the total guardian activation-delay surcharge (0 = uncapped).
     /// @param suspectWindow   The freshness horizon within which a suspect report still counts.
     function setDelayParams(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow)
@@ -166,7 +167,7 @@ interface IGuardianSignals is IGuardianSignalsView {
     function unflag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Report `accounts` as suspect in `marketId`, then heartbeat. A suspect report never latches a ban; it
     ///         raises the activation delay like a flag, but only while inside the suspect window. Per account a
-    ///         no-op when immune.
+    ///         no-op when immune; a zero address in the batch reverts.
     function reportSuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
         external;
     /// @notice Retract the caller's suspect reports on `accounts` in `marketId`, then heartbeat. Per account a
@@ -183,7 +184,8 @@ interface IGuardianSignals is IGuardianSignalsView {
 
     /// @notice Force a ban on `account` in `marketId`, bypassing the quorum. Clears any immunity.
     function ban(Id marketId, address account) external;
-    /// @notice Lift the ban on `account` in `marketId`: reset its status to `Normal` and clear its flags. Immunity
+    /// @notice Lift the ban on `account` in `marketId`: reset its status to `Normal` and clear its flags. Suspect
+    ///         reports are left intact (they carry no ban), so a suspect-driven delay survives the unban. Immunity
     ///         is managed with `grantImmunity` / `revokeImmunity`.
     function unban(Id marketId, address account) external;
     /// @notice Exempt `account` from guardian signals in `marketId`. While immune, `flag`/`unflag` no-op and

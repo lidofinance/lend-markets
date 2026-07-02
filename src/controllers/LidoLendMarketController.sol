@@ -403,8 +403,6 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         if (_guardianSignals.isBanned(id, hookData.receiver)) revert AddressBanned();
 
-        // One combined read for the borrower gives the ban bit, the activation-delay surcharge and the quorum-scan
-        // frontier. A banned borrower carries a `max` surcharge, which also pins the unlock at infinity.
         GuardiansOpinion memory opinion = _guardianSignals.getOpinion(id, hookData.onBehalf);
         if (opinion.banned) revert AddressBanned();
 

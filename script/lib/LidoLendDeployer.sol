@@ -22,13 +22,11 @@ interface IOwnerFacade {
     function createMarket(MarketParams calldata marketParams, address controller, bool enableSettlement) external;
 }
 
-/// @dev Minimal surface of the guardian registry used at deploy: grant the manager role, then seed the committee
-///      one guardian at a time plus the quorum and delay parameters.
+/// @dev Minimal surface of the guardian registry used at deploy: grant the manager role and set the delay
+///      parameters (the guardian set and quorum are seeded in `initialize`).
 interface IGuardianRegistry {
     function GUARDIANS_MANAGER_ROLE() external view returns (bytes32);
     function grantRole(bytes32 role, address account) external;
-    function addGuardian(address guardian) external;
-    function setQuorum(uint256 newQuorum) external;
     function setDelayParams(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow)
         external;
 }
@@ -103,8 +101,9 @@ abstract contract LidoLendDeployer {
         bool enableSettlement;
         CollateralActivationConfigParams activation;
         SettlementConfigParams settlementConfig;
-        // Guardian-signals registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
-        // `1 <= quorum <= guardians.length`; swap in the real guardian set post-deploy.
+        // Guardian-signals registry bootstrap, seeded in `initialize`. The registry rejects `quorum` 0, so pass at
+        // least one guardian and `1 <= quorum <= guardians.length`; rotate to the real set post-deploy via
+        // `addGuardian` / `removeGuardian`.
         address[] guardians;
         uint256 quorum;
         GuardianConfigParams guardianConfig;
@@ -124,7 +123,7 @@ abstract contract LidoLendDeployer {
         d.ownerFacade = _deployOwnerFacade(d.core, cfg.admin, cfg.admin, address(0));
         ILidoLend(d.core).setOwner(d.ownerFacade);
 
-        d.guardianSignals = _deployGuardianSignals(cfg.admin);
+        d.guardianSignals = _deployGuardianSignals(cfg.admin, cfg.guardians, cfg.quorum);
         d.oracle = _deployOracle(cfg.oracleSource, cfg.admin);
         d.irm = _deployIrm(d.core, cfg.admin);
 
@@ -151,14 +150,10 @@ abstract contract LidoLendDeployer {
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
 
-        // Seed the guardian committee on its registry. `admin` holds DEFAULT_ADMIN_ROLE, so it self-grants
-        // GUARDIANS_MANAGER_ROLE, then adds each guardian and sets the quorum and delay parameters individually.
+        // The guardian set and quorum are seeded in `initialize`. Grant `admin` GUARDIANS_MANAGER_ROLE for later
+        // roster/quorum changes (it holds DEFAULT_ADMIN_ROLE, so it self-grants), then set the delay parameters.
         IGuardianRegistry guardian = IGuardianRegistry(d.guardianSignals);
         guardian.grantRole(guardian.GUARDIANS_MANAGER_ROLE(), cfg.admin);
-        for (uint256 i; i < cfg.guardians.length; ++i) {
-            guardian.addGuardian(cfg.guardians[i]);
-        }
-        guardian.setQuorum(cfg.quorum);
         guardian.setDelayParams(
             cfg.guardianConfig.delayPerStrike,
             cfg.guardianConfig.delayPerSuspect,
@@ -187,11 +182,16 @@ abstract contract LidoLendDeployer {
         );
     }
 
-    /// @dev Guardian-signals registry behind a proxy. `initialize(admin)`; the committee is seeded via
-    ///      `addGuardian` / `setQuorum` / `setDelayParams` after deploy.
-    function _deployGuardianSignals(address admin) internal virtual returns (address) {
+    /// @dev Guardian-signals registry behind a proxy. `initialize` seeds the admin, guardian set, and quorum; the
+    ///      delay parameters are set via `setDelayParams` after deploy.
+    function _deployGuardianSignals(address admin, address[] memory guardians, uint256 quorum)
+        internal
+        virtual
+        returns (address)
+    {
         address impl = _deployArtifact("src/GuardianSignals.sol:GuardianSignals", "");
-        bytes memory initData = abi.encodeWithSignature("initialize(address)", admin);
+        bytes memory initData =
+            abi.encodeWithSignature("initialize(address,address[],uint256)", admin, guardians, quorum);
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
