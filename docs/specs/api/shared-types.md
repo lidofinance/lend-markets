@@ -67,11 +67,10 @@ struct SettlementConfig {
     uint96 sliceFloorAssets;
     uint96 fullCutBelowCollateral;
     uint16 ltvStepBps;
-    uint96 minBorrowCollateral;
 }
 ```
 
-Settlement and borrow-eligibility policy, set together via `setSettlementConfig`. The first four knobs tune the settlement slice cut; `minBorrowCollateral` is the position floor that borrows and withdrawals are checked against. The uint96 amounts are policy bounds, not accounting: for a loan or collateral token whose plausible amounts exceed uint96 (~7.9e28 base units) the configurable floors saturate low — the policy weakens but nothing reverts or loses accounting.
+Settlement slice policy, set together via `setSettlementConfig`. The knobs tune the settlement slice cut. The uint96 amounts are policy bounds, not accounting: for a loan or collateral token whose plausible amounts exceed uint96 (~7.9e28 base units) the configurable floors saturate low — the policy weakens but nothing reverts or loses accounting.
 
 **Fields**
 
@@ -81,4 +80,3 @@ Settlement and borrow-eligibility policy, set together via `setSettlementConfig`
 | `sliceFloorAssets` | `uint96` | Absolute term of the root cut: one allowance is this many loan assets. |
 | `fullCutBelowCollateral` | `uint96` | Sweep floor in collateral units: when a cut would leave the borrower's remaining collateral below this, the slice lifts to the full debt so the position closes in one cut, leaving no dust tail. 0 disables the sweep. |
 | `ltvStepBps` | `uint16` | LTV-step term of the root cut: one allowance is the cut that lowers the root's LTV by `ltvStepBps / BPS`. The root cut is the largest of the three terms (debt-fraction, absolute, LTV-step). |
-| `minBorrowCollateral` | `uint96` | Minimum raw collateral a position must hold to open or grow debt, and the floor a withdrawal may not cross while debt is open. Keeps debt positions large enough to stay economical to liquidate and settle. 0 disables the floor. |

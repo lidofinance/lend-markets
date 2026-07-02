@@ -48,25 +48,21 @@ library CollateralActivationLib {
     // EVENTS
     // ---
 
-    /// @notice Emitted when a deposit enters or extends the activation timer. The base unlock is
-    ///         `activatingStart + activatingDelay`, before any strike surcharge.
-    event CollateralActivating(
-        address indexed borrower, uint256 amount, uint256 activatingStart, uint256 activatingDelay
-    );
+    /// @notice A deposit enters or extends the activation timer. `position` is the resulting state.
+    event CollateralActivating(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice Emitted when an activating lot matures (or an instant deposit lands) into borrowable collateral.
-    event CollateralActivated(address indexed borrower, uint256 amount);
+    /// @notice An activating lot matures, or an instant deposit lands active. `position` is the resulting state.
+    event CollateralActivated(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice Emitted when a deposit stays below the activation threshold and is held as untimed dust.
-    event CollateralDusted(address indexed borrower, uint256 amount);
+    /// @notice A sub-threshold deposit is held as untimed dust. `position` is the resulting state.
+    event CollateralDusted(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice Emitted when collateral is drained from the un-matured buckets, reporting the amounts taken from
-    ///         dust and activating.
-    event CollateralDrained(address indexed borrower, uint256 fromDust, uint256 fromActivating);
+    /// @notice Collateral is drained from the un-matured buckets. `position` is the resulting state.
+    event CollateralDrained(address indexed borrower, Position position);
 
-    /// @notice Emitted when a withdrawal drains an activating lot below the threshold and its remainder is folded
-    ///         back into untimed dust.
-    event CollateralDemoted(address indexed borrower, uint256 amount);
+    /// @notice A withdrawal folds a sub-threshold activating remainder back into dust. `position` is the
+    ///         resulting state.
+    event CollateralDemoted(address indexed borrower, uint256 amount, Position position);
 
     /// @notice Emitted when the full activation config is set.
     event CollateralActivationConfigSet(CollateralActivationConfig config);
@@ -168,14 +164,14 @@ library CollateralActivationLib {
 
         if (assetsWithDust < $.config.minActivationAmount) {
             position.dust = assetsWithDust.toUint128();
-            emit CollateralDusted(borrower, assets);
+            emit CollateralDusted(borrower, assets, position);
             return;
         }
 
         if (dust > 0) position.dust = 0;
 
         if (instant) {
-            emit CollateralActivated(borrower, assetsWithDust);
+            emit CollateralActivated(borrower, assetsWithDust, position);
             return;
         }
 
@@ -189,7 +185,7 @@ library CollateralActivationLib {
             position.activatingDelay = delay.toUint32();
         }
 
-        emit CollateralActivating(borrower, assetsWithDust, position.activatingStart, position.activatingDelay);
+        emit CollateralActivating(borrower, assetsWithDust, position);
     }
 
     /// @notice Voluntary withdrawal: drain `amount` from the un-matured buckets honoring the activating lock,
@@ -216,7 +212,7 @@ library CollateralActivationLib {
             position.dust += activatingAfter.toUint128();
             position.activating = 0;
             _clearTimer(position);
-            emit CollateralDemoted(borrower, activatingAfter);
+            emit CollateralDemoted(borrower, activatingAfter, position);
         }
     }
 
@@ -241,7 +237,7 @@ library CollateralActivationLib {
                 uint128 activatedAmount = position.activating;
                 position.activating = 0;
                 _clearTimer(position);
-                emit CollateralActivated(borrower, activatedAmount);
+                emit CollateralActivated(borrower, activatedAmount, position);
             }
         }
 
@@ -318,7 +314,7 @@ library CollateralActivationLib {
 
         if (position.activating == 0) _clearTimer(position);
 
-        emit CollateralDrained(borrower, fromDust, fromActivating);
+        emit CollateralDrained(borrower, position);
         return position.dust + position.activating;
     }
 

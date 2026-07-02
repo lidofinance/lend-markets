@@ -37,16 +37,15 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     // ROLES
     // ---
 
-    /// @dev The single governance role: full activation and settlement config, grant and revoke instant
-    ///      activation.
+    /// @inheritdoc ILidoLendMarketController
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
-    /// @dev Freezes the market: blocks new borrows and debt-bearing collateral withdrawals.
+    /// @inheritdoc ILidoLendMarketController
     bytes32 public constant FREEZER_ROLE = keccak256("FREEZER_ROLE");
-    /// @dev Lifts a freeze.
+    /// @inheritdoc ILidoLendMarketController
     bytes32 public constant UNFREEZER_ROLE = keccak256("UNFREEZER_ROLE");
-    /// @dev Pauses every hook for a bounded (or indefinite) duration.
+    /// @inheritdoc ILidoLendMarketController
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    /// @dev Lifts a pause.
+    /// @inheritdoc ILidoLendMarketController
     bytes32 public constant RESUMER_ROLE = keccak256("RESUMER_ROLE");
 
     // ---
@@ -479,10 +478,6 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // The core enforces payload consistency before this hook — shares <= debt and 0 < seize <= collateral.
         uint256 sharesToBurn = hookData.borrowSharesCanceled;
-
-        // settle activation, then drain buckets by the exact amount core seizes from raw (lockstep).
-        // A freeze or ban defers maturation, and `seize` drains all buckets regardless of maturation state.
-        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
 
         _activation.seize(borrower, hookData.seizedAssets);
 

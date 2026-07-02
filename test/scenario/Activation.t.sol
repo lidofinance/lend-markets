@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
+import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
@@ -17,9 +18,7 @@ contract ActivationTest is LidoLendSetup {
     using MarketActions for Market;
 
     /// @dev Local mirror of `CollateralActivationLib.CollateralActivating` for `vm.expectEmit`.
-    event CollateralActivating(
-        address indexed borrower, uint256 amount, uint256 activatingStart, uint256 activatingDelay
-    );
+    event CollateralActivating(address indexed borrower, uint256 amount, CollateralActivationLib.Position position);
 
     function setUp() public {
         vm.roll(1000);
@@ -93,9 +92,10 @@ contract ActivationTest is LidoLendSetup {
         assertEq(m.loanToken.balanceOf(borrower), borrowAmt, "instant activation skips the timer");
     }
 
-    /// @dev A fresh activating deposit emits `CollateralActivating` with the split start/delay: the start is the
-    ///      current block time and the delay is previewed independently via `currentActivationDelay(amount)`.
-    function test_supplyCollateral_emitsActivatingStartAndDelay() public {
+    /// @dev A fresh activating deposit emits `CollateralActivating` with the resulting position: `activating`
+    ///      equals the deposit, `activatingStart` is now, and `activatingDelay` is previewed independently via
+    ///      `currentActivationDelay(amount)`.
+    function test_supplyCollateral_emitsActivatingPosition() public {
         Market storage m = _m();
         address lender = _actor("lender");
         _fund(m.loanToken, lender, 1000 ether);
@@ -106,12 +106,17 @@ contract ActivationTest is LidoLendSetup {
         _fund(m.collateralToken, borrower, amount);
 
         uint256 expectedDelay = m.controller.currentActivationDelay(amount); // independent delay preview
-        uint256 expectedStart = block.timestamp;
+        CollateralActivationLib.Position memory expected = CollateralActivationLib.Position({
+            dust: 0,
+            activating: uint128(amount),
+            activatingStart: uint40(block.timestamp),
+            activatingDelay: uint32(expectedDelay)
+        });
 
         vm.prank(borrower);
         m.collateralToken.approve(address(m.core), amount);
         vm.expectEmit(true, false, false, true, address(m.controller));
-        emit CollateralActivating(borrower, amount, expectedStart, expectedDelay);
+        emit CollateralActivating(borrower, amount, expected);
         vm.prank(borrower);
         m.core.supplyCollateral(m.params, amount, borrower, "");
     }
