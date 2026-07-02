@@ -112,8 +112,9 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     function borrow(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         Position memory pos = CORE.position(ID, a);
-        // Borrowing against collateral below the activation floor now reverts `CollateralFloorBreached`; the
-        // handler honours that gate (no dust action here, so raw collateral equals active collateral).
+        // Borrowing against active collateral below the activation threshold reverts `InsufficientActiveCollateral`
+        // (sub-threshold active collateral has zero capacity); the handler honours that gate (no dust action
+        // here, so raw collateral equals active collateral).
         if (pos.collateral < FLOOR) return;
         MorphoMarket memory mk = CORE.market(ID);
 

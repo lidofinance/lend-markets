@@ -102,11 +102,7 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
                 // fullCutBelowCollateral above both collaterals, so any partial slice strands dust and the queue
                 // lifts every cut to a whole close.
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100,
-                    sliceFloorAssets: 0,
-                    fullCutBelowCollateral: 200e18,
-                    ltvStepBps: 100,
-                    minBorrowCollateral: 0
+                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 200e18, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
@@ -190,71 +186,5 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
 
     function _deployOracle(address, address) internal override returns (address) {
         return address(new FixedPriceOracle(PRICE));
-    }
-
-    function _deployOut(string memory file, string memory name, bytes memory args) internal returns (address a) {
-        string memory json = vm.readFile(string.concat("out/", file, "/", name, ".json"));
-        bytes memory code = bytes.concat(vm.parseJsonBytes(json, ".bytecode.object"), args);
-        assembly ("memory-safe") {
-            a := create(0, add(code, 0x20), mload(code))
-        }
-        require(a != address(0) && a.code.length != 0, "SettleWholePoolFullClose: deploy failed");
-    }
-
-    function _deployCore(address admin) internal override returns (address) {
-        address impl = _deployOut("LidoLend.sol", "LidoLend", "");
-        bytes memory initData = abi.encodeWithSignature("initialize(address)", admin);
-        return _deployOut("OssifiableProxy.sol", "OssifiableProxy", abi.encode(impl, admin, initData));
-    }
-
-    function _deployGuardianSignals(address admin, address[] memory guardians, uint256 quorum)
-        internal
-        override
-        returns (address)
-    {
-        address impl = _deployOut("GuardianSignals.sol", "GuardianSignals", "");
-        bytes memory initData =
-            abi.encodeWithSignature("initialize(address,address[],uint256)", admin, guardians, quorum);
-        return _deployOut("OssifiableProxy.sol", "OssifiableProxy", abi.encode(impl, admin, initData));
-    }
-
-    function _deployIrm(address core, address owner) internal override returns (address) {
-        return _deployOut("AdaptiveCurveIrm.sol", "AdaptiveCurveIrm", abi.encode(core, owner));
-    }
-
-    function _deployController(
-        address core_,
-        Id marketId,
-        address guardianSignals,
-        address admin,
-        CollateralActivationConfigParams memory activation
-    ) internal override returns (address proxy, address impl) {
-        impl = _deployOut("LidoLendMarketController.sol", "LidoLendMarketController", abi.encode(core_, marketId));
-        bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40))",
-            admin,
-            guardianSignals,
-            activation
-        );
-        proxy = _deployOut("OssifiableProxy.sol", "OssifiableProxy", abi.encode(impl, admin, initData));
-    }
-
-    function _deployVault(
-        address core_,
-        MarketParams memory params_,
-        address controller_,
-        address admin,
-        string memory name_,
-        string memory symbol_
-    ) internal override returns (address) {
-        address impl = _deployOut("LidoLendERC4626.sol", "LidoLendERC4626", abi.encode(core_));
-        bytes memory initData = abi.encodeWithSignature(
-            "initialize((address,address,address,address,uint256),address,string,string)",
-            params_,
-            controller_,
-            name_,
-            symbol_
-        );
-        return _deployOut("OssifiableProxy.sol", "OssifiableProxy", abi.encode(impl, admin, initData));
     }
 }

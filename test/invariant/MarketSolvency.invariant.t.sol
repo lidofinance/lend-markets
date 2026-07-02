@@ -125,12 +125,12 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         assertEq(sum, m.collateralToken.balanceOf(address(m.core)), "sum of position collateral == core balance");
     }
 
-    /// @dev A debt-bearing borrower never reaches collateral below `minActivationAmount` through the VOLUNTARY
-    ///      paths: `withdrawCollateral` reverts `CollateralFloorBreached` below the floor with open debt, and
-    ///      the borrow hook now likewise reverts `CollateralFloorBreached` against sub-floor active collateral
-    ///      (a gap this invariant first caught — a debt-free withdraw below the floor followed by a borrow).
-    ///      Liquidation is a FORCED path that may legitimately leave a debt-bearing sub-floor position, so its
-    ///      victims are excluded; only the voluntary paths must uphold the floor.
+    /// @dev A debt-bearing borrower never reaches active collateral below `minActivationAmount` through the
+    ///      VOLUNTARY paths: sub-threshold active collateral has zero borrow capacity, so `withdrawCollateral`
+    ///      and the borrow hook both revert `InsufficientActiveCollateral` (a gap this invariant first caught —
+    ///      a debt-free withdraw below the threshold followed by a borrow). Liquidation is a FORCED path that may
+    ///      legitimately leave a debt-bearing sub-threshold position, so its victims are excluded; only the
+    ///      voluntary paths must uphold the floor.
     function invariant_noDebtWithSubFloorCollateral() public view {
         Market storage m = protocol.markets[0];
         for (uint256 i; i < actors.length; i++) {

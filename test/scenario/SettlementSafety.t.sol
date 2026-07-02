@@ -3,7 +3,6 @@ pragma solidity 0.8.35;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -26,14 +25,6 @@ contract SettlementSafetyTest is LidoLendSetup {
 
     function _m() internal view returns (Market storage) {
         return protocol.markets[0];
-    }
-
-    /// @dev Raise the per-position raw-collateral floor (`minBorrowCollateral`) on the live market. The setup
-    ///      grants the test contract MANAGER_ROLE, so it sets the settlement config directly.
-    function _setMinBorrowCollateral(uint96 floor) internal {
-        SettlementConfig memory cfg = _m().controller.settlementConfig();
-        cfg.minBorrowCollateral = floor;
-        _m().controller.setSettlementConfig(cfg);
     }
 
     function _seed(uint256 collat, uint256 borrowBps)
@@ -69,26 +60,25 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.vault.settle(shares, bs, lender, lender);
     }
 
-    /// @dev Withdrawing collateral under open debt may not leave a raw balance below `minActivationAmount`
-    ///      (10 ether) — it would strand un-reactivatable dust backing a loan.
+    /// @dev Withdrawing collateral under open debt may not leave active collateral below the activation
+    ///      threshold (`minActivationAmount`, 10 ether): `_getMaxBorrow` returns 0 for sub-threshold active
+    ///      collateral, so the debt no longer clears the LLTV health check and the withdraw reverts.
     function testRevert_withdrawCollateral_belowFloorWithOpenDebt() public {
         Market storage m = _m();
-        _setMinBorrowCollateral(10 ether);
         (, address borrower,) = _seed(100 ether, 100); // tiny debt -> lots of health headroom
 
-        // Leaving 5 ether (< the 10 ether floor) while debt is open trips the floor, not the health gate.
+        // Leaving 5 ether active (< the 10 ether activation threshold) zeroes borrow capacity, so the open debt
+        // fails the health gate.
         vm.prank(borrower);
-        vm.expectRevert(ILidoLendMarketController.CollateralFloorBreached.selector);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
         m.core.withdrawCollateral(m.params, 95 ether, borrower, borrower);
     }
 
-    /// @dev BUG FOUND VIA THE SOLVENCY INVARIANT, now fixed: the borrow hook enforces the collateral floor.
-    ///      A borrower could otherwise withdraw active collateral BELOW the floor while debt-free (allowed —
-    ///      the withdraw floor only gates open-debt positions) and THEN borrow, ending with debt + sub-floor
-    ///      collateral. The borrow now reverts `CollateralFloorBreached`, mirroring the withdraw hook.
+    /// @dev A borrower can withdraw active collateral below the threshold while debt-free (the withdraw health
+    ///      gate only bites with open debt), but then cannot open a loan against it: `_getMaxBorrow` is 0 for
+    ///      sub-threshold active collateral, so the borrow fails the health check.
     function testRevert_borrow_subFloorActiveAfterDebtFreeWithdraw() public {
         Market storage m = _m();
-        _setMinBorrowCollateral(10 ether);
         address lender = _actor("lender");
         _fund(m.loanToken, lender, 1000 ether);
         m.vaultDeposit(lender, 1000 ether);
@@ -98,51 +88,49 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.supplyCollateral(borrower, 50 ether);
         m.activateCollateral();
 
-        // Debt-free, so withdrawing active collateral below the floor IS allowed.
+        // Debt-free, so withdrawing active collateral below the threshold IS allowed.
         vm.prank(borrower);
         m.core.withdrawCollateral(m.params, 45 ether, borrower, borrower);
-        assertEq(m.controller.positionOf(borrower).active, 5 ether, "active collateral now below the floor");
+        assertEq(m.controller.positionOf(borrower).active, 5 ether, "active collateral now below the threshold");
 
-        // Opening a loan against that sub-floor active collateral is rejected.
+        // Opening a loan against that sub-threshold active collateral is rejected (zero capacity).
         vm.prank(borrower);
-        vm.expectRevert(ILidoLendMarketController.CollateralFloorBreached.selector);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
         m.core.borrow(m.params, 0.5 ether, 0, borrower, borrower);
     }
 
-    /// @dev A fresh sub-floor deposit stays dust (active 0) and likewise cannot be borrowed against — now via
-    ///      the floor gate (previously this reverted only because zero active collateral failed the health gate).
+    /// @dev A fresh sub-threshold deposit stays dust (active 0) and cannot be borrowed against: zero active
+    ///      collateral means zero borrow capacity.
     function testRevert_borrow_freshDustCollateral() public {
         Market storage m = _m();
-        _setMinBorrowCollateral(10 ether);
         address borrower = _actor("borrower");
-        _fund(m.collateralToken, borrower, 5 ether); // < 10 floor -> dust
+        _fund(m.collateralToken, borrower, 5 ether); // < 10 threshold -> dust
         m.supplyCollateral(borrower, 5 ether);
         m.activateCollateral();
-        assertEq(m.controller.positionOf(borrower).active, 0, "sub-floor deposit never activates");
+        assertEq(m.controller.positionOf(borrower).active, 0, "sub-threshold deposit never activates");
 
         vm.prank(borrower);
-        vm.expectRevert(ILidoLendMarketController.CollateralFloorBreached.selector);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
         m.core.borrow(m.params, 1, 0, borrower, borrower);
     }
 
-    /// @dev Floor boundary: a position with raw collateral exactly at `minBorrowCollateral` clears the gate
-    ///      (the check is strict `<`), so the borrow succeeds. One wei below is the dust case above.
+    /// @dev Threshold boundary: active collateral exactly at `minActivationAmount` (10 ether) has non-zero
+    ///      capacity (`_getMaxBorrow` gates on strict `<`), so a small borrow goes through.
     function test_borrow_atFloorExactly_passes() public {
         Market storage m = _m();
-        _setMinBorrowCollateral(10 ether);
         address lender = _actor("lender");
         _fund(m.loanToken, lender, 1000 ether);
         m.vaultDeposit(lender, 1000 ether);
 
         address borrower = _actor("borrower");
-        _fund(m.collateralToken, borrower, 10 ether); // exactly at the floor
+        _fund(m.collateralToken, borrower, 10 ether); // exactly at the threshold
         m.supplyCollateral(borrower, 10 ether);
         m.activateCollateral();
 
-        // Raw collateral 10 == floor 10 -> not below, so the floor gate passes and a tiny borrow goes through.
+        // Active collateral 10 == threshold 10 -> not below, so capacity is non-zero and a tiny borrow succeeds.
         vm.prank(borrower);
         m.core.borrow(m.params, 1 ether, 0, borrower, borrower);
-        assertEq(m.controller.positionOf(borrower).debtAssets, 1 ether, "borrow at the exact floor succeeds");
+        assertEq(m.controller.positionOf(borrower).debtAssets, 1 ether, "borrow at the exact threshold succeeds");
     }
 
     /// @dev Contrast (accepted behaviour): liquidation is a FORCED path that does NOT re-check the floor, so a

@@ -155,11 +155,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
                     maxGuardiansQuorumDelay: 0
                 }),
                 settlementConfig: SettlementConfigParams({
-                    sliceFloorBps: 100,
-                    sliceFloorAssets: 20 ether,
-                    fullCutBelowCollateral: 10 ether,
-                    ltvStepBps: 100,
-                    minBorrowCollateral: 0
+                    sliceFloorBps: 100, sliceFloorAssets: 20 ether, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,

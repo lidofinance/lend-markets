@@ -36,11 +36,10 @@ struct PositionView {
     uint256 collateral;
 }
 
-/// @notice Settlement and borrow-eligibility policy, set together via `setSettlementConfig`. The first four
-///         knobs tune the settlement slice cut; `minBorrowCollateral` is the position floor that borrows and
-///         withdrawals are checked against. The uint96 amounts are policy bounds, not accounting: for a loan
-///         or collateral token whose plausible amounts exceed uint96 (~7.9e28 base units) the configurable
-///         floors saturate low — the policy weakens but nothing reverts or loses accounting.
+/// @notice Settlement slice policy, set together via `setSettlementConfig`. The knobs tune the settlement slice
+///         cut. The uint96 amounts are policy bounds, not accounting: for a loan or collateral token whose
+///         plausible amounts exceed uint96 (~7.9e28 base units) the configurable floors saturate low — the
+///         policy weakens but nothing reverts or loses accounting.
 /// @param sliceFloorBps Debt-fraction term of the root cut: one allowance is `debt * sliceFloorBps / BPS`.
 /// @param sliceFloorAssets Absolute term of the root cut: one allowance is this many loan assets.
 /// @param fullCutBelowCollateral Sweep floor in collateral units: when a cut would leave the borrower's
@@ -48,13 +47,9 @@ struct PositionView {
 ///        cut, leaving no dust tail. 0 disables the sweep.
 /// @param ltvStepBps LTV-step term of the root cut: one allowance is the cut that lowers the root's LTV by
 ///        `ltvStepBps / BPS`. The root cut is the largest of the three terms (debt-fraction, absolute, LTV-step).
-/// @param minBorrowCollateral Minimum raw collateral a position must hold to open or grow debt, and the floor
-///        a withdrawal may not cross while debt is open. Keeps debt positions large enough to stay economical
-///        to liquidate and settle. 0 disables the floor.
 struct SettlementConfig {
     uint16 sliceFloorBps;
     uint96 sliceFloorAssets;
     uint96 fullCutBelowCollateral;
     uint16 ltvStepBps;
-    uint96 minBorrowCollateral;
 }
