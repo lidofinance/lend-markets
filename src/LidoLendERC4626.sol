@@ -2,7 +2,6 @@
 pragma solidity 0.8.35;
 
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
@@ -24,7 +23,6 @@ import {ILidoLendERC4626} from "./interfaces/ILidoLendERC4626.sol";
 ///         callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
 contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     is
-    Initializable,
     ERC4626Upgradeable,
     ILidoLendERC4626
 {

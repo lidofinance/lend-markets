@@ -7,7 +7,6 @@ import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 import {WAD} from "../libs/Constants.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
 import {IGuardianSignals} from "../interfaces/IGuardianSignals.sol";
@@ -24,7 +23,6 @@ import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTyp
 ///         address gating, and the settlement queue. All hook policy enters through `on`.
 contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendMarketController")
     is
-    Initializable,
     AccessControlUpgradeable,
     PausableUntil,
     ILidoLendMarketController
