@@ -11,11 +11,10 @@ import {Arrays} from "@openzeppelin/contracts/utils/Arrays.sol";
 import {IGuardianSignals} from "./interfaces/IGuardianSignals.sol";
 import {IGuardianSignalsView} from "./interfaces/IGuardianSignalsView.sol";
 import {
-    AccountSignals,
+    GuardiansOpinion,
     BlockInfoWithHash,
     GuardianConfig,
     GuardiansSignal,
-    GuardiansOpinion,
     Status
 } from "./types/GuardianSignalsTypes.sol";
 
@@ -23,12 +22,12 @@ import {
 /// @author Lido
 /// @notice One instance per market: a registry where guardians flag suspect accounts and a quorum of flags
 ///         latches a ban. Guardians are bots run by trusted actors. The market controller reads
-///         `getAccountSignals` to scale collateral activation and to hard-block borrowing.
+///         `getOpinion` to scale collateral activation and to hard-block borrowing.
 /// @dev Upgradeable behind a proxy (`initialize`, not a constructor), with ERC-7201 namespaced storage. Signal
-///      state is per account. Escalation ladder, read through `getOpinion`:
-///        - strikes == 0           : clean, normal activation.
-///        - 0 < strikes < quorum   : the reader scales the activation delay up by the strike count.
-///        - strikes >= quorum      : the status latches to `Banned`, the reader hard-blocks borrow.
+///      state is per account. Escalation ladder, surfaced by `getOpinion`:
+///        - flags == 0             : clean, normal activation.
+///        - 0 < flags < quorum     : the surcharge scales the activation delay up by the flag count.
+///        - flags >= quorum        : the status latches to `Banned`, the reader hard-blocks borrow.
 ///
 ///      The ban latches: retracting a flag never lifts it. `unban` lifts it and clears the flagger set, so
 ///      guardians re-evaluate from scratch. `Immune` exempts an account: while set, `flag`/`unflag` no-op and
@@ -347,12 +346,10 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     /// @inheritdoc IGuardianSignalsView
-    function getAccountSignals(address account) external view returns (AccountSignals memory accountSignals) {
-        GuardiansSignal storage signal = _signals[account];
-        accountSignals.banned = signal.status == Status.Banned;
-        accountSignals.flagCount = signal.flaggedBy.length();
-        accountSignals.activationDelay = _activationDelay(account);
-        accountSignals.quorumBlockTimestamp = _quorumFrontier;
+    function getOpinion(address account) external view returns (GuardiansOpinion memory opinion) {
+        opinion.banned = _signals[account].status == Status.Banned;
+        opinion.activationDelay = _activationDelay(account);
+        opinion.quorumBlockTimestamp = _quorumFrontier;
     }
 
     /// @inheritdoc IGuardianSignalsView
@@ -365,19 +362,9 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         return _activationDelay(account);
     }
 
-    /// @inheritdoc IGuardianSignals
+    /// @inheritdoc IGuardianSignalsView
     function getFlagCount(address account) external view returns (uint256) {
         return _signals[account].flaggedBy.length();
-    }
-
-    /// @inheritdoc IGuardianSignals
-    function getOpinion(address account) external view returns (GuardiansOpinion memory opinion) {
-        GuardiansSignal storage signal = _signals[account];
-        opinion.status = signal.status;
-        opinion.quorumFrontierTimestamp = _quorumFrontier;
-        opinion.flagCount = signal.flaggedBy.length();
-        // `Immune` exempts the account: zero its effective strikes while keeping the raw flag count visible.
-        opinion.strikes = signal.status == Status.Immune ? 0 : opinion.flagCount;
     }
 
     /// @inheritdoc IGuardianSignals

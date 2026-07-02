@@ -62,30 +62,12 @@ struct GuardianConfig {
 }
 
 /// @notice Everything the controller reads about an account in one call: the ban gate plus the activation-gate
-///         inputs. Returned by `getAccountSignals`.
+///         inputs. Returned by `getOpinion`.
 /// @param banned              Whether the account is banned (hard-blocks borrowing).
-/// @param flagCount           Raw number of guardians currently flagging the account.
 /// @param activationDelay     The activation-delay surcharge (`type(uint256).max` when banned, 0 when immune).
-/// @param quorumBlockTimestamp The market's quorum-scan frontier timestamp.
-struct AccountSignals {
+/// @param quorumBlockTimestamp The quorum-scan frontier timestamp.
+struct GuardiansOpinion {
     bool banned;
-    uint256 flagCount;
     uint256 activationDelay;
     uint256 quorumBlockTimestamp;
-}
-
-/// @notice Read model of an account's signal, returned by `getOpinion` and consumed by the controller's
-///         activation gate.
-/// @param status     The account's latched status.
-/// @param strikes     Effective guardian strikes: the flag count that scales the activation delay, forced to 0
-///        while `Immune` so an exempt account carries no surcharge.
-/// @param flagCount   Raw number of guardians currently flagging the account, regardless of status. Equals
-///        `strikes` except while `Immune`, where it stays visible while `strikes` reads 0.
-/// @param quorumFrontierTimestamp The quorum-scan frontier: the highest timestamp a quorum of guardians have
-///        scanned past.
-struct GuardiansOpinion {
-    Status status;
-    uint256 strikes;
-    uint256 flagCount;
-    uint256 quorumFrontierTimestamp;
 }

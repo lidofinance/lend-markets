@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {BlockInfoWithHash, GuardianConfig, GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash, GuardianConfig} from "../types/GuardianSignalsTypes.sol";
 import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
@@ -181,13 +181,9 @@ interface IGuardianSignals is IGuardianSignalsView {
     // VIEWS
     // ---
 
-    /// @notice Guardian opinion on `account`: status, strike count, and the quorum-scan frontier.
-    function getOpinion(address account) external view returns (GuardiansOpinion memory);
     /// @notice The collateral-activation delay surcharge for `account`: `type(uint256).max` when banned, 0 when
     ///         immune, else the capped flag + fresh-suspect surcharge.
     function getActivationDelay(address account) external view returns (uint256);
-    /// @notice The number of guardians currently flagging `account`.
-    function getFlagCount(address account) external view returns (uint256);
     /// @notice The guardians currently flagging `account`.
     function getFlaggedBy(address account) external view returns (address[] memory);
     /// @notice The guardians with a live suspect report on `account`, paired with each report's timestamp.
