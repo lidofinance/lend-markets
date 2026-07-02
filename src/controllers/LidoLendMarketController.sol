@@ -313,9 +313,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         Id id = marketId;
         PositionView memory position = _positionView(id, borrower);
         MarketView memory marketView = _marketView(id);
-        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(borrower);
+        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(id, borrower);
         dashboard.banned = opinion.banned;
-        dashboard.flagCount = _guardianSignals.getFlagCount(borrower);
+        dashboard.flagCount = _guardianSignals.getFlagCount(id, borrower);
         (dashboard.activating, dashboard.dust) = _activation.getActivationState(borrower);
         dashboard.active = position.collateral - dashboard.activating - dashboard.dust;
         dashboard.unlockTime = _activation.getUnlockTime(borrower, opinion.activationDelay);
@@ -399,13 +399,13 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
         // borrow (caller). Soft strikes only delay activation; a ban hard-blocks the borrow.
-        if (_guardianSignals.isBanned(hookData.caller)) revert AddressBanned();
+        if (_guardianSignals.isBanned(id, hookData.caller)) revert AddressBanned();
 
-        if (_guardianSignals.isBanned(hookData.receiver)) revert AddressBanned();
+        if (_guardianSignals.isBanned(id, hookData.receiver)) revert AddressBanned();
 
         // One combined read for the borrower gives the ban bit, the activation-delay surcharge and the quorum-scan
         // frontier. A banned borrower carries a `max` surcharge, which also pins the unlock at infinity.
-        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(hookData.onBehalf);
+        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(id, hookData.onBehalf);
         if (opinion.banned) revert AddressBanned();
 
         // Borrow capacity uses active (matured) collateral only. `sync` matures any ready lot, subject to the
@@ -499,7 +499,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     /// @dev Mature the borrower's activating lot, feeding the guardian-owned activation-delay surcharge and the
     ///      quorum-scan frontier into the timer. Returns the post-mature inactive total.
     function _syncActivation(address borrower) internal returns (uint256) {
-        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(borrower);
+        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(marketId, borrower);
         return _activation.sync(isFrozen, borrower, opinion.activationDelay, opinion.quorumBlockTimestamp);
     }
 

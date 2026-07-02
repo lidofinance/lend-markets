@@ -22,6 +22,17 @@ interface IOwnerFacade {
     function createMarket(MarketParams calldata marketParams, address controller, bool enableSettlement) external;
 }
 
+/// @dev Minimal surface of the guardian registry used at deploy: grant the manager role, then seed the committee
+///      one guardian at a time plus the quorum and delay parameters.
+interface IGuardianRegistry {
+    function GUARDIANS_MANAGER_ROLE() external view returns (bytes32);
+    function grantRole(bytes32 role, address account) external;
+    function addGuardian(address guardian) external;
+    function setQuorum(uint256 newQuorum) external;
+    function setDelayParams(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow)
+        external;
+}
+
 /// @title LidoLendDeployer
 /// @notice Shared deploy steps for a Lido Lending market: core, guardian-signals registry, oracle, IRM,
 ///         controller (behind a proxy), the market, and the ERC-4626 vault.
@@ -50,15 +61,22 @@ abstract contract LidoLendDeployer {
         uint64 minActivationDelay;
         uint64 maxActivationDelay;
         uint128 maxDelayInflow;
-        // strike surcharge
-        uint64 delayPerStrike;
         // sybil lock on activating collateral
         uint128 activatingLockAmount;
         uint64 activatingLockDuration;
         // dust threshold (anti-griefing)
         uint128 minActivationAmount;
-        // cap on total activating time from the lot's start (0 = no quorum-scan gate)
+        // quorum-scan liveness fallback: mature past this from the lot's start even if the quorum stalls
         uint64 maxGuardiansQuorumDelay;
+    }
+
+    /// @dev Guardian-signals delay parameters seeded post-deploy via `setDelayParams`. `guardians`/`quorum` live
+    ///      on `DeployConfig`; these are the activation-delay knobs owned by the registry.
+    struct GuardianConfigParams {
+        uint256 delayPerStrike;
+        uint256 delayPerSuspect;
+        uint256 maxDelay;
+        uint256 suspectWindow;
     }
 
     struct Deployed {
@@ -89,6 +107,7 @@ abstract contract LidoLendDeployer {
         // `1 <= quorum <= guardians.length`; swap in the real guardian set post-deploy.
         address[] guardians;
         uint256 quorum;
+        GuardianConfigParams guardianConfig;
         string vaultName;
         string vaultSymbol;
     }
@@ -105,7 +124,7 @@ abstract contract LidoLendDeployer {
         d.ownerFacade = _deployOwnerFacade(d.core, cfg.admin, cfg.admin, address(0));
         ILidoLend(d.core).setOwner(d.ownerFacade);
 
-        d.guardianSignals = _deployGuardianSignals(cfg.admin, cfg.guardians, cfg.quorum);
+        d.guardianSignals = _deployGuardianSignals(cfg.admin);
         d.oracle = _deployOracle(cfg.oracleSource, cfg.admin);
         d.irm = _deployIrm(d.core, cfg.admin);
 
@@ -131,6 +150,21 @@ abstract contract LidoLendDeployer {
         // later policy changes; `admin` holds DEFAULT_ADMIN_ROLE (the MANAGER_ROLE admin), so it self-grants.
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
+
+        // Seed the guardian committee on its registry. `admin` holds DEFAULT_ADMIN_ROLE, so it self-grants
+        // GUARDIANS_MANAGER_ROLE, then adds each guardian and sets the quorum and delay parameters individually.
+        IGuardianRegistry guardian = IGuardianRegistry(d.guardianSignals);
+        guardian.grantRole(guardian.GUARDIANS_MANAGER_ROLE(), cfg.admin);
+        for (uint256 i; i < cfg.guardians.length; ++i) {
+            guardian.addGuardian(cfg.guardians[i]);
+        }
+        guardian.setQuorum(cfg.quorum);
+        guardian.setDelayParams(
+            cfg.guardianConfig.delayPerStrike,
+            cfg.guardianConfig.delayPerSuspect,
+            cfg.guardianConfig.maxDelay,
+            cfg.guardianConfig.suspectWindow
+        );
     }
 
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so
@@ -153,15 +187,11 @@ abstract contract LidoLendDeployer {
         );
     }
 
-    /// @dev Guardian-signals registry behind a proxy. `initialize(admin, guardians, quorum)`.
-    function _deployGuardianSignals(address admin, address[] memory guardians, uint256 quorum)
-        internal
-        virtual
-        returns (address)
-    {
+    /// @dev Guardian-signals registry behind a proxy. `initialize(admin)`; the committee is seeded via
+    ///      `addGuardian` / `setQuorum` / `setDelayParams` after deploy.
+    function _deployGuardianSignals(address admin) internal virtual returns (address) {
         address impl = _deployArtifact("src/GuardianSignals.sol:GuardianSignals", "");
-        bytes memory initData =
-            abi.encodeWithSignature("initialize(address,address[],uint256)", admin, guardians, quorum);
+        bytes memory initData = abi.encodeWithSignature("initialize(address)", admin);
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }
 
@@ -224,7 +254,7 @@ abstract contract LidoLendDeployer {
             "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(bytes32,address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40),(uint16,uint96,uint96,uint16))",
+            "initialize(bytes32,address,address,(uint40,uint40,uint128,uint128,uint40,uint128,uint40),(uint16,uint96,uint96,uint16))",
             Id.unwrap(marketId),
             admin,
             guardianSignals,

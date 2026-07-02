@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {BlockInfoWithHash, GuardianConfig} from "../types/GuardianSignalsTypes.sol";
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {BlockInfoWithHash} from "../types/GuardianSignalsTypes.sol";
 import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
-/// @notice Guardian-committee signal layer over accounts, one instance per market. Guardians flag accounts they
-///         detect as malicious. A `quorum` of distinct flags latches a ban. The minimal read surface the market
-///         controller depends on (`getAccountSignals`, `isBanned`) is {IGuardianSignalsView}; this interface adds
-///         the full guardian/committee/governance surface on top.
+/// @notice Guardian-committee signal layer over accounts, keyed per market. Guardians flag accounts they detect
+///         as malicious. A `quorum` of distinct flags latches a ban in the market it was raised in. The minimal
+///         read surface the market controller depends on (`getOpinion`, `isBanned`, `getFlagCount`) is
+///         {IGuardianSignalsView}; this interface adds the full guardian/committee/governance surface on top.
 interface IGuardianSignals is IGuardianSignalsView {
     // ---
     // EVENTS
@@ -18,49 +19,50 @@ interface IGuardianSignals is IGuardianSignalsView {
     event GuardianAdded(address indexed guardian);
     /// @notice Emitted when a guardian leaves the set.
     event GuardianRemoved(address indexed guardian);
-    /// @notice Emitted when the guardian config is set via `setConfig`.
-    /// @param quorum         The distinct flags that latch a ban.
-    /// @param delayPerStrike The activation-delay surcharge per flag.
+    /// @notice Emitted when the quorum is set.
+    event QuorumSet(uint256 quorum);
+    /// @notice Emitted when the delay parameters are set.
+    /// @param delayPerStrike  The activation-delay surcharge per flag.
     /// @param delayPerSuspect The activation-delay surcharge per fresh suspect report.
-    /// @param maxDelay       The cap on the total guardian activation-delay surcharge (0 = uncapped).
-    /// @param suspectWindow  The freshness horizon within which a suspect report still counts.
-    event ConfigSet(
-        uint256 quorum, uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow
-    );
+    /// @param maxDelay        The cap on the total guardian activation-delay surcharge (0 = uncapped).
+    /// @param suspectWindow   The freshness horizon within which a suspect report still counts.
+    event DelayParamsSet(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow);
     /// @notice Emitted when a guardian reports liveness, directly or via `flag`/`unflag`.
     /// @param guardian    The guardian that reported.
     /// @param blockNumber The block number the guardian reports scanning past (carried for off-chain tooling).
     /// @param timestamp   The reported block's timestamp; the quorum-scan frontier orders guardians by this value.
     event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp);
     /// @notice Emitted when a guardian reports an account as suspect (raises the activation delay, never bans).
+    /// @param marketId  The market the report is scoped to.
     /// @param account   The suspected account.
     /// @param guardian  The reporting guardian.
     /// @param timestamp The report time, recorded so the report can be aged out of the suspect window.
-    event Suspected(address indexed account, address indexed guardian, uint256 timestamp);
+    event Suspected(Id indexed marketId, address indexed account, address indexed guardian, uint256 timestamp);
     /// @notice Emitted when a guardian retracts its suspect report on an account.
-    event SuspectCleared(address indexed account, address indexed guardian);
+    event SuspectCleared(Id indexed marketId, address indexed account, address indexed guardian);
     /// @notice Emitted when a suspect report cast by an address that is no longer a guardian is pruned.
-    event SuspectPruned(address indexed account, address indexed guardian);
+    event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
     /// @notice Emitted when a guardian flags an account.
+    /// @param marketId The market the flag is scoped to.
     /// @param account  The flagged account.
     /// @param guardian The flagging guardian.
     /// @param strikes  The account's flag count after the flag.
-    event Flagged(address indexed account, address indexed guardian, uint16 strikes);
+    event Flagged(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
     /// @notice Emitted when a guardian retracts a flag.
-    event Unflagged(address indexed account, address indexed guardian, uint16 strikes);
+    event Unflagged(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
     /// @notice Emitted when a flag cast by an address that is no longer a guardian is pruned.
-    event FlagPruned(address indexed account, address indexed guardian, uint16 strikes);
+    event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
     /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
-    event Banned(address indexed account);
+    event Banned(Id indexed marketId, address indexed account);
     /// @notice Emitted when an account's ban is lifted.
     /// @param by The `UNBAN_ROLE` holder that unbanned.
-    event Unbanned(address indexed account, address indexed by);
+    event Unbanned(Id indexed marketId, address indexed account, address indexed by);
     /// @notice Emitted when an account is exempted.
     /// @param by The `IMMUNITY_GRANTER_ROLE` holder that granted immunity.
-    event ImmunityGranted(address indexed account, address indexed by);
+    event ImmunityGranted(Id indexed marketId, address indexed account, address indexed by);
     /// @notice Emitted when an account's immunity is removed.
     /// @param by The `IMMUNITY_REVOKER_ROLE` holder that revoked immunity.
-    event ImmunityRevoked(address indexed account, address indexed by);
+    event ImmunityRevoked(Id indexed marketId, address indexed account, address indexed by);
 
     // ---
     // ERRORS
@@ -97,21 +99,31 @@ interface IGuardianSignals is IGuardianSignalsView {
     // GUARDIANS & CONFIG (admin)
     // ---
 
-    /// @notice Set the full guardian configuration in one call: replace the guardian set, then set the quorum,
-    ///         the per-flag and per-suspect activation delays, the total-delay cap, and the suspect window.
-    ///         Reverts if a per-signal delay exceeds `MAX_DELAY_PER_STRIKE`, the window exceeds
-    ///         `MAX_SUSPECT_WINDOW`, or the quorum is out of range for the new roster.
-    /// @param config The full guardian configuration.
-    function setConfig(GuardianConfig calldata config) external;
-    /// @notice The full guardian configuration.
-    /// @return The guardian set, quorum, per-flag and per-suspect delays, delay cap, and suspect window.
-    function getConfig() external view returns (GuardianConfig memory);
     /// @notice Add a guardian to the set.
     /// @param guardian The address to add. Must be non-zero, not already a guardian, and within `MAX_GUARDIANS_COUNT`.
     function addGuardian(address guardian) external;
     /// @notice Remove a guardian from the set. Reverts if it would drop the set below the quorum.
     /// @param guardian The guardian to remove. Reverts if not currently a guardian.
     function removeGuardian(address guardian) external;
+    /// @notice Set the quorum — the distinct flags that latch a ban. Reverts if zero or above the guardian count.
+    /// @param newQuorum The new quorum.
+    function setQuorum(uint256 newQuorum) external;
+    /// @notice Set the delay parameters. Reverts if a per-signal delay exceeds `MAX_DELAY_PER_STRIKE` or the
+    ///         window exceeds `MAX_SUSPECT_WINDOW`. Never touches the guardian set.
+    /// @param delayPerStrike  The activation-delay surcharge per flag.
+    /// @param delayPerSuspect The activation-delay surcharge per fresh suspect report.
+    /// @param maxDelay        The cap on the total guardian activation-delay surcharge (0 = uncapped).
+    /// @param suspectWindow   The freshness horizon within which a suspect report still counts.
+    function setDelayParams(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow)
+        external;
+    /// @notice The quorum: distinct flags that latch a ban.
+    function getQuorum() external view returns (uint256);
+    /// @notice The delay parameters: per-flag and per-suspect surcharge, the total-delay cap, and the suspect
+    ///         window.
+    function getDelayParams()
+        external
+        view
+        returns (uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow);
     /// @notice Whether `account` is a guardian.
     function isGuardian(address account) external view returns (bool);
     /// @notice The number of guardians in the set.
@@ -143,53 +155,61 @@ interface IGuardianSignals is IGuardianSignalsView {
     // FLAGGING (guardians)
     // ---
 
-    /// @notice Flag `accounts`, then heartbeat. Per account a no-op when the caller already flags it or it is
-    ///         immune, so a batch never reverts on a skip.
+    /// @notice Flag `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller already flags it
+    ///         or it is immune, so a batch never reverts on a skip.
+    /// @param marketId         The market to flag in.
     /// @param accounts         The accounts to flag. A zero address in the batch reverts.
     /// @param lastScannedBlock The heartbeat recorded for the caller after flagging, validated like `heartbeat`.
-    function flag(address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
-    /// @notice Retract the caller's flags on `accounts`, then heartbeat. Per account a no-op when the caller does
-    ///         not flag it or it is immune. Never lifts a latched ban.
-    function unflag(address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
-    /// @notice Report `accounts` as suspect, then heartbeat. A suspect report never latches a ban; it raises the
-    ///         activation delay like a flag, but only while inside the suspect window. Per account a no-op when
-    ///         immune.
-    function reportSuspect(address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
-    /// @notice Retract the caller's suspect reports on `accounts`, then heartbeat. Per account a no-op when the
-    ///         caller has no live report on it.
-    function clearSuspect(address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
-    /// @notice Permissionless: prune `account`'s flags and suspect reports cast by addresses that are no longer
-    ///         guardians. Lowers the flag/suspect count but never changes status.
-    function prune(address account) external;
+    function flag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
+    /// @notice Retract the caller's flags on `accounts` in `marketId`, then heartbeat. Per account a no-op when the
+    ///         caller does not flag it or it is immune. Never lifts a latched ban.
+    function unflag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
+    /// @notice Report `accounts` as suspect in `marketId`, then heartbeat. A suspect report never latches a ban; it
+    ///         raises the activation delay like a flag, but only while inside the suspect window. Per account a
+    ///         no-op when immune.
+    function reportSuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
+        external;
+    /// @notice Retract the caller's suspect reports on `accounts` in `marketId`, then heartbeat. Per account a
+    ///         no-op when the caller has no live report on it.
+    function clearSuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
+        external;
+    /// @notice Permissionless: prune `account`'s flags and suspect reports in `marketId` cast by addresses that are
+    ///         no longer guardians. Lowers the flag/suspect count but never changes status.
+    function prune(Id marketId, address account) external;
 
     // ---
     // OVERRIDE (committee / governance)
     // ---
 
-    /// @notice Force a ban on `account`, bypassing the quorum. Clears any immunity.
-    function ban(address account) external;
-    /// @notice Lift the ban on `account`: reset its status to `Normal` and clear its flags. Immunity is managed
-    ///         with `grantImmunity` / `revokeImmunity`.
-    function unban(address account) external;
-    /// @notice Exempt `account` from guardian signals. While immune, `flag`/`unflag` no-op and readers see it as
-    ///         clean. Cleared by `revokeImmunity` or `ban`.
-    function grantImmunity(address account) external;
-    /// @notice Remove `account`'s immunity, re-subjecting it to guardian signals.
-    function revokeImmunity(address account) external;
+    /// @notice Force a ban on `account` in `marketId`, bypassing the quorum. Clears any immunity.
+    function ban(Id marketId, address account) external;
+    /// @notice Lift the ban on `account` in `marketId`: reset its status to `Normal` and clear its flags. Immunity
+    ///         is managed with `grantImmunity` / `revokeImmunity`.
+    function unban(Id marketId, address account) external;
+    /// @notice Exempt `account` from guardian signals in `marketId`. While immune, `flag`/`unflag` no-op and
+    ///         readers see it as clean. Cleared by `revokeImmunity` or `ban`.
+    function grantImmunity(Id marketId, address account) external;
+    /// @notice Remove `account`'s immunity in `marketId`, re-subjecting it to guardian signals.
+    function revokeImmunity(Id marketId, address account) external;
 
     // ---
     // VIEWS
     // ---
 
-    /// @notice The collateral-activation delay surcharge for `account`: `type(uint256).max` when banned, 0 when
-    ///         immune, else the capped flag + fresh-suspect surcharge.
-    function getActivationDelay(address account) external view returns (uint256);
-    /// @notice The guardians currently flagging `account`.
-    function getFlaggedBy(address account) external view returns (address[] memory);
-    /// @notice The guardians with a live suspect report on `account`, paired with each report's timestamp.
+    /// @notice The collateral-activation delay surcharge for `account` in `marketId`: `type(uint256).max` when
+    ///         banned, 0 when immune, else the capped flag + fresh-suspect surcharge.
+    function getActivationDelay(Id marketId, address account) external view returns (uint256);
+    /// @notice Whether `account` is immune (exempt from guardian signals) in `marketId`.
+    function isImmune(Id marketId, address account) external view returns (bool);
+    /// @notice The guardians currently flagging `account` in `marketId`.
+    function getFlaggedBy(Id marketId, address account) external view returns (address[] memory);
+    /// @notice The guardians with a live suspect report on `account` in `marketId`, paired with each report's
+    ///         timestamp.
+    /// @param marketId    The market to read the signal in.
+    /// @param account     The account to read.
     /// @return guardians  The addresses of guardians currently reporting the account as suspect.
     /// @return reportedAt The timestamp of each guardian's last suspect report, aligned by index with `guardians`.
-    function getSuspectedBy(address account)
+    function getSuspectedBy(Id marketId, address account)
         external
         view
         returns (address[] memory guardians, uint40[] memory reportedAt);

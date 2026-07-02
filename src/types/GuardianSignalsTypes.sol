@@ -43,24 +43,6 @@ struct GuardiansSignal {
     mapping(address guardian => uint40 timestamp) suspectedAt;
 }
 
-/// @notice Full per-market guardian configuration, set (and read) in one shot via `setMarketConfig` /
-///         `getMarketConfig`.
-/// @param guardians       The market's guardian set. Each must be non-zero, unique, and within `MAX_GUARDIANS_COUNT`.
-/// @param quorum          Distinct flags that latch a ban. Must satisfy `1 <= quorum <= guardians.length`.
-/// @param delayPerStrike  Activation-delay surcharge per flag. Must not exceed `MAX_DELAY_PER_STRIKE`.
-/// @param delayPerSuspect Activation-delay surcharge per fresh suspect report. Must not exceed `MAX_DELAY_PER_STRIKE`.
-/// @param maxDelay        Cap on the total guardian activation-delay surcharge (flags + suspects). 0 means uncapped.
-/// @param suspectWindow   Freshness horizon within which a suspect report still counts. Must not exceed
-///        `MAX_SUSPECT_WINDOW`.
-struct GuardianConfig {
-    address[] guardians;
-    uint256 quorum;
-    uint256 delayPerStrike;
-    uint256 delayPerSuspect;
-    uint256 maxDelay;
-    uint256 suspectWindow;
-}
-
 /// @notice Everything the controller reads about an account in one call: the ban gate plus the activation-gate
 ///         inputs. Returned by `getOpinion`.
 /// @param banned              Whether the account is banned (hard-blocks borrowing).
