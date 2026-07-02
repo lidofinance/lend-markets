@@ -36,7 +36,7 @@ interface IChainlinkAggregator {
 ///         and decimal-derived `scale` are set in `initialize`, so one implementation behind per-market proxies
 ///         serves any Chainlink-priced stablecoin. Matches Morpho's IOracle convention: price of 1 collateral
 ///         asset quoted in 1 loan asset, scaled by 1e36.
-contract UsdyStableOracle layout at erc7201("lido.lend.markets.storage.UsdyStableOracle") is Initializable, IOracle {
+contract UsdyStableOracle layout at erc7201("lido.lend.storage.UsdyStableOracle") is Initializable, IOracle {
     // ---
     // CONSTANTS
     // ---

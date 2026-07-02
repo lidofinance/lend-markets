@@ -14,8 +14,12 @@ import {MockERC20} from "../setup/Mocks.sol";
 /// @dev Concrete instance of the abstract recoverer, owner wired via `Ownable`. `ERC1155Holder` only lets the
 ///      test place an ERC-1155 balance on the contract (OZ's mint runs the acceptance check) — the recovery
 ///      logic under test is unaffected.
-contract AssetRecovererHarness is AssetRecoverer, ERC1155Holder {
+contract AssetRecovererHarness is AssetRecoverer, Ownable, ERC1155Holder {
     constructor(address owner) Ownable(owner) {}
+
+    function _checkRecoverer() internal view override {
+        _checkOwner();
+    }
 }
 
 /// @dev Reverts on any incoming Ether (no `receive`/payable fallback), to exercise `EtherTransferFailed`.

@@ -42,7 +42,7 @@ library CollateralActivationLib {
 
     /// @dev Transient-storage namespace for the inflow a position added in the current tx (same-tx undo).
     bytes32 private constant TRANSIENT_INFLOW_INCREASE_NAMESPACE =
-        keccak256("lido.lend.markets.CollateralActivationLib.TransientInflowIncrease");
+        keccak256("lido.lend.CollateralActivationLib.TransientInflowIncrease");
 
     // ---
     // EVENTS

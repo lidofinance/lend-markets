@@ -45,7 +45,7 @@ import {
 ///      block a quorum have scanned past (monotonic) — decoupled from the heartbeat so heartbeats stay cheap.
 ///
 ///      Events and errors are declared in {IGuardianSignals}.
-contract GuardianSignals layout at erc7201("lido.lend.markets.storage.GuardianSignals")
+contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     is
     Initializable,
     AccessControlEnumerableUpgradeable,

@@ -11,7 +11,6 @@ import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalanc
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {ExitBookBase} from "./ExitBookBase.sol";
-import {AssetRecoverer} from "../utils/AssetRecoverer.sol";
 import {IMorphoExitBook} from "../interfaces/IMorphoExitBook.sol";
 import {Request, PriorityRamp} from "../types/ExitBookTypes.sol";
 import {WAD} from "../libs/Constants.sol";
@@ -20,7 +19,7 @@ import {WAD} from "../libs/Constants.sol";
 /// @author Lido
 /// @notice The Morpho exit book: a request is backed by the lender's supply position, and a fill withdraws
 ///         from it. Governance picks the allowed markets. Works on any Morpho deployment.
-contract MorphoExitBook is ExitBookBase, AssetRecoverer, IMorphoExitBook {
+contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     using SafeERC20 for IERC20;
     using MarketParamsLib for MarketParams;
     using SharesMathLib for uint256;

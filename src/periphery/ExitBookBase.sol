@@ -7,6 +7,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IExitBook} from "../interfaces/IExitBook.sol";
+import {AssetRecoverer} from "../utils/AssetRecoverer.sol";
 import {ExitStatus, Request, PriorityRamp, RequestPreview} from "../types/ExitBookTypes.sol";
 import {ExitBookLib} from "../libs/ExitBookLib.sol";
 import {WAD} from "../libs/Constants.sol";
@@ -16,7 +17,7 @@ import {WAD} from "../libs/Constants.sol";
 /// @notice Shared base of the exit books. A lender posts a request to exit a position; a filler later
 ///         closes it against available liquidity for a fee. A concrete book binds it to a source by
 ///         implementing the source operations, so any position that supports them can reuse this primitive.
-abstract contract ExitBookBase is IExitBook, Ownable {
+abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     using SafeERC20 for IERC20;
     using ExitBookLib for ExitBookLib.State;
 
@@ -104,6 +105,15 @@ abstract contract ExitBookBase is IExitBook, Ownable {
         if (maxLifetime_ == 0) revert ZeroMaxLifetime();
 
         MAX_REQUEST_LIFETIME = maxLifetime_;
+    }
+
+    // ---
+    // PERMISSIONS
+    // ---
+
+    /// @dev Asset recovery is owner-only.
+    function _checkRecoverer() internal view override {
+        _checkOwner();
     }
 
     // ---

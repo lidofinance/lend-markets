@@ -4,6 +4,7 @@ pragma solidity 0.8.35;
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -21,7 +22,7 @@ import {ILidoLendERC4626} from "./interfaces/ILidoLendERC4626.sol";
 /// @notice Single-market ERC-4626 wrapper for a Morpho Blue fork market with settle exit support.
 /// @dev    Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer
 ///         callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
-contract LidoLendERC4626 layout at erc7201("lido.lend.markets.storage.LidoLendERC4626")
+contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     is
     Initializable,
     ERC4626Upgradeable,
@@ -95,10 +96,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.markets.storage.LidoLendER
         __ERC20_init(name_, symbol_);
         __ERC4626_init(IERC20(marketParams_.loanToken));
 
-        // Offset = SHARE_DECIMALS - loanTokenDecimals (floored at 0), so shares normalize to SHARE_DECIMALS and
-        // the virtual-share buffer scales to 10**offset. `decimals()` here returns the underlying's, because
-        // the offset is still 0 in storage and has not been folded in yet.
-        _loanDecimalsOffset = uint8(Math.saturatingSub(SHARE_DECIMALS, decimals()));
+        _loanDecimalsOffset =
+            uint8(Math.saturatingSub(SHARE_DECIMALS, IERC20Metadata(marketParams_.loanToken).decimals()));
 
         controller = ILidoLendMarketController(controller_);
         marketId = marketParams_.id();

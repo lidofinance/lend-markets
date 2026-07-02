@@ -22,7 +22,7 @@ import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTyp
 
 /// @notice Lido-policy controller for a Lido Lend market: collateral activation, freeze and pause,
 ///         address gating, and the settlement queue. All hook policy enters through `on`.
-contract LidoLendMarketController layout at erc7201("lido.lend.markets.storage.LidoLendMarketController")
+contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendMarketController")
     is
     Initializable,
     AccessControlUpgradeable,

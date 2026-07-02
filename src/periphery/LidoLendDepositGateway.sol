@@ -23,7 +23,7 @@ import {ILidoLendDepositGateway, IWETH, IWstETH} from "../interfaces/ILidoLendDe
 ///      checks the one token it actually moves — the WETH supply zaps require the loan token to be WETH, the
 ///      stETH collateral zap requires the collateral token to be wstETH — so the gateway only ever supplies
 ///      the token it just wrapped; the market identity itself is never stored.
-contract LidoLendDepositGateway is ILidoLendDepositGateway, AssetRecoverer {
+contract LidoLendDepositGateway is ILidoLendDepositGateway, Ownable, AssetRecoverer {
     using SafeERC20 for IERC20;
     using SafeERC20 for IWETH;
     using SafeERC20 for IWstETH;
@@ -74,6 +74,15 @@ contract LidoLendDepositGateway is ILidoLendDepositGateway, AssetRecoverer {
         WETH.forceApprove(vault, type(uint256).max);
         STETH.forceApprove(wstEth, type(uint256).max);
         WSTETH.forceApprove(morpho, type(uint256).max);
+    }
+
+    // ---
+    // PERMISSIONS
+    // ---
+
+    /// @dev Asset recovery is owner-only.
+    function _checkRecoverer() internal view override {
+        _checkOwner();
     }
 
     // ---
