@@ -84,7 +84,6 @@ src/
 │   └── UsdyStableOracle.sol         # USDY to stablecoin oracle
 ├── periphery/
 │   ├── RiskStewardDashboard.sol     # bounded per-market risk levers
-│   ├── LidoLendDepositGateway.sol   # ETH / stETH / WETH deposit zaps
 │   ├── ExitBookBase.sol             # lender exit queue (base) and adapters
 │   ├── Erc4626ExitBook.sol
 │   └── MorphoExitBook.sol
@@ -113,7 +112,7 @@ The vendored core (`lib/lido-lend`, contract `LidoLend`) is the Morpho-compatibl
 
 `LidoLendERC4626` is the single-market ERC-4626 vault, the sole lender, with a fallback settle exit when ordinary liquidity is short.
 
-Supporting pieces: `GuardianSignals` (shared address bans and activation strikes), `RiskStewardDashboard` (bounded tighten-only risk levers), the exit-book periphery (`ExitBookBase` and its adapters), `LidoLendDepositGateway` (deposit zaps), and the `WstEthRateOracle` / `UsdyStableOracle` adapters.
+Supporting pieces: `GuardianSignals` (shared address bans and activation strikes), `RiskStewardDashboard` (bounded tighten-only risk levers), the exit-book periphery (`ExitBookBase` and its adapters), and the `WstEthRateOracle` / `UsdyStableOracle` adapters.
 
 ## Fork Notes
 

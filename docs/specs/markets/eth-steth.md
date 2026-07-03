@@ -26,16 +26,6 @@ Querying at the `1e36` input keeps the rate's low-order digits, rather than floo
 
 The rate rises monotonically as staking rewards accrue. It does **not** reflect a stETH/ETH market depeg. Depeg and slashing risk are handled by the activation delay, freeze, and the fast-depreciation response below — not by the price feed (ADR 009).
 
-## Deposit gateway
-
-`LidoLendDepositGateway` is a stateless convenience zap, so users need not pre-wrap:
-
-- `supplyCollateralWithStEth(params, stEthAmount, onBehalf)` — wrap stETH → wstETH, post as collateral. Requires the market's collateral token to be wstETH. It wraps the **measured** received stETH (the balance delta), not the requested `stEthAmount`, since stETH transfers can land 1-2 wei short.
-- `supplyWithEth(params, onBehalf)` / `supplyWithWeth(params, wethAmount, onBehalf)` — supply the loan side. Both require the market's loan token to be WETH.
-- `depositEthToVault(receiver)` / `depositWethToVault(wethAmount, receiver)` — deposit into the vault the gateway is bound to.
-
-It holds no funds between calls and routes through the core and the vault.
-
 ## Liquidation
 
 - **Morpho liquidation** — the inherited path for ordinary unhealthy positions.

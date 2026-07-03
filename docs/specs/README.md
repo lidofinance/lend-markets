@@ -14,7 +14,7 @@ The system, the rules, and the trust assumptions the code cannot state itself.
 
 The contract surface — functions, structs, state variables — rendered from the Solidity NatSpec. This is the single source for per-member behaviour, so it is never hand-edited: keep the NatSpec accurate and regenerate.
 
-- [api/](api/) — one page per Lido-layer contract: [LidoLendMarketController](api/lido-lend-market-controller.md), [LidoLendERC4626](api/lido-lend-erc4626.md), [GuardianSignals](api/guardian-signals.md), [LidoLendDepositGateway](api/lido-lend-deposit-gateway.md), [RiskStewardDashboard](api/risk-steward-dashboard.md), the [exit-book layer](api/exit-book.md) (ExitBookBase, Erc4626ExitBook, MorphoExitBook), the oracles ([WstEthRateOracle](api/wst-eth-rate-oracle.md), [UsdyStableOracle](api/usdy-stable-oracle.md)), and [shared types](api/shared-types.md).
+- [api/](api/) — one page per Lido-layer contract: [LidoLendMarketController](api/lido-lend-market-controller.md), [LidoLendERC4626](api/lido-lend-erc4626.md), [GuardianSignals](api/guardian-signals.md), [RiskStewardDashboard](api/risk-steward-dashboard.md), the [exit-book layer](api/exit-book.md) (ExitBookBase, Erc4626ExitBook, MorphoExitBook), the oracles ([WstEthRateOracle](api/wst-eth-rate-oracle.md), [UsdyStableOracle](api/usdy-stable-oracle.md)), and [shared types](api/shared-types.md).
 
 The forked Morpho core's fork point and core changes are recorded in [`lib/lido-lend/FORK_NOTES.md`](../../lib/lido-lend/FORK_NOTES.md). The API reference here covers only the Lido layer on top.
 
