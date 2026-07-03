@@ -164,7 +164,7 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         uint256 expSeized = expDebt * ORACLE_PRICE_SCALE / PRICE;
 
         vm.prank(LENDER);
-        (uint256 seized, uint256 debtCanceled) = core.settle(params, 0, borrowShares, LENDER, BORROWER, RECEIVER);
+        (uint256 seized, uint256 debtCanceled,,) = core.settle(params, 0, borrowShares, LENDER, BORROWER, RECEIVER);
 
         assertEq(debtCanceled, expDebt, "debt canceled = borrowShares valued up");
         assertEq(seized, expSeized, "collateral seized at oracle par");
@@ -193,7 +193,7 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         uint256 expSeized = expDebt * ORACLE_PRICE_SCALE / PRICE;
 
         vm.prank(LENDER);
-        (uint256 seized, uint256 debtCanceled) = core.settle(params, supplyCut, 0, LENDER, BORROWER, RECEIVER);
+        (uint256 seized, uint256 debtCanceled,,) = core.settle(params, supplyCut, 0, LENDER, BORROWER, RECEIVER);
 
         assertEq(debtCanceled, expDebt, "debt canceled = supplyCut valued down");
         assertEq(seized, expSeized, "collateral seized at oracle par");

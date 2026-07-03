@@ -406,7 +406,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
         uint256 cut = lenderShares / 10;
         vm.prank(LENDER);
-        (uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 collateralSeized, uint256 debtCanceled,,) =
             ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
 
         assertGt(debtCanceled, 0, "debt cancelled");
@@ -528,7 +528,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
         uint128 colBefore = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
         vm.prank(LENDER);
-        (uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 collateralSeized, uint256 debtCanceled,,) =
             ctx.market.settle(ctx.marketParams, 0, cut, LENDER, SECOND_BORROWER, LENDER);
 
         uint128 colAfter = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
@@ -630,7 +630,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         uint256 sharesToExit = _sliceShares(ctx);
 
         vm.prank(LENDER);
-        (uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 collateralSeized, uint256 debtCanceled,,) =
             ctx.market.settle(ctx.marketParams, 0, sharesToExit, LENDER, BORROWER, LENDER);
 
         uint256 expectedCollateralSeized = debtCanceled * 1e36 / ctx.price;

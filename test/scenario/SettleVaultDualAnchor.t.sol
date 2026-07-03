@@ -223,7 +223,7 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
 
         uint256 debtBefore = core.position(id, BORROWER).borrowShares;
         vm.prank(vault);
-        (, uint256 debtCanceled) = core.settle(params, 0, handle, vault, BORROWER, RECEIVER);
+        (, uint256 debtCanceled,,) = core.settle(params, 0, handle, vault, BORROWER, RECEIVER);
 
         assertEq(debtBefore - core.position(id, BORROWER).borrowShares, handle, "exact handle shares burned");
         assertGe(debtCanceled, slice, "cancels at least the slice");

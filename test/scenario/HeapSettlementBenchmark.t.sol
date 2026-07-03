@@ -483,32 +483,34 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
             }
             if (cutShares > remaining) cutShares = remaining;
 
-            vm.prank(LENDER);
-            try ctx.market.settle(ctx.marketParams, 0, cutShares, LENDER, top, LENDER) returns (
-                uint256 colSeized, uint256 debtCanceled
-            ) {
-                remaining -= cutShares;
-                res.totalCollateralSeized += colSeized;
-                res.totalDebtCanceled += debtCanceled;
-                res.iterations++;
-            } catch {
+            if (!_settleCutOnce(ctx, res, cutShares, top)) {
                 if (cutShares > remaining / 2) cutShares = remaining / 2;
                 if (cutShares == 0) break;
-                vm.prank(LENDER);
-                try ctx.market.settle(ctx.marketParams, 0, cutShares, LENDER, top, LENDER) returns (
-                    uint256 colSeized, uint256 debtCanceled
-                ) {
-                    remaining -= cutShares;
-                    res.totalCollateralSeized += colSeized;
-                    res.totalDebtCanceled += debtCanceled;
-                    res.iterations++;
-                } catch {
-                    break;
-                }
+                if (!_settleCutOnce(ctx, res, cutShares, top)) break;
             }
+            remaining -= cutShares;
         }
 
         res.gasUsed = gasBefore - gasleft();
+    }
+
+    /// @dev One settle attempt as LENDER, accumulated into `res`; swallows the revert so the caller can
+    ///      retry with a smaller cut.
+    function _settleCutOnce(Ctx memory ctx, SettlementResult memory res, uint256 cutShares, address top)
+        internal
+        returns (bool)
+    {
+        vm.prank(LENDER);
+        try ctx.market.settle(ctx.marketParams, 0, cutShares, LENDER, top, LENDER) returns (
+            uint256 colSeized, uint256 debtCanceled, uint256, uint256
+        ) {
+            res.totalCollateralSeized += colSeized;
+            res.totalDebtCanceled += debtCanceled;
+            res.iterations++;
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     // ── Logging

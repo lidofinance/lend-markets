@@ -68,7 +68,7 @@ interface ILidoLendLike {
         address onBehalf,
         address borrower,
         address receiver
-    ) external returns (uint256, uint256);
+    ) external returns (uint256, uint256, uint256, uint256);
     function position(bytes32 id, address user)
         external
         view
@@ -257,7 +257,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
         (,, uint128 borrowerRawCollateralBefore) = ctx.market.position(ctx.marketId, BORROWER);
 
         vm.prank(DIRECT_LENDER);
-        (uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 collateralSeized, uint256 debtCanceled,,) =
             ctx.market.settle(ctx.lidoParams, 0, supplyShares, DIRECT_LENDER, BORROWER, DIRECT_LENDER);
 
         (uint256 directSupplySharesAfterFallback,,) = ctx.market.position(ctx.marketId, DIRECT_LENDER);

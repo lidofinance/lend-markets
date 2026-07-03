@@ -275,7 +275,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     }
 
     /// @dev Settle `borrower`'s cut capped at `budget`: borrow-anchor an affordable full close, else supply-anchor.
-    ///      The supply burned (`cutShares`) is exactly `min(supplyShares, budget)`, so the position needs no measuring.
+    ///      `cutShares` is the supply burn the core reports back; a borrow-anchored close derives it, matching the
+    ///      controller's `supplyShares` estimate, so the cut stays within `budget`.
     function _settle(
         uint256 budget,
         address borrower,
@@ -287,12 +288,12 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         cutShares = Math.min(supplyShares, budget);
         if (cutShares == 0) return (0, 0, 0);
 
-        // Affordable full close: borrow-anchor (supply 0, the core derives the same `cutShares` burn). Partial or
+        // Affordable full close: borrow-anchor (supply 0, the core derives the burn). Partial or
         // unaffordable full close: supply-anchor at the capped burn.
         (supplyShares, borrowShares) =
             remainingBorrowShares == 0 && supplyShares <= budget ? (uint256(0), borrowShares) : (cutShares, 0);
 
-        (collateralSeized, debtCanceled) =
+        (collateralSeized, debtCanceled,, cutShares) =
             LIDO_LEND.settle(_marketParams, supplyShares, borrowShares, address(this), borrower, receiver);
     }
 
