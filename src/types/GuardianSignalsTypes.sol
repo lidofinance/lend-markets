@@ -7,24 +7,9 @@ import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet
 // TYPES
 // ---
 
-/// @notice An account's latched guardian status. `Normal` is clean. `Immune` exempts the account from
-///         guardian signals. `Banned` hard-blocks borrowing, latched by a quorum of flags or a forced `ban`.
-enum Status {
-    Normal,
-    Immune,
-    Banned
-}
-
-/// @notice A scanned block recorded by a guardian heartbeat.
-/// @param number    The block number.
-/// @param timestamp The block timestamp, carried so readers can gate on time without a second lookup.
-struct BlockInfo {
-    uint40 number;
-    uint40 timestamp;
-}
-
-/// @notice Heartbeat payload: a scanned block plus its hash, validated against `blockhash(number)` before
-///         the registry records it as a `BlockInfo`.
+/// @notice Heartbeat payload: a scanned block plus its hash, validated against `blockhash(number)`. Only the
+///         `timestamp` is kept in storage (the frontier gates on time); `number` + `hash` prove the block is
+///         real and un-reorged, and `number` is re-emitted in the `Heartbeat` event for off-chain tooling.
 /// @param hash      The reported block hash, checked against `blockhash(number)`.
 /// @param number    The block number, which may not exceed the current block.
 /// @param timestamp The block timestamp.
@@ -35,26 +20,38 @@ struct BlockInfoWithHash {
 }
 
 /// @notice Per-account guardian signal, stored per `(market, account)`.
-/// @param status    Latched status. A quorum of flags or a forced `ban` latches `Banned`, held until `unban`.
-///        While `Immune`, `flag`/`unflag` no-op and readers see the account as clean.
-/// @param flaggedBy Live set of guardians currently flagging the account. Its size is the raw flag count,
-///        which becomes the effective strikes unless the account is `Immune`. `unban` clears it in one call.
+/// @param banned           Latched ban. A quorum of flags or a forced `ban` sets it, held until `unban`.
+/// @param suspectReportedAt Timestamp of the last suspect report or retraction. Anchors the suspect snapshot.
+/// @param suspectCount     Active suspect reports at `suspectReportedAt`. Snapshotted on report/retraction so the
+///        activation delay need not re-scan the suspect set: the suspect surcharge is
+///        `suspectCount * delayPerSuspect`, applied while `now - suspectReportedAt <= that`, then it lapses to 0.
+/// @param flaggedBy        Live set of guardians currently flagging the account. Its size is the raw flag count,
+///        which is the effective strikes. `unban` clears it in one call.
+/// @param suspectedBy      Live set of guardians who reported the account as suspect. Unlike a flag, a suspect
+///        report never latches a ban; it scales the activation delay like a strike, but only while fresh —
+///        counted only when its `suspectedAt` timestamp falls inside the market's suspect window.
+/// @param suspectedAt      Per-guardian timestamp of the last suspect report, kept so stale reports can be excluded.
 struct GuardiansSignal {
-    Status status;
+    bool banned;
+    uint40 suspectReportedAt;
+    uint16 suspectCount;
     EnumerableSet.AddressSet flaggedBy;
+    EnumerableSet.AddressSet suspectedBy;
+    mapping(address guardian => uint40 timestamp) suspectedAt;
 }
 
-/// @notice Read model of an account's signal, returned by `getOpinion` and consumed by the controller's
-///         activation gate.
-/// @param status     The account's latched status.
-/// @param strikes     Effective guardian strikes: the flag count that scales the activation delay, forced to 0
-///        while `Immune` so an exempt account carries no surcharge.
-/// @param flagCount   Raw number of guardians currently flagging the account, regardless of status. Equals
-///        `strikes` except while `Immune`, where it stays visible while `strikes` reads 0.
-/// @param quorumBlock The quorum-scan frontier: the highest block a quorum of guardians have scanned past.
+/// @notice Everything the controller reads about an account in one call, forwarded to the activation lib which
+///         owns the delay math. Returned by `getOpinion`.
+/// @param banned                  Whether the account is banned (hard-blocks borrowing).
+/// @param strikeCount             Raw guardian flags on the account.
+/// @param suspectCount            Active suspect reports snapshotted at the last report/retraction.
+/// @param suspectExpiryTimestamp  When the current suspect snapshot lapses (`suspectReportedAt + suspectWindow`);
+///        the activation lib applies the suspect surcharge only to lots whose activation started before this.
+/// @param quorumFrontierTimestamp The quorum-scan frontier timestamp.
 struct GuardiansOpinion {
-    Status status;
-    uint256 strikes;
-    uint256 flagCount;
-    BlockInfo quorumBlock;
+    bool banned;
+    uint256 strikeCount;
+    uint256 suspectCount;
+    uint256 suspectExpiryTimestamp;
+    uint256 quorumFrontierTimestamp;
 }

@@ -3,7 +3,7 @@ pragma solidity 0.8.35;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {GuardiansOpinion, Status} from "../types/GuardianSignalsTypes.sol";
+import {GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 
 /// @title CollateralActivationLib
@@ -28,8 +28,9 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 /// @dev The base delay is frozen at deposit from the market-wide recent inflow, the same for every position
 ///      regardless of the depositing address. The inflow is capped at `maxDelayInflow` and decays at a fixed
 ///      rate, draining from the cap to zero over `maxActivationDelay`.
-/// @dev The caller embeds `State`, forwards calls, and supplies the one external read the lib cannot make (the
-///      guardian opinion). The only state outside `State` is the per-tx transient same-tx-undo counter.
+/// @dev The caller embeds `State`, forwards calls, and supplies the external reads the lib cannot make (the
+///      guardian-owned activation delay surcharge and quorum-scan frontier). The only state outside `State` is
+///      the per-tx transient same-tx-undo counter.
 library CollateralActivationLib {
     using SafeCast for uint256;
 
@@ -80,9 +81,6 @@ library CollateralActivationLib {
     /// @notice The activation delay cap exceeds `MAX_DELAY_DURATION`.
     error MaxActivationDelayExceeded();
 
-    /// @notice The per-strike delay surcharge exceeds `MAX_DELAY_DURATION`.
-    error DelayPerStrikeExceeded();
-
     /// @notice The activating-lock duration exceeds `MAX_DELAY_DURATION`.
     error MaxActivatingLockDurationExceeded();
 
@@ -95,6 +93,12 @@ library CollateralActivationLib {
     /// @notice The guardian-quorum fallback delay is nonzero but does not exceed `maxActivationDelay`, leaving the
     ///         quorum gate no window.
     error InvalidMaxGuardiansQuorumDelay();
+
+    /// @notice The per-strike surcharge exceeds `MAX_DELAY_DURATION`.
+    error MaxDelayPerStrikeExceeded();
+
+    /// @notice The per-suspect surcharge exceeds `MAX_DELAY_DURATION`.
+    error MaxDelayPerSuspectExceeded();
 
     // ---
     // TYPES
@@ -134,13 +138,14 @@ library CollateralActivationLib {
         if (cfg.minActivationDelay == 0) revert ZeroMinActivationDelay();
         if (cfg.minActivationDelay > cfg.maxActivationDelay) revert InvalidActivationDelays();
         if (cfg.maxActivationDelay > MAX_DELAY_DURATION) revert MaxActivationDelayExceeded();
-        if (cfg.delayPerStrike > MAX_DELAY_DURATION) revert DelayPerStrikeExceeded();
         if (cfg.activatingLockDuration > MAX_DELAY_DURATION) revert MaxActivatingLockDurationExceeded();
         if (cfg.maxGuardiansQuorumDelay != 0 && cfg.maxGuardiansQuorumDelay <= cfg.maxActivationDelay) {
             revert InvalidMaxGuardiansQuorumDelay();
         }
         if (cfg.minActivationAmount == 0) revert ZeroMinActivationAmount();
         if (cfg.maxDelayInflow == 0) revert ZeroMaxDelayInflow();
+        if (cfg.delayPerStrike > MAX_DELAY_DURATION) revert MaxDelayPerStrikeExceeded();
+        if (cfg.delayPerSuspect > MAX_DELAY_DURATION) revert MaxDelayPerSuspectExceeded();
 
         $.config = cfg;
 
@@ -230,7 +235,7 @@ library CollateralActivationLib {
         if (!isFrozen && position.activatingStart > 0) {
             uint256 unlockTime = _getUnlockTime($, borrower, opinion);
             bool isUnlockTimePassed = block.timestamp >= unlockTime;
-            bool hasGuardiansQuorum = unlockTime <= opinion.quorumBlock.timestamp;
+            bool hasGuardiansQuorum = unlockTime <= opinion.quorumFrontierTimestamp;
             bool maxQuorumDelayElapsed = block.timestamp >= position.activatingStart + $.config.maxGuardiansQuorumDelay;
 
             if (isUnlockTimePassed && (hasGuardiansQuorum || maxQuorumDelayElapsed)) {
@@ -254,7 +259,8 @@ library CollateralActivationLib {
     // GETTERS
     // ---
 
-    /// @notice Unlock timestamp of the borrower's activating lot, 0 if none.
+    /// @notice Unlock timestamp of the borrower's activating lot, 0 if none. `opinion` carries the guardian
+    ///         counters this derives the surcharge from (`type(uint256).max` for a banned borrower).
     function getUnlockTime(State storage $, address borrower, GuardiansOpinion memory opinion)
         internal
         view
@@ -349,18 +355,22 @@ library CollateralActivationLib {
         _storeTransientInflowIncrease(borrower, inflowInTx - inflowDecrement);
     }
 
-    /// @dev Unlock = start + frozen base delay + strike surcharge (strikes * delayPerStrike). A banned borrower
-    ///      never unlocks (returns max).
+    /// @dev Unlock = start + frozen base delay + the guardian surcharge: `strikeCount * delayPerStrike`, plus
+    ///      `suspectCount * delayPerSuspect` only for a lot whose activation started before the suspect snapshot
+    ///      lapses (`suspectExpiryTimestamp`). A banned borrower never unlocks (returns max).
     function _getUnlockTime(State storage $, address borrower, GuardiansOpinion memory opinion)
         private
         view
         returns (uint256)
     {
-        if (opinion.status == Status.Banned) return type(uint256).max;
+        if (opinion.banned) return type(uint256).max;
 
         Position storage position = $.positions[borrower];
-        uint256 delaySurcharge = opinion.strikes * $.config.delayPerStrike;
-        return position.activatingStart + position.activatingDelay + delaySurcharge;
+        uint256 surcharge = opinion.strikeCount * $.config.delayPerStrike;
+        if (position.activatingStart < opinion.suspectExpiryTimestamp) {
+            surcharge += opinion.suspectCount * $.config.delayPerSuspect;
+        }
+        return position.activatingStart + position.activatingDelay + surcharge;
     }
 
     /// @dev Base delay scales linearly with the inflow, clamped at both ends. The dormant lot's size is folded

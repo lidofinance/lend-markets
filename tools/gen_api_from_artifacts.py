@@ -451,9 +451,8 @@ def main() -> int:
 
     gt = ast_of(GUARDIAN_TYPES)
     gbody = render_contract(GUARDIAN, "IGuardianSignals", reg, BASE,
-                            extra_enums=[find(gt, "EnumDefinition", "Status")],
                             extra_structs=[find(gt, "StructDefinition", s)
-                                           for s in ("BlockInfo", "BlockInfoWithHash", "GuardiansOpinion")])
+                                           for s in ("BlockInfoWithHash", "GuardiansOpinion")])
     written.append(write_page("guardian-signals.md", "GuardianSignals", gbody))
 
     gw_events = iface_members(GATEWAY_IFACE, "ILidoLendDepositGateway", "EventDefinition")

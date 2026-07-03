@@ -92,12 +92,13 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
                 activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    delayPerStrike: 2 hours,
                     activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     maxDelayInflow: 100_000 ether,
                     minActivationAmount: 1e18,
-                    maxGuardiansQuorumDelay: 0
+                    maxGuardiansQuorumDelay: 0,
+                    delayPerStrike: 0,
+                    delayPerSuspect: 0
                 }),
                 // fullCutBelowCollateral above both collaterals, so any partial slice strands dust and the queue
                 // lifts every cut to a whole close.
@@ -106,6 +107,7 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
                 }),
                 guardians: guardians,
                 quorum: 1,
+                suspectWindow: 0,
                 vaultName: "Lido WETH Vault",
                 vaultSymbol: "lidoWETH"
             })

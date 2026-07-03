@@ -22,6 +22,14 @@ interface IOwnerFacade {
     function createMarket(MarketParams calldata marketParams, address controller, bool enableSettlement) external;
 }
 
+/// @dev Minimal surface of the guardian registry used at deploy: grant the manager role and set the delay
+///      parameters (the guardian set and quorum are seeded in `initialize`).
+interface IGuardianRegistry {
+    function MANAGER_ROLE() external view returns (bytes32);
+    function grantRole(bytes32 role, address account) external;
+    function setSuspectWindow(uint256 suspectWindow) external;
+}
+
 /// @title LidoLendDeployer
 /// @notice Shared deploy steps for a Lido Lending market: core, guardian-signals registry, oracle, IRM,
 ///         controller (behind a proxy), the market, and the ERC-4626 vault.
@@ -50,8 +58,6 @@ abstract contract LidoLendDeployer {
         uint64 minActivationDelay;
         uint64 maxActivationDelay;
         uint128 maxDelayInflow;
-        // strike surcharge
-        uint64 delayPerStrike;
         // sybil lock on activating collateral
         uint128 activatingLockAmount;
         uint64 activatingLockDuration;
@@ -59,6 +65,9 @@ abstract contract LidoLendDeployer {
         uint128 minActivationAmount;
         // cap on total activating time from the lot's start (0 = no quorum-scan gate)
         uint64 maxGuardiansQuorumDelay;
+        // guardian surcharges: per strike and per active suspect
+        uint64 delayPerStrike;
+        uint64 delayPerSuspect;
     }
 
     struct Deployed {
@@ -85,10 +94,12 @@ abstract contract LidoLendDeployer {
         bool enableSettlement;
         CollateralActivationConfigParams activation;
         SettlementConfigParams settlementConfig;
-        // Guardian-signals registry bootstrap. The registry rejects `quorum` 0, so pass at least one guardian and
-        // `1 <= quorum <= guardians.length`; swap in the real guardian set post-deploy.
+        // Guardian-signals registry bootstrap, seeded in `initialize`. The registry rejects `quorum` 0, so pass at
+        // least one guardian and `1 <= quorum <= guardians.length`; rotate to the real set post-deploy via
+        // `addGuardian` / `removeGuardian`.
         address[] guardians;
         uint256 quorum;
+        uint256 suspectWindow;
         string vaultName;
         string vaultSymbol;
     }
@@ -131,6 +142,12 @@ abstract contract LidoLendDeployer {
         // later policy changes; `admin` holds DEFAULT_ADMIN_ROLE (the MANAGER_ROLE admin), so it self-grants.
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
+
+        // The guardian set and quorum are seeded in `initialize`. Grant `admin` MANAGER_ROLE for later
+        // roster/quorum changes (it holds DEFAULT_ADMIN_ROLE, so it self-grants), then set the suspect window.
+        IGuardianRegistry guardian = IGuardianRegistry(d.guardianSignals);
+        guardian.grantRole(guardian.MANAGER_ROLE(), cfg.admin);
+        guardian.setSuspectWindow(cfg.suspectWindow);
     }
 
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so
@@ -153,7 +170,8 @@ abstract contract LidoLendDeployer {
         );
     }
 
-    /// @dev Guardian-signals registry behind a proxy. `initialize(admin, guardians, quorum)`.
+    /// @dev Guardian-signals registry behind a proxy. `initialize` seeds the admin, guardian set, and quorum; the
+    ///      suspect window is set via `setSuspectWindow` after deploy.
     function _deployGuardianSignals(address admin, address[] memory guardians, uint256 quorum)
         internal
         virtual
@@ -224,7 +242,7 @@ abstract contract LidoLendDeployer {
             "src/controllers/LidoLendMarketController.sol:LidoLendMarketController", abi.encode(core)
         );
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(bytes32,address,address,(uint40,uint40,uint128,uint40,uint128,uint40,uint128,uint40),(uint16,uint96,uint96,uint16))",
+            "initialize(bytes32,address,address,(uint40,uint40,uint128,uint128,uint40,uint128,uint40,uint40,uint40),(uint16,uint96,uint96,uint16))",
             Id.unwrap(marketId),
             admin,
             guardianSignals,

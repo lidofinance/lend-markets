@@ -109,18 +109,20 @@ contract ExitBookTest is Test, LidoLendDeployer {
                 activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    delayPerStrike: 2 hours,
                     activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
-                    maxGuardiansQuorumDelay: 0
+                    maxGuardiansQuorumDelay: 0,
+                    delayPerStrike: 0,
+                    delayPerSuspect: 0
                 }),
                 settlementConfig: SettlementConfigParams({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
+                suspectWindow: 0,
                 vaultName: "Lido Loan Vault",
                 vaultSymbol: "lidoLOAN"
             })

@@ -44,12 +44,13 @@ contract DeployMarket is Script, LidoLendDeployer {
                 activation: CollateralActivationConfigParams({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    delayPerStrike: 2 hours,
                     activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
-                    maxGuardiansQuorumDelay: 0
+                    maxGuardiansQuorumDelay: 0,
+                    delayPerStrike: 2 hours,
+                    delayPerSuspect: 0
                 }),
                 // DRAFT slice policy — governance values, tune before any real deploy.
                 settlementConfig: SettlementConfigParams({
@@ -60,6 +61,7 @@ contract DeployMarket is Script, LidoLendDeployer {
                 }),
                 guardians: guardians,
                 quorum: 1,
+                suspectWindow: 0,
                 vaultName: "Lido wstETH/WETH Vault",
                 vaultSymbol: "lidoWSTETH-WETH"
             })

@@ -36,6 +36,8 @@ struct Market {
     ILidoLendMarketController controller;
     IOssifiableProxy controllerProxy;
     address controllerImpl;
+    IGuardianSignals guardianSignals;
+    IOssifiableProxy guardianSignalsProxy;
     ILidoLendERC4626 vault;
     IOssifiableProxy vaultProxy;
     IOracle oracle;

@@ -282,12 +282,13 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
             minActivationDelay: 300,
             maxActivationDelay: 3 hours,
             maxDelayInflow: 20_000 ether,
-            delayPerStrike: 1 hours,
             activatingLockAmount: 5 ether,
             activatingLockDuration: 1 hours,
             minActivationAmount: 7 ether,
             // must be 0 or strictly above maxActivationDelay (the liveness fallback sits past the delay cap)
-            maxGuardiansQuorumDelay: 4 hours
+            maxGuardiansQuorumDelay: 4 hours,
+            delayPerStrike: 0,
+            delayPerSuspect: 0
         });
         c.setCollateralActivationConfig(cfg);
 
@@ -295,7 +296,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(stored.minActivationDelay, 300, "minActivationDelay");
         assertEq(stored.maxActivationDelay, 3 hours, "maxActivationDelay");
         assertEq(stored.maxDelayInflow, 20_000 ether, "maxDelayInflow");
-        assertEq(stored.delayPerStrike, 1 hours, "delayPerStrike");
         assertEq(stored.activatingLockAmount, 5 ether, "activatingLockAmount");
         assertEq(stored.activatingLockDuration, 1 hours, "activatingLockDuration");
         assertEq(stored.minActivationAmount, 7 ether, "minActivationAmount");
@@ -864,7 +864,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(d.activating, 0, "no activating left after maturation");
         assertEq(d.dust, 0, "no dust");
         assertEq(d.unlockTime, 0, "no timer once matured");
-        assertEq(d.strikes, 0, "no guardian strikes");
         assertEq(d.flagCount, 0, "no flags");
         assertFalse(d.banned, "not banned");
         // Fresh borrow with no interest accrued: debt assets == borrowed amount.

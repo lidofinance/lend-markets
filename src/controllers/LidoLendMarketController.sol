@@ -9,8 +9,8 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
-import {IGuardianSignals} from "../interfaces/IGuardianSignals.sol";
-import {GuardiansOpinion, Status} from "../types/GuardianSignalsTypes.sol";
+import {IGuardianSignalsView} from "../interfaces/IGuardianSignalsView.sol";
+import {GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
 import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 import {ILidoLendMarketConfigurator} from "../interfaces/ILidoLendMarketConfigurator.sol";
 import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
@@ -66,7 +66,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     ///      defers. Debt-free positions can still withdraw.
     bool public isFrozen;
     /// @dev Guardian-signal registry read on every hook to gate borrowing (ban) and scale activation (strikes).
-    IGuardianSignals private _guardianSignals;
+    IGuardianSignalsView private _guardianSignals;
     /// @dev Config + inflow accumulator + per-borrower activation pipeline.
     CollateralActivationLib.State private _activation;
     /// @dev Risk queue + settlement LTVs + settlement config.
@@ -103,7 +103,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     function initialize(
         Id marketId_,
         address admin,
-        IGuardianSignals guardianSignals,
+        IGuardianSignalsView guardianSignals,
         CollateralActivationConfig calldata activationConfig,
         SettlementConfig calldata settlementConfig
     ) external initializer {
@@ -311,9 +311,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         PositionView memory position = _positionView(id, borrower);
         MarketView memory marketView = _marketView(id);
         GuardiansOpinion memory opinion = _guardianSignals.getOpinion(id, borrower);
-        dashboard.banned = opinion.status == Status.Banned;
-        dashboard.strikes = opinion.strikes;
-        dashboard.flagCount = opinion.flagCount;
+        dashboard.banned = opinion.banned;
+        dashboard.flagCount = opinion.strikeCount;
         (dashboard.activating, dashboard.dust) = _activation.getActivationState(borrower);
         dashboard.active = position.collateral - dashboard.activating - dashboard.dust;
         dashboard.unlockTime = _activation.getUnlockTime(borrower, opinion);
@@ -397,17 +396,16 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
         // borrow (caller). Soft strikes only delay activation; a ban hard-blocks the borrow.
-        if (_guardianSignals.getOpinion(id, hookData.caller).status == Status.Banned) revert AddressBanned();
+        if (_guardianSignals.isBanned(id, hookData.caller)) revert AddressBanned();
 
-        if (_guardianSignals.getOpinion(id, hookData.receiver).status == Status.Banned) revert AddressBanned();
+        if (_guardianSignals.isBanned(id, hookData.receiver)) revert AddressBanned();
 
-        GuardiansOpinion memory borrowerOpinion = _guardianSignals.getOpinion(id, hookData.onBehalf);
-
-        if (borrowerOpinion.status == Status.Banned) revert AddressBanned();
+        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(id, hookData.onBehalf);
+        if (opinion.banned) revert AddressBanned();
 
         // Borrow capacity uses active (matured) collateral only. `sync` matures any ready lot, subject to the
         // quorum-scan gate, and returns the post-mature inactive total. Active is the raw collateral minus that.
-        uint256 inactive = _activation.sync(isFrozen, hookData.onBehalf, borrowerOpinion);
+        uint256 inactive = _activation.sync(isFrozen, hookData.onBehalf, opinion);
 
         PositionView memory position = _positionView(id, hookData.onBehalf);
         uint256 activeCollateral = position.collateral - inactive;
