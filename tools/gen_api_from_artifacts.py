@@ -395,8 +395,6 @@ API_DIR = ROOT / "docs" / "specs" / "api"
 HEADER = "<!-- GENERATED FROM NatSpec by tools/gen_api_from_artifacts.py — do not edit by hand; run `make doc`. -->"
 
 VAULT = "LidoLendERC4626.sol/LidoLendERC4626.json"
-GATEWAY = "LidoLendDepositGateway.sol/LidoLendDepositGateway.json"
-GATEWAY_IFACE = "ILidoLendDepositGateway.sol/ILidoLendDepositGateway.json"
 VAULT_IFACE = "ILidoLendERC4626.sol/ILidoLendERC4626.json"
 GUARDIAN = "IGuardianSignals.sol/IGuardianSignals.json"
 GUARDIAN_TYPES = "GuardianSignalsTypes.sol/GuardianSignalsTypes.json"
@@ -454,12 +452,6 @@ def main() -> int:
                             extra_structs=[find(gt, "StructDefinition", s)
                                            for s in ("BlockInfoWithHash", "GuardiansOpinion")])
     written.append(write_page("guardian-signals.md", "GuardianSignals", gbody))
-
-    gw_events = iface_members(GATEWAY_IFACE, "ILidoLendDepositGateway", "EventDefinition")
-    gw_errors = iface_members(GATEWAY_IFACE, "ILidoLendDepositGateway", "ErrorDefinition")
-    written.append(write_page("lido-lend-deposit-gateway.md", "LidoLendDepositGateway",
-                              render_contract(GATEWAY, "LidoLendDepositGateway", reg, BASE,
-                                              extra_events=gw_events, extra_errors=gw_errors)))
 
     # The lender exit-book layer: an abstract base plus two source-specific concrete books.
     exit_body = ["The lender exit-book layer. An abstract `ExitBookBase` holds the shared fill, cancel, and "

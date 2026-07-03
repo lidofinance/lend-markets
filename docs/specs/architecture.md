@@ -12,7 +12,6 @@ A single `LidoLend` core hosts many markets, as in Morpho. To each market the Li
 - **[LidoLendMarketController](#lidolendmarketcontroller)** holds Lido policy: borrower gating, collateral activation, settlement queue, freeze/pause.
 - **[GuardianSignals](#guardiansignals)** is the registry the controller reads for gating.
 - **[LidoLendERC4626](#lidolenderc4626)** is the tokenized lender position and the fallback-exit entrypoint.
-- **[LidoLendDepositGateway](#lidolenddepositgateway)** is a stateless convenience zap (ETH/WETH, stETH/wstETH).
 - **[RiskStewardDashboard](#riskstewarddashboard)** is the per-core tighten-only risk console: appointed stewards ratchet a market's activation levers in the safe direction.
 - **[Exit books](#exit-books)** are the filler-served exit registry: lenders post exit requests, fillers close them from market liquidity for a Dutch-auction priority fee.
 
@@ -62,12 +61,6 @@ Full surface: [API reference](api/guardian-signals.md).
 The tokenized lender position for one market — a standard ERC-4626 vault over the market's supply, freely transferable and ungated, plus the griefing-resistant fallback exit for when pool liquidity is short. `totalAssets` counts only the Morpho supply position, so idle or donated loan tokens stay inert, and a virtual-share decimals offset hardens the share price against inflation.
 
 Full surface: [API reference](api/lido-lend-erc4626.md).
-
-### LidoLendDepositGateway
-
-A stateless convenience layer so lenders and borrowers can enter with raw ETH/WETH or stETH/wstETH instead of pre-wrapping. It forwards to the core or the vault in one call, wrapping where needed — the ETH paths wrap to WETH and the stETH path wraps to wstETH, while the WETH supply and vault paths only forward.
-
-Full surface: [API reference](api/lido-lend-deposit-gateway.md).
 
 ### RiskStewardDashboard
 
@@ -310,7 +303,7 @@ Each invariant here maps to a scenario or integration test in `test/`.
 
 ## Markets
 
-Both markets reuse the shared stack — controller, guardian signals, collateral activation, settlement queue, vault, freeze/pause — differing in the oracle, the deposit gateway, the liquidation path, and the risk parameters:
+Both markets reuse the shared stack — controller, guardian signals, collateral activation, settlement queue, vault, freeze/pause — differing in the oracle, the liquidation path, and the risk parameters:
 
-- **ETH / wstETH** — `WstEthRateOracle` (on-chain accounting rate, no market price), `LidoLendDepositGateway` for ETH/stETH zaps. See [markets/eth-steth.md](markets/eth-steth.md).
+- **ETH / wstETH** — `WstEthRateOracle` (on-chain accounting rate, no market price). See [markets/eth-steth.md](markets/eth-steth.md).
 - **USD / Treasuries** — a USDY NAV oracle, transfer-gated collateral.
