@@ -1,0 +1,16 @@
+name: 'Repo setup'
+description: 'Reads .foundryref and installs the pinned Foundry version. Assumes the repo is already checked out.'
+
+runs:
+  using: composite
+  steps:
+    - id: foundryref
+      shell: bash
+      run: echo "version=$(cat .foundryref)" >> $GITHUB_OUTPUT
+
+    - uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0
+      with:
+        version: ${{ steps.foundryref.outputs.version }}
+
+    - shell: bash
+      run: forge --version

@@ -1,0 +1,24 @@
+# Foundry build artifacts
+/out/
+/cache/
+/broadcast/
+.forge-snapshots/
+.gas-snapshot
+
+# Coverage output
+/coverage/
+/coverage.json
+/lcov.info
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Logs
+*.log

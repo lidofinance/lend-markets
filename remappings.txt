@@ -1,0 +1,6 @@
+@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/
+@lido-lend-irm/=lib/lido-lend-irm/
+@lido-lend/=lib/lido-lend/
+@vault-v2/=lib/vault-v2/
+forge-std/=lib/vault-v2/lib/forge-std/src/
