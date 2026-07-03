@@ -378,14 +378,6 @@ error InsufficientActiveCollateral();
 
 Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
 
-### `CollateralFloorBreached`
-
-```solidity
-error CollateralFloorBreached();
-```
-
-Thrown when a withdrawal would draw a borrower's collateral below the activation minimum while it still owes debt. Repaying to zero lifts the floor.
-
 ### `PositionAccountingMismatch`
 
 ```solidity
@@ -418,7 +410,7 @@ Thrown when the requested cut exceeds the policy-allowed slice (a zero slice mea
 function MANAGER_ROLE() external view returns (bytes32);
 ```
 
-The single governance role: full activation and settlement config, grant and revoke instant activation.
+The single governance role: full activation and settlement config, the supply cap, and grant and revoke instant activation.
 
 ### `FREEZER_ROLE`
 

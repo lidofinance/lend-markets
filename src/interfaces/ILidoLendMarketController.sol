@@ -97,8 +97,8 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     // ROLES
     // ---
 
-    /// @notice The single governance role: full activation and settlement config, grant and revoke instant
-    ///         activation.
+    /// @notice The single governance role: full activation and settlement config, the supply cap, and
+    ///         grant and revoke instant activation.
     function MANAGER_ROLE() external view returns (bytes32);
 
     /// @notice Role allowed to freeze the market.
