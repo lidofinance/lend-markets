@@ -145,6 +145,10 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         uint256 owed = Math.mulDiv(
             shares, uint256(mk.totalBorrowAssets) + 1, uint256(mk.totalBorrowShares) + 1e6, Math.Rounding.Ceil
         );
+        // The controller vetoes a repay that drains total borrow assets to zero while shares linger (the
+        // borrow-share-inflation guard). Only a full unwind may zero the assets — skip a partial pick that
+        // would strand shares rather than trip the policy revert.
+        if (uint256(mk.totalBorrowAssets) <= owed && uint256(mk.totalBorrowShares) > shares) return;
         _mintTo(LOAN, a, owed);
         vm.startPrank(a);
         LOAN.approve(address(CORE), owed);

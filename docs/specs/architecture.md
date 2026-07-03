@@ -292,12 +292,14 @@ Trust within the policy layer. Core-level actors — proxy admin, owner, oracle,
 | Actor | Trusted to | Not trusted to |
 |---|---|---|
 | Lender | — | (permissionless) |
-| Borrower | — | bypass activation, borrow against immature collateral |
+| Borrower | — | bypass activation, borrow against immature collateral, inflate the borrow-share price to brick borrowing |
 | Guardian | flag malicious accounts, report honest last-scanned blocks | single-handedly force a borrow block or move the liveness frontier (quorum required) |
 | Committee / governance | force or lift a borrow block, or exempt accounts | move funds |
 | Risk steward / committee | freeze, tighten config | loosen risk, move funds |
 | Emergency-seal committee | pause every hook for a finite time | resume, change parameters, move funds |
 | Governance | set parameters and roles within bounds | bypass timelocks for risk-increasing changes, take custody |
+
+**Borrow-share-price invariant.** On a market with zero borrow assets, a repay that drains borrow assets to zero while borrow shares remain outstanding would let the next minimum borrow mint shares roughly equal to the outstanding total — doubling the borrow-share supply each cheap cycle until it overflows and every borrow reverts. The repay hook forbids this: a repay may reach zero borrow assets only when it clears every borrow share too (a full unwind). Partial repays and honest full closes are untouched.
 
 Each invariant here maps to a scenario or integration test in `test/`.
 
