@@ -7,11 +7,10 @@ import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet
 // TYPES
 // ---
 
-/// @notice An account's latched guardian status. `Normal` is clean. `Immune` exempts the account from
-///         guardian signals. `Banned` hard-blocks borrowing, latched by a quorum of flags or a forced `ban`.
+/// @notice An account's latched guardian status. `Normal` is clean. `Banned` hard-blocks borrowing, latched by
+///         a quorum of flags or a forced `ban`.
 enum Status {
     Normal,
-    Immune,
     Banned
 }
 
@@ -29,9 +28,8 @@ struct BlockInfoWithHash {
 
 /// @notice Per-account guardian signal, stored per `(market, account)`.
 /// @param status      Latched status. A quorum of flags or a forced `ban` latches `Banned`, held until `unban`.
-///        While `Immune`, `flag`/`unflag` no-op and readers see the account as clean.
 /// @param flaggedBy   Live set of guardians currently flagging the account. Its size is the raw flag count,
-///        which becomes the effective strikes unless the account is `Immune`. `unban` clears it in one call.
+///        which is the effective strikes. `unban` clears it in one call.
 /// @param suspectedBy Live set of guardians who reported the account as suspect. Unlike a flag, a suspect
 ///        report never latches a ban; it scales the activation delay like a strike, but only while fresh —
 ///        counted only when its `suspectedAt` timestamp falls inside the market's suspect window.
@@ -62,7 +60,7 @@ struct DelayParams {
 /// @notice Everything the controller reads about an account in one call: the ban gate plus the activation-gate
 ///         inputs. Returned by `getOpinion`.
 /// @param banned              Whether the account is banned (hard-blocks borrowing).
-/// @param activationDelay     The activation-delay surcharge (`type(uint256).max` when banned, 0 when immune).
+/// @param activationDelay     The activation-delay surcharge (`type(uint256).max` when banned).
 /// @param quorumFrontierTimestamp The quorum-scan frontier timestamp.
 struct GuardiansOpinion {
     bool banned;

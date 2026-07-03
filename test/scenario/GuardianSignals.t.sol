@@ -92,39 +92,4 @@ contract GuardianSignalsTest is Test {
         vm.prank(guardian);
         gs.flag(MARKET, accounts, _hb(block.number));
     }
-
-    /// @notice Immunity exempts an account from its flag surcharge without erasing the raw flags: `getFlagCount`
-    ///         keeps the raw flags visible, the activation delay drops to 0 while `Immune`, and a further flag is a
-    ///         no-op, so an immune account can never latch a ban. Revoking immunity re-subjects it to the flags.
-    function test_immunity_zeroesEffectiveStrikesButKeepsFlagCount() public {
-        _deploy(3, 3); // quorum 3, so two flags stay below the ban threshold
-        GuardianSignals gsImpl = GuardianSignals(address(gs));
-        gsImpl.grantRole(gsImpl.IMMUNITY_GRANTER_ROLE(), address(this));
-        gsImpl.grantRole(gsImpl.IMMUNITY_REVOKER_ROLE(), address(this));
-        vm.roll(1000);
-
-        address account = address(0xCAFE);
-
-        _flag(guardians[0], account);
-        _flag(guardians[1], account);
-
-        assertFalse(gs.isBanned(MARKET, account), "not banned below quorum");
-        assertFalse(gs.isImmune(MARKET, account), "not immune yet");
-        assertEq(gs.getFlagCount(MARKET, account), 2, "raw flag count");
-
-        gs.grantImmunity(MARKET, account);
-        assertTrue(gs.isImmune(MARKET, account), "immune");
-        assertEq(gs.getFlagCount(MARKET, account), 2, "immune keeps the raw flag count");
-        assertEq(gs.getActivationDelay(MARKET, account), 0, "immune zeroes the activation-delay surcharge");
-
-        _flag(guardians[2], account); // no-op while immune
-        assertTrue(gs.isImmune(MARKET, account), "still immune, never banned");
-        assertFalse(gs.isBanned(MARKET, account), "immune account never latches a ban");
-        assertEq(gs.getFlagCount(MARKET, account), 2, "flag is a no-op while immune");
-
-        gs.revokeImmunity(MARKET, account);
-        assertFalse(gs.isImmune(MARKET, account), "normal after revoke");
-        assertFalse(gs.isBanned(MARKET, account), "still below quorum after revoke");
-        assertEq(gs.getFlagCount(MARKET, account), 2, "flag count unchanged");
-    }
 }

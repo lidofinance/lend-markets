@@ -14,8 +14,8 @@ import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 /// @notice Unit suite for `GuardianSignals`, modelled from the "Guardian signals" spec:
 ///         a per-(market,account) registry where each guardian flag is one strike,
-///         status latches to `Banned` at quorum (`unflag` below quorum does NOT lift it), immunity forces
-///         strikes to 0, and `syncQuorumBlock` advances a monotonic quorum liveness frontier. Deployed
+///         status latches to `Banned` at quorum (`unflag` below quorum does NOT lift it), and
+///         `syncQuorumBlock` advances a monotonic quorum liveness frontier. Deployed
 ///         behind `OssifiableProxy` (the impl disables initializers).
 contract GuardianSignalsTest is Test {
     GuardianSignals internal gs;
@@ -44,8 +44,6 @@ contract GuardianSignalsTest is Test {
         gs.grantRole(gs.MANAGER_ROLE(), address(this));
         gs.grantRole(gs.ACCESS_LIMITER_ROLE(), address(this));
         gs.grantRole(gs.ACCESS_RESTORER_ROLE(), address(this));
-        gs.grantRole(gs.IMMUNITY_GRANTER_ROLE(), address(this));
-        gs.grantRole(gs.IMMUNITY_REVOKER_ROLE(), address(this));
 
         // Activation delays left at 0 for these tests.
         gs.setDelayParams(DelayParams({delayPerStrike: 0, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0}));
@@ -84,9 +82,7 @@ contract GuardianSignalsTest is Test {
     }
 
     function _status(address account) internal view returns (Status) {
-        if (gs.isBanned(MARKET, account)) return Status.Banned;
-        if (gs.isImmune(MARKET, account)) return Status.Immune;
-        return Status.Normal;
+        return gs.isBanned(MARKET, account) ? Status.Banned : Status.Normal;
     }
 
     function _flagCount(address account) internal view returns (uint256) {
@@ -94,7 +90,7 @@ contract GuardianSignalsTest is Test {
     }
 
     function _strikes(address account) internal view returns (uint256) {
-        return gs.isImmune(MARKET, account) ? 0 : gs.getFlagCount(MARKET, account);
+        return gs.getFlagCount(MARKET, account);
     }
 
     // ── mutations ──
@@ -136,60 +132,6 @@ contract GuardianSignalsTest is Test {
         _flag(G1, BOB);
         _unflag(G2, BOB); // G2 never flagged -> no-op
         assertEq(_flagCount(BOB), 1, "unflag by a non-flagger is a no-op");
-    }
-
-    // ── immunity ──
-
-    function test_grantImmunity_overBanned_forcesStrikesZero() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB); // Banned, flagCount 2
-        gs.grantImmunity(MARKET, BOB);
-        assertEq(uint8(_status(BOB)), uint8(Status.Immune), "immunity overrides Banned");
-        assertEq(_strikes(BOB), 0, "immune -> strikes forced to 0");
-        assertEq(_flagCount(BOB), 2, "raw flagCount still visible under immunity");
-    }
-
-    function test_flag_onImmune_isNoop_frozenSet() public {
-        gs.grantImmunity(MARKET, BOB);
-        _flag(G1, BOB); // no-op while immune
-        assertEq(_flagCount(BOB), 0, "flags are frozen (dropped) while immune");
-    }
-
-    /// @dev `revokeImmunity` re-derives the status from the flag set instead of forcing `Normal`: an account
-    ///      still carrying a quorum of flags re-latches to `Banned`, so an immunity round-trip cannot silently
-    ///      unban it.
-    function test_immunityRoundTrip_stillQuorumFlagged_relatchesBanned() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB); // Banned, flagCount 2 >= quorum
-        gs.grantImmunity(MARKET, BOB);
-        assertEq(uint8(_status(BOB)), uint8(Status.Immune), "immune during the grant");
-        gs.revokeImmunity(MARKET, BOB);
-        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "re-latches Banned, still quorum-flagged");
-        assertEq(_flagCount(BOB), 2, "flags retained across the round-trip");
-        assertEq(_strikes(BOB), 2, "effective strikes restored once no longer immune");
-    }
-
-    /// @dev The mirror branch: an account below quorum at revoke returns to `Normal`, not `Banned`.
-    function test_immunityRoundTrip_belowQuorum_returnsNormal() public {
-        _flag(G1, BOB); // 1 flag < quorum 2
-        gs.grantImmunity(MARKET, BOB);
-        gs.revokeImmunity(MARKET, BOB);
-        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "below quorum -> Normal after revoke");
-        assertEq(_flagCount(BOB), 1, "the single flag is retained");
-    }
-
-    /// @dev `revokeImmunity` is a no-op on a non-immune account: it must not lift a committee `ban` (a forced
-    ///      Banned carries zero flags) — closing the limiter-role unban bypass.
-    function test_revokeImmunity_onForcedBan_isNoop() public {
-        gs.ban(MARKET, BOB); // forced Banned, zero flags
-        gs.revokeImmunity(MARKET, BOB);
-        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "forced ban survives revoke (no-op on non-immune)");
-    }
-
-    /// @dev ...and it leaves a never-immune Normal account untouched.
-    function test_revokeImmunity_onNormal_isNoop() public {
-        gs.revokeImmunity(MARKET, BOB);
-        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "no-op on a never-immune account");
     }
 
     // ── forced ban / unban ──
@@ -313,7 +255,6 @@ contract GuardianSignalsTest is Test {
 
     event Flagged(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
     event Banned(Id indexed marketId, address indexed account);
-    event ImmunityGranted(Id indexed marketId, address indexed account, address indexed by);
     event QuorumSet(uint256 quorum);
 
     /// @dev `initialize` seeds the quorum and emits `QuorumSet` for off-chain indexers (guardians emit
@@ -359,13 +300,6 @@ contract GuardianSignalsTest is Test {
         }
     }
 
-    function test_grantImmunity_overForcedBan() public {
-        gs.ban(MARKET, BOB); // forced Banned (no flags)
-        gs.grantImmunity(MARKET, BOB);
-        assertEq(uint8(_status(BOB)), uint8(Status.Immune), "immunity overrides a forced ban");
-        assertEq(_strikes(BOB), 0, "strikes 0 under immunity");
-    }
-
     function test_flag_batch_multipleAccounts() public {
         address[] memory accs = new address[](2);
         accs[0] = BOB;
@@ -388,20 +322,6 @@ contract GuardianSignalsTest is Test {
     }
 
     // ── wrong-role reverts (each gated mutator) ──
-
-    function testRevert_grantImmunity_wrongRole() public {
-        bytes32 role = gs.IMMUNITY_GRANTER_ROLE();
-        vm.prank(BOB); // lacks IMMUNITY_GRANTER_ROLE
-        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
-        gs.grantImmunity(MARKET, BOB);
-    }
-
-    function testRevert_revokeImmunity_wrongRole() public {
-        bytes32 role = gs.IMMUNITY_REVOKER_ROLE();
-        vm.prank(BOB); // lacks IMMUNITY_REVOKER_ROLE
-        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
-        gs.revokeImmunity(MARKET, BOB);
-    }
 
     function testRevert_setQuorum_wrongRole() public {
         bytes32 role = gs.MANAGER_ROLE();
@@ -452,26 +372,6 @@ contract GuardianSignalsTest is Test {
         assertEq(gs.getGuardianCount(), 3, "set unchanged after the revert");
     }
 
-    // ── unflag on an immune account is a no-op ──
-
-    /// @dev `_unflag` short-circuits on an immune account before touching the flag set: a pre-existing flag is
-    ///      retained (immunity froze it) and no `Unflagged` event fires. Mirrors `_flag`'s immune no-op.
-    function test_unflag_onImmune_isNoop() public {
-        _flag(G1, BOB); // one flag recorded while Normal
-        gs.grantImmunity(MARKET, BOB); // immunity freezes the set at flagCount 1
-
-        vm.recordLogs();
-        _unflag(G1, BOB); // immune -> no-op, flag retained, no event
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-        bytes32 unflaggedSig = keccak256("Unflagged(bytes32,address,address,uint16)");
-        for (uint256 i = 0; i < logs.length; i++) {
-            assertTrue(logs[i].topics[0] != unflaggedSig, "no Unflagged event while immune");
-        }
-
-        assertEq(_flagCount(BOB), 1, "flag retained: unflag is a no-op while immune");
-        assertEq(uint8(_status(BOB)), uint8(Status.Immune), "status unchanged");
-    }
-
     // ── fuzz: latch invariant & frontier == quorum-th largest ──
 
     function testFuzz_latchHoldsAcrossSequence(uint256 seed) public {
@@ -484,7 +384,7 @@ contract GuardianSignalsTest is Test {
             else _unflag(g, BOB);
 
             if (uint8(_status(BOB)) == uint8(Status.Banned)) everBanned = true;
-            // No unban/immunity is called, so once Banned it must stay Banned.
+            // No unban is called, so once Banned it must stay Banned.
             if (everBanned) assertEq(uint8(_status(BOB)), uint8(Status.Banned), "latch holds across the sequence");
         }
     }
@@ -619,36 +519,5 @@ contract GuardianSignalsTest is Test {
 
         assertEq(_flagCount(BOB), 2, "current-guardian flags kept");
         assertEq(uint8(_status(BOB)), uint8(Status.Banned), "status unchanged");
-    }
-
-    /// @dev Prune runs on an immune account too — it never changes status, so the ex-guardian flag is removed
-    ///      while the `Immune` status is preserved.
-    function test_prune_immune_removesFlagKeepsStatus() public {
-        _flag(G1, BOB);
-        gs.grantImmunity(MARKET, BOB);
-        gs.removeGuardian(G1); // G1 now stale
-
-        vm.prank(CLEANER);
-        gs.prune(MARKET, BOB);
-
-        assertEq(gs.getFlaggedBy(MARKET, BOB).length, 0, "ex-guardian flag pruned even while immune");
-        assertEq(uint8(_status(BOB)), uint8(Status.Immune), "status stays Immune");
-    }
-
-    /// @dev Why prune must work while immune: pruning an ex-guardian flag before `revokeImmunity` stops the
-    ///      re-derivation from re-banning on a former guardian's flag. Without the prune, `revokeImmunity` would
-    ///      count the removed guardian's flag toward quorum and re-latch `Banned`.
-    function test_prune_immune_thenRevoke_noRebanFromExGuardian() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB); // quorum 2 -> Banned
-        gs.grantImmunity(MARKET, BOB);
-        gs.removeGuardian(G1); // G1 stale; without a prune, revoke would still count it toward quorum
-
-        vm.prank(CLEANER);
-        gs.prune(MARKET, BOB); // flaggedBy -> {G2}, length 1 < quorum
-
-        gs.revokeImmunity(MARKET, BOB);
-        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "revoke does not re-ban on a former guardian's flag");
-        assertEq(_flagCount(BOB), 1, "only the current-guardian flag remains");
     }
 }

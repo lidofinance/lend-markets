@@ -34,16 +34,14 @@ import {
 ///        - flags >= quorum        : the status latches to `Banned`, the reader hard-blocks borrow.
 ///
 ///      The ban latches: retracting a flag never lifts it. `unban` lifts it and clears the flagger set, so
-///      guardians re-evaluate from scratch. `Immune` exempts an account: while set, `flag`/`unflag` no-op and
-///      readers see it as clean. `ban` clears it. All of these are per `(market, account)`.
+///      guardians re-evaluate from scratch. Both are per `(market, account)`.
 ///
 ///      A suspect report (`suspect` / `unsuspect`) never latches a ban but raises the activation delay
 ///      like a flag, counted only while fresh (its timestamp inside `suspectWindow`).
 ///
-///      Override roles split by concern and risk direction: fast risk-reducing (`ACCESS_LIMITER_ROLE`: `ban`;
-///      `IMMUNITY_REVOKER_ROLE`: `revokeImmunity`), slow risk-increasing (`ACCESS_RESTORER_ROLE`: `unban`;
-///      `IMMUNITY_GRANTER_ROLE`: `grantImmunity`). `MANAGER_ROLE` manages the guardian set, quorum, and
-///      delay parameters. A guardian set is a plain enumerable set, not a role. Every role is standard
+///      Override roles split by risk direction: `ACCESS_LIMITER_ROLE` (fast, risk-reducing) forces `ban`;
+///      `ACCESS_RESTORER_ROLE` (slow, risk-increasing) `unban`. `MANAGER_ROLE` manages the guardian set, quorum,
+///      and delay parameters. A guardian set is a plain enumerable set, not a role. Every role is standard
 ///      `AccessControl`, committee-wide across the markets this instance serves.
 ///
 ///      Guardians report liveness: `flag`, `unflag`, `suspect`, `unsuspect`, and `heartbeat` each record
@@ -86,10 +84,6 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     bytes32 public constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
     /// @dev `unban` (slow, risk-increasing).
     bytes32 public constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
-    /// @dev `revokeImmunity` (fast, risk-reducing).
-    bytes32 public constant IMMUNITY_REVOKER_ROLE = keccak256("IMMUNITY_REVOKER_ROLE");
-    /// @dev `grantImmunity` (slow, risk-increasing).
-    bytes32 public constant IMMUNITY_GRANTER_ROLE = keccak256("IMMUNITY_GRANTER_ROLE");
     /// @dev Manages the guardian set, quorum, and delay parameters.
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
@@ -319,7 +313,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     /// @inheritdoc IGuardianSignals
-    /// @dev Clears immunity so the block takes effect even on an exempt account.
+    /// @dev Force a ban regardless of the current flag count.
     function ban(Id marketId, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
         if (account == address(0)) revert ZeroAddress();
         _signals[marketId][account].status = Status.Banned;
@@ -327,32 +321,12 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    /// @dev Clears the flagger set, so the freshly-unbanned account can be re-flagged and re-banned from
-    ///      scratch. Immunity is left to `revokeImmunity`.
+    /// @dev Clears the flagger set, so the freshly-unbanned account can be re-flagged and re-banned from scratch.
     function unban(Id marketId, address account) external onlyRole(ACCESS_RESTORER_ROLE) {
         GuardiansSignal storage signal = _signals[marketId][account];
         signal.status = Status.Normal;
         signal.flaggedBy.clear();
         emit Unbanned(marketId, account, msg.sender);
-    }
-
-    /// @inheritdoc IGuardianSignals
-    function grantImmunity(Id marketId, address account) external onlyRole(IMMUNITY_GRANTER_ROLE) {
-        if (account == address(0)) revert ZeroAddress();
-        _signals[marketId][account].status = Status.Immune;
-        emit ImmunityGranted(marketId, account, msg.sender);
-    }
-
-    /// @inheritdoc IGuardianSignals
-    function revokeImmunity(Id marketId, address account) external onlyRole(IMMUNITY_REVOKER_ROLE) {
-        GuardiansSignal storage signal = _signals[marketId][account];
-        // Only act on an actually-immune account: revoking is a no-op otherwise, so this never clears a
-        // committee `ban` (a forced `Banned` carries no flags) nor disturbs a `Normal` account.
-        if (signal.status != Status.Immune) return;
-        // Restore the status the flag set implies rather than forcing `Normal`: an account still carrying a
-        // quorum of flags re-latches to `Banned`, so revoking immunity never silently unbans it.
-        signal.status = signal.flaggedBy.length() >= _quorum ? Status.Banned : Status.Normal;
-        emit ImmunityRevoked(marketId, account, msg.sender);
     }
 
     // ---
@@ -369,11 +343,6 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @inheritdoc IGuardianSignalsView
     function isBanned(Id marketId, address account) external view returns (bool) {
         return _signals[marketId][account].status == Status.Banned;
-    }
-
-    /// @inheritdoc IGuardianSignals
-    function isImmune(Id marketId, address account) external view returns (bool) {
-        return _signals[marketId][account].status == Status.Immune;
     }
 
     /// @inheritdoc IGuardianSignals
@@ -453,12 +422,12 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         emit GuardianAdded(guardian);
     }
 
-    /// @dev Single-account flag. No-op when `account` is immune or the caller already flags it.
+    /// @dev Single-account flag. No-op when the caller already flags it.
     function _flag(Id marketId, address account) internal {
         if (account == address(0)) revert ZeroAddress();
 
         GuardiansSignal storage signal = _signals[marketId][account];
-        if (signal.status == Status.Immune || !signal.flaggedBy.add(msg.sender)) return;
+        if (!signal.flaggedBy.add(msg.sender)) return;
 
         uint256 strikes = signal.flaggedBy.length();
         if (strikes >= _quorum && signal.status != Status.Banned) {
@@ -468,22 +437,19 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         emit Flagged(marketId, account, msg.sender, uint16(strikes));
     }
 
-    /// @dev Single-account unflag. No-op when `account` is immune or the caller does not flag it. Never lifts a
-    ///      latched ban.
+    /// @dev Single-account unflag. No-op when the caller does not flag it. Never lifts a latched ban.
     function _unflag(Id marketId, address account) internal {
         GuardiansSignal storage signal = _signals[marketId][account];
-        if (signal.status == Status.Immune || !signal.flaggedBy.remove(msg.sender)) return;
+        if (!signal.flaggedBy.remove(msg.sender)) return;
         emit Unflagged(marketId, account, msg.sender, uint16(signal.flaggedBy.length()));
     }
 
-    /// @dev Single-account suspect report. No-op while immune. Records (or refreshes) the caller's timestamp so a
-    ///      re-report keeps the suspicion inside the window. Never latches a ban.
+    /// @dev Single-account suspect report. Records (or refreshes) the caller's timestamp so a re-report keeps the
+    ///      suspicion inside the window. Never latches a ban.
     function _suspect(Id marketId, address account) internal {
         if (account == address(0)) revert ZeroAddress();
 
         GuardiansSignal storage signal = _signals[marketId][account];
-        if (signal.status == Status.Immune) return;
-
         _pruneExpiredSuspects(marketId, account);
         signal.suspectedBy.add(msg.sender);
         signal.suspectedAt[msg.sender] = uint40(block.timestamp);
@@ -499,12 +465,11 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         emit SuspectCleared(marketId, account, msg.sender);
     }
 
-    /// @dev The collateral-activation delay surcharge: `type(uint256).max` when banned, 0 when immune, else
+    /// @dev The collateral-activation delay surcharge: `type(uint256).max` when banned, else
     ///      `min(flags * delayPerStrike + freshSuspects * delayPerSuspect, maxDelay)` (0 = uncapped).
     function _activationDelay(Id marketId, address account) internal view returns (uint256) {
         GuardiansSignal storage signal = _signals[marketId][account];
         if (signal.status == Status.Banned) return type(uint256).max;
-        if (signal.status == Status.Immune) return 0;
         uint256 delay =
             signal.flaggedBy.length() * _delayPerStrike + _activeSuspectCount(marketId, account) * _delayPerSuspect;
         uint256 maxDelay = _maxDelay;

@@ -72,7 +72,7 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @param activating Collateral inside the activation timer, not yet borrowable.
     /// @param dust Collateral below the activation threshold, withdrawable.
     /// @param unlockTime Activation unlock timestamp, 0 when there is no timer.
-    /// @param flagCount Raw guardian flags on the account, regardless of status (visible even while immune).
+    /// @param flagCount Raw guardian flags on the account, regardless of status.
     /// @param banned Hard-blocked by a latched guardian ban.
     /// @param debtAssets Current borrow debt, in loan assets.
     /// @param settlementLtv Borrower's personal settle-down target LTV (WAD), 0 when unset.

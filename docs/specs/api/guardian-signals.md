@@ -2,7 +2,7 @@
 
 # GuardianSignals
 
-Guardian-committee signal layer over accounts, keyed per market. Guardians flag accounts they detect as malicious. A `quorum` of distinct flags latches a ban. The market controller reads `getOpinion` to scale collateral activation and to hard-block borrowing.
+Guardian-committee signal layer over accounts, keyed per market. Guardians flag accounts they detect as malicious. A `quorum` of distinct flags latches a ban in the market it was raised in. The minimal read surface the market controller depends on (`getOpinion`, `isBanned`, `getFlagCount`) is {IGuardianSignalsView}; this interface adds the full guardian/committee/governance surface on top.
 
 ## Enums
 
@@ -11,32 +11,13 @@ Guardian-committee signal layer over accounts, keyed per market. Guardians flag 
 ```solidity
 enum Status {
     Normal,
-    Immune,
     Banned
 }
 ```
 
-An account's latched guardian status. `Normal` is clean. `Immune` exempts the account from guardian signals. `Banned` hard-blocks borrowing, latched by a quorum of flags or a forced `ban`.
+An account's latched guardian status. `Normal` is clean. `Banned` hard-blocks borrowing, latched by a quorum of flags or a forced `ban`.
 
 ## Structs
-
-### `BlockInfo`
-
-```solidity
-struct BlockInfo {
-    uint40 number;
-    uint40 timestamp;
-}
-```
-
-A scanned block recorded by a guardian heartbeat.
-
-**Fields**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `number` | `uint40` | The block number. |
-| `timestamp` | `uint40` | The block timestamp, carried so readers can gate on time without a second lookup. |
 
 ### `BlockInfoWithHash`
 
@@ -48,7 +29,7 @@ struct BlockInfoWithHash {
 }
 ```
 
-Heartbeat payload: a scanned block plus its hash, validated against `blockhash(number)` before the registry records it as a `BlockInfo`.
+Heartbeat payload: a scanned block plus its hash, validated against `blockhash(number)`. Only the `timestamp` is kept in storage (the frontier gates on time); `number` + `hash` prove the block is real and un-reorged, and `number` is re-emitted in the `Heartbeat` event for off-chain tooling.
 
 **Fields**
 
@@ -58,27 +39,47 @@ Heartbeat payload: a scanned block plus its hash, validated against `blockhash(n
 | `number` | `uint40` | The block number, which may not exceed the current block. |
 | `timestamp` | `uint40` | The block timestamp. |
 
-### `GuardiansOpinion`
+### `DelayParams`
 
 ```solidity
-struct GuardiansOpinion {
-    Status status;
-    uint256 strikes;
-    uint256 flagCount;
-    BlockInfo quorumBlock;
+struct DelayParams {
+    uint256 delayPerStrike;
+    uint256 delayPerSuspect;
+    uint256 maxDelay;
+    uint256 suspectWindow;
 }
 ```
 
-Read model of an account's signal, returned by `getOpinion` and consumed by the controller's activation gate.
+The guardian activation-delay parameters, set (and read) in one shot via `setDelayParams` / `getDelayParams`.
 
 **Fields**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `status` | `Status` | The account's latched status. |
-| `strikes` | `uint256` | Effective guardian strikes: the flag count that scales the activation delay, forced to 0 while `Immune` so an exempt account carries no surcharge. |
-| `flagCount` | `uint256` | Raw number of guardians currently flagging the account, regardless of status. Equals `strikes` except while `Immune`, where it stays visible while `strikes` reads 0. |
-| `quorumBlock` | `BlockInfo` | The quorum-scan frontier: the highest block a quorum of guardians have scanned past. |
+| `delayPerStrike` | `uint256` | Activation-delay surcharge per flag. Must not exceed `MAX_DELAY_PER_STRIKE`. |
+| `delayPerSuspect` | `uint256` | Activation-delay surcharge per fresh suspect report. Must not exceed `MAX_DELAY_PER_STRIKE`; inert while `suspectWindow` is 0, since a report is then fresh only in its own block. |
+| `maxDelay` | `uint256` | Cap on the total guardian activation-delay surcharge (flags + suspects). 0 = uncapped. |
+| `suspectWindow` | `uint256` | Freshness horizon within which a suspect report still counts. Must not exceed `MAX_SUSPECT_WINDOW`. |
+
+### `GuardiansOpinion`
+
+```solidity
+struct GuardiansOpinion {
+    bool banned;
+    uint256 activationDelay;
+    uint256 quorumFrontierTimestamp;
+}
+```
+
+Everything the controller reads about an account in one call: the ban gate plus the activation-gate inputs. Returned by `getOpinion`.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `banned` | `bool` | Whether the account is banned (hard-blocks borrowing). |
+| `activationDelay` | `uint256` | The activation-delay surcharge (`type(uint256).max` when banned). |
+| `quorumFrontierTimestamp` | `uint256` | The quorum-scan frontier timestamp. |
 
 ## Events
 
@@ -104,21 +105,73 @@ Emitted when a guardian leaves the set.
 event QuorumSet(uint256 quorum);
 ```
 
+Emitted when the quorum is set.
+
+### `DelayParamsSet`
+
+```solidity
+event DelayParamsSet(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow);
+```
+
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `quorum` | `uint256` | The number of distinct flags that latches a ban. |
+| `delayPerStrike` | `uint256` | The activation-delay surcharge per flag. |
+| `delayPerSuspect` | `uint256` | The activation-delay surcharge per fresh suspect report. |
+| `maxDelay` | `uint256` | The cap on the total guardian activation-delay surcharge (0 = uncapped). |
+| `suspectWindow` | `uint256` | The freshness horizon within which a suspect report still counts. |
 
-Emitted when the quorum changes.
+Emitted when the delay parameters are set.
 
 ### `Heartbeat`
 
 ```solidity
-event Heartbeat(address indexed guardian);
+event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `guardian` | `address` | The guardian that reported. |
+| `blockNumber` | `uint40` | The block number the guardian reports scanning past (carried for off-chain tooling). |
+| `timestamp` | `uint40` | The reported block's timestamp; the quorum-scan frontier orders guardians by this value. |
+
 Emitted when a guardian reports liveness, directly or via `flag`/`unflag`.
+
+### `Suspected`
+
+```solidity
+event Suspected(Id indexed marketId, address indexed account, address indexed guardian, uint256 timestamp);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market the report is scoped to. |
+| `account` | `address` | The suspected account. |
+| `guardian` | `address` | The reporting guardian. |
+| `timestamp` | `uint256` | The report time, recorded so the report can be aged out of the suspect window. |
+
+Emitted when a guardian reports an account as suspect (raises the activation delay, never bans).
+
+### `SuspectCleared`
+
+```solidity
+event SuspectCleared(Id indexed marketId, address indexed account, address indexed guardian);
+```
+
+Emitted when a guardian retracts its suspect report on an account.
+
+### `SuspectPruned`
+
+```solidity
+event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
+```
+
+Emitted when a suspect report cast by an address that is no longer a guardian is pruned.
 
 ### `Flagged`
 
@@ -130,7 +183,7 @@ event Flagged(Id indexed marketId, address indexed account, address indexed guar
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `marketId` | `Id` | The market id. |
+| `marketId` | `Id` | The market the flag is scoped to. |
 | `account` | `address` | The flagged account. |
 | `guardian` | `address` | The flagging guardian. |
 | `strikes` | `uint16` | The account's flag count after the flag. |
@@ -143,15 +196,6 @@ Emitted when a guardian flags an account.
 event Unflagged(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
 ```
 
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `marketId` | `Id` | The market id. |
-| `account` | `address` | The account. |
-| `guardian` | `address` | The retracting guardian. |
-| `strikes` | `uint16` | The account's flag count after the retraction. |
-
 Emitted when a guardian retracts a flag.
 
 ### `FlagPruned`
@@ -159,15 +203,6 @@ Emitted when a guardian retracts a flag.
 ```solidity
 event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
 ```
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `marketId` | `Id` | The market id. |
-| `account` | `address` | The account. |
-| `guardian` | `address` | The former guardian whose flag was pruned. |
-| `strikes` | `uint16` | The account's flag count after this flag was pruned. |
 
 Emitted when a flag cast by an address that is no longer a guardian is pruned.
 
@@ -194,38 +229,6 @@ event Unbanned(Id indexed marketId, address indexed account, address indexed by)
 | `by` | `address` | The `ACCESS_RESTORER_ROLE` holder that unbanned. |
 
 Emitted when an account's ban is lifted.
-
-### `ImmunityGranted`
-
-```solidity
-event ImmunityGranted(Id indexed marketId, address indexed account, address indexed by);
-```
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `marketId` | `Id` |  |
-| `account` | `address` |  |
-| `by` | `address` | The `ACCESS_RESTORER_ROLE` holder that granted immunity. |
-
-Emitted when an account is exempted.
-
-### `ImmunityRevoked`
-
-```solidity
-event ImmunityRevoked(Id indexed marketId, address indexed account, address indexed by);
-```
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `marketId` | `Id` |  |
-| `account` | `address` |  |
-| `by` | `address` | The `ACCESS_LIMITER_ROLE` holder that revoked immunity. |
-
-Emitted when an account's immunity is removed.
 
 ## Errors
 
@@ -285,6 +288,22 @@ error BlockInTheFuture();
 
 Thrown when a heartbeat reports a block number ahead of the current block.
 
+### `TimestampInTheFuture`
+
+```solidity
+error TimestampInTheFuture();
+```
+
+Thrown when a heartbeat reports a timestamp ahead of the current block.
+
+### `HeartbeatTimestampRegressed`
+
+```solidity
+error HeartbeatTimestampRegressed();
+```
+
+Thrown when a heartbeat reports a timestamp below the guardian's previous heartbeat.
+
 ### `InvalidBlockHash`
 
 ```solidity
@@ -293,21 +312,31 @@ error InvalidBlockHash();
 
 Thrown when a heartbeat's reported hash does not match the block's hash.
 
-## Functions
-
-### `getQuorum`
+### `DelayPerStrikeTooHigh`
 
 ```solidity
-function getQuorum() external view returns (uint256);
+error DelayPerStrikeTooHigh();
 ```
 
-**Returns**
+Thrown when the per-flag activation delay exceeds `MAX_DELAY_PER_STRIKE`.
 
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `uint256` | The current quorum. |
+### `DelayPerSuspectTooHigh`
 
-The number of distinct flags that latches a ban.
+```solidity
+error DelayPerSuspectTooHigh();
+```
+
+Thrown when the per-suspect activation delay exceeds `MAX_DELAY_PER_STRIKE`.
+
+### `SuspectWindowTooHigh`
+
+```solidity
+error SuspectWindowTooHigh();
+```
+
+Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
+
+## Functions
 
 ### `addGuardian`
 
@@ -347,27 +376,45 @@ function setQuorum(uint256 newQuorum) external;
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `newQuorum` | `uint256` | The new number of distinct flags that latches a ban. |
+| `newQuorum` | `uint256` | The new quorum. |
 
-Set the quorum. Reverts unless `1 <= newQuorum <= guardian count`.
+Set the quorum — the distinct flags that latch a ban. Reverts if zero or above the guardian count.
 
-### `isGuardian`
+### `setDelayParams`
 
 ```solidity
-function isGuardian(address account) external view returns (bool);
+function setDelayParams(DelayParams calldata params) external;
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `account` | `address` | The address to check. |
+| `params` | `DelayParams` | The per-flag and per-suspect surcharge, the total-delay cap, and the suspect window. |
 
-**Returns**
+Set the delay parameters. Reverts if a per-signal delay exceeds `MAX_DELAY_PER_STRIKE` or the window exceeds `MAX_SUSPECT_WINDOW`. Never touches the guardian set.
 
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `bool` | True if `account` is in the guardian set. |
+### `getQuorum`
+
+```solidity
+function getQuorum() external view returns (uint256);
+```
+
+The quorum: distinct flags that latch a ban.
+
+### `getDelayParams`
+
+```solidity
+function getDelayParams() external view returns (DelayParams memory);
+```
+
+The delay parameters: per-flag and per-suspect surcharge, the total-delay cap, and the suspect window.
+
+### `isGuardian`
+
+```solidity
+function isGuardian(address account) external view returns (bool);
+```
 
 Whether `account` is a guardian.
 
@@ -377,12 +424,6 @@ Whether `account` is a guardian.
 function getGuardianCount() external view returns (uint256);
 ```
 
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `uint256` | The guardian count. |
-
 The number of guardians in the set.
 
 ### `getGuardians`
@@ -390,12 +431,6 @@ The number of guardians in the set.
 ```solidity
 function getGuardians() external view returns (address[] memory);
 ```
-
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `address[]` | The list of guardian addresses. |
 
 The current guardian set.
 
@@ -409,9 +444,9 @@ function heartbeat(BlockInfoWithHash calldata lastScannedBlock) external;
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `lastScannedBlock` | `BlockInfoWithHash` | The block the caller reports scanning past. Reverts if `number` exceeds the current block or if `hash` does not match `blockhash(number)`. Only the caller (a guardian) is recorded. |
+| `lastScannedBlock` | `BlockInfoWithHash` | The block the caller reports scanning past. Reverts if `number` exceeds the current block, if `hash` does not match `blockhash(number)`, if `timestamp` exceeds the current block, or if `timestamp` is below the caller's previous heartbeat. |
 
-Record the caller's last-scanned block, validated against its block hash. O(1): the quorum frontier is recomputed separately by `syncQuorumBlock`.
+Record the caller's last-scanned block, validated against its block hash and timestamp. O(1): the quorum frontier is recomputed separately by `syncQuorumBlock`. Caller must be a guardian.
 
 ### `syncQuorumBlock`
 
@@ -419,58 +454,31 @@ Record the caller's last-scanned block, validated against its block hash. O(1): 
 function syncQuorumBlock() external;
 ```
 
-Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and monotonic — anyone may advance it (an off-chain agent per scan frame, or a borrower whose activation depends on it). Decoupled from `heartbeat` so heartbeats stay O(1).
+Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and monotonic.
 
 ### `getHeartbeat`
 
 ```solidity
-function getHeartbeat(
-    address guardian
-) external view returns (BlockInfo memory);
+function getHeartbeat(address guardian) external view returns (uint40);
 ```
 
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `guardian` | `address` | The guardian to query. |
-
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `BlockInfo` | The guardian's last-scanned block. Zero-valued if the guardian has never reported a heartbeat. |
-
-The last block `guardian` reported scanning.
+The timestamp of the last block `guardian` reported scanning.
 
 ### `getHeartbeats`
 
 ```solidity
-function getHeartbeats() external view returns (address[] memory guardians, BlockInfo[] memory heartbeats);
+function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory heartbeats);
 ```
 
-**Returns**
+The guardian set paired with each guardian's last-scanned timestamp.
 
-| Name | Type | Description |
-| --- | --- | --- |
-| `guardians` | `address[]` | The current guardian set. |
-| `heartbeats` | `BlockInfo[]` | The last-scanned block of each guardian, aligned by index with `guardians`. |
-
-The guardian set paired with each guardian's last-scanned block.
-
-### `getLastScannedQuorumBlock`
+### `getQuorumFrontier`
 
 ```solidity
-function getLastScannedQuorumBlock() external view returns (BlockInfo memory);
+function getQuorumFrontier() external view returns (uint40);
 ```
 
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `BlockInfo` | The quorum-scan frontier as last ratcheted by `syncQuorumBlock`. |
-
-Highest block at least a quorum of guardians have ever scanned past. Monotonic: a guardian rotation cannot lower it.
+Highest timestamp at least a quorum of guardians have ever scanned past. Monotonic.
 
 ### `flag`
 
@@ -486,11 +494,11 @@ function flag(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `marketId` | `Id` | The market id the accounts are flagged in. |
-| `accounts` | `address[]` | The accounts to flag. A zero address in the batch reverts. Each one a no-op when already flagged by the caller or immune. |
+| `marketId` | `Id` | The market to flag in. |
+| `accounts` | `address[]` | The accounts to flag. A zero address in the batch reverts. |
 | `lastScannedBlock` | `BlockInfoWithHash` | The heartbeat recorded for the caller after flagging, validated like `heartbeat`. |
 
-Flag `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller already flags it or it is immune, so a batch never reverts on a skip.
+Flag `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller already flags it, so a batch never reverts on a skip.
 
 ### `unflag`
 
@@ -502,15 +510,31 @@ function unflag(
 ) external;
 ```
 
-**Parameters**
+Retract the caller's flags on `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller does not flag it. Never lifts a latched ban.
 
-| Name | Type | Description |
-| --- | --- | --- |
-| `marketId` | `Id` | The market id the flags are retracted in. |
-| `accounts` | `address[]` | The accounts to unflag. Each one a no-op when not flagged by the caller or immune. |
-| `lastScannedBlock` | `BlockInfoWithHash` | The heartbeat recorded for the caller after retracting, validated like `heartbeat`. |
+### `suspect`
 
-Retract the caller's flags on `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller does not flag it or it is immune. Never lifts a latched ban.
+```solidity
+function suspect(
+    Id marketId,
+    address[] calldata accounts,
+    BlockInfoWithHash calldata lastScannedBlock
+) external;
+```
+
+Report `accounts` as suspect in `marketId`, then heartbeat. A suspect report never latches a ban; it raises the activation delay like a flag, but only while inside the suspect window. A zero address in the batch reverts.
+
+### `unsuspect`
+
+```solidity
+function unsuspect(
+    Id marketId,
+    address[] calldata accounts,
+    BlockInfoWithHash calldata lastScannedBlock
+) external;
+```
+
+Retract the caller's suspect reports on `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller has no live report on it.
 
 ### `prune`
 
@@ -518,7 +542,7 @@ Retract the caller's flags on `accounts` in `marketId`, then heartbeat. Per acco
 function prune(Id marketId, address account) external;
 ```
 
-Permissionless: prune `account`'s flags cast by addresses that are no longer guardians. Lowers the flag count (and, below quorum, the activation surcharge) but never changes status — a latched ban lifts only through `unban`, so this is not a permissionless unban.
+Permissionless: prune `account`'s flags and suspect reports in `marketId` cast by addresses that are no longer guardians. Lowers the flag/suspect count but never changes status.
 
 ### `ban`
 
@@ -526,14 +550,7 @@ Permissionless: prune `account`'s flags cast by addresses that are no longer gua
 function ban(Id marketId, address account) external;
 ```
 
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `marketId` | `Id` | The market id the ban applies in. |
-| `account` | `address` | The account to ban. Reverts on the zero address. |
-
-Force a ban on `account` in `marketId`, bypassing the quorum. Clears any immunity.
+Force a ban on `account` in `marketId`, bypassing the quorum.
 
 ### `unban`
 
@@ -541,68 +558,18 @@ Force a ban on `account` in `marketId`, bypassing the quorum. Clears any immunit
 function unban(Id marketId, address account) external;
 ```
 
-**Parameters**
+Lift the ban on `account` in `marketId`: reset its status to `Normal` and clear its flags. Suspect reports are left intact (they carry no ban), so a suspect-driven delay survives the unban.
 
-| Name | Type | Description |
-| --- | --- | --- |
-| `marketId` | `Id` | The market id the ban is lifted in. |
-| `account` | `address` | The account to unban. Its status returns to `Normal` and its flagger set is cleared. |
-
-Lift the ban on `account` in `marketId`: reset its status to `Normal` and clear its flags, so guardians re-evaluate from scratch and can re-ban it. Resetting to `Normal` also clears a standing immunity, so manage immunity with `grantImmunity` / `revokeImmunity`.
-
-### `grantImmunity`
+### `getActivationDelay`
 
 ```solidity
-function grantImmunity(Id marketId, address account) external;
-```
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `marketId` | `Id` | The market id the immunity applies in. |
-| `account` | `address` | The account to exempt. Reverts on the zero address. Its status is set to `Immune`. |
-
-Exempt `account` in `marketId` from guardian signals. While immune, `flag`/`unflag` no-op and `getOpinion` reads it as clean. Cleared by `revokeImmunity` or `ban`.
-
-### `revokeImmunity`
-
-```solidity
-function revokeImmunity(Id marketId, address account) external;
-```
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `marketId` | `Id` | The market id the immunity is revoked in. |
-| `account` | `address` | The account whose immunity is removed. Its status returns to `Normal`. |
-
-Remove `account`'s immunity in `marketId`, re-subjecting it to guardian signals.
-
-### `getOpinion`
-
-```solidity
-function getOpinion(
+function getActivationDelay(
     Id marketId,
     address account
-) external view returns (GuardiansOpinion memory);
+) external view returns (uint256);
 ```
 
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `marketId` | `Id` | The market id to read. |
-| `account` | `address` | The account to read. |
-
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `GuardiansOpinion` | The opinion: latched status, effective strikes (forced to 0 while `Immune`), raw flag count, and the quorum-scan frontier. |
-
-Guardian opinion on `account` in `marketId`: status, strike count, and the quorum-scan frontier. The view the controller's activation gate consumes.
+The collateral-activation delay surcharge for `account` in `marketId`: `type(uint256).max` when banned, else the capped flag + fresh-suspect surcharge.
 
 ### `getFlaggedBy`
 
@@ -613,17 +580,29 @@ function getFlaggedBy(
 ) external view returns (address[] memory);
 ```
 
+The guardians currently flagging `account` in `marketId`.
+
+### `getSuspectedBy`
+
+```solidity
+function getSuspectedBy(
+    Id marketId,
+    address account
+) external view returns (address[] memory guardians, uint40[] memory reportedAt);
+```
+
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `marketId` | `Id` | The market id to read. |
+| `marketId` | `Id` | The market to read the signal in. |
 | `account` | `address` | The account to read. |
 
 **Returns**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `<none>` | `address[]` | The addresses of guardians currently flagging the account. |
+| `guardians` | `address[]` | The addresses of guardians currently reporting the account as suspect. |
+| `reportedAt` | `uint40[]` | The timestamp of each guardian's last suspect report, aligned by index with `guardians`. |
 
-The guardians currently flagging `account` in `marketId`.
+The guardians with a live suspect report on `account` in `marketId`, paired with each report's timestamp.

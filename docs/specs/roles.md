@@ -89,10 +89,10 @@ A steward is appointed per market id, not as an AccessControl role, so the set s
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
 | `MANAGER_ROLE` | guardian set, quorum, and delay params (`addGuardian`, `removeGuardian`, `setQuorum`, `setDelayParams`) | C1 / C3 | Lido DAO |
-| `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum), `revokeImmunity` | C3 | risk steward committee |
-| `ACCESS_RESTORER_ROLE` | `unban`, `grantImmunity` | C4 | Lido DAO, timelocked |
+| `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum) | C3 | risk steward committee |
+| `ACCESS_RESTORER_ROLE` | `unban` | C4 | Lido DAO, timelocked |
 
-The committee holds the fast risk-reducing side (`ban`, `revokeImmunity`) and governance the slow risk-increasing side (`unban`, `grantImmunity`). Guardian-set membership stays DAO-only: a fast authority to shrink the set could quietly disable detection, and a bare count floor cannot tell a legitimate excision from sabotage.
+The committee holds the fast risk-reducing side (`ban`) and governance the slow risk-increasing side (`unban`). Guardian-set membership stays DAO-only: a fast authority to shrink the set could quietly disable detection, and a bare count floor cannot tell a legitimate excision from sabotage.
 
 ### `ExitBookBase`
 
@@ -119,7 +119,7 @@ Factory-gated actions and their parameters:
 - **setCollateralActivationConfig** — `minActivationDelay`, `maxActivationDelay`, `maxDelayInflow`, `delayPerStrike`, `activatingLockAmount`, `activatingLockDuration`, `minActivationAmount`, `maxGuardiansQuorumDelay`.
 - **setSettlementConfig** — `sliceFloorBps`, `sliceFloorAssets`, `fullCutBelowCollateral`, `ltvStepBps`, `minBorrowCollateral`.
 
-The fast risk-reducing levers run with no objection window: the dashboard's `increaseActivationDelays`, `increaseActivatingLock`, and `revokeInstantActivation`, the controller's `freeze` and `unfreeze`, and the registry's `ban` and `revokeImmunity`.
+The fast risk-reducing levers run with no objection window: the dashboard's `increaseActivationDelays`, `increaseActivatingLock`, and `revokeInstantActivation`, the controller's `freeze` and `unfreeze`, and the registry's `ban`.
 
 ## Role manifest
 

@@ -32,7 +32,6 @@ struct BorrowerPosition {
     uint256 activating;
     uint256 dust;
     uint256 unlockTime;
-    uint256 strikes;
     uint256 flagCount;
     bool banned;
     uint256 debtAssets;
@@ -52,8 +51,7 @@ One-read borrower snapshot for off-chain dashboards: collateral split, activatio
 | `activating` | `uint256` | Collateral inside the activation timer, not yet borrowable. |
 | `dust` | `uint256` | Collateral below the activation threshold, withdrawable. |
 | `unlockTime` | `uint256` | Activation unlock timestamp, 0 when there is no timer. |
-| `strikes` | `uint256` | Effective guardian strike count driving the activation surcharge (0 while immune). |
-| `flagCount` | `uint256` | Raw guardian flags on the account, regardless of status (visible even while immune). |
+| `flagCount` | `uint256` | Raw guardian flags on the account, regardless of status. |
 | `banned` | `bool` | Hard-blocked by a latched guardian ban. |
 | `debtAssets` | `uint256` | Current borrow debt, in loan assets. |
 | `settlementLtv` | `uint256` | Borrower's personal settle-down target LTV (WAD), 0 when unset. |
@@ -271,7 +269,6 @@ struct CollateralActivationConfig {
     uint40 minActivationDelay;
     uint40 maxActivationDelay;
     uint128 maxDelayInflow;
-    uint40 delayPerStrike;
     uint128 activatingLockAmount;
     uint40 activatingLockDuration;
     uint128 minActivationAmount;
@@ -288,7 +285,6 @@ Governance-tunable activation parameters, validated by `CollateralActivationLib.
 | `minActivationDelay` | `uint40` | Base delay floor, at zero inflow. |
 | `maxActivationDelay` | `uint40` | Base delay cap, reached at inflow >= maxDelayInflow. Also the inflow decay horizon: the accumulator drains from `maxDelayInflow` to zero over this duration. |
 | `maxDelayInflow` | `uint128` | Inflow reference at which the base delay reaches the cap, and the ceiling the inflow accumulator saturates at. |
-| `delayPerStrike` | `uint40` | Activation-delay surcharge added per strike. 0 disables the surcharge, so strikes do not slow activation and only the ban gates a flagged borrower. |
 | `activatingLockAmount` | `uint128` | Lock on activating collateral, honored by `withdraw`. 0 disables it. Forced paths pass floor 0. |
 | `activatingLockDuration` | `uint40` | How long, from `activatingStart`, the `activatingLockAmount` portion stays unwithdrawable. Once it elapses the locked collateral becomes withdrawable even if the lot has not matured. 0 disables the lock. |
 | `minActivationAmount` | `uint128` | Dust threshold. Collateral below it does not enter activation. |
@@ -377,14 +373,6 @@ error InsufficientActiveCollateral();
 ```
 
 Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
-
-### `CollateralFloorBreached`
-
-```solidity
-error CollateralFloorBreached();
-```
-
-Thrown when a withdrawal would draw a borrower's collateral below the activation minimum while it still owes debt. Repaying to zero lifts the floor.
 
 ### `PositionAccountingMismatch`
 

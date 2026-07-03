@@ -53,7 +53,7 @@ Full surface: [API reference](api/lido-lend-market-controller.md).
 
 ### GuardianSignals
 
-The shared registry of guardian opinions per `(market, account)` — how the controller learns which borrowers the guardians have flagged as malicious. It holds the guardian set (capped at `MAX_GUARDIANS_COUNT = 32`) and quorum, each account's strike count and flagged/immune status, and per-guardian liveness heartbeats. `MANAGER_ROLE` manages the guardian set and quorum — `addGuardian`, `removeGuardian`, `setQuorum`. One registry can serve many markets, and a deployment runs several only when markets need different guardian sets or quorums.
+The shared registry of guardian opinions per `(market, account)` — how the controller learns which borrowers the guardians have flagged as malicious. It holds the guardian set (capped at `MAX_GUARDIANS_COUNT = 32`) and quorum, each account's strike count and flagged/banned status, and per-guardian liveness heartbeats. `MANAGER_ROLE` manages the guardian set and quorum — `addGuardian`, `removeGuardian`, `setQuorum`. One registry can serve many markets, and a deployment runs several only when markets need different guardian sets or quorums.
 
 Full surface: [API reference](api/guardian-signals.md).
 
@@ -186,21 +186,14 @@ stateDiagram-v2
     Normal --> Normal: flag / unflag (strike count moves)
     Normal --> Banned: quorum of strikes, or forced ban
     Banned --> Normal: unban (clears the flag set)
-    Banned --> Immune: grantImmunity
-    Immune --> Normal: unban, or revokeImmunity below quorum
-    Immune --> Banned: forced ban, or revokeImmunity at quorum
-    note right of Immune
-        flag / unflag are no-ops
-        the account reads as clean
-    end note
     note left of Banned
         latched: unflag never lifts it
     end note
 ```
 
-Two override pairs sit above the guardians, split by risk direction. The committee acts fast to reduce risk — `ban` forces a block past the quorum, `revokeImmunity` re-derives status from the live flag set, re-latching `Banned` if the account still carries a quorum of flags and dropping to `Normal` otherwise. Governance moves slowly to increase it — `unban` lifts a ban (or immunity) and clears the flag set so guardians re-evaluate from scratch, `grantImmunity` exempts an account they keep misjudging.
+Two override roles sit above the guardians, split by risk direction. The committee acts fast to reduce risk — `ACCESS_LIMITER_ROLE` forces a `ban` past the quorum. Governance moves slowly to increase it — `ACCESS_RESTORER_ROLE` `unban`s, clearing the flag set so guardians re-evaluate from scratch.
 
-The controller reads `getOpinion(market, account) → GuardiansOpinion{status, strikes, flagCount, quorumBlock}`. `strikes` is effective — forced to 0 while `Immune`, so an exempt account carries no surcharge — while `flagCount` is the raw guardian-flag count, still visible under immunity. These three are what the activation gate consumes: `strikes` lengthen the delay, `Banned` blocks borrowing, and `quorumBlock` is the liveness frontier that gates maturation.
+The controller reads `getOpinion(market, account) → GuardiansOpinion{banned, activationDelay, quorumFrontierTimestamp}` (with `getFlagCount` for the raw flag count on the side). `activationDelay` is the guardian-owned surcharge (`type(uint256).max` when banned); `banned` blocks borrowing; `quorumFrontierTimestamp` is the liveness frontier that gates maturation.
 
 **Heartbeats.** Guardians also report how far they have scanned, which tells whether the watch is keeping up with the chain. Each `heartbeat` carries `{number, hash, timestamp}`, recorded only if `hash` matches `blockhash(number)` — so the reported block must be on the canonical chain. A block the guardian scanned on a fork that later reorged out no longer matches and is rejected. `syncQuorumBlock` then takes the quorum-th highest reported block as the frontier and ratchets it up — monotonic, so a guardian rotation cannot pull it back.
 
