@@ -98,6 +98,12 @@ library CollateralActivationLib {
     ///         quorum gate no window.
     error InvalidMaxGuardiansQuorumDelay();
 
+    /// @notice The per-strike surcharge exceeds `MAX_DELAY_DURATION`.
+    error MaxDelayPerStrikeExceeded();
+
+    /// @notice The per-suspect surcharge exceeds `MAX_DELAY_DURATION`.
+    error MaxDelayPerSuspectExceeded();
+
     // ---
     // TYPES
     // ---
@@ -142,6 +148,8 @@ library CollateralActivationLib {
         }
         if (cfg.minActivationAmount == 0) revert ZeroMinActivationAmount();
         if (cfg.maxDelayInflow == 0) revert ZeroMaxDelayInflow();
+        if (cfg.delayPerStrike > MAX_DELAY_DURATION) revert MaxDelayPerStrikeExceeded();
+        if (cfg.delayPerSuspect > MAX_DELAY_DURATION) revert MaxDelayPerSuspectExceeded();
 
         $.config = cfg;
 
@@ -229,7 +237,7 @@ library CollateralActivationLib {
         Position storage position = $.positions[borrower];
 
         if (!isFrozen && position.activatingStart > 0) {
-            uint256 unlockTime = _getUnlockTime($, borrower, opinion.activationDelay);
+            uint256 unlockTime = _getUnlockTime($, borrower, opinion);
             bool isUnlockTimePassed = block.timestamp >= unlockTime;
             bool hasGuardiansQuorum = unlockTime <= opinion.quorumFrontierTimestamp;
             bool maxQuorumDelayElapsed = block.timestamp >= position.activatingStart + $.config.maxGuardiansQuorumDelay;
@@ -255,15 +263,15 @@ library CollateralActivationLib {
     // GETTERS
     // ---
 
-    /// @notice Unlock timestamp of the borrower's activating lot, 0 if none. `opinion.activationDelay` is the
-    ///         guardian-owned surcharge (`type(uint256).max` for a banned borrower).
+    /// @notice Unlock timestamp of the borrower's activating lot, 0 if none. `opinion` carries the guardian
+    ///         counters this derives the surcharge from (`type(uint256).max` for a banned borrower).
     function getUnlockTime(State storage $, address borrower, GuardiansOpinion memory opinion)
         internal
         view
         returns (uint256)
     {
         if ($.positions[borrower].activatingStart == 0) return 0;
-        return _getUnlockTime($, borrower, opinion.activationDelay);
+        return _getUnlockTime($, borrower, opinion);
     }
 
     /// @notice The borrower's activation state: how much collateral is activating (timed) versus dust (untimed).
@@ -351,13 +359,22 @@ library CollateralActivationLib {
         _storeTransientInflowIncrease(borrower, inflowInTx - inflowDecrement);
     }
 
-    /// @dev Unlock = start + frozen base delay + the guardian-owned `activationDelay` surcharge. A banned
-    ///      borrower is signalled by `activationDelay == type(uint256).max`, which never unlocks (returns max).
-    function _getUnlockTime(State storage $, address borrower, uint256 activationDelay) private view returns (uint256) {
-        if (activationDelay == type(uint256).max) return type(uint256).max;
+    /// @dev Unlock = start + frozen base delay + the guardian surcharge: `strikeCount * delayPerStrike`, plus
+    ///      `suspectCount * delayPerSuspect` only for a lot whose activation started before the suspect snapshot
+    ///      lapses (`suspectExpiryTimestamp`). A banned borrower never unlocks (returns max).
+    function _getUnlockTime(State storage $, address borrower, GuardiansOpinion memory opinion)
+        private
+        view
+        returns (uint256)
+    {
+        if (opinion.banned) return type(uint256).max;
 
         Position storage position = $.positions[borrower];
-        return position.activatingStart + position.activatingDelay + activationDelay;
+        uint256 surcharge = opinion.strikeCount * $.config.delayPerStrike;
+        if (position.activatingStart < opinion.suspectExpiryTimestamp) {
+            surcharge += opinion.suspectCount * $.config.delayPerSuspect;
+        }
+        return position.activatingStart + position.activatingDelay + surcharge;
     }
 
     /// @dev Base delay scales linearly with the inflow, clamped at both ends. The dormant lot's size is folded

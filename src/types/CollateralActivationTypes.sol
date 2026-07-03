@@ -15,8 +15,6 @@ pragma solidity 0.8.35;
 ///        horizon: the accumulator drains from `maxDelayInflow` to zero over this duration.
 /// @param maxDelayInflow Inflow reference at which the base delay reaches the cap, and the ceiling the
 ///        inflow accumulator saturates at.
-/// @param delayPerStrike Activation-delay surcharge added per strike. 0 disables the surcharge, so strikes do
-///        not slow activation and only the ban gates a flagged borrower.
 /// @param activatingLockAmount Lock on activating collateral, honored by `withdraw`. 0 disables it. Forced
 ///        paths pass floor 0.
 /// @param activatingLockDuration How long, from `activatingStart`, the `activatingLockAmount` portion stays
@@ -27,6 +25,10 @@ pragma solidity 0.8.35;
 ///        it elapses the lot matures even if the guardian quorum has not scanned past the unlock. Must exceed
 ///        the base-delay cap (maxActivationDelay), else it fires at the unlock and the quorum gets no window.
 ///        0 matures at the base unlock (no gate).
+/// @param delayPerStrike Activation-delay surcharge added per guardian strike. 0 disables it, so strikes do not
+///        slow activation and only the ban gates a flagged borrower.
+/// @param delayPerSuspect Activation-delay surcharge added per active suspect report, applied only to lots whose
+///        activation started before the suspect snapshot lapses. 0 disables it.
 struct CollateralActivationConfig {
     uint40 minActivationDelay;
     uint40 maxActivationDelay;
@@ -35,4 +37,6 @@ struct CollateralActivationConfig {
     uint40 activatingLockDuration;
     uint128 minActivationAmount;
     uint40 maxGuardiansQuorumDelay;
+    uint40 delayPerStrike;
+    uint40 delayPerSuspect;
 }

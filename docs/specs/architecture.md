@@ -139,6 +139,7 @@ delay = minActivationDelay + (maxActivationDelay − minActivationDelay) × infl
         (clamped to maxActivationDelay when inflow ≥ maxDelayInflow)
 
 unlockTime = activatingStart + delay + strikes × delayPerStrike
+           + (activatingStart < suspectExpiry ? suspects × delayPerSuspect : 0)
 ```
 
 `inflow` is the market's recent collateral inflow, capped at `maxDelayInflow` and decaying at a fixed rate (draining from the cap to zero over `maxActivationDelay`), plus the incoming lot. More recent volume → longer delay, giving guardians more time to vet the larger supplies that carry more risk for lenders.
@@ -193,7 +194,7 @@ stateDiagram-v2
 
 Two override roles sit above the guardians, split by risk direction. The committee acts fast to reduce risk — `ACCESS_LIMITER_ROLE` forces a `ban` past the quorum. Governance moves slowly to increase it — `ACCESS_RESTORER_ROLE` `unban`s, clearing the flag set so guardians re-evaluate from scratch.
 
-The controller reads `getOpinion(market, account) → GuardiansOpinion{banned, activationDelay, quorumFrontierTimestamp}` (with `getFlagCount` for the raw flag count on the side). `activationDelay` is the guardian-owned surcharge (`type(uint256).max` when banned); `banned` blocks borrowing; `quorumFrontierTimestamp` is the liveness frontier that gates maturation.
+The controller reads `getOpinion(market, account) → GuardiansOpinion{banned, strikeCount, suspectCount, suspectExpiryTimestamp, quorumFrontierTimestamp}` and forwards it to the activation lib, which owns the delay math: `strikeCount × delayPerStrike`, plus `suspectCount × delayPerSuspect` for a lot whose activation started before `suspectExpiryTimestamp`. `banned` blocks borrowing (and pins the unlock at infinity); `quorumFrontierTimestamp` is the liveness frontier that gates maturation.
 
 **Heartbeats.** Guardians also report how far they have scanned, which tells whether the watch is keeping up with the chain. Each `heartbeat` carries `{number, hash, timestamp}`, recorded only if `hash` matches `blockhash(number)` — so the reported block must be on the canonical chain. A block the guardian scanned on a fork that later reorged out no longer matches and is rejected. `syncQuorumBlock` then takes the quorum-th highest reported block as the frontier and ratchets it up — monotonic, so a guardian rotation cannot pull it back.
 

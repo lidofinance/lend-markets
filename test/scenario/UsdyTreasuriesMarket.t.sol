@@ -102,14 +102,16 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
                     activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     minActivationAmount: 10 ether,
-                    maxGuardiansQuorumDelay: 0
+                    maxGuardiansQuorumDelay: 0,
+                    delayPerStrike: 0,
+                    delayPerSuspect: 0
                 }),
                 settlementConfig: SettlementConfigParams({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
-                guardianConfig: GuardianConfigParams({delayPerStrike: 2 hours, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0}),
+                suspectWindow: 0,
                 vaultName: "Lido USDY/USDT Vault",
                 vaultSymbol: "lidoUSDY-USDT"
             })

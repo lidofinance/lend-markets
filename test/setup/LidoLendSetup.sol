@@ -24,7 +24,6 @@ import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
-import {DelayParams} from "../../src/types/GuardianSignalsTypes.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
@@ -82,16 +81,16 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 activatingLockAmount: 0,
                 activatingLockDuration: 0,
                 minActivationAmount: 10 ether,
-                maxGuardiansQuorumDelay: 0
+                maxGuardiansQuorumDelay: 0,
+                delayPerStrike: 2 hours,
+                delayPerSuspect: 0
             }),
             settlementConfig: SettlementConfigParams({
                 sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
             }),
             guardians: guardians,
             quorum: 1,
-            guardianConfig: GuardianConfigParams({
-                delayPerStrike: 2 hours, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0
-            }),
+            suspectWindow: 0,
             vaultName: "Lido Loan Vault",
             vaultSymbol: "lidoLOAN"
         });
@@ -168,14 +167,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         );
         GuardianSignals gs = GuardianSignals(guardian);
         gs.grantRole(gs.MANAGER_ROLE(), admin);
-        gs.setDelayParams(
-            DelayParams({
-                delayPerStrike: cfg.guardianConfig.delayPerStrike,
-                delayPerSuspect: cfg.guardianConfig.delayPerSuspect,
-                maxDelay: cfg.guardianConfig.maxDelay,
-                suspectWindow: cfg.guardianConfig.suspectWindow
-            })
-        );
+        gs.setSuspectWindow(cfg.suspectWindow);
         protocol.guardianSignals = IGuardianSignals(guardian);
         protocol.guardianSignalsProxy = IOssifiableProxy(guardian);
     }
@@ -250,7 +242,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 controllerImpl,
                 admin,
                 abi.encodeWithSignature(
-                    "initialize(bytes32,address,address,(uint40,uint40,uint128,uint128,uint40,uint128,uint40),(uint16,uint96,uint96,uint16))",
+                    "initialize(bytes32,address,address,(uint40,uint40,uint128,uint128,uint40,uint128,uint40,uint40,uint40),(uint16,uint96,uint96,uint16))",
                     Id.unwrap(id),
                     admin,
                     guardian,

@@ -88,7 +88,7 @@ A steward is appointed per market id, not as an AccessControl role, so the set s
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | guardian set, quorum, and delay params (`addGuardian`, `removeGuardian`, `setQuorum`, `setDelayParams`) | C1 / C3 | Lido DAO |
+| `MANAGER_ROLE` | guardian set, quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C1 / C3 | Lido DAO |
 | `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum) | C3 | risk steward committee |
 | `ACCESS_RESTORER_ROLE` | `unban` | C4 | Lido DAO, timelocked |
 
@@ -116,7 +116,7 @@ Each routine risk-increasing action is meant to run through a dedicated factory 
 
 Factory-gated actions and their parameters:
 
-- **setCollateralActivationConfig** — `minActivationDelay`, `maxActivationDelay`, `maxDelayInflow`, `delayPerStrike`, `activatingLockAmount`, `activatingLockDuration`, `minActivationAmount`, `maxGuardiansQuorumDelay`.
+- **setCollateralActivationConfig** — `minActivationDelay`, `maxActivationDelay`, `maxDelayInflow`, `delayPerStrike`, `delayPerSuspect`, `activatingLockAmount`, `activatingLockDuration`, `minActivationAmount`, `maxGuardiansQuorumDelay`.
 - **setSettlementConfig** — `sliceFloorBps`, `sliceFloorAssets`, `fullCutBelowCollateral`, `ltvStepBps`, `minBorrowCollateral`.
 
 The fast risk-reducing levers run with no objection window: the dashboard's `increaseActivationDelays`, `increaseActivatingLock`, and `revokeInstantActivation`, the controller's `freeze` and `unfreeze`, and the registry's `ban`.

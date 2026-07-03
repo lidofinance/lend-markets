@@ -2,13 +2,13 @@
 pragma solidity 0.8.35;
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {BlockInfoWithHash, DelayParams} from "../types/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash} from "../types/GuardianSignalsTypes.sol";
 import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
 /// @notice Guardian-committee signal layer over accounts, keyed per market. Guardians flag accounts they detect
 ///         as malicious. A `quorum` of distinct flags latches a ban in the market it was raised in. The minimal
-///         read surface the market controller depends on (`getOpinion`, `isBanned`, `getFlagCount`) is
+///         read surface the market controller depends on (`getOpinion`, `isBanned`) is
 ///         {IGuardianSignalsView}; this interface adds the full guardian/committee/governance surface on top.
 interface IGuardianSignals is IGuardianSignalsView {
     // ---
@@ -22,12 +22,9 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Emitted when the quorum changes.
     /// @param quorum The number of distinct flags that latches a ban.
     event QuorumSet(uint256 quorum);
-    /// @notice Emitted when the delay parameters are set.
-    /// @param delayPerStrike  The activation-delay surcharge per flag.
-    /// @param delayPerSuspect The activation-delay surcharge per fresh suspect report.
-    /// @param maxDelay        The cap on the total guardian activation-delay surcharge (0 = uncapped).
-    /// @param suspectWindow   The freshness horizon within which a suspect report still counts.
-    event DelayParamsSet(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow);
+    /// @notice Emitted when the suspect window is set.
+    /// @param suspectWindow The freshness horizon within which a suspect report still counts.
+    event SuspectWindowSet(uint256 suspectWindow);
     /// @notice Emitted when a guardian reports liveness, directly or via `flag`/`unflag`.
     /// @param guardian    The guardian that reported.
     /// @param blockNumber The block number the guardian reports scanning past (carried for off-chain tooling).
@@ -83,10 +80,6 @@ interface IGuardianSignals is IGuardianSignalsView {
     error HeartbeatTimestampRegressed();
     /// @notice Thrown when a heartbeat's reported hash does not match the block's hash.
     error InvalidBlockHash();
-    /// @notice Thrown when the per-flag activation delay exceeds `MAX_DELAY_PER_STRIKE`.
-    error DelayPerStrikeTooHigh();
-    /// @notice Thrown when the per-suspect activation delay exceeds `MAX_DELAY_PER_STRIKE`.
-    error DelayPerSuspectTooHigh();
     /// @notice Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
     error SuspectWindowTooHigh();
 
@@ -103,15 +96,15 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Set the quorum — the distinct flags that latch a ban. Reverts if zero or above the guardian count.
     /// @param newQuorum The new quorum.
     function setQuorum(uint256 newQuorum) external;
-    /// @notice Set the delay parameters. Reverts if a per-signal delay exceeds `MAX_DELAY_PER_STRIKE` or the
-    ///         window exceeds `MAX_SUSPECT_WINDOW`. Never touches the guardian set.
-    /// @param params The per-flag and per-suspect surcharge, the total-delay cap, and the suspect window.
-    function setDelayParams(DelayParams calldata params) external;
+    /// @notice Set the suspect window — the freshness horizon within which a suspect report still counts. Reverts
+    ///         if it exceeds `MAX_SUSPECT_WINDOW`. Never touches the guardian set. The per-flag and per-suspect
+    ///         delays live in the market's activation config, not here.
+    /// @param suspectWindow The new suspect window.
+    function setSuspectWindow(uint256 suspectWindow) external;
     /// @notice The quorum: distinct flags that latch a ban.
     function getQuorum() external view returns (uint256);
-    /// @notice The delay parameters: per-flag and per-suspect surcharge, the total-delay cap, and the suspect
-    ///         window.
-    function getDelayParams() external view returns (DelayParams memory);
+    /// @notice The suspect window: the freshness horizon within which a suspect report still counts.
+    function getSuspectWindow() external view returns (uint256);
     /// @notice Whether `account` is a guardian.
     function isGuardian(address account) external view returns (bool);
     /// @notice The number of guardians in the set.
@@ -180,9 +173,6 @@ interface IGuardianSignals is IGuardianSignalsView {
     // VIEWS
     // ---
 
-    /// @notice The collateral-activation delay surcharge for `account` in `marketId`: `type(uint256).max` when
-    ///         banned, else the capped flag + fresh-suspect surcharge.
-    function getActivationDelay(Id marketId, address account) external view returns (uint256);
     /// @notice The guardians currently flagging `account` in `marketId`.
     function getFlaggedBy(Id marketId, address account) external view returns (address[] memory);
     /// @notice The guardians with a live suspect report on `account` in `marketId`, paired with each report's

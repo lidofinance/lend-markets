@@ -561,8 +561,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                 ctx.id,
                 toFlag,
                 BlockInfoWithHash({
-                    hash: blockhash(block.number), number: uint40(block.number), timestamp: uint40(block.timestamp)
-                })
+                hash: blockhash(block.number), number: uint40(block.number), timestamp: uint40(block.timestamp)
+            })
             );
 
         // Warp far past any normal activation delay — a banned address never settles.
@@ -690,14 +690,16 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                     activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
-                    maxGuardiansQuorumDelay: 0
+                    maxGuardiansQuorumDelay: 0,
+                    delayPerStrike: 0,
+                    delayPerSuspect: 0
                 }),
                 settlementConfig: SettlementConfigParams({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
-                guardianConfig: GuardianConfigParams({delayPerStrike: 2 hours, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0}),
+                suspectWindow: 0,
                 vaultName: "Lido wstETH/WETH Vault",
                 vaultSymbol: "lidoWSTETH-WETH"
             })

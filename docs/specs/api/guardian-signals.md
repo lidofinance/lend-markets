@@ -2,7 +2,7 @@
 
 # GuardianSignals
 
-Guardian-committee signal layer over accounts, keyed per market. Guardians flag accounts they detect as malicious. A `quorum` of distinct flags latches a ban in the market it was raised in. The minimal read surface the market controller depends on (`getOpinion`, `isBanned`, `getFlagCount`) is {IGuardianSignalsView}; this interface adds the full guardian/committee/governance surface on top.
+Guardian-committee signal layer over accounts, keyed per market. Guardians flag accounts they detect as malicious. A `quorum` of distinct flags latches a ban in the market it was raised in. The minimal read surface the market controller depends on (`getOpinion`, `isBanned`) is {IGuardianSignalsView}; this interface adds the full guardian/committee/governance surface on top.
 
 ## Structs
 
@@ -26,46 +26,28 @@ Heartbeat payload: a scanned block plus its hash, validated against `blockhash(n
 | `number` | `uint40` | The block number, which may not exceed the current block. |
 | `timestamp` | `uint40` | The block timestamp. |
 
-### `DelayParams`
-
-```solidity
-struct DelayParams {
-    uint256 delayPerStrike;
-    uint256 delayPerSuspect;
-    uint256 maxDelay;
-    uint256 suspectWindow;
-}
-```
-
-The guardian activation-delay parameters, set (and read) in one shot via `setDelayParams` / `getDelayParams`.
-
-**Fields**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `delayPerStrike` | `uint256` | Activation-delay surcharge per flag. Must not exceed `MAX_DELAY_PER_STRIKE`. |
-| `delayPerSuspect` | `uint256` | Activation-delay surcharge per fresh suspect report. Must not exceed `MAX_DELAY_PER_STRIKE`; inert while `suspectWindow` is 0, since a report is then fresh only in its own block. |
-| `maxDelay` | `uint256` | Cap on the total guardian activation-delay surcharge (flags + suspects). 0 = uncapped. |
-| `suspectWindow` | `uint256` | Freshness horizon within which a suspect report still counts. Must not exceed `MAX_SUSPECT_WINDOW`. |
-
 ### `GuardiansOpinion`
 
 ```solidity
 struct GuardiansOpinion {
     bool banned;
-    uint256 activationDelay;
+    uint256 strikeCount;
+    uint256 suspectCount;
+    uint256 suspectExpiryTimestamp;
     uint256 quorumFrontierTimestamp;
 }
 ```
 
-Everything the controller reads about an account in one call: the ban gate plus the activation-gate inputs. Returned by `getOpinion`.
+Everything the controller reads about an account in one call, forwarded to the activation lib which owns the delay math. Returned by `getOpinion`.
 
 **Fields**
 
 | Name | Type | Description |
 | --- | --- | --- |
 | `banned` | `bool` | Whether the account is banned (hard-blocks borrowing). |
-| `activationDelay` | `uint256` | The activation-delay surcharge (`type(uint256).max` when banned). |
+| `strikeCount` | `uint256` | Raw guardian flags on the account. |
+| `suspectCount` | `uint256` | Active suspect reports snapshotted at the last report/retraction. |
+| `suspectExpiryTimestamp` | `uint256` | When the current suspect snapshot lapses (`suspectReportedAt + suspectWindow`); the activation lib applies the suspect surcharge only to lots whose activation started before this. |
 | `quorumFrontierTimestamp` | `uint256` | The quorum-scan frontier timestamp. |
 
 ## Events
@@ -100,22 +82,19 @@ event QuorumSet(uint256 quorum);
 
 Emitted when the quorum changes.
 
-### `DelayParamsSet`
+### `SuspectWindowSet`
 
 ```solidity
-event DelayParamsSet(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow);
+event SuspectWindowSet(uint256 suspectWindow);
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `delayPerStrike` | `uint256` | The activation-delay surcharge per flag. |
-| `delayPerSuspect` | `uint256` | The activation-delay surcharge per fresh suspect report. |
-| `maxDelay` | `uint256` | The cap on the total guardian activation-delay surcharge (0 = uncapped). |
 | `suspectWindow` | `uint256` | The freshness horizon within which a suspect report still counts. |
 
-Emitted when the delay parameters are set.
+Emitted when the suspect window is set.
 
 ### `Heartbeat`
 
@@ -305,22 +284,6 @@ error InvalidBlockHash();
 
 Thrown when a heartbeat's reported hash does not match the block's hash.
 
-### `DelayPerStrikeTooHigh`
-
-```solidity
-error DelayPerStrikeTooHigh();
-```
-
-Thrown when the per-flag activation delay exceeds `MAX_DELAY_PER_STRIKE`.
-
-### `DelayPerSuspectTooHigh`
-
-```solidity
-error DelayPerSuspectTooHigh();
-```
-
-Thrown when the per-suspect activation delay exceeds `MAX_DELAY_PER_STRIKE`.
-
 ### `SuspectWindowTooHigh`
 
 ```solidity
@@ -373,19 +336,19 @@ function setQuorum(uint256 newQuorum) external;
 
 Set the quorum — the distinct flags that latch a ban. Reverts if zero or above the guardian count.
 
-### `setDelayParams`
+### `setSuspectWindow`
 
 ```solidity
-function setDelayParams(DelayParams calldata params) external;
+function setSuspectWindow(uint256 suspectWindow) external;
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `params` | `DelayParams` | The per-flag and per-suspect surcharge, the total-delay cap, and the suspect window. |
+| `suspectWindow` | `uint256` | The new suspect window. |
 
-Set the delay parameters. Reverts if a per-signal delay exceeds `MAX_DELAY_PER_STRIKE` or the window exceeds `MAX_SUSPECT_WINDOW`. Never touches the guardian set.
+Set the suspect window — the freshness horizon within which a suspect report still counts. Reverts if it exceeds `MAX_SUSPECT_WINDOW`. Never touches the guardian set. The per-flag and per-suspect delays live in the market's activation config, not here.
 
 ### `getQuorum`
 
@@ -395,13 +358,13 @@ function getQuorum() external view returns (uint256);
 
 The quorum: distinct flags that latch a ban.
 
-### `getDelayParams`
+### `getSuspectWindow`
 
 ```solidity
-function getDelayParams() external view returns (DelayParams memory);
+function getSuspectWindow() external view returns (uint256);
 ```
 
-The delay parameters: per-flag and per-suspect surcharge, the total-delay cap, and the suspect window.
+The suspect window: the freshness horizon within which a suspect report still counts.
 
 ### `isGuardian`
 
@@ -567,17 +530,6 @@ function unban(Id marketId, address account) external;
 ```
 
 Lift the ban on `account` in `marketId` and clear its flags. Suspect reports are left intact (they carry no ban), so a suspect-driven delay survives the unban.
-
-### `getActivationDelay`
-
-```solidity
-function getActivationDelay(
-    Id marketId,
-    address account
-) external view returns (uint256);
-```
-
-The collateral-activation delay surcharge for `account` in `marketId`: `type(uint256).max` when banned, else the capped flag + fresh-suspect surcharge.
 
 ### `getFlaggedBy`
 

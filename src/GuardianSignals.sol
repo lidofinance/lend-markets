@@ -12,7 +12,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {IGuardianSignals} from "./interfaces/IGuardianSignals.sol";
 import {IGuardianSignalsView} from "./interfaces/IGuardianSignalsView.sol";
-import {DelayParams, BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/GuardianSignalsTypes.sol";
 
 /// @title GuardianSignals
 /// @author Lido
@@ -40,10 +40,6 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     ///         frontier, whose cost grows with the set. 32 keeps that bounded and still fits the quorum in `uint8`.
     uint256 public constant MAX_GUARDIANS_COUNT = 32;
 
-    /// @notice Ceiling on the per-flag activation-delay surcharge, so a single misfired flag cannot pin an
-    ///         account's collateral for an unreasonable time.
-    uint256 public constant MAX_DELAY_PER_STRIKE = 7 days;
-
     /// @notice Ceiling on the suspect window: the horizon within which a suspect report still counts toward the
     ///         activation delay. Reports older than the window are ignored.
     uint256 public constant MAX_SUSPECT_WINDOW = 30 days;
@@ -56,7 +52,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     bytes32 public constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
     /// @dev `unban` (slow, risk-increasing).
     bytes32 public constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
-    /// @dev Manages the guardian set, quorum, and delay parameters.
+    /// @dev Manages the guardian set, quorum, and suspect window.
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
     // ---
@@ -64,9 +60,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     uint8 private _quorum;
-    uint40 private _delayPerStrike;
-    uint40 private _delayPerSuspect;
-    uint40 private _maxDelay;
+    /// @dev Freshness horizon for a suspect snapshot: `suspectReportedAt + suspectWindow` is when it lapses.
     uint40 private _suspectWindow;
     /// @dev Quorum-scan frontier: the highest timestamp a quorum of guardians have ever scanned past. Monotonic.
     uint40 private _quorumFrontier;
@@ -93,8 +87,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         _disableInitializers();
     }
 
-    /// @notice Set the admin and seed the guardian set and quorum. The delay parameters are set afterwards via
-    ///         `setDelayParams`. Emits `GuardianAdded` per guardian and `QuorumSet`.
+    /// @notice Set the admin and seed the guardian set and quorum. The suspect window is set afterwards via
+    ///         `setSuspectWindow`. Emits `GuardianAdded` per guardian and `QuorumSet`.
     /// @param admin     Holder of `DEFAULT_ADMIN_ROLE`, the default admin of the guardian and override roles.
     /// @param guardians The initial guardian set. Each must be non-zero, unique, and within `MAX_GUARDIANS_COUNT`.
     /// @param quorum    The initial quorum. Must satisfy `1 <= quorum <= guardians.length`.
@@ -135,16 +129,10 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function setDelayParams(DelayParams calldata params) external onlyRole(MANAGER_ROLE) {
-        if (params.delayPerStrike > MAX_DELAY_PER_STRIKE) revert DelayPerStrikeTooHigh();
-        if (params.delayPerSuspect > MAX_DELAY_PER_STRIKE) revert DelayPerSuspectTooHigh();
-        if (params.suspectWindow > MAX_SUSPECT_WINDOW) revert SuspectWindowTooHigh();
-
-        _delayPerStrike = params.delayPerStrike.toUint40();
-        _delayPerSuspect = params.delayPerSuspect.toUint40();
-        _maxDelay = params.maxDelay.toUint40();
-        _suspectWindow = params.suspectWindow.toUint40();
-        emit DelayParamsSet(params.delayPerStrike, params.delayPerSuspect, params.maxDelay, params.suspectWindow);
+    function setSuspectWindow(uint256 suspectWindow) external onlyRole(MANAGER_ROLE) {
+        if (suspectWindow > MAX_SUSPECT_WINDOW) revert SuspectWindowTooHigh();
+        _suspectWindow = suspectWindow.toUint40();
+        emit SuspectWindowSet(suspectWindow);
     }
 
     /// @inheritdoc IGuardianSignals
@@ -153,13 +141,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function getDelayParams() external view returns (DelayParams memory) {
-        return DelayParams({
-            delayPerStrike: _delayPerStrike,
-            delayPerSuspect: _delayPerSuspect,
-            maxDelay: _maxDelay,
-            suspectWindow: _suspectWindow
-        });
+    function getSuspectWindow() external view returns (uint256) {
+        return _suspectWindow;
     }
 
     /// @inheritdoc IGuardianSignals
@@ -306,23 +289,13 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @inheritdoc IGuardianSignalsView
     function getOpinion(Id marketId, address account) external view returns (GuardiansOpinion memory opinion) {
         opinion.banned = _signals[marketId][account].banned;
-        opinion.activationDelay = _activationDelay(marketId, account);
+        (opinion.strikeCount, opinion.suspectCount, opinion.suspectExpiryTimestamp) = _signalCounters(marketId, account);
         opinion.quorumFrontierTimestamp = _quorumFrontier;
     }
 
     /// @inheritdoc IGuardianSignalsView
     function isBanned(Id marketId, address account) external view returns (bool) {
         return _signals[marketId][account].banned;
-    }
-
-    /// @inheritdoc IGuardianSignals
-    function getActivationDelay(Id marketId, address account) external view returns (uint256) {
-        return _activationDelay(marketId, account);
-    }
-
-    /// @inheritdoc IGuardianSignalsView
-    function getFlagCount(Id marketId, address account) external view returns (uint256) {
-        return _signals[marketId][account].flaggedBy.length();
     }
 
     /// @inheritdoc IGuardianSignals
@@ -444,19 +417,18 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         signal.suspectCount = _activeSuspectCount(marketId, account).toUint16();
     }
 
-    /// @dev The collateral-activation delay surcharge: `type(uint256).max` when banned, else
-    ///      `min(flags * delayPerStrike + suspectSurcharge, maxDelay)` (0 = uncapped). The suspect surcharge comes
-    ///      from the snapshot taken at the last report/retraction — `suspectCount * delayPerSuspect`, applied only
-    ///      while `now - suspectReportedAt <= suspectCount * delayPerSuspect`, then 0. Reads the stored snapshot
-    ///      rather than scanning the suspect set.
-    function _activationDelay(Id marketId, address account) internal view returns (uint256) {
+    /// @dev The raw signal counters the activation lib turns into a delay: the flag count, the snapshotted active
+    ///      suspect count, and when that snapshot lapses (`suspectReportedAt + suspectWindow`). Reads the stored
+    ///      snapshot rather than scanning the suspect set.
+    function _signalCounters(Id marketId, address account)
+        internal
+        view
+        returns (uint256 strikeCount, uint256 suspectCount, uint256 suspectExpiryTimestamp)
+    {
         GuardiansSignal storage signal = _signals[marketId][account];
-        if (signal.banned) return type(uint256).max;
-        uint256 suspectSurcharge = uint256(signal.suspectCount) * _delayPerSuspect;
-        if (block.timestamp - signal.suspectReportedAt > suspectSurcharge) suspectSurcharge = 0;
-        uint256 delay = signal.flaggedBy.length() * _delayPerStrike + suspectSurcharge;
-        uint256 maxDelay = _maxDelay;
-        return maxDelay != 0 && delay > maxDelay ? maxDelay : delay;
+        strikeCount = signal.flaggedBy.length();
+        suspectCount = signal.suspectCount;
+        suspectExpiryTimestamp = uint256(signal.suspectReportedAt) + _suspectWindow;
     }
 
     /// @dev Count the live suspect reports on `account` still inside the suspect window (`t + window >= now`).

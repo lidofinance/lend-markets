@@ -9,7 +9,7 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
-import {BlockInfoWithHash, DelayParams} from "../../src/types/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash, GuardiansOpinion} from "../../src/types/GuardianSignalsTypes.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 /// @notice Unit suite for `GuardianSignals`, modelled from the "Guardian signals" spec:
@@ -46,7 +46,7 @@ contract GuardianSignalsTest is Test {
         gs.grantRole(gs.ACCESS_RESTORER_ROLE(), address(this));
 
         // Activation delays left at 0 for these tests.
-        gs.setDelayParams(DelayParams({delayPerStrike: 0, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0}));
+        gs.setSuspectWindow(0);
     }
 
     /// @dev The default three-guardian roster used across the suite.
@@ -82,11 +82,11 @@ contract GuardianSignalsTest is Test {
     }
 
     function _flagCount(address account) internal view returns (uint256) {
-        return gs.getFlagCount(MARKET, account);
+        return gs.getFlaggedBy(MARKET, account).length;
     }
 
     function _strikes(address account) internal view returns (uint256) {
-        return gs.getFlagCount(MARKET, account);
+        return gs.getFlaggedBy(MARKET, account).length;
     }
 
     // ── mutations ──
@@ -517,7 +517,7 @@ contract GuardianSignalsTest is Test {
         assertTrue(gs.isBanned(MARKET, BOB), "status unchanged");
     }
 
-    // ── suspect snapshot -> activation delay ──
+    // ── suspect snapshot -> counters ──
 
     function _suspect(address g, address account) internal {
         address[] memory a = new address[](1);
@@ -526,41 +526,34 @@ contract GuardianSignalsTest is Test {
         gs.suspect(MARKET, a, _validBlock());
     }
 
-    /// @dev The suspect surcharge is read from the `(suspectReportedAt, suspectCount)` snapshot (O(1), no set
-    ///      scan): it is `suspectCount * delayPerSuspect`, applied while `now - reportedAt <= that`, then lapses.
-    function test_suspect_snapshotDelayAppliesThenLapses() public {
-        gs.setDelayParams(
-            DelayParams({delayPerStrike: 0, delayPerSuspect: 1 hours, maxDelay: 0, suspectWindow: 1 days})
-        );
+    /// @dev `getOpinion` carries the raw counters the activation lib turns into a delay: flag count, the
+    ///      snapshotted active suspect count, and when the snapshot lapses (`suspectReportedAt + suspectWindow`).
+    function test_suspect_snapshotsCountAndExpiry() public {
+        gs.setSuspectWindow(1 days);
 
         _suspect(G1, BOB);
-        assertEq(gs.getActivationDelay(MARKET, BOB), 1 hours, "1 fresh suspect -> 1x delayPerSuspect");
+        GuardiansOpinion memory op = gs.getOpinion(MARKET, BOB);
+        assertEq(op.strikeCount, 0, "no flags");
+        assertEq(op.suspectCount, 1, "one active suspect snapshotted");
+        assertEq(op.suspectExpiryTimestamp, block.timestamp + 1 days, "expiry = reportedAt + suspectWindow");
 
-        _suspect(G2, BOB); // count snapshots to 2 at a fresh timestamp
-        assertEq(gs.getActivationDelay(MARKET, BOB), 2 hours, "2 fresh suspects -> 2x delayPerSuspect");
-
-        // valid up to count*delayPerSuspect (2h) after the last report; the edge still counts.
-        vm.warp(block.timestamp + 2 hours);
-        assertEq(gs.getActivationDelay(MARKET, BOB), 2 hours, "at the snapshot edge still applies");
-
-        // one second past -> the snapshot lapses to 0 (no re-scan of the suspect set).
-        vm.warp(block.timestamp + 1);
-        assertEq(gs.getActivationDelay(MARKET, BOB), 0, "snapshot lapsed -> 0 surcharge");
+        _suspect(G2, BOB);
+        op = gs.getOpinion(MARKET, BOB);
+        assertEq(op.suspectCount, 2, "two active suspects");
+        assertEq(op.suspectExpiryTimestamp, block.timestamp + 1 days, "expiry re-anchored to the latest report");
     }
 
     /// @dev Retracting a suspect re-snapshots the count against a fresh timestamp.
     function test_unsuspect_reSnapshotsCount() public {
-        gs.setDelayParams(
-            DelayParams({delayPerStrike: 0, delayPerSuspect: 1 hours, maxDelay: 0, suspectWindow: 1 days})
-        );
+        gs.setSuspectWindow(1 days);
         _suspect(G1, BOB);
         _suspect(G2, BOB);
-        assertEq(gs.getActivationDelay(MARKET, BOB), 2 hours, "two suspects");
+        assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 2, "two suspects");
 
         address[] memory a = new address[](1);
         a[0] = BOB;
         vm.prank(G1);
         gs.unsuspect(MARKET, a, _validBlock());
-        assertEq(gs.getActivationDelay(MARKET, BOB), 1 hours, "retraction re-snapshots to 1x delayPerSuspect");
+        assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 1, "retraction re-snapshots to 1 active suspect");
     }
 }

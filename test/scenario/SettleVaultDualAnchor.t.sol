@@ -95,14 +95,16 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
                     activatingLockDuration: 0,
                     maxDelayInflow: 100_000 ether,
                     minActivationAmount: 1e18,
-                    maxGuardiansQuorumDelay: 0
+                    maxGuardiansQuorumDelay: 0,
+                    delayPerStrike: 0,
+                    delayPerSuspect: 0
                 }),
                 settlementConfig: SettlementConfigParams({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100
                 }),
                 guardians: guardians,
                 quorum: 1,
-                guardianConfig: GuardianConfigParams({delayPerStrike: 2 hours, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0}),
+                suspectWindow: 0,
                 vaultName: "Lido WETH Vault",
                 vaultSymbol: "lidoWETH"
             })

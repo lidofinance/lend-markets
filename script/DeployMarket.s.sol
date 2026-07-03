@@ -48,7 +48,9 @@ contract DeployMarket is Script, LidoLendDeployer {
                     activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
-                    maxGuardiansQuorumDelay: 0
+                    maxGuardiansQuorumDelay: 0,
+                    delayPerStrike: 2 hours,
+                    delayPerSuspect: 0
                 }),
                 // DRAFT slice policy — governance values, tune before any real deploy.
                 settlementConfig: SettlementConfigParams({
@@ -59,9 +61,7 @@ contract DeployMarket is Script, LidoLendDeployer {
                 }),
                 guardians: guardians,
                 quorum: 1,
-                guardianConfig: GuardianConfigParams({
-                    delayPerStrike: 2 hours, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0
-                }),
+                suspectWindow: 0,
                 vaultName: "Lido wstETH/WETH Vault",
                 vaultSymbol: "lidoWSTETH-WETH"
             })

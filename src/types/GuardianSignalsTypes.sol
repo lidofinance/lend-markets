@@ -40,29 +40,18 @@ struct GuardiansSignal {
     mapping(address guardian => uint40 timestamp) suspectedAt;
 }
 
-/// @notice The guardian activation-delay parameters, set (and read) in one shot via `setDelayParams` /
-///         `getDelayParams`.
-/// @param delayPerStrike  Activation-delay surcharge per flag. Must not exceed `MAX_DELAY_PER_STRIKE`.
-/// @param delayPerSuspect Activation-delay surcharge per fresh suspect report. Must not exceed
-///        `MAX_DELAY_PER_STRIKE`; inert while `suspectWindow` is 0, since a report is then fresh only in its
-///        own block.
-/// @param maxDelay        Cap on the total guardian activation-delay surcharge (flags + suspects). 0 = uncapped.
-/// @param suspectWindow   Freshness horizon within which a suspect report still counts. Must not exceed
-///        `MAX_SUSPECT_WINDOW`.
-struct DelayParams {
-    uint256 delayPerStrike;
-    uint256 delayPerSuspect;
-    uint256 maxDelay;
-    uint256 suspectWindow;
-}
-
-/// @notice Everything the controller reads about an account in one call: the ban gate plus the activation-gate
-///         inputs. Returned by `getOpinion`.
-/// @param banned              Whether the account is banned (hard-blocks borrowing).
-/// @param activationDelay     The activation-delay surcharge (`type(uint256).max` when banned).
+/// @notice Everything the controller reads about an account in one call, forwarded to the activation lib which
+///         owns the delay math. Returned by `getOpinion`.
+/// @param banned                  Whether the account is banned (hard-blocks borrowing).
+/// @param strikeCount             Raw guardian flags on the account.
+/// @param suspectCount            Active suspect reports snapshotted at the last report/retraction.
+/// @param suspectExpiryTimestamp  When the current suspect snapshot lapses (`suspectReportedAt + suspectWindow`);
+///        the activation lib applies the suspect surcharge only to lots whose activation started before this.
 /// @param quorumFrontierTimestamp The quorum-scan frontier timestamp.
 struct GuardiansOpinion {
     bool banned;
-    uint256 activationDelay;
+    uint256 strikeCount;
+    uint256 suspectCount;
+    uint256 suspectExpiryTimestamp;
     uint256 quorumFrontierTimestamp;
 }

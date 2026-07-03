@@ -315,7 +315,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         MarketView memory marketView = _marketView(id);
         GuardiansOpinion memory opinion = _guardianSignals.getOpinion(id, borrower);
         dashboard.banned = opinion.banned;
-        dashboard.flagCount = _guardianSignals.getFlagCount(id, borrower);
+        dashboard.flagCount = opinion.strikeCount;
         (dashboard.activating, dashboard.dust) = _activation.getActivationState(borrower);
         dashboard.active = position.collateral - dashboard.activating - dashboard.dust;
         dashboard.unlockTime = _activation.getUnlockTime(borrower, opinion);

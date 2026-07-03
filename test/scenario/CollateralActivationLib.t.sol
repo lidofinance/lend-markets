@@ -6,9 +6,9 @@ import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.so
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {GuardiansOpinion} from "../../src/types/GuardianSignalsTypes.sol";
 
-/// @dev Storage harness so the internal library can operate on a real storage struct. The guardian-owned
-///      activation-delay surcharge now lives outside the lib, so the harness supplies it (strikes * delayPerStrike)
-///      directly to `sync`, mirroring how the controller feeds it from GuardianSignals.
+/// @dev Storage harness so the internal library can operate on a real storage struct. The guardian surcharge is
+///      computed inside the lib from the counters in `GuardiansOpinion`, so the harness just supplies those
+///      counters to `sync`, mirroring how the controller feeds them from GuardianSignals.
 contract ActivationHarness {
     using CollateralActivationLib for CollateralActivationLib.State;
 
@@ -16,9 +16,6 @@ contract ActivationHarness {
 
     /// @dev Mirrors the borrower's raw collateral in core, so the harness can derive `active = total - inactive`.
     mapping(address => uint256) internal _total;
-
-    /// @dev Per-strike surcharge the harness applies to turn a strike count into an activation-delay surcharge.
-    uint256 public delayPerStrike = 1 hours;
 
     function setConfig(CollateralActivationConfig memory cfg) external {
         $.setConfig(cfg);
@@ -76,17 +73,27 @@ contract ActivationHarness {
     }
 
     function sync(address borrower, uint256 strikes) external returns (uint256) {
-        // Surcharge = strikes * delayPerStrike; the quorum frontier is "now" so the quorum gate is satisfied.
+        // The lib turns the strike count into a surcharge via `config.delayPerStrike`; the quorum frontier is
+        // "now" so the quorum gate is satisfied.
         GuardiansOpinion memory opinion = GuardiansOpinion({
-            banned: false, activationDelay: strikes * delayPerStrike, quorumFrontierTimestamp: block.timestamp
+            banned: false,
+            strikeCount: strikes,
+            suspectCount: 0,
+            suspectExpiryTimestamp: 0,
+            quorumFrontierTimestamp: block.timestamp
         });
         return _total[borrower] - $.sync(false, borrower, opinion);
     }
 
-    /// @dev Sync with an explicit quorum-frontier timestamp (and no strike surcharge), to exercise the gate.
+    /// @dev Sync with an explicit quorum-frontier timestamp (and no surcharge), to exercise the gate.
     function syncWithQuorum(address borrower, uint40 quorumTimestamp) external returns (uint256) {
-        GuardiansOpinion memory opinion =
-            GuardiansOpinion({banned: false, activationDelay: 0, quorumFrontierTimestamp: quorumTimestamp});
+        GuardiansOpinion memory opinion = GuardiansOpinion({
+            banned: false,
+            strikeCount: 0,
+            suspectCount: 0,
+            suspectExpiryTimestamp: 0,
+            quorumFrontierTimestamp: quorumTimestamp
+        });
         return _total[borrower] - $.sync(false, borrower, opinion);
     }
 
@@ -113,7 +120,9 @@ contract CollateralActivationLibTest is Test {
                 activatingLockDuration: 0,
                 maxDelayInflow: 10_000 ether,
                 minActivationAmount: 1,
-                maxGuardiansQuorumDelay: 1 days
+                maxGuardiansQuorumDelay: 1 days,
+                delayPerStrike: 1 hours,
+                delayPerSuspect: 30 minutes
             })
         );
     }
@@ -299,7 +308,9 @@ contract CollateralActivationLibTest is Test {
                 activatingLockDuration: 1 hours,
                 maxDelayInflow: 10_000 ether,
                 minActivationAmount: 2 ether, // above the lock, so the lock floor is a sub-threshold remainder
-                maxGuardiansQuorumDelay: 0
+                maxGuardiansQuorumDelay: 0,
+                delayPerStrike: 1 hours,
+                delayPerSuspect: 30 minutes
             })
         );
         address borrower = address(0x10C);

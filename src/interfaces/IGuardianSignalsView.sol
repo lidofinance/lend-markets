@@ -9,8 +9,8 @@ import {GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
 ///         per-account read plus the cheap ban bit, both keyed by market. The full guardian/committee/governance
 ///         surface lives in {IGuardianSignals}, which extends this.
 interface IGuardianSignalsView {
-    /// @notice Everything the controller needs about `account` in `marketId` in one call: the ban gate, the
-    ///         activation-delay surcharge, and the quorum-scan frontier timestamp.
+    /// @notice Everything the controller needs about `account` in `marketId` in one call: the ban gate, the raw
+    ///         signal counters the activation lib turns into a delay, and the quorum-scan frontier timestamp.
     /// @param marketId The market to read the signal in.
     /// @param account  The account to read.
     /// @return The account's bundled signal state.
@@ -21,10 +21,4 @@ interface IGuardianSignalsView {
     /// @param account  The account to read.
     /// @return True if the account's status is `Banned`.
     function isBanned(Id marketId, address account) external view returns (bool);
-    /// @notice The number of guardians currently flagging `account` in `marketId`. Read on its own by the position
-    ///         dashboard; not part of the hot-path `getOpinion` bundle.
-    /// @param marketId The market to read the signal in.
-    /// @param account  The account to read.
-    /// @return The raw flag count.
-    function getFlagCount(Id marketId, address account) external view returns (uint256);
 }
