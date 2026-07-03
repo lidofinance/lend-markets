@@ -425,8 +425,16 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         _settlementQueue.sync(hookData.onBehalf, position);
     }
 
-    /// @dev Repay hook: re-key the settlement queue on the post-repay shares (the borrower drops out at zero debt).
+    /// @dev Repay hook: block borrow-share stranding, then re-key the settlement queue on the post-repay shares
+    ///      (the borrower drops out at zero debt).
     function _handleRepay(Id id, RepayHookData memory hookData) internal {
+        // Draining borrow assets to zero while shares linger lets the next borrow mint ~all outstanding shares
+        // per wei, doubling the total each cheap cycle until it overflows. Zero the assets only on a full unwind.
+        MarketView memory marketView = _marketView(id);
+        if (marketView.totalBorrowAssets <= hookData.assets && marketView.totalBorrowShares > hookData.shares) {
+            revert RepayWouldStrandBorrowShares();
+        }
+
         // repay lowers debt: re-key the queue on the post-repay shares (drops out at zero debt)
         PositionView memory position = _positionView(id, hookData.onBehalf);
         if (hookData.shares > position.borrowShares) revert PositionAccountingMismatch();

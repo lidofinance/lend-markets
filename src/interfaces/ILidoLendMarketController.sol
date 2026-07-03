@@ -62,6 +62,11 @@ interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessCon
     /// @notice Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
     error SettlementExceedsAllowed();
 
+    /// @notice Thrown when a repay would drain the market's borrow assets to zero while borrow shares remain
+    ///         outstanding — the rounding state a first borrower can exploit to inflate the borrow-share price
+    ///         and brick further borrows. A repay may reach zero borrow assets only by clearing all shares too.
+    error RepayWouldStrandBorrowShares();
+
     // ---
     // TYPES
     // ---
