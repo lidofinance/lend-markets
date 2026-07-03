@@ -113,18 +113,18 @@ contract LidoLendOwnerTest is Test {
     // ---
 
     /// @notice A `MARKET_CREATOR_ROLE` holder creates a controller-less market; the core emits the full
-    ///         first-use sequence `EnableIrm`, `EnableLltv`, `CreateMarket`.
+    ///         first-use sequence `CreateMarket`, `EnableIrm`, `EnableLltv`.
     function test_createMarket_withRole_createsMarket() public {
         _grant(facade.MARKET_CREATOR_ROLE(), CREATOR);
         MarketParams memory p = _params(1);
         Id id = p.id();
 
         vm.expectEmit(true, true, true, true, address(core));
+        emit CreateMarket(id, p);
+        vm.expectEmit(true, true, true, true, address(core));
         emit EnableIrm(irm);
         vm.expectEmit(true, true, true, true, address(core));
         emit EnableLltv(p.lltv);
-        vm.expectEmit(true, true, true, true, address(core));
-        emit CreateMarket(id, p);
         vm.prank(CREATOR);
         facade.createMarket(p);
 
@@ -159,15 +159,15 @@ contract LidoLendOwnerTest is Test {
         ControllerMock controller = new ControllerMock(id);
 
         vm.expectEmit(true, true, true, true, address(core));
-        emit EnableIrm(irm);
-        vm.expectEmit(true, true, true, true, address(core));
-        emit EnableLltv(p.lltv);
+        emit CreateMarket(id, p);
         vm.expectEmit(true, true, true, true, address(core));
         emit SetMarketController(id, address(controller));
         vm.expectEmit(true, true, true, true, address(core));
         emit EnableSettlement(id);
         vm.expectEmit(true, true, true, true, address(core));
-        emit CreateMarket(id, p);
+        emit EnableIrm(irm);
+        vm.expectEmit(true, true, true, true, address(core));
+        emit EnableLltv(p.lltv);
         vm.prank(CREATOR);
         facade.createMarket(p, address(controller), true);
 
