@@ -63,10 +63,10 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @dev Freshness horizon for a suspect snapshot: `suspectReportedAt + suspectWindow` is when it lapses.
     uint40 private _suspectWindow;
     /// @dev Quorum-scan frontier: the highest timestamp a quorum of guardians have ever scanned past. Monotonic.
-    uint40 private _quorumFrontier;
+    uint40 private _quorumFrontierTimestamp;
     EnumerableSet.AddressSet private _guardians;
     /// @dev Each guardian's last-scanned block timestamp (a Unix timestamp, not a block number).
-    mapping(address guardian => uint40 timestamp) private _heartbeatAt;
+    mapping(address guardian => uint40 timestamp) private _heartbeats;
     mapping(Id marketId => mapping(address account => GuardiansSignal)) private _signals;
 
     // ---
@@ -176,7 +176,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
     /// @inheritdoc IGuardianSignals
     function getHeartbeat(address guardian) external view returns (uint40 timestamp) {
-        return _heartbeatAt[guardian];
+        return _heartbeats[guardian];
     }
 
     /// @inheritdoc IGuardianSignals
@@ -184,13 +184,13 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         guardians = _guardians.values();
         timestamps = new uint40[](guardians.length);
         for (uint256 i; i < guardians.length; ++i) {
-            timestamps[i] = _heartbeatAt[guardians[i]];
+            timestamps[i] = _heartbeats[guardians[i]];
         }
     }
 
     /// @inheritdoc IGuardianSignals
     function getQuorumFrontier() external view returns (uint40) {
-        return _quorumFrontier;
+        return _quorumFrontierTimestamp;
     }
 
     // ---
@@ -290,7 +290,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     function getOpinion(Id marketId, address account) external view returns (GuardiansOpinion memory opinion) {
         opinion.banned = _signals[marketId][account].banned;
         (opinion.strikeCount, opinion.suspectCount, opinion.suspectExpiryTimestamp) = _signalCounters(marketId, account);
-        opinion.quorumFrontierTimestamp = _quorumFrontier;
+        opinion.quorumFrontierTimestamp = _quorumFrontierTimestamp;
     }
 
     /// @inheritdoc IGuardianSignalsView
@@ -330,11 +330,11 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         // guardian-reported timestamp. Bound it to the past and force it non-decreasing per guardian, so a
         // guardian cannot backdate or fast-forward the quorum-scan frontier it feeds.
         if (lastScannedBlock.timestamp > block.timestamp) revert TimestampInTheFuture();
-        if (lastScannedBlock.timestamp < _heartbeatAt[msg.sender]) revert HeartbeatTimestampRegressed();
+        if (lastScannedBlock.timestamp < _heartbeats[msg.sender]) revert HeartbeatTimestampRegressed();
         // number + hash only prove the reported block is real and un-reorged; the frontier orders by timestamp.
         if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) revert InvalidBlockHash();
 
-        _heartbeatAt[msg.sender] = lastScannedBlock.timestamp;
+        _heartbeats[msg.sender] = lastScannedBlock.timestamp;
         emit Heartbeat(msg.sender, lastScannedBlock.number, lastScannedBlock.timestamp);
     }
 
@@ -347,10 +347,10 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         address[] memory guardians = _guardians.values();
         uint256[] memory timestamps = new uint256[](n);
         for (uint256 i; i < n; ++i) {
-            timestamps[i] = _heartbeatAt[guardians[i]];
+            timestamps[i] = _heartbeats[guardians[i]];
         }
         uint40 frontierTimestamp = uint40(Arrays.sort(timestamps)[n - quorum]);
-        if (frontierTimestamp > _quorumFrontier) _quorumFrontier = frontierTimestamp;
+        if (frontierTimestamp > _quorumFrontierTimestamp) _quorumFrontierTimestamp = frontierTimestamp;
     }
 
     function _setQuorum(uint256 newQuorum) internal {
