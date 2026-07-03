@@ -6,6 +6,7 @@ import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLendMarketConfigurator} from "./ILidoLendMarketConfigurator.sol";
+import {IPausableUntil} from "./IPausableUntil.sol";
 import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 /// @title ILidoLendMarketController
@@ -13,7 +14,12 @@ import {SettlementConfig} from "../types/SettlementTypes.sol";
 ///         (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the
 ///         borrower dashboard. The controller implements this interface, so it is the single source for
 ///         the dashboard struct, events, errors, and the function docs the contract inherits.
-interface ILidoLendMarketController is ILidoLendBaseMarketController, IAccessControl, ILidoLendMarketConfigurator {
+interface ILidoLendMarketController is
+    ILidoLendBaseMarketController,
+    IAccessControl,
+    ILidoLendMarketConfigurator,
+    IPausableUntil
+{
     // ---
     // EVENTS
     // ---
