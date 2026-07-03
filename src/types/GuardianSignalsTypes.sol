@@ -63,9 +63,9 @@ struct DelayParams {
 ///         inputs. Returned by `getOpinion`.
 /// @param banned              Whether the account is banned (hard-blocks borrowing).
 /// @param activationDelay     The activation-delay surcharge (`type(uint256).max` when banned, 0 when immune).
-/// @param quorumBlockTimestamp The quorum-scan frontier timestamp.
+/// @param quorumFrontierTimestamp The quorum-scan frontier timestamp.
 struct GuardiansOpinion {
     bool banned;
     uint256 activationDelay;
-    uint256 quorumBlockTimestamp;
+    uint256 quorumFrontierTimestamp;
 }

@@ -4,6 +4,7 @@ pragma solidity 0.8.35;
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
+import {GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
 
 /// @title CollateralActivationLib
 /// @author Lido
@@ -221,19 +222,16 @@ library CollateralActivationLib {
     ///         `activating`, lowering the inactive total, so the caller's `total - inactive` counts it as active.
     ///         Returns the post-mature `inactive` (`activating + dust`). A freeze skips maturation, and a banned
     ///         borrower's unlock is pushed to infinity so it never matures.
-    function sync(
-        State storage $,
-        bool isFrozen,
-        address borrower,
-        uint256 activationDelay,
-        uint256 quorumBlockTimestamp
-    ) internal returns (uint256 inactive) {
+    function sync(State storage $, bool isFrozen, address borrower, GuardiansOpinion memory opinion)
+        internal
+        returns (uint256 inactive)
+    {
         Position storage position = $.positions[borrower];
 
         if (!isFrozen && position.activatingStart > 0) {
-            uint256 unlockTime = _getUnlockTime($, borrower, activationDelay);
+            uint256 unlockTime = _getUnlockTime($, borrower, opinion.activationDelay);
             bool isUnlockTimePassed = block.timestamp >= unlockTime;
-            bool hasGuardiansQuorum = unlockTime <= quorumBlockTimestamp;
+            bool hasGuardiansQuorum = unlockTime <= opinion.quorumFrontierTimestamp;
             bool maxQuorumDelayElapsed = block.timestamp >= position.activatingStart + $.config.maxGuardiansQuorumDelay;
 
             if (isUnlockTimePassed && (hasGuardiansQuorum || maxQuorumDelayElapsed)) {
@@ -257,11 +255,15 @@ library CollateralActivationLib {
     // GETTERS
     // ---
 
-    /// @notice Unlock timestamp of the borrower's activating lot, 0 if none. `activationDelay` is the
+    /// @notice Unlock timestamp of the borrower's activating lot, 0 if none. `opinion.activationDelay` is the
     ///         guardian-owned surcharge (`type(uint256).max` for a banned borrower).
-    function getUnlockTime(State storage $, address borrower, uint256 activationDelay) internal view returns (uint256) {
+    function getUnlockTime(State storage $, address borrower, GuardiansOpinion memory opinion)
+        internal
+        view
+        returns (uint256)
+    {
         if ($.positions[borrower].activatingStart == 0) return 0;
-        return _getUnlockTime($, borrower, activationDelay);
+        return _getUnlockTime($, borrower, opinion.activationDelay);
     }
 
     /// @notice The borrower's activation state: how much collateral is activating (timed) versus dust (untimed).

@@ -155,7 +155,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
 
     /// @dev Deploy and seed this market's guardian registry (one GuardianSignals per market). `initialize` seeds
     ///      the admin, guardian set, and quorum; `admin` holds DEFAULT_ADMIN_ROLE, so it self-grants
-    ///      GUARDIANS_MANAGER_ROLE and sets the delay parameters. Split out of `_addMarket` to keep its frame under
+    ///      MANAGER_ROLE and sets the delay parameters. Split out of `_addMarket` to keep its frame under
     ///      the stack limit. Also mirrors it to `protocol` so single-market tests can read
     ///      `protocol.guardianSignals`.
     function _deployMarketGuardian(DeployConfig memory cfg, address admin) private returns (address guardian) {
@@ -167,7 +167,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
             )
         );
         GuardianSignals gs = GuardianSignals(guardian);
-        gs.grantRole(gs.GUARDIANS_MANAGER_ROLE(), admin);
+        gs.grantRole(gs.MANAGER_ROLE(), admin);
         gs.setDelayParams(
             DelayParams({
                 delayPerStrike: cfg.guardianConfig.delayPerStrike,

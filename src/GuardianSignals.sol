@@ -7,6 +7,7 @@ import {
 } from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {Arrays} from "@openzeppelin/contracts/utils/Arrays.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {IGuardianSignals} from "./interfaces/IGuardianSignals.sol";
@@ -36,16 +37,16 @@ import {
 ///      guardians re-evaluate from scratch. `Immune` exempts an account: while set, `flag`/`unflag` no-op and
 ///      readers see it as clean. `ban` clears it. All of these are per `(market, account)`.
 ///
-///      A suspect report (`reportSuspect` / `clearSuspect`) never latches a ban but raises the activation delay
+///      A suspect report (`suspect` / `unsuspect`) never latches a ban but raises the activation delay
 ///      like a flag, counted only while fresh (its timestamp inside `suspectWindow`).
 ///
-///      Override roles split by concern and risk direction: fast risk-reducing (`BAN_ROLE`: `ban`;
-///      `IMMUNITY_REVOKER_ROLE`: `revokeImmunity`), slow risk-increasing (`UNBAN_ROLE`: `unban`;
-///      `IMMUNITY_GRANTER_ROLE`: `grantImmunity`). `GUARDIANS_MANAGER_ROLE` manages the guardian set, quorum, and
+///      Override roles split by concern and risk direction: fast risk-reducing (`ACCESS_LIMITER_ROLE`: `ban`;
+///      `IMMUNITY_REVOKER_ROLE`: `revokeImmunity`), slow risk-increasing (`ACCESS_RESTORER_ROLE`: `unban`;
+///      `IMMUNITY_GRANTER_ROLE`: `grantImmunity`). `MANAGER_ROLE` manages the guardian set, quorum, and
 ///      delay parameters. A guardian set is a plain enumerable set, not a role. Every role is standard
 ///      `AccessControl`, committee-wide across the markets this instance serves.
 ///
-///      Guardians report liveness: `flag`, `unflag`, `reportSuspect`, `clearSuspect`, and `heartbeat` each record
+///      Guardians report liveness: `flag`, `unflag`, `suspect`, `unsuspect`, and `heartbeat` each record
 ///      a last-scanned block (O(1)). `syncQuorumBlock` recomputes the quorum frontier that `getQuorumFrontier`
 ///      returns — the highest timestamp a quorum have scanned past (monotonic). Only the timestamp is stored; the
 ///      block number is re-emitted in the `Heartbeat` event for off-chain tooling.
@@ -58,6 +59,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     IGuardianSignals
 {
     using EnumerableSet for EnumerableSet.AddressSet;
+    using SafeCast for uint256;
 
     // ---
     // CONSTANTS
@@ -81,15 +83,15 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     /// @dev `ban` (fast, risk-reducing).
-    bytes32 public constant BAN_ROLE = keccak256("BAN_ROLE");
+    bytes32 public constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
     /// @dev `unban` (slow, risk-increasing).
-    bytes32 public constant UNBAN_ROLE = keccak256("UNBAN_ROLE");
+    bytes32 public constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
     /// @dev `revokeImmunity` (fast, risk-reducing).
     bytes32 public constant IMMUNITY_REVOKER_ROLE = keccak256("IMMUNITY_REVOKER_ROLE");
     /// @dev `grantImmunity` (slow, risk-increasing).
     bytes32 public constant IMMUNITY_GRANTER_ROLE = keccak256("IMMUNITY_GRANTER_ROLE");
     /// @dev Manages the guardian set, quorum, and delay parameters.
-    bytes32 public constant GUARDIANS_MANAGER_ROLE = keccak256("GUARDIANS_MANAGER_ROLE");
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
     // ---
     // STORAGE
@@ -149,34 +151,34 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function addGuardian(address guardian) external onlyRole(GUARDIANS_MANAGER_ROLE) {
+    function addGuardian(address guardian) external onlyRole(MANAGER_ROLE) {
         _addGuardian(guardian);
     }
 
     /// @inheritdoc IGuardianSignals
     /// @dev Reverts if removal would drop the set below `quorum`, so the quorum stays reachable.
-    function removeGuardian(address guardian) external onlyRole(GUARDIANS_MANAGER_ROLE) {
+    function removeGuardian(address guardian) external onlyRole(MANAGER_ROLE) {
         if (!_guardians.remove(guardian)) revert NotGuardian();
         if (_guardians.length() < _quorum) revert WouldBreakQuorum();
         emit GuardianRemoved(guardian);
     }
 
     /// @inheritdoc IGuardianSignals
-    function setQuorum(uint256 newQuorum) external onlyRole(GUARDIANS_MANAGER_ROLE) {
+    function setQuorum(uint256 newQuorum) external onlyRole(MANAGER_ROLE) {
         _setQuorum(newQuorum);
         emit QuorumSet(newQuorum);
     }
 
     /// @inheritdoc IGuardianSignals
-    function setDelayParams(DelayParams calldata params) external onlyRole(GUARDIANS_MANAGER_ROLE) {
+    function setDelayParams(DelayParams calldata params) external onlyRole(MANAGER_ROLE) {
         if (params.delayPerStrike > MAX_DELAY_PER_STRIKE) revert DelayPerStrikeTooHigh();
         if (params.delayPerSuspect > MAX_DELAY_PER_STRIKE) revert DelayPerSuspectTooHigh();
         if (params.suspectWindow > MAX_SUSPECT_WINDOW) revert SuspectWindowTooHigh();
 
-        _delayPerStrike = uint40(params.delayPerStrike);
-        _delayPerSuspect = uint40(params.delayPerSuspect);
-        _maxDelay = uint40(params.maxDelay);
-        _suspectWindow = uint40(params.suspectWindow);
+        _delayPerStrike = params.delayPerStrike.toUint40();
+        _delayPerSuspect = params.delayPerSuspect.toUint40();
+        _maxDelay = params.maxDelay.toUint40();
+        _suspectWindow = params.suspectWindow.toUint40();
         emit DelayParamsSet(params.delayPerStrike, params.delayPerSuspect, params.maxDelay, params.suspectWindow);
     }
 
@@ -270,23 +272,23 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function reportSuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
+    function suspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
         external
         onlyGuardian
     {
         for (uint256 i; i < accounts.length; ++i) {
-            _reportSuspect(marketId, accounts[i]);
+            _suspect(marketId, accounts[i]);
         }
         _heartbeat(lastScannedBlock);
     }
 
     /// @inheritdoc IGuardianSignals
-    function clearSuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
+    function unsuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
         external
         onlyGuardian
     {
         for (uint256 i; i < accounts.length; ++i) {
-            _clearSuspect(marketId, accounts[i]);
+            _unsuspect(marketId, accounts[i]);
         }
         _heartbeat(lastScannedBlock);
     }
@@ -318,7 +320,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
     /// @inheritdoc IGuardianSignals
     /// @dev Clears immunity so the block takes effect even on an exempt account.
-    function ban(Id marketId, address account) external onlyRole(BAN_ROLE) {
+    function ban(Id marketId, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
         if (account == address(0)) revert ZeroAddress();
         _signals[marketId][account].status = Status.Banned;
         emit Banned(marketId, account);
@@ -327,7 +329,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @inheritdoc IGuardianSignals
     /// @dev Clears the flagger set, so the freshly-unbanned account can be re-flagged and re-banned from
     ///      scratch. Immunity is left to `revokeImmunity`.
-    function unban(Id marketId, address account) external onlyRole(UNBAN_ROLE) {
+    function unban(Id marketId, address account) external onlyRole(ACCESS_RESTORER_ROLE) {
         GuardiansSignal storage signal = _signals[marketId][account];
         signal.status = Status.Normal;
         signal.flaggedBy.clear();
@@ -361,7 +363,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     function getOpinion(Id marketId, address account) external view returns (GuardiansOpinion memory opinion) {
         opinion.banned = _signals[marketId][account].status == Status.Banned;
         opinion.activationDelay = _activationDelay(marketId, account);
-        opinion.quorumBlockTimestamp = _quorumFrontier;
+        opinion.quorumFrontierTimestamp = _quorumFrontier;
     }
 
     /// @inheritdoc IGuardianSignalsView
@@ -476,7 +478,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
     /// @dev Single-account suspect report. No-op while immune. Records (or refreshes) the caller's timestamp so a
     ///      re-report keeps the suspicion inside the window. Never latches a ban.
-    function _reportSuspect(Id marketId, address account) internal {
+    function _suspect(Id marketId, address account) internal {
         if (account == address(0)) revert ZeroAddress();
 
         GuardiansSignal storage signal = _signals[marketId][account];
@@ -489,7 +491,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @dev Single-account suspect retraction. No-op when the caller has no live report on the account.
-    function _clearSuspect(Id marketId, address account) internal {
+    function _unsuspect(Id marketId, address account) internal {
         _pruneExpiredSuspects(marketId, account);
         GuardiansSignal storage signal = _signals[marketId][account];
         if (!signal.suspectedBy.remove(msg.sender)) return;

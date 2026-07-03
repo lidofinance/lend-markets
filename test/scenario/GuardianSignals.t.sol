@@ -30,7 +30,7 @@ contract GuardianSignalsTest is Test {
         gs = IGuardianSignals(address(new ERC1967Proxy(address(impl), data)));
 
         GuardianSignals gsImpl = GuardianSignals(address(gs));
-        gsImpl.grantRole(gsImpl.GUARDIANS_MANAGER_ROLE(), address(this));
+        gsImpl.grantRole(gsImpl.MANAGER_ROLE(), address(this));
     }
 
     /// @dev A heartbeat for block `n` carrying the block hash the registry validates against. The frontier orders

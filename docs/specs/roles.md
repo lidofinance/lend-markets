@@ -88,7 +88,7 @@ A steward is appointed per market id, not as an AccessControl role, so the set s
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `GUARDIANS_MANAGER_ROLE` | guardian set and quorum (`addGuardian`, `removeGuardian`, `setQuorum`) | C1 / C3 | Lido DAO |
+| `MANAGER_ROLE` | guardian set, quorum, and delay params (`addGuardian`, `removeGuardian`, `setQuorum`, `setDelayParams`) | C1 / C3 | Lido DAO |
 | `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum), `revokeImmunity` | C3 | risk steward committee |
 | `ACCESS_RESTORER_ROLE` | `unban`, `grantImmunity` | C4 | Lido DAO, timelocked |
 

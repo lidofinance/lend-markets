@@ -318,7 +318,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         dashboard.flagCount = _guardianSignals.getFlagCount(id, borrower);
         (dashboard.activating, dashboard.dust) = _activation.getActivationState(borrower);
         dashboard.active = position.collateral - dashboard.activating - dashboard.dust;
-        dashboard.unlockTime = _activation.getUnlockTime(borrower, opinion.activationDelay);
+        dashboard.unlockTime = _activation.getUnlockTime(borrower, opinion);
         dashboard.debtAssets = _debtAssets(marketView, position);
         dashboard.settlementLtv = _settlementQueue.settlementLtvOf(borrower);
         dashboard.isNextToSettle = _settlementQueue.peekRoot() == borrower;
@@ -408,8 +408,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // Borrow capacity uses active (matured) collateral only. `sync` matures any ready lot, subject to the
         // quorum-scan gate, and returns the post-mature inactive total. Active is the raw collateral minus that.
-        uint256 inactive =
-            _activation.sync(isFrozen, hookData.onBehalf, opinion.activationDelay, opinion.quorumBlockTimestamp);
+        uint256 inactive = _activation.sync(isFrozen, hookData.onBehalf, opinion);
 
         PositionView memory position = _positionView(id, hookData.onBehalf);
         uint256 activeCollateral = position.collateral - inactive;
@@ -498,7 +497,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     ///      quorum-scan frontier into the timer. Returns the post-mature inactive total.
     function _syncActivation(address borrower) internal returns (uint256) {
         GuardiansOpinion memory opinion = _guardianSignals.getOpinion(marketId, borrower);
-        return _activation.sync(isFrozen, borrower, opinion.activationDelay, opinion.quorumBlockTimestamp);
+        return _activation.sync(isFrozen, borrower, opinion);
     }
 
     /// @dev Borrower debt in loan assets, rounded up. 0 when the position carries no debt.

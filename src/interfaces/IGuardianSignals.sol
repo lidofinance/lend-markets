@@ -55,7 +55,7 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
     event Banned(Id indexed marketId, address indexed account);
     /// @notice Emitted when an account's ban is lifted.
-    /// @param by The `UNBAN_ROLE` holder that unbanned.
+    /// @param by The `ACCESS_RESTORER_ROLE` holder that unbanned.
     event Unbanned(Id indexed marketId, address indexed account, address indexed by);
     /// @notice Emitted when an account is exempted.
     /// @param by The `IMMUNITY_GRANTER_ROLE` holder that granted immunity.
@@ -160,12 +160,10 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Report `accounts` as suspect in `marketId`, then heartbeat. A suspect report never latches a ban; it
     ///         raises the activation delay like a flag, but only while inside the suspect window. Per account a
     ///         no-op when immune; a zero address in the batch reverts.
-    function reportSuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
-        external;
+    function suspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Retract the caller's suspect reports on `accounts` in `marketId`, then heartbeat. Per account a
     ///         no-op when the caller has no live report on it.
-    function clearSuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock)
-        external;
+    function unsuspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Permissionless: prune `account`'s flags and suspect reports in `marketId` cast by addresses that are
     ///         no longer guardians. Lowers the flag/suspect count but never changes status.
     function prune(Id marketId, address account) external;

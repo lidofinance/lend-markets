@@ -4,6 +4,7 @@ pragma solidity 0.8.35;
 import {Test} from "forge-std/Test.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
+import {GuardiansOpinion} from "../../src/types/GuardianSignalsTypes.sol";
 
 /// @dev Storage harness so the internal library can operate on a real storage struct. The guardian-owned
 ///      activation-delay surcharge now lives outside the lib, so the harness supplies it (strikes * delayPerStrike)
@@ -76,12 +77,17 @@ contract ActivationHarness {
 
     function sync(address borrower, uint256 strikes) external returns (uint256) {
         // Surcharge = strikes * delayPerStrike; the quorum frontier is "now" so the quorum gate is satisfied.
-        return _total[borrower] - $.sync(false, borrower, strikes * delayPerStrike, block.timestamp);
+        GuardiansOpinion memory opinion = GuardiansOpinion({
+            banned: false, activationDelay: strikes * delayPerStrike, quorumFrontierTimestamp: block.timestamp
+        });
+        return _total[borrower] - $.sync(false, borrower, opinion);
     }
 
     /// @dev Sync with an explicit quorum-frontier timestamp (and no strike surcharge), to exercise the gate.
     function syncWithQuorum(address borrower, uint40 quorumTimestamp) external returns (uint256) {
-        return _total[borrower] - $.sync(false, borrower, 0, quorumTimestamp);
+        GuardiansOpinion memory opinion =
+            GuardiansOpinion({banned: false, activationDelay: 0, quorumFrontierTimestamp: quorumTimestamp});
+        return _total[borrower] - $.sync(false, borrower, opinion);
     }
 
     function currentInflow() external view returns (uint256) {

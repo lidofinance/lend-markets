@@ -25,7 +25,7 @@ interface IOwnerFacade {
 /// @dev Minimal surface of the guardian registry used at deploy: grant the manager role and set the delay
 ///      parameters (the guardian set and quorum are seeded in `initialize`).
 interface IGuardianRegistry {
-    function GUARDIANS_MANAGER_ROLE() external view returns (bytes32);
+    function MANAGER_ROLE() external view returns (bytes32);
     function grantRole(bytes32 role, address account) external;
     function setDelayParams(LidoLendDeployer.GuardianConfigParams calldata params) external;
 }
@@ -149,10 +149,10 @@ abstract contract LidoLendDeployer {
         IControllerConfigurator controller = IControllerConfigurator(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
 
-        // The guardian set and quorum are seeded in `initialize`. Grant `admin` GUARDIANS_MANAGER_ROLE for later
+        // The guardian set and quorum are seeded in `initialize`. Grant `admin` MANAGER_ROLE for later
         // roster/quorum changes (it holds DEFAULT_ADMIN_ROLE, so it self-grants), then set the delay parameters.
         IGuardianRegistry guardian = IGuardianRegistry(d.guardianSignals);
-        guardian.grantRole(guardian.GUARDIANS_MANAGER_ROLE(), cfg.admin);
+        guardian.grantRole(guardian.MANAGER_ROLE(), cfg.admin);
         guardian.setDelayParams(cfg.guardianConfig);
     }
 

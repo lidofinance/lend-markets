@@ -41,9 +41,9 @@ contract GuardianSignalsTest is Test {
         gs = GuardianSignals(address(new OssifiableProxy(impl, address(this), initData)));
 
         // Governance roles (not granted by initialize).
-        gs.grantRole(gs.GUARDIANS_MANAGER_ROLE(), address(this));
-        gs.grantRole(gs.BAN_ROLE(), address(this));
-        gs.grantRole(gs.UNBAN_ROLE(), address(this));
+        gs.grantRole(gs.MANAGER_ROLE(), address(this));
+        gs.grantRole(gs.ACCESS_LIMITER_ROLE(), address(this));
+        gs.grantRole(gs.ACCESS_RESTORER_ROLE(), address(this));
         gs.grantRole(gs.IMMUNITY_GRANTER_ROLE(), address(this));
         gs.grantRole(gs.IMMUNITY_REVOKER_ROLE(), address(this));
 
@@ -285,8 +285,8 @@ contract GuardianSignalsTest is Test {
     }
 
     function testRevert_ban_wrongRole() public {
-        bytes32 role = gs.BAN_ROLE();
-        vm.prank(BOB); // lacks BAN_ROLE
+        bytes32 role = gs.ACCESS_LIMITER_ROLE();
+        vm.prank(BOB); // lacks ACCESS_LIMITER_ROLE
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
         gs.ban(MARKET, BOB);
     }
@@ -404,8 +404,8 @@ contract GuardianSignalsTest is Test {
     }
 
     function testRevert_setQuorum_wrongRole() public {
-        bytes32 role = gs.GUARDIANS_MANAGER_ROLE();
-        vm.prank(BOB); // lacks GUARDIANS_MANAGER_ROLE
+        bytes32 role = gs.MANAGER_ROLE();
+        vm.prank(BOB); // lacks MANAGER_ROLE
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
         gs.setQuorum(1);
     }
