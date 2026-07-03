@@ -170,7 +170,7 @@ A borrower with open debt cannot withdraw all of its collateral: a withdrawal mu
 
 ### Guardian signals
 
-Guardians are off-chain services run by trusted actors that watch each market and flag accounts they judge malicious — a hijacked account pushing stolen collateral toward a borrow is the case they exist to catch. No guardian acts alone: each flag is one **strike**, and an account's `Status` escalates as strikes accumulate.
+Guardians are off-chain services run by trusted actors that watch each market and flag accounts they judge malicious — a hijacked account pushing stolen collateral toward a borrow is the case they exist to catch. No guardian acts alone: each flag is one **strike**, and an account's ban latches as strikes accumulate.
 
 ```
 strikes == 0          Normal — clean, normal activation

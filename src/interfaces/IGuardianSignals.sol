@@ -172,8 +172,8 @@ interface IGuardianSignals is IGuardianSignalsView {
 
     /// @notice Force a ban on `account` in `marketId`, bypassing the quorum.
     function ban(Id marketId, address account) external;
-    /// @notice Lift the ban on `account` in `marketId`: reset its status to `Normal` and clear its flags. Suspect
-    ///         reports are left intact (they carry no ban), so a suspect-driven delay survives the unban.
+    /// @notice Lift the ban on `account` in `marketId` and clear its flags. Suspect reports are left intact
+    ///         (they carry no ban), so a suspect-driven delay survives the unban.
     function unban(Id marketId, address account) external;
 
     // ---

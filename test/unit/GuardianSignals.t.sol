@@ -9,7 +9,7 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
-import {Status, BlockInfoWithHash, DelayParams} from "../../src/types/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash, DelayParams} from "../../src/types/GuardianSignalsTypes.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 /// @notice Unit suite for `GuardianSignals`, modelled from the "Guardian signals" spec:
@@ -81,10 +81,6 @@ contract GuardianSignalsTest is Test {
         gs.unflag(MARKET, a, _validBlock());
     }
 
-    function _status(address account) internal view returns (Status) {
-        return gs.isBanned(MARKET, account) ? Status.Banned : Status.Normal;
-    }
-
     function _flagCount(address account) internal view returns (uint256) {
         return gs.getFlagCount(MARKET, account);
     }
@@ -99,7 +95,7 @@ contract GuardianSignalsTest is Test {
 
     function test_flag_belowQuorum_isNormalWithStrikes() public {
         _flag(G1, BOB); // 1 flag, quorum 2
-        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "below quorum stays Normal");
+        assertFalse(gs.isBanned(MARKET, BOB), "below quorum stays Normal");
         assertEq(_strikes(BOB), 1, "one strike");
         assertEq(_flagCount(BOB), 1, "flagCount 1");
     }
@@ -107,7 +103,7 @@ contract GuardianSignalsTest is Test {
     function test_flag_atQuorum_latchesBanned() public {
         _flag(G1, BOB);
         _flag(G2, BOB); // reaches quorum 2
-        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "quorum bans");
+        assertTrue(gs.isBanned(MARKET, BOB), "quorum bans");
         assertEq(_strikes(BOB), 2, "strikes == flagCount, uncapped");
     }
 
@@ -115,7 +111,7 @@ contract GuardianSignalsTest is Test {
         _flag(G1, BOB);
         _flag(G2, BOB); // Banned
         _unflag(G1, BOB); // flagCount drops to 1 < quorum
-        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "latched: unflag does not lift the ban");
+        assertTrue(gs.isBanned(MARKET, BOB), "latched: unflag does not lift the ban");
         assertEq(_flagCount(BOB), 1, "flagCount dropped");
         assertEq(_strikes(BOB), 1, "strikes follow flagCount");
     }
@@ -140,13 +136,13 @@ contract GuardianSignalsTest is Test {
         _flag(G1, BOB);
         _flag(G2, BOB); // Banned
         gs.unban(MARKET, BOB);
-        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "unban returns to Normal");
+        assertFalse(gs.isBanned(MARKET, BOB), "unban returns to Normal");
         assertEq(_flagCount(BOB), 0, "unban clears the flag set");
     }
 
     function test_forcedBan_latchesRegardlessOfFlags() public {
         gs.ban(MARKET, BOB); // no flags at all
-        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "forced ban latches with zero flags");
+        assertTrue(gs.isBanned(MARKET, BOB), "forced ban latches with zero flags");
         assertEq(_flagCount(BOB), 0, "forced ban does not touch flags");
     }
 
@@ -383,9 +379,9 @@ contract GuardianSignalsTest is Test {
             if (seed % 2 == 0) _flag(g, BOB);
             else _unflag(g, BOB);
 
-            if (uint8(_status(BOB)) == uint8(Status.Banned)) everBanned = true;
+            if (gs.isBanned(MARKET, BOB)) everBanned = true;
             // No unban is called, so once Banned it must stay Banned.
-            if (everBanned) assertEq(uint8(_status(BOB)), uint8(Status.Banned), "latch holds across the sequence");
+            if (everBanned) assertTrue(gs.isBanned(MARKET, BOB), "latch holds across the sequence");
         }
     }
 
@@ -491,7 +487,7 @@ contract GuardianSignalsTest is Test {
 
         assertEq(_flagCount(BOB), 0, "stale flag pruned");
         assertEq(_strikes(BOB), 0, "no strikes");
-        assertEq(uint8(_status(BOB)), uint8(Status.Normal), "stays Normal");
+        assertFalse(gs.isBanned(MARKET, BOB), "stays Normal");
         assertEq(gs.getFlaggedBy(MARKET, BOB).length, 0, "flagger set empty");
     }
 
@@ -500,13 +496,13 @@ contract GuardianSignalsTest is Test {
     function test_prune_doesNotLiftBan() public {
         _flag(G1, BOB);
         _flag(G2, BOB); // reaches quorum 2 -> Banned
-        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "banned at quorum");
+        assertTrue(gs.isBanned(MARKET, BOB), "banned at quorum");
 
         gs.removeGuardian(G1); // 3 -> 2, still >= quorum
         vm.prank(CLEANER);
         gs.prune(MARKET, BOB);
 
-        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "prune does not lift the latched ban");
+        assertTrue(gs.isBanned(MARKET, BOB), "prune does not lift the latched ban");
         assertEq(_flagCount(BOB), 1, "only the current-guardian flag remains");
     }
 
@@ -518,6 +514,6 @@ contract GuardianSignalsTest is Test {
         gs.prune(MARKET, BOB); // nothing stale
 
         assertEq(_flagCount(BOB), 2, "current-guardian flags kept");
-        assertEq(uint8(_status(BOB)), uint8(Status.Banned), "status unchanged");
+        assertTrue(gs.isBanned(MARKET, BOB), "status unchanged");
     }
 }

@@ -12,13 +12,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {IGuardianSignals} from "./interfaces/IGuardianSignals.sol";
 import {IGuardianSignalsView} from "./interfaces/IGuardianSignalsView.sol";
-import {
-    DelayParams,
-    BlockInfoWithHash,
-    GuardiansOpinion,
-    GuardiansSignal,
-    Status
-} from "./types/GuardianSignalsTypes.sol";
+import {DelayParams, BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/GuardianSignalsTypes.sol";
 
 /// @title GuardianSignals
 /// @author Lido
@@ -31,7 +25,7 @@ import {
 ///      Escalation ladder, surfaced by `getOpinion`:
 ///        - flags == 0             : clean, normal activation.
 ///        - 0 < flags < quorum     : the surcharge scales the activation delay up by the flag count.
-///        - flags >= quorum        : the status latches to `Banned`, the reader hard-blocks borrow.
+///        - flags >= quorum        : the account latches to banned, the reader hard-blocks borrow.
 ///
 ///      The ban latches: retracting a flag never lifts it. `unban` lifts it and clears the flagger set, so
 ///      guardians re-evaluate from scratch. Both are per `(market, account)`.
@@ -289,7 +283,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    /// @dev Permissionless cleanup: removes flags and suspect reports left behind by removed guardians. Status is
+    /// @dev Permissionless cleanup: removes flags and suspect reports left behind by removed guardians. The ban is
     ///      never touched — the ban latch means a permissionless caller can lower the flag count but cannot unban.
     function prune(Id marketId, address account) external {
         GuardiansSignal storage signal = _signals[marketId][account];
@@ -317,7 +311,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @dev Force a ban regardless of the current flag count.
     function ban(Id marketId, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
         if (account == address(0)) revert ZeroAddress();
-        _signals[marketId][account].status = Status.Banned;
+        _signals[marketId][account].banned = true;
         emit Banned(marketId, account);
     }
 
@@ -325,7 +319,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @dev Clears the flagger set, so the freshly-unbanned account can be re-flagged and re-banned from scratch.
     function unban(Id marketId, address account) external onlyRole(ACCESS_RESTORER_ROLE) {
         GuardiansSignal storage signal = _signals[marketId][account];
-        signal.status = Status.Normal;
+        signal.banned = false;
         signal.flaggedBy.clear();
         emit Unbanned(marketId, account, msg.sender);
     }
@@ -336,14 +330,14 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
     /// @inheritdoc IGuardianSignalsView
     function getOpinion(Id marketId, address account) external view returns (GuardiansOpinion memory opinion) {
-        opinion.banned = _signals[marketId][account].status == Status.Banned;
+        opinion.banned = _signals[marketId][account].banned;
         opinion.activationDelay = _activationDelay(marketId, account);
         opinion.quorumFrontierTimestamp = _quorumFrontier;
     }
 
     /// @inheritdoc IGuardianSignalsView
     function isBanned(Id marketId, address account) external view returns (bool) {
-        return _signals[marketId][account].status == Status.Banned;
+        return _signals[marketId][account].banned;
     }
 
     /// @inheritdoc IGuardianSignals
@@ -431,8 +425,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         if (!signal.flaggedBy.add(msg.sender)) return;
 
         uint256 strikes = signal.flaggedBy.length();
-        if (strikes >= _quorum && signal.status != Status.Banned) {
-            signal.status = Status.Banned;
+        if (strikes >= _quorum && !signal.banned) {
+            signal.banned = true;
             emit Banned(marketId, account);
         }
         emit Flagged(marketId, account, msg.sender, uint16(strikes));
@@ -470,7 +464,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     ///      `min(flags * delayPerStrike + freshSuspects * delayPerSuspect, maxDelay)` (0 = uncapped).
     function _activationDelay(Id marketId, address account) internal view returns (uint256) {
         GuardiansSignal storage signal = _signals[marketId][account];
-        if (signal.status == Status.Banned) return type(uint256).max;
+        if (signal.banned) return type(uint256).max;
         uint256 delay =
             signal.flaggedBy.length() * _delayPerStrike + _activeSuspectCount(marketId, account) * _delayPerSuspect;
         uint256 maxDelay = _maxDelay;

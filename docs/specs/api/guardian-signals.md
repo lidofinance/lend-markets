@@ -4,19 +4,6 @@
 
 Guardian-committee signal layer over accounts, keyed per market. Guardians flag accounts they detect as malicious. A `quorum` of distinct flags latches a ban in the market it was raised in. The minimal read surface the market controller depends on (`getOpinion`, `isBanned`, `getFlagCount`) is {IGuardianSignalsView}; this interface adds the full guardian/committee/governance surface on top.
 
-## Enums
-
-### `Status`
-
-```solidity
-enum Status {
-    Normal,
-    Banned
-}
-```
-
-An account's latched guardian status. `Normal` is clean. `Banned` hard-blocks borrowing, latched by a quorum of flags or a forced `ban`.
-
 ## Structs
 
 ### `BlockInfoWithHash`
@@ -579,7 +566,7 @@ Force a ban on `account` in `marketId`, bypassing the quorum.
 function unban(Id marketId, address account) external;
 ```
 
-Lift the ban on `account` in `marketId`: reset its status to `Normal` and clear its flags. Suspect reports are left intact (they carry no ban), so a suspect-driven delay survives the unban.
+Lift the ban on `account` in `marketId` and clear its flags. Suspect reports are left intact (they carry no ban), so a suspect-driven delay survives the unban.
 
 ### `getActivationDelay`
 

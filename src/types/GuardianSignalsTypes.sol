@@ -7,13 +7,6 @@ import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet
 // TYPES
 // ---
 
-/// @notice An account's latched guardian status. `Normal` is clean. `Banned` hard-blocks borrowing, latched by
-///         a quorum of flags or a forced `ban`.
-enum Status {
-    Normal,
-    Banned
-}
-
 /// @notice Heartbeat payload: a scanned block plus its hash, validated against `blockhash(number)`. Only the
 ///         `timestamp` is kept in storage (the frontier gates on time); `number` + `hash` prove the block is
 ///         real and un-reorged, and `number` is re-emitted in the `Heartbeat` event for off-chain tooling.
@@ -27,7 +20,7 @@ struct BlockInfoWithHash {
 }
 
 /// @notice Per-account guardian signal, stored per `(market, account)`.
-/// @param status      Latched status. A quorum of flags or a forced `ban` latches `Banned`, held until `unban`.
+/// @param banned      Latched ban. A quorum of flags or a forced `ban` sets it, held until `unban`.
 /// @param flaggedBy   Live set of guardians currently flagging the account. Its size is the raw flag count,
 ///        which is the effective strikes. `unban` clears it in one call.
 /// @param suspectedBy Live set of guardians who reported the account as suspect. Unlike a flag, a suspect
@@ -35,7 +28,7 @@ struct BlockInfoWithHash {
 ///        counted only when its `suspectedAt` timestamp falls inside the market's suspect window.
 /// @param suspectedAt Per-guardian timestamp of the last suspect report, kept so stale reports can be excluded.
 struct GuardiansSignal {
-    Status status;
+    bool banned;
     EnumerableSet.AddressSet flaggedBy;
     EnumerableSet.AddressSet suspectedBy;
     mapping(address guardian => uint40 timestamp) suspectedAt;
