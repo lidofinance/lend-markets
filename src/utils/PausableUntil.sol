@@ -3,13 +3,14 @@
 
 pragma solidity 0.8.35;
 
+import {IPausableUntil} from "../interfaces/IPausableUntil.sol";
 import {StorageSlot} from "@openzeppelin/contracts/utils/StorageSlot.sol";
 
 /**
  * @title PausableUntil
  * @notice allows to pause the contract for a specific duration or indefinitely
  */
-abstract contract PausableUntil {
+abstract contract PausableUntil is IPausableUntil {
     using StorageSlot for bytes32;
 
     // ---
@@ -51,14 +52,13 @@ abstract contract PausableUntil {
     // VIEWS
     // ---
 
-    /// @notice Whether the contract is currently paused.
-    function isPaused() public view returns (bool) {
+    /// @inheritdoc IPausableUntil
+    function isPaused() public view override returns (bool) {
         return block.timestamp < RESUME_SINCE_TIMESTAMP_POSITION.getUint256Slot().value;
     }
 
-    /// @notice The timestamp at which the contract resumes: `PAUSE_INFINITELY` when paused indefinitely, a
-    ///         future timestamp when paused for a duration, or a past timestamp when not paused.
-    function getResumeSinceTimestamp() external view returns (uint256) {
+    /// @inheritdoc IPausableUntil
+    function getResumeSinceTimestamp() external view override returns (uint256) {
         return RESUME_SINCE_TIMESTAMP_POSITION.getUint256Slot().value;
     }
 

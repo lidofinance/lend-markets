@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {Test, stdError} from "forge-std/Test.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {
     ILidoLendMarketController as ILidoLendBaseMarketController
@@ -109,6 +110,35 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         vm.prank(lender);
         vm.expectRevert(PausableUntil.ResumedExpected.selector);
         m.vault.deposit(10 ether, lender); // core.supply -> on(Supply) -> _checkResumed
+    }
+
+    /// @dev A paused market has no withdrawable liquidity: the Withdraw hook would revert any real exit, so
+    ///      `maxWithdraw`/`maxRedeem` must read 0 while paused (and the ERC-4626 guard then blocks the withdraw
+    ///      with the standard `ERC4626ExceededMaxWithdraw`, not the raw hook revert). They restore on resume.
+    function test_pause_zeroesWithdrawCaps() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 10 ether);
+        m.vaultDeposit(lender, 10 ether);
+
+        // Idle liquidity, no borrows: the full position is withdrawable before the pause.
+        assertGt(m.vault.maxWithdraw(lender), 0, "withdrawable before pause");
+        assertGt(m.vault.maxRedeem(lender), 0, "redeemable before pause");
+
+        c.pauseFor(1 hours);
+
+        assertEq(m.vault.maxWithdraw(lender), 0, "maxWithdraw 0 while paused");
+        assertEq(m.vault.maxRedeem(lender), 0, "maxRedeem 0 while paused");
+
+        // The cap now gates the withdraw at the ERC-4626 layer, before the hook's own resume check.
+        vm.prank(lender);
+        vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxWithdraw.selector, lender, 1, 0));
+        m.vault.withdraw(1, lender, lender);
+
+        c.resume();
+
+        assertGt(m.vault.maxWithdraw(lender), 0, "withdrawable after resume");
+        assertGt(m.vault.maxRedeem(lender), 0, "redeemable after resume");
     }
 
     function test_pause_autoResumesAfterDuration() public {

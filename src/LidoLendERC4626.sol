@@ -179,23 +179,27 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         if (shares > balanceOf(owner)) revert ExceededBalance(owner, shares, balanceOf(owner));
 
         // The owner's pro-rata supply shares — the budget the cuts consume.
-        uint256 supplyTarget = Math.mulDiv(_lidoLendSupplyShares(), shares, totalSupply());
-        if (supplyTarget == 0) revert ZeroMorphoSupplyShares();
+        uint256 settlingSupplyShares = Math.mulDiv(_lidoLendSupplyShares(), shares, totalSupply());
+        if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
 
-        uint256 remaining = supplyTarget;
-        for (uint256 i = 0; i < borrowers.length && remaining != 0; ++i) {
+        uint256 remainingSupplyShares = settlingSupplyShares;
+        for (uint256 i = 0; i < borrowers.length && remainingSupplyShares != 0; ++i) {
             address borrower = borrowers[i];
-            (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) = _settleBorrower(remaining, borrower, receiver);
+            (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) =
+                _settleBorrower(remainingSupplyShares, borrower, receiver);
 
-            remaining -= cutShares;
-            collateralSeized += cutCollateral;
             debtCanceled += cutDebt;
+            collateralSeized += cutCollateral;
+            remainingSupplyShares = Math.saturatingSub(remainingSupplyShares, cutShares);
         }
 
         // Burn only the shares actually settled (pro-rata if the cuts fell short). loanAssets stays 0 — settle
         // pays the receiver collateral, not loan assets.
-        sharesBurned =
-            remaining == 0 ? shares : Math.mulDiv(shares, supplyTarget - remaining, supplyTarget, Math.Rounding.Ceil);
+        sharesBurned = remainingSupplyShares == 0
+            ? shares
+            : Math.mulDiv(
+                shares, settlingSupplyShares - remainingSupplyShares, settlingSupplyShares, Math.Rounding.Ceil
+            );
 
         address caller = _msgSender();
         if (sharesBurned != 0) {
@@ -207,12 +211,12 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     }
 
     /// @dev Resolve the policy cut for `borrower` and settle it within `budget` via `_settle`.
-    function _settleBorrower(uint256 budget, address borrower, address receiver)
+    function _settleBorrower(uint256 budgetSupplyShares, address borrower, address receiver)
         internal
         returns (uint256 cutShares, uint256 collateralSeized, uint256 debtCanceled)
     {
         (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares) = controller.settlementFor(borrower);
-        return _settle(budget, borrower, supplyShares, borrowShares, remainingBorrowShares, receiver);
+        return _settle(budgetSupplyShares, borrower, supplyShares, borrowShares, remainingBorrowShares, receiver);
     }
 
     /// @inheritdoc ILidoLendERC4626
@@ -237,24 +241,31 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
         // 2. Settle the remainder against the risk queue, head first (collateral to receiver), up to the owner's
         //    pro-rata supply-share budget for it.
-        uint256 supplyTarget = Math.mulDiv(_lidoLendSupplyShares(), remaining, totalSupply());
-        if (supplyTarget == 0) revert ZeroMorphoSupplyShares();
+        uint256 settlingSupplyShares = Math.mulDiv(_lidoLendSupplyShares(), remaining, totalSupply());
+        if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
 
         if (maxIterations == 0) maxIterations = DEFAULT_MAX_SETTLEMENT_ITERATIONS;
-        uint256 budget = supplyTarget;
-        for (uint256 i = 0; i < maxIterations && budget != 0; ++i) {
-            (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) = _settleNextAllowedBorrower(budget, receiver);
+        uint256 remainingSupplyShares = settlingSupplyShares;
+
+        for (uint256 i = 0; i < maxIterations && remainingSupplyShares != 0; ++i) {
+            (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) =
+                _settleNextAllowedBorrower(remainingSupplyShares, receiver);
             if (cutShares == 0) break;
-            budget -= cutShares;
-            collateralSeized += cutCollateral;
+
             debtCanceled += cutDebt;
+            collateralSeized += cutCollateral;
+            remainingSupplyShares = Math.saturatingSub(remainingSupplyShares, cutShares);
         }
 
         // Burn the settled remainder (pro-rata, rounded up so remaining holders aren't diluted) and spend
         // allowance for it; the redeem leg burned its own.
-        uint256 settledShares =
-            budget == 0 ? remaining : Math.mulDiv(remaining, supplyTarget - budget, supplyTarget, Math.Rounding.Ceil);
+        uint256 settledShares = remainingSupplyShares == 0
+            ? remaining
+            : Math.mulDiv(
+                remaining, settlingSupplyShares - remainingSupplyShares, settlingSupplyShares, Math.Rounding.Ceil
+            );
         address caller = _msgSender();
+
         if (settledShares != 0) {
             if (caller != owner) _spendAllowance(owner, caller, settledShares);
             _burn(owner, settledShares);
@@ -265,35 +276,36 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     }
 
     /// @dev Same as `_settleBorrower`, but on the queue root resolved together with its cut.
-    function _settleNextAllowedBorrower(uint256 budget, address receiver)
+    function _settleNextAllowedBorrower(uint256 budgetSupplyShares, address receiver)
         internal
         returns (uint256 cutShares, uint256 collateralSeized, uint256 debtCanceled)
     {
         (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares) =
             controller.nextSettlementBorrower();
-        return _settle(budget, borrower, supplyShares, borrowShares, remainingBorrowShares, receiver);
+        return _settle(budgetSupplyShares, borrower, supplyShares, borrowShares, remainingBorrowShares, receiver);
     }
 
-    /// @dev Settle `borrower`'s cut capped at `budget`: borrow-anchor an affordable full close, else supply-anchor.
-    ///      `cutShares` is the supply burn the core reports back; a borrow-anchored close derives it, matching the
-    ///      controller's `supplyShares` estimate, so the cut stays within `budget`.
+    /// @dev Settle `borrower`'s cut capped at `budgetSupplyShares`: borrow-anchor an affordable full close, else
+    ///      supply-anchor. `cutSupplyShares` is the supply burn the core reports back; a borrow-anchored close
+    ///      derives it, matching the controller's `supplyShares` estimate, so the cut stays within budget.
     function _settle(
-        uint256 budget,
+        uint256 budgetSupplyShares,
         address borrower,
         uint256 supplyShares,
         uint256 borrowShares,
         uint256 remainingBorrowShares,
         address receiver
-    ) internal returns (uint256 cutShares, uint256 collateralSeized, uint256 debtCanceled) {
-        cutShares = Math.min(supplyShares, budget);
-        if (cutShares == 0) return (0, 0, 0);
+    ) internal returns (uint256 cutSupplyShares, uint256 collateralSeized, uint256 debtCanceled) {
+        cutSupplyShares = Math.min(supplyShares, budgetSupplyShares);
+        if (cutSupplyShares == 0) return (0, 0, 0);
 
         // Affordable full close: borrow-anchor (supply 0, the core derives the burn). Partial or
         // unaffordable full close: supply-anchor at the capped burn.
-        (supplyShares, borrowShares) =
-            remainingBorrowShares == 0 && supplyShares <= budget ? (uint256(0), borrowShares) : (cutShares, 0);
+        (supplyShares, borrowShares) = remainingBorrowShares == 0 && supplyShares <= budgetSupplyShares
+            ? (uint256(0), borrowShares)
+            : (cutSupplyShares, 0);
 
-        (collateralSeized, debtCanceled,, cutShares) =
+        (collateralSeized, debtCanceled,/* borrowSharesCanceled */, cutSupplyShares) =
             LIDO_LEND.settle(_marketParams, supplyShares, borrowShares, address(this), borrower, receiver);
     }
 
@@ -320,6 +332,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     }
 
     function _morphoWithdrawableAssets() internal view returns (uint256) {
+        if (controller.isPaused()) return 0;
+
         uint256 supplyShares = _lidoLendSupplyShares();
         if (supplyShares == 0) return 0;
 
