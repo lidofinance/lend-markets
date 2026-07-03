@@ -20,15 +20,21 @@ struct BlockInfoWithHash {
 }
 
 /// @notice Per-account guardian signal, stored per `(market, account)`.
-/// @param banned      Latched ban. A quorum of flags or a forced `ban` sets it, held until `unban`.
-/// @param flaggedBy   Live set of guardians currently flagging the account. Its size is the raw flag count,
+/// @param banned           Latched ban. A quorum of flags or a forced `ban` sets it, held until `unban`.
+/// @param suspectReportedAt Timestamp of the last suspect report or retraction. Anchors the suspect snapshot.
+/// @param suspectCount     Active suspect reports at `suspectReportedAt`. Snapshotted on report/retraction so the
+///        activation delay need not re-scan the suspect set: the suspect surcharge is
+///        `suspectCount * delayPerSuspect`, applied while `now - suspectReportedAt <= that`, then it lapses to 0.
+/// @param flaggedBy        Live set of guardians currently flagging the account. Its size is the raw flag count,
 ///        which is the effective strikes. `unban` clears it in one call.
-/// @param suspectedBy Live set of guardians who reported the account as suspect. Unlike a flag, a suspect
+/// @param suspectedBy      Live set of guardians who reported the account as suspect. Unlike a flag, a suspect
 ///        report never latches a ban; it scales the activation delay like a strike, but only while fresh —
 ///        counted only when its `suspectedAt` timestamp falls inside the market's suspect window.
-/// @param suspectedAt Per-guardian timestamp of the last suspect report, kept so stale reports can be excluded.
+/// @param suspectedAt      Per-guardian timestamp of the last suspect report, kept so stale reports can be excluded.
 struct GuardiansSignal {
     bool banned;
+    uint40 suspectReportedAt;
+    uint16 suspectCount;
     EnumerableSet.AddressSet flaggedBy;
     EnumerableSet.AddressSet suspectedBy;
     mapping(address guardian => uint40 timestamp) suspectedAt;

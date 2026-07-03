@@ -123,8 +123,8 @@ interface IGuardianSignals is IGuardianSignalsView {
     // LIVENESS
     // ---
 
-    /// @notice Record the caller's last-scanned block, validated against its block hash and timestamp. O(1): the
-    ///         quorum frontier is recomputed separately by `syncQuorumBlock`. Caller must be a guardian.
+    /// @notice Record the caller's last-scanned block, validated against its block hash and timestamp. The quorum
+    ///         frontier is recomputed separately by `syncQuorumBlock`. Caller must be a guardian.
     /// @param lastScannedBlock The block the caller reports scanning past. Reverts if `number` exceeds the current
     ///        block, if `hash` does not match `blockhash(number)`, if `timestamp` exceeds the current block, or if
     ///        `timestamp` is below the caller's previous heartbeat.

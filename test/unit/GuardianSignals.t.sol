@@ -516,4 +516,51 @@ contract GuardianSignalsTest is Test {
         assertEq(_flagCount(BOB), 2, "current-guardian flags kept");
         assertTrue(gs.isBanned(MARKET, BOB), "status unchanged");
     }
+
+    // ── suspect snapshot -> activation delay ──
+
+    function _suspect(address g, address account) internal {
+        address[] memory a = new address[](1);
+        a[0] = account;
+        vm.prank(g);
+        gs.suspect(MARKET, a, _validBlock());
+    }
+
+    /// @dev The suspect surcharge is read from the `(suspectReportedAt, suspectCount)` snapshot (O(1), no set
+    ///      scan): it is `suspectCount * delayPerSuspect`, applied while `now - reportedAt <= that`, then lapses.
+    function test_suspect_snapshotDelayAppliesThenLapses() public {
+        gs.setDelayParams(
+            DelayParams({delayPerStrike: 0, delayPerSuspect: 1 hours, maxDelay: 0, suspectWindow: 1 days})
+        );
+
+        _suspect(G1, BOB);
+        assertEq(gs.getActivationDelay(MARKET, BOB), 1 hours, "1 fresh suspect -> 1x delayPerSuspect");
+
+        _suspect(G2, BOB); // count snapshots to 2 at a fresh timestamp
+        assertEq(gs.getActivationDelay(MARKET, BOB), 2 hours, "2 fresh suspects -> 2x delayPerSuspect");
+
+        // valid up to count*delayPerSuspect (2h) after the last report; the edge still counts.
+        vm.warp(block.timestamp + 2 hours);
+        assertEq(gs.getActivationDelay(MARKET, BOB), 2 hours, "at the snapshot edge still applies");
+
+        // one second past -> the snapshot lapses to 0 (no re-scan of the suspect set).
+        vm.warp(block.timestamp + 1);
+        assertEq(gs.getActivationDelay(MARKET, BOB), 0, "snapshot lapsed -> 0 surcharge");
+    }
+
+    /// @dev Retracting a suspect re-snapshots the count against a fresh timestamp.
+    function test_unsuspect_reSnapshotsCount() public {
+        gs.setDelayParams(
+            DelayParams({delayPerStrike: 0, delayPerSuspect: 1 hours, maxDelay: 0, suspectWindow: 1 days})
+        );
+        _suspect(G1, BOB);
+        _suspect(G2, BOB);
+        assertEq(gs.getActivationDelay(MARKET, BOB), 2 hours, "two suspects");
+
+        address[] memory a = new address[](1);
+        a[0] = BOB;
+        vm.prank(G1);
+        gs.unsuspect(MARKET, a, _validBlock());
+        assertEq(gs.getActivationDelay(MARKET, BOB), 1 hours, "retraction re-snapshots to 1x delayPerSuspect");
+    }
 }

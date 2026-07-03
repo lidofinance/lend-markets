@@ -16,34 +16,12 @@ import {DelayParams, BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from 
 
 /// @title GuardianSignals
 /// @author Lido
-/// @notice One guardian committee over many markets: a registry where guardians flag suspect accounts and a
-///         quorum of flags latches a ban. Guardians are bots run by trusted actors. Signal state is keyed per
-///         `(market, account)`, so a ban is scoped to the market it was raised in; the guardian set, quorum, and
-///         liveness frontier are committee-wide. The market controller reads `getOpinion(marketId, account)` to
-///         scale collateral activation and to hard-block borrowing.
-/// @dev Upgradeable behind a proxy (`initialize`, not a constructor), with ERC-7201 namespaced storage.
-///      Escalation ladder, surfaced by `getOpinion`:
-///        - flags == 0             : clean, normal activation.
-///        - 0 < flags < quorum     : the surcharge scales the activation delay up by the flag count.
-///        - flags >= quorum        : the account latches to banned, the reader hard-blocks borrow.
-///
-///      The ban latches: retracting a flag never lifts it. `unban` lifts it and clears the flagger set, so
-///      guardians re-evaluate from scratch. Both are per `(market, account)`.
-///
-///      A suspect report (`suspect` / `unsuspect`) never latches a ban but raises the activation delay
-///      like a flag, counted only while fresh (its timestamp inside `suspectWindow`).
-///
-///      Override roles split by risk direction: `ACCESS_LIMITER_ROLE` (fast, risk-reducing) forces `ban`;
-///      `ACCESS_RESTORER_ROLE` (slow, risk-increasing) `unban`. `MANAGER_ROLE` manages the guardian set, quorum,
-///      and delay parameters. A guardian set is a plain enumerable set, not a role. Every role is standard
-///      `AccessControl`, committee-wide across the markets this instance serves.
-///
-///      Guardians report liveness: `flag`, `unflag`, `suspect`, `unsuspect`, and `heartbeat` each record
-///      a last-scanned block (O(1)). `syncQuorumBlock` recomputes the quorum frontier that `getQuorumFrontier`
-///      returns — the highest timestamp a quorum have scanned past (monotonic). Only the timestamp is stored; the
-///      block number is re-emitted in the `Heartbeat` event for off-chain tooling.
-///
-///      Events and errors are declared in {IGuardianSignals}.
+/// @notice One guardian committee over many markets: guardians flag suspect accounts and a quorum of flags
+///         latches a ban, scoped to the market it was raised in; softer suspect reports raise a borrower's
+///         collateral-activation delay without banning. The market controller reads `getOpinion(marketId, account)`
+///         to scale activation and hard-block borrowing. Guardians are bots run by trusted actors.
+/// @dev Upgradeable behind a proxy (`initialize`, not a constructor), with ERC-7201 namespaced storage. Events and
+///      errors are declared in {IGuardianSignals}.
 contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     is
     Initializable,
@@ -59,7 +37,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
     /// @notice Maximum number of guardians. Capped low because every `heartbeat` (and the heartbeat inside
     ///         `flag` / `unflag`) re-sorts all guardians' last-scanned timestamps to recompute the quorum
-    ///         frontier, an O(n²)-worst-case cost. 32 keeps that bounded and still fits the quorum in `uint8`.
+    ///         frontier, whose cost grows with the set. 32 keeps that bounded and still fits the quorum in `uint8`.
     uint256 public constant MAX_GUARDIANS_COUNT = 32;
 
     /// @notice Ceiling on the per-flag activation-delay surcharge, so a single misfired flag cannot pin an
@@ -93,9 +71,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @dev Quorum-scan frontier: the highest timestamp a quorum of guardians have ever scanned past. Monotonic.
     uint40 private _quorumFrontier;
     EnumerableSet.AddressSet private _guardians;
-    /// @dev Each guardian's heartbeat: the Unix timestamp of the last block it reported scanning — never a block
-    ///      number (that is re-emitted in the `Heartbeat` event for off-chain tooling and only used at call time
-    ///      for the reorg blockhash check). The quorum frontier is the quorum-th largest of these timestamps.
+    /// @dev Each guardian's last-scanned block timestamp (a Unix timestamp, not a block number).
     mapping(address guardian => uint40 timestamp) private _heartbeatAt;
     mapping(Id marketId => mapping(address account => GuardiansSignal)) private _signals;
 
@@ -308,7 +284,6 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     /// @inheritdoc IGuardianSignals
-    /// @dev Force a ban regardless of the current flag count.
     function ban(Id marketId, address account) external onlyRole(ACCESS_LIMITER_ROLE) {
         if (account == address(0)) revert ZeroAddress();
         _signals[marketId][account].banned = true;
@@ -373,7 +348,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // INTERNAL METHODS
     // ---
 
-    /// @dev Record the caller's last-scanned block. O(1): the quorum frontier is recomputed separately by
+    /// @dev Record the caller's last-scanned block. The quorum frontier is recomputed separately by
     ///      `_syncQuorumBlock`.
     function _heartbeat(BlockInfoWithHash calldata lastScannedBlock) internal {
         // a guardian cannot have scanned a block that does not exist yet
@@ -417,7 +392,6 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         emit GuardianAdded(guardian);
     }
 
-    /// @dev Single-account flag. No-op when the caller already flags it.
     function _flag(Id marketId, address account) internal {
         if (account == address(0)) revert ZeroAddress();
 
@@ -432,7 +406,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         emit Flagged(marketId, account, msg.sender, uint16(strikes));
     }
 
-    /// @dev Single-account unflag. No-op when the caller does not flag it. Never lifts a latched ban.
+    /// @dev Never lifts a latched ban.
     function _unflag(Id marketId, address account) internal {
         GuardiansSignal storage signal = _signals[marketId][account];
         if (!signal.flaggedBy.remove(msg.sender)) return;
@@ -440,7 +414,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @dev Single-account suspect report. Records (or refreshes) the caller's timestamp so a re-report keeps the
-    ///      suspicion inside the window. Never latches a ban.
+    ///      suspicion inside the window, then snapshots `(now, activeSuspectCount)` so the delay read need not
+    ///      re-scan the suspect set. Never latches a ban.
     function _suspect(Id marketId, address account) internal {
         if (account == address(0)) revert ZeroAddress();
 
@@ -448,6 +423,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         _pruneExpiredSuspects(marketId, account);
         signal.suspectedBy.add(msg.sender);
         signal.suspectedAt[msg.sender] = uint40(block.timestamp);
+        _snapshotSuspects(marketId, account, signal);
         emit Suspected(marketId, account, msg.sender, block.timestamp);
     }
 
@@ -457,16 +433,28 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         GuardiansSignal storage signal = _signals[marketId][account];
         if (!signal.suspectedBy.remove(msg.sender)) return;
         signal.suspectedAt[msg.sender] = 0;
+        _snapshotSuspects(marketId, account, signal);
         emit SuspectCleared(marketId, account, msg.sender);
     }
 
+    /// @dev Snapshot the active suspect count against `block.timestamp`, so `_activationDelay` reads it instead of
+    ///      re-scanning the suspect set. Run on every report/retraction (after pruning expired ones).
+    function _snapshotSuspects(Id marketId, address account, GuardiansSignal storage signal) internal {
+        signal.suspectReportedAt = uint40(block.timestamp);
+        signal.suspectCount = _activeSuspectCount(marketId, account).toUint16();
+    }
+
     /// @dev The collateral-activation delay surcharge: `type(uint256).max` when banned, else
-    ///      `min(flags * delayPerStrike + freshSuspects * delayPerSuspect, maxDelay)` (0 = uncapped).
+    ///      `min(flags * delayPerStrike + suspectSurcharge, maxDelay)` (0 = uncapped). The suspect surcharge comes
+    ///      from the snapshot taken at the last report/retraction — `suspectCount * delayPerSuspect`, applied only
+    ///      while `now - suspectReportedAt <= suspectCount * delayPerSuspect`, then 0. Reads the stored snapshot
+    ///      rather than scanning the suspect set.
     function _activationDelay(Id marketId, address account) internal view returns (uint256) {
         GuardiansSignal storage signal = _signals[marketId][account];
         if (signal.banned) return type(uint256).max;
-        uint256 delay =
-            signal.flaggedBy.length() * _delayPerStrike + _activeSuspectCount(marketId, account) * _delayPerSuspect;
+        uint256 suspectSurcharge = uint256(signal.suspectCount) * _delayPerSuspect;
+        if (block.timestamp - signal.suspectReportedAt > suspectSurcharge) suspectSurcharge = 0;
+        uint256 delay = signal.flaggedBy.length() * _delayPerStrike + suspectSurcharge;
         uint256 maxDelay = _maxDelay;
         return maxDelay != 0 && delay > maxDelay ? maxDelay : delay;
     }
