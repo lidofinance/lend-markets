@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {
     AccessControlEnumerableUpgradeable
@@ -8,14 +9,13 @@ import {
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {Arrays} from "@openzeppelin/contracts/utils/Arrays.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {IGuardianSignals} from "./interfaces/IGuardianSignals.sol";
 import {IGuardianSignalsView} from "./interfaces/IGuardianSignalsView.sol";
 import {
-    GuardiansOpinion,
-    BlockInfoWithHash,
     DelayParams,
+    BlockInfoWithHash,
+    GuardiansOpinion,
     GuardiansSignal,
     Status
 } from "./types/GuardianSignalsTypes.sol";
@@ -99,8 +99,9 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @dev Quorum-scan frontier: the highest timestamp a quorum of guardians have ever scanned past. Monotonic.
     uint40 private _quorumFrontier;
     EnumerableSet.AddressSet private _guardians;
-    /// @dev Each guardian's last-scanned block timestamp. The block number is not kept — it is re-emitted in the
-    ///      `Heartbeat` event for off-chain tooling and only used at call time for the reorg (blockhash) check.
+    /// @dev Each guardian's heartbeat: the Unix timestamp of the last block it reported scanning — never a block
+    ///      number (that is re-emitted in the `Heartbeat` event for off-chain tooling and only used at call time
+    ///      for the reorg blockhash check). The quorum frontier is the quorum-th largest of these timestamps.
     mapping(address guardian => uint40 timestamp) private _heartbeatAt;
     mapping(Id marketId => mapping(address account => GuardiansSignal)) private _signals;
 
@@ -221,16 +222,16 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function getHeartbeat(address guardian) external view returns (uint40) {
+    function getHeartbeat(address guardian) external view returns (uint40 timestamp) {
         return _heartbeatAt[guardian];
     }
 
     /// @inheritdoc IGuardianSignals
-    function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory heartbeats) {
+    function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory timestamps) {
         guardians = _guardians.values();
-        heartbeats = new uint40[](guardians.length);
+        timestamps = new uint40[](guardians.length);
         for (uint256 i; i < guardians.length; ++i) {
-            heartbeats[i] = _heartbeatAt[guardians[i]];
+            timestamps[i] = _heartbeatAt[guardians[i]];
         }
     }
 

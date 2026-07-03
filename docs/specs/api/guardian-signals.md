@@ -105,7 +105,13 @@ Emitted when a guardian leaves the set.
 event QuorumSet(uint256 quorum);
 ```
 
-Emitted when the quorum is set.
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `quorum` | `uint256` | The number of distinct flags that latches a ban. |
+
+Emitted when the quorum changes.
 
 ### `DelayParamsSet`
 
@@ -183,7 +189,7 @@ event Flagged(Id indexed marketId, address indexed account, address indexed guar
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `marketId` | `Id` | The market the flag is scoped to. |
+| `marketId` | `Id` | The market id. |
 | `account` | `address` | The flagged account. |
 | `guardian` | `address` | The flagging guardian. |
 | `strikes` | `uint16` | The account's flag count after the flag. |
@@ -459,18 +465,33 @@ Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Pe
 ### `getHeartbeat`
 
 ```solidity
-function getHeartbeat(address guardian) external view returns (uint40);
+function getHeartbeat(
+    address guardian
+) external view returns (uint40 timestamp);
 ```
 
-The timestamp of the last block `guardian` reported scanning.
+**Returns**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `timestamp` | `uint40` | The last-scanned block timestamp. |
+
+The Unix timestamp of the last block `guardian` reported scanning (0 if it never has).
 
 ### `getHeartbeats`
 
 ```solidity
-function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory heartbeats);
+function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory timestamps);
 ```
 
-The guardian set paired with each guardian's last-scanned timestamp.
+**Returns**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `guardians` | `address[]` | The guardian set. |
+| `timestamps` | `uint40[]` | Each guardian's last-scanned block timestamp, aligned by index with `guardians`. |
+
+The guardian set paired with each guardian's last-scanned block timestamp.
 
 ### `getQuorumFrontier`
 
@@ -478,7 +499,7 @@ The guardian set paired with each guardian's last-scanned timestamp.
 function getQuorumFrontier() external view returns (uint40);
 ```
 
-Highest timestamp at least a quorum of guardians have ever scanned past. Monotonic.
+Highest block timestamp at least a quorum of guardians have ever scanned past. Monotonic.
 
 ### `flag`
 

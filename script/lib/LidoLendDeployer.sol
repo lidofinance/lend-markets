@@ -63,7 +63,7 @@ abstract contract LidoLendDeployer {
         uint64 activatingLockDuration;
         // dust threshold (anti-griefing)
         uint128 minActivationAmount;
-        // quorum-scan liveness fallback: mature past this from the lot's start even if the quorum stalls
+        // cap on total activating time from the lot's start (0 = no quorum-scan gate)
         uint64 maxGuardiansQuorumDelay;
     }
 

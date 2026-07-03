@@ -19,7 +19,8 @@ interface IGuardianSignals is IGuardianSignalsView {
     event GuardianAdded(address indexed guardian);
     /// @notice Emitted when a guardian leaves the set.
     event GuardianRemoved(address indexed guardian);
-    /// @notice Emitted when the quorum is set.
+    /// @notice Emitted when the quorum changes.
+    /// @param quorum The number of distinct flags that latches a ban.
     event QuorumSet(uint256 quorum);
     /// @notice Emitted when the delay parameters are set.
     /// @param delayPerStrike  The activation-delay surcharge per flag.
@@ -43,7 +44,7 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Emitted when a suspect report cast by an address that is no longer a guardian is pruned.
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
     /// @notice Emitted when a guardian flags an account.
-    /// @param marketId The market the flag is scoped to.
+    /// @param marketId The market id.
     /// @param account  The flagged account.
     /// @param guardian The flagging guardian.
     /// @param strikes  The account's flag count after the flag.
@@ -131,11 +132,14 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and
     ///         monotonic.
     function syncQuorumBlock() external;
-    /// @notice The timestamp of the last block `guardian` reported scanning.
-    function getHeartbeat(address guardian) external view returns (uint40);
-    /// @notice The guardian set paired with each guardian's last-scanned timestamp.
-    function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory heartbeats);
-    /// @notice Highest timestamp at least a quorum of guardians have ever scanned past. Monotonic.
+    /// @notice The Unix timestamp of the last block `guardian` reported scanning (0 if it never has).
+    /// @return timestamp The last-scanned block timestamp.
+    function getHeartbeat(address guardian) external view returns (uint40 timestamp);
+    /// @notice The guardian set paired with each guardian's last-scanned block timestamp.
+    /// @return guardians  The guardian set.
+    /// @return timestamps Each guardian's last-scanned block timestamp, aligned by index with `guardians`.
+    function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory timestamps);
+    /// @notice Highest block timestamp at least a quorum of guardians have ever scanned past. Monotonic.
     function getQuorumFrontier() external view returns (uint40);
 
     // ---

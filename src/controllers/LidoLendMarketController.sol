@@ -101,7 +101,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         _disableInitializers();
     }
 
-    /// @notice One-shot initializer: binds the market, grants roles, wires the guardian-opinion registry, and
+    /// @notice One-shot initializer: binds the market, grants roles, wires the guardian-signals registry, and
     ///         sets the activation and settlement configs.
     function initialize(
         Id marketId_,
@@ -350,7 +350,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // settle anything already matured, then book the deposit. A sub-threshold deposit stays dust, and only
         // once it crosses the threshold does the lot enter the activation timer. A freeze or ban defers maturation.
-        _syncActivation(borrower);
+        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
         _activation.credit(borrower, hookData.assets, _instantActivationCallers[hookData.caller]);
 
         position.collateral += hookData.assets;
@@ -372,7 +372,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         // settle activation, then drain the un-matured buckets (dust, then activating above the lock) and reverse
         // any same-tx flash addition to the inflow (the lib owns the undo); a revert below rolls this back. The
         // lib returns the post-debit inactive, so active is the post-withdraw raw minus it.
-        _syncActivation(borrower);
+        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
         uint256 inactive = _activation.debit(borrower, hookData.assets);
 
         if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
@@ -480,7 +480,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // settle activation, then drain buckets by the exact amount core seizes from raw (lockstep).
         // A freeze or ban defers maturation, and `seize` drains all buckets regardless of maturation state.
-        _syncActivation(borrower);
+        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
 
         _activation.seize(borrower, hookData.seizedAssets);
 
@@ -492,13 +492,6 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     // ---
     // INTERNAL HELPERS
     // ---
-
-    /// @dev Mature the borrower's activating lot, feeding the guardian-owned activation-delay surcharge and the
-    ///      quorum-scan frontier into the timer. Returns the post-mature inactive total.
-    function _syncActivation(address borrower) internal returns (uint256) {
-        GuardiansOpinion memory opinion = _guardianSignals.getOpinion(marketId, borrower);
-        return _activation.sync(isFrozen, borrower, opinion);
-    }
 
     /// @dev Borrower debt in loan assets, rounded up. 0 when the position carries no debt.
     function _debtAssets(MarketView memory marketView, PositionView memory position) internal pure returns (uint256) {

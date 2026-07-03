@@ -3,8 +3,8 @@ pragma solidity 0.8.35;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 import {GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
+import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 
 /// @title CollateralActivationLib
 /// @author Lido

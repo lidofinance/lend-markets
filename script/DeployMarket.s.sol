@@ -59,7 +59,9 @@ contract DeployMarket is Script, LidoLendDeployer {
                 }),
                 guardians: guardians,
                 quorum: 1,
-                guardianConfig: GuardianConfigParams({delayPerStrike: 2 hours, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0}),
+                guardianConfig: GuardianConfigParams({
+                    delayPerStrike: 2 hours, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0
+                }),
                 vaultName: "Lido wstETH/WETH Vault",
                 vaultSymbol: "lidoWSTETH-WETH"
             })
