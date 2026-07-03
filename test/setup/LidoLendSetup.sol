@@ -24,6 +24,7 @@ import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
+import {DelayParams} from "../../src/types/GuardianSignalsTypes.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
@@ -168,10 +169,12 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         GuardianSignals gs = GuardianSignals(guardian);
         gs.grantRole(gs.GUARDIANS_MANAGER_ROLE(), admin);
         gs.setDelayParams(
-            cfg.guardianConfig.delayPerStrike,
-            cfg.guardianConfig.delayPerSuspect,
-            cfg.guardianConfig.maxDelay,
-            cfg.guardianConfig.suspectWindow
+            DelayParams({
+                delayPerStrike: cfg.guardianConfig.delayPerStrike,
+                delayPerSuspect: cfg.guardianConfig.delayPerSuspect,
+                maxDelay: cfg.guardianConfig.maxDelay,
+                suspectWindow: cfg.guardianConfig.suspectWindow
+            })
         );
         protocol.guardianSignals = IGuardianSignals(guardian);
         protocol.guardianSignalsProxy = IOssifiableProxy(guardian);

@@ -9,7 +9,7 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
-import {Status, BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
+import {Status, BlockInfoWithHash, DelayParams} from "../../src/types/GuardianSignalsTypes.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 /// @notice Unit suite for `GuardianSignals`, modelled from the "Guardian signals" spec:
@@ -48,7 +48,7 @@ contract GuardianSignalsTest is Test {
         gs.grantRole(gs.IMMUNITY_REVOKER_ROLE(), address(this));
 
         // Activation delays left at 0 for these tests.
-        gs.setDelayParams(0, 0, 0, 0);
+        gs.setDelayParams(DelayParams({delayPerStrike: 0, delayPerSuspect: 0, maxDelay: 0, suspectWindow: 0}));
     }
 
     /// @dev The default three-guardian roster used across the suite.

@@ -11,7 +11,13 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {IGuardianSignals} from "./interfaces/IGuardianSignals.sol";
 import {IGuardianSignalsView} from "./interfaces/IGuardianSignalsView.sol";
-import {GuardiansOpinion, BlockInfoWithHash, GuardiansSignal, Status} from "./types/GuardianSignalsTypes.sol";
+import {
+    GuardiansOpinion,
+    BlockInfoWithHash,
+    DelayParams,
+    GuardiansSignal,
+    Status
+} from "./types/GuardianSignalsTypes.sol";
 
 /// @title GuardianSignals
 /// @author Lido
@@ -162,19 +168,16 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function setDelayParams(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow)
-        external
-        onlyRole(GUARDIANS_MANAGER_ROLE)
-    {
-        if (delayPerStrike > MAX_DELAY_PER_STRIKE) revert DelayPerStrikeTooHigh();
-        if (delayPerSuspect > MAX_DELAY_PER_STRIKE) revert DelayPerSuspectTooHigh();
-        if (suspectWindow > MAX_SUSPECT_WINDOW) revert SuspectWindowTooHigh();
+    function setDelayParams(DelayParams calldata params) external onlyRole(GUARDIANS_MANAGER_ROLE) {
+        if (params.delayPerStrike > MAX_DELAY_PER_STRIKE) revert DelayPerStrikeTooHigh();
+        if (params.delayPerSuspect > MAX_DELAY_PER_STRIKE) revert DelayPerSuspectTooHigh();
+        if (params.suspectWindow > MAX_SUSPECT_WINDOW) revert SuspectWindowTooHigh();
 
-        _delayPerStrike = uint40(delayPerStrike);
-        _delayPerSuspect = uint40(delayPerSuspect);
-        _maxDelay = uint40(maxDelay);
-        _suspectWindow = uint40(suspectWindow);
-        emit DelayParamsSet(delayPerStrike, delayPerSuspect, maxDelay, suspectWindow);
+        _delayPerStrike = uint40(params.delayPerStrike);
+        _delayPerSuspect = uint40(params.delayPerSuspect);
+        _maxDelay = uint40(params.maxDelay);
+        _suspectWindow = uint40(params.suspectWindow);
+        emit DelayParamsSet(params.delayPerStrike, params.delayPerSuspect, params.maxDelay, params.suspectWindow);
     }
 
     /// @inheritdoc IGuardianSignals
@@ -183,12 +186,13 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function getDelayParams()
-        external
-        view
-        returns (uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow)
-    {
-        return (_delayPerStrike, _delayPerSuspect, _maxDelay, _suspectWindow);
+    function getDelayParams() external view returns (DelayParams memory) {
+        return DelayParams({
+            delayPerStrike: _delayPerStrike,
+            delayPerSuspect: _delayPerSuspect,
+            maxDelay: _maxDelay,
+            suspectWindow: _suspectWindow
+        });
     }
 
     /// @inheritdoc IGuardianSignals

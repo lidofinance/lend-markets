@@ -27,8 +27,7 @@ interface IOwnerFacade {
 interface IGuardianRegistry {
     function GUARDIANS_MANAGER_ROLE() external view returns (bytes32);
     function grantRole(bytes32 role, address account) external;
-    function setDelayParams(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow)
-        external;
+    function setDelayParams(LidoLendDeployer.GuardianConfigParams calldata params) external;
 }
 
 /// @title LidoLendDeployer
@@ -154,12 +153,7 @@ abstract contract LidoLendDeployer {
         // roster/quorum changes (it holds DEFAULT_ADMIN_ROLE, so it self-grants), then set the delay parameters.
         IGuardianRegistry guardian = IGuardianRegistry(d.guardianSignals);
         guardian.grantRole(guardian.GUARDIANS_MANAGER_ROLE(), cfg.admin);
-        guardian.setDelayParams(
-            cfg.guardianConfig.delayPerStrike,
-            cfg.guardianConfig.delayPerSuspect,
-            cfg.guardianConfig.maxDelay,
-            cfg.guardianConfig.suspectWindow
-        );
+        guardian.setDelayParams(cfg.guardianConfig);
     }
 
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so

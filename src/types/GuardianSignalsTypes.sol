@@ -43,6 +43,22 @@ struct GuardiansSignal {
     mapping(address guardian => uint40 timestamp) suspectedAt;
 }
 
+/// @notice The guardian activation-delay parameters, set (and read) in one shot via `setDelayParams` /
+///         `getDelayParams`.
+/// @param delayPerStrike  Activation-delay surcharge per flag. Must not exceed `MAX_DELAY_PER_STRIKE`.
+/// @param delayPerSuspect Activation-delay surcharge per fresh suspect report. Must not exceed
+///        `MAX_DELAY_PER_STRIKE`; inert while `suspectWindow` is 0, since a report is then fresh only in its
+///        own block.
+/// @param maxDelay        Cap on the total guardian activation-delay surcharge (flags + suspects). 0 = uncapped.
+/// @param suspectWindow   Freshness horizon within which a suspect report still counts. Must not exceed
+///        `MAX_SUSPECT_WINDOW`.
+struct DelayParams {
+    uint256 delayPerStrike;
+    uint256 delayPerSuspect;
+    uint256 maxDelay;
+    uint256 suspectWindow;
+}
+
 /// @notice Everything the controller reads about an account in one call: the ban gate plus the activation-gate
 ///         inputs. Returned by `getOpinion`.
 /// @param banned              Whether the account is banned (hard-blocks borrowing).

@@ -2,7 +2,7 @@
 pragma solidity 0.8.35;
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {BlockInfoWithHash} from "../types/GuardianSignalsTypes.sol";
+import {BlockInfoWithHash, DelayParams} from "../types/GuardianSignalsTypes.sol";
 import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
@@ -110,21 +110,13 @@ interface IGuardianSignals is IGuardianSignalsView {
     function setQuorum(uint256 newQuorum) external;
     /// @notice Set the delay parameters. Reverts if a per-signal delay exceeds `MAX_DELAY_PER_STRIKE` or the
     ///         window exceeds `MAX_SUSPECT_WINDOW`. Never touches the guardian set.
-    /// @param delayPerStrike  The activation-delay surcharge per flag.
-    /// @param delayPerSuspect The activation-delay surcharge per fresh suspect report. A non-zero value has no
-    ///        effect while `suspectWindow` is 0, since a report is then fresh only in its own block.
-    /// @param maxDelay        The cap on the total guardian activation-delay surcharge (0 = uncapped).
-    /// @param suspectWindow   The freshness horizon within which a suspect report still counts.
-    function setDelayParams(uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow)
-        external;
+    /// @param params The per-flag and per-suspect surcharge, the total-delay cap, and the suspect window.
+    function setDelayParams(DelayParams calldata params) external;
     /// @notice The quorum: distinct flags that latch a ban.
     function getQuorum() external view returns (uint256);
     /// @notice The delay parameters: per-flag and per-suspect surcharge, the total-delay cap, and the suspect
     ///         window.
-    function getDelayParams()
-        external
-        view
-        returns (uint256 delayPerStrike, uint256 delayPerSuspect, uint256 maxDelay, uint256 suspectWindow);
+    function getDelayParams() external view returns (DelayParams memory);
     /// @notice Whether `account` is a guardian.
     function isGuardian(address account) external view returns (bool);
     /// @notice The number of guardians in the set.
