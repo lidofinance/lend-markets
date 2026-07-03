@@ -252,7 +252,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
             address flagger = flaggers[i];
             if (!_guardians.contains(flagger)) {
                 signal.flaggedBy.remove(flagger);
-                emit FlagPruned(marketId, account, flagger, uint16(signal.flaggedBy.length()));
+                emit FlagPruned(marketId, account, flagger, signal.flaggedBy.length().toUint16());
             }
         }
 
@@ -349,13 +349,13 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         for (uint256 i; i < n; ++i) {
             timestamps[i] = _heartbeats[guardians[i]];
         }
-        uint40 frontierTimestamp = uint40(Arrays.sort(timestamps)[n - quorum]);
+        uint40 frontierTimestamp = Arrays.sort(timestamps)[n - quorum].toUint40();
         if (frontierTimestamp > _quorumFrontierTimestamp) _quorumFrontierTimestamp = frontierTimestamp;
     }
 
     function _setQuorum(uint256 newQuorum) internal {
         if (newQuorum == 0 || newQuorum > _guardians.length()) revert BadQuorum();
-        _quorum = uint8(newQuorum);
+        _quorum = newQuorum.toUint8();
     }
 
     function _addGuardian(address guardian) internal {
@@ -376,14 +376,14 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
             signal.banned = true;
             emit Banned(marketId, account);
         }
-        emit Flagged(marketId, account, msg.sender, uint16(strikes));
+        emit Flagged(marketId, account, msg.sender, strikes.toUint16());
     }
 
     /// @dev Never lifts a latched ban.
     function _unflag(Id marketId, address account) internal {
         GuardiansSignal storage signal = _signals[marketId][account];
         if (!signal.flaggedBy.remove(msg.sender)) return;
-        emit Unflagged(marketId, account, msg.sender, uint16(signal.flaggedBy.length()));
+        emit Unflagged(marketId, account, msg.sender, signal.flaggedBy.length().toUint16());
     }
 
     /// @dev Single-account suspect report. Records (or refreshes) the caller's timestamp so a re-report keeps the
@@ -395,7 +395,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         GuardiansSignal storage signal = _signals[marketId][account];
         _pruneExpiredSuspects(marketId, account);
         signal.suspectedBy.add(msg.sender);
-        signal.suspectedAt[msg.sender] = uint40(block.timestamp);
+        signal.suspectedAt[msg.sender] = block.timestamp.toUint40();
         _snapshotSuspects(marketId, account, signal);
         emit Suspected(marketId, account, msg.sender, block.timestamp);
     }
@@ -413,7 +413,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @dev Snapshot the active suspect count against `block.timestamp`, so `_activationDelay` reads it instead of
     ///      re-scanning the suspect set. Run on every report/retraction (after pruning expired ones).
     function _snapshotSuspects(Id marketId, address account, GuardiansSignal storage signal) internal {
-        signal.suspectReportedAt = uint40(block.timestamp);
+        signal.suspectReportedAt = block.timestamp.toUint40();
         signal.suspectCount = _activeSuspectCount(marketId, account).toUint16();
     }
 
