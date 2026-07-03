@@ -11,12 +11,11 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {LidoLend} from "@lido-lend/src/LidoLend.sol";
 
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
-import {IMarketConfig} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IMarketConfig.sol";
-import {MarketConfig} from "@lido-lend-irm/src/adaptive-curve-irm/MarketConfig.sol";
+import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {FixedRateIrm} from "@lido-lend-irm/src/fixed-rate-irm/FixedRateIrm.sol";
 // The IRM ships its own morpho-blue, so its `Id` is a distinct UDVT from `@lido-lend`'s. Same bytes32
 // market hash; bridged by unwrap/wrap only where the IRM's typed API needs it.
-import {Id as IrmId} from "@lido-lend-irm/lib/morpho-blue/src/interfaces/IMorpho.sol";
+import {Id as IrmId, MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/morpho-blue/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
@@ -97,8 +96,8 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
     }
 
     /// @dev Standard adaptive curve parameters (Morpho mainnet-like; pass `_validateConfig`).
-    function _curveConfig() internal pure returns (IMarketConfig.Config memory) {
-        return IMarketConfig.Config({
+    function _curveConfig() internal pure returns (AdaptiveCurveParams memory) {
+        return AdaptiveCurveParams({
             curveSteepness: 4e18,
             adjustmentSpeed: int256(50e18) / int256(365 days),
             targetUtilization: 9e17,
@@ -188,12 +187,19 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         Id id = params.id();
 
         // The IRM needs its per-market config set before the market is used. Fixed: a constant rate. Adaptive:
-        // an immutable `MarketConfig` holding the curve params, pointed at by the owner via `setConfig`.
+        // the curve params, which the IRM freezes into a per-market config contract, set by the owner.
         if (irmKind == IrmKind.Fixed) {
             FixedRateIrm(irm).setBorrowRate(IrmId.wrap(Id.unwrap(id)), fixedBorrowRate);
         } else {
-            MarketConfig marketConfig = new MarketConfig(_curveConfig());
-            AdaptiveCurveIrm(irm).setConfig(IrmId.wrap(Id.unwrap(id)), marketConfig);
+            IrmMarketParams memory irmParams = IrmMarketParams({
+                loanToken: params.loanToken,
+                collateralToken: params.collateralToken,
+                oracle: params.oracle,
+                irm: params.irm,
+                lltv: params.lltv
+            });
+            vm.prank(admin);
+            AdaptiveCurveIrm(irm).setMarketCurveParams(irmParams, _curveConfig());
         }
 
         // One GuardianSignals per market, deployed and seeded before the controller (which binds to it).
@@ -293,10 +299,18 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
     }
 
     /// @dev IRM picked by `irmKind`. Both flavours have their per-market config set after the id is known
-    ///      (Adaptive's curve via `setConfig`, Fixed's rate via `setBorrowRate`).
+    ///      (Adaptive's curve via `setMarketCurveParams`, Fixed's rate via `setBorrowRate`).
     function _deployMarketIrm(address core, address owner) internal returns (address) {
         if (irmKind == IrmKind.Fixed) return address(new FixedRateIrm());
-        return address(new AdaptiveCurveIrm(core, owner));
+        // Adaptive IRM is proxy-first: the impl locks itself in its constructor; owner and manager are set via
+        // `initialize` on the proxy. owner == manager == `owner`, so the harness can set curve params as `owner`.
+        return address(
+            new OssifiableProxy(
+                address(new AdaptiveCurveIrm(core)),
+                owner,
+                abi.encodeWithSignature("initialize(address,address)", owner, owner)
+            )
+        );
     }
 
     // ---
