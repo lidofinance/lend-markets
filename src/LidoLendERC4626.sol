@@ -232,10 +232,19 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         if (receiver == address(0)) revert ZeroAddress();
         if (shares > balanceOf(owner)) revert ExceededBalance(owner, shares, balanceOf(owner));
 
-        // 1. Redeem whatever current liquidity (idle + Morpho-withdrawable) covers, as loan assets. Draining idle
-        //    also unblocks the core's settle gate for the remainder. OZ redeem burns these shares + emits Withdraw.
-        sharesBurned = Math.min(shares, maxRedeem(owner));
-        if (sharesBurned != 0) loanAssets = redeem(sharesBurned, receiver, owner);
+        // 1. Drain the free liquidity, then settle the illiquid remainder. When illiquid, drain by EXACT assets
+        //    (via `withdraw`), not floor-rounded shares: a floor-share redeem strands a wei of liquidity that makes
+        //    the core settle gate reject the remainder and revert the whole exit.
+        {
+            uint256 liquid = _morphoWithdrawableAssets();
+            if (previewRedeem(shares) <= liquid) {
+                sharesBurned = shares;
+                loanAssets = redeem(shares, receiver, owner);
+            } else if (liquid != 0) {
+                loanAssets = liquid;
+                sharesBurned = withdraw(liquid, receiver, owner);
+            }
+        }
         uint256 remaining = shares - sharesBurned;
         if (remaining == 0) return (sharesBurned, loanAssets, 0, 0);
 
