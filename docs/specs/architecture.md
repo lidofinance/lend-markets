@@ -137,6 +137,8 @@ unlockTime = activatingStart + delay + strikes × delayPerStrike
 
 `inflow` is the market's recent collateral inflow, capped at `maxDelayInflow` and decaying at a fixed rate (draining from the cap to zero over `maxActivationDelay`), plus the incoming lot. More recent volume → longer delay, giving guardians more time to vet the larger supplies that carry more risk for lenders.
 
+All activating collateral shares one timer (`activatingStart`). A top-up that extends the deadline restarts it for the whole lot, so a top-up after `suspectExpiry` clears the suspect surcharge.
+
 ![Inflow chart](image-3.png)
 
 > **Example.** 
@@ -184,6 +186,8 @@ stateDiagram-v2
         latched: unflag never lifts it
     end note
 ```
+
+Alongside strikes, a guardian can raise a softer **suspect** report: it never bans, only lengthening the activation delay (`delayPerSuspect` per report). The delay reads one per-account snapshot — a count plus an expiry `now + suspectWindow` — re-taken on each report or retraction, counting the reports still fresh at that moment. So a still-fresh earlier suspect is counted into the new snapshot and rides its extended expiry, while an already-expired one is left out. A `prune` does not re-take the snapshot, so a departed guardian's report stays counted until the next report or retraction.
 
 Two override roles sit above the guardians, split by risk direction. The committee acts fast to reduce risk — `ACCESS_LIMITER_ROLE` forces a `ban` past the quorum. Governance moves slowly to increase it — `ACCESS_RESTORER_ROLE` `unban`s, clearing the flag set so guardians re-evaluate from scratch.
 

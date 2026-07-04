@@ -46,9 +46,9 @@ contract GuardianSignalsTest is Test {
         vm.warp(5000);
 
         vm.prank(guardians[0]);
-        gs.heartbeat(_hb(block.number));
+        gs.heartbeat(_hb(block.number - 1));
         vm.prank(guardians[1]);
-        gs.heartbeat(_hb(block.number));
+        gs.heartbeat(_hb(block.number - 1));
         assertEq(gs.getQuorumFrontier(), 0, "heartbeat alone does not move the frontier");
 
         gs.syncQuorumBlock(); // permissionless
@@ -61,16 +61,16 @@ contract GuardianSignalsTest is Test {
         vm.roll(1000);
         vm.warp(5000);
         vm.prank(guardians[0]);
-        gs.heartbeat(_hb(block.number));
+        gs.heartbeat(_hb(block.number - 1));
         vm.prank(guardians[1]);
-        gs.heartbeat(_hb(block.number));
+        gs.heartbeat(_hb(block.number - 1));
         gs.syncQuorumBlock();
         assertEq(gs.getQuorumFrontier(), 5000, "frontier at 5000");
 
         // A single guardian moves ahead; the quorum-th largest (2nd) is still 5000, so the frontier holds.
         vm.warp(6000);
         vm.prank(guardians[0]);
-        gs.heartbeat(_hb(block.number));
+        gs.heartbeat(_hb(block.number - 1));
         gs.syncQuorumBlock();
         assertEq(gs.getQuorumFrontier(), 5000, "frontier never decreases and needs a quorum to advance");
     }
@@ -90,6 +90,6 @@ contract GuardianSignalsTest is Test {
         address[] memory accounts = new address[](1);
         accounts[0] = account;
         vm.prank(guardian);
-        gs.flag(MARKET, accounts, _hb(block.number));
+        gs.flag(MARKET, accounts, _hb(block.number - 1));
     }
 }

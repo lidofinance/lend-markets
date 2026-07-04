@@ -29,6 +29,9 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @notice Thrown when the controller address is zero at initialization.
     error ZeroController();
 
+    /// @notice Thrown when the bound controller governs a different market than the vault's.
+    error ControllerMarketMismatch();
+
     /// @notice Thrown when the market's loan token is the zero address at initialization.
     error ZeroLoanToken();
 
