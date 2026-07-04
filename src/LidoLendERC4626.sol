@@ -99,6 +99,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
         controller = ILidoLendMarketController(controller_);
         marketId = marketParams_.id();
+        if (Id.unwrap(controller.marketId()) != Id.unwrap(marketId)) revert ControllerMarketMismatch();
         _marketParams = marketParams_;
 
         IERC20(marketParams_.loanToken).forceApprove(address(LIDO_LEND), type(uint256).max);

@@ -80,6 +80,14 @@ error ZeroController();
 
 Thrown when the controller address is zero at initialization.
 
+### `ControllerMarketMismatch`
+
+```solidity
+error ControllerMarketMismatch();
+```
+
+Thrown when the bound controller governs a different market than the vault's.
+
 ### `ZeroLoanToken`
 
 ```solidity
