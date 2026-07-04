@@ -561,8 +561,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                 ctx.id,
                 toFlag,
                 BlockInfoWithHash({
-                hash: blockhash(block.number), number: uint40(block.number), timestamp: uint40(block.timestamp)
-            })
+                    hash: blockhash(block.number), number: uint40(block.number), timestamp: uint40(block.timestamp)
+                })
             );
 
         // Warp far past any normal activation delay — a banned address never settles.

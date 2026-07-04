@@ -119,6 +119,41 @@ contract LidoLendERC4626Test is LidoLendSetup {
         assertEq(m.vault.balanceOf(lender), 0, "all shares redeemed");
     }
 
+    // ── maxRedeem is the exact redeem boundary (the property Erc4626ExitBook relies on) ──
+
+    /// @dev When borrowing pushes idle below the owner's full position, `maxRedeem` falls to its
+    ///      `convertToShares(liquidAssets)` branch. That value must be self-consistent with `redeem`: the vault
+    ///      redeems exactly `maxRedeem` shares and refuses one more. `Erc4626ExitBook` caps availability at
+    ///      `maxRedeem` and fills via `redeem`, so this coincidence is what keeps it from under- or over-reporting.
+    function test_maxRedeem_isExactRedeemBoundary_underLiquidityConstraint() public {
+        Market storage m = _market();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 100 ether);
+        uint256 ownerShares = m.vaultDeposit(lender, 100 ether);
+
+        // Borrow drains idle well below the position -> maxRedeem uses the liquidity fallback, not the balance.
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 1_000 ether);
+        m.supplyCollateral(borrower, 1_000 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 90 ether); // ~10 idle vs the 100 position
+
+        uint256 cap = m.vault.maxRedeem(lender);
+        assertGt(cap, 0, "some liquidity redeemable");
+        assertLt(cap, ownerShares, "constrained: maxRedeem is the liquidity fallback, not the full balance");
+
+        // One share past the cap is refused -> the vault never redeems beyond its own maxRedeem (no over-report).
+        vm.prank(lender);
+        vm.expectRevert();
+        m.vault.redeem(cap + 1, lender, lender);
+
+        // Exactly the cap redeems in one shot -> maxRedeem is a genuinely redeemable amount (no under-report).
+        vm.prank(lender);
+        uint256 assetsOut = m.vault.redeem(cap, lender, lender);
+        assertGt(assetsOut, 0, "cap redeemed to assets");
+        assertEq(m.vault.balanceOf(lender), ownerShares - cap, "exactly cap shares burned");
+    }
+
     // ── fallbackExit: redeem-first, then settle ──
 
     function test_fallbackExit_pureRedeem_whenLiquidityCovers() public {

@@ -140,10 +140,14 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
         if (!MORPHO.isAuthorized(request.owner, address(this))) return 0;
         MarketParams memory marketParams = _requestMarket(id);
 
-        uint256 available = _assetsToSupplyShares(marketParams, _idleAssets(marketParams));
+        uint256 idleAssets = _idleAssets(marketParams);
         uint256 ownerShares = MORPHO.position(marketParams.id(), request.owner).supplyShares;
+        uint256 backedShares = Math.min(request.sizeRemaining, ownerShares);
 
-        return Math.min(Math.min(request.sizeRemaining, available), ownerShares);
+        // A plain `toSharesDown(idleAssets)` cap rounds below what the core's exact-share withdraw actually
+        // releases, so a fully redeemable request would be wrongly rejected (or left with dust) at the boundary.
+        if (_supplySharesToAssets(marketParams, backedShares) <= idleAssets) return backedShares;
+        return _assetsToSupplyShares(marketParams, idleAssets);
     }
 
     function _redeem(uint256 id, address account, uint256 shares) internal override {

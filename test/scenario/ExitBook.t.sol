@@ -265,6 +265,41 @@ contract ExitBookTest is Test, LidoLendDeployer {
         assertGt(preview.assetsOut, 0, "assets out positive");
     }
 
+    /* The erc4626 book caps availability at the vault's own `maxRedeem`, and OZ `redeem` enforces
+       `shares <= maxRedeem`, so the book's cap coincides exactly with what the fill can execute. Unlike
+       `MorphoExitBook` (which drives the raw core `withdraw`, with no such guard, so a hand-rolled
+       `toSharesDown(idle)` cap could fall short of what the core accepts), there is no gap here for a
+       rounded-down cap to wrongly reject: what the book reports fillable is exactly what redeem accepts. */
+    function test_erc4626_availableShares_capMatchesRedeemBoundary() public {
+        uint256 ownerShares = _depositToVault(LENDER, 100 ether);
+        vm.prank(LENDER);
+        IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+
+        // Drain so the owner's whole position no longer fits idle -> `maxRedeem` uses its `convertToShares`
+        // (toSharesDown) liquidity fallback, the same rounding cap that under-reported in MorphoExitBook.
+        _drain(BORROWER, 990 ether, 99 ether); // ~1 loan idle, far below the 100e position
+
+        uint256 cap = IERC4626(d.vault).maxRedeem(LENDER);
+        assertGt(cap, 0, "some liquidity");
+        assertLt(cap, ownerShares, "constrained: cap is the liquidity fallback, not the full balance");
+
+        // The source itself refuses one share past the cap: OZ `redeem` enforces `shares <= maxRedeem`, so the
+        // cap IS the true redeem boundary — not an under-report the book could wrongly reject past.
+        vm.prank(LENDER);
+        vm.expectRevert();
+        IERC4626(d.vault).redeem(cap + 1, LENDER, LENDER);
+
+        // A full-fill-only request sized exactly at the cap is fully fillable and clears in one shot: the book
+        // reports precisely what redeem accepts, no gap.
+        vm.prank(LENDER);
+        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), cap, _flat(0), block.timestamp + 7 days, true);
+        assertEq(vaultBook.previewFill(id).filledShares, cap, "book reports the whole cap fillable");
+
+        vm.prank(FILLER);
+        vaultBook.fillExitRequest(id, 0, 0);
+        assertEq(uint8(vaultBook.getExitRequest(id).status), uint8(ExitStatus.Filled), "filled at the boundary");
+    }
+
     /* getOwnerRequestIds lists every id a lender opened, and nothing for others. */
     function test_erc4626_getOwnerRequestIds_listsLenderIds() public {
         uint256 shares = _depositToVault(LENDER, 20 ether);
