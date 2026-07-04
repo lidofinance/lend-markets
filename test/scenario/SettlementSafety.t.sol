@@ -111,7 +111,7 @@ contract SettlementSafetyTest is LidoLendSetup {
 
         vm.prank(borrower);
         vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
-        m.core.borrow(m.params, 1, 0, borrower, borrower);
+        m.core.borrow(m.params, 1 ether, 0, borrower, borrower);
     }
 
     /// @dev Threshold boundary: active collateral exactly at `minActivationAmount` (10 ether) has non-zero

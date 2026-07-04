@@ -299,7 +299,7 @@ Trust within the policy layer. Core-level actors — proxy admin, owner, oracle,
 | Emergency-seal committee | pause every hook for a finite time | resume, change parameters, move funds |
 | Governance | set parameters and roles within bounds | bypass timelocks for risk-increasing changes, take custody |
 
-**Borrow-share-price invariant.** On a market with zero borrow assets, a repay that drains borrow assets to zero while borrow shares remain outstanding would let the next minimum borrow mint shares roughly equal to the outstanding total — doubling the borrow-share supply each cheap cycle until it overflows and every borrow reverts. The repay hook forbids this: a repay may reach zero borrow assets only when it clears every borrow share too (a full unwind). Partial repays and honest full closes are untouched.
+**Borrow-share-price invariant.** On a market whose total borrow assets are dust, a 1-wei borrow mints a slice of the whole outstanding share pool (`toSharesUp(1, TBA, TBS) ≈ TBS/TBA`). Repaying borrow assets to zero one share at a time and re-minting doubles the borrow-share supply each cheap cycle until it overflows `uint128` and every borrow reverts. The borrow hook fences this: while total borrow assets sit below `DUST_MARKET_MIN_BORROW`, a borrow must draw at least that much, so the market never enters the degenerate low-assets regime where a tiny borrow mints disproportionately. The floor sets the attack's cost — reaching the overflow takes on the order of `floor · log_floor(2^128)` transactions — for a payoff of only a temporary, recoverable borrow-DoS on an unused market, and leaves honest borrows on a market above the floor untouched.
 
 Each invariant here maps to a scenario or integration test in `test/`.
 

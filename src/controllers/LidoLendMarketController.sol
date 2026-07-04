@@ -47,6 +47,13 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     bytes32 public constant RESUMER_ROLE = keccak256("RESUMER_ROLE");
 
     // ---
+    // CONFIG
+    // ---
+
+    /// @inheritdoc ILidoLendMarketController
+    uint256 public constant DUST_MARKET_MIN_BORROW = 1e5;
+
+    // ---
     // IMMUTABLES
     // ---
 
@@ -394,6 +401,16 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     function _handleBorrow(Id id, BorrowHookData memory hookData) internal {
         if (isFrozen) revert MarketIsFrozen();
 
+        // A share-anchored borrow can round its assets to zero, minting borrow shares for nothing.
+        if (hookData.assets == 0) revert ZeroBorrowAssets();
+
+        // Borrow-share inflation guard: while borrow assets are dust, a wei-sized borrow mints a disproportionate
+        // slice of the outstanding shares, compounding to overflow the uint128 share counter and brick borrows.
+        MarketView memory marketView = _marketView(id);
+        if (marketView.totalBorrowAssets < DUST_MARKET_MIN_BORROW && hookData.assets < DUST_MARKET_MIN_BORROW) {
+            revert BorrowBelowDustMarketMinimum(DUST_MARKET_MIN_BORROW, hookData.assets);
+        }
+
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
         // borrow (caller). Soft strikes only delay activation; a ban hard-blocks the borrow.
         if (_guardianSignals.isBanned(id, hookData.caller)) revert AddressBanned();
@@ -413,7 +430,6 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         // Capacity check: active collateral must cover the post-borrow debt at LLTV. `_getMaxBorrow` returns 0
         // when active collateral is sub-threshold dust, so a sub-floor position cannot open or grow debt — the
         // position floor is folded in here rather than a separate raw-collateral revert.
-        MarketView memory marketView = _marketView(id);
         if (_debtAssets(marketView, position) + hookData.assets > _getMaxBorrow(marketView, activeCollateral)) {
             revert InsufficientActiveCollateral();
         }
@@ -422,17 +438,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         _settlementQueue.sync(hookData.onBehalf, position);
     }
 
-    /// @dev Repay hook: block borrow-share stranding, then re-key the settlement queue on the post-repay shares
-    ///      (the borrower drops out at zero debt).
+    /// @dev Repay hook: re-key the settlement queue on the post-repay shares (the borrower drops out at zero debt).
     function _handleRepay(Id id, RepayHookData memory hookData) internal {
-        // Draining borrow assets to zero while shares linger lets the next borrow mint ~all outstanding shares
-        // per wei, doubling the total each cheap cycle until it overflows. Zero the assets only on a full unwind.
-        MarketView memory marketView = _marketView(id);
-        if (marketView.totalBorrowAssets <= hookData.assets && marketView.totalBorrowShares > hookData.shares) {
-            revert RepayWouldStrandBorrowShares();
-        }
-
-        // repay lowers debt: re-key the queue on the post-repay shares (drops out at zero debt)
         PositionView memory position = _positionView(id, hookData.onBehalf);
         if (hookData.shares > position.borrowShares) revert PositionAccountingMismatch();
         position.borrowShares -= hookData.shares;
