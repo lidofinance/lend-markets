@@ -172,7 +172,7 @@ strikes == 0          Normal — clean, normal activation
 strikes >= quorum     Banned — borrowing hard-blocked, collateral never matures
 ```
 
-Below quorum an account is only slowed, not stopped — the extra delay buys reaction time while sparing a possible false positive. At quorum the ban latches: retracting a flag no longer lifts it, so an attacker cannot un-flag their way back in. The ban blocks new borrowing, not exit — a banned borrower can still withdraw its own collateral.
+Below quorum an account is only slowed, not stopped — the extra delay buys reaction time while sparing a possible false positive. An account is banned while its strikes meet the **current** quorum; reaching the quorum also latches the ban, so retracting a flag no longer lifts a latched ban and an attacker cannot un-flag their way back in. The ban blocks new borrowing, not exit — a banned borrower can still withdraw its own collateral.
 
 ```mermaid
 stateDiagram-v2

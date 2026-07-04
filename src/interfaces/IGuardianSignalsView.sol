@@ -15,8 +15,8 @@ interface IGuardianSignalsView {
     /// @param account  The account to read.
     /// @return The account's bundled signal state.
     function getOpinion(Id marketId, address account) external view returns (GuardiansOpinion memory);
-    /// @notice Whether `account` is banned in `marketId`. The cheap single-bit check for the borrow hard-block on
-    ///         the caller and receiver (where the full bundle is not needed).
+    /// @notice Whether `account` is banned in `marketId` — the borrow hard-block on the caller and receiver. True
+    ///         when the ban is latched or the flag count is at or above the current quorum.
     /// @param marketId The market to read the signal in.
     /// @param account  The account to read.
     /// @return True if the account's status is `Banned`.
