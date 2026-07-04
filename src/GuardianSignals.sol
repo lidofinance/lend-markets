@@ -330,6 +330,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         if (lastScannedBlock.timestamp > block.timestamp) revert TimestampInTheFuture();
         if (lastScannedBlock.timestamp < _heartbeats[msg.sender]) revert HeartbeatTimestampRegressed();
         // number + hash only prove the reported block is real and un-reorged; the frontier orders by timestamp.
+        // Reject a zero hash: `blockhash` returns zero for the current or out-of-window block, which it would match.
+        if (lastScannedBlock.hash == bytes32(0)) revert InvalidBlockHash();
         if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) revert InvalidBlockHash();
 
         _heartbeats[msg.sender] = lastScannedBlock.timestamp;
