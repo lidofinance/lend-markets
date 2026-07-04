@@ -160,6 +160,8 @@ library CollateralActivationLib {
     ///         threshold the whole dormant amount enters the activation timer and is added to the market inflow.
     ///         When `instant` (a trusted caller) the collateral is not held inactive: it joins neither bucket, so it
     ///         counts as active immediately, releasing any dust with it. A sub-threshold deposit stays dust.
+    /// @dev All activating collateral shares one timer: a top-up that extends the deadline restarts
+    ///      `activatingStart` for the whole lot, clearing the suspect surcharge if it restarts past `suspectExpiry`.
     /// @param instant Whether the supplying caller is trusted to skip the activation timer and inflow throttle.
     function credit(State storage $, address borrower, uint256 assets, bool instant) internal {
         Position storage position = $.positions[borrower];

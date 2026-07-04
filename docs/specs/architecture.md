@@ -137,6 +137,8 @@ unlockTime = activatingStart + delay + strikes × delayPerStrike
 
 `inflow` is the market's recent collateral inflow, capped at `maxDelayInflow` and decaying at a fixed rate (draining from the cap to zero over `maxActivationDelay`), plus the incoming lot. More recent volume → longer delay, giving guardians more time to vet the larger supplies that carry more risk for lenders.
 
+All activating collateral shares one timer (`activatingStart`). A top-up that extends the deadline restarts it for the whole lot, so a top-up after `suspectExpiry` clears the suspect surcharge.
+
 ![Inflow chart](image-3.png)
 
 > **Example.** 
