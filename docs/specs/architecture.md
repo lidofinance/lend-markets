@@ -185,6 +185,8 @@ stateDiagram-v2
     end note
 ```
 
+Alongside strikes, a guardian can raise a softer **suspect** report: it never bans, only lengthening the activation delay (`delayPerSuspect` per report). The delay reads one per-account snapshot — a count plus an expiry `now + suspectWindow` — re-taken on each report or retraction, counting the reports still fresh at that moment. So a still-fresh earlier suspect is counted into the new snapshot and rides its extended expiry, while an already-expired one is left out. A `prune` does not re-take the snapshot, so a departed guardian's report stays counted until the next report or retraction.
+
 Two override roles sit above the guardians, split by risk direction. The committee acts fast to reduce risk — `ACCESS_LIMITER_ROLE` forces a `ban` past the quorum. Governance moves slowly to increase it — `ACCESS_RESTORER_ROLE` `unban`s, clearing the flag set so guardians re-evaluate from scratch.
 
 The controller reads `getOpinion(market, account) → GuardiansOpinion{banned, strikeCount, suspectCount, suspectExpiryTimestamp, quorumFrontierTimestamp}` and forwards it to the activation lib, which owns the delay math: `strikeCount × delayPerStrike`, plus `suspectCount × delayPerSuspect` for a lot whose activation started before `suspectExpiryTimestamp`. `banned` blocks borrowing (and pins the unlock at infinity); `quorumFrontierTimestamp` is the liveness frontier that gates maturation.

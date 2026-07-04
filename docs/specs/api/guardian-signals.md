@@ -513,7 +513,7 @@ Retract the caller's suspect reports on `accounts` in `marketId`, then heartbeat
 function prune(Id marketId, address account) external;
 ```
 
-Permissionless: prune `account`'s flags and suspect reports in `marketId` cast by addresses that are no longer guardians. Lowers the flag/suspect count but never changes status.
+Permissionless: prune `account`'s flags and suspect reports in `marketId` cast by addresses that are no longer guardians, lowering the flag count. The pruned suspect reports leave the set, but the cached suspect count the activation delay reads is re-derived only on the next `suspect`/`unsuspect`, not here — so a pruned report keeps counting toward the delay until then. Never changes ban status.
 
 ### `ban`
 
