@@ -12,7 +12,10 @@ import {LidoLend} from "@lido-lend/src/LidoLend.sol";
 
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
-import {FixedRateIrm} from "@lido-lend-irm/src/fixed-rate-irm/FixedRateIrm.sol";
+import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
+import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.sol";
+import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
+import {IIrm} from "@lido-lend-irm/lib/morpho-blue/src/interfaces/IIrm.sol";
 // The IRM ships its own morpho-blue, so its `Id` is a distinct UDVT from `@lido-lend`'s. Same bytes32
 // market hash; bridged by unwrap/wrap only where the IRM's typed API needs it.
 import {Id as IrmId, MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/morpho-blue/src/interfaces/IMorpho.sol";
@@ -186,21 +189,9 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         });
         Id id = params.id();
 
-        // The IRM needs its per-market config set before the market is used. Fixed: a constant rate. Adaptive:
-        // the curve params, which the IRM freezes into a per-market config contract, set by the owner.
-        if (irmKind == IrmKind.Fixed) {
-            FixedRateIrm(irm).setBorrowRate(IrmId.wrap(Id.unwrap(id)), fixedBorrowRate);
-        } else {
-            IrmMarketParams memory irmParams = IrmMarketParams({
-                loanToken: params.loanToken,
-                collateralToken: params.collateralToken,
-                oracle: params.oracle,
-                irm: params.irm,
-                lltv: params.lltv
-            });
-            vm.prank(admin);
-            AdaptiveCurveIrm(irm).setMarketCurveParams(irmParams, _curveConfig());
-        }
+        // `irm` is the shared router. Deploy the chosen frozen IRM, set its per-market params, and route the
+        // market to it through the router (all owner-gated, done as `admin`).
+        _routeMarketIrm(irm, params, admin);
 
         // One GuardianSignals per market, deployed and seeded before the controller (which binds to it).
         address guardian = _deployMarketGuardian(cfg, admin);
@@ -298,19 +289,53 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         return address(new OssifiableProxy(impl, admin, abi.encodeWithSignature("initialize(uint256)", oraclePrice)));
     }
 
-    /// @dev IRM picked by `irmKind`. Both flavours have their per-market config set after the id is known
-    ///      (Adaptive's curve via `setMarketCurveParams`, Fixed's rate via `setBorrowRate`).
+    /// @dev The shared `IrmRouter` behind an `OssifiableProxy`: the market's `irm` field points at it, and it
+    ///      routes the market to a frozen per-market IRM (deployed in `_routeMarketIrm`). owner == manager ==
+    ///      `owner`, so the harness can route and set curve/kink params as `owner`.
     function _deployMarketIrm(address core, address owner) internal returns (address) {
-        if (irmKind == IrmKind.Fixed) return address(new FixedRateIrm());
-        // Adaptive IRM is proxy-first: the impl locks itself in its constructor; owner and manager are set via
-        // `initialize` on the proxy. owner == manager == `owner`, so the harness can set curve params as `owner`.
         return address(
             new OssifiableProxy(
-                address(new AdaptiveCurveIrm(core)),
+                address(new IrmRouter(core)),
                 owner,
                 abi.encodeWithSignature("initialize(address,address)", owner, owner)
             )
         );
+    }
+
+    /// @dev Deploy the market's frozen IRM (LinearKink for `Fixed`, AdaptiveCurve otherwise), set its per-market
+    ///      params, and route the market to it through the shared `router`. Split out to keep `_addMarket`'s frame
+    ///      under the stack limit. All setters are owner-gated, run as `admin`.
+    function _routeMarketIrm(address router, MarketParams memory params, address admin) private {
+        IrmMarketParams memory irmParams = IrmMarketParams({
+            loanToken: params.loanToken,
+            collateralToken: params.collateralToken,
+            oracle: params.oracle,
+            irm: params.irm, // == router
+            lltv: params.lltv
+        });
+
+        IIrm irm;
+        if (irmKind == IrmKind.Fixed) {
+            LinearKinkIrm kink = new LinearKinkIrm(admin, admin);
+            vm.prank(admin);
+            kink.setMarketKinkParams(irmParams, _kinkParams());
+            irm = IIrm(address(kink));
+        } else {
+            AdaptiveCurveIrm adaptive = new AdaptiveCurveIrm(router, admin, admin);
+            vm.prank(admin);
+            adaptive.setMarketCurveParams(irmParams, _curveConfig());
+            irm = IIrm(address(adaptive));
+        }
+
+        vm.prank(admin);
+        IrmRouter(router).setMarketIrm(irmParams, irm);
+    }
+
+    /// @dev Flat linear-kink curve emulating the old fixed rate: constant `fixedBorrowRate` at any utilization
+    ///      (both slopes zero).
+    function _kinkParams() internal view returns (LinearKinkParams memory) {
+        return
+            LinearKinkParams({optimalUtilization: uint64(0.9e18), baseRate: uint64(fixedBorrowRate), slope1: 0, slope2: 0});
     }
 
     // ---

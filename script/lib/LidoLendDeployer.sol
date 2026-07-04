@@ -8,6 +8,12 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 
+// The IRM submodule is 0.8.35-compatible, so the router and adaptive IRM are deployed with `new` (typed) rather
+// than `vm.getCode`, which cannot resolve their cross-compilation artifacts. Their per-market setters are still
+// reached through low-level calls to avoid coupling the deployer to the submodule's `MarketParams` type.
+import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
+import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
+
 /// @dev Minimal configurator surface of the controller used to seed the deploy-time policy.
 ///      `LidoLendDeployer.SettlementConfigParams` mirrors the controller's struct, so the call ABI matches.
 interface IControllerConfigurator {
@@ -125,8 +131,9 @@ abstract contract LidoLendDeployer {
         });
         d.marketId = d.params.id();
 
-        // The adaptive IRM freezes the per-market curve params into a config contract it deploys itself.
-        _configureAdaptiveIrm(d.irm, d.params);
+        // Attach the pricing model behind the router: deploy the adaptive IRM, freeze its per-market curve, and
+        // route the market to it. The market's `irm` field stays the router, so the model can later be switched.
+        _configureAdaptiveIrm(d.irm, d.params, cfg.admin);
 
         (d.controllerProxy, d.controllerImpl) =
             _deployController(d.core, d.marketId, d.guardianSignals, cfg.admin, cfg.activation, cfg.settlementConfig);
@@ -198,11 +205,10 @@ abstract contract LidoLendDeployer {
     }
 
     function _deployIrm(address core, address owner) internal virtual returns (address) {
-        // Proxy-first: the impl locks itself in its constructor; `initialize(owner, manager)` runs through the
-        // proxy. owner == manager == `owner`; the proxy admin is `owner`.
-        address impl = _deployArtifact(
-            "lib/lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol:AdaptiveCurveIrm", abi.encode(core)
-        );
+        // A Morpho market's `irm` is immutable, so it points at the router; the router forwards `borrowRate` to a
+        // per-market model the owner can switch. Proxy-first: the impl locks itself in its constructor;
+        // `initialize(owner, manager)` runs through the proxy. owner == manager == `owner`; proxy admin is `owner`.
+        address impl = address(new IrmRouter(core));
         return _behindProxy(impl, owner, abi.encodeWithSignature("initialize(address,address)", owner, owner));
     }
 
@@ -221,9 +227,13 @@ abstract contract LidoLendDeployer {
         );
     }
 
-    /// @dev Set the adaptive IRM's per-market curve params (owner/manager-only, run in the deploy context which
-    ///      owns the IRM). The IRM freezes the params into a per-market config contract it deploys itself.
-    function _configureAdaptiveIrm(address irm, MarketParams memory params) internal virtual {
+    /// @dev Deploy the adaptive IRM (trusted caller is the `router`), freeze its per-market curve, and route the
+    ///      market to it. Owner/manager-only calls, run in the deploy context which owns the router and IRM. The
+    ///      IRM freezes the params into a per-market config contract it deploys itself. The IRM is 0.8.35 but the
+    ///      deployer reaches it through artifacts + low-level calls to stay decoupled from its types.
+    function _configureAdaptiveIrm(address router, MarketParams memory params, address owner) internal virtual {
+        address irm = address(new AdaptiveCurveIrm(router, owner, owner));
+
         // Both tuples are static, so `abi.encode(params) ++ _encodedCurveConfig()` equals encoding them together.
         (bool ok,) = irm.call(
             abi.encodePacked(
@@ -237,6 +247,13 @@ abstract contract LidoLendDeployer {
             )
         );
         require(ok, "LidoLendDeployer: irm setMarketCurveParams failed");
+
+        // Route the market to the freshly configured IRM. `setMarketIrm` requires `params.irm == router` and
+        // probes the IRM with the exact call Morpho will make, so it must run after the curve is set.
+        (bool routed,) = router.call(
+            abi.encodeWithSignature("setMarketIrm((address,address,address,address,uint256),address)", params, irm)
+        );
+        require(routed, "LidoLendDeployer: router setMarketIrm failed");
     }
 
     /// @dev Controller behind a proxy. The impl bakes `lidoLend` into an immutable; `initialize(marketId,
