@@ -3,7 +3,9 @@ pragma solidity 0.8.35;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {Id, MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {IMorpho, Id, MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
@@ -24,6 +26,7 @@ import {MockERC20} from "../setup/Mocks.sol";
 ///         `assertEq`'d, with the three legs reconstructing `assetsOut` exactly.
 contract MorphoExitBookTest is LidoLendSetup {
     using MarketActions for Market;
+    using SharesMathLib for uint256;
 
     uint256 internal constant MAX_LIFETIME = 30 days;
     uint256 internal constant SERVICE_FEE = 0.05e18; // 5% cut of filler gross (WAD)
@@ -395,6 +398,76 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertGt(m.loanToken.balanceOf(lender), lenderBefore, "lender paid out from filler liquidity");
         // The book holds nothing afterward.
         assertEq(m.loanToken.balanceOf(address(book)), 0, "book holds nothing post-fill");
+    }
+
+    // ---
+    // L1 — full-fill must not be rejected by asset->share rounding at the liquidity boundary
+    // ---
+
+    /// @dev A fullFillOnly request sized at the exact-share liquidity boundary. The core's exact-share withdraw
+    ///      admits `shares` when `toAssetsDown(shares) <= idle`, so the whole position would come out. Capping
+    ///      availability at `toSharesDown(idle)` rounds strictly below that boundary and wrongly reported nothing
+    ///      fillable (reverting the fill). The full request must be fillable in one shot.
+    function test_fullFill_atLiquidityBoundary_notRejectedByRounding() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        address borrower = _actor("borrower");
+
+        uint256 ownerShares = _lenderSupply(lender, 100 ether);
+        _borrowOut(borrower, 90 ether); // drain idle well below the position
+
+        // Live (accrued) balances -> the two rounding directions at the boundary.
+        (uint256 tsa, uint256 tss, uint256 tba,) =
+            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(m.core)), m.params);
+        uint256 idle = tsa - tba;
+        uint256 available = idle.toSharesDown(tsa, tss); // the old, understated cap
+        uint256 sMax = ((idle + 1) * (tss + 1e6) - 1) / (tsa + 1); // max shares the core's exact-share path releases
+
+        // Preconditions: the rounding gap exists, the owner backs the size, and the full withdraw fits idle.
+        assertGt(sMax, available, "rounding gap exists at the boundary");
+        assertLe(sMax, ownerShares, "owner backs the full request");
+        assertLe(sMax.toAssetsDown(tsa, tss), idle, "full request fits idle liquidity (core would accept)");
+
+        uint256 id = _place(lender, sMax, true); // fullFillOnly
+
+        // The whole request fits the core's liquidity, so it is fully fillable (was 0 -> the fill reverted).
+        assertEq(book.previewFill(id).filledShares, sMax, "full request fillable, not understated");
+
+        uint256 posBefore = m.core.position(m.id, lender).supplyShares;
+        vm.prank(address(0x2000));
+        book.fillExitRequest(id, 0, 0);
+
+        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "request filled in one shot");
+        assertEq(posBefore - m.core.position(m.id, lender).supplyShares, sMax, "exactly sMax shares withdrawn");
+    }
+
+    /// @dev The same boundary with a partial-fill request. The old `toSharesDown(idle)` cap would fill only
+    ///      `available` and leave the sub-1-asset remainder as dust (request stays Open). The whole `sMax` fits
+    ///      idle, so the fill now clears it in one shot with nothing left over.
+    function test_partialFill_atLiquidityBoundary_leavesNoDust() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        address borrower = _actor("borrower");
+
+        uint256 ownerShares = _lenderSupply(lender, 100 ether);
+        _borrowOut(borrower, 90 ether);
+
+        (uint256 tsa, uint256 tss, uint256 tba,) =
+            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(m.core)), m.params);
+        uint256 idle = tsa - tba;
+        uint256 available = idle.toSharesDown(tsa, tss);
+        uint256 sMax = ((idle + 1) * (tss + 1e6) - 1) / (tsa + 1);
+        assertGt(sMax, available, "rounding gap exists at the boundary");
+        assertLe(sMax, ownerShares, "owner backs the full request");
+
+        uint256 id = _place(lender, sMax, false); // partial fills allowed
+
+        vm.prank(address(0x2000));
+        book.fillExitRequest(id, 0, 0);
+
+        Request memory req = book.getExitRequest(id);
+        assertEq(req.sizeRemaining, 0, "no dust left: full sMax filled in one shot");
+        assertEq(uint8(req.status), uint8(ExitStatus.Filled), "request filled");
     }
 
     function testRevert_constructor_zeroMorpho() public {

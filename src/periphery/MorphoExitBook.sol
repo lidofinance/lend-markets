@@ -138,12 +138,20 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
         // The withdraw pulls from the owner's position on their behalf — if they revoked authorization the
         // fill would revert, so report nothing fillable (keeps `previewFill` honest for fillers).
         if (!MORPHO.isAuthorized(request.owner, address(this))) return 0;
+
         MarketParams memory marketParams = _requestMarket(id);
 
-        uint256 available = _assetsToSupplyShares(marketParams, _idleAssets(marketParams));
-        uint256 ownerShares = MORPHO.position(marketParams.id(), request.owner).supplyShares;
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) =
+            MorphoBalancesLib.expectedMarketBalances(MORPHO, marketParams);
 
-        return Math.min(Math.min(request.sizeRemaining, available), ownerShares);
+        uint256 idleAssets = totalSupplyAssets > totalBorrowAssets ? totalSupplyAssets - totalBorrowAssets : 0;
+        uint256 ownerShares = MORPHO.position(marketParams.id(), request.owner).supplyShares;
+        uint256 backedShares = Math.min(request.sizeRemaining, ownerShares);
+
+        // A plain `toSharesDown(idleAssets)` cap rounds below what the core's exact-share withdraw actually
+        // releases, so a fully redeemable request would be wrongly rejected (or left with dust) at the boundary.
+        if (backedShares.toAssetsDown(totalSupplyAssets, totalSupplyShares) <= idleAssets) return backedShares;
+        return idleAssets.toSharesDown(totalSupplyAssets, totalSupplyShares);
     }
 
     function _redeem(uint256 id, address account, uint256 shares) internal override {
@@ -163,24 +171,10 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     // MORPHO MATH
     // ---
 
-    /// @dev Idle loan assets a fill can withdraw: supply minus borrow on the market, or 0.
-    function _idleAssets(MarketParams memory marketParams) internal view returns (uint256) {
-        (uint256 totalSupplyAssets,, uint256 totalBorrowAssets,) =
-            MorphoBalancesLib.expectedMarketBalances(MORPHO, marketParams);
-        return totalSupplyAssets > totalBorrowAssets ? totalSupplyAssets - totalBorrowAssets : 0;
-    }
-
     /// @dev Market supply shares to assets at the live supply price, rounding down.
     function _supplySharesToAssets(MarketParams memory marketParams, uint256 shares) internal view returns (uint256) {
         (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
             MorphoBalancesLib.expectedMarketBalances(MORPHO, marketParams);
         return shares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
-    }
-
-    /// @dev Market assets to supply shares at the live supply price, rounding down.
-    function _assetsToSupplyShares(MarketParams memory marketParams, uint256 assets) internal view returns (uint256) {
-        (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
-            MorphoBalancesLib.expectedMarketBalances(MORPHO, marketParams);
-        return assets.toSharesDown(totalSupplyAssets, totalSupplyShares);
     }
 }
