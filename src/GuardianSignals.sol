@@ -286,14 +286,19 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
     /// @inheritdoc IGuardianSignalsView
     function getOpinion(Id marketId, address account) external view returns (GuardiansOpinion memory opinion) {
-        opinion.banned = _signals[marketId][account].banned;
+        opinion.banned = _isBanned(_signals[marketId][account]);
         (opinion.strikeCount, opinion.suspectCount, opinion.suspectExpiryTimestamp) = _signalCounters(marketId, account);
         opinion.quorumFrontierTimestamp = _quorumFrontierTimestamp;
     }
 
     /// @inheritdoc IGuardianSignalsView
     function isBanned(Id marketId, address account) external view returns (bool) {
-        return _signals[marketId][account].banned;
+        return _isBanned(_signals[marketId][account]);
+    }
+
+    /// @dev Effective ban: the latched bit, or a flag count at or above the current quorum.
+    function _isBanned(GuardiansSignal storage signal) internal view returns (bool) {
+        return signal.banned || signal.flaggedBy.length() >= _quorum;
     }
 
     /// @inheritdoc IGuardianSignals
