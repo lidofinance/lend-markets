@@ -22,6 +22,8 @@ enum HookEvent {
 }
 ```
 
+The action being dispatched to the controller.
+
 ## Structs
 
 ### `BorrowerPosition`
@@ -378,6 +380,22 @@ error InsufficientActiveCollateral();
 
 Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
 
+### `ZeroBorrowAssets`
+
+```solidity
+error ZeroBorrowAssets();
+```
+
+Thrown when a borrow would mint borrow shares while transferring zero loan assets.
+
+### `BorrowBelowDustMarketMinimum`
+
+```solidity
+error BorrowBelowDustMarketMinimum(uint256 minimum, uint256 attempted);
+```
+
+Thrown when a borrow draws fewer than `minimum` loan assets while the market's total borrow assets are still below that floor — the dust regime where borrow-share inflation would be cheap.
+
 ### `PositionAccountingMismatch`
 
 ```solidity
@@ -401,14 +419,6 @@ error SettlementExceedsAllowed();
 ```
 
 Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
-
-### `RepayWouldStrandBorrowShares`
-
-```solidity
-error RepayWouldStrandBorrowShares();
-```
-
-Thrown when a repay would drain the market's borrow assets to zero while borrow shares remain outstanding — the rounding state a first borrower can exploit to inflate the borrow-share price and brick further borrows. A repay may reach zero borrow assets only by clearing all shares too.
 
 ## Functions
 
@@ -451,6 +461,14 @@ function RESUMER_ROLE() external view returns (bytes32);
 ```
 
 Role allowed to lift a pause.
+
+### `DUST_MARKET_MIN_BORROW`
+
+```solidity
+function DUST_MARKET_MIN_BORROW() external view returns (uint256);
+```
+
+While the market's total borrow assets sit below this amount, every borrow must draw at least this much loan assets. It fences borrow-share inflation by keeping the market out of the dust regime where a 1-wei borrow mints a disproportionate slice of the outstanding shares.
 
 ### `currentInflow`
 

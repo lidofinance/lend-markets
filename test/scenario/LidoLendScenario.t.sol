@@ -201,10 +201,11 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.withdrawCollateral(ctx.marketParams, col - 5 ether, BORROWER, BORROWER);
         _assertCollateralState(ctx.controller, BORROWER, 5 ether, 0, 0); // active collateral = 5 < 10
 
-        // Borrowing against sub-threshold active collateral is blocked (zero capacity), even for a tiny amount.
+        // Sub-threshold active collateral has zero borrow capacity, so the borrow reverts. (Draw above the
+        // dust-market floor: a 1-wei borrow would trip that floor first, before reaching the capacity gate.)
         vm.prank(BORROWER);
         vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
-        ctx.market.borrow(ctx.marketParams, 1, 0, BORROWER, BORROWER);
+        ctx.market.borrow(ctx.marketParams, 1 ether, 0, BORROWER, BORROWER);
     }
 
     function test_settle_happyPath() public {
@@ -561,8 +562,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                 ctx.id,
                 toFlag,
                 BlockInfoWithHash({
-                hash: blockhash(block.number), number: uint40(block.number), timestamp: uint40(block.timestamp)
-            })
+                    hash: blockhash(block.number), number: uint40(block.number), timestamp: uint40(block.timestamp)
+                })
             );
 
         // Warp far past any normal activation delay — a banned address never settles.

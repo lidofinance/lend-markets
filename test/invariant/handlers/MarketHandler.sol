@@ -128,6 +128,12 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         if (room < 1e18) return;
 
         amount = bound(amount, 1e18, room);
+        // At dust borrow assets the mint `toSharesUp(amount, ...)` can exceed uint128 and revert in the core's
+        // `toUint128`; skip the borrow the core would itself reject (fail_on_revert leaves no room for it).
+        uint256 mintShares = Math.mulDiv(
+            amount, uint256(mk.totalBorrowShares) + 1e6, uint256(mk.totalBorrowAssets) + 1, Math.Rounding.Ceil
+        );
+        if (mintShares > type(uint128).max) return;
         vm.prank(a);
         CORE.borrow(params, amount, 0, a, a);
         borrows++;
@@ -145,10 +151,8 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         uint256 owed = Math.mulDiv(
             shares, uint256(mk.totalBorrowAssets) + 1, uint256(mk.totalBorrowShares) + 1e6, Math.Rounding.Ceil
         );
-        // The controller vetoes a repay that drains total borrow assets to zero while shares linger (the
-        // borrow-share-inflation guard). Only a full unwind may zero the assets — skip a partial pick that
-        // would strand shares rather than trip the policy revert.
-        if (uint256(mk.totalBorrowAssets) <= owed && uint256(mk.totalBorrowShares) > shares) return;
+        // A partial repay may drain borrow assets to dust while shares linger — legitimate now, and the state the
+        // borrow-side dust floor defends. Exercise it here rather than skipping it.
         _mintTo(LOAN, a, owed);
         vm.startPrank(a);
         LOAN.approve(address(CORE), owed);

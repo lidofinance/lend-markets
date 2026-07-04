@@ -58,6 +58,13 @@ interface ILidoLendMarketController is
     /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
 
+    /// @notice Thrown when a borrow would mint borrow shares while transferring zero loan assets.
+    error ZeroBorrowAssets();
+
+    /// @notice Thrown when a borrow draws fewer than `minimum` loan assets while the market's total borrow assets
+    ///         are still below that floor — the dust regime where borrow-share inflation would be cheap.
+    error BorrowBelowDustMarketMinimum(uint256 minimum, uint256 attempted);
+
     /// @notice Thrown when a core-applied position delta exceeds the controller's read of that position.
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
     error PositionAccountingMismatch();
@@ -67,11 +74,6 @@ interface ILidoLendMarketController is
 
     /// @notice Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
     error SettlementExceedsAllowed();
-
-    /// @notice Thrown when a repay would drain the market's borrow assets to zero while borrow shares remain
-    ///         outstanding — the rounding state a first borrower can exploit to inflate the borrow-share price
-    ///         and brick further borrows. A repay may reach zero borrow assets only by clearing all shares too.
-    error RepayWouldStrandBorrowShares();
 
     // ---
     // TYPES
@@ -121,6 +123,15 @@ interface ILidoLendMarketController is
 
     /// @notice Role allowed to lift a pause.
     function RESUMER_ROLE() external view returns (bytes32);
+
+    // ---
+    // CONFIG
+    // ---
+
+    /// @notice While the market's total borrow assets sit below this amount, every borrow must draw at least
+    ///         this much loan assets. It fences borrow-share inflation by keeping the market out of the dust
+    ///         regime where a 1-wei borrow mints a disproportionate slice of the outstanding shares.
+    function DUST_MARKET_MIN_BORROW() external view returns (uint256);
 
     // ---
     // COLLATERAL ACTIVATION
