@@ -183,7 +183,11 @@ contract CollateralActivationLibTest is Test {
         vm.warp(1_000_000);
         h.deposit(address(0xD1), 100 ether);
         uint40 depositTime = uint40(block.timestamp);
-        vm.warp(block.timestamp + 2 hours); // past the base unlock (cap 1 hour)
+        // Derive the post-warp timestamp from `depositTime` instead of re-reading `block.timestamp` after the warp.
+        // Under --via-ir the optimizer caches the TIMESTAMP opcode within this frame, so a second read folds back to
+        // the pre-warp value (vm.warp mutates block.timestamp mid-frame, which never happens on real EVM).
+        uint40 scannedPastUnlock = depositTime + 2 hours; // past the base unlock (cap 1 hour)
+        vm.warp(scannedPastUnlock);
 
         // Frontier still behind the unlock: the gate holds the lot.
         h.syncWithQuorum(address(0xD1), depositTime - 1);
@@ -192,7 +196,7 @@ contract CollateralActivationLibTest is Test {
         assertEq(activating, 100 ether, "still activating");
 
         // Frontier scans past the unlock: the lot matures.
-        h.syncWithQuorum(address(0xD1), uint40(block.timestamp));
+        h.syncWithQuorum(address(0xD1), scannedPastUnlock);
         (uint256 activeAfter,,) = h.bucketsOf(address(0xD1));
         assertEq(activeAfter, 100 ether, "matured once the quorum scanned past the unlock");
     }
