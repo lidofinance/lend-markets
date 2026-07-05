@@ -24,18 +24,6 @@ struct MarketParams {
 }
 ```
 
-The immutable parameters that define a market and, hashed, its `Id`.
-
-**Fields**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `loanToken` | `address` | The token lenders supply and borrowers borrow. |
-| `collateralToken` | `address` | The token borrowers post as collateral. |
-| `oracle` | `address` | Prices the collateral in loan-token terms. |
-| `irm` | `address` | The interest rate model. |
-| `lltv` | `uint256` | The liquidation loan-to-value, in WAD. |
-
 ## `Position`
 
 ```solidity
@@ -46,18 +34,8 @@ struct Position {
 }
 ```
 
-A single account's position in one market.
-
 > [!WARNING]
 > For `feeRecipient`, `supplyShares` does not contain the accrued shares since the last interest accrual.
-
-**Fields**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `supplyShares` | `uint256` | The account's supply shares. |
-| `borrowShares` | `uint128` | The account's borrow shares. |
-| `collateral` | `uint128` | The account's collateral, in collateral-token units. |
 
 ## `SettlementConfig`
 

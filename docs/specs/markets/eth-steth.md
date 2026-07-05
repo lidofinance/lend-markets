@@ -1,6 +1,6 @@
 # ETH / wstETH Market
 
-Borrow **WETH** against **wstETH** collateral. The market runs the shared stack unchanged — controller, guardian signals, collateral activation, settlement queue, vault, freeze/pause — described in [architecture.md](../architecture.md). Only the oracle, the deposit gateway, the liquidation path, and the risk parameters are market-specific.
+Borrow **WETH** against **wstETH** collateral. The market runs the shared stack unchanged — controller, guardian signals, collateral activation, settlement queue, vault, freeze/pause — described in [architecture.md](../architecture.md). Only the oracle, the liquidation path, and the risk parameters are market-specific.
 
 ## Parameters
 
