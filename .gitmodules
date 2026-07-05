@@ -10,8 +10,8 @@
 [submodule "lib/lido-lend"]
 	path = lib/lido-lend
 	url = git@github.com:lidofinance/morpho-lido-blue.git
-	branch = feat/lido-blue
+	branch = main
 [submodule "lib/lido-lend-irm"]
 	path = lib/lido-lend-irm
 	url = git@github.com:lidofinance/lido-blue-irm.git
-	branch = feat/irm-router
+	branch = main

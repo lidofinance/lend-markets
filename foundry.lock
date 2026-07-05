@@ -1,14 +1,14 @@
 {
   "lib/lido-lend": {
     "branch": {
-      "name": "feat/lido-blue",
-      "rev": "959bd1a125608b8646ba8e6020618d6b353274ba"
+      "name": "main",
+      "rev": "ec7171654bdb7211e07bf696a813f2e7a290a1e2"
     }
   },
   "lib/lido-lend-irm": {
     "branch": {
-      "name": "feat/irm-router",
-      "rev": "ef715844eb6a910ed7b7392e99694d1c9d41bfd0"
+      "name": "main",
+      "rev": "dac925b7c32014e2d506afbcc395a118a73ad064"
     }
   },
   "lib/openzeppelin-contracts": {

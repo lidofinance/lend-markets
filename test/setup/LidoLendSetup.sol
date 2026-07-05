@@ -15,10 +15,10 @@ import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfa
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
 import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.sol";
 import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
-import {IIrm} from "@lido-lend-irm/lib/morpho-blue/src/interfaces/IIrm.sol";
-// The IRM ships its own morpho-blue, so its `Id` is a distinct UDVT from `@lido-lend`'s. Same bytes32
+import {IIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.sol";
+// The IRM ships its own nested copy of the core, so its `Id` is a distinct UDVT from `@lido-lend`'s. Same bytes32
 // market hash; bridged by unwrap/wrap only where the IRM's typed API needs it.
-import {Id as IrmId, MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/morpho-blue/src/interfaces/IMorpho.sol";
+import {Id as IrmId, MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
@@ -335,7 +335,9 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
     ///      (both slopes zero).
     function _kinkParams() internal view returns (LinearKinkParams memory) {
         return
-            LinearKinkParams({optimalUtilization: uint64(0.9e18), baseRate: uint64(fixedBorrowRate), slope1: 0, slope2: 0});
+            LinearKinkParams({
+                optimalUtilization: uint64(0.9e18), baseRate: uint64(fixedBorrowRate), slope1: 0, slope2: 0
+            });
     }
 
     // ---

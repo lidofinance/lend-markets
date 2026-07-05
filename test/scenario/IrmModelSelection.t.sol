@@ -19,15 +19,15 @@ import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
 // The adaptive and kinked candidates are the real `AdaptiveCurveIrm` / `LinearKinkIrm` from the `lido-lend-irm`
 // submodule, reached through the `IrmRouter` a market's immutable `irm` points at. They carry their own
-// `IIrm` / `MarketParams` / `Id` types (a separate morpho-blue copy) that do not unify with the core's, so
+// `IIrm` / `MarketParams` / `Id` types (its own nested copy of the core) that do not unify with the core's, so
 // those are imported under `Irm*` aliases and the ABI-identical structs are converted at the call boundary.
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.sol";
 import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
-import {IIrm as IrmIIrm} from "@lido-lend-irm/lib/morpho-blue/src/interfaces/IIrm.sol";
-import {MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/morpho-blue/src/interfaces/IMorpho.sol";
+import {IIrm as IrmIIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.sol";
+import {MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 // Adaptive-curve math, reused by the local CapD prototype. These libraries are pragma ^0.8.0 (not strict
@@ -538,7 +538,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
     ///      Initial params are scenario inputs; yearly `_retune` derives params from the trailing-year average
     ///      APR. Runs before `createMarket`, so `setMarketIrm` probes the model on a fresh (zero) market.
     /// @dev Deploy the core with `new` rather than the deployer's `vm.getCode` path: this file imports the IRM
-    ///      submodule's morpho-blue types, which fragments getCode's version resolution for the cross-version core.
+    ///      submodule's own nested copy of the core types, which fragments getCode's version resolution for the core.
     function _deployCore(address admin) internal override returns (address) {
         address impl = address(new LidoLend());
         return _behindProxy(impl, admin, abi.encodeWithSignature("initialize(address)", admin));
