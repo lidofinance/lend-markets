@@ -45,7 +45,6 @@ interface IExitBook {
 
     /// @notice The stored request at `id` (a zeroed record if it never existed).
     /// @param id The request id.
-    /// @return The request record.
     function getExitRequest(uint256 id) external view returns (Request memory);
 
     /// @notice The stored requests at `ids` (closed ones included) — a cheap batch read with no source calls.
@@ -59,7 +58,6 @@ interface IExitBook {
 
     /// @notice How many requests `owner` has ever opened.
     /// @param owner The lender to count requests for.
-    /// @return The number of requests `owner` has opened.
     function getOwnerRequestCount(address owner) external view returns (uint256);
 
     /// @notice A page of `owner`'s request ids in creation order (closed ones included).

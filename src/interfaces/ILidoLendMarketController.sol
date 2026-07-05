@@ -209,7 +209,7 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation
-    ///         settlement is deferred. Debt-free positions can still withdraw their collateral.
+    ///         maturation is deferred. Debt-free positions can still withdraw their collateral.
     function freeze() external;
 
     /// @notice Lift the freeze.

@@ -93,19 +93,15 @@ interface ILidoLendERC4626 is IERC4626 {
 
     /// @notice Default per-call cut bound for the fallback-exit loop (gas safety); `fallbackExit` callers may
     ///         override it, and passing 0 falls back to this.
-    /// @return The default maximum settlement iterations.
     function DEFAULT_MAX_SETTLEMENT_ITERATIONS() external view returns (uint256);
 
     /// @notice The LidoLend core (Morpho Blue fork) this vault supplies into and settles against.
-    /// @return The LidoLend core.
     function LIDO_LEND() external view returns (ILidoLend);
 
     /// @notice Id of the market this vault wraps.
-    /// @return The wrapped market's id.
     function marketId() external view returns (Id);
 
     /// @notice The market's policy controller, read for settlement-queue sizing.
-    /// @return The market controller.
     function controller() external view returns (ILidoLendMarketController);
 
     // ---
@@ -131,7 +127,6 @@ interface ILidoLendERC4626 is IERC4626 {
     // ---
 
     /// @notice The wrapped market's params (loan/collateral/oracle/irm/lltv), as cached at init.
-    /// @return The cached market params.
     function marketParams() external view returns (MarketParams memory);
 
     /// @notice Returns the loan assets and Morpho supply shares `fallbackExit(shares, ...)` would consume.

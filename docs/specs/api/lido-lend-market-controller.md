@@ -591,7 +591,7 @@ A window of queued borrowers (approximate top-down order) and their risk keys: u
 function freeze() external;
 ```
 
-Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation settlement is deferred. Debt-free positions can still withdraw their collateral.
+Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation maturation is deferred. Debt-free positions can still withdraw their collateral.
 
 ### `unfreeze`
 

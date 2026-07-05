@@ -129,6 +129,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
     /// @dev Capped by the market's free liquidity, not just the owner's position: supplied tokens may be borrowed
     ///      out, so withdrawing past liquidity reverts in the core. The illiquid remainder exits via `fallbackExit`.
+    ///      Zero while the controller is paused, since a real withdraw would revert then too.
     function maxWithdraw(address owner) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         return Math.min(previewRedeem(balanceOf(owner)), _morphoWithdrawableAssets());
     }
@@ -168,7 +169,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
     /// @inheritdoc ILidoLendERC4626
     /// @dev A targeted, liquidity-neutral cut of the named borrowers: it redeems no liquidity first (unlike
-    ///      `fallbackExit`), so it stays subject to the core's `SETTLEMENT_LIQUIDITY_AVAILABLE` gate. Collateral
+    ///      `fallbackExit`), so it stays subject to the core's settleable-supply gate (reverts
+    ///      `SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY` while idle liquidity still covers the amount). Collateral
     ///      goes from Morpho straight to `receiver`. For the griefing-resistant exit use `fallbackExit`.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external

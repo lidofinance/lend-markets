@@ -115,9 +115,6 @@ contract UsdyStableOracle layout at erc7201("lido.lend.storage.UsdyStableOracle"
     // ---
 
     /// @inheritdoc IOracle
-    /// @dev USDY NAV divided by the stablecoin feed and scaled to 1e36: `getPrice() * scale / stableUsdPrice`.
-    ///      Reverts on a zero NAV or a non-positive feed answer (zero divisor / negative cast).
-    /// @return Price of 1 USDY quoted in the loan stablecoin, scaled by `1e36`.
     function price() external view override returns (uint256) {
         uint256 navPrice = USDY_ORACLE.getPrice();
         if (navPrice == 0) revert InvalidNavPrice();

@@ -11,12 +11,10 @@ import {PriorityRamp} from "../types/ExitBookTypes.sol";
 interface IErc4626ExitBook is IExitBook {
     /// @notice Whether `vault` is allowed for new requests.
     /// @param vault The vault to query.
-    /// @return True if `vault` is allowed.
     function isVaultAllowed(IERC4626 vault) external view returns (bool);
 
     /// @notice The source vault request `id` was placed against (zero if none).
     /// @param id The request id.
-    /// @return The vault backing the request.
     function vaultOf(uint256 id) external view returns (IERC4626);
 
     /// @notice Allow or disallow `vault` for new requests. Owner only.
