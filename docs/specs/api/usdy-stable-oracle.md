@@ -67,14 +67,6 @@ Bind the per-market stablecoin leg: the Chainlink USD feed and the decimal-deriv
 function price() external view returns (uint256);
 ```
 
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `uint256` | Price of 1 USDY quoted in the loan stablecoin, scaled by `1e36`. |
-
-USDY NAV divided by the stablecoin feed and scaled to 1e36: `getPrice() * scale / stableUsdPrice`. Reverts on a zero NAV or a non-positive feed answer (zero divisor / negative cast).
-
 ## State variables
 
 | Name | Type | Description |

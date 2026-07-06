@@ -38,8 +38,8 @@ struct PositionView {
 
 /// @notice Settlement slice policy, set together via `setSettlementConfig`. The knobs tune the settlement slice
 ///         cut. The uint96 amounts are policy bounds, not accounting: for a loan or collateral token whose
-///         plausible amounts exceed uint96 (~7.9e28 base units) the configurable floors saturate low — the
-///         policy weakens but nothing reverts or loses accounting.
+///         plausible amounts exceed uint96 (~7.9e28 base units) the configurable floors cannot be set high
+///         enough to match — the policy weakens but nothing reverts or loses accounting.
 /// @param sliceFloorBps Debt-fraction term of the root cut: one allowance is `debt * sliceFloorBps / BPS`.
 /// @param sliceFloorAssets Absolute term of the root cut: one allowance is this many loan assets.
 /// @param fullCutBelowCollateral Sweep floor in collateral units: when a cut would leave the borrower's

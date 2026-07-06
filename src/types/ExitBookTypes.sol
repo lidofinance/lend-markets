@@ -43,7 +43,7 @@ struct PriorityRamp {
 /// @param rampEnd Seconds from `createdAt` the climb reaches `endRate`.
 /// @param createdAt Creation timestamp: the fee schedule's start.
 /// @param deadline Last timestamp the request may be filled. Chosen by the lender, capped at
-///        `createdAt + MAX_LIFETIME` and never earlier than `createdAt + rampEnd`.
+///        `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`.
 /// @param fullFillOnly When true a fill must cover the whole remaining size in one shot or be rejected.
 /// @param status Open / Filled / Cancelled (Expired is derived).
 struct Request {

@@ -20,7 +20,7 @@ contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
     // ROLES
     // ---
 
-    /// @dev Role allowed to appoint and remove per-market stewards.
+    /// @inheritdoc IRiskStewardDashboard
     bytes32 public constant STEWARD_ADMIN_ROLE = keccak256("STEWARD_ADMIN_ROLE");
 
     // ---

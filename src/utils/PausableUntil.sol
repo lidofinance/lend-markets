@@ -6,10 +6,8 @@ pragma solidity 0.8.35;
 import {IPausableUntil} from "../interfaces/IPausableUntil.sol";
 import {StorageSlot} from "@openzeppelin/contracts/utils/StorageSlot.sol";
 
-/**
- * @title PausableUntil
- * @notice allows to pause the contract for a specific duration or indefinitely
- */
+/// @title PausableUntil
+/// @notice Pauses the contract for a duration or indefinitely.
 abstract contract PausableUntil is IPausableUntil {
     using StorageSlot for bytes32;
 

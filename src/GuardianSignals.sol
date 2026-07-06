@@ -33,9 +33,9 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // CONSTANTS
     // ---
 
-    /// @notice Maximum number of guardians. Capped low because every `heartbeat` (and the heartbeat inside
-    ///         `flag` / `unflag`) re-sorts all guardians' last-scanned timestamps to recompute the quorum
-    ///         frontier, whose cost grows with the set. 32 keeps that bounded and still fits the quorum in `uint8`.
+    /// @notice Maximum number of guardians. Capped low because `syncQuorumBlock` re-sorts all guardians'
+    ///         last-scanned timestamps to recompute the quorum frontier, whose cost grows with the set. 32 keeps
+    ///         that bounded and still fits the quorum in `uint8`.
     uint256 public constant MAX_GUARDIANS_COUNT = 32;
 
     /// @notice Ceiling on the suspect window: the horizon within which a suspect report still counts toward the

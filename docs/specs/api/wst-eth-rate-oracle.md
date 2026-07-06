@@ -36,14 +36,6 @@ constructor(address wstETH_);
 function price() external view returns (uint256);
 ```
 
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `uint256` | ETH per 1 wstETH scaled by `1e36`, under stETH/ETH par. |
-
-wstETH→stETH rate scaled to `1e36`: `getStETHByWstETH(1e36)`. Queried at `1e36` (rather than at `1e18` then scaled) to keep the low-order digits instead of flooring the rate.
-
 ## State variables
 
 | Name | Type | Description |

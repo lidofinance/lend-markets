@@ -82,7 +82,7 @@ One exit request — lifecycle and pricing only. The backing source (which vault
 | `rampStart` | `uint32` | Seconds from `createdAt` the rate holds at `startRate` before the climb begins. |
 | `rampEnd` | `uint32` | Seconds from `createdAt` the climb reaches `endRate`. |
 | `createdAt` | `uint40` | Creation timestamp: the fee schedule's start. |
-| `deadline` | `uint40` | Last timestamp the request may be filled. Chosen by the lender, capped at `createdAt + MAX_LIFETIME` and never earlier than `createdAt + rampEnd`. |
+| `deadline` | `uint40` | Last timestamp the request may be filled. Chosen by the lender, capped at `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`. |
 | `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot or be rejected. |
 | `status` | `ExitStatus` | Open / Filled / Cancelled (Expired is derived). |
 
@@ -277,12 +277,6 @@ function getExitRequest(uint256 id) external view returns (Request memory);
 | --- | --- | --- |
 | `id` | `uint256` | The request id. |
 
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `Request` | The request record. |
-
 The stored request at `id` (a zeroed record if it never existed).
 
 #### `getRequests`
@@ -332,12 +326,6 @@ function getOwnerRequestCount(address owner) external view returns (uint256);
 | Name | Type | Description |
 | --- | --- | --- |
 | `owner` | `address` | The lender to count requests for. |
-
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `uint256` | The number of requests `owner` has opened. |
 
 How many requests `owner` has ever opened.
 
@@ -461,12 +449,6 @@ function isVaultAllowed(IERC4626 vault) external view returns (bool);
 | --- | --- | --- |
 | `vault` | `IERC4626` | The vault to query. |
 
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `bool` | True if `vault` is allowed. |
-
 Whether `vault` is allowed for new requests.
 
 #### `vaultOf`
@@ -480,12 +462,6 @@ function vaultOf(uint256 id) external view returns (IERC4626);
 | Name | Type | Description |
 | --- | --- | --- |
 | `id` | `uint256` | The request id. |
-
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `IERC4626` | The vault backing the request. |
 
 The source vault request `id` was placed against (zero if none).
 
@@ -586,12 +562,6 @@ error ZeroMorpho();
 function MORPHO() external view returns (IMorpho);
 ```
 
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `IMorpho` | The Morpho core contract. |
-
 The Morpho deployment this book reads positions from and withdraws against.
 
 #### `isMarketAllowed`
@@ -605,12 +575,6 @@ function isMarketAllowed(Id marketId) external view returns (bool);
 | Name | Type | Description |
 | --- | --- | --- |
 | `marketId` | `Id` | The market id to query. |
-
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `bool` | True if `marketId` is allowed. |
 
 Whether market `marketId` is allowed for new requests.
 
@@ -627,12 +591,6 @@ function marketParamsOf(
 | Name | Type | Description |
 | --- | --- | --- |
 | `requestId` | `uint256` | The request id. |
-
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `MarketParams` | The market's params. |
 
 The market params request `requestId` was placed against (empty if none).
 

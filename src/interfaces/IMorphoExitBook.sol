@@ -10,17 +10,14 @@ import {PriorityRamp} from "../types/ExitBookTypes.sol";
 ///         exit-book surface (`IExitBook`) with market placement and allow-list admin.
 interface IMorphoExitBook is IExitBook {
     /// @notice The Morpho deployment this book reads positions from and withdraws against.
-    /// @return The Morpho core contract.
     function MORPHO() external view returns (IMorpho);
 
     /// @notice Whether market `marketId` is allowed for new requests.
     /// @param marketId The market id to query.
-    /// @return True if `marketId` is allowed.
     function isMarketAllowed(Id marketId) external view returns (bool);
 
     /// @notice The market params request `requestId` was placed against (empty if none).
     /// @param requestId The request id.
-    /// @return The market's params.
     function marketParamsOf(uint256 requestId) external view returns (MarketParams memory);
 
     /// @notice Register `marketParams` (which must name a live Morpho market, checked on both allow and

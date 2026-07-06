@@ -48,7 +48,7 @@ struct SettlementConfig {
 }
 ```
 
-Settlement slice policy, set together via `setSettlementConfig`. The knobs tune the settlement slice cut. The uint96 amounts are policy bounds, not accounting: for a loan or collateral token whose plausible amounts exceed uint96 (~7.9e28 base units) the configurable floors saturate low — the policy weakens but nothing reverts or loses accounting.
+Settlement slice policy, set together via `setSettlementConfig`. The knobs tune the settlement slice cut. The uint96 amounts are policy bounds, not accounting: for a loan or collateral token whose plausible amounts exceed uint96 (~7.9e28 base units) the configurable floors cannot be set high enough to match — the policy weakens but nothing reverts or loses accounting.
 
 **Fields**
 

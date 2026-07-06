@@ -383,8 +383,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         _settlementQueue.sync(borrower, position);
     }
 
-    /// @dev Withdraw hook: with open debt a freeze blocks it, the remaining active must still cover the debt
-    ///      at LLTV, and raw collateral may not fall below the minimum borrowable size. Debt-free exits are free.
+    /// @dev Withdraw hook: with open debt a freeze blocks it, and the remaining active must still cover the debt
+    ///      at LLTV. Debt-free exits are free.
     function _handleWithdrawCollateral(Id id, WithdrawCollateralHookData memory hookData) internal {
         address borrower = hookData.onBehalf;
 
@@ -406,8 +406,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         uint256 activeCollateral = position.collateral - inactive;
 
         // With open debt, the remaining active collateral must still cover the debt at LLTV. `_getMaxBorrow`
-        // returns 0 for sub-threshold dust, so a debt-bearing position cannot be drained below the borrowable
-        // floor — to exit below it, repay the debt to zero first (a zero-debt withdraw is unconstrained here).
+        // returns 0 for sub-threshold dust, so a debt-bearing position cannot be drained below
+        // `minActivationAmount` — to exit below it, repay the debt to zero first (a zero-debt withdraw is
+        // unconstrained here).
         if (position.borrowShares != 0) {
             MarketView memory marketView = _marketView(id);
             if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, activeCollateral)) {
@@ -535,8 +536,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
     /// @dev Max loan assets `collateral` can back at the market LLTV. Active collateral below the activation
     ///      dust threshold (`minActivationAmount`) backs no borrow and returns 0, so a sub-threshold position has
-    ///      no capacity — this folds the old raw-collateral position floor into the capacity check, keeping debt
-    ///      positions above the minimum borrowable size without a separate revert.
+    ///      no capacity.
     function _getMaxBorrow(MarketView memory marketView, uint256 collateral) internal view returns (uint256) {
         if (collateral < _activation.config.minActivationAmount) return 0;
         return Math.mulDiv(_collateralValue(marketView, collateral), marketView.lltv, WAD);

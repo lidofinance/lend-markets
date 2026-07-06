@@ -175,7 +175,7 @@ Only the Morpho supply position backs shares — direct loan-token donations are
 function maxWithdraw(address owner) public view returns (uint256);
 ```
 
-Capped by the market's free liquidity, not just the owner's position: supplied tokens may be borrowed out, so withdrawing past liquidity reverts in the core. The illiquid remainder exits via `fallbackExit`.
+Capped by the market's free liquidity, not just the owner's position: supplied tokens may be borrowed out, so withdrawing past liquidity reverts in the core. The illiquid remainder exits via `fallbackExit`. Zero while the controller is paused, since a real withdraw would revert then too.
 
 ### `maxRedeem`
 
@@ -212,7 +212,7 @@ function settle(
 ) external returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
-A targeted, liquidity-neutral cut of the named borrowers: it redeems no liquidity first (unlike `fallbackExit`), so it stays subject to the core's `SETTLEMENT_LIQUIDITY_AVAILABLE` gate. Collateral goes from Morpho straight to `receiver`. For the griefing-resistant exit use `fallbackExit`.
+A targeted, liquidity-neutral cut of the named borrowers: it redeems no liquidity first (unlike `fallbackExit`), so it stays subject to the core's settleable-supply gate (reverts `SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY` while idle liquidity still covers the amount). Collateral goes from Morpho straight to `receiver`. For the griefing-resistant exit use `fallbackExit`.
 
 ### `fallbackExit`
 
