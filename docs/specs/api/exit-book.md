@@ -441,6 +441,12 @@ error InsufficientBacking();
 error ZeroVault();
 ```
 
+#### `ZeroPricePerShare`
+
+```solidity
+error ZeroPricePerShare();
+```
+
 ### Functions
 
 #### `isVaultAllowed`

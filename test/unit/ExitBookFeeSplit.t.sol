@@ -37,6 +37,17 @@ contract ZeroRedeemVault is ERC4626 {
     }
 }
 
+/// @notice A vault whose per-share price rounds to zero (`convertToAssets(WAD) == 0`) — the sub-1-wei-per-share
+///         regime `placeExitRequest` must reject. A snapshot price of 0 would pay the lender `owed = 0` on every
+///         fill and route the whole redemption to the filler.
+contract ZeroPriceVault is ERC4626 {
+    constructor(IERC20 asset_) ERC20("ZeroPriceVault", "zpAST") ERC4626(asset_) {}
+
+    function convertToAssets(uint256) public pure override returns (uint256) {
+        return 0;
+    }
+}
+
 /// @notice Exact three-way conservation of `ExitBookBase.fillExitRequest` — the fee split that the deleted
 ///         `WithdrawalMathLib` once covered, now inlined in the base. For a fill that arrives with `assetsOut`:
 ///           owed        = min(filledShares * pricePerShare / WAD, assetsOut)
@@ -372,6 +383,15 @@ contract ExitBookFeeSplitTest is Test {
         vm.prank(lender);
         vm.expectRevert(Erc4626ExitBook.InsufficientBacking.selector);
         book.placeExitRequest(IERC4626(address(vault)), shares + 1, _ramp(), block.timestamp + 30 days, false);
+    }
+
+    /// @dev A vault whose snapshot price is 0 is rejected up front — the check precedes the backing check, so no
+    ///      shares or allowance are needed to trip it.
+    function testRevert_place_zeroPricePerShare() public {
+        ZeroPriceVault zeroPrice = new ZeroPriceVault(IERC20(address(asset)));
+        book.setVaultAllowed(IERC4626(address(zeroPrice)), true);
+        vm.expectRevert(Erc4626ExitBook.ZeroPricePerShare.selector);
+        book.placeExitRequest(IERC4626(address(zeroPrice)), 1 ether, _ramp(), block.timestamp + 30 days, false);
     }
 
     function testRevert_setVaultAllowed_zeroVault() public {
