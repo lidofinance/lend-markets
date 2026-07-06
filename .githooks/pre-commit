@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Pre-commit hook. Activate with: git config core.hooksPath .githooks
+#
+# Runs `solhint` on staged Solidity files under src/. Skips silently when solhint
+# is not installed so users without Node don't get blocked from committing.
+#
+# Setup: npm install -g solhint@5
+
+set -euo pipefail
+
+if ! command -v solhint >/dev/null 2>&1; then
+  echo "pre-commit: solhint not found in PATH, skipping (install with: npm install -g solhint@5)" >&2
+  exit 0
+fi
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^src/.*\.sol$' || true)
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+# .solhintignore already excludes vendored paths, but src/proxy/OssifiableProxy.sol matches
+# the src/ filter above and would slip through — drop it explicitly.
+STAGED=$(echo "$STAGED" | grep -v '^src/proxy/OssifiableProxy.sol' || true)
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+if ! solhint $STAGED; then
+  echo >&2
+  echo "pre-commit: solhint reported issues. Fix them or run 'git commit --no-verify' to bypass." >&2
+  exit 1
+fi

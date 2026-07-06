@@ -1,0 +1,75 @@
+name: contract-sizes
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sizes:
+    name: contract sizes
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: ./.github/actions/repo-setup
+
+      - name: build (head)
+        run: forge build --sizes --json > sizes.head.json
+
+      # Build the same target on the base ref so the report can show deltas.
+      # Empty file => no diff column; the report still renders absolute sizes.
+      - name: build (base)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -e
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          git worktree add /tmp/base-tree FETCH_HEAD
+          (
+            cd /tmp/base-tree
+            git submodule update --init --recursive
+            forge build --sizes --json
+          ) > sizes.base.json || {
+            echo "::warning::base build failed; diff column will be omitted"
+            echo '{}' > sizes.base.json
+          }
+          git worktree remove --force /tmp/base-tree
+
+      - name: render report
+        id: render
+        run: |
+          set -e
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            python3 .github/scripts/contract-sizes.py \
+              --head sizes.head.json --base sizes.base.json \
+              --output report.md --fail-on-oversize
+          else
+            python3 .github/scripts/contract-sizes.py \
+              --head sizes.head.json \
+              --output report.md --fail-on-oversize
+          fi
+          {
+            echo '## Contract sizes'
+            echo
+            cat report.md
+          } > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: post sticky comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          .github/scripts/sticky-comment.sh \
+            "${{ github.event.pull_request.number }}" \
+            '<!-- contract-sizes:do-not-edit -->' \
+            comment.md

@@ -1,0 +1,32 @@
+name: coverage
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: forge coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/repo-setup
+
+      # `--ir-minimum` lets coverage instrument the bytecode while keeping via_ir for
+      # compilation — turning via_ir off triggers stack-too-deep on the deleverage helpers.
+      # The benchmark suite is skipped because its 100M+ gas tests blow up coverage time.
+      - name: coverage
+        run: forge coverage --ir-minimum --report summary --report lcov --report-file lcov.info --no-match-path 'test/integration/HeapDeleverageBenchmark.t.sol'
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 14

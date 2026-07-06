@@ -1,0 +1,23 @@
+{
+  "lib/lido-lend": {
+    "branch": {
+      "name": "main",
+      "rev": "ec7171654bdb7211e07bf696a813f2e7a290a1e2"
+    }
+  },
+  "lib/lido-lend-irm": {
+    "branch": {
+      "name": "main",
+      "rev": "ce459215fd045dfd4c6a84f5460904d24650f8bf"
+    }
+  },
+  "lib/openzeppelin-contracts": {
+    "rev": "5fd1781b1454fd1ef8e722282f86f9293cacf256"
+  },
+  "lib/openzeppelin-contracts-upgradeable": {
+    "rev": "7bf4727aacdbfaa0f36cbd664654d0c9e1dc52bf"
+  },
+  "lib/vault-v2": {
+    "rev": "425f6b1fb3a1d25083a9515348bd5e7bd3ab9017"
+  }
+}

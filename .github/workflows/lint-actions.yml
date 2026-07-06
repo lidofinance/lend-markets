@@ -1,0 +1,10 @@
+name: lint-actions
+
+# Reusable lidofinance/linters workflow. Validates GH Actions usage: pinned
+# refs, deprecated commands, etc. Maintained by the Lido org.
+on:
+  workflow_dispatch:
+
+jobs:
+  actions:
+    uses: lidofinance/linters/.github/workflows/actions.yml@master

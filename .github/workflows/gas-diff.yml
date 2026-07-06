@@ -1,0 +1,115 @@
+name: gas-diff
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gas-diff:
+    name: gas snapshot diff
+    # PRs from forks can't access secrets, so the mainnet-fork tests would skip and produce a
+    # zero-gas diff. Skip the whole job to avoid noise.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+      # Heap-deleverage benchmark uses 100M+ gas and drowns out everything else. Path may not
+      # exist on every branch — forge ignores a non-match silently.
+      SNAPSHOT_EXCLUDE: test/integration/HeapDeleverageBenchmark.t.sol
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: ./.github/actions/repo-setup
+
+      # Snapshot the base ref in an isolated worktree so we don't have to swap branches in the
+      # main checkout. Submodule pins on the base ref may differ from head.
+      - name: snapshot (base)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -e
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          git worktree add /tmp/base-tree FETCH_HEAD
+          (
+            cd /tmp/base-tree
+            git submodule update --init --recursive
+            forge snapshot \
+              --no-match-path "$SNAPSHOT_EXCLUDE" \
+              --fork-url "$MAINNET_RPC_URL" \
+              --snap /tmp/snap.base
+          ) || {
+            echo "::warning::base snapshot failed; gas-diff comment will be skipped"
+            : > /tmp/snap.base
+          }
+          git worktree remove --force /tmp/base-tree
+
+      - name: snapshot diff (head vs base)
+        if: github.event_name == 'pull_request'
+        id: diff
+        run: |
+          set -o pipefail
+          if [ ! -s /tmp/snap.base ]; then
+            echo 'has_diff=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          forge snapshot \
+            --no-match-path "$SNAPSHOT_EXCLUDE" \
+            --fork-url "$MAINNET_RPC_URL" \
+            --diff /tmp/snap.base \
+            2>&1 | tee /tmp/gas-diff.txt
+          echo 'has_diff=true' >> "$GITHUB_OUTPUT"
+
+      - name: snapshot (head, push to main)
+        if: github.event_name == 'push'
+        run: |
+          forge snapshot \
+            --no-match-path "$SNAPSHOT_EXCLUDE" \
+            --fork-url "$MAINNET_RPC_URL" \
+            --snap /tmp/snap.head 2>&1 | tee /tmp/gas-snapshot.txt
+          {
+            echo '## Gas snapshot (main)'
+            echo
+            echo '```'
+            tail -c 50000 /tmp/gas-snapshot.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: upload full diff
+        if: always() && steps.diff.outputs.has_diff == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gas-diff
+          path: /tmp/gas-diff.txt
+
+      - name: render comment (top 10)
+        if: github.event_name == 'pull_request' && steps.diff.outputs.has_diff == 'true'
+        run: |
+          python3 .github/scripts/gas-diff-top.py \
+            --input /tmp/gas-diff.txt --top 10 --output /tmp/gas-top.md
+          {
+            echo '## Gas diff vs `${{ github.base_ref }}`'
+            echo
+            cat /tmp/gas-top.md
+            echo
+            echo '<sub>Heap deleverage benchmark excluded. Full diff in `gas-diff` artefact.</sub>'
+          } > /tmp/gas-comment.md
+          cat /tmp/gas-comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: post sticky comment
+        if: github.event_name == 'pull_request' && steps.diff.outputs.has_diff == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          .github/scripts/sticky-comment.sh \
+            "${{ github.event.pull_request.number }}" \
+            '<!-- gas-diff:do-not-edit -->' \
+            /tmp/gas-comment.md
