@@ -97,6 +97,12 @@ contract ActivationHarness {
         return _total[borrower] - $.sync(false, borrower, opinion);
     }
 
+    /// @dev Direct read of the unlock time for a caller-supplied opinion, to exercise the banned and suspect
+    ///      surcharge branches the `sync` helpers don't reach.
+    function getUnlockTime(address borrower, GuardiansOpinion memory opinion) external view returns (uint256) {
+        return $.getUnlockTime(borrower, opinion);
+    }
+
     function currentInflow() external view returns (uint256) {
         return $.calcDecayedInflow();
     }
@@ -165,6 +171,27 @@ contract CollateralActivationLibTest is Test {
         (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(attacker);
         assertEq(active, 0, "no matured collateral");
         assertEq(activating + dust, 0.5 ether, "only the sub-threshold dust remains, matched 1:1 by the inflow");
+    }
+
+    /// @notice Dust that predates a crossing deposit is released into the timed lot: a sub-threshold deposit parks
+    ///         as dust, then a later deposit that (with the dust) crosses the threshold clears the dust and folds
+    ///         the whole amount into `activating`. Exercises the "dust already present when the threshold is
+    ///         crossed" path, distinct from the flash test where the crossing deposit comes first.
+    function test_dustThenCrossThreshold_releasesDustIntoActivating() public {
+        h.setMinActivationAmount(10 ether); // a real threshold so a sub-threshold deposit is possible
+        address borrower = address(0xD05);
+
+        h.deposit(borrower, 4 ether); // below 10 -> parks as dust, nothing timed
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(dust, 4 ether, "sub-threshold deposit parks as dust");
+        assertEq(activating, 0, "nothing activating yet");
+        assertEq(active, 0, "nothing active yet");
+
+        h.deposit(borrower, 8 ether); // 8 + 4 dust = 12 >= 10 -> crosses; the dust is released with it
+        (active, activating, dust) = h.bucketsOf(borrower);
+        assertEq(dust, 0, "dust cleared once the threshold is crossed");
+        assertEq(activating, 12 ether, "dust joins the crossing deposit in the timed lot");
+        assertEq(active, 0, "still timed, not yet matured");
     }
 
     /// @notice A trusted (instant) deposit crosses straight into `active`, with no timer and no inflow bump.
@@ -326,5 +353,92 @@ contract CollateralActivationLibTest is Test {
         (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
         assertEq(activating, 1 ether, "locked remainder stays activating, not demoted");
         assertEq(dust, 0, "locked remainder not folded into freely-withdrawable dust");
+    }
+
+    // ── setConfig bound reverts not reached by the single-field setter helpers ──
+
+    /// @dev A valid config to mutate one field at a time. Mirrors `setUp`.
+    function _baseConfig() internal pure returns (CollateralActivationConfig memory) {
+        return CollateralActivationConfig({
+            minActivationDelay: 1 minutes,
+            maxActivationDelay: 1 hours,
+            activatingLockAmount: 0,
+            activatingLockDuration: 0,
+            maxDelayInflow: 10_000 ether,
+            minActivationAmount: 1,
+            maxGuardiansQuorumDelay: 1 days,
+            delayPerStrike: 1 hours,
+            delayPerSuspect: 30 minutes
+        });
+    }
+
+    function testRevert_setConfig_activatingLockDurationAboveBound() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.activatingLockDuration = uint40(7 days + 1);
+        vm.expectRevert(CollateralActivationLib.MaxActivatingLockDurationExceeded.selector);
+        h.setConfig(cfg);
+    }
+
+    function testRevert_setConfig_zeroMinActivationAmount() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.minActivationAmount = 0;
+        vm.expectRevert(CollateralActivationLib.ZeroMinActivationAmount.selector);
+        h.setConfig(cfg);
+    }
+
+    function testRevert_setConfig_zeroMaxDelayInflow() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.maxDelayInflow = 0;
+        vm.expectRevert(CollateralActivationLib.ZeroMaxDelayInflow.selector);
+        h.setConfig(cfg);
+    }
+
+    function testRevert_setConfig_delayPerStrikeAboveBound() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.delayPerStrike = uint40(7 days + 1);
+        vm.expectRevert(CollateralActivationLib.MaxDelayPerStrikeExceeded.selector);
+        h.setConfig(cfg);
+    }
+
+    function testRevert_setConfig_delayPerSuspectAboveBound() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.delayPerSuspect = uint40(7 days + 1);
+        vm.expectRevert(CollateralActivationLib.MaxDelayPerSuspectExceeded.selector);
+        h.setConfig(cfg);
+    }
+
+    // ── _getUnlockTime branches ──
+
+    function test_getUnlockTime_bannedNeverUnlocks() public {
+        address borrower = address(0xBEEF);
+        h.deposit(borrower, 5 ether);
+        GuardiansOpinion memory op = GuardiansOpinion({
+            banned: true, strikeCount: 0, suspectCount: 0, suspectExpiryTimestamp: 0, quorumFrontierTimestamp: 0
+        });
+        assertEq(h.getUnlockTime(borrower, op), type(uint256).max, "banned borrower never unlocks");
+    }
+
+    function test_getUnlockTime_suspectSurchargeWhenLotBeforeExpiry() public {
+        address borrower = address(0xBEEF);
+        h.deposit(borrower, 5 ether); // activatingStart = now
+
+        // suspectExpiry = 0: the lot's start is not before it, so no surcharge.
+        GuardiansOpinion memory noSurcharge = GuardiansOpinion({
+            banned: false, strikeCount: 0, suspectCount: 2, suspectExpiryTimestamp: 0, quorumFrontierTimestamp: 0
+        });
+        // future expiry: the lot started before it, so the suspect surcharge applies.
+        GuardiansOpinion memory surcharge = GuardiansOpinion({
+            banned: false,
+            strikeCount: 0,
+            suspectCount: 2,
+            suspectExpiryTimestamp: block.timestamp + 1 hours,
+            quorumFrontierTimestamp: 0
+        });
+
+        assertEq(
+            h.getUnlockTime(borrower, surcharge) - h.getUnlockTime(borrower, noSurcharge),
+            2 * 30 minutes,
+            "surcharge = suspectCount * delayPerSuspect when the lot started before the suspect expiry"
+        );
     }
 }
