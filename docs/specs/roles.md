@@ -61,7 +61,7 @@ The core authorizes its admin surface against a single in-contract `owner`. The 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | `setCollateralActivationConfig`, `setSettlementConfig`, `grantInstantActivation`, `revokeInstantActivation` | C4 | routine delay mechanism |
+| `MANAGER_ROLE` | `setCollateralActivationConfig`, `setSettlementConfig`, `setSupplyCap`, `grantInstantActivation`, `revokeInstantActivation` | C4 | routine delay mechanism |
 | `FREEZER_ROLE` | `freeze` | C3 | risk steward committee |
 | `UNFREEZER_ROLE` | `unfreeze` | C3 | risk steward committee (splittable from the freezer) |
 | `PAUSER_ROLE` | `pauseFor` (stops every controller hook) | C2 | emergency-seal committee, bounded |
@@ -108,7 +108,7 @@ The exit book is plain `Ownable` set at construction, not behind an `OssifiableP
 - **Borrower** — `supplyCollateral` and `repay` are permissionless add-value, `borrow` and `withdrawCollateral` are authorized and pass the controller's hook gates, `setSettlementLtv` is self-scoped with no role.
 - **Lender** — `supply` and `withdraw` on the core, `deposit` / `mint` / `withdraw` / `redeem` / `fallbackExit` / `settle` on the vault, and `setAuthorization` to let the vault or an operator act over a core position.
 - **Permissionless** — `liquidate`, `flashLoan`, `accrueInterest`.
-- **Contract callers** — the core is the sole caller of `controller.on(...)` and of the IRM `borrowRate`, the vault acts on the core for lenders under their authorization, the deposit gateway runs add-value zaps, and the deployer performs the one-shot `initialize` and holds placeholder roles until handover.
+- **Contract callers** — the core is the sole caller of `controller.on(...)` and of the IRM `borrowRate`, the vault acts on the core for lenders under their authorization, and the deployer performs the one-shot `initialize` and holds placeholder roles until handover.
 
 ## Routine risk-increasing actions
 
@@ -117,7 +117,8 @@ Each routine risk-increasing action is meant to run through a dedicated factory 
 Factory-gated actions and their parameters:
 
 - **setCollateralActivationConfig** — `minActivationDelay`, `maxActivationDelay`, `maxDelayInflow`, `delayPerStrike`, `delayPerSuspect`, `activatingLockAmount`, `activatingLockDuration`, `minActivationAmount`, `maxGuardiansQuorumDelay`.
-- **setSettlementConfig** — `sliceFloorBps`, `sliceFloorAssets`, `fullCutBelowCollateral`, `ltvStepBps`, `minBorrowCollateral`.
+- **setSettlementConfig** — `sliceFloorBps`, `sliceFloorAssets`, `fullCutBelowCollateral`, `ltvStepBps`.
+- **setSupplyCap** — `cap`.
 
 The fast risk-reducing levers run with no objection window: the dashboard's `increaseActivationDelays`, `increaseActivatingLock`, and `revokeInstantActivation`, the controller's `freeze` and `unfreeze`, and the registry's `ban`.
 
