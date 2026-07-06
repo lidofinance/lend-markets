@@ -204,6 +204,28 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     // ---
+    // LENDER LIMITS
+    // ---
+
+    /// @inheritdoc ILidoLendMarketController
+    function maxDeposit() external view returns (uint256) {
+        if (isPaused()) return 0;
+        if (supplyCap == 0) return type(uint256).max;
+        (uint256 totalSupplyAssets,,,) = _marketTotals(LIDO_LEND.idToMarketParams(marketId));
+        return Math.saturatingSub(supplyCap, totalSupplyAssets);
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function maxWithdrawableAssets(address supplier) external view returns (uint256) {
+        if (isPaused()) return 0;
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) =
+            _marketTotals(LIDO_LEND.idToMarketParams(marketId));
+        uint256 supplyAssets =
+            LIDO_LEND.position(marketId, supplier).supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
+        return Math.min(supplyAssets, Math.saturatingSub(totalSupplyAssets, totalBorrowAssets));
+    }
+
+    // ---
     // SETTLEMENT QUEUE
     // ---
 
@@ -526,21 +548,35 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         return _debtAssets(marketView, position) > _collateralValue(marketView, position.collateral);
     }
 
-    /// @dev Market snapshot for sizing: LLTV, oracle price, and supply/borrow totals with pending interest
-    ///      simulated so view numbers match what the core sees at hook time.
+    /// @dev Market snapshot for sizing: LLTV, oracle price, and the accrued totals.
     function _marketView(Id id) internal view returns (MarketView memory marketView) {
         MarketParams memory params = LIDO_LEND.idToMarketParams(id);
 
         marketView.lltv = params.lltv;
         marketView.price = IOracle(params.oracle).price();
-        // supply and borrow totals with pending interest simulated, so view sizing matches the hook-time
-        // numbers (the core accrues before invoking hooks)
         (
             marketView.totalSupplyAssets,
             marketView.totalSupplyShares,
             marketView.totalBorrowAssets,
             marketView.totalBorrowShares
-        ) = MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
+        ) = _marketTotals(params);
+    }
+
+    /// @dev Supply/borrow totals with pending interest simulated, so view numbers match what the core sees
+    ///      at hook time. No oracle read — the lender limits built on this stay available during an oracle
+    ///      outage.
+    function _marketTotals(MarketParams memory params)
+        internal
+        view
+        returns (
+            uint256 totalSupplyAssets,
+            uint256 totalSupplyShares,
+            uint256 totalBorrowAssets,
+            uint256 totalBorrowShares
+        )
+    {
+        (totalSupplyAssets, totalSupplyShares, totalBorrowAssets, totalBorrowShares) =
+            MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
     }
 
     /// @dev Borrower's settle-relevant position, widened from the core `Position` (uint128 fields).

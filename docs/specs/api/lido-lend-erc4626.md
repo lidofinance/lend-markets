@@ -185,6 +185,22 @@ function maxRedeem(address owner) public view returns (uint256);
 
 Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in free liquidity it returns the exact share balance, avoiding a `convertToShares` round-trip that could round the last wei down and strand a share. Otherwise it caps to the shares liquidity covers.
 
+### `maxDeposit`
+
+```solidity
+function maxDeposit(address) public view returns (uint256);
+```
+
+Deferred to the controller, which decides how much the market accepts.
+
+### `maxMint`
+
+```solidity
+function maxMint(address receiver) public view returns (uint256);
+```
+
+`maxDeposit` in shares, floored; the unlimited sentinel passes through unconverted.
+
 ### `settle`
 
 ```solidity

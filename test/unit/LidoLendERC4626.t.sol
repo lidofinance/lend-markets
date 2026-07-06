@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
@@ -444,5 +445,117 @@ contract LidoLendERC4626Test is LidoLendSetup {
         assertEq(p.oracle, _market().params.oracle, "oracle");
         assertEq(p.irm, _market().params.irm, "irm");
         assertEq(p.lltv, _market().params.lltv, "lltv");
+    }
+
+    // ── maxDeposit / maxMint: deposit-side controller vetoes ──
+
+    /// @dev With no cap and no pause the supply hook vetoes nothing, so both maxes report the ERC-4626
+    ///      sentinel `type(uint256).max`, matching what `deposit`/`mint` will honor.
+    function test_maxDeposit_maxWhenUncapped() public view {
+        Market storage m = _market();
+        assertEq(m.vault.maxDeposit(address(this)), type(uint256).max, "uncapped: maxDeposit is the sentinel");
+        assertEq(m.vault.maxMint(address(this)), type(uint256).max, "uncapped: maxMint is the sentinel");
+    }
+
+    /// @dev A paused market reverts every supply in the hook, so both maxes collapse to 0 irrespective of cap.
+    function test_maxDeposit_zeroWhenPaused() public {
+        Market storage m = _market();
+        m.controller.grantRole(m.controller.PAUSER_ROLE(), address(this));
+        m.controller.pauseFor(1 hours);
+        assertTrue(m.controller.isPaused(), "market paused");
+        assertEq(m.vault.maxDeposit(address(this)), 0, "paused: maxDeposit 0");
+        assertEq(m.vault.maxMint(address(this)), 0, "paused: maxMint 0");
+    }
+
+    /// @dev Freeze blocks borrow and withdrawCollateral but not plain lender supply, so it must leave the
+    ///      deposit maxes untouched — the sentinel here, since no cap is set.
+    function test_maxDeposit_unaffectedByFreeze() public {
+        Market storage m = _market();
+        m.controller.grantRole(m.controller.FREEZER_ROLE(), address(this));
+        m.controller.freeze();
+        assertEq(m.vault.maxDeposit(address(this)), type(uint256).max, "frozen: deposit still uncapped");
+        assertEq(m.vault.maxMint(address(this)), type(uint256).max, "frozen: mint still uncapped");
+    }
+
+    /// @dev With a cap set, `maxDeposit` is the remaining headroom `cap - totalSupplyAssets`, and it is the
+    ///      EXACT boundary `deposit` honors: depositing precisely `maxDeposit` fills the market to the cap
+    ///      (`attempted == cap`, passes), and once at the cap the view drops to 0 so `deposit` rejects one wei
+    ///      more at the ERC-4626 layer (`ERC4626ExceededMaxDeposit`) — before the supply hook even runs. This is
+    ///      the deposit-side analogue of the maxRedeem exact-boundary test: the corrected view is now
+    ///      load-bearing, neither under- nor over-reporting what `deposit` accepts.
+    function test_maxDeposit_capHeadroomIsExactDepositBoundary() public {
+        Market storage m = _market();
+        uint256 cap = 100 ether;
+        m.controller.setSupplyCap(cap);
+
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 30 ether);
+        m.vaultDeposit(lender, 30 ether); // no borrow -> no accrual, totalSupplyAssets == 30
+
+        uint256 headroom = m.vault.maxDeposit(lender);
+        assertEq(headroom, cap - 30 ether, "maxDeposit == cap - totalSupplyAssets");
+
+        // Depositing exactly the headroom fills the market to the cap (attempted == cap, not > cap).
+        address filler = _actor("filler");
+        _fund(m.loanToken, filler, headroom + 1);
+        m.vaultDeposit(filler, headroom);
+        assertEq(m.vault.maxDeposit(filler), 0, "at the cap: no headroom left");
+
+        // One wei more is rejected at the ERC-4626 layer, since `deposit` consults the now-zero `maxDeposit`.
+        vm.prank(filler);
+        vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, filler, 1, 0));
+        m.vault.deposit(1, filler);
+    }
+
+    /// @dev Shares form of the capped case: `maxMint` is `maxDeposit` floored through the share conversion, so
+    ///      it equals `convertToShares(headroom)`.
+    function test_maxMint_mirrorsCappedMaxDeposit() public {
+        Market storage m = _market();
+        uint256 cap = 100 ether;
+        m.controller.setSupplyCap(cap);
+
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 40 ether);
+        m.vaultDeposit(lender, 40 ether);
+
+        uint256 headroom = m.vault.maxDeposit(lender);
+        assertEq(headroom, 60 ether, "headroom == cap - 40");
+        assertEq(m.vault.maxMint(lender), m.vault.convertToShares(headroom), "maxMint == convertToShares(headroom)");
+    }
+
+    /// @dev Tightness of `maxMint` on a RAGGED share ratio (a year of accrued interest breaks the exact
+    ///      divisibility a fresh market has): the reported shares resolve to assets within the cap headroom,
+    ///      one share more resolves beyond it, and minting exactly `maxMint` executes end to end. Pins the
+    ///      Floor rounding — a round-up would report a share count whose mint the supply hook rejects.
+    function test_maxMint_isExactMintBoundary_underCapWithInterest() public {
+        Market storage m = _market();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 50 ether);
+        m.vaultDeposit(lender, 50 ether);
+
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 1_000 ether);
+        m.supplyCollateral(borrower, 1_000 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 40 ether); // high utilization -> interest accrues
+
+        vm.warp(block.timestamp + 365 days);
+        m.accrueInterest();
+        m.controller.setSupplyCap(m.core.market(m.id).totalSupplyAssets + 10 ether);
+
+        uint256 headroom = m.vault.maxDeposit(lender);
+        uint256 maxShares = m.vault.maxMint(lender);
+        assertLe(m.vault.previewMint(maxShares), headroom, "maxMint resolves within the headroom");
+        assertGt(m.vault.previewMint(maxShares + 1), headroom, "one share more resolves beyond the headroom");
+
+        // Minting exactly maxMint clears both the ERC-4626 guard and the supply hook.
+        address minter = _actor("minter");
+        uint256 assetsNeeded = m.vault.previewMint(maxShares);
+        _fund(m.loanToken, minter, assetsNeeded);
+        vm.prank(minter);
+        m.loanToken.approve(address(m.vault), assetsNeeded);
+        vm.prank(minter);
+        m.vault.mint(maxShares, minter);
+        assertEq(m.vault.balanceOf(minter), maxShares, "minted exactly maxMint");
     }
 }

@@ -143,6 +143,17 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         return previewRedeem(ownerShares) <= liquidAssets ? ownerShares : convertToShares(liquidAssets);
     }
 
+    /// @dev Deferred to the controller, which decides how much the market accepts.
+    function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        return controller.maxDeposit();
+    }
+
+    /// @dev `maxDeposit` in shares, floored; the unlimited sentinel passes through unconverted.
+    function maxMint(address receiver) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        uint256 maxAssets = maxDeposit(receiver);
+        return maxAssets == type(uint256).max ? maxAssets : _convertToShares(maxAssets, Math.Rounding.Floor);
+    }
+
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override {
         super._deposit(caller, receiver, assets, shares);
         if (assets != 0) LIDO_LEND.supply(_marketParams, assets, 0, address(this), "");
@@ -342,16 +353,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     }
 
     function _morphoWithdrawableAssets() internal view returns (uint256) {
-        if (controller.isPaused()) return 0;
-
-        uint256 supplyShares = _lidoLendSupplyShares();
-        if (supplyShares == 0) return 0;
-
-        (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) =
-            MorphoBalancesLib.expectedMarketBalances(IMorpho(address(LIDO_LEND)), _marketParams);
-        uint256 supplyAssets = supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
-        uint256 liquidity = Math.saturatingSub(totalSupplyAssets, totalBorrowAssets);
-        return Math.min(supplyAssets, liquidity);
+        return controller.maxWithdrawableAssets(address(this));
     }
 
     function _lidoLendSupplyShares() internal view returns (uint256 supplyShares) {
