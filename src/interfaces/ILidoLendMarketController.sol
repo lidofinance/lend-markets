@@ -134,6 +134,18 @@ interface ILidoLendMarketController is
     function DUST_MARKET_MIN_BORROW() external view returns (uint256);
 
     // ---
+    // LENDER LIMITS
+    // ---
+
+    /// @notice Loan assets the market still accepts from lenders: the remaining supply-cap headroom,
+    ///         `type(uint256).max` when uncapped, 0 while paused.
+    function maxDeposit() external view returns (uint256);
+
+    /// @notice Loan assets `supplier` can withdraw from its market supply right now: its position capped by
+    ///         the idle liquidity, 0 while paused.
+    function maxWithdrawableAssets(address supplier) external view returns (uint256);
+
+    // ---
     // COLLATERAL ACTIVATION
     // ---
 

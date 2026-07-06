@@ -260,7 +260,7 @@ flowchart LR
 
 ### Tokenized lender layer & fallback exit
 
-Lenders hold an ERC-4626 vault share (`LidoLendERC4626`), one vault per market, freely transferable and ungated. `deposit`/`mint`/`withdraw`/`redeem` are standard. `maxWithdraw`/`maxRedeem` are bounded by the lesser of the owner's position value and the market's free pool liquidity, so withdrawing past available liquidity reverts in the core.
+Lenders hold an ERC-4626 vault share (`LidoLendERC4626`), one vault per market, freely transferable and ungated. `deposit`/`mint`/`withdraw`/`redeem` are standard, with the max views mirroring the controller's lender limits: `maxDeposit`/`maxMint` report the remaining supply-cap headroom (unlimited when uncapped), `maxWithdraw`/`maxRedeem` the lesser of the owner's position value and the market's free pool liquidity, and all four drop to zero while the market is paused.
 
 When liquidity is short, lenders use the settlement exit:
 

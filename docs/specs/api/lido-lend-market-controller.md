@@ -470,6 +470,24 @@ function DUST_MARKET_MIN_BORROW() external view returns (uint256);
 
 While the market's total borrow assets sit below this amount, every borrow must draw at least this much loan assets. It fences borrow-share inflation by keeping the market out of the dust regime where a 1-wei borrow mints a disproportionate slice of the outstanding shares.
 
+### `maxDeposit`
+
+```solidity
+function maxDeposit() external view returns (uint256);
+```
+
+Loan assets the market still accepts from lenders: the remaining supply-cap headroom, `type(uint256).max` when uncapped, 0 while paused.
+
+### `maxWithdrawableAssets`
+
+```solidity
+function maxWithdrawableAssets(
+    address supplier
+) external view returns (uint256);
+```
+
+Loan assets `supplier` can withdraw from its market supply right now: its position capped by the idle liquidity, 0 while paused.
+
 ### `currentInflow`
 
 ```solidity
