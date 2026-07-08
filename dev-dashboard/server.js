@@ -6,6 +6,7 @@
 
 const express = require("express");
 const path = require("path");
+const fs = require("fs");
 const { spawn } = require("child_process");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -30,9 +31,11 @@ let state = { core: null, guardianSignals: null, tokens: [], markets: [] };
 // page reload. Archived (not deleted) on node stop/start — the last few sessions are kept alongside.
 let history = [];
 let historyArchive = [];
+let txLog = []; // { hash, label } of txs the browser has sent this session (reset on node start/stop)
 function archiveHistory(reason) {
   if (history.length) { historyArchive.unshift({ reason, steps: history }); historyArchive = historyArchive.slice(0, 3); }
   history = [];
+  txLog = []; // hashes belong to the old chain
 }
 
 const app = express();
@@ -66,6 +69,50 @@ app.get("/api/node/status", (_req, res) => {
     history,
     archive: historyArchive,
   });
+});
+
+// ── transaction hashes: the browser reports each sent tx so it lands in the server log and can be
+//    looked up later (eth_getTransactionReceipt → .logs for the emitted events) ──
+app.post("/api/txlog", (req, res) => {
+  const { hash, label } = req.body || {};
+  if (!hash) return res.status(400).json({ error: "hash required" });
+  txLog.push({ hash, label: label || null });
+  txLog = txLog.slice(-1000);
+  res.json({ ok: true });
+});
+app.get("/api/txlog", (_req, res) => res.json({ txLog }));
+
+// ── event ABIs from forge artifacts, so the browser can decode any emitted event (incl. struct-typed
+//    ones the hand-written list can't express). Collected once from out/ and cached. ──
+let eventAbiCache = null;
+function collectEventAbis() {
+  const outDir = path.join(REPO_ROOT, "out");
+  if (!fs.existsSync(outDir)) return [];
+  const seen = new Set(), events = [];
+  const walk = (dir) => {
+    for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      let st; try { st = fs.statSync(p); } catch { continue; }
+      if (st.isDirectory()) walk(p);
+      else if (f.endsWith(".json")) {
+        let j; try { j = JSON.parse(fs.readFileSync(p, "utf8")); } catch { continue; }
+        if (!Array.isArray(j.abi)) continue;
+        for (const e of j.abi) {
+          if (e.type !== "event") continue;
+          const key = e.name + JSON.stringify(e.inputs || []);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          events.push(e);
+        }
+      }
+    }
+  };
+  try { walk(outDir); } catch {}
+  return events;
+}
+app.get("/api/events-abi", (_req, res) => {
+  if (!eventAbiCache) eventAbiCache = collectEventAbis();
+  res.json({ events: eventAbiCache });
 });
 
 // ── scenario history (persisted, archived on node lifecycle) ──
@@ -134,10 +181,17 @@ function runForge(extraArgs, req) {
   const args = ["script", SCRIPT, "--rpc-url", rpc, "--broadcast", "--private-key", privateKey, ...extraArgs];
   return new Promise((resolve) => {
     const forge = spawn("forge", args, { cwd: REPO_ROOT, env: process.env });
-    let out = "", err = "";
+    let out = "", err = "", done = false;
+    const finish = (code) => { if (!done) { done = true; resolve({ code, out, err }); } };
+    // surface a missing/broken toolchain instead of resolving with an empty log
+    forge.on("error", (e) => {
+      err += `[spawn error] ${e.message}`
+        + (e.code === "ENOENT" ? " — `forge` not found on PATH. Install Foundry (https://getfoundry.sh) and reopen the terminal." : "");
+      finish(127);
+    });
     forge.stdout.on("data", (d) => (out += d.toString()));
     forge.stderr.on("data", (d) => (err += d.toString()));
-    forge.on("close", (code) => resolve({ code, out, err }));
+    forge.on("close", (code) => finish(code));
   });
 }
 

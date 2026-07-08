@@ -46,6 +46,7 @@
   th,td { text-align:right; padding:3px 9px; border-bottom:1px solid #1e242c; white-space:nowrap; }
   th { color:var(--mut); font-weight:600; text-transform:uppercase; font-size:10.5px; letter-spacing:.04em; }
   td:first-child, th:first-child { text-align:left; }
+  .ev { padding-bottom:9px; } /* small gap between decoded/undecoded events in the tx detail */
 </style>
 </head>
 <body>
@@ -69,6 +70,7 @@
   <button class="gt" data-group="protocol">protocol</button>
   <button class="gt" data-group="market">market</button>
   <button class="gt" data-group="script">script</button>
+  <button class="gt" data-group="txs">txs</button>
 </div>
 
 <main>
@@ -322,6 +324,16 @@
     <div id="historyArchive" class="list" style="margin-top:8px"></div>
   </section>
 
+  <section class="full" data-group="txs">
+    <h2>transactions — node tx history (click a tx to inspect)</h2>
+    <div class="row"><div style="flex:2"><label>inspect any tx by hash</label><input id="txHashInput" placeholder="0x… tx hash (paste from anywhere)" /></div><button id="inspectTxBtn" class="primary">inspect</button><button id="refreshTxs">refresh list</button></div>
+    <small>the list holds hashes the browser sent this session (also in the server console / <code>GET /api/txlog</code>); or paste any hash above. click for status, gas, calldata and decoded events.</small>
+    <div style="display:grid;grid-template-columns:minmax(220px,360px) 1fr;gap:14px;margin-top:10px;align-items:start">
+      <div id="txList" class="list" style="max-height:560px;overflow:auto"></div>
+      <div id="txDetail" class="kv"></div>
+    </div>
+  </section>
+
   <section class="full" data-group="always" style="order:99">
     <h2>log</h2>
     <div id="log"></div>
@@ -403,10 +415,13 @@ const GUARDIAN = [
   "function getQuorum() view returns (uint256)","function getSuspectWindow() view returns (uint256)","function getGuardians() view returns (address[])"
 ];
 
-function log(m, cls){ const el=$("log"), t=new Date().toLocaleTimeString(); el.innerHTML+=`<div class="${cls||''}">[${t}] ${m}</div>`; el.scrollTop=el.scrollHeight; }
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function log(m, cls){ const el=$("log"), t=new Date().toLocaleTimeString(); el.innerHTML+=`<div class="${cls||''}">[${t}] ${esc(m)}</div>`; el.scrollTop=el.scrollHeight; }
+// tx hash line in the page log — clickable to open the txs tab on that transaction
+function logTx(hash, label){ const el=$("log"), t=new Date().toLocaleTimeString(); el.innerHTML+=`<div class="log-mut">[${t}] tx <span class="addr" onclick="showGroup('txs');viewTx('${hash}')">${hash}</span>${label?(" ("+esc(label)+")"):""}</div>`; el.scrollTop=el.scrollHeight; }
 function ok(m){log(m,"log-ok")} function bad(m){log("✗ "+m,"log-bad")}
 async function api(p, body){ const r=await fetch(p,{method:body?"POST":"GET",headers:{"content-type":"application/json"},body:body?JSON.stringify(body):undefined}); const j=await r.json(); if(!r.ok) throw new Error(j.error||("HTTP "+r.status)+(j.log?("\n"+j.log):"")); return j; }
-function short(a){ return a? a.slice(0,6)+"…"+a.slice(-4):"—"; }
+function short(a){ return a || "—"; } // full address everywhere (kept the name/callsites; click still copies)
 function copy(t){ navigator.clipboard.writeText(t); log("copied "+t,"log-mut"); }
 function kv(o){ return Object.entries(o).map(([k,v])=>`<span>${k}</span><span class="addr" onclick="copy('${v}')">${v}</span>`).join(""); }
 function tokMeta(addr){ return tokens.find(t=>t.address.toLowerCase()===String(addr).toLowerCase()); }
@@ -417,6 +432,16 @@ function connect(){
   // cacheTimeout:-1 disables ethers' request cache so nonce and "latest" reads are always fresh — fast
   // back-to-back actions otherwise reuse a stale nonce ("nonce too low") or a stale block.
   provider = new E.JsonRpcProvider($("rpc").value.trim(), undefined, { cacheTimeout: -1, staticNetwork: true });
+  // report every sent tx hash to the server log (and the browser log) — look it up later via the receipt
+  const _send = provider.send.bind(provider);
+  provider.send = async (method, params) => {
+    const res = await _send(method, params);
+    if ((method === "eth_sendRawTransaction" || method === "eth_sendTransaction") && typeof res === "string" && /^0x[0-9a-fA-F]{64}$/.test(res)) {
+      logTx(res, lastAction);
+      api("/api/txlog", { hash: res, label: lastAction }).then(() => { if (curGroup === "txs") renderTxList(); }).catch(() => {});
+    }
+    return res;
+  };
   signer = new E.Wallet($("signer").value, provider);
   ok("connected as "+short(signer.address)); setActorLabel(); refreshChain(); refreshMktCtl(); refreshPrice(); refreshCommittee(); renderOverview(); renderParticipants();
 }
@@ -459,6 +484,7 @@ function showGroup(g){
   document.querySelectorAll(".gt").forEach(b=>b.classList.toggle("active", b.dataset.group===g));
   document.querySelectorAll("section[data-group]").forEach(s=>{ s.style.display = (s.dataset.group===g||s.dataset.group==="always") ? "" : "none"; });
   if(g==="market" && provider){ renderOverview(); renderParticipants(); }
+  if(g==="txs") renderTxList();
 }
 document.querySelectorAll(".gt").forEach(b=>b.onclick=()=>showGroup(b.dataset.group));
 showGroup("network");
@@ -738,11 +764,94 @@ $("watchMeBtn").onclick=()=>{ if(signer&&!watched.includes(signer.address)) watc
 $("watchResetBtn").onclick=()=>{ watched=accounts.map(a=>E.getAddress(a.address)); renderParticipants(); };
 $("refreshParticipants").onclick=()=>{ renderParticipants(); renderOverview(); };
 
+// ══ transactions tab ════════════════════════════════════════════════════════════════════════
+// curated events for decoding receipt logs (ERC20 / ERC4626 / Morpho core / guardian / controller / IRM);
+// these win on topic0 collisions, and loadEventAbi() below adds the rest from the forge artifacts.
+const CURATED_EVENTS = [
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+  "event Approval(address indexed owner, address indexed spender, uint256 value)",
+  "event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares)",
+  "event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)",
+  "event Supply(bytes32 indexed id, address indexed caller, address indexed onBehalf, uint256 assets, uint256 shares)",
+  "event Withdraw(bytes32 indexed id, address caller, address indexed onBehalf, address indexed receiver, uint256 assets, uint256 shares)",
+  "event Borrow(bytes32 indexed id, address caller, address indexed onBehalf, address indexed receiver, uint256 assets, uint256 shares)",
+  "event Repay(bytes32 indexed id, address indexed caller, address indexed onBehalf, uint256 assets, uint256 shares)",
+  "event SupplyCollateral(bytes32 indexed id, address indexed caller, address indexed onBehalf, uint256 assets)",
+  "event WithdrawCollateral(bytes32 indexed id, address caller, address indexed onBehalf, address indexed receiver, uint256 assets)",
+  "event Liquidate(bytes32 indexed id, address indexed caller, address indexed borrower, uint256 repaidAssets, uint256 repaidShares, uint256 seizedAssets, uint256 badDebtAssets, uint256 badDebtShares)",
+  "event AccrueInterest(bytes32 indexed id, uint256 prevBorrowRate, uint256 interest, uint256 feeShares)",
+  "event Banned(bytes32 indexed marketId, address indexed account)",
+  "event Unbanned(bytes32 indexed marketId, address indexed account, address indexed by)",
+  "event Flagged(bytes32 indexed marketId, address indexed account, address indexed guardian, uint16 strikes)",
+  "event Unflagged(bytes32 indexed marketId, address indexed account, address indexed guardian, uint16 strikes)",
+  "event Suspected(bytes32 indexed marketId, address indexed account, address indexed guardian, uint256 timestamp)",
+  "event GuardianAdded(address indexed guardian)","event GuardianRemoved(address indexed guardian)",
+  "event QuorumSet(uint256 quorum)","event SuspectWindowSet(uint256 suspectWindow)",
+  "event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp)",
+  "event FrozenSet(bool frozen, address indexed account)","event SupplyCapSet(uint256 cap, address indexed account)","event InstantActivationSet(address indexed caller, bool enabled)",
+  "event BorrowRateUpdate(bytes32 indexed id, uint256 avgBorrowRate, uint256 rateAtTarget)","event MarketIrmSet(bytes32 indexed id, address indexed irm)","event ConfigDeployed(bytes32 indexed paramsHash, address indexed config)",
+  "event OwnershipTransferred(address indexed previousOwner, address indexed newOwner)","event ManagerSet(address indexed manager)","event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender)"
+];
+let TX_EVENTS = new E.Interface(CURATED_EVENTS);
+// pull full event ABIs from the forge artifacts so struct-typed events (e.g. CollateralDrained) decode too;
+// only add events whose topic0 isn't already covered by the curated list (keeps ERC20 Transfer unambiguous).
+async function loadEventAbi(){
+  try{
+    const { events } = await api("/api/events-abi");
+    const have = new Set(TX_EVENTS.fragments.map(f=>f.topicHash));
+    const extra=[];
+    for(const e of events||[]){ try{ const fr=E.EventFragment.from(e); if(!have.has(fr.topicHash)){ have.add(fr.topicHash); extra.push(e); } }catch{} }
+    if(extra.length){ TX_EVENTS = new E.Interface([...CURATED_EVENTS, ...extra]); log("event decoder: +"+extra.length+" types from artifacts","log-mut"); }
+  }catch{}
+}
+loadEventAbi();
+async function renderTxList(){
+  let items=[]; try{ items=(await api("/api/txlog")).txLog||[]; }catch{}
+  $("txList").innerHTML = items.length
+    ? items.slice().reverse().map(t=>`<div class="addr" onclick="viewTx('${t.hash}')">${t.label?("<b style='color:var(--acc)'>"+esc(t.label)+"</b> "):""}${short(t.hash)}</div>`).join("")
+    : "<small>no txs yet — actions you take will show up here</small>";
+}
+async function viewTx(hash){
+  if(!provider){ $("txDetail").innerHTML="<small>connect first</small>"; return; }
+  $("txDetail").innerHTML="<small>loading…</small>";
+  try{
+    const [tx,rc]=await Promise.all([provider.getTransaction(hash),provider.getTransactionReceipt(hash)]);
+    if(!rc){ $("txDetail").innerHTML="<small>receipt not found (wrong node?)</small>"; return; }
+    const blk=await provider.getBlock(rc.blockNumber); const gasPrice=rc.gasPrice??0n;
+    const o={
+      hash, status: rc.status===1? "✓ success" : "✗ reverted",
+      block: String(rc.blockNumber), time: blk? new Date(Number(blk.timestamp)*1000).toISOString():"—",
+      from: tx?.from||"—", to: tx?.to || (rc.contractAddress? "(contract created) "+rc.contractAddress : "—"),
+      value: tx? E.formatEther(tx.value)+" ETH":"—", nonce: tx? String(tx.nonce):"—",
+      gasUsed: rc.gasUsed.toString(), gasPrice: E.formatUnits(gasPrice,"gwei")+" gwei", fee: E.formatEther(rc.gasUsed*gasPrice)+" ETH",
+      input: tx? (tx.data.length>202? tx.data.slice(0,202)+"… ("+((tx.data.length-2)/2)+" bytes)": tx.data) : "—",
+    };
+    let html=kv2(o)+'<span style="grid-column:1/-1;color:var(--mut);margin-top:8px">events ('+rc.logs.length+')</span>';
+    if(!rc.logs.length) html+='<span class="log-mut">—</span><span class="log-mut">none</span>';
+    for(const lg of rc.logs){
+      let val;
+      try{ const d=TX_EVENTS.parseLog(lg); val=esc(d.name+"("+d.fragment.inputs.map((inp,i)=>inp.name+"="+d.args[i].toString()).join(", ")+")"); }
+      catch{
+        // unknown event (struct/enum/multiline decl) — show it in full: topic0, indexed topics, and data as 32-byte words
+        const hex=(lg.data||"0x").slice(2); const words=[]; for(let i=0;i<hex.length;i+=64) words.push("0x"+hex.slice(i,i+64));
+        val="<span class='log-bad'>undecoded</span>  <small>copy topic0/data to decode manually</small>"
+          + "<br>topic0  "+lg.topics[0]
+          + lg.topics.slice(1).map((t,i)=>"<br>topic"+(i+1)+"  "+t).join("")
+          + (words.length ? words.map((w,i)=>"<br>data["+i+"] "+w).join("") : "<br>data    0x");
+      }
+      html+='<span class="log-mut ev">log</span><span class="ev">'+val+' <small>@'+short(lg.address)+'</small></span>';
+    }
+    $("txDetail").innerHTML=html;
+  }catch(e){ $("txDetail").innerHTML="<small class='log-bad'>"+esc(errMsg(e))+"</small>"; }
+}
+$("refreshTxs").onclick=()=>renderTxList();
+$("inspectTxBtn").onclick=()=>{ const h=$("txHashInput").value.trim(); if(!/^0x[0-9a-fA-F]{64}$/.test(h)) return bad("enter a 32-byte tx hash (0x…64 hex)"); viewTx(h); };
+
 // ══ scenario recorder ═══════════════════════════════════════════════════════════════════════
 // Every user action runs through run(name, params): execute via ACTIONS[name], then (if recording)
 // append the step to `recording`. The script tab shows the steps as editable JSON; replay() runs them
 // top-to-bottom against the current node, so a recorded session is a re-runnable / editable scenario.
-let recording = [], archive = [];
+let recording = [], archive = [], lastAction = null;
 function mustMarket(){ const m=activeMarket(); if(!m) throw new Error("no active market"); if(!signer) throw new Error("connect first"); return m; }
 function onMarketChange(){ renderMktAddrs(); refreshPrice(); refreshMktCtl(); refreshGuardian(); refreshCommittee(); renderOverview(); renderParticipants(); }
 
@@ -829,7 +938,7 @@ async function recordStep(name, params){
   try{ const r=await api("/api/history",{step}); recording=r.history; }catch{ recording.push(step); }
   renderHistory();
 }
-async function run(name, params){ const fn=ACTIONS[name]; if(!fn) throw new Error("unknown action: "+name); await fn(params||{}); await recordStep(name, params); }
+async function run(name, params){ const fn=ACTIONS[name]; if(!fn) throw new Error("unknown action: "+name); lastAction=name; await fn(params||{}); await recordStep(name, params); }
 // thin wrapper for a button: gather params from the DOM, run+record, decode errors
 function act(name, paramsFn){ return async()=>{ try{ await run(name, paramsFn?paramsFn():{}); }catch(e){ bad(errMsg(e)); } }; }
 // run the pasted script: each step executes (impersonating its `from`) AND is appended to history
@@ -842,6 +951,7 @@ async function runScript(){
     try{
       if(from && (!signer || signer.address.toLowerCase()!==String(from).toLowerCase())) await doImpersonate(from);
       log("· ["+(i+1)+"/"+steps.length+"] "+a+(from?(" (from "+short(from)+")"):""),"log-mut");
+      lastAction=a;
       await fn(params);
       await recordStep(a, params); // executed script steps are recorded to history too
     }catch(e){ bad("step "+(i+1)+" ("+a+"): "+errMsg(e)); return; } }

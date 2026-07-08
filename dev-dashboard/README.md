@@ -5,6 +5,23 @@ stack with mock tokens, seed addresses, crank the oracle price, and fast-forward
 browser page. Everything is against a local **anvil** (never a real network); it signs with anvil's
 well-known dev keys.
 
+## Prerequisites
+
+The backend shells out to `forge` and `anvil`, so the parent repo must be able to build:
+
+```sh
+# Foundry (provides forge + anvil)
+curl -L https://foundry.paradigm.xyz | bash && foundryup
+forge --version                       # must be on PATH
+
+# submodules (recursive — lib/lido-lend-irm has its own nested submodules)
+git submodule update --init --recursive
+forge build                           # must succeed before the dashboard can deploy
+```
+
+If `deploy core` fails, run `forge build` at the repo root and read its error — a missing `forge`
+on PATH or uninitialised submodules is the usual cause (the log now shows the real forge output).
+
 ## Run
 
 ```sh
@@ -16,11 +33,18 @@ npm start            # serves http://127.0.0.1:8899
 The page is organized into global tabs (header, active-market bar, and log stay visible across all of
 them): **network** (node, snapshot, seed, time & blocks), **protocol** (deploy core / mock tokens /
 create market), **market** (overview, actions, participants, state, oracle, control, guardian,
-controller config, IRM), and **script** (scenario input + history — see below). Typical flow moves
-left to right: network → protocol → market.
+controller config, IRM), **script** (scenario input + history), and **txs** (transaction inspector).
+Typical flow moves left to right: network → protocol → market.
 
 Reverts are decoded: a failed action logs the protocol error name (e.g. `InsufficientActiveCollateral()`,
-`SupplyCapExceeded(…)`) or the core's string reason, instead of raw selector bytes.
+`SupplyCapExceeded(…)`) or the core's string reason, instead of raw selector bytes. Every sent tx also
+prints a clickable hash line in the page log (click → the txs tab, details for that tx).
+
+**Transactions tab (txs).** The node's tx history for this session (hashes the browser sent, also in the
+`GET /api/txlog`), or paste **any** hash to inspect it. A tx view shows status, block,
+from/to, value, gas & fee, calldata, and its **decoded events** — the event ABIs are loaded from the
+forge artifacts (`GET /api/events-abi`), so struct-typed events (e.g. `CollateralDrained`) decode too;
+anything still unknown is shown in full (topic0, indexed topics, data as 32-byte words) to decode by hand.
 
 **Scenario tab (script + history).** Split in two:
 
@@ -92,7 +116,9 @@ backend runs against the node.
 - **Backend** (`server.js`, Express): manages the `anvil` process and runs the forge deploy against
   it, parsing the labeled addresses from the script's log. It does **not** re-implement the deploy —
   it reuses `script/Devnet.s.sol` (`deployCore` / `deployToken` / `createMarket`). It also persists the
-  scenario **history** (append + archive on node stop/start) so it survives page reloads.
+  scenario **history** (append + archive on node stop/start) so it survives page reloads, records every
+  sent **tx hash** (`GET /api/txlog`), and serves the project's **event ABIs** from the forge artifacts
+  (`GET /api/events-abi`) for the txs-tab event decoder.
 - **Frontend** (`public/index.html`, ethers): talks to the node directly over JSON-RPC for seeding
   (`mint`, `anvil_setStorageAt` deal, `anvil_setBalance`), time-travel (`evm_increaseTime`/`evm_mine`/
   `anvil_mine`/`evm_setNextBlockTimestamp`), chain freeze (`evm_setAutomine`/`evm_setIntervalMining`),
