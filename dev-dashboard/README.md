@@ -40,11 +40,15 @@ Reverts are decoded: a failed action logs the protocol error name (e.g. `Insuffi
 `SupplyCapExceeded(…)`) or the core's string reason, instead of raw selector bytes. Every sent tx also
 prints a clickable hash line in the page log (click → the txs tab, details for that tx).
 
-**Transactions tab (txs).** The node's tx history for this session (hashes the browser sent, also in the
-`GET /api/txlog`), or paste **any** hash to inspect it. A tx view shows status, block,
-from/to, value, gas & fee, calldata, and its **decoded events** — the event ABIs are loaded from the
-forge artifacts (`GET /api/events-abi`), so struct-typed events (e.g. `CollateralDrained`) decode too;
-anything still unknown is shown in full (topic0, indexed topics, data as 32-byte words) to decode by hand.
+**Transactions tab (txs).** The node's **whole tx history** (block walk, newest first); known txs are
+labelled — deploy steps (`deployCore`/`deployToken`/`createMarket`, whose hashes the server reads from
+the forge broadcast) and your own actions — the rest show `·`. Or paste **any** hash to inspect it. A tx
+view shows status, block, from/to (with the contract's Solidity name if we deployed it, e.g.
+`LidoLendERC4626`), value, gas & fee, the **decoded call** (`name(args)` from the artifact function ABIs;
+deploys show "contract creation"), the raw calldata, and the **decoded events**. Event/function ABIs come
+from the forge artifacts (`GET /api/events-abi`, `GET /api/functions-abi`), so struct-typed events (e.g.
+`CollateralDrained`) decode too; anything still unknown is shown in full (topic0, indexed topics, data as
+32-byte words).
 
 **Scenario tab (script + history).** Split in two:
 

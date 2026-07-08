@@ -84,11 +84,11 @@ app.get("/api/txlog", (_req, res) => res.json({ txLog }));
 
 // ── event ABIs from forge artifacts, so the browser can decode any emitted event (incl. struct-typed
 //    ones the hand-written list can't express). Collected once from out/ and cached. ──
-let eventAbiCache = null;
-function collectEventAbis() {
+let abiCache = null;
+function collectAbis() {
   const outDir = path.join(REPO_ROOT, "out");
-  if (!fs.existsSync(outDir)) return [];
-  const seen = new Set(), events = [];
+  if (!fs.existsSync(outDir)) return { events: [], functions: [] };
+  const seenE = new Set(), seenF = new Set(), events = [], functions = [];
   const walk = (dir) => {
     for (const f of fs.readdirSync(dir)) {
       const p = path.join(dir, f);
@@ -98,22 +98,18 @@ function collectEventAbis() {
         let j; try { j = JSON.parse(fs.readFileSync(p, "utf8")); } catch { continue; }
         if (!Array.isArray(j.abi)) continue;
         for (const e of j.abi) {
-          if (e.type !== "event") continue;
           const key = e.name + JSON.stringify(e.inputs || []);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          events.push(e);
+          if (e.type === "event" && !seenE.has(key)) { seenE.add(key); events.push(e); }
+          else if (e.type === "function" && !seenF.has(key)) { seenF.add(key); functions.push(e); }
         }
       }
     }
   };
   try { walk(outDir); } catch {}
-  return events;
+  return { events, functions };
 }
-app.get("/api/events-abi", (_req, res) => {
-  if (!eventAbiCache) eventAbiCache = collectEventAbis();
-  res.json({ events: eventAbiCache });
-});
+app.get("/api/events-abi", (_req, res) => { abiCache = abiCache || collectAbis(); res.json({ events: abiCache.events }); });
+app.get("/api/functions-abi", (_req, res) => { abiCache = abiCache || collectAbis(); res.json({ functions: abiCache.functions }); });
 
 // ── scenario history (persisted, archived on node lifecycle) ──
 app.get("/api/history", (_req, res) => res.json({ history, archive: historyArchive }));
@@ -208,6 +204,18 @@ function parseLabels(stdout) {
   return d;
 }
 
+// Pull the tx hashes forge just broadcast (from the run's saved transactions file named in stdout) and
+// record them in txLog with a label, so server-side deploy txs also appear in the node tx history.
+function recordForgeTxs(stdout, label) {
+  const m = stdout.match(/Transactions saved to:\s*(\S+\.json)/);
+  if (!m) return [];
+  let j; try { j = JSON.parse(fs.readFileSync(m[1], "utf8")); } catch { return []; }
+  const hashes = (j.transactions || []).map((t) => t.hash).filter(Boolean);
+  for (const hash of hashes) txLog.push({ hash, label });
+  txLog = txLog.slice(-1000);
+  return hashes;
+}
+
 // ── 2a · deploy core (singleton) ──
 app.post("/api/deploy/core", async (req, res) => {
   const r = await runForge(["--sig", "deployCore()"], req);
@@ -216,7 +224,8 @@ app.post("/api/deploy/core", async (req, res) => {
   if (!d.core || !d.guardianSignals) return res.status(500).json({ error: "could not parse core/guardian", log: r.out.slice(-4000) });
   state.core = d.core;
   state.guardianSignals = d.guardianSignals; // project-level singleton, shared by every market
-  res.json({ core: d.core, guardianSignals: d.guardianSignals });
+  const txHashes = recordForgeTxs(r.out, "deployCore");
+  res.json({ core: d.core, guardianSignals: d.guardianSignals, txHashes });
 });
 
 // ── 2b · deploy a mock token ──
@@ -228,7 +237,8 @@ app.post("/api/deploy/token", async (req, res) => {
   if (!token) return res.status(500).json({ error: "could not parse token", log: r.out.slice(-4000) });
   const entry = { address: token, symbol: String(symbol), decimals: Number(decimals) };
   state.tokens.push(entry);
-  res.json({ token: entry });
+  const txHashes = recordForgeTxs(r.out, "deployToken");
+  res.json({ token: entry, txHashes });
 });
 
 // ── 2c · create market on an existing core with chosen tokens ──
@@ -257,7 +267,8 @@ app.post("/api/market/create", async (req, res) => {
     controller: d.controller, vault: d.vault, marketId: d.marketId,
   };
   state.markets.push(market);
-  res.json({ market });
+  const txHashes = recordForgeTxs(r.out, "createMarket");
+  res.json({ market, txHashes });
 });
 
 app.listen(PORT, () => {

@@ -27,11 +27,11 @@
   button:hover { border-color:var(--acc); color:var(--acc); }
   button.primary { background:var(--acc); color:#04121f; border-color:var(--acc); font-weight:600; }
   button:disabled { opacity:.4; cursor:not-allowed; }
-  .tabs { display:flex; gap:4px; margin-bottom:10px; }
-  .tabs button { margin:0; border-radius:6px 6px 0 0; }
+  .tabs { display:flex; gap:4px; margin-bottom:0; position:relative; z-index:1; }
+  .tabs button { margin:0; border-radius:6px 6px 0 0; border-bottom-color:transparent; }
   .tabs button.active { background:var(--acc); color:#04121f; border-color:var(--acc); }
-  .tab { display:none; } .tab.show { display:block; }
-  .ptab { display:none; } .ptab.show { display:block; }
+  .tab, .ptab { display:none; }
+  .tab.show, .ptab.show { display:block; border:1px solid var(--line); border-radius:0 8px 8px 8px; padding:13px 14px; background:#12161c; }
   .gt { margin:0; padding:6px 16px; text-transform:uppercase; letter-spacing:.05em; font-size:12px; }
   .gt.active { background:var(--acc); color:#04121f; border-color:var(--acc); font-weight:700; }
   .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:12px; }
@@ -47,6 +47,8 @@
   th { color:var(--mut); font-weight:600; text-transform:uppercase; font-size:10.5px; letter-spacing:.04em; }
   td:first-child, th:first-child { text-align:left; }
   .ev { padding-bottom:9px; } /* small gap between decoded/undecoded events in the tx detail */
+  .hexval { display:inline-block; max-width:min(760px,70vw); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; cursor:pointer; }
+  .hexval.wrap { max-width:none; white-space:normal; word-break:break-all; }
 </style>
 </head>
 <body>
@@ -327,7 +329,7 @@
   <section class="full" data-group="txs">
     <h2>transactions — node tx history (click a tx to inspect)</h2>
     <div class="row"><div style="flex:2"><label>inspect any tx by hash</label><input id="txHashInput" placeholder="0x… tx hash (paste from anywhere)" /></div><button id="inspectTxBtn" class="primary">inspect</button><button id="refreshTxs">refresh list</button></div>
-    <small>the list holds hashes the browser sent this session (also in the server console / <code>GET /api/txlog</code>); or paste any hash above. click for status, gas, calldata and decoded events.</small>
+    <small>the list is the node's whole tx history (newest first, by block); known txs are labelled (deploy steps / your actions), the rest show <code>·</code>. or paste any hash above. click for status, gas, calldata and decoded events.</small>
     <div style="display:grid;grid-template-columns:minmax(220px,360px) 1fr;gap:14px;margin-top:10px;align-items:start">
       <div id="txList" class="list" style="max-height:560px;overflow:auto"></div>
       <div id="txDetail" class="kv"></div>
@@ -356,36 +358,189 @@ const IRMVIEW = ["function borrowRateView("+MP+",(uint128,uint128,uint128,uint12
 const POSITION = ["function positionOf(address) view returns (tuple(uint256 active,uint256 activating,uint256 dust,uint256 unlockTime,uint256 flagCount,bool banned,uint256 debtAssets,uint256 settlementLtv,bool isNextToSettle,uint256 slice))"];
 const VAULTBAL = ["function balanceOf(address) view returns (uint256)","function convertToAssets(uint256) view returns (uint256)"];
 
-// Custom-error selectors — so a revert decodes to a name (e.g. InsufficientActiveCollateral())
-// instead of raw bytes like 0x4c3de575. Generated from the protocol's Solidity `error` declarations
-// (Id → bytes32) plus the standard OpenZeppelin / ERC errors most actions can hit.
+// Custom-error dictionary — so a revert decodes to a name (e.g. InsufficientActiveCollateral())
+// instead of raw bytes like 0x4c3de575. Regenerate from the forge artifacts after changing errors:
+//   forge build && node dev-dashboard/tools/gen-error-abi.js
 const PROTOCOL_ERRORS = [
-  "error AddressBanned()","error AlreadyGuardian()","error AssetsOutBelowMin()","error BadQuorum()",
-  "error BlockInTheFuture()","error BorrowBelowDustMarketMinimum(uint256,uint256)","error ControllerMarketMismatch()",
-  "error DeadlineInPast()","error DeadlineTooFar()","error EmptyBorrowers()","error EmptyHeap()","error EtherTransferFailed()",
-  "error ExceededBalance(address,uint256,uint256)","error FeeRecipientRequired()","error FeeTooHigh()",
-  "error HeartbeatTimestampRegressed()","error IndexOutOfBounds()","error InsufficientActiveCollateral()",
-  "error InsufficientBacking()","error InvalidActivationDelays()","error InvalidBlockHash()","error InvalidMarketId()",
-  "error InvalidMaxGuardiansQuorumDelay()","error InvalidNavPrice()","error InvalidStablePrice()","error MarketIsFrozen()",
-  "error MarketNotAllowed()","error MarketNotCreated()","error MaxActivatingLockDurationExceeded()",
-  "error MaxActivationDelayExceeded()","error MaxDelayPerStrikeExceeded()","error MaxDelayPerSuspectExceeded()",
-  "error MaxGuardiansReached()","error NoAssetsRedeemed()","error NoFillableShares()","error NotAdmin()",
-  "error NotAuthorizedOnMorpho()","error NotGuardian()","error NotMarketSteward()","error NotOwner()","error NotTightened()",
-  "error PauseUntilMustBeInFuture()","error PausedExpected()","error PositionAccountingMismatch()","error PriorityFeeTooHigh()",
-  "error ProxyIsOssified()","error RampPastDeadline()","error RampStartAfterEnd()","error RequestClosed()","error RequestExpired()",
-  "error ResumedExpected()","error SettlementBadDebt()","error SettlementConfigOutOfRange()","error SettlementExceedsAllowed()",
-  "error SettlementLtvOutOfRange()","error StartFeeAboveEnd()","error SupplyCapExceeded(uint256,uint256)","error SuspectWindowTooHigh()",
-  "error TimestampInTheFuture()","error Unauthorized()","error UnknownHookEvent()","error UnknownMarket(bytes32)","error VaultNotAllowed()",
-  "error WouldBreakQuorum()","error ZeroAddress()","error ZeroBorrowAssets()","error ZeroCollateralToken()","error ZeroController()",
-  "error ZeroLidoLend()","error ZeroLoanToken()","error ZeroMaxDelayInflow()","error ZeroMaxLifetime()","error ZeroMinActivationAmount()",
-  "error ZeroMinActivationDelay()","error ZeroMorpho()","error ZeroMorphoSupplyShares()","error ZeroPauseDuration()",
-  "error ZeroPricePerShare()","error ZeroRecipient()","error ZeroShares()","error ZeroVault()",
-  // OpenZeppelin / ERC standard errors
-  "error AccessControlUnauthorizedAccount(address,bytes32)","error AccessControlBadConfirmation()","error OwnableUnauthorizedAccount(address)",
-  "error EnforcedPause()","error ExpectedPause()","error ERC20InsufficientBalance(address,uint256,uint256)",
-  "error ERC20InsufficientAllowance(address,uint256,uint256)","error ERC20InvalidSender(address)","error ERC20InvalidReceiver(address)",
-  "error ERC4626ExceededMaxDeposit(address,uint256,uint256)","error ERC4626ExceededMaxMint(address,uint256,uint256)",
-  "error ERC4626ExceededMaxWithdraw(address,uint256,uint256)","error ERC4626ExceededMaxRedeem(address,uint256,uint256)"
+  "error Abdicated()",
+  "error AbsoluteCapExceeded()",
+  "error AbsoluteCapNotDecreasing()",
+  "error AbsoluteCapNotIncreasing()",
+  "error AccessControlBadConfirmation()",
+  "error AccessControlUnauthorizedAccount(address account, bytes32 neededRole)",
+  "error AddressBanned()",
+  "error AddressEmptyCode(address target)",
+  "error AlreadyGuardian()",
+  "error ApproveReturnedFalse()",
+  "error ApproveReverted()",
+  "error AssetsOutBelowMin()",
+  "error AuthorizationMustGrant()",
+  "error AutomaticallyTimelocked()",
+  "error BadQuorum()",
+  "error BlockInTheFuture()",
+  "error BorrowBelowDustMarketMinimum(uint256 minimum, uint256 attempted)",
+  "error CallerNotAuthorizer()",
+  "error CannotReceiveAssets()",
+  "error CannotReceiveShares()",
+  "error CannotSendAssets()",
+  "error CannotSendShares()",
+  "error CastOverflow()",
+  "error ControllerMarketMismatch()",
+  "error DataAlreadyPending()",
+  "error DataNotTimelocked()",
+  "error DeadlineInPast()",
+  "error DeadlineTooFar()",
+  "error ERC1155InsufficientBalance(address sender, uint256 balance, uint256 needed, uint256 tokenId)",
+  "error ERC1155InvalidApprover(address approver)",
+  "error ERC1155InvalidArrayLength(uint256 idsLength, uint256 valuesLength)",
+  "error ERC1155InvalidOperator(address operator)",
+  "error ERC1155InvalidReceiver(address receiver)",
+  "error ERC1155InvalidSender(address sender)",
+  "error ERC1155MissingApprovalForAll(address operator, address owner)",
+  "error ERC1967InvalidAdmin(address admin)",
+  "error ERC1967InvalidBeacon(address beacon)",
+  "error ERC1967InvalidImplementation(address implementation)",
+  "error ERC1967NonPayable()",
+  "error ERC1967ProxyUninitialized()",
+  "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
+  "error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)",
+  "error ERC20InvalidApprover(address approver)",
+  "error ERC20InvalidReceiver(address receiver)",
+  "error ERC20InvalidSender(address sender)",
+  "error ERC20InvalidSpender(address spender)",
+  "error ERC4626ExceededMaxDeposit(address receiver, uint256 assets, uint256 max)",
+  "error ERC4626ExceededMaxMint(address receiver, uint256 shares, uint256 max)",
+  "error ERC4626ExceededMaxRedeem(address owner, uint256 shares, uint256 max)",
+  "error ERC4626ExceededMaxWithdraw(address owner, uint256 assets, uint256 max)",
+  "error ERC721IncorrectOwner(address sender, uint256 tokenId, address owner)",
+  "error ERC721InsufficientApproval(address operator, uint256 tokenId)",
+  "error ERC721InvalidApprover(address approver)",
+  "error ERC721InvalidOperator(address operator)",
+  "error ERC721InvalidOwner(address owner)",
+  "error ERC721InvalidReceiver(address receiver)",
+  "error ERC721InvalidSender(address sender)",
+  "error ERC721NonexistentToken(uint256 tokenId)",
+  "error EmptyBorrowers()",
+  "error EmptyHeap()",
+  "error EthSenderNotWeth()",
+  "error EtherTransferFailed()",
+  "error ExceededBalance(address owner, uint256 shares, uint256 balance)",
+  "error FailedCall()",
+  "error FailedDeployment()",
+  "error FeeInvariantBroken()",
+  "error FeeRecipientRequired()",
+  "error FeeTooHigh()",
+  "error HeartbeatTimestampRegressed()",
+  "error IndexOutOfBounds()",
+  "error InsufficientActiveCollateral()",
+  "error InsufficientBacking()",
+  "error InsufficientBalance(uint256 balance, uint256 needed)",
+  "error InsufficientCollateralOut()",
+  "error InvalidActivationDelays()",
+  "error InvalidBlockHash()",
+  "error InvalidInitialization()",
+  "error InvalidMarketId()",
+  "error InvalidMaxGuardiansQuorumDelay()",
+  "error InvalidNavPrice()",
+  "error InvalidParams()",
+  "error InvalidSigner()",
+  "error InvalidStablePrice()",
+  "error IrmMismatch()",
+  "error LoanAssetMismatch()",
+  "error MarketIsFrozen()",
+  "error MarketNotAllowed()",
+  "error MarketNotCreated()",
+  "error MaxActivatingLockDurationExceeded()",
+  "error MaxActivationDelayExceeded()",
+  "error MaxDelayPerStrikeExceeded()",
+  "error MaxDelayPerSuspectExceeded()",
+  "error MaxGuardiansReached()",
+  "error MaxIterationsZero()",
+  "error MaxRateTooHigh()",
+  "error MissingPrecompile(address)",
+  "error NoAssetsRedeemed()",
+  "error NoCode()",
+  "error NoFillableShares()",
+  "error NotAdapter()",
+  "error NotAdmin()",
+  "error NotAuthorized()",
+  "error NotAuthorizedOnMorpho()",
+  "error NotGuardian()",
+  "error NotInAdapterRegistry()",
+  "error NotInitializing()",
+  "error NotMarketSteward()",
+  "error NotOwner()",
+  "error NotRouter()",
+  "error NotTightened()",
+  "error OwnableInvalidOwner(address owner)",
+  "error OwnableUnauthorizedAccount(address account)",
+  "error PauseUntilMustBeInFuture()",
+  "error PausedExpected()",
+  "error PenaltyTooHigh()",
+  "error PermitDeadlineExpired()",
+  "error PositionAccountingMismatch()",
+  "error PriorityFeeTooHigh()",
+  "error ProxyIsOssified()",
+  "error RampPastDeadline()",
+  "error RampStartAfterEnd()",
+  "error RelativeCapAboveOne()",
+  "error RelativeCapExceeded()",
+  "error RelativeCapNotDecreasing()",
+  "error RelativeCapNotIncreasing()",
+  "error RequestClosed()",
+  "error RequestExpired()",
+  "error ResumedExpected()",
+  "error SafeCastOverflowedIntDowncast(uint8 bits, int256 value)",
+  "error SafeCastOverflowedIntToUint(int256 value)",
+  "error SafeCastOverflowedUintDowncast(uint8 bits, uint256 value)",
+  "error SafeCastOverflowedUintToInt(uint256 value)",
+  "error SafeERC20FailedDecreaseAllowance(address spender, uint256 currentAllowance, uint256 requestedDecrease)",
+  "error SafeERC20FailedOperation(address token)",
+  "error SettlementBadDebt()",
+  "error SettlementConfigOutOfRange()",
+  "error SettlementExceedsAllowed()",
+  "error SettlementLtvOutOfRange()",
+  "error SharePriceAboveOne()",
+  "error StartFeeAboveEnd()",
+  "error StringsInsufficientHexLength(uint256 value, uint256 length)",
+  "error StringsInvalidAddressFormat()",
+  "error StringsInvalidChar()",
+  "error SupplyCapExceeded(uint256 cap, uint256 attempted)",
+  "error SuspectWindowTooHigh()",
+  "error TimelockNotDecreasing()",
+  "error TimelockNotExpired()",
+  "error TimelockNotIncreasing()",
+  "error TimestampInTheFuture()",
+  "error TransferFromReturnedFalse()",
+  "error TransferFromReverted()",
+  "error TransferReturnedFalse()",
+  "error TransferReverted()",
+  "error Unauthorized()",
+  "error UnknownHookEvent()",
+  "error UnknownMarket(bytes32 marketId)",
+  "error UnsupportedMarket()",
+  "error VaultNotAllowed()",
+  "error WouldBreakQuorum()",
+  "error WrongAuthorizationTarget()",
+  "error ZeroAbsoluteCap()",
+  "error ZeroAddress()",
+  "error ZeroAllocation()",
+  "error ZeroBorrowAssets()",
+  "error ZeroCollateralToken()",
+  "error ZeroController()",
+  "error ZeroLidoLend()",
+  "error ZeroLoanToken()",
+  "error ZeroMaxDelayInflow()",
+  "error ZeroMaxLifetime()",
+  "error ZeroMinActivationAmount()",
+  "error ZeroMinActivationDelay()",
+  "error ZeroMorpho()",
+  "error ZeroMorphoSupplyShares()",
+  "error ZeroPauseDuration()",
+  "error ZeroPricePerShare()",
+  "error ZeroRecipient()",
+  "error ZeroShares()",
+  "error ZeroVault()"
 ];
 const ERR_IFACE = new E.Interface(PROTOCOL_ERRORS);
 // pull the revert bytes out of the various places ethers v6 stashes them, then decode to a readable name
@@ -438,7 +593,7 @@ function connect(){
     const res = await _send(method, params);
     if ((method === "eth_sendRawTransaction" || method === "eth_sendTransaction") && typeof res === "string" && /^0x[0-9a-fA-F]{64}$/.test(res)) {
       logTx(res, lastAction);
-      api("/api/txlog", { hash: res, label: lastAction }).then(() => { if (curGroup === "txs") renderTxList(); }).catch(() => {});
+      api("/api/txlog", { hash: res, label: lastAction }).catch(() => {});
     }
     return res;
   };
@@ -805,11 +960,66 @@ async function loadEventAbi(){
   }catch{}
 }
 loadEventAbi();
+// function ABIs from artifacts — to decode a tx's `input` calldata into name(args)
+let TX_FUNCS = new E.Interface([]);
+async function loadFuncAbi(){
+  try{ const { functions } = await api("/api/functions-abi"); const frags=[], seen=new Set();
+    for(const e of functions||[]){ try{ const fr=E.FunctionFragment.from(e); if(!seen.has(fr.selector)){ seen.add(fr.selector); frags.push(e); } }catch{} }
+    if(frags.length) TX_FUNCS=new E.Interface(frags);
+  }catch{}
+}
+loadFuncAbi();
+// map a known address to a human name (deployed contracts we tracked)
+function nameFor(a){ if(!a) return null; const x=a.toLowerCase();
+  if(core && x===core.toLowerCase()) return "LidoLend";
+  if(guardianSignals && x===guardianSignals.toLowerCase()) return "GuardianSignals";
+  const tok=tokens.find(t=>t.address.toLowerCase()===x); if(tok) return "MockERC20 "+tok.symbol;
+  for(let i=0;i<markets.length;i++){ const m=markets[i]; const sfx=markets.length>1?(" #"+i):"";
+    if(m.vault&&x===m.vault.toLowerCase()) return "LidoLendERC4626"+sfx;
+    if(m.controller&&x===m.controller.toLowerCase()) return "LidoLendMarketController"+sfx;
+    if(m.oracle&&x===m.oracle.toLowerCase()) return "MockPriceOracle"+sfx;
+    if(m.adaptive&&x===m.adaptive.toLowerCase()) return "AdaptiveCurveIrm"+sfx;
+    if(m.irm&&x===m.irm.toLowerCase()) return "IrmRouter"+sfx; }
+  return null;
+}
+function addrLabel(a){ if(!a) return "—"; const n=nameFor(a); return a+(n?(" ("+n+")"):""); }
+// recursively format a decoded arg by its ParamType — tuples/arrays break onto their own lines with
+// deeper indentation, so nesting (e.g. a MarketParams struct inside a call) is visible.
+const _IND="&nbsp;&nbsp;";
+function _pad(d){ return _IND.repeat(d); }
+function fmtArg(pt, v, depth){
+  depth=depth||0;
+  try{
+    if(pt.baseType==="array"){ const a=Array.from(v); if(!a.length) return "[]"; return "[<br>"+a.map(x=>_pad(depth+1)+fmtArg(pt.arrayChildren, x, depth+1)).join(",<br>")+"<br>"+_pad(depth)+"]"; }
+    if(pt.baseType==="tuple") return "(<br>"+pt.components.map((c,i)=>_pad(depth+1)+esc((c.name||("f"+i))+"=")+fmtArg(c, v[i], depth+1)).join(",<br>")+"<br>"+_pad(depth)+")";
+  }catch{}
+  return esc(String(v));
+}
+// a long hex blob (calldata) shown on one truncated line — click to expand/collapse, plus a copy link
+function hexField(data){ if(!data||data==="0x") return "0x"; const bytes=(data.length-2)/2; return `<span class="hexval" onclick="this.classList.toggle('wrap')" title="click to expand / collapse">${data}</span> <small>(${bytes} bytes)</small> <span class="addr" onclick="copy('${data}')">copy</span>`; }
+// name(args) with each top-level arg named and on its own line (HTML for the tx detail)
+function fmtNamed(name, inputs, args){
+  if(!inputs.length) return esc(name)+"()";
+  const parts=inputs.map((inp,i)=>_pad(1)+esc((inp.name||("arg"+i))+"=")+fmtArg(inp, args[i], 1));
+  return esc(name)+"(<br>"+parts.join(",<br>")+"<br>)";
+}
+// the node's whole tx history: walk blocks newest→oldest (batched), label known hashes from txLog
 async function renderTxList(){
-  let items=[]; try{ items=(await api("/api/txlog")).txLog||[]; }catch{}
-  $("txList").innerHTML = items.length
-    ? items.slice().reverse().map(t=>`<div class="addr" onclick="viewTx('${t.hash}')">${t.label?("<b style='color:var(--acc)'>"+esc(t.label)+"</b> "):""}${short(t.hash)}</div>`).join("")
-    : "<small>no txs yet — actions you take will show up here</small>";
+  if(!provider){ $("txList").innerHTML="<small>connect first</small>"; return; }
+  $("txList").innerHTML="<small>scanning node…</small>";
+  const labels={}; try{ ((await api("/api/txlog")).txLog||[]).forEach(t=>{ labels[t.hash.toLowerCase()]=t.label; }); }catch{}
+  let latest; try{ latest=await provider.getBlockNumber(); }catch{ $("txList").innerHTML="<small>connect first</small>"; return; }
+  const rows=[]; const MAX_BLOCKS=4000, MAX_TXS=800, BATCH=64; let scanned=0;
+  for(let hi=latest; hi>=0 && scanned<MAX_BLOCKS && rows.length<MAX_TXS; hi-=BATCH){
+    const nums=[]; for(let n=hi; n>hi-BATCH && n>=0; n--) nums.push(n);
+    scanned+=nums.length;
+    const blks=await Promise.all(nums.map(n=>provider.getBlock(n).catch(()=>null)));
+    for(const blk of blks){ if(!blk||!blk.transactions.length) continue; for(const h of blk.transactions){ rows.push({hash:h,block:blk.number,label:labels[h.toLowerCase()]||null}); if(rows.length>=MAX_TXS) break; } if(rows.length>=MAX_TXS) break; }
+  }
+  const truncated = scanned>=MAX_BLOCKS && latest+1>scanned;
+  $("txList").innerHTML = rows.length
+    ? rows.map(t=>`<div class="addr" onclick="viewTx('${t.hash}')">#${t.block} `+(t.label?("<b style='color:var(--acc)'>"+esc(t.label)+"</b> "):"<span class='log-mut'>· </span>")+short(t.hash)+`</div>`).join("") + (truncated?"<small>scanned last "+scanned+" blocks (older truncated)</small>":"")
+    : "<small>no transactions on the node yet</small>";
 }
 async function viewTx(hash){
   if(!provider){ $("txDetail").innerHTML="<small>connect first</small>"; return; }
@@ -818,19 +1028,25 @@ async function viewTx(hash){
     const [tx,rc]=await Promise.all([provider.getTransaction(hash),provider.getTransactionReceipt(hash)]);
     if(!rc){ $("txDetail").innerHTML="<small>receipt not found (wrong node?)</small>"; return; }
     const blk=await provider.getBlock(rc.blockNumber); const gasPrice=rc.gasPrice??0n;
+    // decode the calldata into name(args) via the artifact function ABIs (deploys have no target → creation)
+    let call="—";
+    if(tx){ if(!tx.to){ call="contract creation ("+((tx.data.length-2)/2)+" bytes"+(rc.contractAddress&&nameFor(rc.contractAddress)?", "+nameFor(rc.contractAddress):"")+")"; }
+      else if(tx.data && tx.data!=="0x"){ try{ const d=TX_FUNCS.parseTransaction({data:tx.data}); call=d? fmtNamed(d.name, d.fragment.inputs, d.args) : "unknown "+tx.data.slice(0,10); }catch{ call="unknown selector "+tx.data.slice(0,10); } }
+      else call="(no calldata)"; }
     const o={
       hash, status: rc.status===1? "✓ success" : "✗ reverted",
       block: String(rc.blockNumber), time: blk? new Date(Number(blk.timestamp)*1000).toISOString():"—",
-      from: tx?.from||"—", to: tx?.to || (rc.contractAddress? "(contract created) "+rc.contractAddress : "—"),
+      from: addrLabel(tx?.from), to: tx?.to? addrLabel(tx.to) : (rc.contractAddress? "created "+addrLabel(rc.contractAddress) : "—"),
       value: tx? E.formatEther(tx.value)+" ETH":"—", nonce: tx? String(tx.nonce):"—",
       gasUsed: rc.gasUsed.toString(), gasPrice: E.formatUnits(gasPrice,"gwei")+" gwei", fee: E.formatEther(rc.gasUsed*gasPrice)+" ETH",
-      input: tx? (tx.data.length>202? tx.data.slice(0,202)+"… ("+((tx.data.length-2)/2)+" bytes)": tx.data) : "—",
+      call,
+      input: tx? hexField(tx.data) : "—",
     };
     let html=kv2(o)+'<span style="grid-column:1/-1;color:var(--mut);margin-top:8px">events ('+rc.logs.length+')</span>';
     if(!rc.logs.length) html+='<span class="log-mut">—</span><span class="log-mut">none</span>';
     for(const lg of rc.logs){
       let val;
-      try{ const d=TX_EVENTS.parseLog(lg); val=esc(d.name+"("+d.fragment.inputs.map((inp,i)=>inp.name+"="+d.args[i].toString()).join(", ")+")"); }
+      try{ const d=TX_EVENTS.parseLog(lg); val=fmtNamed(d.name, d.fragment.inputs, d.args); }
       catch{
         // unknown event (struct/enum/multiline decl) — show it in full: topic0, indexed topics, and data as 32-byte words
         const hex=(lg.data||"0x").slice(2); const words=[]; for(let i=0;i<hex.length;i+=64) words.push("0x"+hex.slice(i,i+64));
@@ -839,7 +1055,7 @@ async function viewTx(hash){
           + lg.topics.slice(1).map((t,i)=>"<br>topic"+(i+1)+"  "+t).join("")
           + (words.length ? words.map((w,i)=>"<br>data["+i+"] "+w).join("") : "<br>data    0x");
       }
-      html+='<span class="log-mut ev">log</span><span class="ev">'+val+' <small>@'+short(lg.address)+'</small></span>';
+      html+='<span class="log-mut ev">log</span><span class="ev">'+val+' <small>@'+lg.address+(nameFor(lg.address)?(" ("+nameFor(lg.address)+")"):"")+'</small></span>';
     }
     $("txDetail").innerHTML=html;
   }catch(e){ $("txDetail").innerHTML="<small class='log-bad'>"+esc(errMsg(e))+"</small>"; }
@@ -857,9 +1073,9 @@ function onMarketChange(){ renderMktAddrs(); refreshPrice(); refreshMktCtl(); re
 
 const ACTIONS = {
   // setup (server-backed forge; always signs with the account-dropdown key)
-  deployCore: async()=>{ const r=await api("/api/deploy/core",{rpc:$("rpc").value.trim(),privateKey:$("signer").value}); core=r.core; guardianSignals=r.guardianSignals; ok("core "+short(core)+" · guardian "+short(guardianSignals)); await refreshStatus(); },
-  deployToken: async(p)=>{ const r=await api("/api/deploy/token",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,symbol:p.symbol,decimals:Number(p.decimals)}); ok("token "+r.token.symbol+" "+short(r.token.address)); await refreshStatus(); },
-  createMarket: async(p)=>{ if(!core) throw new Error("deploy core first"); const [ld,cd]=await Promise.all([readDecimals(p.loan),readDecimals(p.collateral)]); const oraclePrice=E.parseUnits(String(p.price),36+ld-cd).toString(); const lltv=E.parseUnits(String(p.lltv),18).toString(); const minActivation=E.parseUnits(String(p.minActivation),cd).toString(); const r=await api("/api/market/create",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,core,loanToken:p.loan,collateralToken:p.collateral,oraclePrice,lltv,minActivation}); ok("market "+short(r.market.vault)); await refreshStatus(); $("activeMarket").value=String(markets.length-1); onMarketChange(); },
+  deployCore: async()=>{ const r=await api("/api/deploy/core",{rpc:$("rpc").value.trim(),privateKey:$("signer").value}); core=r.core; guardianSignals=r.guardianSignals; ok("core "+short(core)+" · guardian "+short(guardianSignals)); (r.txHashes||[]).forEach(h=>logTx(h,"deployCore")); await refreshStatus(); },
+  deployToken: async(p)=>{ const r=await api("/api/deploy/token",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,symbol:p.symbol,decimals:Number(p.decimals)}); ok("token "+r.token.symbol+" "+short(r.token.address)); (r.txHashes||[]).forEach(h=>logTx(h,"deployToken")); await refreshStatus(); },
+  createMarket: async(p)=>{ if(!core) throw new Error("deploy core first"); const [ld,cd]=await Promise.all([readDecimals(p.loan),readDecimals(p.collateral)]); const oraclePrice=E.parseUnits(String(p.price),36+ld-cd).toString(); const lltv=E.parseUnits(String(p.lltv),18).toString(); const minActivation=E.parseUnits(String(p.minActivation),cd).toString(); const r=await api("/api/market/create",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,core,loanToken:p.loan,collateralToken:p.collateral,oraclePrice,lltv,minActivation}); ok("market "+short(r.market.vault)); (r.txHashes||[]).forEach(h=>logTx(h,"createMarket")); await refreshStatus(); $("activeMarket").value=String(markets.length-1); onMarketChange(); },
   selectMarket: async(p)=>{ $("activeMarket").value=String(p.index); onMarketChange(); ok("active market #"+p.index); },
   // actor
   actAs: async(p)=>{ await doImpersonate(p.address); },
