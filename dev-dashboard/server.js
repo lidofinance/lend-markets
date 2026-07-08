@@ -26,6 +26,15 @@ const ANVIL_ACCOUNTS = [
 let anvil = null; // { proc, mode, rpc, forkUrl }
 let state = { core: null, guardianSignals: null, tokens: [], markets: [] };
 
+// Scenario history: the chronological log of executed actions, persisted server-side so it survives a
+// page reload. Archived (not deleted) on node stop/start — the last few sessions are kept alongside.
+let history = [];
+let historyArchive = [];
+function archiveHistory(reason) {
+  if (history.length) { historyArchive.unshift({ reason, steps: history }); historyArchive = historyArchive.slice(0, 3); }
+  history = [];
+}
+
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -54,7 +63,22 @@ app.get("/api/node/status", (_req, res) => {
     forkUrl: anvil?.forkUrl || null,
     accounts: ANVIL_ACCOUNTS,
     state,
+    history,
+    archive: historyArchive,
   });
+});
+
+// ── scenario history (persisted, archived on node lifecycle) ──
+app.get("/api/history", (_req, res) => res.json({ history, archive: historyArchive }));
+app.post("/api/history", (req, res) => {
+  const step = req.body?.step;
+  if (!step || typeof step !== "object") return res.status(400).json({ error: "step object required" });
+  history.push(step);
+  res.json({ history });
+});
+app.post("/api/history/clear", (_req, res) => {
+  archiveHistory("manual clear");
+  res.json({ history, archive: historyArchive });
 });
 
 app.post("/api/node/start", async (req, res) => {
@@ -91,6 +115,7 @@ app.post("/api/node/start", async (req, res) => {
   }
   anvil = { proc, mode, rpc: DEFAULT_RPC, forkUrl: forkUrl || null };
   state = { core: null, guardianSignals: null, tokens: [], markets: [] };
+  archiveHistory("node start"); // fresh chain → fresh history, prior session kept in the archive
   res.json({ running: true, mode, rpc: DEFAULT_RPC, accounts: ANVIL_ACCOUNTS });
 });
 
@@ -98,6 +123,7 @@ app.post("/api/node/stop", (_req, res) => {
   if (anvil) { anvil.proc._intentional = true; try { anvil.proc.kill(); } catch {} }
   anvil = null;
   state = { core: null, guardianSignals: null, tokens: [], markets: [] };
+  archiveHistory("node stop");
   res.json({ running: false });
 });
 

@@ -8,15 +8,31 @@ well-known dev keys.
 ## Run
 
 ```sh
-cd devui
+cd dev-dashboard
 npm install          # express + ethers (vendored to public/ethers.min.js on first copy)
 npm start            # serves http://127.0.0.1:8899
 ```
 
-The page is organized into three global tabs (header, active-market bar, and log stay visible across
-all of them): **network** (node, snapshot, seed, time & blocks), **protocol** (deploy core / mock
-tokens / create market), and **market** (oracle, control, guardian, actions, controller config, IRM,
-state). Typical flow moves left to right: network → protocol → market.
+The page is organized into global tabs (header, active-market bar, and log stay visible across all of
+them): **network** (node, snapshot, seed, time & blocks), **protocol** (deploy core / mock tokens /
+create market), **market** (overview, actions, participants, state, oracle, control, guardian,
+controller config, IRM), and **script** (scenario input + history — see below). Typical flow moves
+left to right: network → protocol → market.
+
+Reverts are decoded: a failed action logs the protocol error name (e.g. `InsufficientActiveCollateral()`,
+`SupplyCapExceeded(…)`) or the core's string reason, instead of raw selector bytes.
+
+**Scenario tab (script + history).** Split in two:
+
+- **history** (read-only) — the chronological log of every executed action, one JSON step
+  (`{"a":"deposit","amount":"1000","from":"0x…"}`). It is **persisted on the server**, so it survives a
+  page reload. On node stop/start the history is **archived** (not deleted) — the last few sessions are
+  kept alongside and can be loaded back into the input. Each on-chain step carries a `from` — the acting
+  account; node/cheat/deploy steps have none (deploys always use the account-dropdown key).
+- **script input** (editable) — paste or write a JSON array of steps and hit **run script**. Each step
+  executes (impersonating its `from`) **and is appended to history** — running a script is just another
+  way to drive the protocol. `selectMarket` switches the active market mid-scenario. Run stops (and
+  reports) on the first failing step. `history → input` copies the current history in to edit and re-run.
 
 Open <http://127.0.0.1:8899>, then:
 
@@ -39,7 +55,7 @@ Open <http://127.0.0.1:8899>, then:
    is auto-probed; override it if a token lays out balances unusually. Also sets ETH balances.
 4. **time & blocks** — advance time + mine, mine N blocks, set the next block timestamp, or
    **freeze** the chain (automine off — txs sit pending, time stops) / set interval mining.
-5. **oracle** — set the active market's mock price (human units) directly, or crash it −50%.
+5. **oracle** — shows the current price and lets you set it (human units), bump it ±n%, or crash −50%.
 6. **market control** — freeze/unfreeze and pause/resume the active market via its controller
    (the admin signer holds the FREEZER/UNFREEZER/PAUSER/RESUMER roles); shows frozen/paused status.
 7. **guardian** — flag/unflag, suspect/unsuspect, ban/unban an account on the active market, and
@@ -49,14 +65,20 @@ Open <http://127.0.0.1:8899>, then:
    adaptive, guardian, tokens — click to copy) plus its vault/market totals and share price;
    `export deploy (json)` downloads all addresses (core, guardian, tokens, markets) for a frontend
    app to consume.
-9. **protocol actions** — drive the market as the current signer: lender deposit/redeem/withdraw,
-   borrower supply-collateral/borrow/repay/withdraw-collateral, keeper liquidate. Approvals are
-   automatic. Collateral must mature before borrow — warp past the activation delay or grant instant
-   activation (below).
-10. **controller config** — supply cap, instant-activation grants, your settlement LTV, and the raw
-    settlement / collateral-activation config structs (comma-separated, `Ne18` shorthand supported).
-11. **IRM curve** — retune the active market's adaptive curve params; `adjustmentSpeed=0` freezes
-    rate adaptation.
+9. **protocol actions** — drive the market as the current signer (or any address via `act as`):
+   lender deposit/redeem/withdraw, borrower supply-collateral/borrow/repay (by amount or all)/
+   withdraw-collateral, keeper liquidate. Approvals are automatic. Collateral must mature before
+   borrow — warp past the activation delay or grant instant activation (below).
+10. **controller config** — supply cap, instant-activation grants, your settlement LTV, and the
+    settlement / collateral-activation config structs as separate labelled fields (`Ne18` shorthand).
+11. **IRM curve** — retune the active market's adaptive curve params (separate fields);
+    `adjustmentSpeed=0` freezes rate adaptation.
+12. **market overview** (top of the market tab) — parameters and live counters computed via a JS port
+    of `expectedMarketBalances` (interest accrued): market supply/borrow assets & shares, utilization,
+    borrow/supply APR, plus the ERC-4626 **vault totals** (totalAssets, totalSupply, share price).
+13. **participants** — a table of watched addresses (dev accounts by default; add your own) showing
+    ETH, token balances, **vault shares & assets**, collateral, debt and LTV (red at/over the market
+    LLTV) — via `controller.positionOf`. Auto-refreshes while the market tab is open.
 
 Each of core / token / market is a separate `forge script script/Devnet.s.sol --sig …` call the
 backend runs against the node.
@@ -65,7 +87,8 @@ backend runs against the node.
 
 - **Backend** (`server.js`, Express): manages the `anvil` process and runs the forge deploy against
   it, parsing the labeled addresses from the script's log. It does **not** re-implement the deploy —
-  it reuses the Solidity `DeployLocalDevnet` script.
+  it reuses `script/Devnet.s.sol` (`deployCore` / `deployToken` / `createMarket`). It also persists the
+  scenario **history** (append + archive on node stop/start) so it survives page reloads.
 - **Frontend** (`public/index.html`, ethers): talks to the node directly over JSON-RPC for seeding
   (`mint`, `anvil_setStorageAt` deal, `anvil_setBalance`), time-travel (`evm_increaseTime`/`evm_mine`/
   `anvil_mine`/`evm_setNextBlockTimestamp`), chain freeze (`evm_setAutomine`/`evm_setIntervalMining`),
