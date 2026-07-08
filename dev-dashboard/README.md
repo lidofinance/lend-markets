@@ -66,9 +66,12 @@ Open <http://127.0.0.1:8899>, then:
    `export deploy (json)` downloads all addresses (core, guardian, tokens, markets) for a frontend
    app to consume.
 9. **protocol actions** — drive the market as the current signer (or any address via `act as`):
-   lender deposit/redeem/withdraw, borrower supply-collateral/borrow/repay (by amount or all)/
-   withdraw-collateral, keeper liquidate. Approvals are automatic. Collateral must mature before
-   borrow — warp past the activation delay or grant instant activation (below).
+   - **lender** — via the vault (deposit / withdraw / redeem / fallback-exit) **and** directly to the
+     core (Morpho supply / withdraw / withdraw-all), since a lender can hold supply either way.
+   - **borrower** — supply-collateral / borrow / repay (by amount or all) / withdraw-collateral.
+   - **keeper** — liquidate.
+   Approvals are automatic. Collateral must mature before borrow — warp past the activation delay or
+   grant instant activation (below).
 10. **controller config** — supply cap, instant-activation grants, your settlement LTV, and the
     settlement / collateral-activation config structs as separate labelled fields (`Ne18` shorthand).
 11. **IRM curve** — retune the active market's adaptive curve params (separate fields);
@@ -77,8 +80,9 @@ Open <http://127.0.0.1:8899>, then:
     of `expectedMarketBalances` (interest accrued): market supply/borrow assets & shares, utilization,
     borrow/supply APR, plus the ERC-4626 **vault totals** (totalAssets, totalSupply, share price).
 13. **participants** — a table of watched addresses (dev accounts by default; add your own) showing
-    ETH, token balances, **vault shares & assets**, collateral, debt and LTV (red at/over the market
-    LLTV) — via `controller.positionOf`. Auto-refreshes while the market tab is open.
+    ETH, token balances, **vault shares & assets** (supply via the vault), **supply shares & assets**
+    (supply held directly in the core), collateral, debt and LTV (red at/over the market LLTV) — via
+    `core.position` + `controller.positionOf`. Auto-refreshes while the market tab is open.
 
 Each of core / token / market is a separate `forge script script/Devnet.s.sol --sig …` call the
 backend runs against the node.

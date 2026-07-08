@@ -227,8 +227,15 @@
       <button data-ptab="keeper">keeper</button>
     </div>
     <div id="ptab-lender" class="ptab show">
-      <div class="row"><div><label>assets (whole loan)</label><input id="depAssets" value="1000" /></div><button id="depositBtn" class="primary">deposit</button></div>
-      <div class="row"><div><label>shares</label><input id="redShares" value="100" /></div><button id="redeemBtn">redeem</button><button id="withdrawMaxBtn">withdraw max</button></div>
+      <label>— via vault (ERC-4626) —</label>
+      <div class="row"><div><label>deposit assets (whole loan)</label><input id="depAssets" value="1000" /></div><button id="depositBtn" class="primary">deposit → vault</button></div>
+      <div class="row"><div><label>withdraw assets (whole loan)</label><input id="wdAssets" value="1000" /></div><button id="withdrawBtn">withdraw ← vault</button><button id="withdrawMaxBtn">withdraw max</button></div>
+      <div class="row"><div><label>redeem shares</label><input id="redShares" value="100" /></div><button id="redeemBtn">redeem</button></div>
+      <div class="row"><div><label>fallback-exit shares</label><input id="feShares" value="100" /></div><div><label>max iterations</label><input id="feIters" value="10" /></div><button id="fallbackExitBtn">fallback exit</button></div>
+      <small>fallback exit force-redeems your shares by walking borrowers when a normal withdraw can't fill (illiquid market); max iterations bounds the walk.</small>
+      <label style="margin-top:12px">— directly to core (Morpho supply) —</label>
+      <div class="row"><div><label>supply assets (whole loan)</label><input id="csAssets" value="1000" /></div><button id="coreSupplyBtn" class="primary">supply → core</button></div>
+      <div class="row"><div><label>withdraw assets (whole loan)</label><input id="cwAssets" value="1000" /></div><button id="coreWithdrawBtn">withdraw ← core</button><button id="coreWithdrawAllBtn">withdraw all</button></div>
     </div>
     <div id="ptab-borrower" class="ptab">
       <div class="row"><div><label>collateral (whole)</label><input id="collAmt" value="10" /></div><button id="supplyCollBtn" class="primary">supply collateral</button></div>
@@ -329,8 +336,8 @@ let core = null, guardianSignals = null, tokens = [], markets = [];
 
 const ERC20 = ["function mint(address,uint256)","function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)","function approve(address,uint256) returns (bool)","function allowance(address,address) view returns (uint256)"];
 const MP = "(address,address,address,address,uint256)"; // MarketParams: loan,collateral,oracle,irm(router),lltv
-const VAULT4626 = ["function deposit(uint256,address) returns (uint256)","function mint(uint256,address) returns (uint256)","function withdraw(uint256,address,address) returns (uint256)","function redeem(uint256,address,address) returns (uint256)","function maxWithdraw(address) view returns (uint256)","function balanceOf(address) view returns (uint256)"];
-const MORPHO = ["function supplyCollateral("+MP+",uint256,address,bytes)","function borrow("+MP+",uint256,uint256,address,address) returns (uint256,uint256)","function repay("+MP+",uint256,uint256,address,bytes) returns (uint256,uint256)","function withdrawCollateral("+MP+",uint256,address,address)","function liquidate("+MP+",address,uint256,uint256,bytes) returns (uint256,uint256)","function position(bytes32,address) view returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral)"];
+const VAULT4626 = ["function deposit(uint256,address) returns (uint256)","function mint(uint256,address) returns (uint256)","function withdraw(uint256,address,address) returns (uint256)","function redeem(uint256,address,address) returns (uint256)","function fallbackExit(uint256,address,address,uint256)","function maxWithdraw(address) view returns (uint256)","function balanceOf(address) view returns (uint256)"];
+const MORPHO = ["function supply("+MP+",uint256,uint256,address,bytes) returns (uint256,uint256)","function withdraw("+MP+",uint256,uint256,address,address) returns (uint256,uint256)","function supplyCollateral("+MP+",uint256,address,bytes)","function borrow("+MP+",uint256,uint256,address,address) returns (uint256,uint256)","function repay("+MP+",uint256,uint256,address,bytes) returns (uint256,uint256)","function withdrawCollateral("+MP+",uint256,address,address)","function liquidate("+MP+",address,uint256,uint256,bytes) returns (uint256,uint256)","function position(bytes32,address) view returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral)"];
 const CTLCFG = ["function setSupplyCap(uint256)","function setSettlementConfig((uint16,uint96,uint96,uint16))","function setCollateralActivationConfig((uint40,uint40,uint128,uint128,uint40,uint128,uint40,uint40,uint40))","function grantInstantActivation(address)","function revokeInstantActivation(address)","function setSettlementLtv(uint256)"];
 const ADAPTIVE = ["function setMarketCurveParams("+MP+",(int256,int256,int256,int256,int256,int256,uint256))"];
 const IRMVIEW = ["function borrowRateView("+MP+",(uint128,uint128,uint128,uint128,uint128,uint128)) view returns (uint256)"];
@@ -604,8 +611,13 @@ async function needMarketSigner(){ const m=activeMarket(); if(!m){ bad("no activ
 
 // ── lender ──
 $("depositBtn").onclick=act("deposit",()=>({amount:$("depAssets").value.trim()}));
+$("withdrawBtn").onclick=act("withdraw",()=>({amount:$("wdAssets").value.trim()}));
 $("redeemBtn").onclick=act("redeem",()=>({shares:$("redShares").value.trim()}));
 $("withdrawMaxBtn").onclick=act("withdrawMax");
+$("fallbackExitBtn").onclick=act("fallbackExit",()=>({shares:$("feShares").value.trim(),maxIterations:Number($("feIters").value)}));
+$("coreSupplyBtn").onclick=act("coreSupply",()=>({amount:$("csAssets").value.trim()}));
+$("coreWithdrawBtn").onclick=act("coreWithdraw",()=>({amount:$("cwAssets").value.trim()}));
+$("coreWithdrawAllBtn").onclick=act("coreWithdrawAll");
 
 // ── borrower (core IMorpho) ──
 $("supplyCollBtn").onclick=act("supplyCollateral",()=>({amount:$("collAmt").value.trim()}));
@@ -693,23 +705,26 @@ async function renderParticipants(){
     const vault=new E.Contract(m.vault,VAULTBAL,provider), ctl=new E.Contract(m.controller,POSITION,provider), coreC=new E.Contract(m.core,MORPHO,provider);
     let price=0n; try{ price=await new E.Contract(m.oracle,ORACLE,provider).price(); }catch{}
     const lltvPct=Number(E.formatUnits(BigInt(m.lltv),16));
+    const b=await expectedBalances(m); // market totals to value core-direct supply shares as assets
     const rows=await Promise.all(watched.map(async(addr)=>{
       try{ const a=E.getAddress(addr);
         const [eth,lb,cb,sh,pos,cp]=await Promise.all([provider.getBalance(a),L.balanceOf(a),C.balanceOf(a),vault.balanceOf(a),coreC.position(m.marketId,a),ctl.positionOf(a)]);
         const supplied= sh>0n? await vault.convertToAssets(sh):0n;
+        // supply position held directly in the core (not via the vault): supplyShares → assets (toAssetsDown)
+        const supplyAssets= b.tss>0n? pos.supplyShares*(b.tsa+VIRTUAL_ASSETS)/(b.tss+VIRTUAL_SHARES):0n;
         const collVal= price>0n? pos.collateral*price/(10n**36n) : 0n;
         const ltv= collVal>0n? Number(cp.debtAssets*10000n/collVal)/100 : 0;
-        return {a,eth,lb,cb,sh,supplied,collateral:pos.collateral,debt:cp.debtAssets,ltv,banned:cp.banned,flags:cp.flagCount};
+        return {a,eth,lb,cb,sh,supplied,supplyShares:pos.supplyShares,supplyAssets,collateral:pos.collateral,debt:cp.debtAssets,ltv,banned:cp.banned,flags:cp.flagCount};
       }catch(e){ return {a:addr,err:errMsg(e)}; }
     }));
-    const head=["address","ETH",loanSym,collSym,"vault shares","vault assets","collateral","debt","LTV%","flags"];
+    const head=["address","ETH",loanSym,collSym,"vault shares","vault assets","supply shares","supply assets","collateral","debt","LTV%","flags"];
     let h="<table><thead><tr>"+head.map(x=>"<th>"+x+"</th>").join("")+"</tr></thead><tbody>";
     for(const r of rows){
-      if(r.err){ h+="<tr><td>"+short(r.a)+"</td><td colspan='9' class='log-bad'>"+r.err+"</td></tr>"; continue; }
+      if(r.err){ h+="<tr><td>"+short(r.a)+"</td><td colspan='11' class='log-bad'>"+r.err+"</td></tr>"; continue; }
       const cls= r.ltv>=lltvPct&&r.ltv>0? "log-bad" : (r.ltv>0?"":"log-mut");
       h+="<tr>"+[
         `<span class="addr" onclick="copy('${r.a}')">${short(r.a)}</span>`,
-        fmtU(r.eth,18), fmtU(r.lb,ld), fmtU(r.cb,cd), fmtU(r.sh,18), fmtU(r.supplied,ld), fmtU(r.collateral,cd), fmtU(r.debt,ld),
+        fmtU(r.eth,18), fmtU(r.lb,ld), fmtU(r.cb,cd), fmtU(r.sh,18), fmtU(r.supplied,ld), r.supplyShares.toLocaleString(), fmtU(r.supplyAssets,ld), fmtU(r.collateral,cd), fmtU(r.debt,ld),
         `<span class="${cls}">${r.collateral>0n? r.ltv.toFixed(1):"—"}</span>`,
         (r.banned?"<span class='log-bad'>banned</span> ":"")+(r.flags>0n?(r.flags+"⚑"):"")
       ].map(c=>"<td>"+c+"</td>").join("")+"</tr>";
@@ -775,8 +790,13 @@ const ACTIONS = {
   setSuspectWindow: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).setSuspectWindow(BigInt(p.n))).wait(); ok("suspect window = "+p.n+"s"); refreshCommittee(); },
   // lender / borrower / keeper
   deposit: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const assets=E.parseUnits(String(p.amount),dec); await ensureApprove(m.loanToken,m.vault,assets); const me=await signer.getAddress(); await (await new E.Contract(m.vault,VAULT4626,signer).deposit(assets,me)).wait(); ok("deposited "+p.amount); },
+  withdraw: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const me=await signer.getAddress(); await (await new E.Contract(m.vault,VAULT4626,signer).withdraw(E.parseUnits(String(p.amount),dec),me,me)).wait(); ok("withdrew "+p.amount); },
   redeem: async(p)=>{ const m=mustMarket(); const me=await signer.getAddress(); await (await new E.Contract(m.vault,VAULT4626,signer).redeem(E.parseUnits(String(p.shares),18),me,me)).wait(); ok("redeemed "+p.shares+" shares"); },
   withdrawMax: async()=>{ const m=mustMarket(); const me=await signer.getAddress(); const v=new E.Contract(m.vault,VAULT4626,signer); const max=await v.maxWithdraw(me); await (await v.withdraw(max,me,me)).wait(); ok("withdrew max"); },
+  fallbackExit: async(p)=>{ const m=mustMarket(); const me=await signer.getAddress(); await (await new E.Contract(m.vault,VAULT4626,signer).fallbackExit(E.parseUnits(String(p.shares),18),me,me,BigInt(p.maxIterations||10))).wait(); ok("fallback-exited "+p.shares+" shares"); },
+  coreSupply: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const assets=E.parseUnits(String(p.amount),dec); await ensureApprove(m.loanToken,m.core,assets); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).supply(mp(m),assets,0n,me,"0x")).wait(); ok("supplied "+p.amount+" → core"); },
+  coreWithdraw: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).withdraw(mp(m),E.parseUnits(String(p.amount),dec),0n,me,me)).wait(); ok("withdrew "+p.amount+" ← core"); },
+  coreWithdrawAll: async()=>{ const m=mustMarket(); const me=await signer.getAddress(); const c=new E.Contract(m.core,MORPHO,signer); const pos=await c.position(m.marketId,me); if(pos.supplyShares===0n) throw new Error("no core supply"); await (await c.withdraw(mp(m),0n,pos.supplyShares,me,me)).wait(); ok("withdrew all core supply"); },
   supplyCollateral: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.collateralToken); const amt=E.parseUnits(String(p.amount),dec); await ensureApprove(m.collateralToken,m.core,amt); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).supplyCollateral(mp(m),amt,me,"0x")).wait(); ok("supplied "+p.amount+" collateral"); },
   borrow: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const amt=E.parseUnits(String(p.amount),dec); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).borrow(mp(m),amt,0n,me,me)).wait(); ok("borrowed "+p.amount); },
   repay: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const amt=E.parseUnits(String(p.amount),dec); await ensureApprove(m.loanToken,m.core,E.MaxUint256); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).repay(mp(m),amt,0n,me,"0x")).wait(); ok("repaid "+p.amount); },
