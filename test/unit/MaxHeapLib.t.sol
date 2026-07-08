@@ -295,4 +295,24 @@ contract MaxHeapLibTest is Test {
         vm.expectRevert(MaxHeapLib.IndexOutOfBounds.selector);
         h.nodeAt(1); // size is 1; the only valid index is 0
     }
+
+    /// @dev Sequential root-drain: after N random upserts, repeatedly removing the peeked root yields keys
+    ///      in non-increasing order (each root is the max of what remains) and empties the heap.
+    function testFuzz_drainIsNonIncreasing(uint256 n, uint256 seed) public {
+        n = bound(n, 1, 60);
+        for (uint256 i; i < n; ++i) {
+            uint256 key = uint256(keccak256(abi.encode(seed, i))) % 1e9 + 1;
+            h.upsert(_a(i), key);
+        }
+        assertEq(h.size(), n);
+
+        uint256 prev = type(uint256).max;
+        for (uint256 i; i < n; ++i) {
+            (address top, uint256 key) = h.peek();
+            assertLe(key, prev, "root key non-increasing");
+            prev = key;
+            h.remove(top);
+        }
+        assertEq(h.size(), 0);
+    }
 }

@@ -316,6 +316,19 @@ contract SettlementQueueLibTest is Test {
         assertEq(slice, 100, "clamped to debt");
     }
 
+    /// @dev The absolute floor (`sliceFloorAssets`) can win the slice max and is returned UNCLAMPED when it is
+    ///      the largest term yet still below the borrower's debt — a floor branch the other tests miss (they only
+    ///      set `sliceFloorAssets` large enough to clamp to debt). ltvStep is disabled to isolate the abs term.
+    function test_allowedSlice_absoluteFloorWins_belowDebt() public {
+        q.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 100, sliceFloorAssets: 900, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        );
+        q.sync(_b(1), _pos(1_000, 1_000)); // root; debtAssets == 1000, collateralValue = 1500 at price 1.5e36
+        // bps term = 1% of debt = 10; abs floor 900 is the largest term and < debt (1000) -> returned as-is.
+        uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(1_000, 1_000));
+        assertEq(slice, 900, "absolute floor wins, returned unclamped (below debt)");
+    }
+
     function test_allowedSlice_nonRoot_getsNoFloor() public {
         // Two borrowers; _b(1) is riskier (root). A non-root borrower with NO settlement-LTV opt-in gets
         // neither the root cut nor a settlement cut -> allowedSlice is 0 (floor terms apply to root only).

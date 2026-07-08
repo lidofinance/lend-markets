@@ -165,7 +165,9 @@ contract VaultConformanceInvariant is LidoLendSetup {
             assertEq(m.vault.maxDeposit(a), type(uint256).max, "uncapped: maxDeposit unlimited");
             assertEq(m.vault.maxMint(a), type(uint256).max, "uncapped: maxMint unlimited");
         } else {
-            uint256 tSA = _mk().totalSupplyAssets;
+            // headroom is measured against the ACCRUED supply, matching the controller's maxDeposit()
+            // (which reads `expectedMarketBalances`); the stored total lags by any un-accrued interest.
+            (uint256 tSA,,,) = MorphoBalancesLib.expectedMarketBalances(IMorpho(address(m.core)), m.params);
             assertEq(m.vault.maxDeposit(a), cap > tSA ? cap - tSA : 0, "capped: maxDeposit == headroom");
         }
     }

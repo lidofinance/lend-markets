@@ -98,6 +98,10 @@ contract FullLifecycleTest is LidoLendSetup {
 
     // ── the run ──
 
+    /// @dev End-to-end lifecycle on a freshly deployed stack, run in phases: seed liquidity, open every
+    ///      collateral/borrow path, accrue interest and check the share price, repay and withdraw, a healthy
+    ///      liquidation, a severe bad-debt liquidation, then lender exits (incl. a fallbackExit onto its settle
+    ///      leg). Each phase is exact-asserted by its helper.
     function test_fullLifecycle_allActionsLive() public {
         _phaseSeedLiquidity();
         _phaseOpenPositions();

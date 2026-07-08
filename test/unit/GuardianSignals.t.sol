@@ -206,6 +206,16 @@ contract GuardianSignalsTest is Test {
         assertEq(gs.getQuorumFrontier(), 998, "anyone can advance the frontier");
     }
 
+    /// @dev A heartbeat is lazy: it records the guardian's scan but does not move the frontier on its own;
+    ///      the frontier advances only on a subsequent `syncQuorumBlock`.
+    function test_frontier_heartbeatIsLazy_advancesOnlyOnSync() public {
+        _heartbeat(G1, 999);
+        _heartbeat(G2, 998);
+        assertEq(gs.getQuorumFrontier(), 0, "heartbeats alone do not move the frontier");
+        gs.syncQuorumBlock();
+        assertEq(gs.getQuorumFrontier(), 998, "sync advances the frontier to the quorum-th largest");
+    }
+
     // ── set / quorum / roles ──
 
     /// @dev A zero quorum would ban every account (`count >= 0` always) — rejected.
