@@ -32,6 +32,8 @@
   .tabs button.active { background:var(--acc); color:#04121f; border-color:var(--acc); }
   .tab, .ptab { display:none; }
   .tab.show, .ptab.show { display:block; border:1px solid var(--line); border-radius:0 8px 8px 8px; padding:13px 14px; background:#12161c; }
+  .card { border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#12161c; margin-top:10px; }
+  .card-t { color:var(--acc); text-transform:uppercase; font-size:11px; letter-spacing:.06em; font-weight:700; margin-bottom:9px; }
   .gt { margin:0; padding:6px 16px; text-transform:uppercase; letter-spacing:.05em; font-size:12px; }
   .gt.active { background:var(--acc); color:#04121f; border-color:var(--acc); font-weight:700; }
   .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:12px; }
@@ -123,43 +125,37 @@
   </section>
 
   <section data-group="protocol">
-    <h2>protocol</h2>
-    <div class="tabs">
-      <button data-tab="core" class="active">deploy core</button>
-      <button data-tab="tokens">mock tokens</button>
-      <button data-tab="market">create market</button>
-    </div>
+    <h2>deploy core</h2>
+    <small>The core is a singleton — one core hosts many markets.</small>
+    <button id="deployCoreBtn" class="primary">deploy core</button>
+    <div id="coreInfo" class="kv" style="margin-top:10px"></div>
+  </section>
 
-    <div id="tab-core" class="tab show">
-      <small>The core is a singleton — one core hosts many markets.</small>
-      <button id="deployCoreBtn" class="primary">deploy core</button>
-      <div id="coreInfo" class="kv" style="margin-top:10px"></div>
+  <section data-group="protocol">
+    <h2>mock tokens</h2>
+    <div class="row">
+      <div><label>symbol</label><input id="tokSymbol" value="WETH" /></div>
+      <div><label>decimals</label><input id="tokDecimals" value="18" /></div>
     </div>
+    <button id="deployTokenBtn" class="primary">deploy mock token</button>
+    <div id="tokenList" class="list" style="margin-top:10px"></div>
+  </section>
 
-    <div id="tab-tokens" class="tab">
-      <div class="row">
-        <div><label>symbol</label><input id="tokSymbol" value="WETH" /></div>
-        <div><label>decimals</label><input id="tokDecimals" value="18" /></div>
-      </div>
-      <button id="deployTokenBtn" class="primary">deploy mock token</button>
-      <div id="tokenList" class="list" style="margin-top:10px"></div>
+  <section data-group="protocol">
+    <h2>create market</h2>
+    <label>loan token</label>
+    <select id="loanSel"></select>
+    <input id="loanCustom" placeholder="0x… custom loan address" style="display:none;margin-top:4px" />
+    <label>collateral token</label>
+    <select id="collSel"></select>
+    <input id="collCustom" placeholder="0x… custom collateral address" style="display:none;margin-top:4px" />
+    <div class="row">
+      <div><label>oracle price (loan per 1 collateral)</label><input id="oraclePrice" value="2" /></div>
+      <div><label>lltv (0–1)</label><input id="lltv" value="0.8" /></div>
     </div>
-
-    <div id="tab-market" class="tab">
-      <label>loan token</label>
-      <select id="loanSel"></select>
-      <input id="loanCustom" placeholder="0x… custom loan address" style="display:none;margin-top:4px" />
-      <label>collateral token</label>
-      <select id="collSel"></select>
-      <input id="collCustom" placeholder="0x… custom collateral address" style="display:none;margin-top:4px" />
-      <div class="row">
-        <div><label>oracle price (loan per 1 collateral)</label><input id="oraclePrice" value="2" /></div>
-        <div><label>lltv (0–1)</label><input id="lltv" value="0.8" /></div>
-      </div>
-      <label>min activation amount (tokens)</label><input id="minActivation" value="10" />
-      <button id="createMarketBtn" class="primary">create market</button>
-      <div id="marketList" class="list" style="margin-top:10px"></div>
-    </div>
+    <label>min activation amount (tokens)</label><input id="minActivation" value="10" />
+    <button id="createMarketBtn" class="primary">create market</button>
+    <div id="marketList" class="list" style="margin-top:10px"></div>
   </section>
 
   <section data-group="market" style="order:4">
@@ -634,15 +630,19 @@ function renderAll(){
 
 // global tabs — group sections by network / protocol / market (log + always stay visible)
 let curGroup="network";
+const GROUPS=["network","protocol","market","script","txs"];
 function showGroup(g){
+  if(!GROUPS.includes(g)) g="network";
   curGroup=g;
+  try{ history.replaceState(null,"","#"+g); }catch{} // reflect in the URL so a reload reopens this tab
   document.querySelectorAll(".gt").forEach(b=>b.classList.toggle("active", b.dataset.group===g));
   document.querySelectorAll("section[data-group]").forEach(s=>{ s.style.display = (s.dataset.group===g||s.dataset.group==="always") ? "" : "none"; });
   if(g==="market" && provider){ renderOverview(); renderParticipants(); }
   if(g==="txs") renderTxList();
 }
 document.querySelectorAll(".gt").forEach(b=>b.onclick=()=>showGroup(b.dataset.group));
-showGroup("network");
+window.addEventListener("hashchange",()=>{ const g=location.hash.slice(1); if(GROUPS.includes(g)&&g!==curGroup) showGroup(g); });
+showGroup(location.hash.slice(1));
 
 // tabs
 document.querySelectorAll(".tabs button[data-tab]").forEach(b=>b.onclick=()=>{
