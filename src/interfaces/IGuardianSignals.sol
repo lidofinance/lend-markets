@@ -88,18 +88,14 @@ interface IGuardianSignals is IGuardianSignalsView {
     // ---
 
     /// @notice Add a guardian to the set.
-    /// @param guardian The address to add. Must be non-zero, not already a guardian, and within `MAX_GUARDIANS_COUNT`.
     function addGuardian(address guardian) external;
-    /// @notice Remove a guardian from the set. Reverts if it would drop the set below the quorum.
-    /// @param guardian The guardian to remove. Reverts if not currently a guardian.
+    /// @notice Remove a guardian from the set.
     function removeGuardian(address guardian) external;
-    /// @notice Set the quorum — the distinct flags that latch a ban. Reverts if zero or above the guardian count.
-    /// @param newQuorum The new quorum.
+    /// @notice Set the quorum — the distinct flags that latch a ban.
     function setQuorum(uint256 newQuorum) external;
-    /// @notice Set the suspect window — the freshness horizon within which a suspect report still counts. Reverts
-    ///         if it exceeds `MAX_SUSPECT_WINDOW`. Never touches the guardian set. The per-flag and per-suspect
-    ///         delays live in the market's activation config, not here.
-    /// @param suspectWindow The new suspect window.
+    /// @notice Set the suspect window — the freshness horizon within which a suspect report still counts. Never
+    ///         touches the guardian set. The per-flag and per-suspect delays live in the market's activation
+    ///         config, not here.
     function setSuspectWindow(uint256 suspectWindow) external;
     /// @notice The quorum: distinct flags that latch a ban.
     function getQuorum() external view returns (uint256);
@@ -118,9 +114,7 @@ interface IGuardianSignals is IGuardianSignalsView {
 
     /// @notice Record the caller's last-scanned block, validated against its block hash and timestamp. The quorum
     ///         frontier is recomputed separately by `syncQuorumBlock`. Caller must be a guardian.
-    /// @param lastScannedBlock The block the caller reports scanning past. Reverts if `number` exceeds the current
-    ///        block, if `hash` does not match `blockhash(number)`, if `timestamp` exceeds the current block, or if
-    ///        `timestamp` is below the caller's previous heartbeat.
+    /// @param lastScannedBlock The block the caller reports scanning past.
     function heartbeat(BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and
     ///         monotonic.
@@ -142,15 +136,14 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Flag `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller already flags it,
     ///         so a batch never reverts on a skip.
     /// @param marketId         The market to flag in.
-    /// @param accounts         The accounts to flag. A zero address in the batch reverts.
+    /// @param accounts         The accounts to flag.
     /// @param lastScannedBlock The heartbeat recorded for the caller after flagging, validated like `heartbeat`.
     function flag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Retract the caller's flags on `accounts` in `marketId`, then heartbeat. Per account a no-op when the
     ///         caller does not flag it. Never lifts a latched ban.
     function unflag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Report `accounts` as suspect in `marketId`, then heartbeat. A suspect report never latches a ban; it
-    ///         raises the activation delay like a flag, but only while inside the suspect window. A zero address in
-    ///         the batch reverts.
+    ///         raises the activation delay like a flag, but only while inside the suspect window.
     function suspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Retract the caller's suspect reports on `accounts` in `marketId`, then heartbeat. Per account a
     ///         no-op when the caller has no live report on it.

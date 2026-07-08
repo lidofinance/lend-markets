@@ -25,6 +25,7 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
     error VaultNotAllowed();
     error InsufficientBacking();
     error ZeroVault();
+    error ZeroPricePerShare();
 
     // ---
     // EVENTS
@@ -74,6 +75,11 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
         if (!isVaultAllowed[vault]) revert VaultNotAllowed();
 
         uint256 pricePerShare = vault.convertToAssets(WAD);
+
+        // A zero snapshot price pays the lender `owed = 0` on every fill and hands the whole redemption to the
+        // filler. Reject it.
+        if (pricePerShare == 0) revert ZeroPricePerShare();
+
         // Permission-only: shares stay with the lender; sanity-check now, the fill re-checks live.
         if (vault.allowance(msg.sender, address(this)) < shares || vault.balanceOf(msg.sender) < shares) {
             revert InsufficientBacking();

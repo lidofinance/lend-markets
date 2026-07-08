@@ -1221,8 +1221,8 @@ contract IrmModelSelectionForkTest is IrmScenarioBase {
 
 /// @notice The adaptive IRM's yearly retune re-tunes the routed instance in place through `setMarketCurveParams`
 ///         rather than swapping code behind a proxy. The instance keeps its `rateAtTarget`, so a retune whose new
-///         bounds contain the stored rate causes no spike, and one whose bounds exclude it re-clamps on the next
-///         adapting call.
+///         bounds contain the stored rate causes no spike, and one whose bounds exclude it clamps the stored rate
+///         into the new band at the swap itself.
 contract AdaptiveIrmUpgradeTest is Test {
     using MarketParamsLib for MarketParams;
 
@@ -1268,11 +1268,11 @@ contract AdaptiveIrmUpgradeTest is Test {
         int256 newMin = ratBefore * 3 / 2;
         _setBounds(newMin, newMin, newMin * 4);
 
-        assertEq(_rat(), ratBefore, "stored rate unchanged until the next adapting call");
+        assertEq(_rat(), newMin, "stored rate clamped up into the new band at the swap");
 
         _poke(0.95 ether);
         int256 ratAfter = _rat();
-        assertGe(ratAfter, newMin, "rate clamped up to the new MIN");
+        assertGe(ratAfter, newMin, "subsequent adaptation stays within the new band");
         assertGt(ratAfter, ratBefore, "rate jumped up after the retune (the spike)");
     }
 
@@ -1284,12 +1284,12 @@ contract AdaptiveIrmUpgradeTest is Test {
         int256 newMax = ratBefore * 2 / 3;
         _setBounds(newMax, ratBefore / 4, newMax);
 
-        assertEq(_rat(), ratBefore, "stored rate unchanged until the next adapting call");
+        assertEq(_rat(), newMax, "stored rate clamped down into the new band at the swap");
 
         _poke(0.95 ether);
         int256 ratAfter = _rat();
-        assertLe(ratAfter, newMax, "rate clamped down to the new MAX");
-        assertLt(ratAfter, ratBefore, "rate jumped down after the retune");
+        assertLe(ratAfter, newMax, "subsequent adaptation stays within the new band");
+        assertLt(ratAfter, ratBefore, "rate dropped after the retune");
     }
 
     /// @dev Re-tune the routed instance in place (a parameter retune).

@@ -6,8 +6,6 @@ A single `LidoLend` core hosts many markets, as in Morpho. To each market the Li
 
 `GuardianSignals` is shared the same way — its signals are market-keyed, so one registry can back many markets, though a deployment may run several when markets want different guardian sets or quorums (the set and quorum are per registry). Neither is pinned to a single instance: a market that needs full isolation can get its own core and registry. 
 
-![lido lend diagram](image-1.png)
-
 - **[LidoLend](#lidolend-forked-core)** holds the canonical accounting (supply/borrow shares, collateral, interest).
 - **[LidoLendMarketController](#lidolendmarketcontroller)** holds Lido policy: borrower gating, collateral activation, settlement queue, freeze/pause.
 - **[GuardianSignals](#guardiansignals)** is the registry the controller reads for gating.
@@ -70,7 +68,7 @@ Full surface: [API reference](api/risk-steward-dashboard.md).
 
 ### Exit books
 
-The filler-served exit registry. A lender posts a request to exit a fixed slice of their supply, then any filler drains whatever liquidity the market has into it, earning a `PriorityRamp` priority fee that holds at `startRate` through `rampStart`, climbs linearly to the request's `endRate` by `rampEnd`, then holds at `endRate` to the deadline (a Dutch auction). Each rate is capped at the global `MAX_PRIORITY_FEE = 10%`. A large exit completes over time without the lender chasing liquidity transaction by transaction. An abstract `ExitBookBase` (with `ExitBookLib`) holds the shared `placeExitRequest` / `fillExitRequest` / `cancelExitRequest` surface, and a concrete book binds it to a source — `Erc4626ExitBook` over a vault, `MorphoExitBook` over a market.
+The filler-served exit registry. A lender posts a request to exit a fixed slice of their supply, then any filler drains whatever liquidity the market has into it, earning a `PriorityRamp` priority fee that holds at `startRate` through `rampStart`, climbs linearly to the request's `endRate` by `rampEnd`, then holds at `endRate` to the deadline (a Dutch auction). Each rate is capped at the global `MAX_PRIORITY_FEE = 10%`. A large exit completes over time without the lender chasing liquidity transaction by transaction. An abstract `ExitBookBase` (with `ExitBookLib`) holds the shared `fillExitRequest` / `cancelExitRequest` surface, and a concrete book binds it to a source with its own `placeExitRequest` — `Erc4626ExitBook` over a vault, `MorphoExitBook` over a market.
 
 Full surface: [API reference](api/exit-book.md).
 
@@ -81,11 +79,11 @@ Every market action runs through the controller — the core resolves the amount
 | Hook | Controller action |
 |---|---|
 | SupplyCollateral | sync activation, book the supplied collateral into the activation pipeline, re-key the settlement queue |
-| WithdrawCollateral | freeze gate (only with open debt), sync activation, debit buckets, active-health check, minBorrowCollateral floor (with open debt), re-key |
-| Borrow | freeze gate, guardian check (caller, onBehalf, receiver), active-only health check, minBorrowCollateral floor |
+| WithdrawCollateral | freeze gate (only with open debt), sync activation, debit buckets, active-health check (with open debt), re-key |
+| Borrow | freeze gate, guardian check (caller, onBehalf, receiver), active-only health check (dust-threshold floor folds into capacity) |
 | Repay | re-key the borrower in the settlement queue |
 | Liquidate | debit seized collateral from buckets, re-key |
-| Settle | bad-debt gate, eligibility gate, slice bound, sync activation, debit seized collateral, re-key |
+| Settle | bad-debt gate, eligibility gate, slice bound, debit seized collateral, re-key |
 | Supply / Withdraw / AccrueInterest | no policy (lender flows and interest) |
 
 ### Borrower gating
@@ -106,7 +104,7 @@ Freshly supplied collateral cannot back a new borrow until it has matured throug
 
 All supplied collateral counts toward the core's solvency the moment it lands, whatever bucket it sits in — so a supply protects the position from liquidation at once. Only borrowing waits for `active`.
 
-![Collateral activation flow](image-2.png)
+![Collateral activation flow](collateral-activation-flow.svg)
 
 #### The maturation gate
 
@@ -139,7 +137,7 @@ unlockTime = activatingStart + delay + strikes × delayPerStrike
 
 All activating collateral shares one timer (`activatingStart`). A top-up that extends the deadline restarts it for the whole lot, so a top-up after `suspectExpiry` clears the suspect surcharge.
 
-![Inflow chart](image-3.png)
+![Inflow chart](inflow-chart.svg)
 
 > **Example.** 
 > - `minActivationDelay = 10 min` 
@@ -162,7 +160,7 @@ A supply whose caller is on the instant-activation allowlist matures at supply �
 
 Voluntary withdrawal comes off the collateral in waterfall order: dust first, then `activating` above a configurable lock, then `active`. Only `dust` and `activating` are drained as stored buckets — `active` is the matured remainder, which the rest of the withdrawal simply reduces. The lock keeps an `activatingLockAmount` portion of maturing collateral unwithdrawable for `activatingLockDuration` from the lot's start — an anti-Sybil measure, so while it holds a borrower cannot pull a maturing position all the way back out. Once the duration elapses the locked portion becomes withdrawable even if the lot has not matured. A withdrawal that drops the `activating` remainder below `minActivationAmount` folds it back into `dust` and clears its timer, the mirror of a sub-threshold deposit staying dust. This demotion is skipped while a lock holds, since moving a locked remainder into freely-withdrawable dust would bypass the lock. Forced paths (liquidation, settle) pass lock 0 and reach all collateral. A same-tx supply then withdraw reverses its own inflow contribution (flash-loan undo, via transient storage).
 
-A borrower with open debt cannot withdraw all of its collateral: a withdrawal must leave the remaining `active` covering the debt at LLTV, and raw collateral cannot fall below `minBorrowCollateral`, the minimum borrowable size — so a borrower cannot strand a tiny high-LTV position at the head of the settlement queue. To pull everything out, repay the debt to zero first.
+A borrower with open debt cannot withdraw all of its collateral: a withdrawal must leave the remaining `active` covering the debt at LLTV. Active collateral below `minActivationAmount` backs no borrow at all, so a position can't be left stranded at a tiny high-LTV size at the head of the settlement queue — the capacity check folds that floor in rather than a separate revert. To pull everything out, repay the debt to zero first.
 
 ### Guardian signals
 
@@ -238,7 +236,7 @@ flowchart LR
     A["rule 1: sliceFloorBps × debt"] --> MR[max = root cut]
     B["rule 2: sliceFloorAssets"] --> MR
     C["rule 3: lower LTV by ltvStepBps"] --> MR
-    MR --> MA[max]
+    MR --> MA[final max]
     WM["settlement-LTV cut: to target LTV"] --> MA
     MA --> SW{leaves collateral below<br/>fullCutBelowCollateral?}
     SW -->|yes| FD[lift to full debt]
@@ -260,7 +258,7 @@ flowchart LR
 
 ### Tokenized lender layer & fallback exit
 
-Lenders hold an ERC-4626 vault share (`LidoLendERC4626`), one vault per market, freely transferable and ungated. `deposit`/`mint`/`withdraw`/`redeem` are standard. `maxWithdraw`/`maxRedeem` are bounded by the lesser of the owner's position value and the market's free pool liquidity, so withdrawing past available liquidity reverts in the core.
+Lenders hold an ERC-4626 vault share (`LidoLendERC4626`), one vault per market, freely transferable and ungated. `deposit`/`mint`/`withdraw`/`redeem` are standard, with the max views mirroring the controller's lender limits: `maxDeposit`/`maxMint` report the remaining supply-cap headroom (unlimited when uncapped), `maxWithdraw`/`maxRedeem` the lesser of the owner's position value and the market's free pool liquidity, and all four drop to zero while the market is paused.
 
 When liquidity is short, lenders use the settlement exit:
 
@@ -274,7 +272,7 @@ Both burn lender shares against the cancelled debt, and the vault never custodie
 | State | Blocks | Allows | Trigger |
 |---|---|---|---|
 | Freeze | new borrows, collateral withdraw with open debt, maturation | repay, supply, debt-free withdraw, liquidate, settle/fallback | FREEZER |
-| Pause | every hook (all mutating actions) | nothing | PAUSER, time-bounded |
+| Pause | every hook (all mutating actions) | nothing | PAUSER, for a duration or indefinitely (`PAUSE_INFINITELY`) |
 
 Freeze stops new risk while preserving exits. Pause is the stronger, temporary stop. For a fast-depreciation event (slashing, oracle compromise), the response is a freeze, followed by an operational incident response.
 

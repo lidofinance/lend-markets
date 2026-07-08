@@ -8,7 +8,7 @@
   "lib/lido-lend-irm": {
     "branch": {
       "name": "main",
-      "rev": "dac925b7c32014e2d506afbcc395a118a73ad064"
+      "rev": "ce459215fd045dfd4c6a84f5460904d24650f8bf"
     }
   },
   "lib/openzeppelin-contracts": {

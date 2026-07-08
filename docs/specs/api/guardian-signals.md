@@ -300,12 +300,6 @@ Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
 function addGuardian(address guardian) external;
 ```
 
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `guardian` | `address` | The address to add. Must be non-zero, not already a guardian, and within `MAX_GUARDIANS_COUNT`. |
-
 Add a guardian to the set.
 
 ### `removeGuardian`
@@ -314,13 +308,7 @@ Add a guardian to the set.
 function removeGuardian(address guardian) external;
 ```
 
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `guardian` | `address` | The guardian to remove. Reverts if not currently a guardian. |
-
-Remove a guardian from the set. Reverts if it would drop the set below the quorum.
+Remove a guardian from the set.
 
 ### `setQuorum`
 
@@ -328,13 +316,7 @@ Remove a guardian from the set. Reverts if it would drop the set below the quoru
 function setQuorum(uint256 newQuorum) external;
 ```
 
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `newQuorum` | `uint256` | The new quorum. |
-
-Set the quorum — the distinct flags that latch a ban. Reverts if zero or above the guardian count.
+Set the quorum — the distinct flags that latch a ban.
 
 ### `setSuspectWindow`
 
@@ -342,13 +324,7 @@ Set the quorum — the distinct flags that latch a ban. Reverts if zero or above
 function setSuspectWindow(uint256 suspectWindow) external;
 ```
 
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `suspectWindow` | `uint256` | The new suspect window. |
-
-Set the suspect window — the freshness horizon within which a suspect report still counts. Reverts if it exceeds `MAX_SUSPECT_WINDOW`. Never touches the guardian set. The per-flag and per-suspect delays live in the market's activation config, not here.
+Set the suspect window — the freshness horizon within which a suspect report still counts. Never touches the guardian set. The per-flag and per-suspect delays live in the market's activation config, not here.
 
 ### `getQuorum`
 
@@ -400,7 +376,7 @@ function heartbeat(BlockInfoWithHash calldata lastScannedBlock) external;
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `lastScannedBlock` | `BlockInfoWithHash` | The block the caller reports scanning past. Reverts if `number` exceeds the current block, if `hash` does not match `blockhash(number)`, if `timestamp` exceeds the current block, or if `timestamp` is below the caller's previous heartbeat. |
+| `lastScannedBlock` | `BlockInfoWithHash` | The block the caller reports scanning past. |
 
 Record the caller's last-scanned block, validated against its block hash and timestamp. The quorum frontier is recomputed separately by `syncQuorumBlock`. Caller must be a guardian.
 
@@ -466,7 +442,7 @@ function flag(
 | Name | Type | Description |
 | --- | --- | --- |
 | `marketId` | `Id` | The market to flag in. |
-| `accounts` | `address[]` | The accounts to flag. A zero address in the batch reverts. |
+| `accounts` | `address[]` | The accounts to flag. |
 | `lastScannedBlock` | `BlockInfoWithHash` | The heartbeat recorded for the caller after flagging, validated like `heartbeat`. |
 
 Flag `accounts` in `marketId`, then heartbeat. Per account a no-op when the caller already flags it, so a batch never reverts on a skip.
@@ -493,7 +469,7 @@ function suspect(
 ) external;
 ```
 
-Report `accounts` as suspect in `marketId`, then heartbeat. A suspect report never latches a ban; it raises the activation delay like a flag, but only while inside the suspect window. A zero address in the batch reverts.
+Report `accounts` as suspect in `marketId`, then heartbeat. A suspect report never latches a ban; it raises the activation delay like a flag, but only while inside the suspect window.
 
 ### `unsuspect`
 

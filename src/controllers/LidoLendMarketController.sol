@@ -204,6 +204,28 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     // ---
+    // LENDER LIMITS
+    // ---
+
+    /// @inheritdoc ILidoLendMarketController
+    function maxDeposit() external view returns (uint256) {
+        if (isPaused()) return 0;
+        if (supplyCap == 0) return type(uint256).max;
+        (uint256 totalSupplyAssets,,,) = _marketTotals(LIDO_LEND.idToMarketParams(marketId));
+        return Math.saturatingSub(supplyCap, totalSupplyAssets);
+    }
+
+    /// @inheritdoc ILidoLendMarketController
+    function maxWithdrawableAssets(address supplier) external view returns (uint256) {
+        if (isPaused()) return 0;
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) =
+            _marketTotals(LIDO_LEND.idToMarketParams(marketId));
+        uint256 supplyAssets =
+            LIDO_LEND.position(marketId, supplier).supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
+        return Math.min(supplyAssets, Math.saturatingSub(totalSupplyAssets, totalBorrowAssets));
+    }
+
+    // ---
     // SETTLEMENT QUEUE
     // ---
 
@@ -361,8 +383,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         _settlementQueue.sync(borrower, position);
     }
 
-    /// @dev Withdraw hook: with open debt a freeze blocks it, the remaining active must still cover the debt
-    ///      at LLTV, and raw collateral may not fall below the minimum borrowable size. Debt-free exits are free.
+    /// @dev Withdraw hook: with open debt a freeze blocks it, and the remaining active must still cover the debt
+    ///      at LLTV. Debt-free exits are free.
     function _handleWithdrawCollateral(Id id, WithdrawCollateralHookData memory hookData) internal {
         address borrower = hookData.onBehalf;
 
@@ -384,8 +406,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         uint256 activeCollateral = position.collateral - inactive;
 
         // With open debt, the remaining active collateral must still cover the debt at LLTV. `_getMaxBorrow`
-        // returns 0 for sub-threshold dust, so a debt-bearing position cannot be drained below the borrowable
-        // floor — to exit below it, repay the debt to zero first (a zero-debt withdraw is unconstrained here).
+        // returns 0 for sub-threshold dust, so a debt-bearing position cannot be drained below
+        // `minActivationAmount` — to exit below it, repay the debt to zero first (a zero-debt withdraw is
+        // unconstrained here).
         if (position.borrowShares != 0) {
             MarketView memory marketView = _marketView(id);
             if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, activeCollateral)) {
@@ -513,8 +536,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
     /// @dev Max loan assets `collateral` can back at the market LLTV. Active collateral below the activation
     ///      dust threshold (`minActivationAmount`) backs no borrow and returns 0, so a sub-threshold position has
-    ///      no capacity — this folds the old raw-collateral position floor into the capacity check, keeping debt
-    ///      positions above the minimum borrowable size without a separate revert.
+    ///      no capacity.
     function _getMaxBorrow(MarketView memory marketView, uint256 collateral) internal view returns (uint256) {
         if (collateral < _activation.config.minActivationAmount) return 0;
         return Math.mulDiv(_collateralValue(marketView, collateral), marketView.lltv, WAD);
@@ -526,21 +548,35 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         return _debtAssets(marketView, position) > _collateralValue(marketView, position.collateral);
     }
 
-    /// @dev Market snapshot for sizing: LLTV, oracle price, and supply/borrow totals with pending interest
-    ///      simulated so view numbers match what the core sees at hook time.
+    /// @dev Market snapshot for sizing: LLTV, oracle price, and the accrued totals.
     function _marketView(Id id) internal view returns (MarketView memory marketView) {
         MarketParams memory params = LIDO_LEND.idToMarketParams(id);
 
         marketView.lltv = params.lltv;
         marketView.price = IOracle(params.oracle).price();
-        // supply and borrow totals with pending interest simulated, so view sizing matches the hook-time
-        // numbers (the core accrues before invoking hooks)
         (
             marketView.totalSupplyAssets,
             marketView.totalSupplyShares,
             marketView.totalBorrowAssets,
             marketView.totalBorrowShares
-        ) = MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
+        ) = _marketTotals(params);
+    }
+
+    /// @dev Supply/borrow totals with pending interest simulated, so view numbers match what the core sees
+    ///      at hook time. No oracle read — the lender limits built on this stay available during an oracle
+    ///      outage.
+    function _marketTotals(MarketParams memory params)
+        internal
+        view
+        returns (
+            uint256 totalSupplyAssets,
+            uint256 totalSupplyShares,
+            uint256 totalBorrowAssets,
+            uint256 totalBorrowShares
+        )
+    {
+        (totalSupplyAssets, totalSupplyShares, totalBorrowAssets, totalBorrowShares) =
+            MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
     }
 
     /// @dev Borrower's settle-relevant position, widened from the core `Position` (uint128 fields).
