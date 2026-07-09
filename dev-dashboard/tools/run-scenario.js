@@ -17,9 +17,15 @@ const SCRIPT = "script/Devnet.s.sol";
 const argv = process.argv.slice(2);
 function flag(n) { return argv.includes("--" + n); }
 function opt(n, d) { const i = argv.indexOf("--" + n); return i >= 0 ? argv[i + 1] : d; }
-const FILE = argv.find(a => !a.startsWith("--") && a.endsWith(".json")) || path.join(__dirname, "..", "scenarios", "dense-6mo.json");
-const RPC = opt("rpc", "http://127.0.0.1:8546");
+// --from-server [url]: don't deploy or spawn anvil — attach to the node the dashboard already runs on and take the
+// deployed addresses from its server state (run the *.bootstrap.json in the UI first). Defaults to the activity file.
+const FROM_SERVER = flag("from-server");
+const SERVER_URL = (() => { const v = argv[argv.indexOf("--from-server") + 1]; return v && v.startsWith("http") ? v : "http://127.0.0.1:8899"; })();
+const FILE = argv.find(a => !a.startsWith("--") && a.endsWith(".json")) || path.join(__dirname, "..", "scenarios", FROM_SERVER ? "dense-6mo.activity.json" : "dense-6mo.json");
+const RPC = opt("rpc", FROM_SERVER ? "http://127.0.0.1:8545" : "http://127.0.0.1:8546");
 const PORT = new URL(RPC).port || "8546";
+const http = require("http");
+function httpGetJson(url) { return new Promise((res, rej) => { http.get(url, r => { let d = ""; r.on("data", c => d += c); r.on("end", () => { try { res(JSON.parse(d)); } catch (e) { rej(e); } }); }).on("error", rej); }); }
 const ADMIN_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"; // anvil #0
 const ADMIN = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
@@ -166,9 +172,16 @@ async function startAnvil() {
 (async () => {
   const steps = JSON.parse(fs.readFileSync(FILE, "utf8"));
   log(`scenario: ${FILE} (${steps.length} steps)`);
-  const externalRpc = argv.includes("--rpc");
+  const externalRpc = argv.includes("--rpc") || FROM_SERVER;
   if (!externalRpc) { log("starting anvil on :" + PORT + " …"); await startAnvil(); }
   provider = new ethers.JsonRpcProvider(RPC, undefined, { cacheTimeout: -1, staticNetwork: true });
+  if (FROM_SERVER) {
+    const st = await httpGetJson(SERVER_URL + "/api/node/status");
+    const ss = st.state || {};
+    if (!ss.markets || !ss.markets.length) throw new Error("dashboard server (" + SERVER_URL + ") has no deployed markets — run the *.bootstrap.json script in the UI first");
+    state.core = ss.core; state.guardian = ss.guardianSignals; state.tokens = ss.tokens || []; state.markets = ss.markets;
+    log("attached to " + RPC + "; loaded " + state.markets.length + " markets + " + state.tokens.length + " tokens from " + SERVER_URL);
+  }
 
   let ok = 0;
   const t0 = Date.now();

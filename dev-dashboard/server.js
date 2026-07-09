@@ -39,8 +39,9 @@ function archiveHistory(reason) {
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "64mb" })); // a picked scenario file is POSTed as content (can be a few MB)
 app.use(express.static(path.join(__dirname, "public")));
+app.use("/scenarios", express.static(path.join(REPO_ROOT, "dev-dashboard", "scenarios"))); // serve scenario files so the UI can load one into the input
 
 function rpcReady(url) {
   return fetch(url, {
@@ -270,6 +271,65 @@ app.post("/api/market/create", async (req, res) => {
   const txHashes = recordForgeTxs(r.out, "createMarket");
   res.json({ market, txHashes });
 });
+
+// ── run the headless activity runner (tools/run-scenario.js) against the current node, driven from the UI so the
+//    heavy activity does not crawl through the browser (per-step slot-probing + history POSTs). It attaches to the
+//    running node and reads the deployed addresses from this server, so run a *.bootstrap.json in the UI first. ──
+let scenarioProc = null;
+let scenarioLog = [];
+let scenarioFile = null;
+function scenPush(chunk) { for (const line of String(chunk).split(/\r?\n/)) if (line.trim()) scenarioLog.push(line); scenarioLog = scenarioLog.slice(-400); }
+// Once the node runner finishes, fold the steps it actually executed into the scenario history — so the split
+// (node) run populates the same history panel as an in-UI run. `deal`/probe overhead stays out of the run: we
+// append here, not per step. The count is parsed from the runner's own summary (all vs halted-after-N).
+function appendScenarioHistory() {
+  try {
+    const log = scenarioLog.join("\n");
+    const mAll = log.match(/ALL (\d+)\//), mHalt = log.match(/HALTED after (\d+)\b/);
+    const n = mAll ? Number(mAll[1]) : mHalt ? Number(mHalt[1]) : 0;
+    if (n > 0 && scenarioFile) { for (const s of JSON.parse(fs.readFileSync(scenarioFile, "utf8")).slice(0, n)) history.push(s); scenPush("— appended " + n + " executed step(s) to history"); }
+  } catch (e) { scenPush("— history append failed: " + e.message); }
+}
+
+app.post("/api/scenario/run", (req, res) => {
+  if (scenarioProc) return res.status(409).json({ error: "a scenario run is already in progress" });
+  if (!anvil) return res.status(400).json({ error: "start a node first" });
+  if (!state.markets || !state.markets.length) return res.status(400).json({ error: "no markets deployed — run a *.bootstrap.json in the script tab first" });
+  const body = req.body || {};
+  let abs;
+  if (body.content != null) {
+    // a file picked in the browser is sent as content — validate it and stage it under scenarios/ to run
+    let steps; try { steps = JSON.parse(body.content); } catch { return res.status(400).json({ error: "picked file is not valid JSON" }); }
+    if (!Array.isArray(steps)) return res.status(400).json({ error: "picked file must be a JSON array of steps" });
+    abs = path.join(REPO_ROOT, "dev-dashboard", "scenarios", "_uploaded.activity.json");
+    fs.writeFileSync(abs, JSON.stringify(steps));
+  } else {
+    let file = body.file || "dev-dashboard/scenarios/dense-6mo.activity.json";
+    if (!path.isAbsolute(file) && !file.includes("/")) file = path.join("dev-dashboard", "scenarios", file);
+    abs = path.resolve(REPO_ROOT, file);
+    if (!abs.startsWith(REPO_ROOT) || !fs.existsSync(abs)) return res.status(400).json({ error: "scenario file not found: " + file });
+  }
+  const runner = path.join(__dirname, "tools", "run-scenario.js");
+  scenarioLog = [];
+  scenarioFile = abs;
+  scenPush("$ node tools/run-scenario.js " + path.basename(abs) + " --from-server");
+  const proc = spawn(process.execPath, [runner, abs, "--from-server", "http://127.0.0.1:" + PORT, "--rpc", anvil.rpc], { cwd: REPO_ROOT, env: process.env });
+  scenarioProc = proc;
+  proc.stdout.on("data", (d) => scenPush(d));
+  proc.stderr.on("data", (d) => scenPush(d));
+  proc.on("error", (e) => scenPush("[spawn error] " + e.message));
+  proc.on("close", (code) => { scenPush("— runner exited (code " + code + ")"); appendScenarioHistory(); if (scenarioProc === proc) scenarioProc = null; });
+  res.json({ started: true, file: path.basename(abs) });
+});
+// list the scenario files (the browser can't point a file dialog at a folder, so the UI picks from this list)
+app.get("/api/scenarios", (_req, res) => {
+  const dir = path.join(REPO_ROOT, "dev-dashboard", "scenarios");
+  let files = [];
+  try { files = fs.readdirSync(dir).filter(f => f.endsWith(".json") && !f.startsWith("_")).sort(); } catch {}
+  res.json({ dir: "dev-dashboard/scenarios", files });
+});
+app.get("/api/scenario/status", (_req, res) => res.json({ running: !!scenarioProc, log: scenarioLog.join("\n") }));
+app.post("/api/scenario/stop", (_req, res) => { if (scenarioProc) { try { scenarioProc.kill("SIGKILL"); } catch {} scenarioProc = null; scenPush("— stopped by user"); } res.json({ stopped: true }); });
 
 app.listen(PORT, () => {
   console.log(`Lido Lend dev-UI on http://127.0.0.1:${PORT}  (repo: ${REPO_ROOT})`);

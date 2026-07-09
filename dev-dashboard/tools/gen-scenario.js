@@ -18,7 +18,8 @@
 //   - time is not a strict 1-day step: actions are spread across each day, and connected cascades run tightly but
 //     still with small gaps.
 //
-// Usage: node dev-dashboard/tools/gen-scenario.js [--months 6] [--seed 42] [--out dev-dashboard/scenarios/dense-6mo.json]
+// Usage: node dev-dashboard/tools/gen-scenario.js [--months 6] [--seed 42] [--winddown] [--out dev-dashboard/scenarios/dense-6mo.json]
+//   --winddown  unwind all positions at the end (markets end empty). Default: end in a rich, live state.
 
 const fs = require("fs");
 const path = require("path");
@@ -29,7 +30,9 @@ const argv = process.argv.slice(2);
 function arg(name, def) { const i = argv.indexOf("--" + name); return i >= 0 && argv[i + 1] ? argv[i + 1] : def; }
 const MONTHS = Number(arg("months", "6"));
 const SEED = Number(arg("seed", "42"));
-const OUT = arg("out", path.join(__dirname, "..", "scenarios", "dense-6mo.json"));
+const WINDDOWN = argv.includes("--winddown"); // if set, unwind everything at the end (markets end empty)
+let OUT = arg("out", path.join(__dirname, "..", "scenarios", "dense-6mo.json"));
+if (WINDDOWN) OUT = OUT.replace(/\.json$/, ".winddown.json"); // keep the wound-down variant under its own name
 const DAYS = Math.round(MONTHS * 30);
 
 // ── deterministic PRNG (mulberry32) — no Date/Math.random, so the same seed reproduces the same scenario ──
@@ -146,6 +149,11 @@ push({ a: "setSuspectWindow", n: 7 * DAY, from: ADMIN });
 // example supply caps. The IRM keeps its default adaptive curve (gentle ~4%/yr at target) so the borrow APR
 // moves smoothly; the bad-debt set-piece does not rely on a high rate (it is driven by LLTV + the price crash).
 for (const mk of [ETH, USD]) { selectMarket(mk); push({ a: "setSupplyCap", cap: String(M[mk].cap), from: ADMIN }); }
+
+// Split point: everything above is deploy + guardian config + caps + watch — cheap, run it in the UI so the
+// server learns the addresses and the participants panel is populated. Everything below is the heavy activity —
+// run it in node against the same node (much faster than the browser, which slot-probes on every fund).
+const BOOTSTRAP_LEN = steps.length;
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 // 2) seed initial liquidity + open positions (incl. the maxed VICTIM on ETH held to the crash)
@@ -307,19 +315,40 @@ function emitFallbackExit() {
   pos[mk][lender].vault = Math.max(0, pos[mk][lender].vault - shares);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════════════════════
-// 4) wind-down: repay + withdraw across the remaining live positions
-// ═══════════════════════════════════════════════════════════════════════════════════════════════
-for (const mk of [ETH, USD]) {
-  for (const b of borrowers) { repayAll(mk, b); withdrawCollateralAll(mk, b); }
-  for (const l of lenders) { withdrawMax(mk, l); coreWithdrawAll(mk, l); }
-  warp(HOUR);
+// Wind-down (optional, --winddown): repay every debt and withdraw all supply so the markets end empty. Off by
+// default — the scenario deliberately ends in a rich, live state (open positions, accrued interest, the realized-
+// bad-debt aftermath, latched guardian bans) so the dashboard has something to explore rather than emptied markets.
+if (WINDDOWN) {
+  for (const mk of [ETH, USD]) {
+    for (const b of borrowers) { repayAll(mk, b); withdrawCollateralAll(mk, b); }
+    for (const l of lenders) { withdrawMax(mk, l); coreWithdrawAll(mk, l); }
+    warp(HOUR);
+  }
 }
 
 // ── write ──
+// coalesce runs of adjacent warps into a single warp — same elapsed time, fewer steps
+function coalesce(arr) {
+  const out = [];
+  for (const s of arr) {
+    const last = out[out.length - 1];
+    if (s.a === "warp" && last && last.a === "warp") last.seconds += s.seconds;
+    else out.push(s.a === "warp" ? { a: "warp", seconds: s.seconds } : s);
+  }
+  return out;
+}
+const combined = coalesce(steps);
+const bootstrap = coalesce(steps.slice(0, BOOTSTRAP_LEN));
+const activity = coalesce(steps.slice(BOOTSTRAP_LEN));
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
-fs.writeFileSync(OUT, JSON.stringify(steps, null, 1));
-const counts = steps.reduce((m, s) => ((m[s.a] = (m[s.a] || 0) + 1), m), {});
-console.log("wrote " + steps.length + " steps -> " + OUT);
-console.log("months=" + MONTHS + " days=" + DAYS + " seed=" + SEED + " cast=" + CAST.length);
+fs.writeFileSync(OUT, JSON.stringify(combined, null, 1));
+const bootOut = OUT.replace(/\.json$/, ".bootstrap.json");
+const actOut = OUT.replace(/\.json$/, ".activity.json");
+fs.writeFileSync(bootOut, JSON.stringify(bootstrap, null, 1));
+fs.writeFileSync(actOut, JSON.stringify(activity, null, 1));
+const counts = combined.reduce((m, s) => ((m[s.a] = (m[s.a] || 0) + 1), m), {});
+console.log("months=" + MONTHS + " days=" + DAYS + " seed=" + SEED + " cast=" + CAST.length + " (" + (steps.length - combined.length) + " warps coalesced)");
+console.log("combined  " + combined.length + " steps -> " + OUT + "  (load whole thing in the UI)");
+console.log("bootstrap " + bootstrap.length + " steps -> " + bootOut + "  (load in UI script tab)");
+console.log("activity  " + activity.length + " steps -> " + actOut + "  (node dev-dashboard/tools/run-scenario.js " + path.basename(actOut) + " --from-server)");
 console.log("action counts:", JSON.stringify(counts));

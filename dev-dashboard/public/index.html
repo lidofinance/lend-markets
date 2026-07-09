@@ -307,10 +307,26 @@
     <textarea id="scriptInput" spellcheck="false" placeholder='[ {"a":"deposit","amount":"1000","from":"0x…"} ]' style="width:100%;height:220px;background:#0b0f14;border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:8px;font:12px/1.5 ui-monospace,Menlo,monospace;resize:vertical"></textarea>
     <div class="row">
       <button id="runScriptBtn" class="primary">▶ run script</button>
+      <select id="scriptSelect" title="load from the scenarios folder" style="max-width:230px"><option value="">— scenarios/ —</option></select>
+      <input type="file" id="scriptFilePick" accept=".json,application/json" style="display:none" />
+      <button id="scriptLoadBtn">📁 load file</button>
       <button id="histToInputBtn">history → input</button>
       <button id="clearInputBtn">clear input</button>
     </div>
     <small>each step: <code>{"a":"&lt;action&gt;", …params, "from":"0x…"}</code>. running a step executes it AND appends it to history below; <code>from</code> = acting account (impersonated per step). stops on the first failing step.</small>
+
+    <div style="margin-top:14px;padding:10px;border:1px solid var(--line);border-radius:6px;background:#0b0f14">
+      <b>run in node (fast)</b> — for a big scenario, run the heavy activity in node against this same chain (the browser is ~40× slower: it slot-probes on every fund and POSTs history per step). Deploy first by running a <code>*.bootstrap.json</code> above, then run the matching <code>*.activity.json</code> here:
+      <div class="row" style="margin-top:8px">
+        <select id="scenSelect" title="pick from the scenarios folder" style="max-width:230px"><option value="">— scenarios/ —</option></select>
+        <input id="scenFile" value="dev-dashboard/scenarios/dense-6mo.activity.json" style="flex:1" />
+        <input type="file" id="scenFilePick" accept=".json,application/json" style="display:none" />
+        <button id="scenPickBtn">📁 file</button>
+        <button id="scenRunBtn" class="primary">▶ run in node</button>
+        <button id="scenStopBtn">stop</button>
+      </div>
+      <textarea id="scenLog" readonly spellcheck="false" style="width:100%;height:150px;margin-top:8px;background:#06090d;border:1px solid var(--line);color:var(--mut);border-radius:6px;padding:8px;font:12px/1.5 ui-monospace,Menlo,monospace;resize:vertical"></textarea>
+    </div>
 
     <h2 style="margin-top:18px">history — executed actions (read-only, saved on the server)</h2>
     <div class="row">
@@ -582,6 +598,11 @@ function tokLabel(addr){ const m=tokMeta(addr); return m? `${m.symbol} ${short(a
 function resolveToken(v){ const s=String(v).trim(); if(/^0x[0-9a-fA-F]{40}$/.test(s)) return E.getAddress(s); const t=tokens.find(t=>t.symbol.toLowerCase()===s.toLowerCase()); if(!t) throw new Error("unknown token symbol: "+s); return t.address; }
 function activeMarket(){ const i=$("activeMarket").value; return i==="" ? null : markets[Number(i)]; }
 
+// Force a generous gas limit on every write. anvil auto-mines with a wall-clock block timestamp, so a hook's gas
+// (collateral-activation / settlement-queue sync) can exceed the pre-send estimate and, via the EVM 63/64 rule,
+// starve a nested call — a non-deterministic revert (seen on withdrawCollateral). Skipping estimation with a fixed
+// high limit avoids it. The limit only caps the tx; anvil still charges actual gas used.
+function forceGas(s){ if(!s||s._gasForced) return s; const orig=s.sendTransaction.bind(s); s.sendTransaction=(tx)=>orig(tx&&tx.gasLimit!=null?tx:Object.assign({},tx,{gasLimit:15000000n})); s._gasForced=true; return s; }
 function connect(){
   // cacheTimeout:-1 disables ethers' request cache so nonce and "latest" reads are always fresh — fast
   // back-to-back actions otherwise reuse a stale nonce ("nonce too low") or a stale block.
@@ -596,7 +617,7 @@ function connect(){
     }
     return res;
   };
-  signer = new E.Wallet($("signer").value, provider);
+  signer = forceGas(new E.Wallet($("signer").value, provider));
   ok("connected as "+short(signer.address)); setActorLabel(); refreshChain(); refreshMktCtl(); refreshPrice(); refreshCommittee(); renderOverview(); renderParticipants();
 }
 
@@ -768,8 +789,8 @@ $("refreshState").onclick=async()=>{
 
 // ── impersonation (shared by header + protocol-actions controls) ──
 function setActorLabel(){ const a=signer? signer.address : null; $("curActor").textContent = a? short(a) : "—"; }
-async function doImpersonate(addr){ if(!provider) return bad("connect first"); const a=E.getAddress(addr); await provider.send("anvil_impersonateAccount",[a]); await provider.send("anvil_setBalance",[a,"0x"+E.parseEther("100").toString(16)]); signer=await provider.getSigner(a); setActorLabel(); ok("acting as "+short(a)+" (impersonated, funded 100 ETH)"); }
-function doUseKey(){ signer=new E.Wallet($("signer").value,provider); setActorLabel(); ok("acting as key "+short(signer.address)); }
+async function doImpersonate(addr){ if(!provider) return bad("connect first"); const a=E.getAddress(addr); await provider.send("anvil_impersonateAccount",[a]); await provider.send("anvil_setBalance",[a,"0x"+E.parseEther("100").toString(16)]); signer=forceGas(await provider.getSigner(a)); setActorLabel(); ok("acting as "+short(a)+" (impersonated, funded 100 ETH)"); }
+function doUseKey(){ signer=forceGas(new E.Wallet($("signer").value,provider)); setActorLabel(); ok("acting as key "+short(signer.address)); }
 $("impersonateBtn").onclick=act("actAs",()=>({address:$("impAddr").value.trim()}));
 $("unimpersonateBtn").onclick=act("useKey");
 $("actAsBtn").onclick=act("actAs",()=>({address:$("actorInput").value.trim()}));
@@ -856,6 +877,9 @@ async function renderOverview(){
     let price=0n; try{ price=await new E.Contract(m.oracle,ORACLE,provider).price(); }catch{}
     const v=new E.Contract(m.vault,VAULT,provider);
     let vta=0n,vts=0n,pps=0n; try{ [vta,vts]=await Promise.all([v.totalAssets(),v.totalSupply()]); pps=await v.convertToAssets(10n**18n); }catch{}
+    // Morpho has no market-wide collateral counter (collateral is per-position). The core holds every position's
+    // collateral, so for a collateral token unique to this market its core balance is the market's total collateral.
+    let coll=0n; try{ coll=await new E.Contract(m.collateralToken,ERC20,provider).balanceOf(m.core); }catch{}
     const util=b.tsa>0n? Number(b.tba*10000n/b.tsa)/100 : 0;
     const borrowApr=Number(b.rate*SECONDS_YEAR)/1e18*100;
     const supplyApr=borrowApr*(util/100)*(1-Number(b.fee)/1e18);
@@ -866,6 +890,7 @@ async function renderOverview(){
       "oracle price": price>0n? E.formatUnits(price,scale)+" "+loanSym+"/"+collSym : "—",
       "market supply assets": fmtU(b.tsa,ld)+" "+loanSym,
       "market borrow assets": fmtU(b.tba,ld)+" "+loanSym,
+      "market collateral": fmtU(coll,cd)+" "+collSym,
       "idle liquidity": fmtU(b.tsa-b.tba,ld)+" "+loanSym,
       utilization: util.toFixed(2)+"%",
       "borrow APR": borrowApr.toFixed(2)+"%",
@@ -1190,6 +1215,25 @@ async function runScript(){
   ok("✓ script done");
 }
 $("runScriptBtn").onclick=()=>runScript();
+// load a local JSON scenario file into the input (client-side)
+$("scriptLoadBtn").onclick=()=>$("scriptFilePick").click();
+$("scriptFilePick").onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ $("scriptInput").value=r.result; ok("loaded "+f.name+" into input"); }; r.readAsText(f); e.target.value=""; };
+
+// run the heavy activity in node (server spawns tools/run-scenario.js --from-server against this chain); poll its log
+let scenPoll=null;
+async function scenRefresh(){ try{ const s=await api("/api/scenario/status"); $("scenLog").value=s.log||""; $("scenLog").scrollTop=$("scenLog").scrollHeight; if(!s.running && scenPoll){ clearInterval(scenPoll); scenPoll=null; refreshStatus(); if(curGroup==="market"){ renderOverview(); renderParticipants(); } } }catch(e){} }
+let scenPicked=null;
+$("scenPickBtn").onclick=()=>$("scenFilePick").click();
+$("scenFilePick").onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ scenPicked=r.result; $("scenFile").value=f.name; ok("picked "+f.name+" — its contents will be sent to the node runner"); }; r.readAsText(f); e.target.value=""; };
+$("scenFile").oninput=()=>{ scenPicked=null; }; // typing/editing a path overrides a picked file
+$("scenRunBtn").onclick=async()=>{ try{ const body=scenPicked?{content:scenPicked}:{file:$("scenFile").value.trim()}; await api("/api/scenario/run",body); ok("node runner started — watch the log below"); if(scenPoll) clearInterval(scenPoll); scenPoll=setInterval(scenRefresh,1500); scenRefresh(); }catch(e){ bad(errMsg(e)); } };
+$("scenStopBtn").onclick=async()=>{ try{ await api("/api/scenario/stop",{}); ok("node runner stopped"); setTimeout(scenRefresh,300); }catch(e){ bad(errMsg(e)); } };
+
+// populate the scenarios-folder dropdowns (browsers can't point a file dialog at a folder, so pick from this list)
+async function loadScenarioList(){ try{ const r=await api("/api/scenarios"); const opts='<option value="">— scenarios/ —</option>'+(r.files||[]).map(f=>`<option value="${f}">${f}</option>`).join(""); $("scenSelect").innerHTML=opts; $("scriptSelect").innerHTML=opts; }catch(e){} }
+$("scenSelect").onchange=(e)=>{ const f=e.target.value; if(!f) return; $("scenFile").value="dev-dashboard/scenarios/"+f; scenPicked=null; ok("selected "+f); e.target.value=""; };
+$("scriptSelect").onchange=async(e)=>{ const f=e.target.value; if(!f) return; try{ const t=await (await fetch("/scenarios/"+encodeURIComponent(f))).text(); $("scriptInput").value=t; ok("loaded "+f+" into input"); }catch(err){ bad("load failed: "+errMsg(err)); } e.target.value=""; };
+loadScenarioList();
 $("clearInputBtn").onclick=()=>{ $("scriptInput").value=""; };
 $("histToInputBtn").onclick=()=>{ $("scriptInput").value=$("historyBox").value; ok("history copied into input — edit & run"); };
 $("histClearBtn").onclick=async()=>{ try{ const r=await api("/api/history/clear",{}); recording=r.history||[]; archive=r.archive||[]; renderHistory(); ok("history archived & cleared"); }catch(e){ bad(errMsg(e)); } };
