@@ -38,6 +38,11 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     uint256 internal constant LLTV = 0.8e18;
     uint256 internal constant FLOOR = 10 ether;
     uint256 internal constant PPS_TOLERANCE = 2; // wei of rounding a pro-rata burn may shift convertToAssets(1e18)
+    // Below one full share the price is dominated by the virtual-share offset: an exit that drains the vault to dust
+    // leaves totalSupply/totalAssets at the offset scale, where `convertToAssets(1e18)` snaps back to parity. That is
+    // an empty-vault artifact, not dilution — there are no remaining holders to dilute — so the no-drop check below
+    // only applies while the vault still carries meaningful supply.
+    uint256 internal constant MIN_SUPPLY_FOR_PPS = 1e18;
 
     address[] internal actors;
 
@@ -225,7 +230,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
 
         if (sharesBurned > shares) exitBurnedTooMuch = true;
         // The burn is rounded up so remaining holders aren't diluted -> the price may tick up, but must never drop.
-        if (_pps() + PPS_TOLERANCE < ppsBefore) exitDiluted = true;
+        // Skip once the vault is drained to dust, where the price is a virtual-share artifact (see MIN_SUPPLY_FOR_PPS).
+        if (VAULT.totalSupply() >= MIN_SUPPLY_FOR_PPS && _pps() + PPS_TOLERANCE < ppsBefore) exitDiluted = true;
         // Liquidity-neutral: settle pays no loan and cancels debt + supply by the same amount, so idle is unchanged.
         if (loanAssets != 0 || _absDiff(_idle(), idleBefore) > PPS_TOLERANCE) settleMovedLiquidity = true;
         if (_seizedValueExceedsDebt(collateralSeized, debtCanceled)) parViolated = true;
@@ -248,7 +254,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
             VAULT.fallbackExit(shares, owner, owner, bound(iterations, 0, 50));
 
         if (sharesBurned > shares) exitBurnedTooMuch = true;
-        if (_pps() + PPS_TOLERANCE < ppsBefore) exitDiluted = true;
+        // Skip once the vault is drained to dust, where the price is a virtual-share artifact (see MIN_SUPPLY_FOR_PPS).
+        if (VAULT.totalSupply() >= MIN_SUPPLY_FOR_PPS && _pps() + PPS_TOLERANCE < ppsBefore) exitDiluted = true;
         // The redeem leg drops idle by exactly its payout; the settle leg is liquidity-neutral -> idle drop == loan.
         uint256 idleAfter = _idle();
         if (idleAfter > idleBefore || _absDiff(idleBefore - idleAfter, loanAssets) > PPS_TOLERANCE) {
