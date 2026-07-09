@@ -346,7 +346,7 @@ let core = null, guardianSignals = null, tokens = [], markets = [];
 
 const ERC20 = ["function mint(address,uint256)","function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)","function approve(address,uint256) returns (bool)","function allowance(address,address) view returns (uint256)"];
 const MP = "(address,address,address,address,uint256)"; // MarketParams: loan,collateral,oracle,irm(router),lltv
-const VAULT4626 = ["function deposit(uint256,address) returns (uint256)","function mint(uint256,address) returns (uint256)","function withdraw(uint256,address,address) returns (uint256)","function redeem(uint256,address,address) returns (uint256)","function fallbackExit(uint256,address,address,uint256)","function maxWithdraw(address) view returns (uint256)","function balanceOf(address) view returns (uint256)"];
+const VAULT4626 = ["function deposit(uint256,address) returns (uint256)","function mint(uint256,address) returns (uint256)","function withdraw(uint256,address,address) returns (uint256)","function redeem(uint256,address,address) returns (uint256)","function fallbackExit(uint256,address,address,uint256)","function settle(uint256,address[],address,address)","function maxWithdraw(address) view returns (uint256)","function balanceOf(address) view returns (uint256)"];
 const MORPHO = ["function supply("+MP+",uint256,uint256,address,bytes) returns (uint256,uint256)","function withdraw("+MP+",uint256,uint256,address,address) returns (uint256,uint256)","function supplyCollateral("+MP+",uint256,address,bytes)","function borrow("+MP+",uint256,uint256,address,address) returns (uint256,uint256)","function repay("+MP+",uint256,uint256,address,bytes) returns (uint256,uint256)","function withdrawCollateral("+MP+",uint256,address,address)","function liquidate("+MP+",address,uint256,uint256,bytes) returns (uint256,uint256)","function position(bytes32,address) view returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral)"];
 const CTLCFG = ["function setSupplyCap(uint256)","function setSettlementConfig((uint16,uint96,uint96,uint16))","function setCollateralActivationConfig((uint40,uint40,uint128,uint128,uint40,uint128,uint40,uint40,uint40))","function grantInstantActivation(address)","function revokeInstantActivation(address)","function setSettlementLtv(uint256)"];
 const ADAPTIVE = ["function setMarketCurveParams("+MP+",(int256,int256,int256,int256,int256,int256,uint256))"];
@@ -577,6 +577,9 @@ function copy(t){ navigator.clipboard.writeText(t); log("copied "+t,"log-mut"); 
 function kv(o){ return Object.entries(o).map(([k,v])=>`<span>${k}</span><span class="addr" onclick="copy('${v}')">${v}</span>`).join(""); }
 function tokMeta(addr){ return tokens.find(t=>t.address.toLowerCase()===String(addr).toLowerCase()); }
 function tokLabel(addr){ const m=tokMeta(addr); return m? `${m.symbol} ${short(addr)}` : short(addr); }
+// resolve a token reference that is either a 0x address or a deployed-token symbol (e.g. "WETH") — lets a
+// scenario script name tokens by symbol so it survives a fresh deploy (addresses are only known at runtime)
+function resolveToken(v){ const s=String(v).trim(); if(/^0x[0-9a-fA-F]{40}$/.test(s)) return E.getAddress(s); const t=tokens.find(t=>t.symbol.toLowerCase()===s.toLowerCase()); if(!t) throw new Error("unknown token symbol: "+s); return t.address; }
 function activeMarket(){ const i=$("activeMarket").value; return i==="" ? null : markets[Number(i)]; }
 
 function connect(){
@@ -876,6 +879,8 @@ async function renderOverview(){
   }catch(e){ $("marketOverview").innerHTML="<small class='log-bad'>"+errMsg(e)+"</small>"; }
 }
 let watched=[];
+// add an address to the participants watch-list (deduped); tolerant of bad input so scenario auto-collection is safe
+function watchAddress(a){ if(!a) return false; try{ const addr=E.getAddress(String(a)); if(!watched.includes(addr)){ watched.push(addr); return true; } }catch{} return false; }
 async function renderParticipants(){
   const m=activeMarket(); if(!m||!provider){ $("participants").innerHTML="<small>no active market</small>"; return; }
   if(!watched.length && accounts.length) watched=accounts.map(a=>E.getAddress(a.address));
@@ -1075,7 +1080,7 @@ const ACTIONS = {
   // setup (server-backed forge; always signs with the account-dropdown key)
   deployCore: async()=>{ const r=await api("/api/deploy/core",{rpc:$("rpc").value.trim(),privateKey:$("signer").value}); core=r.core; guardianSignals=r.guardianSignals; ok("core "+short(core)+" · guardian "+short(guardianSignals)); (r.txHashes||[]).forEach(h=>logTx(h,"deployCore")); await refreshStatus(); },
   deployToken: async(p)=>{ const r=await api("/api/deploy/token",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,symbol:p.symbol,decimals:Number(p.decimals)}); ok("token "+r.token.symbol+" "+short(r.token.address)); (r.txHashes||[]).forEach(h=>logTx(h,"deployToken")); await refreshStatus(); },
-  createMarket: async(p)=>{ if(!core) throw new Error("deploy core first"); const [ld,cd]=await Promise.all([readDecimals(p.loan),readDecimals(p.collateral)]); const oraclePrice=E.parseUnits(String(p.price),36+ld-cd).toString(); const lltv=E.parseUnits(String(p.lltv),18).toString(); const minActivation=E.parseUnits(String(p.minActivation),cd).toString(); const r=await api("/api/market/create",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,core,loanToken:p.loan,collateralToken:p.collateral,oraclePrice,lltv,minActivation}); ok("market "+short(r.market.vault)); (r.txHashes||[]).forEach(h=>logTx(h,"createMarket")); await refreshStatus(); $("activeMarket").value=String(markets.length-1); onMarketChange(); },
+  createMarket: async(p)=>{ if(!core) throw new Error("deploy core first"); p.loan=resolveToken(p.loan); p.collateral=resolveToken(p.collateral); const [ld,cd]=await Promise.all([readDecimals(p.loan),readDecimals(p.collateral)]); const oraclePrice=E.parseUnits(String(p.price),36+ld-cd).toString(); const lltv=E.parseUnits(String(p.lltv),18).toString(); const minActivation=E.parseUnits(String(p.minActivation),cd).toString(); const r=await api("/api/market/create",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,core,loanToken:p.loan,collateralToken:p.collateral,oraclePrice,lltv,minActivation}); ok("market "+short(r.market.vault)); (r.txHashes||[]).forEach(h=>logTx(h,"createMarket")); await refreshStatus(); $("activeMarket").value=String(markets.length-1); onMarketChange(); },
   selectMarket: async(p)=>{ $("activeMarket").value=String(p.index); onMarketChange(); ok("active market #"+p.index); },
   // actor
   actAs: async(p)=>{ await doImpersonate(p.address); },
@@ -1083,6 +1088,10 @@ const ACTIONS = {
   // seed
   mint: async(p)=>{ const t=new E.Contract(p.token,ERC20,signer); const dec=await t.decimals(); await (await t.mint(E.getAddress(p.to),E.parseUnits(String(p.amount),dec))).wait(); ok("minted "+p.amount+" "+tokLabel(p.token)+" → "+short(p.to)); },
   deal: async(p)=>{ const dec=await readDecimals(p.token); const slot=await deal(p.token,E.getAddress(p.to),E.parseUnits(String(p.amount),dec),p.slot!==undefined?String(p.slot):""); ok("set balance "+p.amount+" "+tokLabel(p.token)+" → "+short(p.to)+" (slot "+slot+")"); },
+  // fund the active market's loan/collateral token to an actor, addressed by side so a script needs no token address
+  fund: async(p)=>{ const m=mustMarket(); const token=String(p.side).toLowerCase()==="collateral"?m.collateralToken:m.loanToken; const dec=await readDecimals(token); await deal(token,E.getAddress(p.to),E.parseUnits(String(p.amount),dec),""); watchAddress(p.to); ok("funded "+p.amount+" "+tokLabel(token)+" → "+short(p.to)); },
+  // register addresses in the participants watch-list (so a scenario's cast shows up in the active-market table)
+  watch: async(p)=>{ const list=Array.isArray(p.addresses)?p.addresses:(p.address?[p.address]:[]); list.forEach(watchAddress); renderParticipants(); ok("watching "+list.length+" address(es)"); },
   setEth: async(p)=>{ const wei=E.parseEther(String(p.amount)); await provider.send("anvil_setBalance",[E.getAddress(p.to),"0x"+wei.toString(16)]); ok("set ETH "+short(p.to)+" = "+p.amount); },
   // time / chain
   warp: async(p)=>{ const dt=Math.max(1,Number(p.seconds)); const iv=blockInterval(); const CAP=300; let n=Math.max(1,Math.round(dt/iv)),sp=iv; if(n>CAP){n=CAP;sp=Math.max(1,Math.floor(dt/n));} const ts0=await latestTs(); if(n>1){ await provider.send("evm_setNextBlockTimestamp",[ts0+sp]); await provider.send("anvil_mine",["0x"+(n-1).toString(16),"0x"+sp.toString(16)]); } await provider.send("evm_setNextBlockTimestamp",[ts0+dt]); await provider.send("evm_mine",[]); ok("warped +"+dt+"s"); refreshChain(); },
@@ -1096,7 +1105,7 @@ const ACTIONS = {
   // oracle
   setPrice: async(p)=>{ const m=mustMarket(); const scale=await oracleScale(m.loanToken,m.collateralToken); await (await new E.Contract(m.oracle,ORACLE,signer).setPrice(E.parseUnits(String(p.price),scale))).wait(); ok("price → "+p.price); refreshPrice(); },
   bumpPrice: async(p)=>{ const m=mustMarket(); const o=new E.Contract(m.oracle,ORACLE,signer); const scale=await oracleScale(m.loanToken,m.collateralToken); const cur=await o.price(); const bps=BigInt(Math.round(Number(p.pct)*100)); const np=cur*(10000n+bps)/10000n; await (await o.setPrice(np)).wait(); ok((Number(p.pct)>=0?"+":"")+p.pct+"% → "+E.formatUnits(np,scale)); refreshPrice(); },
-  crashPrice: async()=>{ await ACTIONS.bumpPrice({pct:-50}); },
+  crashPrice: async(p)=>{ await ACTIONS.bumpPrice({pct:(p&&p.pct!==undefined)?p.pct:-50}); },
   // market control
   marketFreeze: async()=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CONTROLLER,signer).freeze()).wait(); ok("market frozen"); refreshMktCtl(); },
   marketUnfreeze: async()=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CONTROLLER,signer).unfreeze()).wait(); ok("market unfrozen"); refreshMktCtl(); },
@@ -1119,6 +1128,7 @@ const ACTIONS = {
   redeem: async(p)=>{ const m=mustMarket(); const me=await signer.getAddress(); await (await new E.Contract(m.vault,VAULT4626,signer).redeem(E.parseUnits(String(p.shares),18),me,me)).wait(); ok("redeemed "+p.shares+" shares"); },
   withdrawMax: async()=>{ const m=mustMarket(); const me=await signer.getAddress(); const v=new E.Contract(m.vault,VAULT4626,signer); const max=await v.maxWithdraw(me); await (await v.withdraw(max,me,me)).wait(); ok("withdrew max"); },
   fallbackExit: async(p)=>{ const m=mustMarket(); const me=await signer.getAddress(); await (await new E.Contract(m.vault,VAULT4626,signer).fallbackExit(E.parseUnits(String(p.shares),18),me,me,BigInt(p.maxIterations||10))).wait(); ok("fallback-exited "+p.shares+" shares"); },
+  settle: async(p)=>{ const m=mustMarket(); const me=await signer.getAddress(); const borrowers=(p.borrowers||[]).map(a=>E.getAddress(a)); if(!borrowers.length) throw new Error("settle needs a borrowers list"); await (await new E.Contract(m.vault,VAULT4626,signer).settle(E.parseUnits(String(p.shares),18),borrowers,me,me)).wait(); ok("settled "+p.shares+" shares over "+borrowers.length+" borrower(s)"); },
   coreSupply: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const assets=E.parseUnits(String(p.amount),dec); await ensureApprove(m.loanToken,m.core,assets); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).supply(mp(m),assets,0n,me,"0x")).wait(); ok("supplied "+p.amount+" → core"); },
   coreWithdraw: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).withdraw(mp(m),E.parseUnits(String(p.amount),dec),0n,me,me)).wait(); ok("withdrew "+p.amount+" ← core"); },
   coreWithdrawAll: async()=>{ const m=mustMarket(); const me=await signer.getAddress(); const c=new E.Contract(m.core,MORPHO,signer); const pos=await c.position(m.marketId,me); if(pos.supplyShares===0n) throw new Error("no core supply"); await (await c.withdraw(mp(m),0n,pos.supplyShares,me,me)).wait(); ok("withdrew all core supply"); },
@@ -1128,6 +1138,9 @@ const ACTIONS = {
   repayAll: async()=>{ const m=mustMarket(); const me=await signer.getAddress(); const c=new E.Contract(m.core,MORPHO,signer); const pos=await c.position(m.marketId,me); if(pos.borrowShares===0n) throw new Error("no debt"); await ensureApprove(m.loanToken,m.core,E.MaxUint256); await (await c.repay(mp(m),0n,pos.borrowShares,me,"0x")).wait(); ok("repaid all"); },
   withdrawCollateral: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.collateralToken); const amt=E.parseUnits(String(p.amount),dec); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).withdrawCollateral(mp(m),amt,me,me)).wait(); ok("withdrew "+p.amount+" collateral"); },
   liquidate: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.collateralToken); const seized=E.parseUnits(String(p.seize),dec); await ensureApprove(m.loanToken,m.core,E.MaxUint256); await (await new E.Contract(m.core,MORPHO,signer).liquidate(mp(m),E.getAddress(p.borrower),seized,0n,"0x")).wait(); ok("liquidated "+short(p.borrower)); },
+  // seize a borrower's WHOLE on-chain collateral (read live, so no exact-amount guessing) — the reliable way to
+  // drive a bad-debt liquidation: zeroing collateral while debt remains makes the core socialize the residual
+  liquidateMax: async(p)=>{ const m=mustMarket(); const c=new E.Contract(m.core,MORPHO,signer); const pos=await c.position(m.marketId,E.getAddress(p.borrower)); if(pos.collateral===0n) throw new Error("no collateral to seize"); await ensureApprove(m.loanToken,m.core,E.MaxUint256); await (await c.liquidate(mp(m),E.getAddress(p.borrower),pos.collateral,0n,"0x")).wait(); ok("liquidated (max seize) "+short(p.borrower)); },
   // controller config
   setSupplyCap: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const cap=Number(p.cap)===0?0n:E.parseUnits(String(p.cap),dec); await (await new E.Contract(m.controller,CTLCFG,signer).setSupplyCap(cap)).wait(); ok("supply cap "+p.cap); },
   grantInstantActivation: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CTLCFG,signer).grantInstantActivation(E.getAddress(p.caller))).wait(); ok("instant activation granted "+short(p.caller)); },
@@ -1148,7 +1161,7 @@ function renderHistory(){
 function loadArchive(i){ const h=archive[i]; if(!h) return; $("scriptInput").value=JSON.stringify(h.steps,null,2); ok("loaded archived session ("+h.steps.length+" steps) into input"); }
 // actions NOT sent as the signer (cheats, node/time control, actor switch, forge-key deploys); everything
 // else is a tx from the current signer, so we stamp `from` for explicit, reorder-safe scripts.
-const NO_FROM = new Set(["actAs","useKey","selectMarket","deployCore","deployToken","createMarket","warp","mine","setNextTs","freezeChain","resumeChain","intervalMine","snapshot","revertSnapshot","deal","setEth"]);
+const NO_FROM = new Set(["actAs","useKey","selectMarket","deployCore","deployToken","createMarket","warp","mine","setNextTs","freezeChain","resumeChain","intervalMine","snapshot","revertSnapshot","deal","setEth","fund","watch"]);
 async function recordStep(name, params){
   const step=Object.assign({a:name}, params||{}); if(!NO_FROM.has(name) && signer) step.from=signer.address;
   try{ const r=await api("/api/history",{step}); recording=r.history; }catch{ recording.push(step); }
@@ -1162,7 +1175,10 @@ async function runScript(){
   let steps; try{ steps=JSON.parse($("scriptInput").value); }catch(e){ return bad("script JSON parse error: "+e.message); }
   if(!Array.isArray(steps)) return bad("script must be a JSON array of steps");
   ok("▶ run "+steps.length+" step(s)…");
-  for(let i=0;i<steps.length;i++){ const s=steps[i]||{}; const a=s.a; const {a:_drop, from, ...params}=s; const fn=ACTIONS[a];
+  for(let i=0;i<steps.length;i++){ const s=steps[i]||{}; const a=s.a; const {a:_drop, from, ...params}=s;
+    // auto-register every address the step touches into the participants watch-list, so the scenario's cast appears
+    [from,params.to,params.borrower,params.account,params.caller].forEach(watchAddress); if(Array.isArray(params.borrowers)) params.borrowers.forEach(watchAddress); if(Array.isArray(params.addresses)) params.addresses.forEach(watchAddress);
+    const fn=ACTIONS[a];
     if(!fn){ bad("step "+(i+1)+": unknown action \""+a+"\""); return; }
     try{
       if(from && (!signer || signer.address.toLowerCase()!==String(from).toLowerCase())) await doImpersonate(from);

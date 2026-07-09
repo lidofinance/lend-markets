@@ -134,4 +134,35 @@ Fork mode boots an `--fork-url` anvil so real Lido tokens exist; seed those with
 it probes the token's `balanceOf` storage slot and writes it via `anvil_setStorageAt`, so no mint
 is required.
 
+## Scenarios
+
+The `script` tab replays a JSON array of steps (`{"a":<action>, …params, "from":<actor>}`); it runs each
+step (impersonating its `from`) and **halts on the first failure**.
+
+`tools/gen-scenario.js` generates a big, self-contained one — two markets driven densely over ~6 months:
+
+```
+node dev-dashboard/tools/gen-scenario.js [--months 6] [--seed 42] [--out dev-dashboard/scenarios/dense-6mo.json]
+```
+
+Load the output into the `script` tab and run it against a **fresh local node** (it deploys core + 4 mock
+tokens + 2 markets itself, so start from an empty anvil). It exercises:
+
+- dense ordinary flow on both markets, via the vault (deposit/withdraw) **and** the core (supply/borrow/repay);
+- smooth price growth on both markets, then one −10% crash on ETH that tips a maxed borrower into **bad debt**,
+  realized by a full-seizure `liquidateMax` (residual debt socialized);
+- once-each set-pieces: `settle` (lender self-liquidation via the queue) and `fallbackExit` (illiquid exit);
+- a guardian episode: suspect flags, a quorum ban that stays, and a ban that is later lifted;
+- governance: a pause/resume and a supply-cap change.
+
+Time is spread across each day (not a strict 1-day step); connected cascades (crash → liquidate → fallback)
+run tightly but still with gaps. The generator keeps every emitted step valid against its own state model
+(entries pre-funded, exits self-sizing), so the run does not halt midway. Re-run with a different `--seed`
+for a different mix, or `--months 12` for a full year.
+
+Actions the scenarios rely on beyond the panel buttons: `fund {side,to,amount}` (deal the active market's
+loan/collateral to an actor), `settle {shares,borrowers}`, `liquidateMax {borrower}`, `watch {addresses}`
+(register a cast into the participants table), and token **symbols** (e.g. `"WETH"`) in place of addresses
+in `createMarket`. Every address a step touches is auto-added to the participants watch-list.
+
 Not production tooling — a draft dev aid.
