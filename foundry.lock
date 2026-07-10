@@ -1,4 +1,7 @@
 {
+  "lib/bundler3": {
+    "rev": "2576d7438676a1f2a2b2648a3f5b0d53099ba676"
+  },
   "lib/lido-lend": {
     "branch": {
       "name": "main",

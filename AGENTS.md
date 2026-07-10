@@ -6,6 +6,9 @@
   libraries.
 - `lib/lido-lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported
   via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
+- `lib/bundler3`: stock Morpho bundler3, pinned as a submodule and imported via
+  the `@bundler3/` remapping — the one-transaction bundling dispatcher and its general adapter. The only
+  Lido bundler code is `src/periphery/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`).
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
 - `src/GuardianSignals.sol`: guardian-signal registry (one per project).
 - `src/interfaces/`: local interfaces and hook payload structs.
