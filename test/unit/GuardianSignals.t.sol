@@ -20,9 +20,14 @@ import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 contract GuardianSignalsTest is Test {
     GuardianSignals internal gs;
 
-    address internal constant G1 = address(0x4001);
-    address internal constant G2 = address(0x4002);
-    address internal constant G3 = address(0x4003);
+    // Each seat is an immutable guardian key (Gn) paired with a rotatable operator key (On). Signals are keyed
+    // by the guardian, so `getFlaggedBy`/`getSuspectedBy` return Gn, not On.
+    address internal constant O1 = address(0x4001);
+    address internal constant O2 = address(0x4002);
+    address internal constant O3 = address(0x4003);
+    address internal constant G1 = address(0x4101);
+    address internal constant G2 = address(0x4102);
+    address internal constant G3 = address(0x4103);
     address internal constant BOB = address(0x5001);
 
     /// @dev The market all signals in this suite are keyed under. GuardianSignals is committee-wide over many
@@ -33,10 +38,14 @@ contract GuardianSignalsTest is Test {
         vm.roll(1000);
         vm.warp(1_000_000);
 
-        // `initialize` seeds the default three-guardian committee at quorum 2.
+        // `initialize` seeds the default three-seat committee (guardians paired 1:1 with operators) at quorum 2.
         address impl = address(new GuardianSignals());
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address[],uint256)", address(this), _defaultGuardians(), uint256(2)
+            "initialize(address,address[],address[],uint256)",
+            address(this),
+            _defaultGuardians(),
+            _defaultOperators(),
+            uint256(2)
         );
         gs = GuardianSignals(address(new OssifiableProxy(impl, address(this), initData)));
 
@@ -49,7 +58,15 @@ contract GuardianSignalsTest is Test {
         gs.setSuspectWindow(0);
     }
 
-    /// @dev The default three-guardian roster used across the suite.
+    /// @dev The default operator keys, aligned 1:1 with `_defaultGuardians`.
+    function _defaultOperators() internal pure returns (address[] memory o) {
+        o = new address[](3);
+        o[0] = O1;
+        o[1] = O2;
+        o[2] = O3;
+    }
+
+    /// @dev The default three-guardian roster (guardian keys) used across the suite.
     function _defaultGuardians() internal pure returns (address[] memory g) {
         g = new address[](3);
         g[0] = G1;
@@ -67,18 +84,20 @@ contract GuardianSignalsTest is Test {
         return _block(uint40(block.number - 1));
     }
 
-    function _flag(address g, address account) internal {
+    /// @dev Flags as the operator key `o` (an operator may flag; its guardian is resolved internally).
+    function _flag(address o, address account) internal {
         address[] memory a = new address[](1);
         a[0] = account;
-        vm.prank(g);
+        vm.prank(o);
         gs.flag(MARKET, a, _validBlock());
     }
 
-    function _unflag(address g, address account) internal {
+    /// @dev Retraction is guardian-only, so this pranks the seat's guardian (resolved from its operator key).
+    function _unflag(address o, address account) internal {
         address[] memory a = new address[](1);
         a[0] = account;
-        vm.prank(g);
-        gs.unflag(MARKET, a, _validBlock());
+        vm.prank(gs.guardianOf(o));
+        gs.unflag(MARKET, a);
     }
 
     function _flagCount(address account) internal view returns (uint256) {
@@ -95,7 +114,7 @@ contract GuardianSignalsTest is Test {
 
     /// @dev A single flag below quorum is a strike, not a ban: the account stays borrowable.
     function test_flag_belowQuorum_isNormalWithStrikes() public {
-        _flag(G1, BOB); // 1 flag, quorum 2
+        _flag(O1, BOB); // 1 flag, quorum 2
         assertFalse(gs.isBanned(MARKET, BOB), "below quorum stays Normal");
         assertEq(_strikes(BOB), 1, "one strike");
         assertEq(_flagCount(BOB), 1, "flagCount 1");
@@ -103,8 +122,8 @@ contract GuardianSignalsTest is Test {
 
     /// @dev The flag that reaches quorum latches the ban; strikes keep counting past it, uncapped.
     function test_flag_atQuorum_latchesBanned() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB); // reaches quorum 2
+        _flag(O1, BOB);
+        _flag(O2, BOB); // reaches quorum 2
         assertTrue(gs.isBanned(MARKET, BOB), "quorum bans");
         assertEq(_strikes(BOB), 2, "strikes == flagCount, uncapped");
     }
@@ -112,9 +131,9 @@ contract GuardianSignalsTest is Test {
     /// @dev The latch: once quorum banned, a retraction that drops the count back below quorum does NOT lift
     ///      the ban — only `unban` does.
     function test_latch_unflagBelowQuorum_staysBanned() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB); // Banned
-        _unflag(G1, BOB); // flagCount drops to 1 < quorum
+        _flag(O1, BOB);
+        _flag(O2, BOB); // Banned
+        _unflag(O1, BOB); // flagCount drops to 1 < quorum
         assertTrue(gs.isBanned(MARKET, BOB), "latched: unflag does not lift the ban");
         assertEq(_flagCount(BOB), 1, "flagCount dropped");
         assertEq(_strikes(BOB), 1, "strikes follow flagCount");
@@ -124,15 +143,15 @@ contract GuardianSignalsTest is Test {
 
     /// @dev One guardian holds at most one flag per account: re-flagging cannot manufacture strikes.
     function test_flag_sameGuardianTwice_isIdempotent() public {
-        _flag(G1, BOB);
-        _flag(G1, BOB); // same guardian -> no second strike
+        _flag(O1, BOB);
+        _flag(O1, BOB); // same guardian -> no second strike
         assertEq(_flagCount(BOB), 1, "set semantics: one flag per guardian");
     }
 
     /// @dev A guardian can only retract its OWN flag: retracting someone else's is a no-op.
     function test_unflag_nonFlagger_isNoop() public {
-        _flag(G1, BOB);
-        _unflag(G2, BOB); // G2 never flagged -> no-op
+        _flag(O1, BOB);
+        _unflag(O2, BOB); // O2 never flagged -> no-op
         assertEq(_flagCount(BOB), 1, "unflag by a non-flagger is a no-op");
     }
 
@@ -141,16 +160,16 @@ contract GuardianSignalsTest is Test {
     /// @dev `unban` is the one recovery path: it lifts the latched ban AND wipes the flag set, so the account
     ///      restarts from a clean slate — a fresh quorum of flags is needed to re-ban it.
     function test_ban_unban_clearsFlagSet() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB); // Banned
+        _flag(O1, BOB);
+        _flag(O2, BOB); // Banned
         gs.unban(MARKET, BOB);
         assertFalse(gs.isBanned(MARKET, BOB), "unban returns to Normal");
         assertEq(_flagCount(BOB), 0, "unban clears the flag set");
 
         // Clean slate is functional: one fresh flag does not re-ban, a fresh quorum does.
-        _flag(G1, BOB);
+        _flag(O1, BOB);
         assertFalse(gs.isBanned(MARKET, BOB), "one fresh flag stays below quorum after unban");
-        _flag(G2, BOB);
+        _flag(O2, BOB);
         assertTrue(gs.isBanned(MARKET, BOB), "a fresh quorum re-latches the ban");
     }
 
@@ -170,7 +189,7 @@ contract GuardianSignalsTest is Test {
 
     /// @dev The frontier only moves on a quorum of heartbeats: a single scanner cannot advance it.
     function test_frontier_belowQuorumHeartbeats_noAdvance() public {
-        _heartbeat(G1, 999); // only one guardian heartbeated; quorum is 2
+        _heartbeat(O1, 999); // only one guardian heartbeated; quorum is 2
         gs.syncQuorumBlock();
         assertEq(gs.getQuorumFrontier(), 0, "fewer than quorum heartbeats -> frontier stays 0");
     }
@@ -178,9 +197,9 @@ contract GuardianSignalsTest is Test {
     /// @dev The frontier is the quorum-th largest heartbeat: the point a quorum of guardians has provably
     ///      scanned past.
     function test_frontier_atQuorum_advancesToQuorumthLargest() public {
-        _heartbeat(G1, 999);
-        _heartbeat(G2, 998);
-        _heartbeat(G3, 997);
+        _heartbeat(O1, 999);
+        _heartbeat(O2, 998);
+        _heartbeat(O3, 997);
         gs.syncQuorumBlock();
         // quorum-th largest of {999,998,997} (quorum 2) = 2nd largest = 998 (min of the top-2).
         assertEq(gs.getQuorumFrontier(), 998, "frontier = quorum-th largest heartbeat");
@@ -188,19 +207,19 @@ contract GuardianSignalsTest is Test {
 
     /// @dev The frontier is a ratchet: a lagging guardian's lower heartbeat can stall it but never pull it back.
     function test_frontier_monotonic_doesNotRegress() public {
-        _heartbeat(G1, 999);
-        _heartbeat(G2, 998);
+        _heartbeat(O1, 999);
+        _heartbeat(O2, 998);
         gs.syncQuorumBlock(); // frontier 998
         // Now a lagging guardian heartbeats at a lower block; the frontier must not move backward.
-        _heartbeat(G3, 990);
+        _heartbeat(O3, 990);
         gs.syncQuorumBlock();
         assertEq(gs.getQuorumFrontier(), 998, "monotonic ratchet: frontier stays at 998, no regress");
     }
 
     /// @dev Recomputing the frontier is permissionless: it only distills already-attested heartbeats.
     function test_syncQuorumBlock_isPermissionless() public {
-        _heartbeat(G1, 999);
-        _heartbeat(G2, 998);
+        _heartbeat(O1, 999);
+        _heartbeat(O2, 998);
         vm.prank(BOB); // a non-guardian
         gs.syncQuorumBlock();
         assertEq(gs.getQuorumFrontier(), 998, "anyone can advance the frontier");
@@ -209,8 +228,8 @@ contract GuardianSignalsTest is Test {
     /// @dev A heartbeat is lazy: it records the guardian's scan but does not move the frontier on its own;
     ///      the frontier advances only on a subsequent `syncQuorumBlock`.
     function test_frontier_heartbeatIsLazy_advancesOnlyOnSync() public {
-        _heartbeat(G1, 999);
-        _heartbeat(G2, 998);
+        _heartbeat(O1, 999);
+        _heartbeat(O2, 998);
         assertEq(gs.getQuorumFrontier(), 0, "heartbeats alone do not move the frontier");
         gs.syncQuorumBlock();
         assertEq(gs.getQuorumFrontier(), 998, "sync advances the frontier to the quorum-th largest");
@@ -236,10 +255,10 @@ contract GuardianSignalsTest is Test {
         gs.setQuorum(3);
         assertEq(gs.getQuorum(), 3, "quorum == guardian count is allowed");
 
-        _flag(G1, BOB);
-        _flag(G2, BOB); // 2 flags, the OLD quorum
+        _flag(O1, BOB);
+        _flag(O2, BOB); // 2 flags, the OLD quorum
         assertFalse(gs.isBanned(MARKET, BOB), "the raised quorum governs: 2 flags no longer ban");
-        _flag(G3, BOB);
+        _flag(O3, BOB);
         assertTrue(gs.isBanned(MARKET, BOB), "the full roster reaches the raised quorum");
     }
 
@@ -251,10 +270,23 @@ contract GuardianSignalsTest is Test {
         gs.removeGuardian(G3); // would drop below quorum
     }
 
-    /// @dev The roster is a set: re-adding a member is an explicit error, not a silent no-op.
+    /// @dev The roster is a set: re-appointing an address that already fills a guardian key is an explicit
+    ///      error, not a silent no-op.
     function testRevert_addGuardian_existing() public {
         vm.expectRevert(IGuardianSignals.AlreadyGuardian.selector);
-        gs.addGuardian(G1);
+        gs.addGuardian(O1, address(0x4104));
+    }
+
+    /// @dev The manager key is subject to the same uniqueness guard: reusing a live manager key reverts.
+    function testRevert_addGuardian_existingManager() public {
+        vm.expectRevert(IGuardianSignals.AlreadyGuardian.selector);
+        gs.addGuardian(address(0x4004), G1);
+    }
+
+    /// @dev A seat's two keys must differ: a guardian equal to its manager is malformed input.
+    function testRevert_addGuardian_guardianEqualsManager() public {
+        vm.expectRevert(IGuardianSignals.InvalidParams.selector);
+        gs.addGuardian(address(0x4004), address(0x4004));
     }
 
     /// @dev Signals are guardian-only: a non-guardian cannot flag.
@@ -262,36 +294,46 @@ contract GuardianSignalsTest is Test {
         address[] memory a = new address[](1);
         a[0] = BOB;
         vm.prank(BOB); // not a guardian
-        vm.expectRevert(IGuardianSignals.NotGuardian.selector);
+        vm.expectRevert(IGuardianSignals.NotOperator.selector);
         gs.flag(MARKET, a, _validBlock());
     }
 
-    /// @dev The `onlyGuardian` gate inlines per function; sweep the remaining guardian-only mutators so each
-    ///      instantiation has its revert side exercised.
-    function testRevert_unflag_nonGuardian() public {
+    /// @dev Retraction is manager-only: a non-manager (here a plain account) reverts `NotGuardian`. A guardian
+    ///      operator key is NOT a manager, so it cannot retract either — only the seat's manager can.
+    function testRevert_unflag_nonManager() public {
         address[] memory a = new address[](1);
         a[0] = BOB;
         vm.prank(BOB);
         vm.expectRevert(IGuardianSignals.NotGuardian.selector);
-        gs.unflag(MARKET, a, _validBlock());
+        gs.unflag(MARKET, a);
     }
 
-    /// @dev suspect is guardian-only: a non-guardian call reverts NotGuardian.
+    /// @dev A guardian operator key cannot retract its own seat's flag: retraction is reserved to the manager.
+    function testRevert_unflag_byGuardianKey() public {
+        _flag(O1, BOB);
+        address[] memory a = new address[](1);
+        a[0] = BOB;
+        vm.prank(O1); // the guardian key, not the manager
+        vm.expectRevert(IGuardianSignals.NotGuardian.selector);
+        gs.unflag(MARKET, a);
+    }
+
+    /// @dev suspect is guardian-only: a non-guardian call reverts NotOperator.
     function testRevert_suspect_nonGuardian() public {
         address[] memory a = new address[](1);
         a[0] = BOB;
         vm.prank(BOB);
-        vm.expectRevert(IGuardianSignals.NotGuardian.selector);
+        vm.expectRevert(IGuardianSignals.NotOperator.selector);
         gs.suspect(MARKET, a, _validBlock());
     }
 
-    /// @dev unsuspect is guardian-only: a non-guardian call reverts NotGuardian.
-    function testRevert_unsuspect_nonGuardian() public {
+    /// @dev unsuspect is manager-only: a non-manager call reverts NotGuardian.
+    function testRevert_unsuspect_nonManager() public {
         address[] memory a = new address[](1);
         a[0] = BOB;
         vm.prank(BOB);
         vm.expectRevert(IGuardianSignals.NotGuardian.selector);
-        gs.unsuspect(MARKET, a, _validBlock());
+        gs.unsuspect(MARKET, a);
     }
 
     /// @dev The force-ban is role-gated: guardians flag, but only `ACCESS_LIMITER_ROLE` bans directly.
@@ -308,7 +350,7 @@ contract GuardianSignalsTest is Test {
     function testRevert_heartbeat_blockInTheFuture() public {
         BlockInfoWithHash memory b = _block(uint40(block.number - 1));
         b.number = uint40(block.number + 1); // future
-        vm.prank(G1);
+        vm.prank(O1);
         vm.expectRevert(IGuardianSignals.BlockInTheFuture.selector);
         gs.heartbeat(b);
     }
@@ -317,14 +359,14 @@ contract GuardianSignalsTest is Test {
     function testRevert_heartbeat_invalidBlockHash() public {
         BlockInfoWithHash memory b = _block(uint40(block.number - 1));
         b.hash = bytes32(uint256(0xdead)); // wrong hash
-        vm.prank(G1);
+        vm.prank(O1);
         vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
         gs.heartbeat(b);
     }
 
     // ── events / batch ──
 
-    event Flagged(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
+    event Flagged(Id indexed marketId, address indexed account, address indexed manager, address actor, uint16 strikes);
     event Banned(Id indexed marketId, address indexed account);
     event QuorumSet(uint256 quorum);
 
@@ -338,7 +380,11 @@ contract GuardianSignalsTest is Test {
             impl,
             address(this),
             abi.encodeWithSignature(
-                "initialize(address,address[],uint256)", address(this), _defaultGuardians(), uint256(2)
+                "initialize(address,address[],address[],uint256)",
+                address(this),
+                _defaultOperators(),
+                _defaultGuardians(),
+                uint256(2)
             )
         );
     }
@@ -349,24 +395,24 @@ contract GuardianSignalsTest is Test {
         a[0] = BOB;
 
         vm.expectEmit(true, true, true, true, address(gs));
-        emit Flagged(MARKET, BOB, G1, 1);
-        vm.prank(G1);
+        emit Flagged(MARKET, BOB, G1, O1, 1); // keyed by manager G1; actor is the guardian O1
+        vm.prank(O1);
         gs.flag(MARKET, a, _validBlock());
 
         // The quorum-crossing flag emits Flagged AND Banned.
         vm.expectEmit(true, true, false, false, address(gs));
         emit Banned(MARKET, BOB);
-        vm.prank(G2);
+        vm.prank(O2);
         gs.flag(MARKET, a, _validBlock());
     }
 
     /// @dev `Banned` fires exactly once, on the crossing flag: later flags must not re-emit it (indexers
     ///      treat it as a state transition).
     function test_flag_pastQuorum_noSecondBannedEvent() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB); // Banned latched
+        _flag(O1, BOB);
+        _flag(O2, BOB); // Banned latched
         vm.recordLogs();
-        _flag(G3, BOB); // a 3rd flag past quorum must NOT re-emit Banned
+        _flag(O3, BOB); // a 3rd flag past quorum must NOT re-emit Banned
         bytes32 bannedSig = keccak256("Banned(bytes32,address)");
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i = 0; i < logs.length; i++) {
@@ -379,7 +425,7 @@ contract GuardianSignalsTest is Test {
         address[] memory accs = new address[](2);
         accs[0] = BOB;
         accs[1] = address(0x5002);
-        vm.prank(G1);
+        vm.prank(O1);
         gs.flag(MARKET, accs, _validBlock());
         assertEq(_flagCount(BOB), 1, "first account flagged");
         assertEq(_flagCount(address(0x5002)), 1, "second account flagged");
@@ -390,10 +436,10 @@ contract GuardianSignalsTest is Test {
     /// @dev A rotation that adds a never-heartbeated guardian (timestamp 0) can stall the frontier but the
     ///      ratchet keeps it from regressing.
     function test_frontier_freshGuardian_stallsNoRegress() public {
-        _heartbeat(G1, 999);
-        _heartbeat(G2, 998);
+        _heartbeat(O1, 999);
+        _heartbeat(O2, 998);
         gs.syncQuorumBlock(); // frontier 998
-        gs.addGuardian(address(0x4099)); // a 4th, never heartbeated (packs as 0)
+        gs.addGuardian(address(0x4099), address(0x4199)); // a 4th, never heartbeated (packs as 0)
         gs.syncQuorumBlock();
         assertEq(gs.getQuorumFrontier(), 998, "fresh guardian stalls, never regresses the frontier");
     }
@@ -411,23 +457,23 @@ contract GuardianSignalsTest is Test {
     /// @dev Heartbeats are guardian-only: an outsider cannot feed the liveness frontier.
     function testRevert_heartbeat_nonGuardian() public {
         vm.prank(BOB);
-        vm.expectRevert(IGuardianSignals.NotGuardian.selector);
+        vm.expectRevert(IGuardianSignals.NotOperator.selector);
         gs.heartbeat(_validBlock());
     }
 
     /// @dev The roster is capped at `MAX_GUARDIANS_COUNT` (32): the frontier sort stays bounded.
     function testRevert_addGuardian_max32() public {
-        // 3 guardians already; add up to 32, then the 33rd reverts.
+        // 3 seats already; add up to 32, then the 33rd reverts. Guardian keys 0x40xx, manager keys 0x42xx.
         for (uint160 i = 4; i <= 32; i++) {
-            gs.addGuardian(address(0x4000 + i));
+            gs.addGuardian(address(0x4000 + i), address(0x4200 + i));
         }
         vm.expectRevert(IGuardianSignals.MaxGuardiansReached.selector);
-        gs.addGuardian(address(0x4000 + 33));
+        gs.addGuardian(address(0x4000 + 33), address(0x4200 + 33));
     }
 
     // ── guardian set management: removal ──
 
-    event GuardianRemoved(address indexed guardian);
+    event GuardianRemoved(address indexed guardian, address indexed operator);
 
     /// @dev `removeGuardian` success path: drops the set from 3 to 2 (== quorum), emits `GuardianRemoved` —
     ///      and REVOKES the signal rights: the ex-guardian's flag/heartbeat revert while the remaining
@@ -435,25 +481,25 @@ contract GuardianSignalsTest is Test {
     function test_removeGuardian_succeeds() public {
         assertEq(gs.getGuardianCount(), 3, "starts with three guardians");
 
-        vm.expectEmit(true, false, false, false, address(gs));
-        emit GuardianRemoved(G3);
+        vm.expectEmit(true, true, false, false, address(gs));
+        emit GuardianRemoved(G3, O3);
         gs.removeGuardian(G3);
 
         assertEq(gs.getGuardianCount(), 2, "count drops to two");
-        assertFalse(gs.isGuardian(G3), "removed address is no longer a guardian");
+        assertFalse(gs.isGuardian(G3), "removed guardian is gone");
         assertTrue(gs.isGuardian(G1), "G1 still a guardian");
         assertTrue(gs.isGuardian(G2), "G2 still a guardian");
 
         // Revoked in practice: the ex-guardian cannot signal, the rest can.
         address[] memory a = new address[](1);
         a[0] = BOB;
-        vm.prank(G3);
-        vm.expectRevert(IGuardianSignals.NotGuardian.selector);
+        vm.prank(O3);
+        vm.expectRevert(IGuardianSignals.NotOperator.selector);
         gs.flag(MARKET, a, _validBlock());
-        vm.prank(G3);
-        vm.expectRevert(IGuardianSignals.NotGuardian.selector);
+        vm.prank(O3);
+        vm.expectRevert(IGuardianSignals.NotOperator.selector);
         gs.heartbeat(_validBlock());
-        _flag(G1, BOB);
+        _flag(O1, BOB);
         assertEq(_flagCount(BOB), 1, "remaining guardian still flags");
     }
 
@@ -465,19 +511,74 @@ contract GuardianSignalsTest is Test {
         a[0] = BOB;
 
         vm.prank(g4);
-        vm.expectRevert(IGuardianSignals.NotGuardian.selector);
+        vm.expectRevert(IGuardianSignals.NotOperator.selector);
         gs.flag(MARKET, a, _validBlock());
 
-        gs.addGuardian(g4);
+        gs.addGuardian(g4, address(0x4104));
 
         _flag(g4, BOB); // the fresh guardian's flag lands...
         assertEq(_flagCount(BOB), 1, "new guardian's flag counted");
-        _flag(G1, BOB); // ...and participates in the quorum
+        _flag(O1, BOB); // ...and participates in the quorum
         assertTrue(gs.isBanned(MARKET, BOB), "new guardian's flag counts toward the latch");
     }
 
-    /// @dev `removeGuardian` on an address that is not in the set reverts `NotGuardian` (the `remove` returns
-    ///      false before the quorum check), and leaves the set untouched.
+    // ── operator rotation ──
+
+    /// @dev A guardian rotates its operator key: the old key loses signal rights, the new key gains them, and the
+    ///      seat's standing is untouched — flags stay keyed by the immutable guardian id.
+    function test_rotateOperator_movesRightsKeepsStanding() public {
+        _flag(O1, BOB); // seat G1 flags via its operator O1
+        address newOp = address(0x4201);
+
+        vm.prank(G1); // the guardian rotates its operator
+        gs.rotateOperator(newOp);
+
+        assertEq(gs.operatorOf(G1), newOp, "operator rotated");
+        assertEq(gs.guardianOf(newOp), G1, "new operator resolves to the guardian");
+        assertEq(gs.guardianOf(O1), address(0), "old operator no longer resolves");
+
+        // The old operator key is revoked; the new one signs for the same seat.
+        address other = address(0x5002);
+        address[] memory a = new address[](1);
+        a[0] = other;
+        vm.prank(O1);
+        vm.expectRevert(IGuardianSignals.NotOperator.selector);
+        gs.flag(MARKET, a, _validBlock());
+        vm.prank(newOp);
+        gs.flag(MARKET, a, _validBlock());
+        assertEq(gs.getFlaggedBy(MARKET, other)[0], G1, "new operator flags for the same guardian");
+
+        // Standing survived: the seat's earlier flag on BOB is untouched, still keyed by G1.
+        assertEq(_flagCount(BOB), 1, "earlier flag survives the rotation");
+        assertEq(gs.getFlaggedBy(MARKET, BOB)[0], G1, "still keyed by the guardian");
+    }
+
+    /// @dev Rotation is guardian-only: the operator key cannot rotate its own seat.
+    function testRevert_rotateOperator_byOperator() public {
+        vm.prank(O1); // the operator, not the guardian
+        vm.expectRevert(IGuardianSignals.NotGuardian.selector);
+        gs.rotateOperator(address(0x4201));
+    }
+
+    /// @dev Rotation rejects a key that already fills a guardian or operator role.
+    function testRevert_rotateOperator_toTakenKey() public {
+        vm.prank(G1);
+        vm.expectRevert(IGuardianSignals.AlreadyGuardian.selector);
+        gs.rotateOperator(O2); // already an operator
+    }
+
+    /// @dev `getGuardians` returns the guardian keys (seats), `getOperators` the operator keys — index-aligned.
+    function test_getGuardians_returnsSeatsAlignedWithOperators() public view {
+        address[] memory guardians = gs.getGuardians();
+        address[] memory operators = gs.getOperators();
+        assertEq(guardians.length, 3, "three guardians");
+        assertEq(guardians[0], G1, "guardian 0 is G1");
+        assertEq(operators[0], O1, "operator 0 is O1");
+        assertEq(gs.operatorOf(guardians[0]), operators[0], "operatorOf matches the aligned pair");
+    }
+
+    /// @dev `removeGuardian` on an address that is not a guardian reverts `NotGuardian`, and leaves the set
+    ///      untouched.
     function testRevert_removeGuardian_notGuardian() public {
         vm.expectRevert(IGuardianSignals.NotGuardian.selector);
         gs.removeGuardian(BOB); // never a guardian
@@ -488,7 +589,7 @@ contract GuardianSignalsTest is Test {
 
     /// @dev Property: across any interleaving of flags and retractions (no unban), once Banned always Banned.
     function testFuzz_latchHoldsAcrossSequence(uint256 seed) public {
-        address[3] memory gns = [G1, G2, G3];
+        address[3] memory gns = [O1, O2, O3];
         bool everBanned;
         for (uint256 i = 0; i < 24; i++) {
             seed = uint256(keccak256(abi.encode(seed, i)));
@@ -516,9 +617,9 @@ contract GuardianSignalsTest is Test {
         b1 = uint40(bound(b1, 745, 999));
         b2 = uint40(bound(b2, 745, 999));
         b3 = uint40(bound(b3, 745, 999));
-        _heartbeat(G1, b1);
-        _heartbeat(G2, b2);
-        _heartbeat(G3, b3);
+        _heartbeat(O1, b1);
+        _heartbeat(O2, b2);
+        _heartbeat(O3, b3);
         gs.syncQuorumBlock();
         assertEq(gs.getQuorumFrontier(), _sort3(b1, b2, b3), "frontier = quorum-th largest heartbeat");
     }
@@ -527,28 +628,34 @@ contract GuardianSignalsTest is Test {
 
     // ── guardian set management: views ──
 
-    /// @dev `isGuardian` is a direct membership read: true for a seeded guardian, false for a non-guardian.
+    /// @dev `isGuardian`/`isOperator` are direct membership reads over the two key spaces: a seat's guardian key
+    ///      reads as a guardian (not an operator), its operator key reads as an operator (not a guardian), and a
+    ///      stranger reads false for both.
     function test_isGuardian_reflectsMembership() public view {
-        assertTrue(gs.isGuardian(G1), "seeded guardian reads true");
+        assertTrue(gs.isGuardian(G1), "seeded guardian key reads as guardian");
+        assertFalse(gs.isOperator(G1), "guardian key is not an operator");
+        assertTrue(gs.isOperator(O1), "seeded operator key reads as operator");
+        assertFalse(gs.isGuardian(O1), "operator key is not a guardian");
         assertFalse(gs.isGuardian(BOB), "non-guardian reads false");
+        assertFalse(gs.isOperator(BOB), "non-operator reads false");
     }
 
-    /// @dev `getGuardians` returns the full set; with the seeded 3 it is exactly {G1, G2, G3} (insertion order
+    /// @dev `getOperators` returns the full set; with the seeded 3 it is exactly {O1, O2, O3} (insertion order
     ///      for an untouched EnumerableSet).
-    function test_getGuardians_returnsFullSet() public view {
-        address[] memory set = gs.getGuardians();
+    function test_getOperators_returnsFullSet() public view {
+        address[] memory set = gs.getOperators();
         assertEq(set.length, 3, "three guardians");
-        assertEq(set[0], G1, "index 0 is G1");
-        assertEq(set[1], G2, "index 1 is G2");
-        assertEq(set[2], G3, "index 2 is G3");
+        assertEq(set[0], O1, "index 0 is O1");
+        assertEq(set[1], O2, "index 1 is O2");
+        assertEq(set[2], O3, "index 2 is O3");
     }
 
     // ── events / batch / getFlaggedBy ──
 
     /// @dev `getFlaggedBy` exposes the raw flagger set behind the strike count.
     function test_getFlaggedBy_returnsFlaggerSet() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB);
+        _flag(O1, BOB);
+        _flag(O2, BOB);
         address[] memory flaggers = gs.getFlaggedBy(MARKET, BOB);
         assertEq(flaggers.length, 2, "two flaggers");
     }
@@ -558,50 +665,50 @@ contract GuardianSignalsTest is Test {
     /// @dev `getHeartbeat` returns the exact last-scanned timestamp recorded for a guardian; a guardian
     ///      that never heartbeated reads zero.
     function test_getHeartbeat_recordedAndZero() public {
-        _heartbeat(G1, 997); // _block packs timestamp == number == 997
+        _heartbeat(O1, 997); // _block packs timestamp == number == 997
 
-        assertEq(gs.getHeartbeat(G1), 997, "recorded timestamp");
+        assertEq(gs.getHeartbeat(O1), 997, "recorded timestamp");
 
-        assertEq(gs.getHeartbeat(G2), 0, "never heartbeated -> zero timestamp");
+        assertEq(gs.getHeartbeat(O2), 0, "never heartbeated -> zero timestamp");
     }
 
     /// @dev `getHeartbeats` pairs the guardian set with each guardian's last-scanned timestamp.
-    ///      Order matches `getGuardians`; an un-heartbeated guardian carries a zero timestamp.
+    ///      Order matches `getOperators`; an un-heartbeated guardian carries a zero timestamp.
     function test_getHeartbeats_pairsSetWithBlocks() public {
-        _heartbeat(G1, 999);
-        _heartbeat(G3, 990);
-        // G2 deliberately left without a heartbeat.
+        _heartbeat(O1, 999);
+        _heartbeat(O3, 990);
+        // O2 deliberately left without a heartbeat.
 
         (address[] memory guardians, uint40[] memory heartbeats) = gs.getHeartbeats();
 
         assertEq(guardians.length, 3, "three guardians returned");
         assertEq(heartbeats.length, 3, "one timestamp per guardian");
 
-        assertEq(guardians[0], G1, "index 0 guardian G1");
-        assertEq(heartbeats[0], 999, "G1 heartbeat timestamp");
+        assertEq(guardians[0], O1, "index 0 guardian O1");
+        assertEq(heartbeats[0], 999, "O1 heartbeat timestamp");
 
-        assertEq(guardians[1], G2, "index 1 guardian G2");
-        assertEq(heartbeats[1], 0, "G2 never heartbeated -> zero");
+        assertEq(guardians[1], O2, "index 1 guardian O2");
+        assertEq(heartbeats[1], 0, "O2 never heartbeated -> zero");
 
-        assertEq(guardians[2], G3, "index 2 guardian G3");
-        assertEq(heartbeats[2], 990, "G3 heartbeat timestamp");
+        assertEq(guardians[2], O3, "index 2 guardian O3");
+        assertEq(heartbeats[2], 990, "O3 heartbeat timestamp");
     }
 
     // ── prune (permissionless) ──
 
-    event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
+    event FlagPruned(Id indexed marketId, address indexed account, address indexed manager, uint16 strikes);
 
     address internal constant CLEANER = address(0xC1EA); // not a guardian, holds no roles
 
     /// @dev A flag left behind by a removed guardian is pruned by anyone; the flag count drops and the account
     ///      is clean again. Emits `FlagPruned`.
     function test_prune_removesRemovedGuardianFlag() public {
-        _flag(G1, BOB); // 1 flag, below quorum -> Normal
-        gs.removeGuardian(G1); // G1 no longer a guardian, but still in BOB's flagger set
+        _flag(O1, BOB); // 1 flag, below quorum -> Normal
+        gs.removeGuardian(G1); // G1 no longer a guardian, but its flag stays in BOB's set
         assertEq(_flagCount(BOB), 1, "stale flag still counts before prune");
 
         vm.expectEmit(true, true, true, true, address(gs));
-        emit FlagPruned(MARKET, BOB, G1, 0);
+        emit FlagPruned(MARKET, BOB, G1, 0); // the flagger set holds the manager id, not the guardian key
         vm.prank(CLEANER); // permissionless
         gs.prune(MARKET, BOB);
 
@@ -614,8 +721,8 @@ contract GuardianSignalsTest is Test {
     /// @dev Security: prune lowers the flag count but NEVER lifts a latched ban — else it would be a
     ///      permissionless unban. Only `unban` clears the status.
     function test_prune_doesNotLiftBan() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB); // reaches quorum 2 -> Banned
+        _flag(O1, BOB);
+        _flag(O2, BOB); // reaches quorum 2 -> Banned
         assertTrue(gs.isBanned(MARKET, BOB), "banned at quorum");
 
         gs.removeGuardian(G1); // 3 -> 2, still >= quorum
@@ -628,8 +735,8 @@ contract GuardianSignalsTest is Test {
 
     /// @dev Prune touches only ex-guardian flags: a flag from a still-active guardian is untouched.
     function test_prune_keepsCurrentGuardianFlags() public {
-        _flag(G1, BOB);
-        _flag(G2, BOB); // both still guardians
+        _flag(O1, BOB);
+        _flag(O2, BOB); // both still guardians
         vm.prank(CLEANER);
         gs.prune(MARKET, BOB); // nothing stale
 
@@ -651,13 +758,13 @@ contract GuardianSignalsTest is Test {
     function test_suspect_snapshotsCountAndExpiry() public {
         gs.setSuspectWindow(1 days);
 
-        _suspect(G1, BOB);
+        _suspect(O1, BOB);
         GuardiansOpinion memory op = gs.getOpinion(MARKET, BOB);
         assertEq(op.strikeCount, 0, "no flags");
         assertEq(op.suspectCount, 1, "one active suspect snapshotted");
         assertEq(op.suspectExpiryTimestamp, block.timestamp + 1 days, "expiry = reportedAt + suspectWindow");
 
-        _suspect(G2, BOB);
+        _suspect(O2, BOB);
         op = gs.getOpinion(MARKET, BOB);
         assertEq(op.suspectCount, 2, "two active suspects");
         assertEq(op.suspectExpiryTimestamp, block.timestamp + 1 days, "expiry re-anchored to the latest report");
@@ -666,14 +773,14 @@ contract GuardianSignalsTest is Test {
     /// @dev Retracting a suspect re-snapshots the count against a fresh timestamp.
     function test_unsuspect_reSnapshotsCount() public {
         gs.setSuspectWindow(1 days);
-        _suspect(G1, BOB);
-        _suspect(G2, BOB);
+        _suspect(O1, BOB);
+        _suspect(O2, BOB);
         assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 2, "two suspects");
 
         address[] memory a = new address[](1);
         a[0] = BOB;
-        vm.prank(G1);
-        gs.unsuspect(MARKET, a, _validBlock());
+        vm.prank(G1); // retraction is manager-only
+        gs.unsuspect(MARKET, a);
         assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 1, "retraction re-snapshots to 1 active suspect");
     }
 
@@ -684,7 +791,7 @@ contract GuardianSignalsTest is Test {
     function testRevert_heartbeat_timestampInTheFuture() public {
         BlockInfoWithHash memory b = _block(uint40(block.number - 1));
         b.timestamp = uint40(block.timestamp + 1); // number/hash valid, timestamp ahead of now
-        vm.prank(G1);
+        vm.prank(O1);
         vm.expectRevert(IGuardianSignals.TimestampInTheFuture.selector);
         gs.heartbeat(b);
     }
@@ -692,33 +799,33 @@ contract GuardianSignalsTest is Test {
     /// @dev A guardian cannot backdate its own frontier feed: a second heartbeat with a lower timestamp
     ///      than the recorded one is rejected, and the recorded timestamp stays.
     function testRevert_heartbeat_regressesBelowPrevious() public {
-        _heartbeat(G1, 999); // records timestamp 999
+        _heartbeat(O1, 999); // records timestamp 999
 
         BlockInfoWithHash memory b = _block(998); // valid block, timestamp 998 < 999
-        vm.prank(G1);
+        vm.prank(O1);
         vm.expectRevert(IGuardianSignals.HeartbeatTimestampRegressed.selector);
         gs.heartbeat(b);
 
-        assertEq(gs.getHeartbeat(G1), 999, "recorded timestamp unchanged after the revert");
+        assertEq(gs.getHeartbeat(O1), 999, "recorded timestamp unchanged after the revert");
     }
 
     /// @dev Boundary: the per-guardian check is non-decreasing, so re-reporting the SAME timestamp passes
     ///      (only a strictly lower one regresses), and a timestamp equal to `block.timestamp` passes (only
     ///      a strictly future one reverts).
     function test_heartbeat_equalTimestamps_accepted() public {
-        _heartbeat(G1, 999);
+        _heartbeat(O1, 999);
 
         BlockInfoWithHash memory b = _block(998);
         b.timestamp = 999; // == recorded: allowed
-        vm.prank(G1);
+        vm.prank(O1);
         gs.heartbeat(b);
-        assertEq(gs.getHeartbeat(G1), 999, "equal re-report accepted");
+        assertEq(gs.getHeartbeat(O1), 999, "equal re-report accepted");
 
         b = _block(uint40(block.number - 1));
         b.timestamp = uint40(block.timestamp); // == now: allowed
-        vm.prank(G1);
+        vm.prank(O1);
         gs.heartbeat(b);
-        assertEq(gs.getHeartbeat(G1), block.timestamp, "timestamp equal to now accepted");
+        assertEq(gs.getHeartbeat(O1), block.timestamp, "timestamp equal to now accepted");
     }
 
     // ── suspect window bounds ──
@@ -751,7 +858,11 @@ contract GuardianSignalsTest is Test {
     function testRevert_initialize_zeroAdmin() public {
         address impl = address(new GuardianSignals());
         bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address[],uint256)", address(0), _defaultGuardians(), uint256(2)
+            "initialize(address,address[],address[],uint256)",
+            address(0),
+            _defaultOperators(),
+            _defaultGuardians(),
+            uint256(2)
         );
         vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
         new OssifiableProxy(impl, address(this), initData);
@@ -761,10 +872,11 @@ contract GuardianSignalsTest is Test {
     ///      whole deploy.
     function testRevert_initialize_zeroGuardianInSet() public {
         address impl = address(new GuardianSignals());
-        address[] memory g = _defaultGuardians();
+        address[] memory g = _defaultOperators();
         g[1] = address(0);
-        bytes memory initData =
-            abi.encodeWithSignature("initialize(address,address[],uint256)", address(this), g, uint256(2));
+        bytes memory initData = abi.encodeWithSignature(
+            "initialize(address,address[],address[],uint256)", address(this), g, _defaultGuardians(), uint256(2)
+        );
         vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
         new OssifiableProxy(impl, address(this), initData);
     }
@@ -772,7 +884,13 @@ contract GuardianSignalsTest is Test {
     /// @dev A zero guardian could never signal but would count in the roster size: rejected.
     function testRevert_addGuardian_zeroAddress() public {
         vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
-        gs.addGuardian(address(0));
+        gs.addGuardian(address(0), address(0x4199));
+    }
+
+    /// @dev A zero manager key is rejected symmetrically: the seat needs a governing manager id.
+    function testRevert_addGuardian_zeroManager() public {
+        vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
+        gs.addGuardian(address(0x4004), address(0));
     }
 
     /// @dev The governance force-ban path rejects the zero account (nothing borrows from address(0), so a
@@ -789,7 +907,7 @@ contract GuardianSignalsTest is Test {
         address[] memory a = new address[](2);
         a[0] = BOB;
         a[1] = address(0);
-        vm.prank(G1);
+        vm.prank(O1);
         vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
         gs.flag(MARKET, a, _validBlock());
 
@@ -802,7 +920,7 @@ contract GuardianSignalsTest is Test {
         address[] memory a = new address[](2);
         a[0] = BOB;
         a[1] = address(0);
-        vm.prank(G1);
+        vm.prank(O1);
         vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
         gs.suspect(MARKET, a, _validBlock());
 
@@ -811,25 +929,25 @@ contract GuardianSignalsTest is Test {
 
     // ── suspect lifecycle: no-op retraction, expiry window, refresh, prune ──
 
-    event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
-    event SuspectCleared(Id indexed marketId, address indexed account, address indexed guardian);
+    event SuspectPruned(Id indexed marketId, address indexed account, address indexed manager);
+    event SuspectCleared(Id indexed marketId, address indexed account, address indexed manager, address actor);
 
     /// @dev Retracting a report the caller never made is a no-op: the other guardian's report stays counted.
     function test_unsuspect_nonSuspecter_isNoop() public {
         gs.setSuspectWindow(1 days);
-        _suspect(G1, BOB);
+        _suspect(O1, BOB);
 
         address[] memory a = new address[](1);
         a[0] = BOB;
         vm.recordLogs();
-        vm.prank(G2); // G2 never suspected BOB
-        gs.unsuspect(MARKET, a, _validBlock());
+        vm.prank(G2); // G2's seat never suspected BOB
+        gs.unsuspect(MARKET, a);
 
         assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 1, "G1's report still counted");
         (address[] memory suspecters,) = gs.getSuspectedBy(MARKET, BOB);
         assertEq(suspecters.length, 1, "suspect set untouched");
         assertEq(suspecters[0], G1, "only G1 remains");
-        bytes32 clearedSig = keccak256("SuspectCleared(bytes32,address,address)");
+        bytes32 clearedSig = keccak256("SuspectCleared(bytes32,address,address,address)");
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i = 0; i < logs.length; i++) {
             assertTrue(logs[i].topics[0] != clearedSig, "no SuspectCleared for a no-op retraction");
@@ -839,7 +957,7 @@ contract GuardianSignalsTest is Test {
     /// @dev A suspect report left behind by a removed guardian is pruned by anyone, mirroring flag pruning.
     function test_prune_removesRemovedGuardianSuspect() public {
         gs.setSuspectWindow(1 days);
-        _suspect(G1, BOB);
+        _suspect(O1, BOB);
         gs.removeGuardian(G1); // 3 -> 2 == quorum, allowed; G1's report is now stale
 
         vm.expectEmit(true, true, true, false, address(gs));
@@ -864,13 +982,13 @@ contract GuardianSignalsTest is Test {
     ///      snapshots only the still-active reporters.
     function test_suspect_expiredReport_prunedAndUncounted() public {
         gs.setSuspectWindow(1 days);
-        _suspect(G1, BOB); // reported at t0
+        _suspect(O1, BOB); // reported at t0
 
-        vm.warp(block.timestamp + 1 days + 1); // G1's report lapses
+        vm.warp(block.timestamp + 1 days + 1); // O1's report lapses
 
         vm.expectEmit(true, true, true, false, address(gs));
         emit SuspectPruned(MARKET, BOB, G1);
-        _suspect(G2, BOB); // prunes G1's lapsed report, then snapshots
+        _suspect(O2, BOB); // prunes G1's lapsed report, then snapshots
 
         assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 1, "only the fresh report counts");
         (address[] memory suspecters,) = gs.getSuspectedBy(MARKET, BOB);
@@ -882,11 +1000,11 @@ contract GuardianSignalsTest is Test {
     ///      count includes it.
     function test_suspect_atWindowBoundary_stillActive() public {
         gs.setSuspectWindow(1 days);
-        _suspect(G1, BOB);
+        _suspect(O1, BOB);
 
         vm.warp(block.timestamp + 1 days); // exactly at the boundary
 
-        _suspect(G2, BOB);
+        _suspect(O2, BOB);
         assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 2, "boundary report still counts");
     }
 
@@ -894,13 +1012,13 @@ contract GuardianSignalsTest is Test {
     ///      expiry as long as the guardian keeps re-attesting it.
     function test_suspect_reReport_refreshesWindow() public {
         gs.setSuspectWindow(1 days);
-        _suspect(G1, BOB); // t0
+        _suspect(O1, BOB); // t0
 
         vm.warp(block.timestamp + 20 hours);
-        _suspect(G1, BOB); // refresh at t0 + 20h
+        _suspect(O1, BOB); // refresh at t0 + 20h
 
         vm.warp(block.timestamp + 20 hours); // t0 + 40h: past the original expiry, inside the refreshed one
-        _suspect(G2, BOB); // prunes lapsed reports (none) and snapshots
+        _suspect(O2, BOB); // prunes lapsed reports (none) and snapshots
 
         assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 2, "refreshed report still active at t0+40h");
     }
@@ -909,9 +1027,9 @@ contract GuardianSignalsTest is Test {
     ///      many guardians report it.
     function test_suspect_neverBans() public {
         gs.setSuspectWindow(1 days);
-        _suspect(G1, BOB);
-        _suspect(G2, BOB);
-        _suspect(G3, BOB); // all guardians, over any quorum
+        _suspect(O1, BOB);
+        _suspect(O2, BOB);
+        _suspect(O3, BOB); // all guardians, over any quorum
 
         assertFalse(gs.isBanned(MARKET, BOB), "suspects never ban");
         assertEq(_strikes(BOB), 0, "suspects are not strikes");
@@ -924,16 +1042,16 @@ contract GuardianSignalsTest is Test {
         // Read the clock via the cheatcode: under --ir-minimum the compiler rematerializes the
         // `block.timestamp` OPCODE at the use site, which would observe the post-warp clock.
         uint256 t1 = vm.getBlockTimestamp();
-        _suspect(G1, BOB);
+        _suspect(O1, BOB);
         vm.warp(t1 + 1 hours);
-        _suspect(G2, BOB);
+        _suspect(O2, BOB);
 
         (address[] memory suspecters, uint40[] memory reportedAt) = gs.getSuspectedBy(MARKET, BOB);
         assertEq(suspecters.length, 2, "two reporters");
         assertEq(reportedAt.length, 2, "one timestamp per reporter");
-        assertEq(suspecters[0], G1, "index 0 reporter");
+        assertEq(suspecters[0], G1, "index 0 reporter (manager id)");
         assertEq(reportedAt[0], t1, "G1's report timestamp");
-        assertEq(suspecters[1], G2, "index 1 reporter");
+        assertEq(suspecters[1], G2, "index 1 reporter (manager id)");
         assertEq(reportedAt[1], t1 + 1 hours, "G2's report timestamp");
 
         (address[] memory none, uint40[] memory noneAt) = gs.getSuspectedBy(MARKET, address(0x5099));
@@ -943,35 +1061,36 @@ contract GuardianSignalsTest is Test {
 
     // ── quorum-change and rotation edge cases ──
 
-    /// @dev Pinned behaviour (quorum lowering): dropping the quorum below an existing UNLATCHED flag count
-    ///      creates a dynamic ban (`flaggedBy.length() >= quorum`) that a single guardian retraction lifts —
-    ///      the latch only fires on a flag ADDITION crossing quorum. This is the documented pre-latch
-    ///      retraction path; the test pins the behavior so a silent change is caught.
-    function test_quorumLowering_dynamicBanLiftedByUnflag() public {
+    /// @dev A retraction latches a live ban before dropping the count: lowering the quorum below an existing flag
+    ///      count creates a quorum-derived (unlatched) ban, and `unflag` materializes it into the latch BEFORE
+    ///      removing the flag — so the ban survives the retraction. An attacker cannot un-flag out of an in-effect
+    ///      ban; only `unban` clears it.
+    function test_quorumLowering_unflagLatchesDynamicBan() public {
         gs.setQuorum(3);
-        _flag(G1, BOB);
-        _flag(G2, BOB); // 2 strikes < 3: no latch
+        _flag(O1, BOB);
+        _flag(O2, BOB); // 2 strikes < 3: no latch
         assertFalse(gs.isBanned(MARKET, BOB), "below quorum: not banned");
 
-        gs.setQuorum(2); // now 2 flags >= quorum 2
-        assertTrue(gs.isBanned(MARKET, BOB), "quorum lowering turns the flag count into a dynamic ban");
+        gs.setQuorum(2); // now 2 flags >= quorum 2: a quorum-derived, still-unlatched ban
+        assertTrue(gs.isBanned(MARKET, BOB), "quorum lowering turns the flag count into a ban");
 
-        _unflag(G1, BOB); // 1 flag < 2
-        assertFalse(gs.isBanned(MARKET, BOB), "unlatched: a retraction lifts the dynamic ban");
+        _unflag(O1, BOB); // drops to 1 flag < 2, but the retraction latches the ban first
+        assertTrue(gs.isBanned(MARKET, BOB), "the retraction latched the ban -> it survives below quorum");
+        assertEq(_flagCount(BOB), 1, "the flag count still dropped");
     }
 
     /// @dev Pinned behaviour (guardian rotation): a flag left by a since-removed guardian still counts
     ///      toward a LATER latch — the crossing flag latches `banned`, and pruning the stale flag afterwards
     ///      does not lift it. Recovery is `unban` only.
     function test_staleFlagAfterRotation_latchesBan() public {
-        _flag(G1, BOB); // 1 strike
+        _flag(O1, BOB); // 1 strike
         gs.removeGuardian(G1); // G1 leaves, its flag stays in the set
 
-        _flag(G2, BOB); // stale G1 + fresh G2 = 2 >= quorum 2: latches
+        _flag(O2, BOB); // stale O1 + fresh O2 = 2 >= quorum 2: latches
         assertTrue(gs.isBanned(MARKET, BOB), "stale flag participates in the latch");
 
         vm.prank(CLEANER);
-        gs.prune(MARKET, BOB); // drops the stale G1 flag
+        gs.prune(MARKET, BOB); // drops the stale O1 flag
         assertEq(_flagCount(BOB), 1, "stale flag pruned");
         assertTrue(gs.isBanned(MARKET, BOB), "latched ban survives the prune");
     }
@@ -980,8 +1099,8 @@ contract GuardianSignalsTest is Test {
     ///      below quorum and the account is borrowable again.
     function test_unban_liftsDynamicQuorumBan() public {
         gs.setQuorum(3);
-        _flag(G1, BOB);
-        _flag(G2, BOB);
+        _flag(O1, BOB);
+        _flag(O2, BOB);
         gs.setQuorum(2); // dynamic ban, not latched
         assertTrue(gs.isBanned(MARKET, BOB), "dynamically banned");
 

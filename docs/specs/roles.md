@@ -88,7 +88,7 @@ A steward is appointed per market id, not as an AccessControl role, so the set s
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | guardian set, quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C1 / C3 | Lido DAO |
+| `MANAGER_ROLE` | guardian seats (guardian + operator keys), quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C1 / C3 | Lido DAO |
 | `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum) | C3 | risk steward committee |
 | `ACCESS_RESTORER_ROLE` | `unban` | C4 | Lido DAO, timelocked |
 
@@ -107,7 +107,7 @@ The exit book is `AccessControl` set at construction, not behind an `OssifiableP
 
 ## Non-role actors
 
-- **Guardians** — the registry's guardian set, not an AccessControl role but off-chain services run by trusted parties. `flag` adds the caller as a flagger of an account, and at `quorum` distinct flaggers a ban latches automatically. `unflag` retracts the caller's flag before the ban latches. `heartbeat` reports a last-scanned block for the liveness frontier.
+- **Guardian seats** — each committee seat is an immutable guardian key paired with a rotatable operator key, off-chain parties, not an AccessControl role. The operator key raises signals: `flag` and `suspect` add the seat as a flagger/reporter of an account (at `quorum` distinct seats a ban latches automatically), and `heartbeat` reports a last-scanned block for the liveness frontier. The guardian key governs the seat: `unflag`/`unsuspect` retract the seat's signals (never lifting a latched ban) and `rotateOperator` swaps the operator key — the seat's flags, reports and heartbeat survive a rotation because they are keyed by the guardian id, not the operator key.
 - **Borrower** — `supplyCollateral` and `repay` are permissionless add-value, `borrow` and `withdrawCollateral` are authorized and pass the controller's hook gates, `setSettlementLtv` is self-scoped with no role.
 - **Lender** — `supply` and `withdraw` on the core, `deposit` / `mint` / `withdraw` / `redeem` / `fallbackExit` / `settle` on the vault, and `setAuthorization` to let the vault or an operator act over a core position.
 - **Permissionless** — `liquidate`, `flashLoan`, `accrueInterest`.

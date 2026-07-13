@@ -100,9 +100,10 @@ abstract contract LidoLendDeployer {
         bool enableSettlement;
         CollateralActivationConfigParams activation;
         SettlementConfigParams settlementConfig;
-        // Guardian-signals registry bootstrap, seeded in `initialize`. The registry rejects `quorum` 0, so pass at
-        // least one guardian and `1 <= quorum <= guardians.length`; rotate to the real set post-deploy via
-        // `addGuardian` / `removeGuardian`.
+        // Guardian-signals registry bootstrap, seeded in `initialize`. Each guardian (a stable seat id) is paired
+        // with a bootstrap operator key, derived at deploy (see `_bootstrapOperatorOf`). The registry rejects
+        // `quorum` 0, so pass at least one guardian and `1 <= quorum <= guardians.length`. Set the real operator
+        // keys post-deploy via `rotateOperator`.
         address[] guardians;
         uint256 quorum;
         uint256 suspectWindow;
@@ -185,9 +186,24 @@ abstract contract LidoLendDeployer {
         returns (address)
     {
         address impl = _deployArtifact("src/GuardianSignals.sol:GuardianSignals", "");
-        bytes memory initData =
-            abi.encodeWithSignature("initialize(address,address[],uint256)", admin, guardians, quorum);
+        bytes memory initData = abi.encodeWithSignature(
+            "initialize(address,address[],address[],uint256)", admin, guardians, _bootstrapOperators(guardians), quorum
+        );
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
+    }
+
+    /// @dev Bootstrap operator key for a guardian: a keccak-derived address — deterministic, effectively distinct
+    ///      from every guardian and from other seats' operators (no adjacent-address collisions), non-zero. A
+    ///      placeholder, replaced with the real bot key post-deploy via `rotateOperator`.
+    function _bootstrapOperatorOf(address guardian) internal pure returns (address) {
+        return address(uint160(uint256(keccak256(abi.encodePacked("lido.lend.bootstrap-operator", guardian)))));
+    }
+
+    function _bootstrapOperators(address[] memory guardians) internal pure returns (address[] memory operators) {
+        operators = new address[](guardians.length);
+        for (uint256 i; i < guardians.length; ++i) {
+            operators[i] = _bootstrapOperatorOf(guardians[i]);
+        }
     }
 
     /// @dev Default oracle: `WstEthRateOracle(wstETH)` behind an `OssifiableProxy` for a stable, upgradeable
