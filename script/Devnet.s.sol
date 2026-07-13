@@ -102,7 +102,9 @@ contract Devnet is Script {
         );
         m.irm = address(
             new OssifiableProxy(
-                address(new IrmRouter(core)), admin, abi.encodeWithSignature("initialize(address,address)", admin, admin)
+                address(new IrmRouter(core)),
+                admin,
+                abi.encodeWithSignature("initialize(address,address)", admin, admin)
             )
         );
 
@@ -117,10 +119,7 @@ contract Devnet is Script {
         m.vault = _deployVault(core, params, m.controller, admin);
     }
 
-    function _routeAdaptiveIrm(address router, MarketParams memory params, address admin)
-        private
-        returns (address)
-    {
+    function _routeAdaptiveIrm(address router, MarketParams memory params, address admin) private returns (address) {
         IrmMarketParams memory irmParams = IrmMarketParams({
             loanToken: params.loanToken,
             collateralToken: params.collateralToken,
@@ -135,13 +134,19 @@ contract Devnet is Script {
     }
 
     function _deployGuardian(address admin) private returns (address guardian) {
+        // Seat model: `admin` is the sole guardian (stable key) with a rotatable operator key. For the devnet the
+        // operator is a distinct placeholder derived from the admin; rotate it to a real bot key from the UI.
         address[] memory guardians = new address[](1);
         guardians[0] = admin;
+        address[] memory operators = new address[](1);
+        operators[0] = address(uint160(admin) ^ 1);
         guardian = address(
             new OssifiableProxy(
                 address(new GuardianSignals()),
                 admin,
-                abi.encodeWithSignature("initialize(address,address[],uint256)", admin, guardians, uint256(1))
+                abi.encodeWithSignature(
+                    "initialize(address,address[],address[],uint256)", admin, guardians, operators, uint256(1)
+                )
             )
         );
         GuardianSignals gs = GuardianSignals(guardian);
@@ -155,23 +160,20 @@ contract Devnet is Script {
         private
         returns (address controller)
     {
-        LidoLendDeployer.CollateralActivationConfigParams memory activation = LidoLendDeployer
-            .CollateralActivationConfigParams({
-            minActivationDelay: 10 minutes,
-            maxActivationDelay: 2 hours,
-            activatingLockAmount: 0,
-            activatingLockDuration: 0,
-            maxDelayInflow: 10_000 ether,
-            minActivationAmount: minActivation,
-            maxGuardiansQuorumDelay: 0,
-            delayPerStrike: 2 hours,
-            delayPerSuspect: 0
-        });
+        LidoLendDeployer.CollateralActivationConfigParams memory activation =
+            LidoLendDeployer.CollateralActivationConfigParams({
+                minActivationDelay: 10 minutes,
+                maxActivationDelay: 2 hours,
+                activatingLockAmount: 0,
+                activatingLockDuration: 0,
+                maxDelayInflow: 10_000 ether,
+                minActivationAmount: minActivation,
+                maxGuardiansQuorumDelay: 0,
+                delayPerStrike: 2 hours,
+                delayPerSuspect: 0
+            });
         LidoLendDeployer.SettlementConfigParams memory settlement = LidoLendDeployer.SettlementConfigParams({
-            sliceFloorBps: 100,
-            sliceFloorAssets: 10 ether,
-            fullCutBelowCollateral: 10 ether,
-            ltvStepBps: 100
+            sliceFloorBps: 100, sliceFloorAssets: 10 ether, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
         });
         controller = address(
             new OssifiableProxy(

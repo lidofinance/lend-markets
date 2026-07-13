@@ -574,12 +574,12 @@ const VAULT = ["function totalAssets() view returns (uint256)","function totalSu
 const CORE = ["function market(bytes32) view returns (uint128 totalSupplyAssets, uint128 totalSupplyShares, uint128 totalBorrowAssets, uint128 totalBorrowShares, uint128 lastUpdate, uint128 fee)"];
 const CONTROLLER = ["function freeze()","function unfreeze()","function pauseFor(uint256)","function resume()","function isFrozen() view returns (bool)","function isPaused() view returns (bool)"];
 const GUARDIAN = [
-  "function flag(bytes32,address[],(bytes32,uint40,uint40))","function unflag(bytes32,address[],(bytes32,uint40,uint40))",
-  "function suspect(bytes32,address[],(bytes32,uint40,uint40))","function unsuspect(bytes32,address[],(bytes32,uint40,uint40))",
+  "function flag(bytes32,address[],(bytes32,uint40,uint40))","function unflag(bytes32,address[])",
+  "function suspect(bytes32,address[],(bytes32,uint40,uint40))","function unsuspect(bytes32,address[])",
   "function ban(bytes32,address)","function unban(bytes32,address)",
-  "function addGuardian(address)","function removeGuardian(address)","function setQuorum(uint256)","function setSuspectWindow(uint256)",
+  "function addGuardian(address,address)","function removeGuardian(address)","function rotateOperator(address)","function setQuorum(uint256)","function setSuspectWindow(uint256)",
   "function getOpinion(bytes32,address) view returns (bool banned, uint256 strikeCount, uint256 suspectCount, uint256 suspectExpiryTimestamp, uint256 quorumFrontierTimestamp)",
-  "function getQuorum() view returns (uint256)","function getSuspectWindow() view returns (uint256)","function getGuardians() view returns (address[])"
+  "function getQuorum() view returns (uint256)","function getSuspectWindow() view returns (uint256)","function getGuardians() view returns (address[])","function getOperators() view returns (address[])"
 ];
 
 function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
@@ -757,6 +757,9 @@ async function guard(){ const m=activeMarket(); if(!m){ bad("no active market");
 function gAcct(){ const a=$("gAccount").value.trim(); if(!a){ bad("enter target account"); return null; } return E.getAddress(a); }
 // flag/suspect submit a proof-of-scan block: the last mined block (latest−1, so blockhash is available) + its real hash/timestamp.
 async function lastScanned(){ const latest=await provider.send("eth_getBlockByNumber",["latest",false]); let n=parseInt(latest.number,16)-1; if(n<0)n=0; const blk=await provider.send("eth_getBlockByNumber",["0x"+n.toString(16),false]); return [blk.hash, n, parseInt(blk.timestamp,16)]; }
+// A seat needs a guardian key (stable) and a distinct operator key (rotatable). For the devnet, derive the
+// operator from the guardian unless one is given explicitly.
+function opFor(g, explicit){ return explicit ? E.getAddress(explicit) : E.getAddress("0x"+(BigInt(g)^1n).toString(16).padStart(40,"0")); }
 async function refreshGuardian(){ try{ const m=activeMarket(); const a=$("gAccount").value.trim(); if(!m||!provider||!a){ $("gStatus").innerHTML=""; return; } const c=new E.Contract(m.guardianSignals,GUARDIAN,provider); const acc=E.getAddress(a); const o=await c.getOpinion(m.marketId,acc); $("gStatus").innerHTML=kv({ account:acc, banned:String(o.banned), strikes:o.strikeCount.toString(), suspects:o.suspectCount.toString() }); }catch(e){ $("gStatus").innerHTML=""; } }
 $("gAccount").onchange = refreshGuardian;
 $("gMeBtn").onclick=()=>{ if(signer){ $("gAccount").value=signer.address; refreshGuardian(); } };
@@ -1138,12 +1141,13 @@ const ACTIONS = {
   marketResume: async()=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CONTROLLER,signer).resume()).wait(); ok("market resumed"); refreshMktCtl(); },
   // guardian
   flag: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).flag(m.marketId,[E.getAddress(p.account)],await lastScanned())).wait(); ok("flagged "+short(p.account)); refreshGuardian(); },
-  unflag: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unflag(m.marketId,[E.getAddress(p.account)],await lastScanned())).wait(); ok("unflagged "+short(p.account)); refreshGuardian(); },
+  unflag: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unflag(m.marketId,[E.getAddress(p.account)])).wait(); ok("unflagged "+short(p.account)); refreshGuardian(); },
   suspect: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).suspect(m.marketId,[E.getAddress(p.account)],await lastScanned())).wait(); ok("suspected "+short(p.account)); refreshGuardian(); },
-  unsuspect: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unsuspect(m.marketId,[E.getAddress(p.account)],await lastScanned())).wait(); ok("unsuspected "+short(p.account)); refreshGuardian(); },
+  unsuspect: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unsuspect(m.marketId,[E.getAddress(p.account)])).wait(); ok("unsuspected "+short(p.account)); refreshGuardian(); },
   ban: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).ban(m.marketId,E.getAddress(p.account))).wait(); ok("banned "+short(p.account)); refreshGuardian(); },
   unban: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unban(m.marketId,E.getAddress(p.account))).wait(); ok("unbanned "+short(p.account)); refreshGuardian(); },
-  addGuardian: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).addGuardian(E.getAddress(p.address))).wait(); ok("guardian added"); refreshCommittee(); },
+  addGuardian: async(p)=>{ const m=mustMarket(); const g=E.getAddress(p.address); const op=opFor(g,p.operator); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).addGuardian(g,op)).wait(); ok("guardian added ("+short(g)+" / op "+short(op)+")"); refreshCommittee(); },
+  rotateOperator: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).rotateOperator(E.getAddress(p.operator))).wait(); ok("operator rotated"); refreshCommittee(); },
   removeGuardian: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).removeGuardian(E.getAddress(p.address))).wait(); ok("guardian removed"); refreshCommittee(); },
   setQuorum: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).setQuorum(BigInt(p.n))).wait(); ok("quorum = "+p.n); refreshCommittee(); },
   setSuspectWindow: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).setSuspectWindow(BigInt(p.n))).wait(); ok("suspect window = "+p.n+"s"); refreshCommittee(); },
