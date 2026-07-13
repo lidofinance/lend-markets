@@ -12,8 +12,8 @@ import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 import {BlockInfoWithHash, GuardiansOpinion} from "../../src/types/GuardianSignalsTypes.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
-/// @notice Unit suite for `GuardianSignals`, modelled from the "Guardian signals" spec:
-///         a per-(market,account) registry where each guardian flag is one strike,
+/// @notice Unit suite for `GuardianSignals`, modelled from the "Guardian signals" spec: a
+///         per-(market,account) registry where each guardian flag is one strike,
 ///         status latches to `Banned` at quorum (`unflag` below quorum does NOT lift it), and
 ///         `syncQuorumBlock` advances a monotonic quorum liveness frontier. Deployed
 ///         behind `OssifiableProxy` (the impl disables initializers).

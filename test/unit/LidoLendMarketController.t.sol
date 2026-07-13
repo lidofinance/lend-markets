@@ -25,7 +25,7 @@ import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 /// @notice Unit/integration suite for `LidoLendMarketController`, modelled from the market-controller spec's
 ///         "Policy boundary" and "Freeze and pause" sections. The controller's `on` hook is driven by the
 ///         core, so the policy is exercised through real market actions on a fresh `setup/` stack. The
-///         libraries it composes (activation/settlement/guardian) are covered in §3–5; here the focus is
+///         libraries it composes (activation/settlement/guardian) are covered separately; here the focus is
 ///         the controller-specific policy: pause (every hook), freeze gate, banned-borrow, active-only
 ///         health, instant activation, settlement config, and setter role-gating.
 contract LidoLendMarketControllerTest is LidoLendSetup {

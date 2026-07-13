@@ -13,7 +13,7 @@ import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 
-/// @notice L1 unit suite for `LidoLendERC4626`, modelled from requirements: the
+/// @notice L1 unit suite for `LidoLendERC4626`: the
 ///         vault is a single-market ERC-4626 over the market supply, plus two exits — `fallbackExit`
 ///         (redeem ordinary liquidity first, then settle the remainder against the risk queue) and `settle`
 ///         (targeted, liquidity-neutral, subject to the core's settle gate). Deploys a fresh stack via

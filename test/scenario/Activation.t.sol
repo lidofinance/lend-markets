@@ -13,7 +13,7 @@ import {MockERC20} from "../setup/Mocks.sol";
 /// @notice L2 collateral-activation scenarios end-to-end through the controller hooks: fresh collateral is
 ///         locked in a maturation timer before it can back a loan; maturing it unlocks borrowing; a guardian
 ///         ban keeps it locked regardless; and instant activation bypasses the timer. The activation/guardian
-///         math is unit-tested in isolation (§4/§5) — here the focus is the integrated supply->hook->borrow path.
+///         math is unit-tested in isolation — here the focus is the integrated supply->hook->borrow path.
 contract ActivationTest is LidoLendSetup {
     using MarketActions for Market;
 
