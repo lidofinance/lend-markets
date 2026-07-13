@@ -149,9 +149,10 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.vault.redeem(cap + 1, lender, lender);
 
         // Exactly the cap redeems in one shot -> maxRedeem is a genuinely redeemable amount (no under-report).
+        uint256 expectedOut = m.vault.previewRedeem(cap);
         vm.prank(lender);
         uint256 assetsOut = m.vault.redeem(cap, lender, lender);
-        assertGt(assetsOut, 0, "cap redeemed to assets");
+        assertEq(assetsOut, expectedOut, "cap redeemed to previewRedeem(cap), exact");
         assertEq(m.vault.balanceOf(lender), ownerShares - cap, "exactly cap shares burned");
     }
 
@@ -270,12 +271,10 @@ contract LidoLendERC4626Test is LidoLendSetup {
         _fund(m.loanToken, owner, 100 ether);
         m.vaultDeposit(owner, 100 ether);
         address receiver = _actor("receiver");
-        uint256 before = m.loanToken.balanceOf(receiver);
-        uint256 shares = m.vault.balanceOf(owner);
-        vm.prank(owner);
-        (, uint256 loanAssets,,) = m.vault.fallbackExit(shares, receiver, owner, 0);
-        assertEq(m.loanToken.balanceOf(receiver), before + loanAssets, "loan assets paid to receiver, not owner");
-        assertEq(m.vault.balanceOf(owner), 0, "shares burned at owner");
+        // Helper asserts owner share burn, receiver loan/collateral, and owner!=receiver routing.
+        (, uint256 loanAssets,,) = m.fallbackExit(owner, m.vault.balanceOf(owner), receiver, 0);
+        // Full idle (no borrow) -> the redeem leg pays out the whole deposit, exactly.
+        assertEq(loanAssets, 100 ether, "pure-redeem paid the full deposit");
     }
 
     function test_fallbackExit_callerWithAllowance() public {
@@ -341,13 +340,16 @@ contract LidoLendERC4626Test is LidoLendSetup {
         Market storage m = _market();
         (address lender, address borrower) = _distress(m, 100 ether, 20 ether, 0.22e36);
         address receiver = _actor("receiver");
-        uint256 before = m.collateralToken.balanceOf(receiver);
+        uint256 sliceAssets = m.controller.positionOf(borrower).slice;
+        uint128 colBefore = m.core.position(m.id, borrower).collateral;
         address[] memory bs = new address[](1);
         bs[0] = borrower;
-        uint256 shares = m.vault.balanceOf(lender);
-        vm.prank(lender);
-        (,, uint256 collateralSeized,) = m.vault.settle(shares, bs, receiver, lender);
-        assertEq(m.collateralToken.balanceOf(receiver), before + collateralSeized, "collateral to receiver");
+        // Helper asserts owner share burn, receiver collateral, and owner!=receiver routing.
+        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+            m.settle(lender, m.vault.balanceOf(lender), bs, receiver);
+        assertEq(debtCanceled, sliceAssets, "cancelled == settlementFor prediction");
+        assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");
+        assertGt(sharesBurned, 0, "settle burned shares");
     }
 
     // ── initialize guards ──

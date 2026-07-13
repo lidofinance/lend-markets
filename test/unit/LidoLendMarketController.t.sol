@@ -86,11 +86,13 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── on() access ──
 
+    /// @dev The `on` hook rejects any caller that is not the core with `Unauthorized`.
     function testRevert_on_nonCoreCaller_unauthorized() public {
         vm.expectRevert(ILidoLendMarketController.Unauthorized.selector);
         c.on(_m().id, ILidoLendBaseMarketController.HookEvent.Supply, "");
     }
 
+    /// @dev An `on` call from the core for a market id this controller does not govern reverts `InvalidMarketId`.
     function testRevert_on_wrongMarketId_invalidMarketId() public {
         Id wrongId = Id.wrap(bytes32(uint256(0xDEAD)));
         vm.prank(address(_m().core)); // authorized caller, wrong market
@@ -100,6 +102,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── pause: every hook reverts ──
 
+    /// @dev While paused every action hook reverts: a direct core supply trips the resume check with `ResumedExpected`.
     function test_pause_haltsActions() public {
         c.pauseFor(1 hours);
         Market storage m = _m();
@@ -143,22 +146,26 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertGt(m.vault.maxRedeem(lender), 0, "redeemable after resume");
     }
 
+    /// @dev A finite pause auto-resumes: once its duration elapses the market reads unpaused with no explicit resume.
     function test_pause_autoResumesAfterDuration() public {
         c.pauseFor(1 hours);
         vm.warp(block.timestamp + 1 hours); // resumeSince reached -> resumed
         assertFalse(c.isPaused(), "auto-resumed after the duration");
     }
 
+    /// @dev `pauseFor(0)` reverts `ZeroPauseDuration`.
     function testRevert_pauseFor_zeroDuration() public {
         vm.expectRevert(PausableUntil.ZeroPauseDuration.selector);
         c.pauseFor(0);
     }
 
+    /// @dev `resume` while the market is not paused reverts `PausedExpected`.
     function testRevert_resume_whenNotPaused() public {
         vm.expectRevert(PausableUntil.PausedExpected.selector);
         c.resume();
     }
 
+    /// @dev `resume` lifts a pause before its duration has elapsed.
     function test_resume_early() public {
         c.pauseFor(1 hours);
         assertTrue(c.isPaused(), "paused");
@@ -168,6 +175,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── freeze gate ──
 
+    /// @dev A frozen market rejects new borrows with `MarketIsFrozen`.
     function testRevert_freeze_blocksBorrow() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
         c.freeze();
@@ -177,6 +185,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.borrow(_m().params, 10 ether, 0, borrower, borrower);
     }
 
+    /// @dev While frozen, withdrawing collateral against an open debt reverts `MarketIsFrozen`.
     function testRevert_freeze_blocksWithdrawCollateral_withDebt() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether); // open debt
         c.freeze();
@@ -185,6 +194,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.withdrawCollateral(_m().params, 1 ether, borrower, borrower);
     }
 
+    /// @dev Freeze still permits a debt-free borrower to withdraw its collateral.
     function test_freeze_allowsDebtFreeWithdraw() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0); // no debt
         c.freeze();
@@ -194,6 +204,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(_m().collateralToken.balanceOf(borrower) - before, 1 ether, "collateral returned while frozen");
     }
 
+    /// @dev Freeze still permits repaying an open debt.
     function test_freeze_allowsRepay() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
         c.freeze();
@@ -206,6 +217,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(before - _m().loanToken.balanceOf(borrower), 5 ether, "repay debited the borrower while frozen");
     }
 
+    /// @dev `unfreeze` clears the freeze and lets borrowing resume.
     function test_unfreeze_restoresBorrow() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
         c.freeze();
@@ -217,6 +229,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── banned borrow ──
 
+    /// @dev A borrower flagged to quorum is banned, so its borrow reverts `AddressBanned`.
     function testRevert_borrow_bannedBorrower() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
         _ban(borrower); // quorum 1 -> Banned
@@ -227,6 +240,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── active-only health ──
 
+    /// @dev Borrowing against still-activating (unmatured) collateral reverts `InsufficientActiveCollateral`.
     function testRevert_borrow_againstUnmaturedCollateral() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -242,6 +256,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── instant activation ──
 
+    /// @dev An instant-activation grantee's collateral is active on supply, so it can borrow with no maturity wait.
     function test_instantActivation_borrowsWithoutWaiting() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -258,6 +273,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── setter role-gating ──
 
+    /// @dev `freeze` without `FREEZER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_freeze_wrongRole() public {
         address nobody = _actor("nobody");
         bytes32 role = c.FREEZER_ROLE();
@@ -266,6 +282,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.freeze();
     }
 
+    /// @dev `pauseFor` without `PAUSER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_pauseFor_wrongRole() public {
         address nobody = _actor("nobody");
         bytes32 role = c.PAUSER_ROLE();
@@ -274,6 +291,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.pauseFor(1 hours);
     }
 
+    /// @dev `grantInstantActivation` without `MANAGER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_grantInstantActivation_wrongRole() public {
         address nobody = _actor("nobody");
         address borrower = _actor("borrower");
@@ -285,6 +303,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── ban 3-way: receiver and caller (distinct from onBehalf) ──
 
+    /// @dev The ban gate covers the receiver: borrowing to a banned receiver reverts `AddressBanned`.
     function testRevert_borrow_bannedReceiver() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
         address receiver = _actor("receiver");
@@ -294,6 +313,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.borrow(_m().params, 10 ether, 0, borrower, receiver);
     }
 
+    /// @dev The ban gate covers the caller: a banned authorized operator's borrow reverts `AddressBanned`.
     function testRevert_borrow_bannedCaller() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
         address operator = _actor("operator");
@@ -334,6 +354,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(stored.maxGuardiansQuorumDelay, 4 hours, "maxGuardiansQuorumDelay");
     }
 
+    /// @dev `setCollateralActivationConfig` without `MANAGER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_setCollateralActivationConfig_wrongRole() public {
         CollateralActivationConfig memory cfg = c.collateralActivationConfig();
         address nobody = _actor("nobody");
@@ -352,6 +373,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertFalse(c.hasInstantActivation(borrower), "revoked");
     }
 
+    /// @dev `revokeInstantActivation` without `MANAGER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_revokeInstantActivation_wrongRole() public {
         address nobody = _actor("nobody");
         address borrower = _actor("borrower");
@@ -585,6 +607,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.pauseFor(1 hours);
     }
 
+    /// @dev `resume` without `RESUMER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_resume_wrongRole() public {
         c.pauseFor(1 hours);
         address nobody = _actor("nobody");
@@ -594,6 +617,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.resume();
     }
 
+    /// @dev `unfreeze` without `UNFREEZER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_unfreeze_wrongRole() public {
         c.freeze();
         address nobody = _actor("nobody");
@@ -617,6 +641,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(c.supplyCap(), 500 ether, "cap stored");
     }
 
+    /// @dev `setSupplyCap` without `MANAGER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_setSupplyCap_wrongRole() public {
         address nobody = _actor("nobody");
         bytes32 role = c.MANAGER_ROLE();
@@ -986,6 +1011,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(c.maxWithdrawableAssets(address(m.vault)), 10 ether, "resumed -> restored");
     }
 
+    /// @dev A freshly deployed controller reports neither frozen nor paused.
     function test_views_defaults() public view {
         assertFalse(c.isFrozen(), "not frozen initially");
         assertFalse(c.isPaused(), "not paused initially");

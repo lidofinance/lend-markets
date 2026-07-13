@@ -76,6 +76,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         uint256 price;
     }
 
+    /// @dev A sub-threshold (dust) deposit is promoted to activating once a top-up crosses the activation minimum,
+    ///      matures after the delay, then borrows real WETH against the now-active collateral.
     function test_supplyCollateral_promotesDustAndBorrowsAfterMaturity() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
@@ -208,6 +210,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.borrow(ctx.marketParams, 1 ether, 0, BORROWER, BORROWER);
     }
 
+    /// @dev Happy-path settle: with two active borrowers, cutting the allowed slice against the queue root seizes
+    ///      collateral at the oracle rate and pays the lender real wstETH.
     function test_settle_happyPath() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 
@@ -562,8 +566,11 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
                 ctx.id,
                 toFlag,
                 BlockInfoWithHash({
-                    hash: blockhash(block.number), number: uint40(block.number), timestamp: uint40(block.timestamp)
-                })
+                // Prior block: `blockhash` of the current block is zero, which the registry rejects.
+                hash: blockhash(block.number - 1),
+                number: uint40(block.number - 1),
+                timestamp: uint40(block.timestamp)
+            })
             );
 
         // Warp far past any normal activation delay — a banned address never settles.
@@ -572,9 +579,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         assertTrue(pv.banned, "banned");
         _assertCollateralState(ctx.controller, BORROWER, 0, col, 0); // still activating, never active
 
-        // No active collateral + banned -> borrow reverts.
         vm.prank(BORROWER);
-        vm.expectRevert();
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
         ctx.market.borrow(ctx.marketParams, 1 ether, 0, BORROWER, BORROWER);
     }
 

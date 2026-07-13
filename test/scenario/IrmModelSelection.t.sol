@@ -1113,18 +1113,22 @@ contract IrmModelSelectionMockTest is IrmScenarioBase {
         return false;
     }
 
+    /// @dev Runs the multi-year IRM comparison scenario driven by the adaptive-curve IRM (mock tokens, no fork).
     function test_scenario_adaptive() public {
         _run(IrmKind.Adaptive);
     }
 
+    /// @dev Runs the multi-year IRM comparison scenario driven by the staking-pegged IRM (mock tokens, no fork).
     function test_scenario_pegged() public {
         _run(IrmKind.Pegged);
     }
 
+    /// @dev Runs the multi-year IRM comparison scenario driven by the linear-kink IRM (mock tokens, no fork).
     function test_scenario_kinked() public {
         _run(IrmKind.Kinked);
     }
 
+    /// @dev Runs the multi-year IRM comparison scenario driven by the capD dynamic-ceiling IRM (mock tokens, no fork).
     function test_scenario_capD() public {
         _run(IrmKind.CapD);
     }
@@ -1196,18 +1200,23 @@ contract IrmModelSelectionForkTest is IrmScenarioBase {
         return !(block.chainid == 1 && WETH.code.length != 0 && WSTETH.code.length != 0);
     }
 
+    /// @dev Runs the multi-year IRM comparison scenario driven by the adaptive-curve IRM against real fork tokens.
     function test_scenario_adaptive() public {
         _run(IrmKind.Adaptive);
     }
 
+    /// @dev Runs the multi-year IRM comparison scenario driven by the staking-pegged IRM against real fork tokens.
     function test_scenario_pegged() public {
         _run(IrmKind.Pegged);
     }
 
+    /// @dev Runs the multi-year IRM comparison scenario driven by the linear-kink IRM against real fork tokens.
     function test_scenario_kinked() public {
         _run(IrmKind.Kinked);
     }
 
+    /// @dev Runs the multi-year IRM comparison scenario driven by the capD dynamic-ceiling IRM against real fork
+    /// tokens.
     function test_scenario_capD() public {
         _run(IrmKind.CapD);
     }
@@ -1247,6 +1256,8 @@ contract AdaptiveIrmUpgradeTest is Test {
         id = params.id();
     }
 
+    /// @dev A retune whose new bounds still contain the adapted `rateAtTarget` keeps the stored rate and the borrow
+    ///      rate continues unchanged — no spike.
     function test_upgrade_statePersists_noSpike_whenBoundsContainRate() public {
         _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
         _adaptDown();
@@ -1260,6 +1271,8 @@ contract AdaptiveIrmUpgradeTest is Test {
         assertEq(_borrowAtTarget(), borrowBefore, "no spike: borrow continues from the persisted rate");
     }
 
+    /// @dev A retune whose new minimum exceeds the stored `rateAtTarget` clamps it up into the new band at the swap,
+    ///      producing an upward rate jump (spike).
     function test_upgrade_rateJumps_whenNewBoundsExcludeStoredRate() public {
         _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
         _adaptDown();
@@ -1276,6 +1289,8 @@ contract AdaptiveIrmUpgradeTest is Test {
         assertGt(ratAfter, ratBefore, "rate jumped up after the retune (the spike)");
     }
 
+    /// @dev A retune whose new maximum sits below the stored `rateAtTarget` clamps it down into the new band at the
+    ///      swap, dropping the rate.
     function test_upgrade_rateDrops_whenNewMaxBelowStoredRate() public {
         _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
         _adaptDown();
@@ -1375,6 +1390,7 @@ contract AdaptiveHardCapTest is Test {
         c.setMarketCurveParams(_toIrmParams(pc), _cfg(CAP));
     }
 
+    /// @dev The hard cap clamps the high-utilization tip to `MAX_BORROW_RATE`, below the uncapped MAX*steepness peak.
     function test_hardCap_clampsTip() public {
         // First call uses INITIAL_RATE_AT_TARGET (= MAX here), so the 100%-util tip is the natural peak MAX*steepness.
         uint256 tipUncapped = IIrm(uncapped).borrowRateView(pu, _market(1 ether)) * uint256(Y);

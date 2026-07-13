@@ -53,6 +53,8 @@ contract ActivationTest is LidoLendSetup {
             .flag(_m().id, a, BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)}));
     }
 
+    /// @dev Fresh collateral cannot back a loan while activating: borrow reverts InsufficientActiveCollateral
+    ///      before maturation and succeeds with exact deltas once the timer matures it.
     function test_freshCollateral_isLockedUntilMatured() public {
         Market storage m = _m();
         address borrower = _seedLenderAndCollateral(100 ether);
@@ -69,6 +71,8 @@ contract ActivationTest is LidoLendSetup {
         assertEq(m.loanToken.balanceOf(borrower), borrowAmt, "borrow unlocked after maturation");
     }
 
+    /// @dev A banned borrower's collateral never matures: even after warping past the delay, borrow reverts
+    ///      AddressBanned.
     function test_bannedBorrower_staysLocked_evenPastTheTimer() public {
         Market storage m = _m();
         address borrower = _seedLenderAndCollateral(100 ether);
@@ -81,6 +85,8 @@ contract ActivationTest is LidoLendSetup {
         m.core.borrow(m.params, _safeBorrow(100 ether), 0, borrower, borrower);
     }
 
+    /// @dev A borrower granted instant activation routes collateral straight to active, so borrowing succeeds
+    ///      with no warp past the timer.
     function test_instantActivation_bypassesTheTimer() public {
         Market storage m = _m();
         m.controller.grantInstantActivation(_actor("borrower"));

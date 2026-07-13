@@ -20,6 +20,8 @@ contract FallbackExitDustReproTest is LidoLendSetup {
         _deployProtocol(_defaultConfig(address(loan), address(collateral), address(collateral)));
     }
 
+    /// @dev On a populated, high-utilization market whose share ratio has drifted with interest, every vault lender
+    ///      exits its full position — including the last — and the vault drains to zero with no dust stranding.
     function test_regression_lastLenderCanExitOnPopulatedMarket() public {
         Market storage m = protocol.markets[0];
 

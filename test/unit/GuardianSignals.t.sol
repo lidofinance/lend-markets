@@ -276,6 +276,7 @@ contract GuardianSignalsTest is Test {
         gs.unflag(MARKET, a, _validBlock());
     }
 
+    /// @dev suspect is guardian-only: a non-guardian call reverts NotGuardian.
     function testRevert_suspect_nonGuardian() public {
         address[] memory a = new address[](1);
         a[0] = BOB;
@@ -284,6 +285,7 @@ contract GuardianSignalsTest is Test {
         gs.suspect(MARKET, a, _validBlock());
     }
 
+    /// @dev unsuspect is guardian-only: a non-guardian call reverts NotGuardian.
     function testRevert_unsuspect_nonGuardian() public {
         address[] memory a = new address[](1);
         a[0] = BOB;

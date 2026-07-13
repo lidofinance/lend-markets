@@ -56,6 +56,8 @@ contract RoundingDustTest is LidoLendSetup {
         vm.stopPrank();
     }
 
+    /// @dev Traces the core loan-balance-minus-idle gap across supply/borrow/accrue/partial+full repay and
+    ///      asserts the final gap is exactly zero once all debt is repaid.
     function test_traceDustOrigin() public {
         Market storage m = protocol.markets[0];
 

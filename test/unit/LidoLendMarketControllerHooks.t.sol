@@ -45,6 +45,7 @@ contract LidoLendMarketControllerHooksTest is LidoLendSetup {
 
     // ── PositionAccountingMismatch: the controller's mirror of the core position diverges ──
 
+    /// @dev A repay hook payload claiming more shares than the borrower's position reverts PositionAccountingMismatch.
     function test_repayHook_forgedSharesAbovePosition_reverts() public {
         address borrower = _seedBorrower(10 ether);
         uint256 shares = _m().core.position(_m().id, borrower).borrowShares;
@@ -56,6 +57,7 @@ contract LidoLendMarketControllerHooksTest is LidoLendSetup {
         _m().controller.on(_m().id, IBase.HookEvent.Repay, data);
     }
 
+    /// @dev A forged withdraw-collateral payload above the position's collateral reverts PositionAccountingMismatch.
     function test_withdrawCollateralHook_forgedAssetsAbovePosition_reverts() public {
         address borrower = _seedBorrower(0);
         uint256 collat = _m().core.position(_m().id, borrower).collateral;
@@ -70,6 +72,7 @@ contract LidoLendMarketControllerHooksTest is LidoLendSetup {
         _m().controller.on(_m().id, IBase.HookEvent.WithdrawCollateral, data);
     }
 
+    /// @dev A liquidate hook payload seizing more than the borrower's collateral reverts PositionAccountingMismatch.
     function test_liquidateHook_seizeAboveCollateral_reverts() public {
         address borrower = _seedBorrower(10 ether);
         uint256 collat = _m().core.position(_m().id, borrower).collateral;
@@ -127,6 +130,7 @@ contract LidoLendMarketControllerHooksTest is LidoLendSetup {
 
     // ── zero-debt collateral withdraw skips the active-collateral health gate ──
 
+    /// @dev A debt-free borrower withdraws its entire collateral: the hook skips the active-collateral health gate.
     function test_withdrawCollateral_zeroDebt_skipsHealthGate() public {
         address borrower = _seedBorrower(0); // collateral, no debt
         Market storage m = _m();

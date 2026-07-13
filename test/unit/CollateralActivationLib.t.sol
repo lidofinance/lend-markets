@@ -243,33 +243,39 @@ contract CollateralActivationLibTest is Test {
 
     // setUp config: minActivationDelay = 1 minutes, maxActivationDelay = 1 hours (MAX_DELAY_DURATION = 7 days)
 
+    /// @dev Setting the min activation delay within bounds updates the stored floor.
     function test_setMinActivationDelay_updatesFloor() public {
         h.setMinActivationDelay(30 minutes);
         (uint40 minActivationDelay,) = h.delays();
         assertEq(minActivationDelay, 30 minutes, "floor updated");
     }
 
+    /// @dev Setting the max activation delay within bounds updates the stored cap.
     function test_setMaxActivationDelay_updatesCap() public {
         h.setMaxActivationDelay(2 hours);
         (, uint40 maxActivationDelay) = h.delays();
         assertEq(maxActivationDelay, 2 hours, "cap updated");
     }
 
+    /// @dev A zero min activation delay reverts ZeroMinActivationDelay.
     function testRevert_setMinActivationDelay_zero() public {
         vm.expectRevert(CollateralActivationLib.ZeroMinActivationDelay.selector);
         h.setMinActivationDelay(0);
     }
 
+    /// @dev A min activation delay above the current max cap reverts InvalidActivationDelays.
     function testRevert_setMinActivationDelay_aboveCap() public {
         vm.expectRevert(CollateralActivationLib.InvalidActivationDelays.selector);
         h.setMinActivationDelay(2 hours);
     }
 
+    /// @dev A max activation delay below the current min floor reverts InvalidActivationDelays.
     function testRevert_setMaxActivationDelay_belowFloor() public {
         vm.expectRevert(CollateralActivationLib.InvalidActivationDelays.selector);
         h.setMaxActivationDelay(30 seconds);
     }
 
+    /// @dev A max activation delay above the hard MAX_DELAY_DURATION bound reverts MaxActivationDelayExceeded.
     function testRevert_setMaxActivationDelay_aboveBound() public {
         vm.expectRevert(CollateralActivationLib.MaxActivationDelayExceeded.selector);
         h.setMaxActivationDelay(8 days);
@@ -372,6 +378,7 @@ contract CollateralActivationLibTest is Test {
         });
     }
 
+    /// @dev A config whose activatingLockDuration exceeds the bound reverts MaxActivatingLockDurationExceeded.
     function testRevert_setConfig_activatingLockDurationAboveBound() public {
         CollateralActivationConfig memory cfg = _baseConfig();
         cfg.activatingLockDuration = uint40(7 days + 1);
@@ -379,6 +386,7 @@ contract CollateralActivationLibTest is Test {
         h.setConfig(cfg);
     }
 
+    /// @dev A config with a zero minActivationAmount reverts ZeroMinActivationAmount.
     function testRevert_setConfig_zeroMinActivationAmount() public {
         CollateralActivationConfig memory cfg = _baseConfig();
         cfg.minActivationAmount = 0;
@@ -386,6 +394,7 @@ contract CollateralActivationLibTest is Test {
         h.setConfig(cfg);
     }
 
+    /// @dev A config with a zero maxDelayInflow reverts ZeroMaxDelayInflow.
     function testRevert_setConfig_zeroMaxDelayInflow() public {
         CollateralActivationConfig memory cfg = _baseConfig();
         cfg.maxDelayInflow = 0;
@@ -393,6 +402,7 @@ contract CollateralActivationLibTest is Test {
         h.setConfig(cfg);
     }
 
+    /// @dev A config whose delayPerStrike exceeds the bound reverts MaxDelayPerStrikeExceeded.
     function testRevert_setConfig_delayPerStrikeAboveBound() public {
         CollateralActivationConfig memory cfg = _baseConfig();
         cfg.delayPerStrike = uint40(7 days + 1);
@@ -400,6 +410,7 @@ contract CollateralActivationLibTest is Test {
         h.setConfig(cfg);
     }
 
+    /// @dev A config whose delayPerSuspect exceeds the bound reverts MaxDelayPerSuspectExceeded.
     function testRevert_setConfig_delayPerSuspectAboveBound() public {
         CollateralActivationConfig memory cfg = _baseConfig();
         cfg.delayPerSuspect = uint40(7 days + 1);
@@ -409,6 +420,7 @@ contract CollateralActivationLibTest is Test {
 
     // ── _getUnlockTime branches ──
 
+    /// @dev A banned borrower's unlock time is uint256 max, so the lot can never mature.
     function test_getUnlockTime_bannedNeverUnlocks() public {
         address borrower = address(0xBEEF);
         h.deposit(borrower, 5 ether);
@@ -418,6 +430,8 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.getUnlockTime(borrower, op), type(uint256).max, "banned borrower never unlocks");
     }
 
+    /// @dev The suspect surcharge (suspectCount * delayPerSuspect) applies only when the lot started before the
+    ///      suspect expiry; a zero expiry adds no surcharge.
     function test_getUnlockTime_suspectSurchargeWhenLotBeforeExpiry() public {
         address borrower = address(0xBEEF);
         h.deposit(borrower, 5 ether); // activatingStart = now

@@ -87,21 +87,25 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ── Uniform-LTV scenarios
     // ──────────────────────────────────────
 
+    /// @dev Benchmarks the settlement heap walk over 20 equal small (0.5) uniform-LTV positions on a quarter-pool exit.
     function test_AllSmallEqual() public {
         _skip();
         _runUniform("AllSmallEqual(20x0.5)", 20, 0.5 ether, 0.7e18, 4);
     }
 
+    /// @dev Benchmarks the settlement heap walk over 5 equal large (10) uniform-LTV positions on a quarter-pool exit.
     function test_AllLargeEqual() public {
         _skip();
         _runUniform("AllLargeEqual(5x10)", 5, 10 ether, 0.7e18, 4);
     }
 
+    /// @dev Benchmarks the settlement heap walk for a tiny (~1%) exit against a large uniform pool.
     function test_SmallExitLargePool() public {
         _skip();
         _runUniform("SmallExit1%(10x5)", 10, 5 ether, 0.7e18, 100);
     }
 
+    /// @dev Benchmarks the settlement heap walk for a 50% exit against a uniform pool.
     function test_LargeExit50Pct() public {
         _skip();
         _runUniform("LargeExit50%(10x5)", 10, 5 ether, 0.7e18, 2);
@@ -110,24 +114,28 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ── Mixed-debt scenarios
     // ───────────────────────────────────────
 
+    /// @dev Benchmarks the settlement heap walk over a mixed debt profile (10 small + 3 large) on a quarter-pool exit.
     function test_MixedSmallAndLarge() public {
         _skip();
         uint256[] memory debts = _buildDebts(10, 0.5 ether, 3, 10 ether);
         _runScenario(_deployCtx(), "Mixed(10x0.5+3x10)", debts, 0.7e18, _sum(debts) / 4);
     }
 
+    /// @dev Benchmarks the heap walk when a dust tail is seeded before one whale (insertion order stresses the heap).
     function test_DustTailThenWhale() public {
         _skip();
         uint256[] memory debts = _buildDebts(10, 0.1 ether, 1, 40 ether);
         _runScenario(_deployCtx(), "DustTailThenWhale(10x0.1+1x40)", debts, 0.7e18, _sum(debts) / 4);
     }
 
+    /// @dev Benchmarks the heap walk when the whale is seeded before the dust tail (reverse insertion order).
     function test_WhaleThenDustTail() public {
         _skip();
         uint256[] memory debts = _buildDebts(1, 40 ether, 10, 0.1 ether);
         _runScenario(_deployCtx(), "WhaleThenDustTail(1x40+10x0.1)", debts, 0.7e18, _sum(debts) / 4);
     }
 
+    /// @dev Benchmarks the heap walk with two tied whales contending for the heap root plus smaller positions.
     function test_TwoEqualWhalesAtTop() public {
         _skip();
         uint256[] memory debts = _buildDebts(2, 15 ether, 3, 3 ether);
@@ -137,6 +145,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ── Variable-LTV scenarios
     // ─────────────────────────────────────
 
+    /// @dev Benchmarks the heap walk over positions spread across a gradient of LTVs (30%..72%).
     function test_GradientLTV() public {
         _skip();
         Ctx memory ctx = _deployCtx();
@@ -150,6 +159,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         _runScenarioWithLTVs(ctx, "GradientLTV(10x3,LTV30-72%)", debts, ltvs, _sum(debts) / 4);
     }
 
+    /// @dev Benchmarks the heap walk with positions clustered in a tight high-LTV band (69..71%) plus low-LTV outliers.
     function test_ClusterNearTop() public {
         _skip();
         Ctx memory ctx = _deployCtx();
@@ -184,6 +194,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ── Serial exits
     // ───────────────────────────────────────────────
 
+    /// @dev Benchmarks repeated small exits (10 rounds) draining a uniform pool, tracking per-round iterations and gas.
     function test_SerialSmallExits() public {
         _skip();
         Ctx memory ctx = _deployCtx();
@@ -192,6 +203,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         _seedBorrowers(ctx, debts, 0.7e18, total);
 
         console2.log("=== SerialSmallExits(10x5%x10rounds) ===");
+        uint256 drainedAcrossRounds;
         for (uint256 round; round < 10; ++round) {
             uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
             if (lenderShares == 0) break;
@@ -199,14 +211,18 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
             if (roundShares > lenderShares) roundShares = lenderShares;
             if (roundShares == 0) break;
             SettlementResult memory res = _settleLoop(ctx, roundShares);
+            drainedAcrossRounds += res.totalDebtCanceled;
             console2.log("  round", round, "iter", res.iterations);
             console2.log("    debt_canceled", res.totalDebtCanceled, "gas", res.gasUsed);
         }
+        assertGt(drainedAcrossRounds, 0, "serial exits cancelled debt");
+        assertLt(ctx.controller.settlementBorrowersCount(), debts.length, "serial exits shrank the queue");
         _logPositions(ctx, debts.length);
     }
 
     // ── Dust scenarios (withdraw to high LTV) ──────────────────────
 
+    /// @dev Benchmarks the heap walk over 100 dust positions each withdrawn to a high (~78%) LTV.
     function test_100DustPositions() public {
         _skip();
         Ctx memory ctx = _deployCtx();
@@ -214,6 +230,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         _runDustScenario(ctx, "100DustPositions(100x0.3@~78%LTV)", 100, 0.3 ether, 4);
     }
 
+    /// @dev Benchmarks the heap walk over 1000 dust positions each withdrawn to a high (~78%) LTV.
     function test_1000DustPositions() public {
         _skip();
         Ctx memory ctx = _deployCtx();
@@ -221,6 +238,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         _runDustScenario(ctx, "1000DustPositions(1000x0.3@~78%LTV)", 1000, 0.3 ether, 4);
     }
 
+    /// @dev Benchmarks the heap walk over 1000 mixed-size positions (900 small + 90 mid + 10 large) on a quarter exit.
     function test_1000MixedPositions() public {
         _skip();
         Ctx memory ctx = _deployCtx();
@@ -244,6 +262,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         console2.log("  total_debt:", total);
 
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, total / 4));
+        // A capped uniform-LTV pass slices debt but need not fully close any position, so don't assert a heap drop.
+        assertGt(res.totalDebtCanceled, 0, "the quarter-pool exit cancels debt");
         _logSettlementResult(res);
         console2.log("  heap_size:", ctx.controller.settlementBorrowersCount());
     }
@@ -251,6 +271,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ── Whale + dust
     // ───────────────────────────────────────────────
 
+    /// @dev Benchmarks the heap walk over 99 low-LTV dust positions plus one high-value whale that the exit hits first.
     function test_DustAndOneWhale100() public {
         _skip();
         Ctx memory ctx = _deployCtx();
@@ -271,6 +292,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         vm.warp(block.timestamp + 2 hours + 1);
         _borrowAll(ctx, 0, 1, whaleDebt);
         _borrowAll(ctx, 1, n, dustDebt);
+        uint128 whaleBorrowBefore = ctx.market.position(ctx.id, _borrowerAddr(0)).borrowShares;
 
         console2.log("=== DustAndOneWhale100(99x0.3lowLTV+1x100whale) ===");
         console2.log("  heap_size_before:", ctx.controller.settlementBorrowersCount());
@@ -280,6 +302,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
         Position memory _whalePos = ctx.market.position(ctx.id, _borrowerAddr(0));
         (uint128 whaleBorrowAfter, uint128 whaleColAfter) = (_whalePos.borrowShares, _whalePos.collateral);
+        // The high-LTV whale is the heap root; a 75-WETH exit (< its 100 debt) trims it and never reaches the dust.
+        assertGt(res.totalDebtCanceled, 0, "the whale exit cancels something");
+        assertLt(whaleBorrowAfter, whaleBorrowBefore, "the whale was trimmed");
+        assertGt(whaleBorrowAfter, 0, "a 75-WETH exit cannot fully close a 100-WETH whale");
+        assertEq(_countClosed(ctx, 1, n), 0, "the dust tail is never touched");
         console2.log("  whale_debt_remaining:", uint256(whaleBorrowAfter));
         console2.log("  whale_col_remaining:", uint256(whaleColAfter));
         console2.log("  heap_size:", ctx.controller.settlementBorrowersCount());
@@ -289,6 +316,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ── Full drain
     // ─────────────────────────────────────────────────
 
+    /// @dev Benchmarks fully draining 2000 dust positions across repeated settle transactions, totaling gas/iterations.
     function test_2000DustFullDrain() public {
         _skip();
         Ctx memory ctx = _deployCtx();
@@ -325,6 +353,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         console2.log("  total_debt_drained:", totalDebtDrained);
         console2.log("  total_gas:", totalGas);
         console2.log("  positions_remaining:", ctx.controller.settlementBorrowersCount());
+
+        // Real progress, though not to zero: accrued interest leaves a residual tail once the lender's supply runs out.
+        assertGt(totalDebtDrained, 0, "the drain cancelled debt");
+        assertGt(_countClosed(ctx, 0, n), 0, "the drain closed positions");
+        assertLt(ctx.controller.settlementBorrowersCount(), n, "the drain shrank the settlement queue");
     }
 
     // ── Runners
@@ -341,6 +374,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     {
         _seedBorrowers(ctx, debts, ltv, _sum(debts));
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, exitAssets));
+        assertGt(res.totalDebtCanceled, 0, "a funded exit against outstanding debt cancels something");
         _logResult(ctx, label, debts.length, res);
     }
 
@@ -353,6 +387,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     ) internal {
         _seedBorrowersWithLTVs(ctx, debts, ltvs, _sum(debts));
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, exitAssets));
+        assertGt(res.totalDebtCanceled, 0, "a funded exit against outstanding debt cancels something");
         _logResult(ctx, label, debts.length, res);
     }
 
@@ -362,6 +397,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         console2.log("===", label, "===");
         console2.log("  heap_size_before:", ctx.controller.settlementBorrowersCount());
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, debtPer * n / exitDivisor));
+        assertGt(res.totalDebtCanceled, 0, "the dust exit cancels something");
         console2.log("  borrowers:", n);
         _logSettlementResult(res);
         console2.log("  positions_closed:", _countClosed(ctx, 0, n));
@@ -453,6 +489,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     function _settleLoop(Ctx memory ctx, uint256 exitShares) internal returns (SettlementResult memory res) {
         uint256 remaining = exitShares;
+        uint256 heapBefore = ctx.controller.settlementBorrowersCount();
         uint256 gasBefore = gasleft();
 
         for (uint256 i; i < MAX_ITERATIONS; ++i) {
@@ -492,6 +529,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         }
 
         res.gasUsed = gasBefore - gasleft();
+
+        // Correctness rails for every scenario, independent of the gas numbers.
+        assertLe(res.iterations, MAX_ITERATIONS, "settle walk stays within the iteration cap");
+        assertLe(ctx.controller.settlementBorrowersCount(), heapBefore, "heap never grows during settlement");
+        assertEq(res.totalCollateralSeized == 0, res.totalDebtCanceled == 0, "collateral seized iff debt canceled");
     }
 
     /// @dev One settle attempt as LENDER, accumulated into `res`; swallows the revert so the caller can

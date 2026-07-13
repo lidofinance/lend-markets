@@ -97,6 +97,7 @@ contract MaxHeapLibTest is Test {
 
     // ── requirements: root is max, upsert is insert-or-rekey ──
 
+    /// @dev Upserting an already-present account re-keys it in place (size unchanged) and re-heapifies its slot.
     function test_upsertExisting_rekeysNotDuplicates() public {
         h.upsert(_a(1), 10);
         h.upsert(_a(2), 20);
@@ -109,6 +110,7 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
+    /// @dev Re-keying a non-root account above the current root sifts it up to become the new root.
     function test_rekeyUp_promotesToRoot() public {
         h.upsert(_a(1), 100);
         h.upsert(_a(2), 40);
@@ -119,6 +121,7 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
+    /// @dev Re-keying the root below its children sifts it down; the largest child becomes the new root.
     function test_rekeyDown_demotesRoot() public {
         h.upsert(_a(1), 100);
         h.upsert(_a(2), 90);
@@ -131,6 +134,7 @@ contract MaxHeapLibTest is Test {
 
     // ── requirements: remove ──
 
+    /// @dev Removing a present account returns true, shrinks size, and promotes the next-largest key to root.
     function test_removeRoot_promotesNextMax() public {
         h.upsert(_a(1), 50);
         h.upsert(_a(2), 90);
@@ -143,6 +147,7 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
+    /// @dev Removing an account not in the heap returns false and leaves size and heap ordering unchanged.
     function test_removeAbsent_isNoop() public {
         h.upsert(_a(1), 50);
         assertFalse(h.remove(_a(9)), "remove returns false when absent");
@@ -172,6 +177,7 @@ contract MaxHeapLibTest is Test {
 
     // ── edge cases: saturation, zero key, ties, fresh-insert sift-up, bounds ──
 
+    /// @dev Multiple accounts sharing the same key still satisfy the parent >= child heap property.
     function test_tiedKeys_heapHolds() public {
         h.upsert(_a(1), 50);
         h.upsert(_a(2), 50);
@@ -180,6 +186,7 @@ contract MaxHeapLibTest is Test {
         _assertHeap(); // equal keys must still satisfy parent >= child
     }
 
+    /// @dev A fresh insert that is the new global maximum sifts up from the leaf to the root.
     function test_upsertFreshInsert_siftsUp() public {
         // Ascending inserts: each new node is the new global max and must climb to the root on insert.
         h.upsert(_a(1), 10);
@@ -191,6 +198,7 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
+    /// @dev Removing the sole element empties the heap, after which peek reverts EmptyHeap.
     function test_removeOnlyElement_emptiesAndPeekReverts() public {
         h.upsert(_a(1), 7);
         assertTrue(h.remove(_a(1)), "removed");
@@ -199,6 +207,7 @@ contract MaxHeapLibTest is Test {
         h.peek();
     }
 
+    /// @dev Re-keying an account to its existing value leaves size and root unchanged.
     function test_rekeySameValue_isNoop() public {
         h.upsert(_a(1), 100);
         h.upsert(_a(2), 90);
@@ -211,6 +220,8 @@ contract MaxHeapLibTest is Test {
 
     // ── property: heap holds after any mutation sequence ──
 
+    /// @dev Across a random upsert/remove sequence, size tracks the reference set and the heap property holds
+    ///      after every mutation.
     function testFuzz_heapPropertyHoldsAcrossSequence(uint256 seed) public {
         address[12] memory actors =
             [_a(1), _a(2), _a(3), _a(4), _a(5), _a(6), _a(7), _a(8), _a(9), _a(10), _a(11), _a(12)];
@@ -241,11 +252,13 @@ contract MaxHeapLibTest is Test {
 
     // ── requirements: empty / singleton ──
 
+    /// @dev peek on an empty heap reverts EmptyHeap.
     function testRevert_peekOnEmpty() public {
         vm.expectRevert(MaxHeapLib.EmptyHeap.selector);
         h.peek();
     }
 
+    /// @dev A single upsert makes that account the root and peek returns its account and key.
     function test_singleton() public {
         h.upsert(_a(1), 42);
         assertEq(h.size(), 1, "size");
@@ -256,6 +269,7 @@ contract MaxHeapLibTest is Test {
 
     // ── requirements: root is max, upsert is insert-or-rekey ──
 
+    /// @dev After several upserts in mixed order, peek returns the account holding the maximum key.
     function test_rootIsMax() public {
         h.upsert(_a(1), 30);
         h.upsert(_a(2), 90);
@@ -269,6 +283,7 @@ contract MaxHeapLibTest is Test {
 
     // ── edge cases: saturation, zero key, ties, fresh-insert sift-up, bounds ──
 
+    /// @dev Keys above uint96 max are clamped to the uint96 cap on store; a saturated account is the root.
     function test_saturatesKeysAboveUint96() public {
         h.upsert(_a(1), type(uint256).max); // saturates to type(uint96).max
         h.upsert(_a(2), uint256(type(uint96).max)); // already the cap
@@ -280,6 +295,7 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
+    /// @dev Key 0 is a valid stored key (only an empty slot marks absence), so the account is present and removable.
     function test_keyZero_isPresentNotAbsent() public {
         h.upsert(_a(1), 0); // key 0 is a valid key; only slot==0 marks an absent account
         assertEq(h.size(), 1, "present");
@@ -290,6 +306,7 @@ contract MaxHeapLibTest is Test {
         assertEq(h.size(), 0, "removed");
     }
 
+    /// @dev nodeAt at an index at or beyond the heap size reverts IndexOutOfBounds.
     function testRevert_nodeAtOutOfRange() public {
         h.upsert(_a(1), 5);
         vm.expectRevert(MaxHeapLib.IndexOutOfBounds.selector);

@@ -181,6 +181,8 @@ contract MorphoExitBookTest is LidoLendSetup {
     // G8 — place against a market that was never allowed
     // ---
 
+    /// @dev Placing against a market the fresh book never allow-listed reverts, even though the lender authorized it on
+    /// core.
     function testRevert_place_marketNotAllowed() public {
         // A fresh book with NO setMarketAllowed call.
         MorphoExitBook fresh = new MorphoExitBook(address(protocol.core), address(this), MAX_LIFETIME);
@@ -202,6 +204,7 @@ contract MorphoExitBookTest is LidoLendSetup {
     // G9 — supplied but never authorized the book on Morpho
     // ---
 
+    /// @dev Supplying to core without authorizing the book to manage the position reverts at placement.
     function testRevert_place_notAuthorized() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -221,6 +224,7 @@ contract MorphoExitBookTest is LidoLendSetup {
     // G10 — authorized, but placing more than the backing
     // ---
 
+    /// @dev Placing for more supply shares than the lender's position backs reverts at placement.
     function testRevert_place_insufficientBacking() public {
         address lender = _actor("lender");
         uint256 shares = _lenderSupply(lender, 10 ether);
@@ -234,6 +238,8 @@ contract MorphoExitBookTest is LidoLendSetup {
     // G11 — setMarketAllowed on a never-created market reverts (on disallow too)
     // ---
 
+    /// @dev setMarketAllowed on a never-created market reverts on both allow and disallow (live-market check always
+    /// runs).
     function testRevert_setMarketAllowed_marketNotCreated() public {
         Market storage m = _m();
         // Real tokens, bogus oracle/irm/lltv -> an id that was never created on the core.
@@ -257,6 +263,7 @@ contract MorphoExitBookTest is LidoLendSetup {
     // G12 — disallowing a market blocks new places but not the fill of an in-flight request
     // ---
 
+    /// @dev Disallowing a market blocks new placements but an in-flight request still fills (fill uses stored params).
     function test_disallowMarket_blocksPlaceNotFill() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -284,6 +291,7 @@ contract MorphoExitBookTest is LidoLendSetup {
     // G13 — previewFill and fill reflect a revoked authorization
     // ---
 
+    /// @dev Revoking the book's core authorization drops previewFill to zero and makes the fill revert.
     function test_previewFill_reflectsDeauthorize() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -470,11 +478,13 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertEq(uint8(req.status), uint8(ExitStatus.Filled), "request filled");
     }
 
+    /// @dev Constructing the book with a zero core (Morpho) address reverts.
     function testRevert_constructor_zeroMorpho() public {
         vm.expectRevert(MorphoExitBook.ZeroMorpho.selector);
         new MorphoExitBook(address(0), address(this), MAX_LIFETIME);
     }
 
+    /// @dev marketParamsOf(id) returns the full market params of the request's market.
     function test_marketParamsOf_returnsRequestMarket() public {
         address lender = address(0xA11CE);
         uint256 shares = _lenderSupply(lender, 10 ether);

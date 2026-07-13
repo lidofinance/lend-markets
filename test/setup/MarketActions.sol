@@ -112,13 +112,15 @@ library MarketActions {
 
     /// @notice Lender (`owner`) targeted-settles `shares` against `borrowers`, collateral to `receiver`.
     ///         Best-effort and liquidity-neutral: asserts `sharesBurned <= shares`, `loanAssets == 0`, the
-    ///         owner's share burn, and the collateral received by `receiver`.
+    ///         owner's share burn, the collateral received by `receiver`, and — when `owner != receiver` —
+    ///         that the owner's own collateral is untouched (all of it routed to `receiver`).
     function settle(Market storage self, address owner, uint256 shares, address[] memory borrowers, address receiver)
         internal
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
     {
         uint256 ownerSharesBefore = self.vault.balanceOf(owner);
         uint256 recvColBefore = self.collateralToken.balanceOf(receiver);
+        uint256 ownerColBefore = self.collateralToken.balanceOf(owner);
 
         vm.prank(owner);
         (sharesBurned, loanAssets, collateralSeized, debtCanceled) =
@@ -130,11 +132,15 @@ library MarketActions {
         vm.assertEq(
             self.collateralToken.balanceOf(receiver), recvColBefore + collateralSeized, "settle: receiver collateral"
         );
+        if (owner != receiver) {
+            vm.assertEq(self.collateralToken.balanceOf(owner), ownerColBefore, "settle: owner collateral routed away");
+        }
     }
 
     /// @notice Lender (`owner`) fallback-exits `shares`: the redeem leg pays loan and the settle leg pays
-    ///         collateral, both to `receiver`. Asserts `sharesBurned <= shares`, the owner's share burn, and
-    ///         the loan + collateral received by `receiver`.
+    ///         collateral, both to `receiver`. Asserts `sharesBurned <= shares`, the owner's share burn, the
+    ///         loan + collateral received by `receiver`, and — when `owner != receiver` — that the owner's own
+    ///         loan and collateral are untouched (both legs routed to `receiver`).
     function fallbackExit(Market storage self, address owner, uint256 shares, address receiver, uint256 maxIterations)
         internal
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
@@ -142,6 +148,9 @@ library MarketActions {
         uint256 ownerSharesBefore = self.vault.balanceOf(owner);
         uint256 recvLoanBefore = self.loanToken.balanceOf(receiver);
         uint256 recvColBefore = self.collateralToken.balanceOf(receiver);
+        // Single stack slot (memory pointer) for the owner's loan+collateral snapshot, to stay within the
+        // legacy pipeline's stack depth.
+        uint256[2] memory ownerBefore = [self.loanToken.balanceOf(owner), self.collateralToken.balanceOf(owner)];
 
         vm.prank(owner);
         (sharesBurned, loanAssets, collateralSeized, debtCanceled) =
@@ -155,6 +164,12 @@ library MarketActions {
             recvColBefore + collateralSeized,
             "fallbackExit: receiver collateral"
         );
+        if (owner != receiver) {
+            vm.assertEq(self.loanToken.balanceOf(owner), ownerBefore[0], "fallbackExit: owner loan routed away");
+            vm.assertEq(
+                self.collateralToken.balanceOf(owner), ownerBefore[1], "fallbackExit: owner collateral routed away"
+            );
+        }
     }
 
     // ── Borrower ──

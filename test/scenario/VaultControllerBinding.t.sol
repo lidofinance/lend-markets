@@ -24,6 +24,7 @@ contract VaultControllerBindingTest is LidoLendSetup {
         return address(new OssifiableProxy(impl, address(this), initData));
     }
 
+    /// @dev `initialize` reverts `ControllerMarketMismatch` when the controller governs a different market id.
     function test_W4_initializeRejectsMismatchedController() public {
         Market storage m = protocol.markets[0];
 
@@ -39,6 +40,7 @@ contract VaultControllerBindingTest is LidoLendSetup {
         new OssifiableProxy(impl, address(this), initData);
     }
 
+    /// @dev `initialize` accepts and binds a controller that governs the vault's own market id.
     function test_W4_initializeAcceptsMatchingController() public {
         Market storage m = protocol.markets[0];
         address vault = _deployVault(m.params, address(m.controller));

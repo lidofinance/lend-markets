@@ -43,6 +43,7 @@ contract LiquidationTest is LidoLendSetup {
         m.borrow(borrower, maxBorrow * 99 / 100);
     }
 
+    /// @dev A -10% drop makes the position unhealthy but solvent; a partial seize clears cleanly with no bad debt.
     function test_liquidate_moderateDrop_noBadDebt() public {
         Market storage m = _m();
         address borrower = _seedNearMax(100 ether);
@@ -58,6 +59,7 @@ contract LiquidationTest is LidoLendSetup {
         assertEq(m.core.position(m.id, borrower).collateral, 100 ether - seized, "collateral debited by exactly seized");
     }
 
+    /// @dev A -50% drop pushes the position underwater; a full seize wipes it and socializes the residual bad debt.
     function test_liquidateBadDebt_severeDrop_socialized() public {
         Market storage m = _m();
         address borrower = _seedNearMax(100 ether);
@@ -71,6 +73,8 @@ contract LiquidationTest is LidoLendSetup {
         m.liquidateBadDebt(keeper, borrower, 100 ether, 0);
     }
 
+    /// @dev A position driven underwater by interest alone (no price move): a partial seize stays loss-neutral and
+    ///      leaves the bad debt unrealized.
     function test_partialLiquidate_underwaterByInterest_doesNotSocialize() public {
         Market storage m = _m();
         uint256 borrowAmt = 100 ether * oraclePrice / 1e36 * 80 / 100 * 99 / 100; // ~99% of LLTV-max
@@ -102,6 +106,7 @@ contract LiquidationTest is LidoLendSetup {
         assertTrue(m.controller.hasBadDebt(), "bad debt remains (partial seize did not clear the underwater root)");
     }
 
+    /// @dev With no price drop the position stays healthy and the core rejects any liquidation attempt.
     function test_healthyPosition_cannotBeLiquidated() public {
         Market storage m = _m();
         address borrower = _seedNearMax(100 ether);
