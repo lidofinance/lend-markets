@@ -47,14 +47,14 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
     // CONSTRUCTOR
     // ---
 
-    constructor(address owner, uint256 maxLifetime_) ExitBookBase(owner, maxLifetime_) {}
+    constructor(address admin, uint256 maxLifetime_) ExitBookBase(admin, maxLifetime_) {}
 
     // ---
     // CONFIG
     // ---
 
     /// @inheritdoc IErc4626ExitBook
-    function setVaultAllowed(IERC4626 vault, bool allowed) external onlyOwner {
+    function setVaultAllowed(IERC4626 vault, bool allowed) external onlyRole(ALLOWLIST_MANAGER_ROLE) {
         if (address(vault) == address(0)) revert ZeroVault();
         isVaultAllowed[vault] = allowed;
         emit VaultAllowedSet(address(vault), allowed);

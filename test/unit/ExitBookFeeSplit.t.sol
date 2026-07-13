@@ -6,6 +6,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
@@ -76,6 +77,8 @@ contract ExitBookFeeSplitTest is Test {
         asset = new MockAsset();
         vault = new MockVault(IERC20(address(asset)));
         book = new Erc4626ExitBook(address(this), 365 days);
+        book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), address(this));
+        book.grantRole(book.FEE_MANAGER_ROLE(), address(this));
         book.setVaultAllowed(IERC4626(address(vault)), true);
     }
 
@@ -425,6 +428,11 @@ contract ExitBookFeeSplitTest is Test {
         new Erc4626ExitBook(address(this), 0);
     }
 
+    function testRevert_constructor_zeroAdmin() public {
+        vm.expectRevert(ExitBookBase.ZeroAddress.selector);
+        new Erc4626ExitBook(address(0), 365 days);
+    }
+
     // ── G8: setServiceFee validation + happy path ──
 
     function testRevert_setServiceFee_feeTooHigh() public {
@@ -451,6 +459,38 @@ contract ExitBookFeeSplitTest is Test {
         book.setServiceFee(address(0), 0);
         assertEq(book.feeRecipient(), address(0), "recipient cleared");
         assertEq(book.serviceFee(), 0, "fee cleared");
+    }
+
+    // ── G8b: role gating — each capability rejects a non-holder ──
+
+    function testRevert_setVaultAllowed_unauthorized() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, lender, book.ALLOWLIST_MANAGER_ROLE()
+            )
+        );
+        vm.prank(lender);
+        book.setVaultAllowed(IERC4626(address(vault)), true);
+    }
+
+    function testRevert_setServiceFee_unauthorized() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, lender, book.FEE_MANAGER_ROLE()
+            )
+        );
+        vm.prank(lender);
+        book.setServiceFee(feeRecipient, 0.1e18);
+    }
+
+    function testRevert_recoverERC20_unauthorized() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, lender, book.RECOVERER_ROLE()
+            )
+        );
+        vm.prank(lender);
+        book.recoverERC20(address(asset), lender, 1);
     }
 
     // ── G9: NoAssetsRedeemed — a fill whose redeem produces zero assets ──

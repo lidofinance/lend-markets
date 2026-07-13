@@ -23,7 +23,7 @@ interface IMorphoExitBook is IExitBook {
     /// @notice Register `marketParams` (which must name a live Morpho market, checked on both allow and
     ///         disallow) and allow or disallow it for new requests. The params are kept permanently (so
     ///         requests already placed stay fillable after a disallow); disallowing only flips the gate.
-    ///         Owner only.
+    ///         `ALLOWLIST_MANAGER_ROLE` only.
     /// @param marketParams The market's full params; its id (the params' hash) is the allow-list key.
     /// @param allowed True to allow new requests against it; false to block them (already-placed ones still fill).
     function setMarketAllowed(MarketParams calldata marketParams, bool allowed) external;

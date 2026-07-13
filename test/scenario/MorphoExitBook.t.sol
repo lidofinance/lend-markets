@@ -40,6 +40,8 @@ contract MorphoExitBookTest is LidoLendSetup {
         _deployProtocol(_defaultConfig(address(loan), address(collateral), address(collateral)));
 
         book = new MorphoExitBook(address(protocol.core), address(this), MAX_LIFETIME);
+        book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), address(this));
+        book.grantRole(book.FEE_MANAGER_ROLE(), address(this));
         book.setServiceFee(feeRecipient, SERVICE_FEE);
         book.setMarketAllowed(_m().params, true);
     }
