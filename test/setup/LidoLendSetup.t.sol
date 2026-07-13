@@ -21,6 +21,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         _deployProtocol(_defaultConfig(address(loan), address(collateral), address(collateral)));
     }
 
+    /// @dev A shared core/guardian singleton hosts exactly one market, and that market points back at the core.
     function test_structure_singletonsAndMarket() public {
         // Singletons.
         assertTrue(address(protocol.core) != address(0), "core singleton");
@@ -36,6 +37,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         );
     }
 
+    /// @dev Each proxied market contract (vault/oracle/controller) exposes a live implementation behind its admin.
     function test_proxyDualFields() public {
         Market storage m = protocol.markets[0];
         assertTrue(m.vaultProxy.proxy__getImplementation() != address(0), "vault impl");
@@ -43,6 +45,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         assertEq(m.controllerProxy.proxy__getImplementation(), m.controllerImpl, "controller impl matches");
     }
 
+    /// @dev Protocol- and market-level config (loan token, lltv, oracle) reads back the values setup deployed with.
     function test_config_reachable() public {
         assertEq(protocol.config.loanToken, address(loan), "protocol.config");
         Market storage m = protocol.markets[0];
@@ -50,6 +53,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         assertEq(m.params.oracle, address(m.oracle), "market.params.oracle");
     }
 
+    /// @dev The oracle price is seeded to a non-1e36 value within the expected range and the oracle returns it exactly.
     function test_oraclePrice_isSeededNonParity() public view {
         assertTrue(seed != 0, "seed set");
         assertTrue(oraclePrice != 1e36, "oracle price must not be parity");
@@ -58,6 +62,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         assertLt(oraclePrice, 3e36, "price in seeded range (high)");
     }
 
+    /// @dev The MarketActions helpers drive a full lender-deposit then supply/activate/borrow/repay/withdraw flow.
     function test_actionHelpers_lenderAndBorrowerFlow() public {
         Market storage m = protocol.markets[0];
 
@@ -76,6 +81,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         m.withdrawCollateral(borrower, 100 ether, borrower);
     }
 
+    /// @dev Selecting the Fixed `IrmKind` deploys a second market with a fixed IRM on the same shared core.
     function test_irmSelection_fixed() public {
         irmKind = IrmKind.Fixed;
         MockERC20 l2 = new MockERC20("Loan2", "LOAN2", 18);
@@ -86,6 +92,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         assertEq(protocol.markets.length, 2, "core hosts a second market");
     }
 
+    /// @dev A lender can mint an exact share amount then redeem the full balance back to zero shares.
     function test_mintAndRedeem() public {
         Market storage m = protocol.markets[0];
         address lender = _actor("lender");
@@ -96,6 +103,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         assertEq(m.vault.balanceOf(lender), 0, "redeemed all shares");
     }
 
+    /// @dev A borrower's per-position settlement LTV can be set through the market helper.
     function test_setSettlementLtv() public {
         protocol.markets[0].setSettlementLtv(_actor("borrower"), 0.5e18);
     }
@@ -116,6 +124,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         m.accrueInterest();
     }
 
+    /// @dev A partial seize on an unhealthy-but-solvent borrower liquidates without realizing bad debt.
     function test_liquidate_noBadDebt() public {
         Market storage m = protocol.markets[0];
         address borrower = _distressedBorrower(m, 0.22e36); // value 22: unhealthy (<25) but solvent (>=20)
@@ -124,6 +133,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         m.liquidate(keeper, borrower, 5 ether, 0); // partial seize → no bad debt
     }
 
+    /// @dev Seizing all collateral of an insolvent borrower realizes and socializes bad debt.
     function test_liquidate_badDebt() public {
         Market storage m = protocol.markets[0];
         address borrower = _distressedBorrower(m, 0.1e36); // value 10 < debt 20 → insolvent
@@ -133,6 +143,7 @@ contract LidoLendSetupSmokeTest is LidoLendSetup {
         m.liquidateBadDebt(keeper, borrower, col, 0); // seize all collateral → bad debt socialized
     }
 
+    /// @dev A short-liquidity lender's fallbackExit redeems idle first then settles collateral to cover the shortfall.
     function test_fallbackExit_redeemThenSettle() public {
         Market storage m = protocol.markets[0];
         address lender = _actor("lender");

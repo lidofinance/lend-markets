@@ -90,11 +90,11 @@ contract ExitBookSolvencyInvariant is Test {
 
     // 3. Three-way conservation, accumulated over every fill: the legs reconstruct the redeem proceeds exactly.
     function invariant_threeWayConservation() public view {
-        // The measured distribution sums to itself by construction (no remainder leaves the book) ...
+        // Recipient legs vs. an independent vault-side measure of what the book redeemed (not the contract's split).
         assertEq(
             handler.sumLenderPaid() + handler.sumFillerPaid() + handler.sumServicePaid(),
             handler.sumAssetsOut(),
-            "lender + filler + service == sum of distributed assets"
+            "lender + filler + service == assets redeemed from the vault"
         );
         // ... and, independently, the no-liquidity legs reconstruct the pre-fill `previewRedeem` with no remainder.
         assertEq(handler.sumLegsNoDep(), handler.sumPreviewNoDep(), "no-liquidity legs == previewRedeem proceeds");

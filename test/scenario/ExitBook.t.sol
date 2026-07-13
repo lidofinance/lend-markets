@@ -511,6 +511,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         assertEq(uint8(vaultBook.getExitRequest(id).status), uint8(ExitStatus.Filled), "filled once floor cleared");
     }
 
+    /// @dev A ramp whose start fee exceeds its end fee is rejected at placement.
     function testRevert_place_startFeeAboveEnd() public {
         uint256 shares = _depositToVault(LENDER, 5 ether);
         vm.prank(LENDER);
@@ -522,6 +523,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         );
     }
 
+    /// @dev A priority fee above the allowed maximum is rejected at placement.
     function testRevert_place_endFeeTooHigh() public {
         uint256 shares = _depositToVault(LENDER, 5 ether);
         vm.prank(LENDER);
@@ -531,6 +533,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         vaultBook.placeExitRequest(IERC4626(d.vault), shares, _flat(0.2e18), block.timestamp + 7 days, false);
     }
 
+    /// @dev A ramp whose climb ends after the request deadline is rejected at placement.
     function testRevert_place_rampPastDeadline() public {
         uint256 shares = _depositToVault(LENDER, 5 ether);
         vm.prank(LENDER);
@@ -543,6 +546,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         );
     }
 
+    /// @dev Placing an exit against a vault the book never allow-listed reverts.
     function testRevert_erc4626_place_vaultNotAllowed() public {
         vm.prank(LENDER);
         vm.expectRevert(Erc4626ExitBook.VaultNotAllowed.selector);
@@ -606,6 +610,8 @@ contract ExitBookTest is Test, LidoLendDeployer {
         assertEq(loan.balanceOf(address(morphoBook)), 0, "book never holds a balance");
     }
 
+    /// @dev Placing against a market the fresh book never allow-listed reverts, though the lender authorized it on
+    /// core.
     function testRevert_morpho_place_marketNotAllowed() public {
         MorphoExitBook fresh = new MorphoExitBook(d.core, address(this), MAX_LIFETIME);
         vm.prank(LENDER);
@@ -650,6 +656,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         morphoBook.setMarketAllowed(ghost, false); // disallowing a non-existent market still reverts
     }
 
+    /// @dev Placing without authorizing the book on the core to manage the supply position reverts.
     function testRevert_morpho_place_notAuthorized() public {
         _supplyDirect(LENDER, 10 ether);
         vm.prank(LENDER);

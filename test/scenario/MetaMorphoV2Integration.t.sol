@@ -107,6 +107,9 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
         IMorphoMarketV1AdapterLike adapter;
     }
 
+    /// @dev A vault-v2 allocator supplies into the Lido fork market via the Morpho adapter; borrowers drain all
+    ///      liquidity so a plain vault withdraw reverts, then forceDeallocate exits the vault user and a
+    ///      direct-lender fallback settle seizes the borrower's collateral to exit the direct lender.
     function test_metaMorphoV2_allocatesIntoForkAndForceDeallocates() public {
         vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
 

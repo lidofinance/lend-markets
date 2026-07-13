@@ -186,6 +186,8 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── concrete ──
 
+    /// @dev With vault yield above the snapshot price and a 20% service fee, a mid-ramp fill splits assetsOut
+    ///      three ways (lender / filler / service) with no remainder.
     function test_fill_conservation_withYieldAndFee() public {
         _setServiceFee(0.2e18); // 20% of the filler's gross
         (uint256 id, uint256 shares) = _lenderPlace(100 ether, _ramp());
@@ -193,6 +195,8 @@ contract ExitBookFeeSplitTest is Test {
         _fillAndAssert(id, shares, 12 hours, 0.2e18); // mid-ramp
     }
 
+    /// @dev With no yield and no service fee, a fill pays the lender `owed - priorityFee` and still conserves
+    /// assetsOut.
     function test_fill_conservation_noYield_noFee() public {
         _setServiceFee(0);
         (uint256 id, uint256 shares) = _lenderPlace(100 ether, _ramp());
@@ -200,6 +204,7 @@ contract ExitBookFeeSplitTest is Test {
         _fillAndAssert(id, shares, 12 hours, 0);
     }
 
+    /// @dev At the max service fee and past ramp end (plateau rate), the three-way split still reconstructs assetsOut.
     function test_fill_conservation_maxServiceFee_plateauRate() public {
         _setServiceFee(0.25e18); // MAX_SERVICE_FEE
         (uint256 id, uint256 shares) = _lenderPlace(500 ether, _ramp());
@@ -209,6 +214,8 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── fuzz: exact conservation across the domain ──
 
+    /// @dev Across deposit / yield / serviceFee / elapsed, the lender, filler and service legs always sum to
+    ///      assetsOut with no remainder.
     function testFuzz_fill_threeWayConservation(uint256 depositAmt, uint256 yield_, uint256 serviceFee, uint256 elapsed)
         public
     {
@@ -261,6 +268,8 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G1: partial fill (Open) then final (Filled) — multi-fill state machine ──
 
+    /// @dev A live allowance cap makes the first fill partial (stays Open with remaining debited); a later fill
+    ///      fully drains it to Filled, and the book holds no assets between or after fills.
     function test_fill_partialThenFinal() public {
         _setServiceFee(0);
         (uint256 id, uint256 shares) = _lenderPlace(100 ether, _ramp()); // placed with full backing
@@ -287,6 +296,8 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G2: filler brings liquidity (depositAssets != 0) → filler ends with the minted vault shares ──
 
+    /// @dev When the filler supplies its own deposit liquidity, it ends holding exactly the vault shares that
+    ///      deposit mints at the pre-redeem rate.
     function test_fillWithLiquidity_fillerReceivesVaultShares() public {
         _setServiceFee(0);
         (uint256 id, uint256 shares) = _lenderPlace(100 ether, _ramp());
@@ -305,6 +316,7 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G3: minAssetsOut slippage floor ──
 
+    /// @dev A minAssetsOut floor above the redeem yield reverts AssetsOutBelowMin; a satisfiable floor fills.
     function test_minAssetsOut_gatesFill() public {
         _setServiceFee(0);
         (uint256 id, uint256 shares) = _lenderPlace(100 ether, _ramp());
@@ -321,6 +333,7 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G5: placement validation reverts ──
 
+    /// @dev Placing a ramp whose startRate exceeds its endRate reverts StartFeeAboveEnd.
     function testRevert_place_startFeeAboveEnd() public {
         _depositAndApprove(100 ether, type(uint256).max);
         vm.prank(lender);
@@ -334,6 +347,7 @@ contract ExitBookFeeSplitTest is Test {
         );
     }
 
+    /// @dev Placing with an endRate above MAX_PRIORITY_FEE reverts PriorityFeeTooHigh.
     function testRevert_place_endFeeTooHigh() public {
         _depositAndApprove(100 ether, type(uint256).max);
         vm.prank(lender);
@@ -347,6 +361,7 @@ contract ExitBookFeeSplitTest is Test {
         );
     }
 
+    /// @dev Placing where `now + rampEnd` overruns the deadline reverts RampPastDeadline.
     function testRevert_place_rampPastDeadline() public {
         _depositAndApprove(100 ether, type(uint256).max);
         vm.prank(lender);
@@ -360,6 +375,7 @@ contract ExitBookFeeSplitTest is Test {
         );
     }
 
+    /// @dev Placing a request for zero shares reverts ZeroShares.
     function testRevert_place_zeroShares() public {
         _depositAndApprove(100 ether, type(uint256).max);
         vm.prank(lender);
@@ -369,6 +385,7 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G6: vault allow-list gating ──
 
+    /// @dev Placing against a vault never added to the allow-list reverts VaultNotAllowed.
     function testRevert_place_vaultNotAllowed() public {
         MockVault other = new MockVault(IERC20(address(asset))); // never allowed
         asset.mint(lender, 1 ether);
@@ -381,6 +398,7 @@ contract ExitBookFeeSplitTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev Placing more shares than the owner's backing covers reverts InsufficientBacking.
     function testRevert_place_insufficientBacking() public {
         uint256 shares = _depositAndApprove(100 ether, type(uint256).max);
         vm.prank(lender);
@@ -397,6 +415,7 @@ contract ExitBookFeeSplitTest is Test {
         book.placeExitRequest(IERC4626(address(zeroPrice)), 1 ether, _ramp(), block.timestamp + 30 days, false);
     }
 
+    /// @dev Allow-listing the zero-address vault reverts ZeroVault.
     function testRevert_setVaultAllowed_zeroVault() public {
         vm.expectRevert(Erc4626ExitBook.ZeroVault.selector);
         book.setVaultAllowed(IERC4626(address(0)), true);
@@ -423,6 +442,7 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G7: constructor validation ──
 
+    /// @dev Constructing the book with a zero max request lifetime reverts ZeroMaxLifetime.
     function testRevert_constructor_zeroMaxLifetime() public {
         vm.expectRevert(ExitBookBase.ZeroMaxLifetime.selector);
         new Erc4626ExitBook(address(this), 0);
@@ -435,6 +455,7 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G8: setServiceFee validation + happy path ──
 
+    /// @dev Setting a service fee above MAX_SERVICE_FEE reverts FeeTooHigh.
     function testRevert_setServiceFee_feeTooHigh() public {
         uint256 tooHigh = book.MAX_SERVICE_FEE() + 1;
         vm.expectRevert(ExitBookBase.FeeTooHigh.selector);
@@ -447,6 +468,8 @@ contract ExitBookFeeSplitTest is Test {
         book.setServiceFee(address(0), 0.1e18);
     }
 
+    /// @dev A valid fee emits ServiceFeeSet and stores recipient + fee; clearing to a zero fee with a zero
+    ///      recipient is allowed and wipes both.
     function test_setServiceFee_happyPath() public {
         vm.expectEmit(true, false, false, true, address(book));
         emit ExitBookBase.ServiceFeeSet(feeRecipient, 0.1e18);
@@ -495,6 +518,7 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G9: NoAssetsRedeemed — a fill whose redeem produces zero assets ──
 
+    /// @dev A fill whose redeem yields a zero asset delta despite real backing reverts NoAssetsRedeemed.
     function test_fill_noAssetsRedeemed_reverts() public {
         ZeroRedeemVault zv = new ZeroRedeemVault(IERC20(address(asset)));
         book.setVaultAllowed(IERC4626(address(zv)), true);
@@ -515,6 +539,7 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G10: cancelExitRequest at the contract level ──
 
+    /// @dev The owner cancelling emits ExitCancelled, marks the request Cancelled, and zeroes its remaining size.
     function test_cancelExitRequest_marksCancelledAndEmits() public {
         (uint256 id,) = _lenderPlace(100 ether, _ramp());
 
@@ -527,6 +552,7 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(book.getExitRequest(id).sizeRemaining, 0, "remaining zeroed on cancel");
     }
 
+    /// @dev A non-owner cancelling another account's request reverts NotOwner.
     function testRevert_cancelExitRequest_notOwner() public {
         (uint256 id,) = _lenderPlace(100 ether, _ramp());
 
@@ -537,6 +563,7 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G12: remaining placement-validation reverts ──
 
+    /// @dev Placing a ramp whose rampStart is after its rampEnd reverts RampStartAfterEnd.
     function testRevert_place_rampStartAfterEnd() public {
         _depositAndApprove(100 ether, type(uint256).max);
         vm.prank(lender);
@@ -550,6 +577,7 @@ contract ExitBookFeeSplitTest is Test {
         );
     }
 
+    /// @dev Placing with a deadline at or before the current time reverts DeadlineInPast.
     function testRevert_place_deadlineInPast() public {
         _depositAndApprove(100 ether, type(uint256).max);
         vm.prank(lender);
@@ -563,6 +591,7 @@ contract ExitBookFeeSplitTest is Test {
         );
     }
 
+    /// @dev Placing with a deadline beyond `now + MAX_REQUEST_LIFETIME` reverts DeadlineTooFar.
     function testRevert_place_deadlineTooFar() public {
         _depositAndApprove(100 ether, type(uint256).max);
         vm.prank(lender);
@@ -580,6 +609,8 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G4: view functions ──
 
+    /// @dev previewFill reports exact fillable shares and assetsOut; owner listing counts, paginates and clamps;
+    ///      batch reads return zeroed rows for unknown ids without reverting.
     function test_views_previewAndListing() public {
         _setServiceFee(0);
         (uint256 id1, uint256 shares1) = _lenderPlace(100 ether, _ramp());
@@ -622,6 +653,7 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── G11: lastRequestId view ──
 
+    /// @dev lastRequestId starts at zero and advances to the id of each newly placed request.
     function test_lastRequestId_tracksLatest() public {
         assertEq(book.lastRequestId(), 0, "no requests issued yet");
         (uint256 id1,) = _lenderPlace(100 ether, _ramp());

@@ -65,6 +65,8 @@ contract EthStethForkTest is LidoLendSetup {
         assertLt(price - naive, 1e18, "precision gained over the naive rate is under one ULP");
     }
 
+    /// @dev Borrowing against real matured wstETH collateral yields exactly the loan amount sized by the live
+    ///      wstETH rate and the 0.8 LLTV.
     function test_borrowAgainstRealWstEthCollateral() public {
         Market storage m = _m();
 

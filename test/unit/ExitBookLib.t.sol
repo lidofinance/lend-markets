@@ -83,6 +83,8 @@ contract ExitBookLibTest is Test {
 
     // ── add / ids ──
 
+    /// @dev A new request is issued with id 1, status Open, sizeRemaining equal to the requested shares, and the
+    /// caller-owner stored.
     function test_add_createsOpenRequest() public {
         uint256 id = _add(ALICE, 100 ether);
         assertEq(id, 1, "ids are 1-indexed");
@@ -91,6 +93,8 @@ contract ExitBookLibTest is Test {
         assertEq(h.ownerOf(id), ALICE, "owner stored");
     }
 
+    /// @dev Ids increment strictly across adds and are never recycled, even after an earlier request is closed by
+    /// cancel.
     function test_add_idsMonotonic_neverReused() public {
         uint256 id1 = _add(ALICE, 100 ether);
         uint256 id2 = _add(BOB, 50 ether);
@@ -103,6 +107,7 @@ contract ExitBookLibTest is Test {
 
     // ── recordFill ──
 
+    /// @dev A partial fill debits sizeRemaining by the filled amount and leaves the request Open.
     function test_recordFill_partial_staysOpen() public {
         uint256 id = _add(ALICE, 100 ether);
         h.recordFill(id, 40 ether);
@@ -110,6 +115,7 @@ contract ExitBookLibTest is Test {
         assertEq(uint8(h.status(id)), uint8(ExitStatus.Open), "still open");
     }
 
+    /// @dev A fill that drains sizeRemaining to zero transitions the request to Filled.
     function test_recordFill_full_marksFilled() public {
         uint256 id = _add(ALICE, 100 ether);
         h.recordFill(id, 100 ether);
@@ -117,6 +123,7 @@ contract ExitBookLibTest is Test {
         assertEq(uint8(h.status(id)), uint8(ExitStatus.Filled), "Filled at zero remaining");
     }
 
+    /// @dev A fill exceeding sizeRemaining reverts on arithmetic underflow rather than over-draining the request.
     function testRevert_recordFill_overfill() public {
         uint256 id = _add(ALICE, 100 ether);
         vm.expectRevert(stdError.arithmeticError); // sizeRemaining -= filled underflows
@@ -125,6 +132,7 @@ contract ExitBookLibTest is Test {
 
     // ── cancel ──
 
+    /// @dev Cancelling a partially-filled Open request moves it to Cancelled and zeroes its remaining size.
     function test_cancel_open_marksCancelled() public {
         uint256 id = _add(ALICE, 100 ether);
         h.recordFill(id, 30 ether);
@@ -133,12 +141,14 @@ contract ExitBookLibTest is Test {
         assertEq(h.sizeRemaining(id), 0, "remaining zeroed on cancel");
     }
 
+    /// @dev Only the recorded owner may cancel; a non-owner caller reverts NotOwner.
     function testRevert_cancel_notOwner() public {
         uint256 id = _add(ALICE, 100 ether);
         vm.expectRevert(ExitBookLib.NotOwner.selector);
         h.cancel(id, BOB);
     }
 
+    /// @dev Cancelling an already-closed request reverts RequestClosed rather than re-cancelling.
     function testRevert_cancel_alreadyClosed() public {
         uint256 id = _add(ALICE, 100 ether);
         h.cancel(id, ALICE);
@@ -157,6 +167,7 @@ contract ExitBookLibTest is Test {
         h.recordFill(id, 0);
     }
 
+    /// @dev recordFill on an already-Filled request reverts RequestClosed and does not reopen or re-close it.
     function testRevert_recordFill_onFilled_revertsClosed() public {
         uint256 id = _add(ALICE, 100 ether);
         h.recordFill(id, 100 ether); // fully drained -> Filled
@@ -166,6 +177,7 @@ contract ExitBookLibTest is Test {
 
     // ── SafeCast packing bounds ──
 
+    /// @dev A shares amount above uint128 max reverts on the SafeCast downcast when packing the request.
     function testRevert_add_sharesOverflowUint128() public {
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -175,6 +187,7 @@ contract ExitBookLibTest is Test {
         h.add(ALICE, ASSET, uint256(type(uint128).max) + 1, 1e18, _ramp(), block.timestamp + 1, false);
     }
 
+    /// @dev A deadline above uint40 max reverts on the SafeCast downcast when packing the request.
     function testRevert_add_deadlineOverflowsUint40() public {
         vm.expectRevert(
             abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 40, uint256(type(uint40).max) + 1)
@@ -182,6 +195,7 @@ contract ExitBookLibTest is Test {
         h.add(ALICE, ASSET, 1 ether, 1e18, _ramp(), uint256(type(uint40).max) + 1, false);
     }
 
+    /// @dev A ramp rate above uint96 max reverts on the SafeCast downcast when packing the request.
     function testRevert_add_rampRateOverflowsUint96() public {
         PriorityRamp memory r =
             PriorityRamp({startRate: uint256(type(uint96).max) + 1, endRate: 0, rampStart: 0, rampEnd: 1});
@@ -193,6 +207,8 @@ contract ExitBookLibTest is Test {
 
     // ── fuzz: id monotonicity & remaining bound ──
 
+    /// @dev Across a sequence of adds and arbitrary fills, ids increment from 1 and sizeRemaining never exceeds the
+    /// total.
     function testFuzz_addThenFills_remainingNeverExceedsTotal(uint256 n, uint256 fillSeed) public {
         n = bound(n, 1, 20);
         for (uint256 i; i < n; i++) {
@@ -209,12 +225,15 @@ contract ExitBookLibTest is Test {
 
     // ── requireFillable (3 reverts + boundary) ──
 
+    /// @dev At exactly the deadline the request is still fillable (expiry check is strict `>`), so requireFillable
+    /// passes.
     function test_requireFillable_atDeadline_ok() public {
         uint256 id = _add(ALICE, 100 ether);
         vm.warp(block.timestamp + 1 days); // now == deadline; `>` is strict so still fillable
         h.requireFillable(id);
     }
 
+    /// @dev One second past the deadline requireFillable reverts RequestExpired.
     function testRevert_requireFillable_pastDeadline() public {
         uint256 id = _add(ALICE, 100 ether);
         vm.warp(block.timestamp + 1 days + 1);
@@ -222,6 +241,7 @@ contract ExitBookLibTest is Test {
         h.requireFillable(id);
     }
 
+    /// @dev A closed (cancelled) request is not fillable; requireFillable reverts RequestClosed.
     function testRevert_requireFillable_closed() public {
         uint256 id = _add(ALICE, 100 ether);
         h.cancel(id, ALICE);
@@ -229,6 +249,7 @@ contract ExitBookLibTest is Test {
         h.requireFillable(id);
     }
 
+    /// @dev A never-created id reads as a default (non-Open) request, so requireFillable reverts RequestClosed.
     function testRevert_requireFillable_uncreated() public {
         vm.expectRevert(ExitBookLib.RequestClosed.selector);
         h.requireFillable(999);

@@ -111,6 +111,7 @@ contract SettlementQueueLibTest is Test {
 
     // ── config / borrower opt-in ──
 
+    /// @dev sliceFloorBps and ltvStepBps at the 10_000 (100%) boundary are accepted (inclusive upper bound).
     function test_setSettlementConfig_bpsBoundaryAllowed() public {
         q.setSettlementConfig(
             SettlementConfig({
@@ -119,6 +120,7 @@ contract SettlementQueueLibTest is Test {
         );
     }
 
+    /// @dev A sliceFloorBps above 10_000 (100%) reverts SettlementConfigOutOfRange.
     function testRevert_setSettlementConfig_sliceFloorBpsOver() public {
         vm.expectRevert(SettlementQueueLib.SettlementConfigOutOfRange.selector);
         q.setSettlementConfig(
@@ -126,6 +128,7 @@ contract SettlementQueueLibTest is Test {
         );
     }
 
+    /// @dev An ltvStepBps above 10_000 (100%) reverts SettlementConfigOutOfRange.
     function testRevert_setSettlementConfig_ltvStepBpsOver() public {
         vm.expectRevert(SettlementQueueLib.SettlementConfigOutOfRange.selector);
         q.setSettlementConfig(
@@ -133,6 +136,7 @@ contract SettlementQueueLibTest is Test {
         );
     }
 
+    /// @dev A borrower's settlement-LTV opt-in is stored, and setting it to 0 clears the opt-in.
     function test_setSettlementLtv_storesAndClears() public {
         q.setSettlementLtv(_b(1), 0.7e18);
         assertEq(q.settlementLtvOf(_b(1)), 0.7e18, "stored");
@@ -140,11 +144,13 @@ contract SettlementQueueLibTest is Test {
         assertEq(q.settlementLtvOf(_b(1)), 0, "cleared");
     }
 
+    /// @dev A settlement LTV at WAD (>= 100%) reverts SettlementLtvOutOfRange.
     function testRevert_setSettlementLtv_geWad() public {
         vm.expectRevert(SettlementQueueLib.SettlementLtvOutOfRange.selector);
         q.setSettlementLtv(_b(1), WAD);
     }
 
+    /// @dev WAD-1 is the highest accepted settlement LTV (the WAD upper bound is exclusive).
     function test_setSettlementLtv_justBelowWadAllowed() public {
         q.setSettlementLtv(_b(1), WAD - 1);
         assertEq(q.settlementLtvOf(_b(1)), WAD - 1, "WAD-1 allowed");
@@ -152,6 +158,8 @@ contract SettlementQueueLibTest is Test {
 
     // ── queue: sync / peekRoot / settlementBorrowers ──
 
+    /// @dev sync enqueues live positions keyed by borrowShares/collateral (riskiest at root), removes on zero
+    ///      collateral, and re-keys an existing borrower in place without inserting a duplicate.
     function test_sync_enqueuesRemovesRekeys() public {
         // risk key = borrowShares/collateral; _b(1) riskier than _b(2)
         q.sync(_b(1), _pos(80, 100)); // ratio 0.8
@@ -169,6 +177,7 @@ contract SettlementQueueLibTest is Test {
         assertEq(q.size(), 1, "still one (re-key, not insert)");
     }
 
+    /// @dev A position synced with zero borrow shares (no debt) is removed from the queue.
     function test_sync_zeroBorrowShares_removes() public {
         q.sync(_b(1), _pos(50, 100));
         assertEq(q.size(), 1, "enqueued");
@@ -178,6 +187,7 @@ contract SettlementQueueLibTest is Test {
 
     // ── events ──
 
+    /// @dev setSettlementConfig emits SettlementConfigSet carrying the full config struct.
     function test_setSettlementConfig_emitsEvent() public {
         SettlementConfig memory expected =
             SettlementConfig({sliceFloorBps: 2_000, sliceFloorAssets: 5, fullCutBelowCollateral: 7, ltvStepBps: 1_000});
@@ -186,6 +196,7 @@ contract SettlementQueueLibTest is Test {
         q.setSettlementConfig(expected);
     }
 
+    /// @dev setSettlementLtv emits SettlementLtvSet with the borrower and the new LTV.
     function test_setSettlementLtv_emitsEvent() public {
         vm.expectEmit(true, false, false, true, address(q));
         emit SettlementLtvSet(_b(1), 0.4e18);
@@ -194,6 +205,7 @@ contract SettlementQueueLibTest is Test {
 
     // ── queue: truncation & re-key ordering ──
 
+    /// @dev Re-keying the root borrower to a lower risk ratio demotes it and promotes the next-riskiest to root.
     function test_sync_rekeyChangesRoot() public {
         q.sync(_b(1), _pos(50, 100)); // ratio 0.5
         q.sync(_b(2), _pos(40, 100)); // ratio 0.4 → b1 is root
@@ -207,20 +219,25 @@ contract SettlementQueueLibTest is Test {
 
     // ── sliceToLtv: closed form & boundaries ──
 
+    /// @dev A target LTV of 0 yields a slice equal to the full debt (cancel everything).
     function test_sliceToLtv_targetZero_isFullDebt() public {
         assertEq(q.sliceToLtv(80, 100, 0), 80, "target 0 cancels the full debt");
     }
 
+    /// @dev A target at or above WAD yields a zero slice.
     function test_sliceToLtv_targetAtOrAboveWad_isZero() public {
         assertEq(q.sliceToLtv(80, 100, WAD), 0, "target == WAD");
         assertEq(q.sliceToLtv(80, 100, WAD + 1), 0, "target > WAD");
     }
 
+    /// @dev A position already at or below the target LTV yields a zero slice.
     function test_sliceToLtv_atOrBelowTarget_isZero() public {
         // debt·WAD (50e18) <= target·collat (0.6·100 = 60e18) -> already below target -> 0
         assertEq(q.sliceToLtv(50, 100, 0.6e18), 0, "already at/below target");
     }
 
+    /// @dev The slice matches the closed form Δ=(debt·WAD−ltv·collat)/(WAD−ltv) and drives post-cut LTV to
+    /// target.
     function test_sliceToLtv_closedForm() public {
         // debt 80, collat 100, target 0.5: Δ = (80 − 0.5·100)/(1−0.5) = 30/0.5 = 60
         uint256 got = q.sliceToLtv(80, 100, 0.5e18);
@@ -230,12 +247,14 @@ contract SettlementQueueLibTest is Test {
         assertEq((80 - got) * WAD / (100 - got), 0.5e18, "post-cut LTV == target");
     }
 
+    /// @dev When collateral < debt (LTV>1) the closed-form slice can exceed debt and is returned unclamped.
     function test_sliceToLtv_collatBelowDebt_canExceedDebt_unclamped() public {
         // LTV > 1 (collat 50 < debt 100): Δ = (100 − 0.5·50)/0.5 = 75/0.5 = 150 > debt -> NOT clamped here
         uint256 got = q.sliceToLtv(100, 50, 0.5e18);
         assertEq(got, 150, "unclamped above debt (150 > debt 100; clamp lives in callers)");
     }
 
+    /// @dev At the equality debt·WAD == target·collat the slice is 0; just below target it is the exact floored cut.
     function test_sliceToLtv_boundaryEquality() public {
         // debt·WAD (60e18) == target·collat (0.6·100=60e18) -> `<=` returns 0
         assertEq(q.sliceToLtv(60, 100, 0.6e18), 0, "equality -> 0");
@@ -244,6 +263,7 @@ contract SettlementQueueLibTest is Test {
         assertEq(q.sliceToLtv(60, 100, 0.5e18), 20, "below target -> exact closed-form cut");
     }
 
+    /// @dev Across fuzzed inputs the slice equals the floored recompute and post-cut LTV never overshoots the target.
     function testFuzz_sliceToLtv_matchesRecompute_andNoOvershoot(uint256 debt, uint256 collat, uint256 target) public {
         // Bound to avoid `debt*WAD` / `target*collat` overflow while keeping non-trivial magnitudes.
         debt = bound(debt, 0, 1e30);
@@ -259,6 +279,7 @@ contract SettlementQueueLibTest is Test {
         }
     }
 
+    /// @dev In the solvent domain, a lower target LTV yields a slice at least as large as a higher target.
     function testFuzz_sliceToLtv_monotonicInTarget(uint256 debt, uint256 collat, uint256 tLow, uint256 tHigh) public {
         debt = bound(debt, 1, 1e30);
         collat = bound(collat, debt, 1e30); // solvent domain (debt <= collat): settle targets solvent positions
@@ -271,11 +292,14 @@ contract SettlementQueueLibTest is Test {
 
     // ── queue: sync / peekRoot / settlementBorrowers ──
 
+    /// @dev An empty queue peeks the zero address and reports size 0.
     function test_peekRoot_empty_isZeroAddress() public {
         assertEq(q.peekRoot(), address(0), "empty queue peeks zero");
         assertEq(q.size(), 0, "empty");
     }
 
+    /// @dev settlementBorrowers lists borrowers in descending risk order and honours offset/maxCount pagination
+    ///      (offset past the end or a zero maxCount returns an empty page).
     function test_settlementBorrowers_pagination() public {
         q.sync(_b(1), _pos(90, 100)); // 0.9 riskiest
         q.sync(_b(2), _pos(60, 100)); // 0.6
@@ -300,6 +324,7 @@ contract SettlementQueueLibTest is Test {
     // ── allowedSlice: max-of-rules, floor only for the root, debt clamp, dust lift ──
     // Non-parity price (1.5e36) and non-1:1 shares isolate the slice logic while keeping values non-round.
 
+    /// @dev An oversized floor for the root borrower is clamped down to the borrower's debt.
     function test_allowedSlice_cappedAtDebt() public {
         // Root borrower, huge floor -> cut is clamped to the debt.
         q.setSettlementConfig(
@@ -316,6 +341,20 @@ contract SettlementQueueLibTest is Test {
         assertEq(slice, 100, "clamped to debt");
     }
 
+    /// @dev The absolute floor (`sliceFloorAssets`) can win the slice max and is returned UNCLAMPED when it is
+    ///      the largest term yet still below the borrower's debt — a floor branch the other tests miss (they only
+    ///      set `sliceFloorAssets` large enough to clamp to debt). ltvStep is disabled to isolate the abs term.
+    function test_allowedSlice_absoluteFloorWins_belowDebt() public {
+        q.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 100, sliceFloorAssets: 900, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        );
+        q.sync(_b(1), _pos(1_000, 1_000)); // root; debtAssets == 1000, collateralValue = 1500 at price 1.5e36
+        // bps term = 1% of debt = 10; abs floor 900 is the largest term and < debt (1000) -> returned as-is.
+        uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(1_000, 1_000));
+        assertEq(slice, 900, "absolute floor wins, returned unclamped (below debt)");
+    }
+
+    /// @dev A non-root borrower without a settlement-LTV opt-in gets neither floor nor cut (slice 0).
     function test_allowedSlice_nonRoot_getsNoFloor() public {
         // Two borrowers; _b(1) is riskier (root). A non-root borrower with NO settlement-LTV opt-in gets
         // neither the root cut nor a settlement cut -> allowedSlice is 0 (floor terms apply to root only).
@@ -328,6 +367,7 @@ contract SettlementQueueLibTest is Test {
         assertEq(slice, 0, "non-root without opt-in gets no floor and no cut");
     }
 
+    /// @dev The root borrower receives the bps debt-fraction floor when no larger term applies.
     function test_allowedSlice_root_getsFloor() public {
         q.setSettlementConfig(
             SettlementConfig({
@@ -344,6 +384,7 @@ contract SettlementQueueLibTest is Test {
 
     // ── allowedSlice: productive policy branches (settlement-LTV cut, LTV-step term, dust lift) ──
 
+    /// @dev A non-root borrower's settlement-LTV opt-in produces the sliceToLtv cut against its collateral value.
     function test_allowedSlice_settlementLtvCut_appliesToNonRoot() public {
         _setFloor(0, 0); // kill the root-cut floor terms so only the settlement-LTV cut can show
         q.sync(_b(1), _pos(90, 100)); // root (riskier)
@@ -355,6 +396,7 @@ contract SettlementQueueLibTest is Test {
         assertEq(slice, 7, "exact");
     }
 
+    /// @dev For the root borrower the LTV-step term (current LTV minus the step) beats the debt-fraction floor.
     function test_allowedSlice_ltvStepTerm_winsForRoot() public {
         // Root, 10% LTV step, negligible debt-fraction floor → the LTV-step term is the root cut.
         q.setSettlementConfig(
@@ -368,6 +410,8 @@ contract SettlementQueueLibTest is Test {
         assertEq(slice, _expectedSlice(80, 150, target), "root cut is exactly the LTV-step term (beats the floor)");
     }
 
+    /// @dev The dust lift uses a strict `<`: remaining == threshold does not lift, remaining < threshold lifts to
+    ///      the full debt.
     function test_allowedSlice_dustLift_boundary() public {
         // partial slice = 20% of debt(100) = 20 loan; seized = 20·1e36/1.5e36 = 13 collateral; remaining = 87.
         // The lift uses a strict `<`, so remaining == threshold does NOT lift; threshold one higher does.
@@ -380,6 +424,7 @@ contract SettlementQueueLibTest is Test {
         assertEq(q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 100)), 100, "remaining<threshold: lift to debt");
     }
 
+    /// @dev A zero fullCutBelowCollateral disables the dust lift entirely.
     function test_allowedSlice_fullCutZero_neverLifts() public {
         _setFloor(2_000, 0);
         q.sync(_b(1), _pos(100, 100));
@@ -388,6 +433,7 @@ contract SettlementQueueLibTest is Test {
 
     // ── queue: truncation & re-key ordering ──
 
+    /// @dev When offset+maxCount exceeds size the page truncates to the remaining (size-offset) entries.
     function test_settlementBorrowers_truncatesTail() public {
         q.sync(_b(1), _pos(90, 100));
         q.sync(_b(2), _pos(60, 100));
