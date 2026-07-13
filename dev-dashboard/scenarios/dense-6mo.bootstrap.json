@@ -1,0 +1,118 @@
+[
+ {
+  "a": "deployCore"
+ },
+ {
+  "a": "deployToken",
+  "symbol": "WETH",
+  "decimals": 18
+ },
+ {
+  "a": "deployToken",
+  "symbol": "wstETH",
+  "decimals": 18
+ },
+ {
+  "a": "deployToken",
+  "symbol": "USDC",
+  "decimals": 6
+ },
+ {
+  "a": "deployToken",
+  "symbol": "USDY",
+  "decimals": 18
+ },
+ {
+  "a": "createMarket",
+  "loan": "WETH",
+  "collateral": "wstETH",
+  "price": "1.150000",
+  "lltv": "0.915",
+  "minActivation": "0.01"
+ },
+ {
+  "a": "createMarket",
+  "loan": "USDC",
+  "collateral": "USDY",
+  "price": "1.020000",
+  "lltv": "0.98",
+  "minActivation": "1"
+ },
+ {
+  "a": "watch",
+  "addresses": [
+   "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+   "0x0D7E71B0320007d758e40662a75D8B6c0f720b67",
+   "0x73933815D0ED675D1C67B941320F20A7C11Ae258",
+   "0x5fa03871539607b8639F94b567DA5E763D0c2C9d",
+   "0xb0E830FAFf8Ce1ABff66F39a98bFD095aE89B702",
+   "0xbA76Bb64f313b8aB32cE28e7b9e1d1c00C08f65c",
+   "0x5CeFd00D2c0D1bCcBbabE810C7FccF844bE57D0A",
+   "0xD577693cdD61D319085239fAdF2720205eCb3c80",
+   "0x2622B600a52fA9199A57B6a27493ebEb87ad5c7f",
+   "0x7950995188cE2F4Cc32Bb9e4e3fB231354c78156",
+   "0xAf70B17A8707789eB3cc0192b723439734B1248F",
+   "0x36586080478D8f66d7F6872b821D6442a6f6978A",
+   "0x0398A98347d3E5298B332dB05D2e2dC29Ddd00AD",
+   "0xFCb6E7AF00EB2870a3AC9cf231FECC150afC39F3",
+   "0x364a922220c92e165A5B48262e6f4Cf7014973e3",
+   "0xC231876E09Fa5658D9368ACA2819fd6Fa9675927",
+   "0x482FF23C3C79506Db0f1c4BD7Cf246050Afa9b62",
+   "0x08c60E0650C7B0A68825f48B79B34EB0B5AD783D",
+   "0x2614E7dE0dCb907b0D51B5F127Fd23d3C52177B4",
+   "0xc643bF484Cb86553B519863bD65Ce0Dda6F4e5ab",
+   "0x1B6d336886681A2abff25cc6eaE90a1c6ceD74C2",
+   "0xE83C8684c0Baf5761ce6bD5038471B9e3a52cbC4",
+   "0x1c73F51d675D67F4E345987A4ABCB8904634e675",
+   "0xaBda1D3136d6BF1184B6eFD7995668CA1A3Bf177"
+  ]
+ },
+ {
+  "a": "addGuardian",
+  "address": "0x0D7E71B0320007d758e40662a75D8B6c0f720b67",
+  "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+ },
+ {
+  "a": "addGuardian",
+  "address": "0x73933815D0ED675D1C67B941320F20A7C11Ae258",
+  "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+ },
+ {
+  "a": "addGuardian",
+  "address": "0x5fa03871539607b8639F94b567DA5E763D0c2C9d",
+  "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+ },
+ {
+  "a": "addGuardian",
+  "address": "0xb0E830FAFf8Ce1ABff66F39a98bFD095aE89B702",
+  "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+ },
+ {
+  "a": "setQuorum",
+  "n": 3,
+  "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+ },
+ {
+  "a": "setSuspectWindow",
+  "n": 604800,
+  "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+ },
+ {
+  "a": "selectMarket",
+  "index": 0
+ },
+ {
+  "a": "setSupplyCap",
+  "cap": "8000",
+  "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+ },
+ {
+  "a": "selectMarket",
+  "index": 1
+ },
+ {
+  "a": "setSupplyCap",
+  "cap": "8000000",
+  "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+ }
+]

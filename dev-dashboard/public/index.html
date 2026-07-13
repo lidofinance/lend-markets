@@ -1,0 +1,1247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lido Lend · dev console</title>
+<script src="ethers.min.js"></script>
+<style>
+  :root { color-scheme: dark; --bg:#0e1116; --panel:#161b22; --line:#2a313c; --fg:#d6deeb; --mut:#8b98ad; --acc:#6cb6ff; --ok:#57ab5a; --bad:#e5534b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  header b { color:var(--acc); font-size:14px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); display:inline-block; }
+  .dot.on { background:var(--ok); }
+  .bar { padding:6px 16px; border-bottom:1px solid var(--line); background:#12161c; display:flex; gap:10px; align-items:center; }
+  main { display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:14px; align-items:start; }
+  @media (max-width:900px){ main{ grid-template-columns:1fr; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
+  h2 { margin:0 0 10px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); }
+  label { display:block; color:var(--mut); margin:8px 0 3px; font-size:11px; }
+  input, select { width:100%; background:#0b0f14; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:6px 8px; font:inherit; }
+  .row { display:flex; gap:8px; align-items:flex-end; } .row > * { flex:1; }
+  /* rows that mix a labeled input with buttons: input grows, buttons stay compact and bottom-aligned */
+  .row:has(> input, > select, > div) > button { flex:0 0 auto; min-width:132px; margin-top:0; }
+  button { background:#20262e; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:7px 11px; font:inherit; cursor:pointer; margin-top:8px; }
+  button:hover { border-color:var(--acc); color:var(--acc); }
+  button.primary { background:var(--acc); color:#04121f; border-color:var(--acc); font-weight:600; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .tabs { display:flex; gap:4px; margin-bottom:0; position:relative; z-index:1; }
+  .tabs button { margin:0; border-radius:6px 6px 0 0; border-bottom-color:transparent; }
+  .tabs button.active { background:var(--acc); color:#04121f; border-color:var(--acc); }
+  .tab, .ptab { display:none; }
+  .tab.show, .ptab.show { display:block; border:1px solid var(--line); border-radius:0 8px 8px 8px; padding:13px 14px; background:#12161c; }
+  .card { border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#12161c; margin-top:10px; }
+  .card-t { color:var(--acc); text-transform:uppercase; font-size:11px; letter-spacing:.06em; font-weight:700; margin-bottom:9px; }
+  .gt { margin:0; padding:6px 16px; text-transform:uppercase; letter-spacing:.05em; font-size:12px; }
+  .gt.active { background:var(--acc); color:#04121f; border-color:var(--acc); font-weight:700; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:12px; }
+  .kv span:nth-child(odd){ color:var(--mut); } .kv span:nth-child(even){ overflow:auto; }
+  .addr { cursor:pointer; } .addr:hover { color:var(--acc); }
+  .list { font-size:12px; } .list div { padding:2px 0; border-bottom:1px solid #1e242c; }
+  #log { background:#0b0f14; border:1px solid var(--line); border-radius:6px; padding:8px; height:150px; overflow:auto; white-space:pre-wrap; font-size:11.5px; }
+  .log-ok{color:var(--ok)} .log-bad{color:var(--bad)} .log-mut{color:var(--mut)}
+  .full { grid-column:1 / -1; }
+  small{color:var(--mut)}
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th,td { text-align:right; padding:3px 9px; border-bottom:1px solid #1e242c; white-space:nowrap; }
+  th { color:var(--mut); font-weight:600; text-transform:uppercase; font-size:10.5px; letter-spacing:.04em; }
+  td:first-child, th:first-child { text-align:left; }
+  .ev { padding-bottom:9px; } /* small gap between decoded/undecoded events in the tx detail */
+  .hexval { display:inline-block; max-width:min(760px,70vw); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; cursor:pointer; }
+  .hexval.wrap { max-width:none; white-space:normal; word-break:break-all; }
+</style>
+</head>
+<body>
+<header>
+  <b>Lido Lend · dev console</b>
+  <span><span id="nodeDot" class="dot"></span> node <span id="nodeMode" class="log-mut">—</span></span>
+  <span>rpc: <input id="rpc" value="http://127.0.0.1:8545" style="width:200px;display:inline-block" /></span>
+  <span>signer: <select id="signer" style="width:300px;display:inline-block"></select></span>
+  <button id="connectBtn">connect</button>
+  <span>· impersonate: <input id="impAddr" placeholder="0x…" style="width:180px;display:inline-block" /></span>
+  <button id="impersonateBtn">as</button>
+  <button id="unimpersonateBtn">use key</button>
+</header>
+<div class="bar">
+  <span>active market:</span>
+  <select id="activeMarket" style="width:420px"></select>
+  <span id="coreBadge" class="log-mut">core: —</span>
+</div>
+<div class="bar" style="gap:6px">
+  <button class="gt active" data-group="network">network</button>
+  <button class="gt" data-group="protocol">protocol</button>
+  <button class="gt" data-group="market">market</button>
+  <button class="gt" data-group="script">script</button>
+  <button class="gt" data-group="txs">txs</button>
+</div>
+
+<main>
+  <section data-group="network">
+    <h2>node</h2>
+    <div class="row">
+      <button id="startLocal" class="primary">start local anvil</button>
+      <button id="startFork">start fork</button>
+      <button id="stopNode">stop</button>
+    </div>
+    <label>fork rpc url (mainnet, for fork mode)</label>
+    <input id="forkUrl" placeholder="https://…" />
+    <div class="row"><button id="snapshotBtn">snapshot</button><button id="revertBtn">revert to snapshot</button></div>
+    <small>snapshot saves chain state; revert restores it, then re-snapshots so you can revert again.</small>
+    <div id="nodeInfo" class="kv" style="margin-top:10px"></div>
+  </section>
+
+  <section data-group="network">
+    <h2>time & blocks</h2>
+    <div class="row"><div><label>advance time (seconds)</label><input id="dt" value="86400" /></div><button id="warpBtn">warp + mine</button></div>
+    <div class="row"><div><label>mine N blocks</label><input id="nBlocks" value="1" /></div><button id="mineBtn">mine</button></div>
+    <div class="row"><div><label>set next block timestamp (unix)</label><input id="nextTs" placeholder="e.g. 1893456000" /></div><button id="setTsBtn">set + mine</button></div>
+    <div class="row"><button id="freezeBtn">freeze (automine off)</button><button id="resumeBtn">resume (automine on)</button></div>
+    <div class="row"><div><label>block interval (sec) — spacing for mine / warp / self-mining</label><input id="mineInterval" value="12" /></div><button id="setIntervalBtn">interval-mine on/off</button></div>
+    <small>each block advances time by the block interval: "mine N" moves +interval·N, "warp" mines dt/interval blocks. by default anvil mines only on a tx; "interval-mine" makes it self-advance every interval sec (set 0 to stop); freeze stops everything — no blocks, time frozen.</small>
+    <div id="chainInfo" class="kv" style="margin-top:10px"></div>
+  </section>
+
+  <section data-group="network">
+    <h2>seed addresses</h2>
+    <label>recipient</label><input id="seedTo" placeholder="0x… (defaults to signer)" />
+    <label>token</label>
+    <select id="seedToken"></select>
+    <input id="seedCustom" placeholder="0x… any ERC20 address (fork/real token)" style="display:none;margin-top:4px" />
+    <div class="row">
+      <div><label>amount (whole)</label><input id="seedAmt" value="1000" /></div>
+      <div><label>balanceOf slot (auto if blank)</label><input id="seedSlot" placeholder="auto" /></div>
+    </div>
+    <div class="row">
+      <button id="mintBtn">mint (mock only)</button>
+      <button id="dealBtn" class="primary">set balance (any token)</button>
+    </div>
+    <small>set balance writes storage directly (deal) — works for any ERC20, incl. fork tokens without mint.</small>
+    <div class="row" style="margin-top:8px">
+      <div><label>set ETH balance (whole ETH)</label><input id="ethAmt" value="100" /></div>
+      <button id="setEthBtn">set ETH</button>
+    </div>
+  </section>
+
+  <section data-group="protocol">
+    <h2>deploy core</h2>
+    <small>The core is a singleton — one core hosts many markets.</small>
+    <button id="deployCoreBtn" class="primary">deploy core</button>
+    <div id="coreInfo" class="kv" style="margin-top:10px"></div>
+  </section>
+
+  <section data-group="protocol">
+    <h2>mock tokens</h2>
+    <div class="row">
+      <div><label>symbol</label><input id="tokSymbol" value="WETH" /></div>
+      <div><label>decimals</label><input id="tokDecimals" value="18" /></div>
+    </div>
+    <button id="deployTokenBtn" class="primary">deploy mock token</button>
+    <div id="tokenList" class="list" style="margin-top:10px"></div>
+  </section>
+
+  <section data-group="protocol">
+    <h2>create market</h2>
+    <label>loan token</label>
+    <select id="loanSel"></select>
+    <input id="loanCustom" placeholder="0x… custom loan address" style="display:none;margin-top:4px" />
+    <label>collateral token</label>
+    <select id="collSel"></select>
+    <input id="collCustom" placeholder="0x… custom collateral address" style="display:none;margin-top:4px" />
+    <div class="row">
+      <div><label>oracle price (loan per 1 collateral)</label><input id="oraclePrice" value="2" /></div>
+      <div><label>lltv (0–1)</label><input id="lltv" value="0.8" /></div>
+    </div>
+    <label>min activation amount (tokens)</label><input id="minActivation" value="10" />
+    <button id="createMarketBtn" class="primary">create market</button>
+    <div id="marketList" class="list" style="margin-top:10px"></div>
+  </section>
+
+  <section data-group="market" style="order:4">
+    <h2>oracle price (active market)</h2>
+    <div id="curPrice" class="kv" style="margin-bottom:8px"></div>
+    <label>new price (loan per 1 collateral)</label><input id="newPrice" placeholder="e.g. 1.5" />
+    <button id="setPriceBtn" class="primary">set oracle price</button>
+    <div class="row"><div><label>bump %</label><input id="bumpPct" value="10" /></div><button id="bumpUpBtn">+%</button><button id="bumpDownBtn">−%</button><button id="crashBtn">crash −50%</button></div>
+  </section>
+
+  <section data-group="market" style="order:5">
+    <h2>market control (active)</h2>
+    <div class="row"><button id="freezeMktBtn">freeze</button><button id="unfreezeMktBtn">unfreeze</button></div>
+    <div class="row"><div><label>pause duration (sec)</label><input id="pauseDur" value="3600" /></div><button id="pauseMktBtn">pause for</button><button id="resumeMktBtn">resume</button></div>
+    <small>freeze blocks new borrows &amp; debt-bearing exits (debt-free exits still ok); pause blocks all hooks and zeroes deposit/withdraw limits.</small>
+    <div id="mktCtl" class="kv" style="margin-top:10px"></div>
+  </section>
+
+  <section data-group="market" style="order:6">
+    <h2>guardian (active market)</h2>
+    <label>account (borrower) — every action & the status below target this address</label>
+    <div class="row"><input id="gAccount" placeholder="0x… borrower to flag / ban / inspect" /><button id="gMeBtn">current actor</button></div>
+    <div class="row"><button id="flagBtn">flag</button><button id="unflagBtn">unflag</button></div>
+    <div class="row"><button id="suspectBtn">suspect</button><button id="unsuspectBtn">unsuspect</button></div>
+    <div class="row"><button id="banBtn">ban</button><button id="unbanBtn">unban</button></div>
+    <small>flag reaching quorum latches a ban; ban is a direct hard-stop. flag/suspect submit the last-scanned block (latest−1 + its real hash) as proof-of-scan.</small>
+    <h2 style="margin-top:14px; text-transform:none; letter-spacing:0">committee <small>(project-wide, shared by all markets)</small></h2>
+    <div id="gCommittee" class="kv" style="margin:6px 0 10px"></div>
+    <div class="row"><div><label>guardian address</label><input id="gGuardian" placeholder="0x…" /></div><button id="addGuardianBtn">add</button><button id="removeGuardianBtn">remove</button></div>
+    <div class="row"><div><label>quorum</label><input id="gQuorum" value="1" /></div><button id="setQuorumBtn">set quorum</button></div>
+    <div class="row"><div><label>suspect window (sec)</label><input id="gWindow" value="0" /></div><button id="setWindowBtn">set window</button></div>
+    <div id="gStatus" class="kv" style="margin-top:10px"></div>
+  </section>
+
+  <section class="full" data-group="market" style="order:2">
+    <h2>participants (active market)</h2>
+    <div class="row">
+      <div style="flex:2"><label>watch address</label><input id="watchAddr" placeholder="0x… add an address to the table" /></div>
+      <button id="watchAddBtn">watch</button>
+      <button id="watchMeBtn">watch actor</button>
+      <button id="watchResetBtn">reset to dev accts</button>
+      <button id="refreshParticipants">refresh</button>
+    </div>
+    <div id="participants" style="overflow-x:auto;margin-top:10px"></div>
+  </section>
+
+  <section data-group="market" style="order:3">
+    <h2>market state (active)</h2>
+    <div class="row"><button id="refreshState">refresh</button><button id="exportBtn">export deploy (json)</button></div>
+    <div id="mktAddrs" class="kv" style="margin-top:10px"></div>
+    <div id="stateInfo" class="kv" style="margin-top:10px"></div>
+  </section>
+
+  <section class="full" data-group="market" style="order:0">
+    <h2>market overview (active) — counters via expectedMarketBalances (interest accrued)</h2>
+    <div id="marketOverview" class="kv"></div>
+  </section>
+
+  <section class="full" data-group="market" style="order:1">
+    <h2>protocol actions (active market) — acts as <span id="curActor" style="color:var(--acc)">—</span></h2>
+    <div class="row" style="margin-bottom:10px">
+      <div style="flex:2"><label>actor</label><input id="actorInput" placeholder="0x… address to act as" /></div>
+      <button id="actAsBtn">act as</button>
+      <button id="useKeyBtn2">use signer key</button>
+    </div>
+    <div class="tabs">
+      <button data-ptab="lender" class="active">lender</button>
+      <button data-ptab="borrower">borrower</button>
+      <button data-ptab="keeper">keeper</button>
+    </div>
+    <div id="ptab-lender" class="ptab show">
+      <label>— via vault (ERC-4626) —</label>
+      <div class="row"><div><label>deposit assets (whole loan)</label><input id="depAssets" value="1000" /></div><button id="depositBtn" class="primary">deposit → vault</button></div>
+      <div class="row"><div><label>withdraw assets (whole loan)</label><input id="wdAssets" value="1000" /></div><button id="withdrawBtn">withdraw ← vault</button><button id="withdrawMaxBtn">withdraw max</button></div>
+      <div class="row"><div><label>redeem shares</label><input id="redShares" value="100" /></div><button id="redeemBtn">redeem</button></div>
+      <div class="row"><div><label>fallback-exit shares</label><input id="feShares" value="100" /></div><div><label>max iterations</label><input id="feIters" value="10" /></div><button id="fallbackExitBtn">fallback exit</button></div>
+      <small>fallback exit force-redeems your shares by walking borrowers when a normal withdraw can't fill (illiquid market); max iterations bounds the walk.</small>
+      <label style="margin-top:12px">— directly to core (Morpho supply) —</label>
+      <div class="row"><div><label>supply assets (whole loan)</label><input id="csAssets" value="1000" /></div><button id="coreSupplyBtn" class="primary">supply → core</button></div>
+      <div class="row"><div><label>withdraw assets (whole loan)</label><input id="cwAssets" value="1000" /></div><button id="coreWithdrawBtn">withdraw ← core</button><button id="coreWithdrawAllBtn">withdraw all</button></div>
+    </div>
+    <div id="ptab-borrower" class="ptab">
+      <div class="row"><div><label>collateral (whole)</label><input id="collAmt" value="10" /></div><button id="supplyCollBtn" class="primary">supply collateral</button></div>
+      <div class="row"><div><label>borrow (whole loan)</label><input id="borrowAmt" value="1000" /></div><button id="borrowBtn" class="primary">borrow</button></div>
+      <div class="row"><div><label>repay (whole loan)</label><input id="repayAmt" value="1000" /></div><button id="repayAmtBtn">repay</button><button id="repayBtn">repay all</button></div>
+      <div class="row"><div><label>withdraw collateral (whole)</label><input id="wcollAmt" value="10" /></div><button id="wcollBtn">withdraw collateral</button></div>
+      <small>collateral must mature before borrow: warp past max activation delay (time panel), or grant instant activation below.</small>
+    </div>
+    <div id="ptab-keeper" class="ptab">
+      <label>borrower</label><input id="liqBorrower" placeholder="0x…" />
+      <div class="row"><div><label>seize collateral (whole)</label><input id="seizeAmt" value="1" /></div><button id="liquidateBtn">liquidate (by seized)</button></div>
+      <small>keeper repays debt in loan token (auto-approved). bad debt is just the outcome when the position is fully wiped.</small>
+    </div>
+  </section>
+
+  <section data-group="market" style="order:7">
+    <h2>controller config (active market)</h2>
+    <div class="row"><div><label>supply cap (whole loan, 0=unlimited)</label><input id="supplyCap" value="0" /></div><button id="setCapBtn">set supply cap</button></div>
+    <div class="row"><div><label>instant-activation caller</label><input id="iaCaller" placeholder="0x… (defaults to signer)" /></div><button id="grantIaBtn">grant</button><button id="revokeIaBtn">revoke</button></div>
+    <div class="row"><div><label>my settlement ltv (0–1)</label><input id="setLtv" value="0.7" /></div><button id="setLtvBtn">set settlement ltv</button></div>
+    <label style="margin-top:12px">settlement config</label>
+    <div class="row">
+      <div><label>sliceFloorBps</label><input id="scFloorBps" value="100" /></div>
+      <div><label>sliceFloorAssets</label><input id="scFloorAssets" value="10e18" /></div>
+      <div><label>fullCutBelowColl</label><input id="scFullCut" value="10e18" /></div>
+      <div><label>ltvStepBps</label><input id="scLtvStep" value="100" /></div>
+    </div>
+    <button id="setSetCfgBtn">set settlement config</button>
+    <label style="margin-top:12px">collateral activation config</label>
+    <div class="row">
+      <div><label>minDelay (s)</label><input id="acMinDelay" value="600" /></div>
+      <div><label>maxDelay (s)</label><input id="acMaxDelay" value="7200" /></div>
+      <div><label>maxInflow</label><input id="acMaxInflow" value="10000e18" /></div>
+    </div>
+    <div class="row">
+      <div><label>lockAmount</label><input id="acLockAmt" value="0" /></div>
+      <div><label>lockDuration (s)</label><input id="acLockDur" value="0" /></div>
+      <div><label>minAmount</label><input id="acMinAmt" value="10e18" /></div>
+    </div>
+    <div class="row">
+      <div><label>quorumDelay (s)</label><input id="acQuorumDelay" value="0" /></div>
+      <div><label>perStrike (s)</label><input id="acPerStrike" value="7200" /></div>
+      <div><label>perSuspect (s)</label><input id="acPerSuspect" value="0" /></div>
+    </div>
+    <button id="setCacBtn">set activation config</button>
+  </section>
+
+  <section data-group="market" style="order:8">
+    <h2>IRM curve (active market)</h2>
+    <div class="row">
+      <div><label>curveSteepness</label><input id="cvSteep" value="4e18" /></div>
+      <div><label>adjustmentSpeed</label><input id="cvAdj" value="1585489599" /></div>
+      <div><label>targetUtil</label><input id="cvTarget" value="9e17" /></div>
+    </div>
+    <div class="row">
+      <div><label>initialRate</label><input id="cvInit" value="1268391679" /></div>
+      <div><label>minRate</label><input id="cvMin" value="31709791" /></div>
+      <div><label>maxRate</label><input id="cvMax" value="63419583690" /></div>
+    </div>
+    <div class="row">
+      <div><label>maxBorrowRate (0=off)</label><input id="cvMaxBorrow" value="0" /></div>
+      <button id="setCurveBtn" class="primary">set curve params</button>
+    </div>
+    <small>adjustmentSpeed=0 freezes rate adaptation; rates are WAD per-second. supports Ne18 shorthand.</small>
+  </section>
+
+  <section class="full" data-group="script">
+    <h2>script — paste / edit a scenario, then run it</h2>
+    <textarea id="scriptInput" spellcheck="false" placeholder='[ {"a":"deposit","amount":"1000","from":"0x…"} ]' style="width:100%;height:220px;background:#0b0f14;border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:8px;font:12px/1.5 ui-monospace,Menlo,monospace;resize:vertical"></textarea>
+    <div class="row">
+      <button id="runScriptBtn" class="primary">▶ run script</button>
+      <select id="scriptSelect" title="load from the scenarios folder" style="max-width:230px"><option value="">— scenarios/ —</option></select>
+      <input type="file" id="scriptFilePick" accept=".json,application/json" style="display:none" />
+      <button id="scriptLoadBtn">📁 load file</button>
+      <button id="histToInputBtn">history → input</button>
+      <button id="clearInputBtn">clear input</button>
+    </div>
+    <small>each step: <code>{"a":"&lt;action&gt;", …params, "from":"0x…"}</code>. running a step executes it AND appends it to history below; <code>from</code> = acting account (impersonated per step). stops on the first failing step.</small>
+
+    <div style="margin-top:14px;padding:10px;border:1px solid var(--line);border-radius:6px;background:#0b0f14">
+      <b>run in node (fast)</b> — for a big scenario, run the heavy activity in node against this same chain (the browser is ~40× slower: it slot-probes on every fund and POSTs history per step). Deploy first by running a <code>*.bootstrap.json</code> above, then run the matching <code>*.activity.json</code> here:
+      <div class="row" style="margin-top:8px">
+        <select id="scenSelect" title="pick from the scenarios folder" style="max-width:230px"><option value="">— scenarios/ —</option></select>
+        <input id="scenFile" value="dev-dashboard/scenarios/dense-6mo.activity.json" style="flex:1" />
+        <input type="file" id="scenFilePick" accept=".json,application/json" style="display:none" />
+        <button id="scenPickBtn">📁 file</button>
+        <button id="scenRunBtn" class="primary">▶ run in node</button>
+        <button id="scenStopBtn">stop</button>
+      </div>
+      <textarea id="scenLog" readonly spellcheck="false" style="width:100%;height:150px;margin-top:8px;background:#06090d;border:1px solid var(--line);color:var(--mut);border-radius:6px;padding:8px;font:12px/1.5 ui-monospace,Menlo,monospace;resize:vertical"></textarea>
+    </div>
+
+    <h2 style="margin-top:18px">history — executed actions (read-only, saved on the server)</h2>
+    <div class="row">
+      <button id="histClearBtn">clear (archive)</button>
+      <button id="histCopyBtn">copy</button>
+      <button id="histExportBtn">download .json</button>
+    </div>
+    <textarea id="historyBox" readonly spellcheck="false" style="width:100%;height:260px;margin-top:8px;background:#0b0f14;border:1px solid var(--line);color:var(--mut);border-radius:6px;padding:8px;font:12px/1.5 ui-monospace,Menlo,monospace;resize:vertical"></textarea>
+    <div id="historyArchive" class="list" style="margin-top:8px"></div>
+  </section>
+
+  <section class="full" data-group="txs">
+    <h2>transactions — node tx history (click a tx to inspect)</h2>
+    <div class="row"><div style="flex:2"><label>inspect any tx by hash</label><input id="txHashInput" placeholder="0x… tx hash (paste from anywhere)" /></div><button id="inspectTxBtn" class="primary">inspect</button><button id="refreshTxs">refresh list</button></div>
+    <small>the list is the node's whole tx history (newest first, by block); known txs are labelled (deploy steps / your actions), the rest show <code>·</code>. or paste any hash above. click for status, gas, calldata and decoded events.</small>
+    <div style="display:grid;grid-template-columns:minmax(220px,360px) 1fr;gap:14px;margin-top:10px;align-items:start">
+      <div id="txList" class="list" style="max-height:560px;overflow:auto"></div>
+      <div id="txDetail" class="kv"></div>
+    </div>
+  </section>
+
+  <section class="full" data-group="always" style="order:99">
+    <h2>log</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const E = window.ethers;
+let provider, signer, accounts = [];
+let core = null, guardianSignals = null, tokens = [], markets = [];
+
+const ERC20 = ["function mint(address,uint256)","function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)","function approve(address,uint256) returns (bool)","function allowance(address,address) view returns (uint256)"];
+const MP = "(address,address,address,address,uint256)"; // MarketParams: loan,collateral,oracle,irm(router),lltv
+const VAULT4626 = ["function deposit(uint256,address) returns (uint256)","function mint(uint256,address) returns (uint256)","function withdraw(uint256,address,address) returns (uint256)","function redeem(uint256,address,address) returns (uint256)","function fallbackExit(uint256,address,address,uint256)","function settle(uint256,address[],address,address)","function maxWithdraw(address) view returns (uint256)","function balanceOf(address) view returns (uint256)"];
+const MORPHO = ["function supply("+MP+",uint256,uint256,address,bytes) returns (uint256,uint256)","function withdraw("+MP+",uint256,uint256,address,address) returns (uint256,uint256)","function supplyCollateral("+MP+",uint256,address,bytes)","function borrow("+MP+",uint256,uint256,address,address) returns (uint256,uint256)","function repay("+MP+",uint256,uint256,address,bytes) returns (uint256,uint256)","function withdrawCollateral("+MP+",uint256,address,address)","function liquidate("+MP+",address,uint256,uint256,bytes) returns (uint256,uint256)","function position(bytes32,address) view returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral)"];
+const CTLCFG = ["function setSupplyCap(uint256)","function setSettlementConfig((uint16,uint96,uint96,uint16))","function setCollateralActivationConfig((uint40,uint40,uint128,uint128,uint40,uint128,uint40,uint40,uint40))","function grantInstantActivation(address)","function revokeInstantActivation(address)","function setSettlementLtv(uint256)"];
+const ADAPTIVE = ["function setMarketCurveParams("+MP+",(int256,int256,int256,int256,int256,int256,uint256))"];
+const IRMVIEW = ["function borrowRateView("+MP+",(uint128,uint128,uint128,uint128,uint128,uint128)) view returns (uint256)"];
+const POSITION = ["function positionOf(address) view returns (tuple(uint256 active,uint256 activating,uint256 dust,uint256 unlockTime,uint256 flagCount,bool banned,uint256 debtAssets,uint256 settlementLtv,bool isNextToSettle,uint256 slice))"];
+const VAULTBAL = ["function balanceOf(address) view returns (uint256)","function convertToAssets(uint256) view returns (uint256)"];
+
+// Custom-error dictionary — so a revert decodes to a name (e.g. InsufficientActiveCollateral())
+// instead of raw bytes like 0x4c3de575. Regenerate from the forge artifacts after changing errors:
+//   forge build && node dev-dashboard/tools/gen-error-abi.js
+const PROTOCOL_ERRORS = [
+  "error Abdicated()",
+  "error AbsoluteCapExceeded()",
+  "error AbsoluteCapNotDecreasing()",
+  "error AbsoluteCapNotIncreasing()",
+  "error AccessControlBadConfirmation()",
+  "error AccessControlUnauthorizedAccount(address account, bytes32 neededRole)",
+  "error AddressBanned()",
+  "error AddressEmptyCode(address target)",
+  "error AlreadyGuardian()",
+  "error ApproveReturnedFalse()",
+  "error ApproveReverted()",
+  "error AssetsOutBelowMin()",
+  "error AuthorizationMustGrant()",
+  "error AutomaticallyTimelocked()",
+  "error BadQuorum()",
+  "error BlockInTheFuture()",
+  "error BorrowBelowDustMarketMinimum(uint256 minimum, uint256 attempted)",
+  "error CallerNotAuthorizer()",
+  "error CannotReceiveAssets()",
+  "error CannotReceiveShares()",
+  "error CannotSendAssets()",
+  "error CannotSendShares()",
+  "error CastOverflow()",
+  "error ControllerMarketMismatch()",
+  "error DataAlreadyPending()",
+  "error DataNotTimelocked()",
+  "error DeadlineInPast()",
+  "error DeadlineTooFar()",
+  "error ERC1155InsufficientBalance(address sender, uint256 balance, uint256 needed, uint256 tokenId)",
+  "error ERC1155InvalidApprover(address approver)",
+  "error ERC1155InvalidArrayLength(uint256 idsLength, uint256 valuesLength)",
+  "error ERC1155InvalidOperator(address operator)",
+  "error ERC1155InvalidReceiver(address receiver)",
+  "error ERC1155InvalidSender(address sender)",
+  "error ERC1155MissingApprovalForAll(address operator, address owner)",
+  "error ERC1967InvalidAdmin(address admin)",
+  "error ERC1967InvalidBeacon(address beacon)",
+  "error ERC1967InvalidImplementation(address implementation)",
+  "error ERC1967NonPayable()",
+  "error ERC1967ProxyUninitialized()",
+  "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
+  "error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)",
+  "error ERC20InvalidApprover(address approver)",
+  "error ERC20InvalidReceiver(address receiver)",
+  "error ERC20InvalidSender(address sender)",
+  "error ERC20InvalidSpender(address spender)",
+  "error ERC4626ExceededMaxDeposit(address receiver, uint256 assets, uint256 max)",
+  "error ERC4626ExceededMaxMint(address receiver, uint256 shares, uint256 max)",
+  "error ERC4626ExceededMaxRedeem(address owner, uint256 shares, uint256 max)",
+  "error ERC4626ExceededMaxWithdraw(address owner, uint256 assets, uint256 max)",
+  "error ERC721IncorrectOwner(address sender, uint256 tokenId, address owner)",
+  "error ERC721InsufficientApproval(address operator, uint256 tokenId)",
+  "error ERC721InvalidApprover(address approver)",
+  "error ERC721InvalidOperator(address operator)",
+  "error ERC721InvalidOwner(address owner)",
+  "error ERC721InvalidReceiver(address receiver)",
+  "error ERC721InvalidSender(address sender)",
+  "error ERC721NonexistentToken(uint256 tokenId)",
+  "error EmptyBorrowers()",
+  "error EmptyHeap()",
+  "error EthSenderNotWeth()",
+  "error EtherTransferFailed()",
+  "error ExceededBalance(address owner, uint256 shares, uint256 balance)",
+  "error FailedCall()",
+  "error FailedDeployment()",
+  "error FeeInvariantBroken()",
+  "error FeeRecipientRequired()",
+  "error FeeTooHigh()",
+  "error HeartbeatTimestampRegressed()",
+  "error IndexOutOfBounds()",
+  "error InsufficientActiveCollateral()",
+  "error InsufficientBacking()",
+  "error InsufficientBalance(uint256 balance, uint256 needed)",
+  "error InsufficientCollateralOut()",
+  "error InvalidActivationDelays()",
+  "error InvalidBlockHash()",
+  "error InvalidInitialization()",
+  "error InvalidMarketId()",
+  "error InvalidMaxGuardiansQuorumDelay()",
+  "error InvalidNavPrice()",
+  "error InvalidParams()",
+  "error InvalidSigner()",
+  "error InvalidStablePrice()",
+  "error IrmMismatch()",
+  "error LoanAssetMismatch()",
+  "error MarketIsFrozen()",
+  "error MarketNotAllowed()",
+  "error MarketNotCreated()",
+  "error MaxActivatingLockDurationExceeded()",
+  "error MaxActivationDelayExceeded()",
+  "error MaxDelayPerStrikeExceeded()",
+  "error MaxDelayPerSuspectExceeded()",
+  "error MaxGuardiansReached()",
+  "error MaxIterationsZero()",
+  "error MaxRateTooHigh()",
+  "error MissingPrecompile(address)",
+  "error NoAssetsRedeemed()",
+  "error NoCode()",
+  "error NoFillableShares()",
+  "error NotAdapter()",
+  "error NotAdmin()",
+  "error NotAuthorized()",
+  "error NotAuthorizedOnMorpho()",
+  "error NotGuardian()",
+  "error NotInAdapterRegistry()",
+  "error NotInitializing()",
+  "error NotMarketSteward()",
+  "error NotOwner()",
+  "error NotRouter()",
+  "error NotTightened()",
+  "error OwnableInvalidOwner(address owner)",
+  "error OwnableUnauthorizedAccount(address account)",
+  "error PauseUntilMustBeInFuture()",
+  "error PausedExpected()",
+  "error PenaltyTooHigh()",
+  "error PermitDeadlineExpired()",
+  "error PositionAccountingMismatch()",
+  "error PriorityFeeTooHigh()",
+  "error ProxyIsOssified()",
+  "error RampPastDeadline()",
+  "error RampStartAfterEnd()",
+  "error RelativeCapAboveOne()",
+  "error RelativeCapExceeded()",
+  "error RelativeCapNotDecreasing()",
+  "error RelativeCapNotIncreasing()",
+  "error RequestClosed()",
+  "error RequestExpired()",
+  "error ResumedExpected()",
+  "error SafeCastOverflowedIntDowncast(uint8 bits, int256 value)",
+  "error SafeCastOverflowedIntToUint(int256 value)",
+  "error SafeCastOverflowedUintDowncast(uint8 bits, uint256 value)",
+  "error SafeCastOverflowedUintToInt(uint256 value)",
+  "error SafeERC20FailedDecreaseAllowance(address spender, uint256 currentAllowance, uint256 requestedDecrease)",
+  "error SafeERC20FailedOperation(address token)",
+  "error SettlementBadDebt()",
+  "error SettlementConfigOutOfRange()",
+  "error SettlementExceedsAllowed()",
+  "error SettlementLtvOutOfRange()",
+  "error SharePriceAboveOne()",
+  "error StartFeeAboveEnd()",
+  "error StringsInsufficientHexLength(uint256 value, uint256 length)",
+  "error StringsInvalidAddressFormat()",
+  "error StringsInvalidChar()",
+  "error SupplyCapExceeded(uint256 cap, uint256 attempted)",
+  "error SuspectWindowTooHigh()",
+  "error TimelockNotDecreasing()",
+  "error TimelockNotExpired()",
+  "error TimelockNotIncreasing()",
+  "error TimestampInTheFuture()",
+  "error TransferFromReturnedFalse()",
+  "error TransferFromReverted()",
+  "error TransferReturnedFalse()",
+  "error TransferReverted()",
+  "error Unauthorized()",
+  "error UnknownHookEvent()",
+  "error UnknownMarket(bytes32 marketId)",
+  "error UnsupportedMarket()",
+  "error VaultNotAllowed()",
+  "error WouldBreakQuorum()",
+  "error WrongAuthorizationTarget()",
+  "error ZeroAbsoluteCap()",
+  "error ZeroAddress()",
+  "error ZeroAllocation()",
+  "error ZeroBorrowAssets()",
+  "error ZeroCollateralToken()",
+  "error ZeroController()",
+  "error ZeroLidoLend()",
+  "error ZeroLoanToken()",
+  "error ZeroMaxDelayInflow()",
+  "error ZeroMaxLifetime()",
+  "error ZeroMinActivationAmount()",
+  "error ZeroMinActivationDelay()",
+  "error ZeroMorpho()",
+  "error ZeroMorphoSupplyShares()",
+  "error ZeroPauseDuration()",
+  "error ZeroPricePerShare()",
+  "error ZeroRecipient()",
+  "error ZeroShares()",
+  "error ZeroVault()"
+];
+const ERR_IFACE = new E.Interface(PROTOCOL_ERRORS);
+// pull the revert bytes out of the various places ethers v6 stashes them, then decode to a readable name
+function revertData(e){
+  const cands=[e?.data, e?.info?.error?.data, e?.error?.data, e?.error?.error?.data, e?.revert?.data];
+  for(const c of cands){ if(typeof c==="string" && /^0x[0-9a-fA-F]{8,}$/.test(c)) return c; }
+  try{ const m=JSON.stringify(e).match(/"data":"(0x[0-9a-fA-F]{8,})"/); if(m) return m[1]; }catch{}
+  return null;
+}
+function errMsg(e){
+  const data=revertData(e);
+  if(data){ try{ const d=ERR_IFACE.parseError(data); if(d){ if(d.name==="Error") return String(d.args[0]); if(d.name==="Panic") return "Panic("+d.args[0].toString()+")"; return d.name+"("+[...d.args].map(x=>x.toString()).join(", ")+")"; } }catch{} }
+  if(e?.reason) return e.reason;
+  if(data) return "revert "+data.slice(0,10);
+  return e?.shortMessage || e?.message || String(e);
+}
+const ORACLE = ["function price() view returns (uint256)","function setPrice(uint256)"];
+const VAULT = ["function totalAssets() view returns (uint256)","function totalSupply() view returns (uint256)","function convertToAssets(uint256) view returns (uint256)"];
+const CORE = ["function market(bytes32) view returns (uint128 totalSupplyAssets, uint128 totalSupplyShares, uint128 totalBorrowAssets, uint128 totalBorrowShares, uint128 lastUpdate, uint128 fee)"];
+const CONTROLLER = ["function freeze()","function unfreeze()","function pauseFor(uint256)","function resume()","function isFrozen() view returns (bool)","function isPaused() view returns (bool)"];
+const GUARDIAN = [
+  "function flag(bytes32,address[],(bytes32,uint40,uint40))","function unflag(bytes32,address[],(bytes32,uint40,uint40))",
+  "function suspect(bytes32,address[],(bytes32,uint40,uint40))","function unsuspect(bytes32,address[],(bytes32,uint40,uint40))",
+  "function ban(bytes32,address)","function unban(bytes32,address)",
+  "function addGuardian(address)","function removeGuardian(address)","function setQuorum(uint256)","function setSuspectWindow(uint256)",
+  "function getOpinion(bytes32,address) view returns (bool banned, uint256 strikeCount, uint256 suspectCount, uint256 suspectExpiryTimestamp, uint256 quorumFrontierTimestamp)",
+  "function getQuorum() view returns (uint256)","function getSuspectWindow() view returns (uint256)","function getGuardians() view returns (address[])"
+];
+
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function log(m, cls){ const el=$("log"), t=new Date().toLocaleTimeString(); el.innerHTML+=`<div class="${cls||''}">[${t}] ${esc(m)}</div>`; el.scrollTop=el.scrollHeight; }
+// tx hash line in the page log — clickable to open the txs tab on that transaction
+function logTx(hash, label){ const el=$("log"), t=new Date().toLocaleTimeString(); el.innerHTML+=`<div class="log-mut">[${t}] tx <span class="addr" onclick="showGroup('txs');viewTx('${hash}')">${hash}</span>${label?(" ("+esc(label)+")"):""}</div>`; el.scrollTop=el.scrollHeight; }
+function ok(m){log(m,"log-ok")} function bad(m){log("✗ "+m,"log-bad")}
+async function api(p, body){ const r=await fetch(p,{method:body?"POST":"GET",headers:{"content-type":"application/json"},body:body?JSON.stringify(body):undefined}); const j=await r.json(); if(!r.ok) throw new Error(j.error||("HTTP "+r.status)+(j.log?("\n"+j.log):"")); return j; }
+function short(a){ return a || "—"; } // full address everywhere (kept the name/callsites; click still copies)
+function copy(t){ navigator.clipboard.writeText(t); log("copied "+t,"log-mut"); }
+function kv(o){ return Object.entries(o).map(([k,v])=>`<span>${k}</span><span class="addr" onclick="copy('${v}')">${v}</span>`).join(""); }
+function tokMeta(addr){ return tokens.find(t=>t.address.toLowerCase()===String(addr).toLowerCase()); }
+function tokLabel(addr){ const m=tokMeta(addr); return m? `${m.symbol} ${short(addr)}` : short(addr); }
+// resolve a token reference that is either a 0x address or a deployed-token symbol (e.g. "WETH") — lets a
+// scenario script name tokens by symbol so it survives a fresh deploy (addresses are only known at runtime)
+function resolveToken(v){ const s=String(v).trim(); if(/^0x[0-9a-fA-F]{40}$/.test(s)) return E.getAddress(s); const t=tokens.find(t=>t.symbol.toLowerCase()===s.toLowerCase()); if(!t) throw new Error("unknown token symbol: "+s); return t.address; }
+function activeMarket(){ const i=$("activeMarket").value; return i==="" ? null : markets[Number(i)]; }
+
+// Force a generous gas limit on every write. anvil auto-mines with a wall-clock block timestamp, so a hook's gas
+// (collateral-activation / settlement-queue sync) can exceed the pre-send estimate and, via the EVM 63/64 rule,
+// starve a nested call — a non-deterministic revert (seen on withdrawCollateral). Skipping estimation with a fixed
+// high limit avoids it. The limit only caps the tx; anvil still charges actual gas used.
+function forceGas(s){ if(!s||s._gasForced) return s; const orig=s.sendTransaction.bind(s); s.sendTransaction=(tx)=>orig(tx&&tx.gasLimit!=null?tx:Object.assign({},tx,{gasLimit:15000000n})); s._gasForced=true; return s; }
+function connect(){
+  // cacheTimeout:-1 disables ethers' request cache so nonce and "latest" reads are always fresh — fast
+  // back-to-back actions otherwise reuse a stale nonce ("nonce too low") or a stale block.
+  provider = new E.JsonRpcProvider($("rpc").value.trim(), undefined, { cacheTimeout: -1, staticNetwork: true });
+  // report every sent tx hash to the server log (and the browser log) — look it up later via the receipt
+  const _send = provider.send.bind(provider);
+  provider.send = async (method, params) => {
+    const res = await _send(method, params);
+    if ((method === "eth_sendRawTransaction" || method === "eth_sendTransaction") && typeof res === "string" && /^0x[0-9a-fA-F]{64}$/.test(res)) {
+      logTx(res, lastAction);
+      api("/api/txlog", { hash: res, label: lastAction }).catch(() => {});
+    }
+    return res;
+  };
+  signer = forceGas(new E.Wallet($("signer").value, provider));
+  ok("connected as "+short(signer.address)); setActorLabel(); refreshChain(); refreshMktCtl(); refreshPrice(); refreshCommittee(); renderOverview(); renderParticipants();
+}
+
+async function refreshStatus(){
+  try{
+    const s = await api("/api/node/status");
+    $("nodeDot").className = "dot"+(s.running?" on":"");
+    $("nodeMode").textContent = s.running? s.mode : "stopped";
+    if (s.accounts && !accounts.length){ accounts=s.accounts; $("signer").innerHTML=accounts.map((a,i)=>`<option value="${a.key}">#${i} ${a.address}</option>`).join(""); }
+    if (s.rpc) $("rpc").value = s.rpc;
+    core = s.state?.core || null; guardianSignals = s.state?.guardianSignals || null; tokens = s.state?.tokens || []; markets = s.state?.markets || [];
+    recording = s.history || []; archive = s.archive || []; renderHistory();
+    $("nodeInfo").innerHTML = kv({ mode:s.mode||"—", rpc:s.rpc||"—", fork:s.forkUrl||"—" });
+    renderAll();
+    if (s.running && !provider) connect(); // auto-connect against an already-running node so actions work immediately
+  }catch(e){ bad(errMsg(e)); }
+}
+
+function renderMktAddrs(){ const m=activeMarket(); if(!m){ $("mktAddrs").innerHTML=""; return; } $("mktAddrs").innerHTML=kv({ marketId:m.marketId, core:m.core, vault:m.vault, controller:m.controller, oracle:m.oracle, irm:m.irm, adaptive:m.adaptive, guardianSignals:m.guardianSignals, loanToken:m.loanToken, collateralToken:m.collateralToken }); }
+function renderAll(){
+  $("coreBadge").textContent = "core: "+short(core)+"  ·  guardian: "+short(guardianSignals);
+  $("coreInfo").innerHTML = core? kv({core, guardianSignals}) : "";
+  $("tokenList").innerHTML = tokens.map(t=>`<div class="addr" onclick="copy('${t.address}')">${t.symbol} (${t.decimals}) — ${t.address}</div>`).join("") || "<small>none yet</small>";
+  const opts = tokens.map((t,i)=>`<option value="${t.address}">${t.symbol} — ${short(t.address)}</option>`).join("");
+  $("loanSel").innerHTML = opts + `<option value="__custom">custom address…</option>`;
+  $("collSel").innerHTML = opts + `<option value="__custom">custom address…</option>`;
+  $("seedToken").innerHTML = tokens.map(t=>`<option value="${t.address}">${t.symbol} — ${short(t.address)}</option>`).join("") + `<option value="__custom">custom address…</option>`;
+  $("marketList").innerHTML = markets.map((m,i)=>`<div class="addr" onclick="copy('${m.vault}')">#${i} ${tokLabel(m.loanToken)}/${tokLabel(m.collateralToken)} · vault ${short(m.vault)}</div>`).join("") || "<small>none yet</small>";
+  const cur = $("activeMarket").value;
+  $("activeMarket").innerHTML = markets.length ? markets.map((m,i)=>`<option value="${i}">#${i} ${tokLabel(m.loanToken)}/${tokLabel(m.collateralToken)} · ${short(m.vault)}</option>`).join("") : `<option value="">— no markets —</option>`;
+  if (cur && markets[Number(cur)]) $("activeMarket").value = cur;
+  renderMktAddrs();
+}
+
+// global tabs — group sections by network / protocol / market (log + always stay visible)
+let curGroup="network";
+const GROUPS=["network","protocol","market","script","txs"];
+function showGroup(g){
+  if(!GROUPS.includes(g)) g="network";
+  curGroup=g;
+  try{ history.replaceState(null,"","#"+g); }catch{} // reflect in the URL so a reload reopens this tab
+  document.querySelectorAll(".gt").forEach(b=>b.classList.toggle("active", b.dataset.group===g));
+  document.querySelectorAll("section[data-group]").forEach(s=>{ s.style.display = (s.dataset.group===g||s.dataset.group==="always") ? "" : "none"; });
+  if(g==="market" && provider){ renderOverview(); renderParticipants(); }
+  if(g==="txs") renderTxList();
+}
+document.querySelectorAll(".gt").forEach(b=>b.onclick=()=>showGroup(b.dataset.group));
+window.addEventListener("hashchange",()=>{ const g=location.hash.slice(1); if(GROUPS.includes(g)&&g!==curGroup) showGroup(g); });
+showGroup(location.hash.slice(1));
+
+// tabs
+document.querySelectorAll(".tabs button[data-tab]").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll(".tabs button[data-tab]").forEach(x=>x.classList.remove("active")); b.classList.add("active");
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("show")); $("tab-"+b.dataset.tab).classList.add("show");
+});
+$("loanSel").onchange = ()=> $("loanCustom").style.display = $("loanSel").value==="__custom"?"block":"none";
+$("collSel").onchange = ()=> $("collCustom").style.display = $("collSel").value==="__custom"?"block":"none";
+$("seedToken").onchange = ()=> $("seedCustom").style.display = $("seedToken").value==="__custom"?"block":"none";
+
+// node
+$("startLocal").onclick=async()=>{ try{ ok("starting local anvil…"); const r=await api("/api/node/start",{mode:"local"}); ok("node up "+r.rpc); await refreshStatus(); connect(); }catch(e){bad(errMsg(e));} };
+$("startFork").onclick=async()=>{ try{ const forkUrl=$("forkUrl").value.trim(); if(!forkUrl) return bad("enter a fork rpc url"); ok("starting fork anvil…"); const r=await api("/api/node/start",{mode:"fork",forkUrl}); ok("fork node up "+r.rpc); await refreshStatus(); connect(); }catch(e){bad(errMsg(e));} };
+$("stopNode").onclick=async()=>{ try{ await api("/api/node/stop",{}); ok("node stopped"); await refreshStatus(); }catch(e){bad(errMsg(e));} };
+$("connectBtn").onclick=connect;
+
+// deploy core / token / market — thin wrappers over the ACTIONS registry (record + replay)
+$("deployCoreBtn").onclick=act("deployCore");
+$("deployTokenBtn").onclick=act("deployToken",()=>({symbol:$("tokSymbol").value.trim(),decimals:Number($("tokDecimals").value)}));
+$("createMarketBtn").onclick=act("createMarket",()=>({
+  loan: $("loanSel").value==="__custom" ? $("loanCustom").value.trim() : $("loanSel").value,
+  collateral: $("collSel").value==="__custom" ? $("collCustom").value.trim() : $("collSel").value,
+  price: $("oraclePrice").value.trim(), lltv: $("lltv").value.trim(), minActivation: $("minActivation").value.trim()
+}));
+
+// seed
+function seedTokenAddr(){ const v=$("seedToken").value; return v==="__custom" ? $("seedCustom").value.trim() : v; }
+async function readDecimals(addr){ try{ return Number(await new E.Contract(addr,ERC20,provider).decimals()); }catch{ return 18; } }
+// Morpho oracle price carries 36 + loanDec − collDec decimals; convert a human "loan per 1 collateral".
+async function oracleScale(loan,coll){ const [ld,cd]=await Promise.all([readDecimals(loan),readDecimals(coll)]); return 36+ld-cd; }
+
+// deal: locate the balanceOf mapping slot by probing keccak256(holder, i), write the balance via
+// anvil_setStorageAt, keep the slot whose write actually moves balanceOf(holder). Works for any ERC20
+// (mock or real fork token) — no mint needed. A manual slot short-circuits the probe.
+async function deal(token, holder, amount, manualSlot){
+  const t = new E.Contract(token, ERC20, provider);
+  const val = E.toBeHex(amount, 32);
+  const candidates = manualSlot!=="" ? [Number(manualSlot)] : Array.from({length:40},(_,i)=>i);
+  for (const i of candidates){
+    const slot = E.keccak256(E.AbiCoder.defaultAbiCoder().encode(["address","uint256"],[holder,i]));
+    const prev = await provider.send("eth_getStorageAt",[token,slot,"latest"]);
+    await provider.send("anvil_setStorageAt",[token,slot,val]);
+    let bal; try{ bal = await t.balanceOf(holder); }catch{ bal = null; }
+    if (bal === amount) return i;
+    await provider.send("anvil_setStorageAt",[token,slot,prev]); // wrong slot — restore
+  }
+  throw new Error("could not locate balanceOf slot — pass it manually");
+}
+
+$("mintBtn").onclick=act("mint",()=>({token:seedTokenAddr(),to:$("seedTo").value.trim()||(signer&&signer.address),amount:$("seedAmt").value.trim()}));
+$("dealBtn").onclick=act("deal",()=>({token:seedTokenAddr(),to:$("seedTo").value.trim()||(signer&&signer.address),amount:$("seedAmt").value.trim(),slot:$("seedSlot").value.trim()||undefined}));
+$("setEthBtn").onclick=act("setEth",()=>({to:$("seedTo").value.trim()||(signer&&signer.address),amount:$("ethAmt").value.trim()}));
+
+// time
+async function mineOne(){ await provider.send("evm_mine",[]); }
+function blockInterval(){ const v=Number($("mineInterval").value); return v>0?v:1; }
+async function latestTs(){ const b=await provider.send("eth_getBlockByNumber",["latest",false]); return parseInt(b.timestamp,16); }
+// mine n blocks spaced by iv, anchored to the last block so time advances exactly n*iv (wallclock-independent)
+async function mineBlocks(n, iv){ const ts0=await latestTs(); await provider.send("evm_setNextBlockTimestamp",[ts0+iv]); await provider.send("anvil_mine",["0x"+n.toString(16),"0x"+iv.toString(16)]); }
+$("mineBtn").onclick=act("mine",()=>({blocks:Number($("nBlocks").value)}));
+$("warpBtn").onclick=act("warp",()=>({seconds:Number($("dt").value)}));
+$("setTsBtn").onclick=act("setNextTs",()=>({ts:Number($("nextTs").value)}));
+$("freezeBtn").onclick=act("freezeChain");
+$("resumeBtn").onclick=act("resumeChain");
+$("setIntervalBtn").onclick=act("intervalMine",()=>({seconds:Number($("mineInterval").value)}));
+async function refreshChain(){ try{ if(!provider) return; const b=await provider.send("eth_getBlockByNumber",["latest",false]); const bn=parseInt(b.number,16), ts=parseInt(b.timestamp,16); let am="?"; try{ am=String(await provider.send("anvil_getAutomine",[])); }catch{} $("chainInfo").innerHTML=kv({block:String(bn),timestamp:String(ts),date:new Date(ts*1000).toISOString(),automine:am}); }catch(e){} }
+// keep the view live: chain always, market overview + participants when that tab is open
+setInterval(()=>{ if(!provider) return; refreshChain(); if(curGroup==="market"){ renderOverview(); renderParticipants(); } }, 10000);
+
+// oracle (active market)
+async function refreshPrice(){ try{ const m=activeMarket(); if(!m||!provider){ $("curPrice").innerHTML=""; return; } const o=new E.Contract(m.oracle,ORACLE,provider); const scale=await oracleScale(m.loanToken,m.collateralToken); const p=await o.price(); $("curPrice").innerHTML=kv({ "current price":E.formatUnits(p,scale)+"  ("+tokLabel(m.loanToken)+" per 1 "+tokLabel(m.collateralToken)+")" }); }catch(e){ $("curPrice").innerHTML=""; } }
+$("setPriceBtn").onclick=act("setPrice",()=>({price:$("newPrice").value.trim()}));
+$("bumpUpBtn").onclick=act("bumpPrice",()=>({pct:Number($("bumpPct").value)}));
+$("bumpDownBtn").onclick=act("bumpPrice",()=>({pct:-Number($("bumpPct").value)}));
+$("crashBtn").onclick=act("crashPrice");
+
+// market control (active market — controller freeze/pause)
+async function ctl(){ const m=activeMarket(); if(!m){ bad("no active market"); return null; } if(!signer){ bad("connect first"); return null; } return new E.Contract(m.controller,CONTROLLER,signer); }
+async function refreshMktCtl(){ try{ const m=activeMarket(); if(!m||!provider){ $("mktCtl").innerHTML=""; return; } const c=new E.Contract(m.controller,CONTROLLER,provider); const [f,p]=await Promise.all([c.isFrozen(),c.isPaused()]); $("mktCtl").innerHTML=kv({frozen:String(f),paused:String(p)}); }catch(e){} }
+$("freezeMktBtn").onclick=act("marketFreeze");
+$("unfreezeMktBtn").onclick=act("marketUnfreeze");
+$("pauseMktBtn").onclick=act("marketPause",()=>({seconds:Number($("pauseDur").value)}));
+$("resumeMktBtn").onclick=act("marketResume");
+$("activeMarket").onchange = ()=>onMarketChange();
+
+// guardian (active market)
+async function guard(){ const m=activeMarket(); if(!m){ bad("no active market"); return null; } if(!signer){ bad("connect first"); return null; } return { c:new E.Contract(m.guardianSignals,GUARDIAN,signer), id:m.marketId }; }
+function gAcct(){ const a=$("gAccount").value.trim(); if(!a){ bad("enter target account"); return null; } return E.getAddress(a); }
+// flag/suspect submit a proof-of-scan block: the last mined block (latest−1, so blockhash is available) + its real hash/timestamp.
+async function lastScanned(){ const latest=await provider.send("eth_getBlockByNumber",["latest",false]); let n=parseInt(latest.number,16)-1; if(n<0)n=0; const blk=await provider.send("eth_getBlockByNumber",["0x"+n.toString(16),false]); return [blk.hash, n, parseInt(blk.timestamp,16)]; }
+async function refreshGuardian(){ try{ const m=activeMarket(); const a=$("gAccount").value.trim(); if(!m||!provider||!a){ $("gStatus").innerHTML=""; return; } const c=new E.Contract(m.guardianSignals,GUARDIAN,provider); const acc=E.getAddress(a); const o=await c.getOpinion(m.marketId,acc); $("gStatus").innerHTML=kv({ account:acc, banned:String(o.banned), strikes:o.strikeCount.toString(), suspects:o.suspectCount.toString() }); }catch(e){ $("gStatus").innerHTML=""; } }
+$("gAccount").onchange = refreshGuardian;
+$("gMeBtn").onclick=()=>{ if(signer){ $("gAccount").value=signer.address; refreshGuardian(); } };
+// committee is project-level (the guardian singleton), not per-market
+async function refreshCommittee(){ try{ if(!guardianSignals||!provider){ $("gCommittee").innerHTML=""; return; } const c=new E.Contract(guardianSignals,GUARDIAN,provider); const [q,w,gs]=await Promise.all([c.getQuorum(),c.getSuspectWindow(),c.getGuardians()]); $("gCommittee").innerHTML=kv({ quorum:q.toString()+" / "+gs.length+" guardians", "suspect window":w.toString()+"s", guardians:gs.join(", ")||"—" }); $("gQuorum").value=q.toString(); $("gWindow").value=w.toString(); }catch(e){ $("gCommittee").innerHTML=""; } }
+async function gSignal(fn, verb){ try{ const g=await guard(); if(!g)return; const a=gAcct(); if(!a)return; const tx=await g.c[fn](g.id,[a],await lastScanned()); await tx.wait(); ok(verb+" "+short(a)); refreshGuardian(); }catch(e){bad(errMsg(e));} }
+$("flagBtn").onclick=act("flag",()=>({account:$("gAccount").value.trim()}));
+$("unflagBtn").onclick=act("unflag",()=>({account:$("gAccount").value.trim()}));
+$("suspectBtn").onclick=act("suspect",()=>({account:$("gAccount").value.trim()}));
+$("unsuspectBtn").onclick=act("unsuspect",()=>({account:$("gAccount").value.trim()}));
+$("banBtn").onclick=act("ban",()=>({account:$("gAccount").value.trim()}));
+$("unbanBtn").onclick=act("unban",()=>({account:$("gAccount").value.trim()}));
+$("addGuardianBtn").onclick=act("addGuardian",()=>({address:$("gGuardian").value.trim()}));
+$("removeGuardianBtn").onclick=act("removeGuardian",()=>({address:$("gGuardian").value.trim()}));
+$("setQuorumBtn").onclick=act("setQuorum",()=>({n:Number($("gQuorum").value)}));
+$("setWindowBtn").onclick=act("setSuspectWindow",()=>({n:Number($("gWindow").value)}));
+
+// state (active market)
+$("refreshState").onclick=async()=>{
+  try{
+    const m=activeMarket(); if(!m||!provider) return bad("no active market / connect");
+    const v=new E.Contract(m.vault,VAULT,provider), c=new E.Contract(m.core,CORE,provider), o=new E.Contract(m.oracle,ORACLE,provider);
+    const [ta,ts,pps]=await Promise.all([v.totalAssets(),v.totalSupply(),v.convertToAssets(10n**18n)]);
+    const mk=await c.market(m.marketId); const price=await o.price(); const idle=mk.totalSupplyAssets-mk.totalBorrowAssets;
+    const scale=await oracleScale(m.loanToken,m.collateralToken);
+    $("stateInfo").innerHTML=kv({ "vault.totalAssets":E.formatEther(ta), "vault.totalSupply":E.formatEther(ts), "pps (1e18)":pps.toString(), "supplyAssets":E.formatEther(mk.totalSupplyAssets), "borrowAssets":E.formatEther(mk.totalBorrowAssets), "idle":E.formatEther(idle), "oracle price":E.formatUnits(price,scale) });
+    ok("state refreshed");
+  }catch(e){bad(errMsg(e));}
+};
+
+// ── impersonation (shared by header + protocol-actions controls) ──
+function setActorLabel(){ const a=signer? signer.address : null; $("curActor").textContent = a? short(a) : "—"; }
+async function doImpersonate(addr){ if(!provider) return bad("connect first"); const a=E.getAddress(addr); await provider.send("anvil_impersonateAccount",[a]); await provider.send("anvil_setBalance",[a,"0x"+E.parseEther("100").toString(16)]); signer=forceGas(await provider.getSigner(a)); setActorLabel(); ok("acting as "+short(a)+" (impersonated, funded 100 ETH)"); }
+function doUseKey(){ signer=forceGas(new E.Wallet($("signer").value,provider)); setActorLabel(); ok("acting as key "+short(signer.address)); }
+$("impersonateBtn").onclick=act("actAs",()=>({address:$("impAddr").value.trim()}));
+$("unimpersonateBtn").onclick=act("useKey");
+$("actAsBtn").onclick=act("actAs",()=>({address:$("actorInput").value.trim()}));
+$("useKeyBtn2").onclick=act("useKey");
+
+// ── snapshot / revert ──
+let lastSnap=null;
+$("snapshotBtn").onclick=act("snapshot");
+$("revertBtn").onclick=act("revertSnapshot");
+
+// ── protocol-action tabs ──
+document.querySelectorAll(".tabs button[data-ptab]").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll(".tabs button[data-ptab]").forEach(x=>x.classList.remove("active")); b.classList.add("active");
+  document.querySelectorAll(".ptab").forEach(t=>t.classList.remove("show")); $("ptab-"+b.dataset.ptab).classList.add("show");
+});
+
+// ── shared action helpers ──
+function parseBig(s){ s=String(s).trim(); const m=s.match(/^(\d+)e(\d+)$/i); if(m) return BigInt(m[1])*(10n**BigInt(m[2])); return BigInt(s); }
+function parseList(s){ return String(s).split(",").map(x=>parseBig(x)); }
+function mp(m){ return [m.loanToken, m.collateralToken, m.oracle, m.irm, BigInt(m.lltv)]; }
+async function ensureApprove(token, spender, amount){ const t=new E.Contract(token,ERC20,signer); const owner=await signer.getAddress(); const cur=await t.allowance(owner,spender); if(cur<amount){ const tx=await t.approve(spender,E.MaxUint256); await tx.wait(); } }
+async function needMarketSigner(){ const m=activeMarket(); if(!m){ bad("no active market"); return null; } if(!signer){ bad("connect first"); return null; } return m; }
+
+// ── lender ──
+$("depositBtn").onclick=act("deposit",()=>({amount:$("depAssets").value.trim()}));
+$("withdrawBtn").onclick=act("withdraw",()=>({amount:$("wdAssets").value.trim()}));
+$("redeemBtn").onclick=act("redeem",()=>({shares:$("redShares").value.trim()}));
+$("withdrawMaxBtn").onclick=act("withdrawMax");
+$("fallbackExitBtn").onclick=act("fallbackExit",()=>({shares:$("feShares").value.trim(),maxIterations:Number($("feIters").value)}));
+$("coreSupplyBtn").onclick=act("coreSupply",()=>({amount:$("csAssets").value.trim()}));
+$("coreWithdrawBtn").onclick=act("coreWithdraw",()=>({amount:$("cwAssets").value.trim()}));
+$("coreWithdrawAllBtn").onclick=act("coreWithdrawAll");
+
+// ── borrower (core IMorpho) ──
+$("supplyCollBtn").onclick=act("supplyCollateral",()=>({amount:$("collAmt").value.trim()}));
+$("borrowBtn").onclick=act("borrow",()=>({amount:$("borrowAmt").value.trim()}));
+$("repayAmtBtn").onclick=act("repay",()=>({amount:$("repayAmt").value.trim()}));
+$("repayBtn").onclick=act("repayAll");
+$("wcollBtn").onclick=act("withdrawCollateral",()=>({amount:$("wcollAmt").value.trim()}));
+
+// ── keeper ──
+$("liquidateBtn").onclick=act("liquidate",()=>({borrower:$("liqBorrower").value.trim(),seize:$("seizeAmt").value.trim()}));
+
+// ── controller config ──
+async function cfgCtl(){ const m=await needMarketSigner(); if(!m)return null; return { c:new E.Contract(m.controller,CTLCFG,signer), m }; }
+$("setCapBtn").onclick=act("setSupplyCap",()=>({cap:$("supplyCap").value.trim()}));
+$("grantIaBtn").onclick=act("grantInstantActivation",()=>({caller:$("iaCaller").value.trim()||(signer&&signer.address)}));
+$("revokeIaBtn").onclick=act("revokeInstantActivation",()=>({caller:$("iaCaller").value.trim()||(signer&&signer.address)}));
+$("setLtvBtn").onclick=act("setSettlementLtv",()=>({ltv:$("setLtv").value.trim()}));
+$("setSetCfgBtn").onclick=act("setSettlementConfig",()=>({values:[$("scFloorBps").value,$("scFloorAssets").value,$("scFullCut").value,$("scLtvStep").value]}));
+$("setCacBtn").onclick=act("setActivationConfig",()=>({values:[$("acMinDelay").value,$("acMaxDelay").value,$("acMaxInflow").value,$("acLockAmt").value,$("acLockDur").value,$("acMinAmt").value,$("acQuorumDelay").value,$("acPerStrike").value,$("acPerSuspect").value]}));
+
+// ── IRM curve ──
+function parseSigned(x){ x=String(x).trim(); const neg=x.startsWith("-"); const b=parseBig(neg?x.slice(1):x); return neg?-b:b; }
+$("setCurveBtn").onclick=act("setCurveParams",()=>({values:[$("cvSteep").value,$("cvAdj").value,$("cvTarget").value,$("cvInit").value,$("cvMin").value,$("cvMax").value,$("cvMaxBorrow").value]}));
+
+// ── export deploy ──
+$("exportBtn").onclick=()=>{ const data={ rpc:$("rpc").value.trim(), core, guardianSignals, tokens, markets }; const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download="devnet.json"; a.click(); URL.revokeObjectURL(url); ok("exported devnet.json ("+markets.length+" markets, "+tokens.length+" tokens)"); };
+
+// ══ market overview + participants ══════════════════════════════════════════════════════════
+const WAD=10n**18n, SECONDS_YEAR=31536000n, VIRTUAL_SHARES=1000000n, VIRTUAL_ASSETS=1n;
+function kv2(o){ return Object.entries(o).map(([k,v])=>`<span>${k}</span><span>${v}</span>`).join(""); }
+function fmtU(v,d){ return Number(E.formatUnits(v,d)).toLocaleString(undefined,{maximumFractionDigits:4}); }
+// JS replica of MorphoBalancesLib.expectedMarketBalances: accrue pending interest off the stored totals
+async function expectedBalances(m){
+  const mk=await new E.Contract(m.core,CORE,provider).market(m.marketId);
+  let tsa=mk.totalSupplyAssets, tss=mk.totalSupplyShares, tba=mk.totalBorrowAssets, tbs=mk.totalBorrowShares; const fee=mk.fee;
+  const marketTuple=[mk.totalSupplyAssets,mk.totalSupplyShares,mk.totalBorrowAssets,mk.totalBorrowShares,mk.lastUpdate,mk.fee];
+  let rate=0n; try{ rate=await new E.Contract(m.irm,IRMVIEW,provider).borrowRateView(mp(m),marketTuple); }catch{}
+  const elapsed=BigInt(await latestTs())-BigInt(mk.lastUpdate);
+  if(elapsed>0n && tba>0n){
+    const taylor=(()=>{ const f=rate*elapsed; const s=f*f/(2n*WAD); const t=s*f/(3n*WAD); return f+s+t; })(); // wTaylorCompounded
+    const interest=tba*taylor/WAD; // wMulDown
+    tba+=interest; tsa+=interest;
+    if(fee>0n){ const feeAmount=interest*fee/WAD; const feeShares=feeAmount*(tss+VIRTUAL_SHARES)/((tsa-feeAmount)+VIRTUAL_ASSETS); tss+=feeShares; }
+  }
+  return {tsa,tss,tba,tbs,fee,rate};
+}
+async function renderOverview(){
+  const m=activeMarket(); if(!m||!provider){ $("marketOverview").innerHTML=""; return; }
+  try{
+    const [ld,cd]=await Promise.all([readDecimals(m.loanToken),readDecimals(m.collateralToken)]);
+    const b=await expectedBalances(m); const scale=36+ld-cd;
+    let price=0n; try{ price=await new E.Contract(m.oracle,ORACLE,provider).price(); }catch{}
+    const v=new E.Contract(m.vault,VAULT,provider);
+    let vta=0n,vts=0n,pps=0n; try{ [vta,vts]=await Promise.all([v.totalAssets(),v.totalSupply()]); pps=await v.convertToAssets(10n**18n); }catch{}
+    // Morpho has no market-wide collateral counter (collateral is per-position). The core holds every position's
+    // collateral, so for a collateral token unique to this market its core balance is the market's total collateral.
+    let coll=0n; try{ coll=await new E.Contract(m.collateralToken,ERC20,provider).balanceOf(m.core); }catch{}
+    const util=b.tsa>0n? Number(b.tba*10000n/b.tsa)/100 : 0;
+    const borrowApr=Number(b.rate*SECONDS_YEAR)/1e18*100;
+    const supplyApr=borrowApr*(util/100)*(1-Number(b.fee)/1e18);
+    const loanSym=(tokMeta(m.loanToken)||{}).symbol||"loan", collSym=(tokMeta(m.collateralToken)||{}).symbol||"coll";
+    $("marketOverview").innerHTML=kv2({
+      pair: loanSym+" / "+collSym,
+      lltv: Number(E.formatUnits(BigInt(m.lltv),16))+"%",
+      "oracle price": price>0n? E.formatUnits(price,scale)+" "+loanSym+"/"+collSym : "—",
+      "market supply assets": fmtU(b.tsa,ld)+" "+loanSym,
+      "market borrow assets": fmtU(b.tba,ld)+" "+loanSym,
+      "market collateral": fmtU(coll,cd)+" "+collSym,
+      "idle liquidity": fmtU(b.tsa-b.tba,ld)+" "+loanSym,
+      utilization: util.toFixed(2)+"%",
+      "borrow APR": borrowApr.toFixed(2)+"%",
+      "supply APR": supplyApr.toFixed(2)+"%",
+      "market supply shares": b.tss.toLocaleString(),
+      "market borrow shares": b.tbs.toLocaleString(),
+      "vault totalAssets": fmtU(vta,ld)+" "+loanSym,
+      "vault totalSupply": fmtU(vts,18)+" shares",
+      "vault share price": fmtU(pps,ld)+" "+loanSym+"/share",
+    });
+  }catch(e){ $("marketOverview").innerHTML="<small class='log-bad'>"+errMsg(e)+"</small>"; }
+}
+let watched=[];
+// add an address to the participants watch-list (deduped); tolerant of bad input so scenario auto-collection is safe
+function watchAddress(a){ if(!a) return false; try{ const addr=E.getAddress(String(a)); if(!watched.includes(addr)){ watched.push(addr); return true; } }catch{} return false; }
+async function renderParticipants(){
+  const m=activeMarket(); if(!m||!provider){ $("participants").innerHTML="<small>no active market</small>"; return; }
+  if(!watched.length && accounts.length) watched=accounts.map(a=>E.getAddress(a.address));
+  try{
+    const [ld,cd]=await Promise.all([readDecimals(m.loanToken),readDecimals(m.collateralToken)]);
+    const loanSym=(tokMeta(m.loanToken)||{}).symbol||"loan", collSym=(tokMeta(m.collateralToken)||{}).symbol||"coll";
+    const L=new E.Contract(m.loanToken,ERC20,provider), C=new E.Contract(m.collateralToken,ERC20,provider);
+    const vault=new E.Contract(m.vault,VAULTBAL,provider), ctl=new E.Contract(m.controller,POSITION,provider), coreC=new E.Contract(m.core,MORPHO,provider);
+    let price=0n; try{ price=await new E.Contract(m.oracle,ORACLE,provider).price(); }catch{}
+    const lltvPct=Number(E.formatUnits(BigInt(m.lltv),16));
+    const b=await expectedBalances(m); // market totals to value core-direct supply shares as assets
+    const rows=await Promise.all(watched.map(async(addr)=>{
+      try{ const a=E.getAddress(addr);
+        const [eth,lb,cb,sh,pos,cp]=await Promise.all([provider.getBalance(a),L.balanceOf(a),C.balanceOf(a),vault.balanceOf(a),coreC.position(m.marketId,a),ctl.positionOf(a)]);
+        const supplied= sh>0n? await vault.convertToAssets(sh):0n;
+        // supply position held directly in the core (not via the vault): supplyShares → assets (toAssetsDown)
+        const supplyAssets= b.tss>0n? pos.supplyShares*(b.tsa+VIRTUAL_ASSETS)/(b.tss+VIRTUAL_SHARES):0n;
+        const collVal= price>0n? pos.collateral*price/(10n**36n) : 0n;
+        const ltv= collVal>0n? Number(cp.debtAssets*10000n/collVal)/100 : 0;
+        return {a,eth,lb,cb,sh,supplied,supplyShares:pos.supplyShares,supplyAssets,collateral:pos.collateral,debt:cp.debtAssets,ltv,banned:cp.banned,flags:cp.flagCount};
+      }catch(e){ return {a:addr,err:errMsg(e)}; }
+    }));
+    const head=["address","ETH",loanSym,collSym,"vault shares","vault assets","supply shares","supply assets","collateral","debt","LTV%","flags"];
+    let h="<table><thead><tr>"+head.map(x=>"<th>"+x+"</th>").join("")+"</tr></thead><tbody>";
+    for(const r of rows){
+      if(r.err){ h+="<tr><td>"+short(r.a)+"</td><td colspan='11' class='log-bad'>"+r.err+"</td></tr>"; continue; }
+      const cls= r.ltv>=lltvPct&&r.ltv>0? "log-bad" : (r.ltv>0?"":"log-mut");
+      h+="<tr>"+[
+        `<span class="addr" onclick="copy('${r.a}')">${short(r.a)}</span>`,
+        fmtU(r.eth,18), fmtU(r.lb,ld), fmtU(r.cb,cd), fmtU(r.sh,18), fmtU(r.supplied,ld), r.supplyShares.toLocaleString(), fmtU(r.supplyAssets,ld), fmtU(r.collateral,cd), fmtU(r.debt,ld),
+        `<span class="${cls}">${r.collateral>0n? r.ltv.toFixed(1):"—"}</span>`,
+        (r.banned?"<span class='log-bad'>banned</span> ":"")+(r.flags>0n?(r.flags+"⚑"):"")
+      ].map(c=>"<td>"+c+"</td>").join("")+"</tr>";
+    }
+    h+="</tbody></table><small>LTV threshold (lltv) "+lltvPct+"% · red = at/over threshold</small>";
+    $("participants").innerHTML=h;
+  }catch(e){ $("participants").innerHTML="<small class='log-bad'>"+errMsg(e)+"</small>"; }
+}
+$("watchAddBtn").onclick=()=>{ try{ const a=E.getAddress($("watchAddr").value.trim()); if(!watched.includes(a)) watched.push(a); $("watchAddr").value=""; renderParticipants(); }catch(e){ bad(errMsg(e)); } };
+$("watchMeBtn").onclick=()=>{ if(signer&&!watched.includes(signer.address)) watched.push(signer.address); renderParticipants(); };
+$("watchResetBtn").onclick=()=>{ watched=accounts.map(a=>E.getAddress(a.address)); renderParticipants(); };
+$("refreshParticipants").onclick=()=>{ renderParticipants(); renderOverview(); };
+
+// ══ transactions tab ════════════════════════════════════════════════════════════════════════
+// curated events for decoding receipt logs (ERC20 / ERC4626 / Morpho core / guardian / controller / IRM);
+// these win on topic0 collisions, and loadEventAbi() below adds the rest from the forge artifacts.
+const CURATED_EVENTS = [
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+  "event Approval(address indexed owner, address indexed spender, uint256 value)",
+  "event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares)",
+  "event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)",
+  "event Supply(bytes32 indexed id, address indexed caller, address indexed onBehalf, uint256 assets, uint256 shares)",
+  "event Withdraw(bytes32 indexed id, address caller, address indexed onBehalf, address indexed receiver, uint256 assets, uint256 shares)",
+  "event Borrow(bytes32 indexed id, address caller, address indexed onBehalf, address indexed receiver, uint256 assets, uint256 shares)",
+  "event Repay(bytes32 indexed id, address indexed caller, address indexed onBehalf, uint256 assets, uint256 shares)",
+  "event SupplyCollateral(bytes32 indexed id, address indexed caller, address indexed onBehalf, uint256 assets)",
+  "event WithdrawCollateral(bytes32 indexed id, address caller, address indexed onBehalf, address indexed receiver, uint256 assets)",
+  "event Liquidate(bytes32 indexed id, address indexed caller, address indexed borrower, uint256 repaidAssets, uint256 repaidShares, uint256 seizedAssets, uint256 badDebtAssets, uint256 badDebtShares)",
+  "event AccrueInterest(bytes32 indexed id, uint256 prevBorrowRate, uint256 interest, uint256 feeShares)",
+  "event Banned(bytes32 indexed marketId, address indexed account)",
+  "event Unbanned(bytes32 indexed marketId, address indexed account, address indexed by)",
+  "event Flagged(bytes32 indexed marketId, address indexed account, address indexed guardian, uint16 strikes)",
+  "event Unflagged(bytes32 indexed marketId, address indexed account, address indexed guardian, uint16 strikes)",
+  "event Suspected(bytes32 indexed marketId, address indexed account, address indexed guardian, uint256 timestamp)",
+  "event GuardianAdded(address indexed guardian)","event GuardianRemoved(address indexed guardian)",
+  "event QuorumSet(uint256 quorum)","event SuspectWindowSet(uint256 suspectWindow)",
+  "event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp)",
+  "event FrozenSet(bool frozen, address indexed account)","event SupplyCapSet(uint256 cap, address indexed account)","event InstantActivationSet(address indexed caller, bool enabled)",
+  "event BorrowRateUpdate(bytes32 indexed id, uint256 avgBorrowRate, uint256 rateAtTarget)","event MarketIrmSet(bytes32 indexed id, address indexed irm)","event ConfigDeployed(bytes32 indexed paramsHash, address indexed config)",
+  "event OwnershipTransferred(address indexed previousOwner, address indexed newOwner)","event ManagerSet(address indexed manager)","event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender)"
+];
+let TX_EVENTS = new E.Interface(CURATED_EVENTS);
+// pull full event ABIs from the forge artifacts so struct-typed events (e.g. CollateralDrained) decode too;
+// only add events whose topic0 isn't already covered by the curated list (keeps ERC20 Transfer unambiguous).
+async function loadEventAbi(){
+  try{
+    const { events } = await api("/api/events-abi");
+    const have = new Set(TX_EVENTS.fragments.map(f=>f.topicHash));
+    const extra=[];
+    for(const e of events||[]){ try{ const fr=E.EventFragment.from(e); if(!have.has(fr.topicHash)){ have.add(fr.topicHash); extra.push(e); } }catch{} }
+    if(extra.length){ TX_EVENTS = new E.Interface([...CURATED_EVENTS, ...extra]); log("event decoder: +"+extra.length+" types from artifacts","log-mut"); }
+  }catch{}
+}
+loadEventAbi();
+// function ABIs from artifacts — to decode a tx's `input` calldata into name(args)
+let TX_FUNCS = new E.Interface([]);
+async function loadFuncAbi(){
+  try{ const { functions } = await api("/api/functions-abi"); const frags=[], seen=new Set();
+    for(const e of functions||[]){ try{ const fr=E.FunctionFragment.from(e); if(!seen.has(fr.selector)){ seen.add(fr.selector); frags.push(e); } }catch{} }
+    if(frags.length) TX_FUNCS=new E.Interface(frags);
+  }catch{}
+}
+loadFuncAbi();
+// map a known address to a human name (deployed contracts we tracked)
+function nameFor(a){ if(!a) return null; const x=a.toLowerCase();
+  if(core && x===core.toLowerCase()) return "LidoLend";
+  if(guardianSignals && x===guardianSignals.toLowerCase()) return "GuardianSignals";
+  const tok=tokens.find(t=>t.address.toLowerCase()===x); if(tok) return "MockERC20 "+tok.symbol;
+  for(let i=0;i<markets.length;i++){ const m=markets[i]; const sfx=markets.length>1?(" #"+i):"";
+    if(m.vault&&x===m.vault.toLowerCase()) return "LidoLendERC4626"+sfx;
+    if(m.controller&&x===m.controller.toLowerCase()) return "LidoLendMarketController"+sfx;
+    if(m.oracle&&x===m.oracle.toLowerCase()) return "MockPriceOracle"+sfx;
+    if(m.adaptive&&x===m.adaptive.toLowerCase()) return "AdaptiveCurveIrm"+sfx;
+    if(m.irm&&x===m.irm.toLowerCase()) return "IrmRouter"+sfx; }
+  return null;
+}
+function addrLabel(a){ if(!a) return "—"; const n=nameFor(a); return a+(n?(" ("+n+")"):""); }
+// recursively format a decoded arg by its ParamType — tuples/arrays break onto their own lines with
+// deeper indentation, so nesting (e.g. a MarketParams struct inside a call) is visible.
+const _IND="&nbsp;&nbsp;";
+function _pad(d){ return _IND.repeat(d); }
+function fmtArg(pt, v, depth){
+  depth=depth||0;
+  try{
+    if(pt.baseType==="array"){ const a=Array.from(v); if(!a.length) return "[]"; return "[<br>"+a.map(x=>_pad(depth+1)+fmtArg(pt.arrayChildren, x, depth+1)).join(",<br>")+"<br>"+_pad(depth)+"]"; }
+    if(pt.baseType==="tuple") return "(<br>"+pt.components.map((c,i)=>_pad(depth+1)+esc((c.name||("f"+i))+"=")+fmtArg(c, v[i], depth+1)).join(",<br>")+"<br>"+_pad(depth)+")";
+  }catch{}
+  return esc(String(v));
+}
+// a long hex blob (calldata) shown on one truncated line — click to expand/collapse, plus a copy link
+function hexField(data){ if(!data||data==="0x") return "0x"; const bytes=(data.length-2)/2; return `<span class="hexval" onclick="this.classList.toggle('wrap')" title="click to expand / collapse">${data}</span> <small>(${bytes} bytes)</small> <span class="addr" onclick="copy('${data}')">copy</span>`; }
+// name(args) with each top-level arg named and on its own line (HTML for the tx detail)
+function fmtNamed(name, inputs, args){
+  if(!inputs.length) return esc(name)+"()";
+  const parts=inputs.map((inp,i)=>_pad(1)+esc((inp.name||("arg"+i))+"=")+fmtArg(inp, args[i], 1));
+  return esc(name)+"(<br>"+parts.join(",<br>")+"<br>)";
+}
+// the node's whole tx history: walk blocks newest→oldest (batched), label known hashes from txLog
+async function renderTxList(){
+  if(!provider){ $("txList").innerHTML="<small>connect first</small>"; return; }
+  $("txList").innerHTML="<small>scanning node…</small>";
+  const labels={}; try{ ((await api("/api/txlog")).txLog||[]).forEach(t=>{ labels[t.hash.toLowerCase()]=t.label; }); }catch{}
+  let latest; try{ latest=await provider.getBlockNumber(); }catch{ $("txList").innerHTML="<small>connect first</small>"; return; }
+  const rows=[]; const MAX_BLOCKS=4000, MAX_TXS=800, BATCH=64; let scanned=0;
+  for(let hi=latest; hi>=0 && scanned<MAX_BLOCKS && rows.length<MAX_TXS; hi-=BATCH){
+    const nums=[]; for(let n=hi; n>hi-BATCH && n>=0; n--) nums.push(n);
+    scanned+=nums.length;
+    const blks=await Promise.all(nums.map(n=>provider.getBlock(n).catch(()=>null)));
+    for(const blk of blks){ if(!blk||!blk.transactions.length) continue; for(const h of blk.transactions){ rows.push({hash:h,block:blk.number,label:labels[h.toLowerCase()]||null}); if(rows.length>=MAX_TXS) break; } if(rows.length>=MAX_TXS) break; }
+  }
+  const truncated = scanned>=MAX_BLOCKS && latest+1>scanned;
+  $("txList").innerHTML = rows.length
+    ? rows.map(t=>`<div class="addr" onclick="viewTx('${t.hash}')">#${t.block} `+(t.label?("<b style='color:var(--acc)'>"+esc(t.label)+"</b> "):"<span class='log-mut'>· </span>")+short(t.hash)+`</div>`).join("") + (truncated?"<small>scanned last "+scanned+" blocks (older truncated)</small>":"")
+    : "<small>no transactions on the node yet</small>";
+}
+async function viewTx(hash){
+  if(!provider){ $("txDetail").innerHTML="<small>connect first</small>"; return; }
+  $("txDetail").innerHTML="<small>loading…</small>";
+  try{
+    const [tx,rc]=await Promise.all([provider.getTransaction(hash),provider.getTransactionReceipt(hash)]);
+    if(!rc){ $("txDetail").innerHTML="<small>receipt not found (wrong node?)</small>"; return; }
+    const blk=await provider.getBlock(rc.blockNumber); const gasPrice=rc.gasPrice??0n;
+    // decode the calldata into name(args) via the artifact function ABIs (deploys have no target → creation)
+    let call="—";
+    if(tx){ if(!tx.to){ call="contract creation ("+((tx.data.length-2)/2)+" bytes"+(rc.contractAddress&&nameFor(rc.contractAddress)?", "+nameFor(rc.contractAddress):"")+")"; }
+      else if(tx.data && tx.data!=="0x"){ try{ const d=TX_FUNCS.parseTransaction({data:tx.data}); call=d? fmtNamed(d.name, d.fragment.inputs, d.args) : "unknown "+tx.data.slice(0,10); }catch{ call="unknown selector "+tx.data.slice(0,10); } }
+      else call="(no calldata)"; }
+    const o={
+      hash, status: rc.status===1? "✓ success" : "✗ reverted",
+      block: String(rc.blockNumber), time: blk? new Date(Number(blk.timestamp)*1000).toISOString():"—",
+      from: addrLabel(tx?.from), to: tx?.to? addrLabel(tx.to) : (rc.contractAddress? "created "+addrLabel(rc.contractAddress) : "—"),
+      value: tx? E.formatEther(tx.value)+" ETH":"—", nonce: tx? String(tx.nonce):"—",
+      gasUsed: rc.gasUsed.toString(), gasPrice: E.formatUnits(gasPrice,"gwei")+" gwei", fee: E.formatEther(rc.gasUsed*gasPrice)+" ETH",
+      call,
+      input: tx? hexField(tx.data) : "—",
+    };
+    let html=kv2(o)+'<span style="grid-column:1/-1;color:var(--mut);margin-top:8px">events ('+rc.logs.length+')</span>';
+    if(!rc.logs.length) html+='<span class="log-mut">—</span><span class="log-mut">none</span>';
+    for(const lg of rc.logs){
+      let val;
+      try{ const d=TX_EVENTS.parseLog(lg); val=fmtNamed(d.name, d.fragment.inputs, d.args); }
+      catch{
+        // unknown event (struct/enum/multiline decl) — show it in full: topic0, indexed topics, and data as 32-byte words
+        const hex=(lg.data||"0x").slice(2); const words=[]; for(let i=0;i<hex.length;i+=64) words.push("0x"+hex.slice(i,i+64));
+        val="<span class='log-bad'>undecoded</span>  <small>copy topic0/data to decode manually</small>"
+          + "<br>topic0  "+lg.topics[0]
+          + lg.topics.slice(1).map((t,i)=>"<br>topic"+(i+1)+"  "+t).join("")
+          + (words.length ? words.map((w,i)=>"<br>data["+i+"] "+w).join("") : "<br>data    0x");
+      }
+      html+='<span class="log-mut ev">log</span><span class="ev">'+val+' <small>@'+lg.address+(nameFor(lg.address)?(" ("+nameFor(lg.address)+")"):"")+'</small></span>';
+    }
+    $("txDetail").innerHTML=html;
+  }catch(e){ $("txDetail").innerHTML="<small class='log-bad'>"+esc(errMsg(e))+"</small>"; }
+}
+$("refreshTxs").onclick=()=>renderTxList();
+$("inspectTxBtn").onclick=()=>{ const h=$("txHashInput").value.trim(); if(!/^0x[0-9a-fA-F]{64}$/.test(h)) return bad("enter a 32-byte tx hash (0x…64 hex)"); viewTx(h); };
+
+// ══ scenario recorder ═══════════════════════════════════════════════════════════════════════
+// Every user action runs through run(name, params): execute via ACTIONS[name], then (if recording)
+// append the step to `recording`. The script tab shows the steps as editable JSON; replay() runs them
+// top-to-bottom against the current node, so a recorded session is a re-runnable / editable scenario.
+let recording = [], archive = [], lastAction = null;
+function mustMarket(){ const m=activeMarket(); if(!m) throw new Error("no active market"); if(!signer) throw new Error("connect first"); return m; }
+function onMarketChange(){ renderMktAddrs(); refreshPrice(); refreshMktCtl(); refreshGuardian(); refreshCommittee(); renderOverview(); renderParticipants(); }
+
+const ACTIONS = {
+  // setup (server-backed forge; always signs with the account-dropdown key)
+  deployCore: async()=>{ const r=await api("/api/deploy/core",{rpc:$("rpc").value.trim(),privateKey:$("signer").value}); core=r.core; guardianSignals=r.guardianSignals; ok("core "+short(core)+" · guardian "+short(guardianSignals)); (r.txHashes||[]).forEach(h=>logTx(h,"deployCore")); await refreshStatus(); },
+  deployToken: async(p)=>{ const r=await api("/api/deploy/token",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,symbol:p.symbol,decimals:Number(p.decimals)}); ok("token "+r.token.symbol+" "+short(r.token.address)); (r.txHashes||[]).forEach(h=>logTx(h,"deployToken")); await refreshStatus(); },
+  createMarket: async(p)=>{ if(!core) throw new Error("deploy core first"); p.loan=resolveToken(p.loan); p.collateral=resolveToken(p.collateral); const [ld,cd]=await Promise.all([readDecimals(p.loan),readDecimals(p.collateral)]); const oraclePrice=E.parseUnits(String(p.price),36+ld-cd).toString(); const lltv=E.parseUnits(String(p.lltv),18).toString(); const minActivation=E.parseUnits(String(p.minActivation),cd).toString(); const r=await api("/api/market/create",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,core,loanToken:p.loan,collateralToken:p.collateral,oraclePrice,lltv,minActivation}); ok("market "+short(r.market.vault)); (r.txHashes||[]).forEach(h=>logTx(h,"createMarket")); await refreshStatus(); $("activeMarket").value=String(markets.length-1); onMarketChange(); },
+  selectMarket: async(p)=>{ $("activeMarket").value=String(p.index); onMarketChange(); ok("active market #"+p.index); },
+  // actor
+  actAs: async(p)=>{ await doImpersonate(p.address); },
+  useKey: async()=>{ doUseKey(); },
+  // seed
+  mint: async(p)=>{ const t=new E.Contract(p.token,ERC20,signer); const dec=await t.decimals(); await (await t.mint(E.getAddress(p.to),E.parseUnits(String(p.amount),dec))).wait(); ok("minted "+p.amount+" "+tokLabel(p.token)+" → "+short(p.to)); },
+  deal: async(p)=>{ const dec=await readDecimals(p.token); const slot=await deal(p.token,E.getAddress(p.to),E.parseUnits(String(p.amount),dec),p.slot!==undefined?String(p.slot):""); ok("set balance "+p.amount+" "+tokLabel(p.token)+" → "+short(p.to)+" (slot "+slot+")"); },
+  // fund the active market's loan/collateral token to an actor, addressed by side so a script needs no token address
+  fund: async(p)=>{ const m=mustMarket(); const token=String(p.side).toLowerCase()==="collateral"?m.collateralToken:m.loanToken; const dec=await readDecimals(token); await deal(token,E.getAddress(p.to),E.parseUnits(String(p.amount),dec),""); watchAddress(p.to); ok("funded "+p.amount+" "+tokLabel(token)+" → "+short(p.to)); },
+  // register addresses in the participants watch-list (so a scenario's cast shows up in the active-market table)
+  watch: async(p)=>{ const list=Array.isArray(p.addresses)?p.addresses:(p.address?[p.address]:[]); list.forEach(watchAddress); renderParticipants(); ok("watching "+list.length+" address(es)"); },
+  setEth: async(p)=>{ const wei=E.parseEther(String(p.amount)); await provider.send("anvil_setBalance",[E.getAddress(p.to),"0x"+wei.toString(16)]); ok("set ETH "+short(p.to)+" = "+p.amount); },
+  // time / chain
+  warp: async(p)=>{ const dt=Math.max(1,Number(p.seconds)); const iv=blockInterval(); const CAP=300; let n=Math.max(1,Math.round(dt/iv)),sp=iv; if(n>CAP){n=CAP;sp=Math.max(1,Math.floor(dt/n));} const ts0=await latestTs(); if(n>1){ await provider.send("evm_setNextBlockTimestamp",[ts0+sp]); await provider.send("anvil_mine",["0x"+(n-1).toString(16),"0x"+sp.toString(16)]); } await provider.send("evm_setNextBlockTimestamp",[ts0+dt]); await provider.send("evm_mine",[]); ok("warped +"+dt+"s"); refreshChain(); },
+  mine: async(p)=>{ const n=Math.max(1,Number(p.blocks)); await mineBlocks(n,blockInterval()); ok("mined "+n+" block(s)"); refreshChain(); },
+  setNextTs: async(p)=>{ await provider.send("evm_setNextBlockTimestamp",[Number(p.ts)]); await mineOne(); ok("next ts "+p.ts); refreshChain(); },
+  freezeChain: async()=>{ await provider.send("evm_setIntervalMining",[0]); await provider.send("evm_setAutomine",[false]); ok("chain frozen"); },
+  resumeChain: async()=>{ await provider.send("evm_setAutomine",[true]); ok("chain resumed"); refreshChain(); },
+  intervalMine: async(p)=>{ const s=Number(p.seconds); await provider.send("evm_setIntervalMining",[s]); ok(s>0?("interval-mine "+s+"s"):"interval-mine off"); refreshChain(); },
+  snapshot: async()=>{ lastSnap=await provider.send("evm_snapshot",[]); ok("snapshot "+lastSnap); },
+  revertSnapshot: async()=>{ if(!lastSnap) throw new Error("take a snapshot first"); await provider.send("evm_revert",[lastSnap]); lastSnap=await provider.send("evm_snapshot",[]); ok("reverted to snapshot"); refreshChain(); refreshMktCtl(); refreshGuardian(); },
+  // oracle
+  setPrice: async(p)=>{ const m=mustMarket(); const scale=await oracleScale(m.loanToken,m.collateralToken); await (await new E.Contract(m.oracle,ORACLE,signer).setPrice(E.parseUnits(String(p.price),scale))).wait(); ok("price → "+p.price); refreshPrice(); },
+  bumpPrice: async(p)=>{ const m=mustMarket(); const o=new E.Contract(m.oracle,ORACLE,signer); const scale=await oracleScale(m.loanToken,m.collateralToken); const cur=await o.price(); const bps=BigInt(Math.round(Number(p.pct)*100)); const np=cur*(10000n+bps)/10000n; await (await o.setPrice(np)).wait(); ok((Number(p.pct)>=0?"+":"")+p.pct+"% → "+E.formatUnits(np,scale)); refreshPrice(); },
+  crashPrice: async(p)=>{ await ACTIONS.bumpPrice({pct:(p&&p.pct!==undefined)?p.pct:-50}); },
+  // market control
+  marketFreeze: async()=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CONTROLLER,signer).freeze()).wait(); ok("market frozen"); refreshMktCtl(); },
+  marketUnfreeze: async()=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CONTROLLER,signer).unfreeze()).wait(); ok("market unfrozen"); refreshMktCtl(); },
+  marketPause: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CONTROLLER,signer).pauseFor(BigInt(p.seconds))).wait(); ok("market paused "+p.seconds+"s"); refreshMktCtl(); },
+  marketResume: async()=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CONTROLLER,signer).resume()).wait(); ok("market resumed"); refreshMktCtl(); },
+  // guardian
+  flag: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).flag(m.marketId,[E.getAddress(p.account)],await lastScanned())).wait(); ok("flagged "+short(p.account)); refreshGuardian(); },
+  unflag: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unflag(m.marketId,[E.getAddress(p.account)],await lastScanned())).wait(); ok("unflagged "+short(p.account)); refreshGuardian(); },
+  suspect: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).suspect(m.marketId,[E.getAddress(p.account)],await lastScanned())).wait(); ok("suspected "+short(p.account)); refreshGuardian(); },
+  unsuspect: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unsuspect(m.marketId,[E.getAddress(p.account)],await lastScanned())).wait(); ok("unsuspected "+short(p.account)); refreshGuardian(); },
+  ban: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).ban(m.marketId,E.getAddress(p.account))).wait(); ok("banned "+short(p.account)); refreshGuardian(); },
+  unban: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unban(m.marketId,E.getAddress(p.account))).wait(); ok("unbanned "+short(p.account)); refreshGuardian(); },
+  addGuardian: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).addGuardian(E.getAddress(p.address))).wait(); ok("guardian added"); refreshCommittee(); },
+  removeGuardian: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).removeGuardian(E.getAddress(p.address))).wait(); ok("guardian removed"); refreshCommittee(); },
+  setQuorum: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).setQuorum(BigInt(p.n))).wait(); ok("quorum = "+p.n); refreshCommittee(); },
+  setSuspectWindow: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).setSuspectWindow(BigInt(p.n))).wait(); ok("suspect window = "+p.n+"s"); refreshCommittee(); },
+  // lender / borrower / keeper
+  deposit: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const assets=E.parseUnits(String(p.amount),dec); await ensureApprove(m.loanToken,m.vault,assets); const me=await signer.getAddress(); await (await new E.Contract(m.vault,VAULT4626,signer).deposit(assets,me)).wait(); ok("deposited "+p.amount); },
+  withdraw: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const me=await signer.getAddress(); await (await new E.Contract(m.vault,VAULT4626,signer).withdraw(E.parseUnits(String(p.amount),dec),me,me)).wait(); ok("withdrew "+p.amount); },
+  redeem: async(p)=>{ const m=mustMarket(); const me=await signer.getAddress(); await (await new E.Contract(m.vault,VAULT4626,signer).redeem(E.parseUnits(String(p.shares),18),me,me)).wait(); ok("redeemed "+p.shares+" shares"); },
+  withdrawMax: async()=>{ const m=mustMarket(); const me=await signer.getAddress(); const v=new E.Contract(m.vault,VAULT4626,signer); const max=await v.maxWithdraw(me); await (await v.withdraw(max,me,me)).wait(); ok("withdrew max"); },
+  fallbackExit: async(p)=>{ const m=mustMarket(); const me=await signer.getAddress(); await (await new E.Contract(m.vault,VAULT4626,signer).fallbackExit(E.parseUnits(String(p.shares),18),me,me,BigInt(p.maxIterations||10))).wait(); ok("fallback-exited "+p.shares+" shares"); },
+  settle: async(p)=>{ const m=mustMarket(); const me=await signer.getAddress(); const borrowers=(p.borrowers||[]).map(a=>E.getAddress(a)); if(!borrowers.length) throw new Error("settle needs a borrowers list"); await (await new E.Contract(m.vault,VAULT4626,signer).settle(E.parseUnits(String(p.shares),18),borrowers,me,me)).wait(); ok("settled "+p.shares+" shares over "+borrowers.length+" borrower(s)"); },
+  coreSupply: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const assets=E.parseUnits(String(p.amount),dec); await ensureApprove(m.loanToken,m.core,assets); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).supply(mp(m),assets,0n,me,"0x")).wait(); ok("supplied "+p.amount+" → core"); },
+  coreWithdraw: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).withdraw(mp(m),E.parseUnits(String(p.amount),dec),0n,me,me)).wait(); ok("withdrew "+p.amount+" ← core"); },
+  coreWithdrawAll: async()=>{ const m=mustMarket(); const me=await signer.getAddress(); const c=new E.Contract(m.core,MORPHO,signer); const pos=await c.position(m.marketId,me); if(pos.supplyShares===0n) throw new Error("no core supply"); await (await c.withdraw(mp(m),0n,pos.supplyShares,me,me)).wait(); ok("withdrew all core supply"); },
+  supplyCollateral: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.collateralToken); const amt=E.parseUnits(String(p.amount),dec); await ensureApprove(m.collateralToken,m.core,amt); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).supplyCollateral(mp(m),amt,me,"0x")).wait(); ok("supplied "+p.amount+" collateral"); },
+  borrow: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const amt=E.parseUnits(String(p.amount),dec); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).borrow(mp(m),amt,0n,me,me)).wait(); ok("borrowed "+p.amount); },
+  repay: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const amt=E.parseUnits(String(p.amount),dec); await ensureApprove(m.loanToken,m.core,E.MaxUint256); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).repay(mp(m),amt,0n,me,"0x")).wait(); ok("repaid "+p.amount); },
+  repayAll: async()=>{ const m=mustMarket(); const me=await signer.getAddress(); const c=new E.Contract(m.core,MORPHO,signer); const pos=await c.position(m.marketId,me); if(pos.borrowShares===0n) throw new Error("no debt"); await ensureApprove(m.loanToken,m.core,E.MaxUint256); await (await c.repay(mp(m),0n,pos.borrowShares,me,"0x")).wait(); ok("repaid all"); },
+  withdrawCollateral: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.collateralToken); const amt=E.parseUnits(String(p.amount),dec); const me=await signer.getAddress(); await (await new E.Contract(m.core,MORPHO,signer).withdrawCollateral(mp(m),amt,me,me)).wait(); ok("withdrew "+p.amount+" collateral"); },
+  liquidate: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.collateralToken); const seized=E.parseUnits(String(p.seize),dec); await ensureApprove(m.loanToken,m.core,E.MaxUint256); await (await new E.Contract(m.core,MORPHO,signer).liquidate(mp(m),E.getAddress(p.borrower),seized,0n,"0x")).wait(); ok("liquidated "+short(p.borrower)); },
+  // seize a borrower's WHOLE on-chain collateral (read live, so no exact-amount guessing) — the reliable way to
+  // drive a bad-debt liquidation: zeroing collateral while debt remains makes the core socialize the residual
+  liquidateMax: async(p)=>{ const m=mustMarket(); const c=new E.Contract(m.core,MORPHO,signer); const pos=await c.position(m.marketId,E.getAddress(p.borrower)); if(pos.collateral===0n) throw new Error("no collateral to seize"); await ensureApprove(m.loanToken,m.core,E.MaxUint256); await (await c.liquidate(mp(m),E.getAddress(p.borrower),pos.collateral,0n,"0x")).wait(); ok("liquidated (max seize) "+short(p.borrower)); },
+  // controller config
+  setSupplyCap: async(p)=>{ const m=mustMarket(); const dec=await readDecimals(m.loanToken); const cap=Number(p.cap)===0?0n:E.parseUnits(String(p.cap),dec); await (await new E.Contract(m.controller,CTLCFG,signer).setSupplyCap(cap)).wait(); ok("supply cap "+p.cap); },
+  grantInstantActivation: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CTLCFG,signer).grantInstantActivation(E.getAddress(p.caller))).wait(); ok("instant activation granted "+short(p.caller)); },
+  revokeInstantActivation: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CTLCFG,signer).revokeInstantActivation(E.getAddress(p.caller))).wait(); ok("instant activation revoked "+short(p.caller)); },
+  setSettlementLtv: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CTLCFG,signer).setSettlementLtv(E.parseUnits(String(p.ltv),18))).wait(); ok("settlement ltv "+p.ltv); },
+  setSettlementConfig: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CTLCFG,signer).setSettlementConfig(p.values.map(v=>parseBig(v)))).wait(); ok("settlement config set"); },
+  setActivationConfig: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CTLCFG,signer).setCollateralActivationConfig(p.values.map(v=>parseBig(v)))).wait(); ok("activation config set"); },
+  setCurveParams: async(p)=>{ const m=mustMarket(); if(!m.adaptive) throw new Error("no adaptive irm"); await (await new E.Contract(m.adaptive,ADAPTIVE,signer).setMarketCurveParams(mp(m),p.values.map(v=>parseSigned(v)))).wait(); ok("curve params set"); },
+};
+
+// `recording` mirrors the server-persisted history; `archive` holds past sessions (kept across restarts)
+function renderHistory(){
+  $("historyBox").value = JSON.stringify(recording, null, 2);
+  $("historyArchive").innerHTML = archive.length
+    ? "<small>archived sessions (kept across node restarts):</small>"+archive.map((h,i)=>`<div class="addr" onclick="loadArchive(${i})">↺ ${h.reason} · ${h.steps.length} step(s) — load into input</div>`).join("")
+    : "";
+}
+function loadArchive(i){ const h=archive[i]; if(!h) return; $("scriptInput").value=JSON.stringify(h.steps,null,2); ok("loaded archived session ("+h.steps.length+" steps) into input"); }
+// actions NOT sent as the signer (cheats, node/time control, actor switch, forge-key deploys); everything
+// else is a tx from the current signer, so we stamp `from` for explicit, reorder-safe scripts.
+const NO_FROM = new Set(["actAs","useKey","selectMarket","deployCore","deployToken","createMarket","warp","mine","setNextTs","freezeChain","resumeChain","intervalMine","snapshot","revertSnapshot","deal","setEth","fund","watch"]);
+async function recordStep(name, params){
+  const step=Object.assign({a:name}, params||{}); if(!NO_FROM.has(name) && signer) step.from=signer.address;
+  try{ const r=await api("/api/history",{step}); recording=r.history; }catch{ recording.push(step); }
+  renderHistory();
+}
+async function run(name, params){ const fn=ACTIONS[name]; if(!fn) throw new Error("unknown action: "+name); lastAction=name; await fn(params||{}); await recordStep(name, params); }
+// thin wrapper for a button: gather params from the DOM, run+record, decode errors
+function act(name, paramsFn){ return async()=>{ try{ await run(name, paramsFn?paramsFn():{}); }catch(e){ bad(errMsg(e)); } }; }
+// run the pasted script: each step executes (impersonating its `from`) AND is appended to history
+async function runScript(){
+  let steps; try{ steps=JSON.parse($("scriptInput").value); }catch(e){ return bad("script JSON parse error: "+e.message); }
+  if(!Array.isArray(steps)) return bad("script must be a JSON array of steps");
+  ok("▶ run "+steps.length+" step(s)…");
+  for(let i=0;i<steps.length;i++){ const s=steps[i]||{}; const a=s.a; const {a:_drop, from, ...params}=s;
+    // auto-register every address the step touches into the participants watch-list, so the scenario's cast appears
+    [from,params.to,params.borrower,params.account,params.caller].forEach(watchAddress); if(Array.isArray(params.borrowers)) params.borrowers.forEach(watchAddress); if(Array.isArray(params.addresses)) params.addresses.forEach(watchAddress);
+    const fn=ACTIONS[a];
+    if(!fn){ bad("step "+(i+1)+": unknown action \""+a+"\""); return; }
+    try{
+      if(from && (!signer || signer.address.toLowerCase()!==String(from).toLowerCase())) await doImpersonate(from);
+      log("· ["+(i+1)+"/"+steps.length+"] "+a+(from?(" (from "+short(from)+")"):""),"log-mut");
+      lastAction=a;
+      await fn(params);
+      await recordStep(a, params); // executed script steps are recorded to history too
+    }catch(e){ bad("step "+(i+1)+" ("+a+"): "+errMsg(e)); return; } }
+  ok("✓ script done");
+}
+$("runScriptBtn").onclick=()=>runScript();
+// load a local JSON scenario file into the input (client-side)
+$("scriptLoadBtn").onclick=()=>$("scriptFilePick").click();
+$("scriptFilePick").onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ $("scriptInput").value=r.result; ok("loaded "+f.name+" into input"); }; r.readAsText(f); e.target.value=""; };
+
+// run the heavy activity in node (server spawns tools/run-scenario.js --from-server against this chain); poll its log
+let scenPoll=null;
+async function scenRefresh(){ try{ const s=await api("/api/scenario/status"); $("scenLog").value=s.log||""; $("scenLog").scrollTop=$("scenLog").scrollHeight; if(!s.running && scenPoll){ clearInterval(scenPoll); scenPoll=null; refreshStatus(); if(curGroup==="market"){ renderOverview(); renderParticipants(); } } }catch(e){} }
+let scenPicked=null;
+$("scenPickBtn").onclick=()=>$("scenFilePick").click();
+$("scenFilePick").onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ scenPicked=r.result; $("scenFile").value=f.name; ok("picked "+f.name+" — its contents will be sent to the node runner"); }; r.readAsText(f); e.target.value=""; };
+$("scenFile").oninput=()=>{ scenPicked=null; }; // typing/editing a path overrides a picked file
+$("scenRunBtn").onclick=async()=>{ try{ const body=scenPicked?{content:scenPicked}:{file:$("scenFile").value.trim()}; await api("/api/scenario/run",body); ok("node runner started — watch the log below"); if(scenPoll) clearInterval(scenPoll); scenPoll=setInterval(scenRefresh,1500); scenRefresh(); }catch(e){ bad(errMsg(e)); } };
+$("scenStopBtn").onclick=async()=>{ try{ await api("/api/scenario/stop",{}); ok("node runner stopped"); setTimeout(scenRefresh,300); }catch(e){ bad(errMsg(e)); } };
+
+// populate the scenarios-folder dropdowns (browsers can't point a file dialog at a folder, so pick from this list)
+async function loadScenarioList(){ try{ const r=await api("/api/scenarios"); const opts='<option value="">— scenarios/ —</option>'+(r.files||[]).map(f=>`<option value="${f}">${f}</option>`).join(""); $("scenSelect").innerHTML=opts; $("scriptSelect").innerHTML=opts; }catch(e){} }
+$("scenSelect").onchange=(e)=>{ const f=e.target.value; if(!f) return; $("scenFile").value="dev-dashboard/scenarios/"+f; scenPicked=null; ok("selected "+f); e.target.value=""; };
+$("scriptSelect").onchange=async(e)=>{ const f=e.target.value; if(!f) return; try{ const t=await (await fetch("/scenarios/"+encodeURIComponent(f))).text(); $("scriptInput").value=t; ok("loaded "+f+" into input"); }catch(err){ bad("load failed: "+errMsg(err)); } e.target.value=""; };
+loadScenarioList();
+$("clearInputBtn").onclick=()=>{ $("scriptInput").value=""; };
+$("histToInputBtn").onclick=()=>{ $("scriptInput").value=$("historyBox").value; ok("history copied into input — edit & run"); };
+$("histClearBtn").onclick=async()=>{ try{ const r=await api("/api/history/clear",{}); recording=r.history||[]; archive=r.archive||[]; renderHistory(); ok("history archived & cleared"); }catch(e){ bad(errMsg(e)); } };
+$("histCopyBtn").onclick=()=>{ navigator.clipboard.writeText($("historyBox").value); ok("history copied"); };
+$("histExportBtn").onclick=()=>{ const blob=new Blob([$("historyBox").value],{type:"application/json"}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download="scenario.json"; a.click(); URL.revokeObjectURL(url); ok("scenario.json downloaded"); };
+
+refreshStatus();
+log("ready. start a node → deploy core → deploy mock tokens → create market.","log-mut");
+</script>
+</body>
+</html>
