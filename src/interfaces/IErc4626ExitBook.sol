@@ -17,7 +17,7 @@ interface IErc4626ExitBook is IExitBook {
     /// @param id The request id.
     function vaultOf(uint256 id) external view returns (IERC4626);
 
-    /// @notice Allow or disallow `vault` for new requests. Owner only.
+    /// @notice Allow or disallow `vault` for new requests. `ALLOWLIST_MANAGER_ROLE` only.
     /// @param vault The vault to allow or disallow.
     /// @param allowed True to allow new requests against it; false to block them (already-placed ones still fill).
     function setVaultAllowed(IERC4626 vault, bool allowed) external;

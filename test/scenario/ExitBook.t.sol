@@ -129,10 +129,14 @@ contract ExitBookTest is Test, LidoLendDeployer {
         );
 
         vaultBook = new Erc4626ExitBook(address(this), MAX_LIFETIME);
+        vaultBook.grantRole(vaultBook.ALLOWLIST_MANAGER_ROLE(), address(this));
+        vaultBook.grantRole(vaultBook.FEE_MANAGER_ROLE(), address(this));
         vaultBook.setVaultAllowed(IERC4626(d.vault), true);
         vaultBook.setServiceFee(FEE_RECIPIENT, SERVICE_FEE);
 
         morphoBook = new MorphoExitBook(d.core, address(this), MAX_LIFETIME);
+        morphoBook.grantRole(morphoBook.ALLOWLIST_MANAGER_ROLE(), address(this));
+        morphoBook.grantRole(morphoBook.FEE_MANAGER_ROLE(), address(this));
         morphoBook.setMarketAllowed(d.params, true);
         morphoBook.setServiceFee(FEE_RECIPIENT, SERVICE_FEE);
     }

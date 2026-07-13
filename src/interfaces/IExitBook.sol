@@ -12,7 +12,7 @@ interface IExitBook {
     // CONFIG
     // ---
 
-    /// @notice Set the service fee and its recipient. Owner only.
+    /// @notice Set the service fee and its recipient. `FEE_MANAGER_ROLE` only.
     /// @param recipient Address paid the service fee (a cut of each fill's filler reward); the zero address is
     ///        allowed only when `fee` is 0.
     /// @param fee Service-fee rate (WAD), capped at `MAX_SERVICE_FEE`.

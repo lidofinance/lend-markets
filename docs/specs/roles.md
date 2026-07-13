@@ -98,9 +98,12 @@ The committee holds the fast risk-reducing side (`ban`) and governance the slow 
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
-| owner | `setServiceFee` (fee recipient and rate, capped at `MAX_SERVICE_FEE` = 25%), `transferOwnership`, `renounceOwnership`, plus the concrete book's source allow-list (`setVaultAllowed` / `setMarketAllowed`) | C4 | Lido DAO (Voting + Dual Governance) |
+| `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO (Voting + Dual Governance) |
+| `ALLOWLIST_MANAGER_ROLE` | the concrete book's source allow-list (`setMarketAllowed` / `setVaultAllowed`) | C4 | EasyTrack (objection window) |
+| `FEE_MANAGER_ROLE` | `setServiceFee` (fee recipient and rate, capped at `MAX_SERVICE_FEE` = 25%) | C4 | Lido DAO |
+| `RECOVERER_ROLE` | asset recovery (`recoverEther` / `recoverERC20` / `recoverERC721` / `recoverERC1155`) | C4 | Lido DAO |
 
-The exit book is plain `Ownable` set at construction, not behind an `OssifiableProxy` — the owner is its only privileged surface, with no separate upgrade authority. `setServiceFee` directs the service's cut of the filler's gross reward within the 25% cap, and cannot reach lender or borrower funds. Ownership transfers and renounces through `Ownable`, and `renounceOwnership` permanently abandons `setServiceFee` and allow-list control. A concrete book additionally gates which sources it serves through an owner allow-list.
+The exit book is `AccessControl` set at construction, not behind an `OssifiableProxy` — its roles are its only privileged surface, with no separate upgrade authority. Each capability sits on its own role so it can be delegated independently: `ALLOWLIST_MANAGER_ROLE` splits the source allow-list off so enabling a market or vault is a routine risk-increase that can run through the EasyTrack objection window; `FEE_MANAGER_ROLE` sets the service fee (a cut of the filler's gross reward within the 25% cap, reaching no lender or borrower funds); `RECOVERER_ROLE` recovers tokens held by the contract. `DEFAULT_ADMIN_ROLE` only administers the roles. At construction `admin` holds all of them, and a deploy delegates each capability role to its final holder and revokes it from `admin`.
 
 ## Non-role actors
 

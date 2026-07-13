@@ -54,6 +54,8 @@ contract ExitBookSolvencyInvariant is Test {
         asset = new MockAsset();
         vault = new MockVault(IERC20(address(asset)));
         book = new Erc4626ExitBook(address(this), MAX_LIFETIME);
+        book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), address(this));
+        book.grantRole(book.FEE_MANAGER_ROLE(), address(this));
         book.setVaultAllowed(IERC4626(address(vault)), true);
         // A non-zero service fee so the service leg participates in the conservation identity.
         book.setServiceFee(FEE_RECIPIENT, 0.2e18);

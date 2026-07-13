@@ -136,6 +136,12 @@ event ServiceFeeSet(address indexed feeRecipient, uint256 serviceFee);
 
 ### Errors
 
+#### `ZeroAddress`
+
+```solidity
+error ZeroAddress();
+```
+
 #### `ZeroShares`
 
 ```solidity
@@ -229,7 +235,7 @@ function setServiceFee(address recipient, uint256 fee) external;
 | `recipient` | `address` | Address paid the service fee (a cut of each fill's filler reward); the zero address is allowed only when `fee` is 0. |
 | `fee` | `uint256` | Service-fee rate (WAD), capped at `MAX_SERVICE_FEE`. |
 
-Set the service fee and its recipient. Owner only.
+Set the service fee and its recipient. `FEE_MANAGER_ROLE` only.
 
 #### `fillExitRequest`
 
@@ -478,7 +484,7 @@ function setVaultAllowed(IERC4626 vault, bool allowed) external;
 | `vault` | `IERC4626` | The vault to allow or disallow. |
 | `allowed` | `bool` | True to allow new requests against it; false to block them (already-placed ones still fill). |
 
-Allow or disallow `vault` for new requests. Owner only.
+Allow or disallow `vault` for new requests. `ALLOWLIST_MANAGER_ROLE` only.
 
 #### `placeExitRequest`
 
@@ -610,7 +616,7 @@ function setMarketAllowed(
 | `marketParams` | `MarketParams` | The market's full params; its id (the params' hash) is the allow-list key. |
 | `allowed` | `bool` | True to allow new requests against it; false to block them (already-placed ones still fill). |
 
-Register `marketParams` (which must name a live Morpho market, checked on both allow and disallow) and allow or disallow it for new requests. The params are kept permanently (so requests already placed stay fillable after a disallow); disallowing only flips the gate. Owner only.
+Register `marketParams` (which must name a live Morpho market, checked on both allow and disallow) and allow or disallow it for new requests. The params are kept permanently (so requests already placed stay fillable after a disallow); disallowing only flips the gate. `ALLOWLIST_MANAGER_ROLE` only.
 
 #### `placeExitRequest`
 
