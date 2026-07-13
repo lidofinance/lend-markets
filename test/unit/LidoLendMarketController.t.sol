@@ -847,6 +847,12 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── views ──
 
+    /// @dev The controller exposes the guardian-signals registry it was wired with at deploy.
+    function test_guardianSignals_returnsWiredRegistry() public view {
+        Market storage m = _m();
+        assertEq(m.controller.guardianSignals(), address(m.guardianSignals), "controller exposes its registry");
+    }
+
     // ── lender limits: maxDeposit / maxWithdrawableAssets ──
 
     /// @dev No cap and not paused: supply is unconstrained, so the ceiling is the ERC-4626 sentinel.
