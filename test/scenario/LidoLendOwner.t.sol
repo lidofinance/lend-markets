@@ -40,10 +40,10 @@ contract LidoLendOwnerTest is Test {
     address internal irm;
 
     function setUp() public {
-        // Core impl is pinned to solc 0.8.30, so it is deployed from its compiled artifact via `getCode`. That
-        // artifact is emitted only when `test/utils/_LidoLendCompileTrigger.sol` compiles, which a full
-        // `forge test` does but a filtered (`--match-path`/`--match-contract`) sparse compile does not. Detect
-        // its absence and skip with a clear reason instead of failing with an opaque `getCode` error.
+        // The core is deployed from its compiled artifact via `getCode`. That artifact is emitted only when
+        // `test/utils/_LidoLendCompileTrigger.sol` compiles, which a full `forge test` does but a filtered
+        // (`--match-path`/`--match-contract`) sparse compile does not. Detect its absence and skip with a clear
+        // reason instead of failing with an opaque `getCode` error.
         bytes memory creationCode;
         try this.coreCreationCode() returns (bytes memory code) {
             creationCode = code;
@@ -72,7 +72,7 @@ contract LidoLendOwnerTest is Test {
 
     /// @dev External wrapper so the `getCode` cheatcode revert (artifact absent) is catchable in `setUp`.
     function coreCreationCode() external returns (bytes memory) {
-        return vm.getCode("lib/lido-lend/src/LidoLend.sol:LidoLend");
+        return vm.getCode("LidoLend");
     }
 
     // ---
@@ -311,11 +311,13 @@ contract LidoLendOwnerTest is Test {
     // CONSTRUCTOR
     // ---
 
+    /// @dev Constructing the facade with a zero core address reverts with `ZeroAddress`.
     function testRevert_constructor_zeroCore() public {
         vm.expectRevert(ILidoLendOwner.ZeroAddress.selector);
         new LidoLendOwner(ILidoLend(address(0)), ADMIN, address(0), address(0));
     }
 
+    /// @dev Constructing the facade with a zero admin address reverts with `ZeroAddress`.
     function testRevert_constructor_zeroAdmin() public {
         vm.expectRevert(ILidoLendOwner.ZeroAddress.selector);
         new LidoLendOwner(core, address(0), address(0), address(0));
