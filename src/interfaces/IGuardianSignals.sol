@@ -7,7 +7,7 @@ import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
 /// @notice Guardian-committee signal layer over accounts, keyed per market. Each committee seat is a *guardian* with a
-///         rotatable operator key and an immutable guardian key: the operator only raises signals (flag, suspect), the
+///         rotatable operator key and a persistent guardian key: the operator only raises signals (flag, suspect), the
 ///         guardian also retracts them and rotates the operator key. A `quorum` of distinct guardians' flags latches a
 ///         ban in the market it was raised in. The minimal read surface the market controller depends on (`getOpinion`,
 ///         `isBanned`) is {IGuardianSignalsView}; this interface adds the full surface on top.
@@ -17,13 +17,13 @@ interface IGuardianSignals is IGuardianSignalsView {
     // ---
 
     /// @notice Emitted when a guardian is added.
-    /// @param guardian The seat's immutable guardian key (its stable id).
+    /// @param guardian The seat's persistent guardian key (its id).
     /// @param operator The guardian's rotatable operator key.
     event GuardianAdded(address indexed guardian, address indexed operator);
     /// @notice Emitted when a guardian is removed.
     event GuardianRemoved(address indexed guardian, address indexed operator);
     /// @notice Emitted when a guardian rotates its operator key.
-    /// @param guardian    The guardian (its immutable guardian key).
+    /// @param guardian    The guardian (its persistent guardian key).
     /// @param oldOperator The retired operator key.
     /// @param newOperator The new operator key.
     event OperatorRotated(address indexed guardian, address indexed oldOperator, address indexed newOperator);
@@ -107,13 +107,13 @@ interface IGuardianSignals is IGuardianSignalsView {
     // GUARDIANS & CONFIG (admin)
     // ---
 
-    /// @notice Add a guardian: an immutable guardian key paired with a rotatable operator key. Both must be non-zero,
+    /// @notice Add a guardian: a persistent guardian key paired with a rotatable operator key. Both must be non-zero,
     ///         distinct, and not already fill a guardian or operator role.
     function addGuardian(address guardian, address operator) external;
     /// @notice Remove the guardian `guardian`.
     function removeGuardian(address guardian) external;
     /// @notice Rotate the caller-guardian's operator key to `newOperator`. Guardian-only. Keeps the guardian's flags,
-    ///         suspect reports and heartbeat, since those are keyed by the immutable guardian id.
+    ///         suspect reports and heartbeat, since those are keyed by the persistent guardian id.
     function rotateOperator(address newOperator) external;
     /// @notice Set the quorum — the distinct guardians' flags that latch a ban.
     function setQuorum(uint256 newQuorum) external;
@@ -175,7 +175,8 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @param lastScannedBlock The operator's heartbeat, validated like `heartbeat`; ignored when a guardian calls.
     function flag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Retract the seat's flags on `accounts` in `marketId`. Guardian-only. Per account a no-op when the seat
-    ///         does not flag it. Never lifts a latched ban.
+    ///         does not flag it. Never lifts a ban in effect: a currently-effective ban (including a quorum-derived
+    ///         one) survives the retraction.
     function unflag(Id marketId, address[] calldata accounts) external;
     /// @notice Report `accounts` as suspect in `marketId`. Callable by the seat's operator or its guardian. A suspect
     ///         report never latches a ban; it raises the activation delay like a flag, but only while inside the

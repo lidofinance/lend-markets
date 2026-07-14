@@ -20,7 +20,7 @@ import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 contract GuardianSignalsTest is Test {
     GuardianSignals internal gs;
 
-    // Each seat is an immutable guardian key (Gn) paired with a rotatable operator key (On). Signals are keyed
+    // Each seat is a persistent guardian key (Gn) paired with a rotatable operator key (On). Signals are keyed
     // by the guardian, so `getFlaggedBy`/`getSuspectedBy` return Gn, not On.
     address internal constant O1 = address(0x4001);
     address internal constant O2 = address(0x4002);
@@ -525,7 +525,7 @@ contract GuardianSignalsTest is Test {
     // ── operator rotation ──
 
     /// @dev A guardian rotates its operator key: the old key loses signal rights, the new key gains them, and the
-    ///      seat's standing is untouched — flags stay keyed by the immutable guardian id.
+    ///      seat's standing is untouched — flags stay keyed by the persistent guardian id.
     function test_rotateOperator_movesRightsKeepsStanding() public {
         _flag(O1, BOB); // seat G1 flags via its operator O1
         address newOp = address(0x4201);

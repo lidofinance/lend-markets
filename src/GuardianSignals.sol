@@ -19,11 +19,11 @@ import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/Guar
 ///         latches a ban, scoped to the market it was raised in; softer suspect reports raise a borrower's
 ///         collateral-activation delay without banning. The market controller reads `getOpinion(marketId, account)`
 ///         to scale activation and hard-block borrowing.
-/// @dev    Each committee seat is a *guardian* with two keys: an immutable **guardian** key that governs the seat and
+/// @dev    Each committee seat is a *guardian* with two keys: a persistent **guardian** key that governs the seat and
 ///         a rotatable **operator** key (the bot that scans and raises signals). The operator may only raise signals
 ///         (`flag`, `suspect`); the guardian may raise them, retract them (`unflag`, `unsuspect`) and rotate the
 ///         operator key (`rotateOperator`). Both keys act on the same seat: flags, suspect reports and heartbeats are
-///         keyed by the immutable guardian address, so an operator-key rotation keeps the seat's standing. Governance
+///         keyed by the persistent guardian address, so an operator-key rotation keeps the seat's standing. Governance
 ///         (`MANAGER_ROLE`) adds/removes guardians and sets quorum and the suspect window. Upgradeable behind a proxy
 ///         (`initialize`, not a constructor), ERC-7201 namespaced storage. Events and errors are declared in
 ///         {IGuardianSignals}.
@@ -68,7 +68,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     uint40 private _suspectWindow;
     /// @dev Quorum-scan frontier: the highest timestamp a quorum of guardians have ever scanned past. Monotonic.
     uint40 private _quorumFrontierTimestamp;
-    /// @dev The committee guardians — one per seat. Each guardian is its seat's immutable id, so the flags,
+    /// @dev The committee guardians — one per seat. Each guardian is its seat's persistent id, so the flags,
     ///      suspect reports and heartbeats keyed by it survive a rotation of the seat's operator key.
     EnumerableSet.AddressSet private _guardians;
     /// @dev Guardian => its current operator key. Rotated by the guardian via `rotateOperator`.
@@ -228,7 +228,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @inheritdoc IGuardianSignals
     function heartbeat(BlockInfoWithHash calldata lastScannedBlock) external {
         // Liveness reflects the guardian bot's scan, so only the operator key heartbeats — not the guardian. The
-        // record is keyed by the guardian (the seat's stable id), so it survives an operator-key rotation.
+        // record is keyed by the guardian (the seat's persistent id), so it survives an operator-key rotation.
         address guardian = _guardianOf[msg.sender];
         if (guardian == address(0)) revert NotOperator();
         _heartbeat(guardian, lastScannedBlock);
@@ -444,7 +444,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         _quorum = newQuorum.toUint8();
     }
 
-    /// @dev Register a new guardian: an immutable guardian key + its rotatable operator key. Both must be free (each
+    /// @dev Register a new guardian: a persistent guardian key + its rotatable operator key. Both must be free (each
     ///      address may fill at most one role) and distinct.
     function _addGuardian(address guardian, address operator) internal {
         if (guardian == address(0) || operator == address(0)) revert ZeroAddress();

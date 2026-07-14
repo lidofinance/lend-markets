@@ -2,7 +2,7 @@
 
 # GuardianSignals
 
-Guardian-committee signal layer over accounts, keyed per market. Each committee seat is a *guardian* with a rotatable operator key and an immutable guardian key: the operator only raises signals (flag, suspect), the guardian also retracts them and rotates the operator key. A `quorum` of distinct guardians' flags latches a ban in the market it was raised in. The minimal read surface the market controller depends on (`getOpinion`, `isBanned`) is {IGuardianSignalsView}; this interface adds the full surface on top.
+Guardian-committee signal layer over accounts, keyed per market. Each committee seat is a *guardian* with a rotatable operator key and a persistent guardian key: the operator only raises signals (flag, suspect), the guardian also retracts them and rotates the operator key. A `quorum` of distinct guardians' flags latches a ban in the market it was raised in. The minimal read surface the market controller depends on (`getOpinion`, `isBanned`) is {IGuardianSignalsView}; this interface adds the full surface on top.
 
 ## Structs
 
@@ -62,7 +62,7 @@ event GuardianAdded(address indexed guardian, address indexed operator);
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `guardian` | `address` | The seat's immutable guardian key (its stable id). |
+| `guardian` | `address` | The seat's persistent guardian key (its id). |
 | `operator` | `address` | The guardian's rotatable operator key. |
 
 Emitted when a guardian is added.
@@ -85,7 +85,7 @@ event OperatorRotated(address indexed guardian, address indexed oldOperator, add
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `guardian` | `address` | The guardian (its immutable guardian key). |
+| `guardian` | `address` | The guardian (its persistent guardian key). |
 | `oldOperator` | `address` | The retired operator key. |
 | `newOperator` | `address` | The new operator key. |
 
@@ -341,7 +341,7 @@ Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
 function addGuardian(address guardian, address operator) external;
 ```
 
-Add a guardian: an immutable guardian key paired with a rotatable operator key. Both must be non-zero, distinct, and not already fill a guardian or operator role.
+Add a guardian: a persistent guardian key paired with a rotatable operator key. Both must be non-zero, distinct, and not already fill a guardian or operator role.
 
 ### `removeGuardian`
 
@@ -357,7 +357,7 @@ Remove the guardian `guardian`.
 function rotateOperator(address newOperator) external;
 ```
 
-Rotate the caller-guardian's operator key to `newOperator`. Guardian-only. Keeps the guardian's flags, suspect reports and heartbeat, since those are keyed by the immutable guardian id.
+Rotate the caller-guardian's operator key to `newOperator`. Guardian-only. Keeps the guardian's flags, suspect reports and heartbeat, since those are keyed by the persistent guardian id.
 
 ### `setQuorum`
 
@@ -532,7 +532,7 @@ Flag `accounts` in `marketId`. Callable by the seat's operator or its guardian; 
 function unflag(Id marketId, address[] calldata accounts) external;
 ```
 
-Retract the seat's flags on `accounts` in `marketId`. Guardian-only. Per account a no-op when the seat does not flag it. Never lifts a latched ban.
+Retract the seat's flags on `accounts` in `marketId`. Guardian-only. Per account a no-op when the seat does not flag it. Never lifts a ban in effect: a currently-effective ban (including a quorum-derived one) survives the retraction.
 
 ### `suspect`
 
