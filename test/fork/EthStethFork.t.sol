@@ -7,6 +7,7 @@ import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20} from "../setup/Mocks.sol";
+import {ForkTest} from "./helpers/ForkTest.sol";
 
 interface IWstETHReal {
     function getStETHByWstETH(uint256 wstETHAmount) external view returns (uint256);
@@ -16,28 +17,19 @@ interface IWstETHReal {
 /// @notice L3-style fork scenario for the eth/steth market against the REAL mainnet wstETH (the unit suites
 ///         cover the same math against mocks). Deploys a fresh protocol on a fork with wstETH collateral
 ///         priced by the live `WstEthRateOracle`, and borrows against it. Skips with no mainnet fork.
-contract EthStethForkTest is LidoLendSetup {
+contract EthStethForkTest is LidoLendSetup, ForkTest {
     using MarketActions for Market;
 
-    address internal constant WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+    address internal WSTETH; // from deployments/deployed-<network>.json (external.wstEth)
     MockERC20 internal weth;
-    bool internal forked;
 
     function setUp() public {
-        string memory url;
-        try vm.envString("MAINNET_RPC_URL") returns (string memory u) {
-            url = u;
-        } catch {
+        if (!_fork()) return;
+        if (!_hasAddr("external.wstEth")) {
             vm.skip(true);
             return;
         }
-        // The local archive node may be offline — skip rather than fail when the fork cannot be created.
-        try vm.createSelectFork(url) {
-            forked = true;
-        } catch {
-            vm.skip(true);
-            return;
-        }
+        WSTETH = _addr("external.wstEth");
         weth = new MockERC20("Wrapped Ether", "WETH", 18);
         _deployProtocol(_defaultConfig(address(weth), WSTETH, WSTETH));
     }

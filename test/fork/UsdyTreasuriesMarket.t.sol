@@ -7,6 +7,7 @@ import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
+import {ForkTest} from "./helpers/ForkTest.sol";
 
 interface IERC20Like {
     // No `returns (bool)`: USDT's approve/transfer return no data, so declaring a bool return would
@@ -48,13 +49,14 @@ interface IUsdyBlocklist {
 ///         USDT/USD feed. Verifies ADR-022's core constraint: USDY's transfer restriction means a
 ///         blocklisted address cannot receive seized collateral — so it can neither liquidate nor be
 ///         the fallback-exit receiver — while an eligible (non-blocklisted) address can.
-contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
+contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer, ForkTest {
     // Real mainnet addresses.
-    address internal constant USDY = 0x96F6eF951840721AdBF46Ac996b59E0235CB985C; // 18 dec, transfer-gated
-    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7; // 6 dec
-    address internal constant ONDO_ORACLE = 0xA0219AA5B31e65Bc920B5b6DFb8EdF0988121De0; // getPrice() 1e18
-    address internal constant USDT_USD_FEED = 0x3E7d1eAB13ad0104d2750B8863b489D65364e32D; // Chainlink, 8 dec
-    address internal constant USDY_BLOCKLIST = 0xd8c8174691d936E2C80114EC449037b13421B0a8; // Ownable
+    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    address internal USDY; // 18 dec, transfer-gated
+    address internal USDT; // 6 dec
+    address internal ONDO_ORACLE; // getPrice() 1e18
+    address internal USDT_USD_FEED; // Chainlink, 8 dec
+    address internal USDY_BLOCKLIST; // Ownable
 
     address internal constant LENDER = address(0x1000);
     address internal constant BORROWER = address(0x2000);
@@ -68,10 +70,6 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
     MarketParams internal params;
     Id internal marketId;
 
-    function _hasFork() internal view returns (bool) {
-        return block.chainid == 1 && USDY.code.length != 0 && USDT.code.length != 0;
-    }
-
     /// @dev Real oracle: USDY NAV (Ondo) quoted in USDT via the real Chainlink USDT/USD feed, behind an
     ///      `OssifiableProxy`. The USDY NAV oracle is baked into the shared impl; the per-market stable feed and
     ///      decimal-derived scale are bound via `initialize`.
@@ -82,7 +80,19 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
     }
 
     function setUp() public {
-        if (!_hasFork()) return;
+        if (!_fork()) return;
+        if (
+            !_hasAddr("external.usdy") || !_hasAddr("external.usdt") || !_hasAddr("external.ondoOracle")
+                || !_hasAddr("external.usdtUsdFeed") || !_hasAddr("external.usdyBlocklist")
+        ) {
+            vm.skip(true);
+            return;
+        }
+        USDY = _addr("external.usdy");
+        USDT = _addr("external.usdt");
+        ONDO_ORACLE = _addr("external.ondoOracle");
+        USDT_USD_FEED = _addr("external.usdtUsdFeed");
+        USDY_BLOCKLIST = _addr("external.usdyBlocklist");
 
         address[] memory guardians = new address[](1);
         guardians[0] = address(this);
@@ -154,8 +164,6 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
     /* T1 — liquidation respects USDY's blocklist */
 
     function test_liquidate_blocklistedCannot_allowlistedCan() public {
-        vm.skip(!_hasFork(), "mainnet fork required");
-
         // Lender funds the market with USDT liquidity.
         deal(USDT, LENDER, 2_000e6);
         vm.startPrank(LENDER);
@@ -195,8 +203,6 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer {
     /* T2 — vault fallback exit respects USDY's blocklist on the receiver */
 
     function test_fallbackExit_blocklistedReceiverCannot_allowlistedCan() public {
-        vm.skip(!_hasFork(), "mainnet fork required");
-
         // Lender deposits USDT into the vault (vault supplies to the market).
         deal(USDT, LENDER, 600e6);
         vm.startPrank(LENDER);

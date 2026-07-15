@@ -11,6 +11,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {ForkTest} from "./helpers/ForkTest.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -50,14 +51,15 @@ contract ControllableWstEthOracle is IOracle {
     }
 }
 
-contract HeapSettlementBenchmark is Test, LidoLendDeployer {
+contract HeapSettlementBenchmark is Test, LidoLendDeployer, ForkTest {
     using MarketParamsLib for MarketParams;
 
-    address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address internal constant WSTETH_ADDRESS = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    address internal WETH_ADDRESS;
+    address internal WSTETH_ADDRESS;
 
-    IWETH internal constant WETH = IWETH(WETH_ADDRESS);
-    IWstETH internal constant WSTETH = IWstETH(WSTETH_ADDRESS);
+    IWETH internal WETH;
+    IWstETH internal WSTETH;
 
     uint256 internal constant LLTV = 0.8e18;
     address internal constant LENDER = address(0x9000);
@@ -84,30 +86,38 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         uint256 gasUsed;
     }
 
+    function setUp() public {
+        if (!_fork()) return;
+        if (!_hasAddr("external.weth") || !_hasAddr("external.wstEth")) {
+            vm.skip(true);
+            return;
+        }
+        WETH_ADDRESS = _addr("external.weth");
+        WSTETH_ADDRESS = _addr("external.wstEth");
+        WETH = IWETH(WETH_ADDRESS);
+        WSTETH = IWstETH(WSTETH_ADDRESS);
+    }
+
     // ── Uniform-LTV scenarios
     // ──────────────────────────────────────
 
     /// @dev Benchmarks the settlement heap walk over 20 equal small (0.5) uniform-LTV positions on a quarter-pool exit.
     function test_AllSmallEqual() public {
-        _skip();
         _runUniform("AllSmallEqual(20x0.5)", 20, 0.5 ether, 0.7e18, 4);
     }
 
     /// @dev Benchmarks the settlement heap walk over 5 equal large (10) uniform-LTV positions on a quarter-pool exit.
     function test_AllLargeEqual() public {
-        _skip();
         _runUniform("AllLargeEqual(5x10)", 5, 10 ether, 0.7e18, 4);
     }
 
     /// @dev Benchmarks the settlement heap walk for a tiny (~1%) exit against a large uniform pool.
     function test_SmallExitLargePool() public {
-        _skip();
         _runUniform("SmallExit1%(10x5)", 10, 5 ether, 0.7e18, 100);
     }
 
     /// @dev Benchmarks the settlement heap walk for a 50% exit against a uniform pool.
     function test_LargeExit50Pct() public {
-        _skip();
         _runUniform("LargeExit50%(10x5)", 10, 5 ether, 0.7e18, 2);
     }
 
@@ -116,28 +126,24 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     /// @dev Benchmarks the settlement heap walk over a mixed debt profile (10 small + 3 large) on a quarter-pool exit.
     function test_MixedSmallAndLarge() public {
-        _skip();
         uint256[] memory debts = _buildDebts(10, 0.5 ether, 3, 10 ether);
         _runScenario(_deployCtx(), "Mixed(10x0.5+3x10)", debts, 0.7e18, _sum(debts) / 4);
     }
 
     /// @dev Benchmarks the heap walk when a dust tail is seeded before one whale (insertion order stresses the heap).
     function test_DustTailThenWhale() public {
-        _skip();
         uint256[] memory debts = _buildDebts(10, 0.1 ether, 1, 40 ether);
         _runScenario(_deployCtx(), "DustTailThenWhale(10x0.1+1x40)", debts, 0.7e18, _sum(debts) / 4);
     }
 
     /// @dev Benchmarks the heap walk when the whale is seeded before the dust tail (reverse insertion order).
     function test_WhaleThenDustTail() public {
-        _skip();
         uint256[] memory debts = _buildDebts(1, 40 ether, 10, 0.1 ether);
         _runScenario(_deployCtx(), "WhaleThenDustTail(1x40+10x0.1)", debts, 0.7e18, _sum(debts) / 4);
     }
 
     /// @dev Benchmarks the heap walk with two tied whales contending for the heap root plus smaller positions.
     function test_TwoEqualWhalesAtTop() public {
-        _skip();
         uint256[] memory debts = _buildDebts(2, 15 ether, 3, 3 ether);
         _runScenario(_deployCtx(), "TwoEqualWhales(2x15+3x3)", debts, 0.7e18, _sum(debts) / 4);
     }
@@ -147,7 +153,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     /// @dev Benchmarks the heap walk over positions spread across a gradient of LTVs (30%..72%).
     function test_GradientLTV() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 10;
         uint256[] memory debts = new uint256[](n);
@@ -161,7 +166,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     /// @dev Benchmarks the heap walk with positions clustered in a tight high-LTV band (69..71%) plus low-LTV outliers.
     function test_ClusterNearTop() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256[] memory debts = new uint256[](8);
         uint256[] memory ltvs = new uint256[](8);
@@ -179,7 +183,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     /// @notice Worst case for the heap walk: many large positions packed into a 2% LTV band, so
     ///         every cut barely re-orders the queue and the exit has to rotate through all of them.
     function test_ManyLargeCloseLTV() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 20;
         uint256[] memory debts = new uint256[](n);
@@ -196,7 +199,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     /// @dev Benchmarks repeated small exits (10 rounds) draining a uniform pool, tracking per-round iterations and gas.
     function test_SerialSmallExits() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256[] memory debts = _uniformDebts(10, 5 ether);
         uint256 total = _sum(debts);
@@ -224,7 +226,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     /// @dev Benchmarks the heap walk over 100 dust positions each withdrawn to a high (~78%) LTV.
     function test_100DustPositions() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         _seedDustBorrowers(ctx, 100, 0.3 ether, 0.78e18);
         _runDustScenario(ctx, "100DustPositions(100x0.3@~78%LTV)", 100, 0.3 ether, 4);
@@ -232,7 +233,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     /// @dev Benchmarks the heap walk over 1000 dust positions each withdrawn to a high (~78%) LTV.
     function test_1000DustPositions() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         _seedDustBorrowers(ctx, 1000, 0.3 ether, 0.78e18);
         _runDustScenario(ctx, "1000DustPositions(1000x0.3@~78%LTV)", 1000, 0.3 ether, 4);
@@ -240,7 +240,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     /// @dev Benchmarks the heap walk over 1000 mixed-size positions (900 small + 90 mid + 10 large) on a quarter exit.
     function test_1000MixedPositions() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 1000;
         uint256[] memory debts = new uint256[](n);
@@ -273,7 +272,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     /// @dev Benchmarks the heap walk over 99 low-LTV dust positions plus one high-value whale that the exit hits first.
     function test_DustAndOneWhale100() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 100;
         uint256 dustDebt = 0.3 ether;
@@ -318,7 +316,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     /// @dev Benchmarks fully draining 2000 dust positions across repeated settle transactions, totaling gas/iterations.
     function test_2000DustFullDrain() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 2000;
         uint256 debtPer = 0.3 ether;
@@ -646,14 +643,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     // ── Helpers
     // ─────────────────────────────────────────────────────
-
-    function _skip() internal {
-        vm.skip(!_hasMainnet(), "mainnet fork required");
-    }
-
-    function _hasMainnet() internal view returns (bool) {
-        return block.chainid == 1 && WETH_ADDRESS.code.length != 0 && WSTETH_ADDRESS.code.length != 0;
-    }
 
     function _borrowerAddr(uint256 i) internal pure returns (address) {
         return address(uint160(0x2000 + i));

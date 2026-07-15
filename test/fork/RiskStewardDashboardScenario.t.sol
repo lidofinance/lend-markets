@@ -11,6 +11,7 @@ import {IRiskStewardDashboard} from "../../src/interfaces/IRiskStewardDashboard.
 import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
+import {ForkTest} from "./helpers/ForkTest.sol";
 
 interface IStETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -28,13 +29,14 @@ interface IWstETH {
 ///         guard), this drives the levers against the live controller: the dashboard holds `MANAGER_ROLE`,
 ///         resolves the controller from the core by market id, and its writes land in the controller's real
 ///         config and instant-activation state, still gated by the controller's own bound validation.
-contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer {
-    address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address internal constant STETH_ADDRESS = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
-    address internal constant WSTETH_ADDRESS = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
+    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    address internal WETH_ADDRESS;
+    address internal STETH_ADDRESS;
+    address internal WSTETH_ADDRESS;
 
-    IStETH internal constant STETH = IStETH(STETH_ADDRESS);
-    IWstETH internal constant WSTETH = IWstETH(WSTETH_ADDRESS);
+    IStETH internal STETH;
+    IWstETH internal WSTETH;
 
     uint256 internal constant LLTV = 0.8e18;
 
@@ -49,11 +51,23 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer {
         MarketParams marketParams;
     }
 
+    function setUp() public {
+        if (!_fork()) return;
+        if (!_hasAddr("external.weth") || !_hasAddr("external.stEth") || !_hasAddr("external.wstEth")) {
+            vm.skip(true);
+            return;
+        }
+        WETH_ADDRESS = _addr("external.weth");
+        STETH_ADDRESS = _addr("external.stEth");
+        WSTETH_ADDRESS = _addr("external.wstEth");
+        STETH = IStETH(STETH_ADDRESS);
+        WSTETH = IWstETH(WSTETH_ADDRESS);
+    }
+
     /// @notice The dashboard drives every important lever against the live controller: it raises the activation
     ///         delays and the activating lock (read back from the controller's real config), then revokes
     ///         instant activation and shows a fresh deposit re-enters the timer instead of going straight active.
     function test_dashboard_drivesRealController_endToEnd() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         Ctx memory c = _deployWithDashboard();
 
         CollateralActivationConfig memory cfg0 = c.controller.collateralActivationConfig();
@@ -99,7 +113,6 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer {
 
     /// @notice The dashboard's tighten-only guard blocks lowering a delay below the controller's current value.
     function testRevert_dashboard_tightenOnlyBlocksLowering() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         Ctx memory c = _deployWithDashboard();
 
         vm.prank(STEWARD);
@@ -110,7 +123,6 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer {
     /// @notice The dashboard only adds the direction guard: a raise that is in-direction but past the
     ///         controller's own bound is still rejected by the controller's validator, not the dashboard.
     function testRevert_dashboard_controllerStillBoundsTheRaise() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         Ctx memory c = _deployWithDashboard();
 
         vm.prank(STEWARD);
@@ -120,7 +132,6 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer {
 
     /// @notice A non-steward cannot pull a lever.
     function testRevert_dashboard_nonStewardBlocked() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         Ctx memory c = _deployWithDashboard();
 
         vm.prank(address(0xBAD));
@@ -130,7 +141,6 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer {
 
     /// @notice A market id the core has no controller for is rejected, even for an appointed steward.
     function testRevert_dashboard_unknownMarket() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         Ctx memory c = _deployWithDashboard();
 
         Id bogus = Id.wrap(bytes32(uint256(0xDEAD)));
@@ -218,10 +228,5 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer {
         assertEq(pv.active, matured, "matured (active) collateral");
         assertEq(pv.activating, activating, "maturing (activating) collateral");
         assertEq(pv.dust, dust, "dust collateral");
-    }
-
-    function _hasMainnetLidoContracts() internal view returns (bool) {
-        return block.chainid == 1 && WETH_ADDRESS.code.length != 0 && STETH_ADDRESS.code.length != 0
-            && WSTETH_ADDRESS.code.length != 0;
     }
 }

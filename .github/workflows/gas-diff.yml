@@ -10,19 +10,17 @@ concurrency:
 jobs:
   gas-diff:
     name: gas snapshot diff
-    # PRs from forks can't access secrets, so the mainnet-fork tests would skip and produce a
-    # zero-gas diff. Skip the whole job to avoid noise.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
       pull-requests: write
     env:
-      MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
-      # Heap-deleverage benchmark uses 100M+ gas and drowns out everything else. Path may not
-      # exist on every branch — forge ignores a non-match silently.
-      SNAPSHOT_EXCLUDE: test/integration/HeapDeleverageBenchmark.t.sol
+      # One suite, no fork split: this job is secret-free, so the fork suites self-skip and the diff covers
+      # the local suites. Only the heap benchmark is excluded — its 100M+ gas swamps every other line.
+      # TEST_SEED is held constant so base and head differ only by code, not by the seeded oracle price.
+      SNAPSHOT_EXCLUDE: test/fork/HeapSettlementBenchmark.t.sol
+      TEST_SEED: "1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -44,7 +42,6 @@ jobs:
             git submodule update --init --recursive
             forge snapshot \
               --no-match-path "$SNAPSHOT_EXCLUDE" \
-              --fork-url "$MAINNET_RPC_URL" \
               --snap /tmp/snap.base
           ) || {
             echo "::warning::base snapshot failed; gas-diff comment will be skipped"
@@ -63,7 +60,6 @@ jobs:
           fi
           forge snapshot \
             --no-match-path "$SNAPSHOT_EXCLUDE" \
-            --fork-url "$MAINNET_RPC_URL" \
             --diff /tmp/snap.base \
             2>&1 | tee /tmp/gas-diff.txt
           echo 'has_diff=true' >> "$GITHUB_OUTPUT"
@@ -73,7 +69,6 @@ jobs:
         run: |
           forge snapshot \
             --no-match-path "$SNAPSHOT_EXCLUDE" \
-            --fork-url "$MAINNET_RPC_URL" \
             --snap /tmp/snap.head 2>&1 | tee /tmp/gas-snapshot.txt
           {
             echo '## Gas snapshot (main)'
@@ -100,7 +95,7 @@ jobs:
             echo
             cat /tmp/gas-top.md
             echo
-            echo '<sub>Heap deleverage benchmark excluded. Full diff in `gas-diff` artefact.</sub>'
+            echo '<sub>Heap settlement benchmark excluded. Full diff in `gas-diff` artefact.</sub>'
           } > /tmp/gas-comment.md
           cat /tmp/gas-comment.md >> "$GITHUB_STEP_SUMMARY"
 
