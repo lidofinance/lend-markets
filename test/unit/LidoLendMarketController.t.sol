@@ -79,7 +79,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function _ban(address account) internal {
         address[] memory a = new address[](1);
         a[0] = account;
-        protocol.guardianSignals.flag(_m().id, a, _validBlock());
+        protocol.guardianSignals.flag(_m().id, address(this), a, _validBlock());
     }
 
     // ── mutations ──

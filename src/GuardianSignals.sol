@@ -19,14 +19,12 @@ import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/Guar
 ///         latches a ban, scoped to the market it was raised in; softer suspect reports raise a borrower's
 ///         collateral-activation delay without banning. The market controller reads `getOpinion(marketId, account)`
 ///         to scale activation and hard-block borrowing.
-/// @dev    Each committee seat is a *guardian* with two keys: a persistent **guardian** key that governs the seat and
-///         a rotatable **operator** key (the bot that scans and raises signals). The operator may only raise signals
-///         (`flag`, `suspect`); the guardian may raise them, retract them (`unflag`, `unsuspect`) and rotate the
-///         operator key (`rotateOperator`). Both keys act on the same seat: flags, suspect reports and heartbeats are
-///         keyed by the persistent guardian address, so an operator-key rotation keeps the seat's standing. Governance
+/// @dev    A guardian is a single committee address. It may appoint a **delegate** — a hot key allowed to act on
+///         its behalf — which `setDelegate` replaces (at most one at a time). Signalling and liveness calls take an
+///         explicit `onBehalf` guardian and accept the guardian itself or its current delegate. All signals and
+///         heartbeats are keyed by the guardian, so replacing the delegate keeps the guardian's standing. Governance
 ///         (`MANAGER_ROLE`) adds/removes guardians and sets quorum and the suspect window. Upgradeable behind a proxy
-///         (`initialize`, not a constructor), ERC-7201 namespaced storage. Events and errors are declared in
-///         {IGuardianSignals}.
+///         (`initialize`, not a constructor), ERC-7201 namespaced storage. Events and errors are in {IGuardianSignals}.
 contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     is
     AccessControlEnumerableUpgradeable,
@@ -56,7 +54,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     bytes32 public constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
     /// @dev `unban` (slow, risk-increasing).
     bytes32 public constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
-    /// @dev Governance of the committee: adds/removes guardians and sets quorum and the suspect window.
+    /// @dev Manages the guardian set, quorum, and suspect window.
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
     // ---
@@ -68,27 +66,15 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     uint40 private _suspectWindow;
     /// @dev Quorum-scan frontier: the highest timestamp a quorum of guardians have ever scanned past. Monotonic.
     uint40 private _quorumFrontierTimestamp;
-    /// @dev The committee guardians — one per seat. Each guardian is its seat's persistent id, so the flags,
-    ///      suspect reports and heartbeats keyed by it survive a rotation of the seat's operator key.
+    /// @dev The committee guardians.
     EnumerableSet.AddressSet private _guardians;
-    /// @dev Guardian => its current operator key. Rotated by the guardian via `rotateOperator`.
-    mapping(address guardian => address operator) private _operatorOf;
-    /// @dev Operator key => its guardian. Doubles as the "is an operator" check.
-    mapping(address operator => address guardian) private _guardianOf;
-    /// @dev Each guardian's last-scanned block timestamp (a Unix timestamp, not a block number). Keyed by guardian id.
+    /// @dev Guardian-appointed delegates. A zero address means the guardian has no delegate.
+    mapping(address guardian => address delegate) private _delegates;
+    /// @dev Each guardian's last-scanned block timestamp (a Unix timestamp, not a block number).
     mapping(address guardian => uint40 timestamp) private _heartbeats;
-    /// @dev Per (market, account) signal. `flaggedBy`/`suspectedBy` hold guardian ids, not raw callers.
+    /// @dev Per (market, account) signal. `flaggedBy`/`suspectedBy` hold guardian addresses — a delegate's
+    ///      signal is recorded under its guardian, not the raw caller.
     mapping(Id marketId => mapping(address account => GuardiansSignal)) private _signals;
-
-    // ---
-    // MODIFIERS
-    // ---
-
-    /// @dev The caller must be a guardian (a guardian id). Guardians may retract signals and rotate the operator key.
-    modifier onlyGuardian() {
-        if (!_guardians.contains(msg.sender)) revert NotGuardian();
-        _;
-    }
 
     // ---
     // INITIALIZATION
@@ -99,24 +85,19 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         _disableInitializers();
     }
 
-    /// @notice Set the admin and seed the guardians and quorum. The suspect window is set afterwards via
-    ///         `setSuspectWindow`. Emits `GuardianAdded` per seat and `QuorumSet`.
+    /// @notice Set the admin and seed the guardian set and quorum. The suspect window is set afterwards via
+    ///         `setSuspectWindow`; guardians appoint their delegates separately via `setDelegate`.
     /// @param admin     Holder of `DEFAULT_ADMIN_ROLE`, the default admin of the guardian and override roles.
-    /// @param guardians The initial guardian keys. Each must be non-zero and globally unique.
-    /// @param operators The per-seat operator keys, aligned 1:1 with `guardians`; each non-zero and globally unique.
+    /// @param guardians The initial guardian set. Each must be non-zero, unique, and within `MAX_GUARDIANS_COUNT`.
     /// @param quorum    The initial quorum. Must satisfy `1 <= quorum <= guardians.length`.
-    function initialize(address admin, address[] calldata guardians, address[] calldata operators, uint256 quorum)
-        external
-        initializer
-    {
+    function initialize(address admin, address[] calldata guardians, uint256 quorum) external initializer {
         if (admin == address(0)) revert ZeroAddress();
-        if (guardians.length != operators.length) revert InvalidParams();
 
         __AccessControlEnumerable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
 
         for (uint256 i; i < guardians.length; ++i) {
-            _addGuardian(guardians[i], operators[i]);
+            _addGuardian(guardians[i]);
         }
         _setQuorum(quorum);
         emit QuorumSet(quorum);
@@ -127,36 +108,28 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function addGuardian(address guardian, address operator) external onlyRole(MANAGER_ROLE) {
-        _addGuardian(guardian, operator);
+    function addGuardian(address guardian) external onlyRole(MANAGER_ROLE) {
+        _addGuardian(guardian);
     }
 
     /// @inheritdoc IGuardianSignals
-    /// @dev Reverts if removal would drop the set below `quorum`, so the quorum stays reachable. Signals already
-    ///      keyed by the removed guardian linger (still counted) until a permissionless `prune` clears them.
+    /// @dev Reverts if removal would drop the set below `quorum`, so the quorum stays reachable. The guardian's
+    ///      delegate and heartbeat are cleared, so re-adding the same guardian starts with fresh state. Signals
+    ///      already keyed by it linger (still counted) until a permissionless `prune` clears them.
     function removeGuardian(address guardian) external onlyRole(MANAGER_ROLE) {
-        if (!_guardians.contains(guardian)) revert NotGuardian();
-        address operator = _operatorOf[guardian];
-        _guardians.remove(guardian);
+        if (!_guardians.remove(guardian)) revert NotGuardian();
         if (_guardians.length() < _quorum) revert WouldBreakQuorum();
-        delete _operatorOf[guardian];
-        delete _guardianOf[operator];
-        // Clear the seat's heartbeat so a later re-add of this guardian starts fresh rather than inheriting a stale
-        // (possibly future) timestamp that would ratchet the frontier and block earlier heartbeats.
+        delete _delegates[guardian];
         delete _heartbeats[guardian];
-        emit GuardianRemoved(guardian, operator);
+        emit GuardianRemoved(guardian);
     }
 
     /// @inheritdoc IGuardianSignals
-    function rotateOperator(address newOperator) external onlyGuardian {
-        if (newOperator == address(0)) revert ZeroAddress();
-        _requireFreeAddress(newOperator);
-        address guardian = msg.sender;
-        address old = _operatorOf[guardian];
-        delete _guardianOf[old];
-        _operatorOf[guardian] = newOperator;
-        _guardianOf[newOperator] = guardian;
-        emit OperatorRotated(guardian, old, newOperator);
+    function setDelegate(address newDelegate) external {
+        if (!_guardians.contains(msg.sender)) revert Unauthorized();
+        address oldDelegate = _delegates[msg.sender];
+        _delegates[msg.sender] = newDelegate;
+        emit DelegateSet(msg.sender, oldDelegate, newDelegate);
     }
 
     /// @inheritdoc IGuardianSignals
@@ -183,23 +156,22 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function isOperator(address account) external view returns (bool) {
-        return _guardianOf[account] != address(0);
-    }
-
-    /// @inheritdoc IGuardianSignals
     function isGuardian(address account) external view returns (bool) {
         return _guardians.contains(account);
     }
 
     /// @inheritdoc IGuardianSignals
-    function guardianOf(address operator) external view returns (address) {
-        return _guardianOf[operator];
+    function getDelegate(address guardian) external view returns (address) {
+        return _delegates[guardian];
     }
 
     /// @inheritdoc IGuardianSignals
-    function operatorOf(address guardian) external view returns (address) {
-        return _operatorOf[guardian];
+    function getDelegates() external view returns (address[] memory guardians, address[] memory delegates) {
+        guardians = _guardians.values();
+        delegates = new address[](guardians.length);
+        for (uint256 i; i < guardians.length; ++i) {
+            delegates[i] = _delegates[guardians[i]];
+        }
     }
 
     /// @inheritdoc IGuardianSignals
@@ -212,26 +184,14 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         return _guardians.values();
     }
 
-    /// @inheritdoc IGuardianSignals
-    function getOperators() external view returns (address[] memory operators) {
-        address[] memory guardians = _guardians.values();
-        operators = new address[](guardians.length);
-        for (uint256 i; i < guardians.length; ++i) {
-            operators[i] = _operatorOf[guardians[i]];
-        }
-    }
-
     // ---
     // LIVENESS
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function heartbeat(BlockInfoWithHash calldata lastScannedBlock) external {
-        // Liveness reflects the guardian bot's scan, so only the operator key heartbeats — not the guardian. The
-        // record is keyed by the guardian (the seat's persistent id), so it survives an operator-key rotation.
-        address guardian = _guardianOf[msg.sender];
-        if (guardian == address(0)) revert NotOperator();
-        _heartbeat(guardian, lastScannedBlock);
+    function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock) external {
+        if (!_isSenderAuthorized(onBehalf)) revert Unauthorized();
+        _heartbeat(onBehalf, lastScannedBlock);
     }
 
     /// @inheritdoc IGuardianSignals
@@ -240,18 +200,15 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function getHeartbeat(address account) external view returns (uint40 timestamp) {
-        address guardian = _guardianFor(account);
-        return guardian == address(0) ? 0 : _heartbeats[guardian];
+    function getHeartbeat(address guardian) external view returns (uint40 timestamp) {
+        return _heartbeats[guardian];
     }
 
     /// @inheritdoc IGuardianSignals
-    function getHeartbeats() external view returns (address[] memory operators, uint40[] memory timestamps) {
-        address[] memory guardians = _guardians.values();
-        operators = new address[](guardians.length);
+    function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory timestamps) {
+        guardians = _guardians.values();
         timestamps = new uint40[](guardians.length);
         for (uint256 i; i < guardians.length; ++i) {
-            operators[i] = _operatorOf[guardians[i]];
             timestamps[i] = _heartbeats[guardians[i]];
         }
     }
@@ -266,40 +223,54 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function flag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external {
-        address guardian = _requireGuardianFor(msg.sender);
+    function flag(
+        Id marketId,
+        address onBehalf,
+        address[] calldata accounts,
+        BlockInfoWithHash calldata lastScannedBlock
+    ) external {
+        if (!_isSenderAuthorized(onBehalf)) revert Unauthorized();
         for (uint256 i; i < accounts.length; ++i) {
-            _flag(guardian, marketId, accounts[i]);
+            _flag(onBehalf, marketId, accounts[i]);
         }
-        _maybeHeartbeat(guardian, lastScannedBlock);
+        if (lastScannedBlock.hash != bytes32(0)) _heartbeat(onBehalf, lastScannedBlock);
     }
 
     /// @inheritdoc IGuardianSignals
-    function unflag(Id marketId, address[] calldata accounts) external onlyGuardian {
+    function unflag(Id marketId, address onBehalf, address[] calldata accounts) external {
+        if (!_isSenderAuthorized(onBehalf)) revert Unauthorized();
         for (uint256 i; i < accounts.length; ++i) {
-            _unflag(msg.sender, marketId, accounts[i]);
+            _unflag(onBehalf, marketId, accounts[i]);
         }
     }
 
     /// @inheritdoc IGuardianSignals
-    function suspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external {
-        address guardian = _requireGuardianFor(msg.sender);
+    function suspect(
+        Id marketId,
+        address onBehalf,
+        address[] calldata accounts,
+        BlockInfoWithHash calldata lastScannedBlock
+    ) external {
+        if (!_isSenderAuthorized(onBehalf)) revert Unauthorized();
         for (uint256 i; i < accounts.length; ++i) {
-            _suspect(guardian, marketId, accounts[i]);
+            _suspect(onBehalf, marketId, accounts[i]);
         }
-        _maybeHeartbeat(guardian, lastScannedBlock);
+        if (lastScannedBlock.hash != bytes32(0)) _heartbeat(onBehalf, lastScannedBlock);
     }
 
     /// @inheritdoc IGuardianSignals
-    function unsuspect(Id marketId, address[] calldata accounts) external onlyGuardian {
+    function unsuspect(Id marketId, address onBehalf, address[] calldata accounts) external {
+        if (!_isSenderAuthorized(onBehalf)) revert Unauthorized();
         for (uint256 i; i < accounts.length; ++i) {
-            _unsuspect(msg.sender, marketId, accounts[i]);
+            _unsuspect(onBehalf, marketId, accounts[i]);
         }
     }
 
     /// @inheritdoc IGuardianSignals
     /// @dev Permissionless cleanup: removes flags and suspect reports left behind by removed guardians. The ban is
     ///      never touched — the ban latch means a permissionless caller can lower the flag count but cannot unban.
+    ///      When any suspect report is pruned, the active-suspect snapshot is re-taken so the delay stops counting
+    ///      the departed guardians' reports immediately.
     function prune(Id marketId, address account) external {
         GuardiansSignal storage signal = _signals[marketId][account];
 
@@ -311,11 +282,22 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
                 emit FlagPruned(marketId, account, flagger, signal.flaggedBy.length().toUint16());
             }
         }
+        // Re-evaluate against the surviving flags: latch if they still meet quorum. A never-latched derived ban
+        // that pruning drops below quorum lapses; a latched ban is untouched.
+        if (!signal.banned && signal.flaggedBy.length() >= _quorum) {
+            signal.banned = true;
+            emit Banned(marketId, account);
+        }
 
         address[] memory suspects = signal.suspectedBy.values();
+        bool suspectPruned;
         for (uint256 i; i < suspects.length; ++i) {
-            if (!_guardians.contains(suspects[i])) _pruneSuspect(marketId, account, signal, suspects[i]);
+            if (!_guardians.contains(suspects[i])) {
+                _pruneSuspect(marketId, account, signal, suspects[i]);
+                suspectPruned = true;
+            }
         }
+        if (suspectPruned) _snapshotSuspects(marketId, account, signal);
     }
 
     // ---
@@ -382,37 +364,20 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // INTERNAL METHODS
     // ---
 
-    /// @dev Resolve a caller to its guardian id: a guardian is its own guardian, an operator maps to its guardian.
-    ///      Zero when the caller is neither.
-    function _guardianFor(address account) internal view returns (address guardian) {
-        if (_guardians.contains(account)) return account;
-        return _guardianOf[account];
+    /// @dev Whether the sender may act for `onBehalf`: it must be a guardian, and the sender must be that guardian
+    ///      or its current delegate.
+    function _isSenderAuthorized(address onBehalf) internal view returns (bool) {
+        if (!_guardians.contains(onBehalf)) return false;
+        return msg.sender == onBehalf || msg.sender == _delegates[onBehalf];
     }
 
-    /// @dev Resolve a caller to its guardian, reverting when it is neither a guardian nor an operator.
-    function _requireGuardianFor(address account) internal view returns (address guardian) {
-        guardian = _guardianFor(account);
-        if (guardian == address(0)) revert NotOperator();
-    }
-
-    /// @dev An address may fill at most one role across all seats: not already a guardian and not already an operator.
-    function _requireFreeAddress(address account) internal view {
-        if (_guardians.contains(account) || _guardianOf[account] != address(0)) revert AlreadyGuardian();
-    }
-
-    /// @dev Advance the seat's liveness only when the caller is its operator key — a guardian raising a signal does
-    ///      not report a scan, so it silently skips. Keeps the frontier a true guardian-bot liveness signal.
-    function _maybeHeartbeat(address guardian, BlockInfoWithHash calldata lastScannedBlock) internal {
-        if (msg.sender == _operatorOf[guardian]) _heartbeat(guardian, lastScannedBlock);
-    }
-
-    /// @dev Record the guardian's last-scanned block. The quorum frontier is recomputed by `_syncQuorumBlock`.
+    /// @dev Record `guardian`'s last-scanned block. The quorum frontier is recomputed by `_syncQuorumBlock`.
     function _heartbeat(address guardian, BlockInfoWithHash calldata lastScannedBlock) internal {
         // a guardian cannot have scanned a block that does not exist yet
         if (lastScannedBlock.number > block.number) revert BlockInTheFuture();
-        // The chain cannot attest an arbitrary block's timestamp by number, so the frontier trusts the
-        // reported timestamp. Bound it to the past and force it non-decreasing per guardian, so a guardian cannot
-        // backdate or fast-forward the quorum-scan frontier it feeds.
+        // The chain cannot attest an arbitrary block's timestamp by number, so the frontier trusts the reported
+        // timestamp. Bound it to the past and force it non-decreasing per guardian, so a guardian cannot backdate
+        // or fast-forward the quorum-scan frontier it feeds.
         if (lastScannedBlock.timestamp > block.timestamp) revert TimestampInTheFuture();
         if (lastScannedBlock.timestamp < _heartbeats[guardian]) revert HeartbeatTimestampRegressed();
         // number + hash only prove the reported block is real and un-reorged; the frontier orders by timestamp.
@@ -425,7 +390,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @dev Recompute the quorum frontier (the quorum-th largest heartbeat timestamp) and ratchet it up.
-    ///      Monotonic: a rotation that adds fresh zero-heartbeat guardians cannot pull it back.
+    ///      Monotonic: adding fresh zero-heartbeat guardians cannot pull it back.
     function _syncQuorumBlock() internal {
         uint256 quorum = _quorum;
         uint256 n = _guardians.length();
@@ -444,18 +409,11 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         _quorum = newQuorum.toUint8();
     }
 
-    /// @dev Register a new guardian: a persistent guardian key + its rotatable operator key. Both must be free (each
-    ///      address may fill at most one role) and distinct.
-    function _addGuardian(address guardian, address operator) internal {
-        if (guardian == address(0) || operator == address(0)) revert ZeroAddress();
-        if (guardian == operator) revert InvalidParams();
+    function _addGuardian(address guardian) internal {
+        if (guardian == address(0)) revert ZeroAddress();
         if (_guardians.length() >= MAX_GUARDIANS_COUNT) revert MaxGuardiansReached();
-        _requireFreeAddress(guardian);
-        _requireFreeAddress(operator);
-        _guardians.add(guardian);
-        _operatorOf[guardian] = operator;
-        _guardianOf[operator] = guardian;
-        emit GuardianAdded(guardian, operator);
+        if (!_guardians.add(guardian)) revert AlreadyGuardian();
+        emit GuardianAdded(guardian);
     }
 
     function _flag(address guardian, Id marketId, address account) internal {

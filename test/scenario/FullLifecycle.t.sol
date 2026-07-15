@@ -294,6 +294,11 @@ contract FullLifecycleTest is LidoLendSetup {
         address[] memory a = new address[](1);
         a[0] = account;
         _m().guardianSignals
-            .flag(_m().id, a, BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)}));
+            .flag(
+                _m().id,
+                address(this),
+                a,
+                BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)})
+            );
     }
 }

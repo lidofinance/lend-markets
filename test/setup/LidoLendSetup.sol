@@ -164,13 +164,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
             new OssifiableProxy(
                 address(new GuardianSignals()),
                 admin,
-                abi.encodeWithSignature(
-                    "initialize(address,address[],address[],uint256)",
-                    admin,
-                    cfg.guardians,
-                    _bootstrapOperators(cfg.guardians),
-                    cfg.quorum
-                )
+                abi.encodeWithSignature("initialize(address,address[],uint256)", admin, cfg.guardians, cfg.quorum)
             )
         );
         GuardianSignals gs = GuardianSignals(guardian);

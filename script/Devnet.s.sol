@@ -134,19 +134,14 @@ contract Devnet is Script {
     }
 
     function _deployGuardian(address admin) private returns (address guardian) {
-        // Seat model: `admin` is the sole guardian (stable key) with a rotatable operator key. For the devnet the
-        // operator is a distinct placeholder derived from the admin; rotate it to a real bot key from the UI.
+        // `admin` is the sole guardian; it may appoint a delegate from the UI via `setDelegate`.
         address[] memory guardians = new address[](1);
         guardians[0] = admin;
-        address[] memory operators = new address[](1);
-        operators[0] = address(uint160(admin) ^ 1);
         guardian = address(
             new OssifiableProxy(
                 address(new GuardianSignals()),
                 admin,
-                abi.encodeWithSignature(
-                    "initialize(address,address[],address[],uint256)", admin, guardians, operators, uint256(1)
-                )
+                abi.encodeWithSignature("initialize(address,address[],uint256)", admin, guardians, uint256(1))
             )
         );
         GuardianSignals gs = GuardianSignals(guardian);

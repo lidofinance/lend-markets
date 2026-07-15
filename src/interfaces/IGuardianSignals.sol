@@ -6,43 +6,41 @@ import {BlockInfoWithHash} from "../types/GuardianSignalsTypes.sol";
 import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
-/// @notice Guardian-committee signal layer over accounts, keyed per market. Each committee seat is a *guardian* with a
-///         rotatable operator key and a persistent guardian key: the operator only raises signals (flag, suspect), the
-///         guardian also retracts them and rotates the operator key. A `quorum` of distinct guardians' flags latches a
-///         ban in the market it was raised in. The minimal read surface the market controller depends on (`getOpinion`,
-///         `isBanned`) is {IGuardianSignalsView}; this interface adds the full surface on top.
+/// @notice Guardian-committee signal layer over accounts, keyed per market. Each guardian is a single committee
+///         address that may appoint a **delegate** (at most one at a time) to act on its behalf: it raises signals
+///         (flag, suspect) and retracts them (unflag, unsuspect), and the delegate may act for it. A `quorum` of
+///         distinct guardians' flags latches a ban in the market it was raised in. The minimal read surface the
+///         controller depends on (`getOpinion`, `isBanned`) is {IGuardianSignalsView}; this interface adds the rest.
 interface IGuardianSignals is IGuardianSignalsView {
     // ---
     // EVENTS
     // ---
 
     /// @notice Emitted when a guardian is added.
-    /// @param guardian The seat's persistent guardian key (its id).
-    /// @param operator The guardian's rotatable operator key.
-    event GuardianAdded(address indexed guardian, address indexed operator);
+    event GuardianAdded(address indexed guardian);
     /// @notice Emitted when a guardian is removed.
-    event GuardianRemoved(address indexed guardian, address indexed operator);
-    /// @notice Emitted when a guardian rotates its operator key.
-    /// @param guardian    The guardian (its persistent guardian key).
-    /// @param oldOperator The retired operator key.
-    /// @param newOperator The new operator key.
-    event OperatorRotated(address indexed guardian, address indexed oldOperator, address indexed newOperator);
+    event GuardianRemoved(address indexed guardian);
+    /// @notice Emitted when a guardian sets or clears its delegate.
+    /// @param guardian    The guardian that changed its delegate.
+    /// @param oldDelegate The previous delegate (zero if none).
+    /// @param newDelegate The new delegate (zero to clear).
+    event DelegateSet(address indexed guardian, address indexed oldDelegate, address indexed newDelegate);
     /// @notice Emitted when the quorum changes.
     /// @param quorum The number of distinct guardians' flags that latches a ban.
     event QuorumSet(uint256 quorum);
     /// @notice Emitted when the suspect window is set.
     /// @param suspectWindow The freshness horizon within which a suspect report still counts.
     event SuspectWindowSet(uint256 suspectWindow);
-    /// @notice Emitted when a guardian reports liveness, directly or via `flag`/`suspect`.
-    /// @param guardian    The seat (by guardian key) that reported.
-    /// @param blockNumber The block number the guardian reports scanning past (carried for off-chain tooling).
+    /// @notice Emitted when a guardian's liveness is recorded, directly or via `flag`/`suspect`.
+    /// @param guardian    The guardian the scan is recorded for.
+    /// @param blockNumber The block number reported as scanned past (carried for off-chain tooling).
     /// @param timestamp   The reported block's timestamp; the quorum-scan frontier orders guardians by this value.
     event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp);
     /// @notice Emitted when a guardian reports an account as suspect (raises the activation delay, never bans).
     /// @param marketId  The market the report is scoped to.
     /// @param account   The suspected account.
-    /// @param guardian  The reporting seat (by guardian key).
-    /// @param actor     The key that made the call (the operator, or the guardian itself).
+    /// @param guardian  The reporting guardian.
+    /// @param actor     The caller that made the call (the guardian or its delegate).
     /// @param timestamp The report time, recorded so the report can be aged out of the suspect window.
     event Suspected(
         Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 timestamp
@@ -54,8 +52,8 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Emitted when a guardian flags an account.
     /// @param marketId The market id.
     /// @param account  The flagged account.
-    /// @param guardian The flagging seat (by guardian key).
-    /// @param actor    The key that made the call (the operator, or the guardian itself).
+    /// @param guardian The flagging guardian.
+    /// @param actor    The caller that made the call (the guardian or its delegate).
     /// @param strikes  The account's flag count after the flag.
     event Flagged(
         Id indexed marketId, address indexed account, address indexed guardian, address actor, uint16 strikes
@@ -69,26 +67,27 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
     event Banned(Id indexed marketId, address indexed account);
     /// @notice Emitted when an account's ban is lifted.
-    /// @param by The `ACCESS_RESTORER_ROLE` holder that unbanned.
+    /// @param marketId The market the ban was scoped to.
+    /// @param account  The unbanned account.
+    /// @param by       The `ACCESS_RESTORER_ROLE` holder that unbanned.
     event Unbanned(Id indexed marketId, address indexed account, address indexed by);
 
     // ---
     // ERRORS
     // ---
 
-    /// @notice Thrown when a zero address is passed where an account, guardian or operator is required.
+    /// @notice Thrown when a zero address is passed where an account or guardian is required.
     error ZeroAddress();
-    /// @notice Thrown on malformed input: mismatched guardian/operator arrays, or a guardian equal to its operator.
-    error InvalidParams();
     /// @notice Thrown when the quorum is zero or exceeds the guardian count.
     error BadQuorum();
     /// @notice Thrown when removing a guardian would drop the set below the quorum.
     error WouldBreakQuorum();
-    /// @notice Thrown when an address already fills a guardian or operator role.
+    /// @notice Thrown when adding a guardian that is already in the set.
     error AlreadyGuardian();
-    /// @notice Thrown when a signal is raised by a caller that is neither a guardian nor an operator.
-    error NotOperator();
-    /// @notice Thrown when a guardian-only action is called by a non-guardian (an operator key is not a guardian).
+    /// @notice Thrown when the caller is neither `onBehalf` nor its delegate, or when a non-guardian appoints a
+    /// delegate.
+    error Unauthorized();
+    /// @notice Thrown when the target of a guardian-only management action is not a guardian.
     error NotGuardian();
     /// @notice Thrown when the guardian set is already at `MAX_GUARDIANS_COUNT`.
     error MaxGuardiansReached();
@@ -107,14 +106,13 @@ interface IGuardianSignals is IGuardianSignalsView {
     // GUARDIANS & CONFIG (admin)
     // ---
 
-    /// @notice Add a guardian: a persistent guardian key paired with a rotatable operator key. Both must be non-zero,
-    ///         distinct, and not already fill a guardian or operator role.
-    function addGuardian(address guardian, address operator) external;
-    /// @notice Remove the guardian `guardian`.
+    /// @notice Add `guardian` to the committee. Must be non-zero, not already a guardian, and within the cap.
+    function addGuardian(address guardian) external;
+    /// @notice Remove `guardian` from the committee (reverts if it would drop the set below the quorum).
     function removeGuardian(address guardian) external;
-    /// @notice Rotate the caller-guardian's operator key to `newOperator`. Guardian-only. Keeps the guardian's flags,
-    ///         suspect reports and heartbeat, since those are keyed by the persistent guardian id.
-    function rotateOperator(address newOperator) external;
+    /// @notice Appoint (or clear, with the zero address) the caller-guardian's delegate — a hot key that may act on
+    ///         the guardian's behalf. Guardian-only. The guardian's signals and heartbeat are unaffected.
+    function setDelegate(address newDelegate) external;
     /// @notice Set the quorum — the distinct guardians' flags that latch a ban.
     function setQuorum(uint256 newQuorum) external;
     /// @notice Set the suspect window — the freshness horizon within which a suspect report still counts. Never
@@ -124,41 +122,39 @@ interface IGuardianSignals is IGuardianSignalsView {
     function getQuorum() external view returns (uint256);
     /// @notice The suspect window: the freshness horizon within which a suspect report still counts.
     function getSuspectWindow() external view returns (uint256);
-    /// @notice Whether `account` is a current operator key.
-    function isOperator(address account) external view returns (bool);
-    /// @notice Whether `account` is a guardian.
+    /// @notice Whether `account` is a current guardian.
     function isGuardian(address account) external view returns (bool);
-    /// @notice The guardian of operator key `operator`, or zero if it is not an operator.
-    function guardianOf(address operator) external view returns (address);
-    /// @notice The current operator key of guardian `guardian`, or zero if `guardian` is not a guardian.
-    function operatorOf(address guardian) external view returns (address);
+    /// @notice The current delegate of `guardian`, or zero if none is set.
+    function getDelegate(address guardian) external view returns (address);
+    /// @notice The guardian set paired with each guardian's current delegate (zero if none), aligned by index.
+    /// @return guardians The current guardian set.
+    /// @return delegates Each guardian's delegate, aligned by index with `guardians`.
+    function getDelegates() external view returns (address[] memory guardians, address[] memory delegates);
     /// @notice The number of guardians.
     function getGuardianCount() external view returns (uint256);
-    /// @notice The guardian keys, one per seat.
+    /// @notice The current guardian set.
     function getGuardians() external view returns (address[] memory);
-    /// @notice The current operator keys, one per guardian.
-    function getOperators() external view returns (address[] memory);
 
     // ---
     // LIVENESS
     // ---
 
-    /// @notice Record the caller's last-scanned block, validated against its block hash and timestamp. Operator-only
-    ///         (only the operator key reports a scan); the record is keyed by the seat's guardian so it survives an
-    ///         operator-key rotation. The quorum frontier is recomputed separately by `syncQuorumBlock`.
-    /// @param lastScannedBlock The block the caller reports scanning past.
-    function heartbeat(BlockInfoWithHash calldata lastScannedBlock) external;
+    /// @notice Record `onBehalf`'s last-scanned block, validated against its block hash and timestamp. Callable by
+    ///         `onBehalf` or its delegate; the record is keyed by the guardian. The quorum frontier is recomputed
+    ///         separately by `syncQuorumBlock`.
+    /// @param onBehalf         The guardian the scan is recorded for.
+    /// @param lastScannedBlock The block reported as scanned past.
+    function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and
     ///         monotonic.
     function syncQuorumBlock() external;
-    /// @notice The Unix timestamp of the last block `account`'s guardian reported scanning (0 if never, or not a
-    ///         guardian/operator). `account` may be either the operator or the guardian key.
+    /// @notice The Unix timestamp of the last block `guardian` reported scanning (0 if never, or not a guardian).
     /// @return timestamp The last-scanned block timestamp.
-    function getHeartbeat(address account) external view returns (uint40 timestamp);
-    /// @notice The current operator keys paired with each guardian's last-scanned block timestamp.
-    /// @return operators  The current operator keys.
-    /// @return timestamps Each guardian's last-scanned block timestamp, aligned by index with `operators`.
-    function getHeartbeats() external view returns (address[] memory operators, uint40[] memory timestamps);
+    function getHeartbeat(address guardian) external view returns (uint40 timestamp);
+    /// @notice The guardian set paired with each guardian's last-scanned block timestamp, aligned by index.
+    /// @return guardians  The current guardian set.
+    /// @return timestamps Each guardian's last-scanned block timestamp, aligned by index with `guardians`.
+    function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory timestamps);
     /// @notice Highest block timestamp at least a quorum of guardians have ever scanned past. Monotonic.
     function getQuorumFrontier() external view returns (uint40);
 
@@ -166,30 +162,45 @@ interface IGuardianSignals is IGuardianSignalsView {
     // SIGNALLING
     // ---
 
-    /// @notice Flag `accounts` in `marketId`. Callable by the seat's operator or its guardian; both write the same
-    ///         seat, so an operator and its guardian flagging one account count as a single strike. Per account a no-op
-    ///         when the seat already flags it, so a batch never reverts on a skip. When the caller is the operator,
-    ///         `lastScannedBlock` also advances the seat's heartbeat; a guardian flagging does not.
+    /// @notice Flag `accounts` in `marketId` on behalf of guardian `onBehalf`. Callable by `onBehalf` or its
+    ///         delegate. Per account a no-op when the guardian already flags it, so a batch never reverts on a skip.
+    ///         A non-zero `lastScannedBlock` hash also advances the guardian's heartbeat; a zero hash skips it.
     /// @param marketId         The market to flag in.
+    /// @param onBehalf         The guardian the flags are recorded for.
     /// @param accounts         The accounts to flag.
-    /// @param lastScannedBlock The operator's heartbeat, validated like `heartbeat`; ignored when a guardian calls.
-    function flag(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
-    /// @notice Retract the seat's flags on `accounts` in `marketId`. Guardian-only. Per account a no-op when the seat
-    ///         does not flag it. Never lifts a ban in effect: a currently-effective ban (including a quorum-derived
-    ///         one) survives the retraction.
-    function unflag(Id marketId, address[] calldata accounts) external;
-    /// @notice Report `accounts` as suspect in `marketId`. Callable by the seat's operator or its guardian. A suspect
-    ///         report never latches a ban; it raises the activation delay like a flag, but only while inside the
-    ///         suspect window. When the caller is the operator, `lastScannedBlock` also advances the seat's heartbeat.
-    /// @param lastScannedBlock The operator's heartbeat, validated like `heartbeat`; ignored when a guardian calls.
-    function suspect(Id marketId, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
-    /// @notice Retract the seat's suspect reports on `accounts` in `marketId`. Guardian-only. Per account a no-op when
-    ///         the seat has no live report on it.
-    function unsuspect(Id marketId, address[] calldata accounts) external;
+    /// @param lastScannedBlock The heartbeat to record, or a zero-hash block to skip the heartbeat.
+    function flag(
+        Id marketId,
+        address onBehalf,
+        address[] calldata accounts,
+        BlockInfoWithHash calldata lastScannedBlock
+    ) external;
+    /// @notice Retract guardian `onBehalf`'s flags on `accounts` in `marketId`. Callable by `onBehalf` or its
+    ///         delegate. Per account a no-op when the guardian does not flag it. Never lifts a ban in effect: a
+    ///         currently-effective ban (including a quorum-derived one) survives the retraction.
+    function unflag(Id marketId, address onBehalf, address[] calldata accounts) external;
+    /// @notice Report `accounts` as suspect in `marketId` on behalf of guardian `onBehalf`. Callable by `onBehalf`
+    ///         or its delegate. A suspect report never latches a ban; it raises the activation delay like a flag,
+    ///         but only while inside the suspect window. A non-zero `lastScannedBlock` hash also advances the
+    ///         guardian's heartbeat.
+    /// @param marketId         The market to report in.
+    /// @param onBehalf         The guardian the reports are recorded for.
+    /// @param accounts         The accounts to report as suspect.
+    /// @param lastScannedBlock The heartbeat to record, or a zero-hash block to skip the heartbeat.
+    function suspect(
+        Id marketId,
+        address onBehalf,
+        address[] calldata accounts,
+        BlockInfoWithHash calldata lastScannedBlock
+    ) external;
+    /// @notice Retract guardian `onBehalf`'s suspect reports on `accounts` in `marketId`. Callable by `onBehalf` or
+    ///         its delegate. Per account a no-op when the guardian has no live report on it.
+    function unsuspect(Id marketId, address onBehalf, address[] calldata accounts) external;
     /// @notice Permissionless: prune `account`'s flags and suspect reports in `marketId` cast by guardians that were
-    ///         since removed, lowering the flag count. The pruned suspect reports leave the set, but the cached
-    ///         suspect count the activation delay reads is re-derived only on the next `suspect`/`unsuspect`, not
-    ///         here — so a pruned report keeps counting toward the delay until then. Never changes ban status.
+    ///         since removed, lowering the flag count. When any suspect report is pruned the active-suspect snapshot
+    ///         is re-taken, so the pruned reports stop counting toward the activation delay immediately. A latched
+    ///         ban is never lifted; after pruning, if the surviving current-committee flags still meet quorum the
+    ///         (quorum-derived) ban is latched, otherwise that still-unlatched ban lapses.
     function prune(Id marketId, address account) external;
 
     // ---
@@ -206,12 +217,13 @@ interface IGuardianSignals is IGuardianSignalsView {
     // VIEWS
     // ---
 
-    /// @notice The seats (by guardian key) currently flagging `account` in `marketId`.
+    /// @notice The guardians currently flagging `account` in `marketId`.
     function getFlaggedBy(Id marketId, address account) external view returns (address[] memory);
     /// @notice The guardians with a live suspect report on `account` in `marketId`, paired with each report's
-    /// timestamp. @param marketId    The market to read the signal in.
+    ///         timestamp.
+    /// @param marketId    The market to read the signal in.
     /// @param account     The account to read.
-    /// @return guardians  The seats (by guardian key) currently reporting the account as suspect.
+    /// @return guardians  The guardians currently reporting the account as suspect.
     /// @return reportedAt The timestamp of each guardian's last suspect report, aligned by index with `guardians`.
     function getSuspectedBy(Id marketId, address account)
         external

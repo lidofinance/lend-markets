@@ -26,8 +26,8 @@ contract DeployMarket is Script, LidoLendDeployer {
     uint256 internal constant LLTV = 0.8e18;
 
     function run() external returns (Deployed memory d) {
-        // Placeholder bootstrap: deployer is the sole guardian seat (its own manager), quorum 1 (the registry
-        // rejects quorum 0). Replace with the real guardian/manager set + quorum post-deploy.
+        // Placeholder bootstrap: deployer is the sole guardian, quorum 1 (the registry rejects quorum 0).
+        // Replace with the real guardian/manager set + quorum post-deploy.
         address[] memory guardians = new address[](1);
         guardians[0] = msg.sender;
 

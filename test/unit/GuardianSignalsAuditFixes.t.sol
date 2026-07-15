@@ -15,9 +15,6 @@ contract GuardianSignalsAuditFixesTest is Test {
     address internal constant G1 = address(0x4001);
     address internal constant G2 = address(0x4002);
     address internal constant G3 = address(0x4003);
-    address internal constant M1 = address(0x4101);
-    address internal constant M2 = address(0x4102);
-    address internal constant M3 = address(0x4103);
     address internal constant BOB = address(0x5001);
 
     Id internal constant MARKET = Id.wrap(bytes32(uint256(0xA11CE)));
@@ -26,21 +23,15 @@ contract GuardianSignalsAuditFixesTest is Test {
         vm.roll(1000);
         vm.warp(1_000_000);
         address impl = address(new GuardianSignals());
-        bytes memory initData = abi.encodeWithSignature(
-            "initialize(address,address[],address[],uint256)", address(this), _guardians(), _managers(), uint256(2)
-        );
+        bytes memory initData =
+            abi.encodeWithSignature("initialize(address,address[],uint256)", address(this), _guardians(), uint256(2));
         gs = GuardianSignals(address(new OssifiableProxy(impl, address(this), initData)));
         gs.grantRole(gs.MANAGER_ROLE(), address(this));
     }
 
-    function _guardians() internal pure returns (address[] memory g) {
-        g = new address[](3);
-        (g[0], g[1], g[2]) = (G1, G2, G3);
-    }
-
-    function _managers() internal pure returns (address[] memory m) {
-        m = new address[](3);
-        (m[0], m[1], m[2]) = (M1, M2, M3);
+    function _guardians() internal pure returns (address[] memory guardians) {
+        guardians = new address[](3);
+        (guardians[0], guardians[1], guardians[2]) = (G1, G2, G3);
     }
 
     function _validBlock() internal view returns (BlockInfoWithHash memory) {
@@ -52,9 +43,9 @@ contract GuardianSignalsAuditFixesTest is Test {
     function test_W1_heartbeatRejectsZeroHashCurrentBlock() public {
         BlockInfoWithHash memory forged =
             BlockInfoWithHash({hash: bytes32(0), number: uint40(block.number), timestamp: uint40(block.timestamp)});
-        vm.prank(M1);
+        vm.prank(G1);
         vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
-        gs.heartbeat(forged);
+        gs.heartbeat(G1, forged);
     }
 
     /// W1: a zero-hash proof for a block outside the 256-block window (also `blockhash` zero) is rejected.
@@ -63,15 +54,15 @@ contract GuardianSignalsAuditFixesTest is Test {
         uint40 stale = uint40(block.number - 300); // outside the blockhash lookback window
         BlockInfoWithHash memory forged =
             BlockInfoWithHash({hash: bytes32(0), number: stale, timestamp: uint40(block.timestamp)});
-        vm.prank(M1);
+        vm.prank(G1);
         vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
-        gs.heartbeat(forged);
+        gs.heartbeat(G1, forged);
     }
 
     /// W1: a canonical in-window past block still records the heartbeat.
     function test_W1_heartbeatAcceptsCanonicalBlock() public {
-        vm.prank(M1);
-        gs.heartbeat(_validBlock());
+        vm.prank(G1);
+        gs.heartbeat(G1, _validBlock());
         assertEq(gs.getHeartbeat(G1), uint40(block.timestamp), "canonical heartbeat recorded");
     }
 }

@@ -50,7 +50,7 @@ Full surface: [API reference](api/lido-lend-market-controller.md).
 
 ### GuardianSignals
 
-The shared registry of guardian opinions per `(market, account)` — how the controller learns which borrowers the guardians have flagged as malicious. It holds the committee of guardian seats — each a persistent guardian key paired with a rotatable operator key, capped at `MAX_GUARDIANS_COUNT = 32` — and quorum, each account's strike count and flagged/banned status, and per-seat liveness heartbeats. `MANAGER_ROLE` manages the seats and quorum — `addGuardian`, `removeGuardian`, `setQuorum`. One registry can serve many markets, and a deployment runs several only when markets need different guardian sets or quorums.
+The shared registry of guardian opinions per `(market, account)` — how the controller learns which borrowers the guardians have flagged as malicious. It holds the guardian committee (a flat set, capped at `MAX_GUARDIANS_COUNT = 32`) and quorum, each account's strike count and flagged/banned status, and per-guardian liveness heartbeats. `MANAGER_ROLE` manages the set and quorum — `addGuardian`, `removeGuardian`, `setQuorum`. One registry can serve many markets, and a deployment runs several only when markets need different guardian sets or quorums.
 
 Full surface: [API reference](api/guardian-signals.md).
 
@@ -166,7 +166,7 @@ A borrower with open debt cannot withdraw all of its collateral: a withdrawal mu
 
 Guardians are off-chain services run by trusted actors that watch each market and flag accounts they judge malicious — a hijacked account pushing stolen collateral toward a borrow is the case they exist to catch. No guardian acts alone: each flag is one **strike**, and an account's ban latches as strikes accumulate.
 
-Each committee **seat** has two keys: a persistent **guardian** key that governs the seat and a rotatable **operator** key (the bot that scans and raises signals). The operator key may only raise signals (`flag`, `suspect`) and heartbeat; the guardian key retracts them (`unflag`, `unsuspect`) and rotates the operator key (`rotateOperator`). Both act on the same seat, and a seat's flags, suspect reports and heartbeat are keyed by its persistent guardian id — so rotating a compromised operator key preserves the seat's standing without re-flagging. A strike counts one seat, so an operator and its own guardian flagging the same account is still a single strike.
+A guardian is a single committee address. It may appoint a **delegate** via `setDelegate` — a hot key allowed to act on its behalf, at most one at a time. Signalling and liveness calls take an explicit `onBehalf` guardian and accept the guardian itself or its current delegate; flags, suspect reports and heartbeat are keyed by the guardian, so replacing a compromised delegate preserves the guardian's standing without re-flagging. A strike counts one guardian, so a guardian and its own delegate flagging the same account is still a single strike.
 
 ```
 strikes == 0          Normal — clean, normal activation

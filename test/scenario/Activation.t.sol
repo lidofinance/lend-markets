@@ -46,11 +46,22 @@ contract ActivationTest is LidoLendSetup {
     }
 
     function _ban(address account) internal {
+        _flagAs(address(this), account);
+    }
+
+    /// @dev Guardian `guardian` flags `account` on its own behalf (a real prior block for the heartbeat leg).
+    function _flagAs(address guardian, address account) internal {
         uint40 n = uint40(block.number - 1);
-        address[] memory a = new address[](1);
-        a[0] = account;
+        address[] memory accounts = new address[](1);
+        accounts[0] = account;
+        vm.prank(guardian);
         protocol.guardianSignals
-            .flag(_m().id, a, BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)}));
+            .flag(
+                _m().id,
+                guardian,
+                accounts,
+                BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)})
+            );
     }
 
     /// @dev Fresh collateral cannot back a loan while activating: borrow reverts InsufficientActiveCollateral
@@ -80,6 +91,62 @@ contract ActivationTest is LidoLendSetup {
 
         m.activateCollateral(); // warp past the delay; a banned lot never matures, and borrowing is blocked
 
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
+        m.core.borrow(m.params, _safeBorrow(100 ether), 0, borrower, borrower);
+    }
+
+    /// @dev End-to-end delegate path: a guardian appoints a delegate, the delegate raises the flag on the
+    ///      guardian's behalf, and the resulting ban blocks borrowing through the controller just like a direct
+    ///      flag — proving the `onBehalf`/delegate wiring works across the full stack.
+    function test_delegateBan_blocksBorrow() public {
+        Market storage m = _m();
+        address borrower = _seedLenderAndCollateral(100 ether);
+
+        // The test contract is the sole guardian; it appoints a delegate to act for it.
+        address delegate = _actor("delegate");
+        protocol.guardianSignals.setDelegate(delegate);
+
+        // The delegate flags the borrower on the guardian's behalf, latching the ban.
+        uint40 n = uint40(block.number - 1);
+        address[] memory accounts = new address[](1);
+        accounts[0] = borrower;
+        vm.prank(delegate);
+        protocol.guardianSignals
+            .flag(
+                _m().id,
+                address(this),
+                accounts,
+                BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)})
+            );
+
+        m.activateCollateral(); // warp past the delay; a banned lot never matures
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
+        m.core.borrow(m.params, _safeBorrow(100 ether), 0, borrower, borrower);
+    }
+
+    /// @dev End-to-end: pruning a departed guardian's stale flag cannot un-ban a borrower whose ban is latched —
+    ///      the controller keeps blocking its borrow. (Only `unban` clears a latched ban.)
+    function test_prune_cannotUnbanLatchedBanThroughController() public {
+        Market storage m = _m();
+        address borrower = _seedLenderAndCollateral(100 ether);
+
+        // Three guardians at quorum 2; two flag the borrower, latching the ban.
+        address guardian2 = _actor("guardian2");
+        address guardian3 = _actor("guardian3");
+        protocol.guardianSignals.addGuardian(guardian2);
+        protocol.guardianSignals.addGuardian(guardian3);
+        protocol.guardianSignals.setQuorum(2);
+        _flagAs(address(this), borrower);
+        _flagAs(guardian2, borrower);
+        assertTrue(protocol.guardianSignals.isBanned(m.id, borrower), "latched at quorum");
+
+        protocol.guardianSignals.removeGuardian(guardian2);
+        protocol.guardianSignals.prune(m.id, borrower); // stale flag pruned, but the latched ban stays
+
+        m.activateCollateral();
         vm.prank(borrower);
         vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
         m.core.borrow(m.params, _safeBorrow(100 ether), 0, borrower, borrower);

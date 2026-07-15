@@ -142,12 +142,8 @@ push({ a: "createMarket", loan: "WETH", collateral: "wstETH", price: px(ETH), ll
 push({ a: "createMarket", loan: "USDC", collateral: "USDY", price: px(USD), lltv: "0.98", minActivation: "1" });
 push({ a: "watch", addresses: CAST });
 
-// guardian committee (shared registry): add 4 more guardians (each with a distinct operator key), example
-// quorum 3-of-5, 7-day suspect window.
-for (const g of guardians.slice(1)) {
-  const operator = "0x" + (BigInt(g) ^ 1n).toString(16).padStart(40, "0");
-  push({ a: "addGuardian", address: g, operator, from: ADMIN });
-}
+// guardian committee (shared registry): add 4 more guardians, example quorum 3-of-5, 7-day suspect window.
+for (const g of guardians.slice(1)) push({ a: "addGuardian", address: g, from: ADMIN });
 push({ a: "setQuorum", n: 3, from: ADMIN });
 push({ a: "setSuspectWindow", n: 7 * DAY, from: ADMIN });
 // example supply caps. The IRM keeps its default adaptive curve (gentle ~4%/yr at target) so the borrow APR

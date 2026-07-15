@@ -88,7 +88,7 @@ A steward is appointed per market id, not as an AccessControl role, so the set s
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | guardian seats (guardian + operator keys), quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C1 / C3 | Lido DAO |
+| `MANAGER_ROLE` | the guardian set, quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C1 / C3 | Lido DAO |
 | `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum) | C3 | risk steward committee |
 | `ACCESS_RESTORER_ROLE` | `unban` | C4 | Lido DAO, timelocked |
 
@@ -107,10 +107,10 @@ The exit book is `AccessControl` set at construction, not behind an `OssifiableP
 
 ## Non-role actors
 
-- **Guardian seats** — each committee seat is a persistent guardian key paired with a rotatable operator key, off-chain parties, not an AccessControl role. The operator key raises signals: `flag` and `suspect` add the seat as a flagger/reporter of an account (at `quorum` distinct seats a ban latches automatically), and `heartbeat` reports a last-scanned block for the liveness frontier. The guardian key governs the seat: `unflag`/`unsuspect` retract the seat's signals (never lifting a ban in effect) and `rotateOperator` swaps the operator key — the seat's flags, reports and heartbeat survive a rotation because they are keyed by the guardian id, not the operator key.
+- **Guardians** — off-chain parties, not an AccessControl role; each guardian is a single committee address. A guardian raises signals — `flag` and `suspect` add it as a flagger/reporter of an account (at `quorum` distinct guardians a ban latches automatically) — retracts them (`unflag`/`unsuspect`, never lifting a ban in effect), and `heartbeat` reports a last-scanned block for the liveness frontier. A guardian may appoint a **delegate** via `setDelegate` — a hot key allowed to act on its behalf, at most one at a time; signals key by the guardian, so replacing the delegate keeps its standing.
 - **Borrower** — `supplyCollateral` and `repay` are permissionless add-value, `borrow` and `withdrawCollateral` are authorized and pass the controller's hook gates, `setSettlementLtv` is self-scoped with no role.
 - **Lender** — `supply` and `withdraw` on the core, `deposit` / `mint` / `withdraw` / `redeem` / `fallbackExit` / `settle` on the vault, and `setAuthorization` to let the vault or an operator act over a core position.
-- **Permissionless** — `liquidate`, `flashLoan`, `accrueInterest`.
+- **Permissionless** — `liquidate`, `flashLoan`, `accrueInterest`, and on the guardian registry `syncQuorumBlock` (advances the liveness frontier) and `prune` (clears removed guardians' flags/reports on an account; lowers the flag count and may let a still-unlatched quorum-derived ban lapse, but never lifts a latched ban).
 - **Contract callers** — the core is the sole caller of `controller.on(...)` and of the IRM `borrowRate`, the vault acts on the core for lenders under their authorization, and the deployer performs the one-shot `initialize` and holds placeholder roles until handover.
 
 ## Routine risk-increasing actions
