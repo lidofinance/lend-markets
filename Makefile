@@ -23,7 +23,7 @@ help:
 	@echo "  lint          forge lint"
 	@echo "  coverage      forge coverage --ir-minimum --report summary"
 	@echo "  snapshot      forge snapshot of the whole suite -> .gas-snapshot (fork suites skip without RPC; heap benchmark excluded)"
-	@echo "  snapshot-diff same run, diffed against .gas-snapshot"
+	@echo "  snapshot-diff same run, diffed against .gas-snapshot (run both at the same TEST_SEED)"
 	@echo "  slither       slither . (needs slither installed)"
 	@echo "  solhint       solhint 'src/**/*.sol' (needs node + solhint installed)"
 	@echo "  doc           forge build --ast + regenerate docs/specs/api/ from NatSpec"

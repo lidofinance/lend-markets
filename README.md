@@ -49,6 +49,8 @@ make fork-test       # test/fork/ only; needs ETH_RPC_URL + DEPLOYMENT in .env (
 make fmt-check       # forge fmt --check on tracked paths (CI gate)
 make lint            # forge lint
 make coverage        # forge coverage --ir-minimum --report summary
+make snapshot        # gas snapshot of the whole suite
+make snapshot-diff   # fresh run diffed against .gas-snapshot
 make slither         # static analysis (requires `slither` in PATH)
 make solhint         # stylistic/security checks (requires `solhint` in PATH)
 make ci              # everything CI runs on PRs: build + fmt-check + lint + test

@@ -33,9 +33,13 @@
 - Test (local suites): `forge test --no-match-path 'test/fork/**'`, or `make test`.
 - Fork tests (needs `ETH_RPC_URL` + `DEPLOYMENT` set, e.g. in `.env`): `forge test --match-path 'test/fork/**'`,
   or `make fork-test`.
-- Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot` (fork suites skip without the RPC;
-  heap benchmark excluded). The run's logs show the `TEST_SEED` (and fork block) it used — export
-  `TEST_SEED`/`FORK_BLOCK` to reproduce a run. `make snapshot-diff` diffs a fresh run against it.
+- Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot` (heap benchmark excluded). The
+  fork suites join when `ETH_RPC_URL` + `DEPLOYMENT` are set, forking the latest block unless `FORK_BLOCK`
+  pins one; without them they self-skip. `TEST_SEED` comes from the env when set; otherwise foundry picks
+  one random seed per run and the suites log it (fork suites also log their block), so a run is always
+  replayable by exporting the logged `TEST_SEED`/`FORK_BLOCK`. `make snapshot-diff` diffs a fresh run
+  against `.gas-snapshot` — run both at the same `TEST_SEED`, or the diff picks up seed noise on top of the
+  code change (CI pins `TEST_SEED=1`).
 - Format check for local Solidity files:
   `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
