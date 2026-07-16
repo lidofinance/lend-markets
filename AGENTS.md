@@ -34,8 +34,8 @@
 - Fork tests (needs `ETH_RPC_URL` + `DEPLOYMENT` set, e.g. in `.env`): `forge test --match-path 'test/fork/**'`,
   or `make fork-test`.
 - Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot` (fork suites skip without the RPC;
-  heap benchmark excluded), echoing the `TEST_SEED`/`FORK_BLOCK` it used — export those to reproduce a run.
-  `make snapshot-diff` diffs a fresh run against it.
+  heap benchmark excluded). The run's logs show the `TEST_SEED` (and fork block) it used — export
+  `TEST_SEED`/`FORK_BLOCK` to reproduce a run. `make snapshot-diff` diffs a fresh run against it.
 - Format check for local Solidity files:
   `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.

@@ -55,22 +55,15 @@ coverage:
 	forge coverage --ir-minimum --report summary --no-match-path '$(FORK_PATH)'
 
 # One snapshot for the whole suite: the fork suites run when ETH_RPC_URL + DEPLOYMENT are set and self-skip
-# otherwise. The oracle seed (and the fork block, when an RPC is set) are resolved once, echoed, and passed
-# into the run so every suite executes at the same values; export the echoed TEST_SEED / FORK_BLOCK to replay.
+# otherwise. No entropy is minted here: foundry seeds one RNG per run, so every suite that falls back to
+# `vm.randomUint()` draws the same TEST_SEED, and each fork suite logs the block it actually forked. `-vv`
+# makes those logs visible (foundry hides console logs below that) — export the logged TEST_SEED / FORK_BLOCK
+# to replay the run. Replay reproduces every gas number; only the invariant suites' `reverts` counters (no
+# gas content) ride foundry's own fuzz RNG, which foundry does not report — set FOUNDRY_FUZZ_SEED to pin
+# those too.
 snapshot-diff: SNAP_FLAGS := --diff
 snapshot snapshot-diff:
-	@set -e; \
-	seed="$${TEST_SEED:-$$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')}"; \
-	block="$$FORK_BLOCK"; \
-	if [ -z "$$block" ] && [ -n "$$ETH_RPC_URL" ] && [ -n "$$DEPLOYMENT" ]; then \
-		block="$$(cast block-number --rpc-url "$$ETH_RPC_URL")"; \
-	fi; \
-	echo "TEST_SEED=$$seed FORK_BLOCK=$${block:-none} (export these to reproduce this run)"; \
-	if [ -n "$$block" ]; then \
-		FORK_BLOCK="$$block" TEST_SEED="$$seed" forge snapshot --no-match-path '$(SNAPSHOT_EXCLUDE)' $(SNAP_FLAGS); \
-	else \
-		TEST_SEED="$$seed" forge snapshot --no-match-path '$(SNAPSHOT_EXCLUDE)' $(SNAP_FLAGS); \
-	fi
+	forge snapshot --no-match-path '$(SNAPSHOT_EXCLUDE)' $(SNAP_FLAGS) -vv
 
 slither:
 	slither .
