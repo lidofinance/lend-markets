@@ -2,7 +2,6 @@
 pragma solidity 0.8.35;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -49,19 +48,12 @@ contract ActivationTest is LidoLendSetup {
         _flagAs(address(this), account);
     }
 
-    /// @dev Guardian `guardian` flags `account` on its own behalf (a real prior block for the heartbeat leg).
+    /// @dev Guardian `guardian` flags `account` on its own behalf.
     function _flagAs(address guardian, address account) internal {
-        uint40 n = uint40(block.number - 1);
         address[] memory accounts = new address[](1);
         accounts[0] = account;
         vm.prank(guardian);
-        protocol.guardianSignals
-            .flag(
-                _m().id,
-                guardian,
-                accounts,
-                BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)})
-            );
+        protocol.guardianSignals.flag(_m().id, guardian, accounts);
     }
 
     /// @dev Fresh collateral cannot back a loan while activating: borrow reverts InsufficientActiveCollateral
@@ -108,17 +100,10 @@ contract ActivationTest is LidoLendSetup {
         protocol.guardianSignals.setDelegate(delegate);
 
         // The delegate flags the borrower on the guardian's behalf, latching the ban.
-        uint40 n = uint40(block.number - 1);
         address[] memory accounts = new address[](1);
         accounts[0] = borrower;
         vm.prank(delegate);
-        protocol.guardianSignals
-            .flag(
-                _m().id,
-                address(this),
-                accounts,
-                BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)})
-            );
+        protocol.guardianSignals.flag(_m().id, address(this), accounts);
 
         m.activateCollateral(); // warp past the delay; a banned lot never matures
 

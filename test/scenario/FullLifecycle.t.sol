@@ -5,7 +5,6 @@ import {Id, Market as MorphoMarket, Position} from "@lido-lend/src/interfaces/IM
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
@@ -290,15 +289,8 @@ contract FullLifecycleTest is LidoLendSetup {
 
     /// @dev Raise a guardian flag on `account`; with the default quorum of 1 this immediately bans it.
     function _flag(address account) private {
-        uint40 n = uint40(block.number - 1);
         address[] memory a = new address[](1);
         a[0] = account;
-        _m().guardianSignals
-            .flag(
-                _m().id,
-                address(this),
-                a,
-                BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)})
-            );
+        _m().guardianSignals.flag(_m().id, address(this), a);
     }
 }

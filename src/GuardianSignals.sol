@@ -37,7 +37,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // CONSTANTS
     // ---
 
-    /// @notice Maximum number of guardians. Capped low because `syncQuorumBlock` re-sorts all guardians'
+    /// @notice Maximum number of guardians. Capped low because `syncQuorumFrontier` re-sorts all guardians'
     ///         last-scanned timestamps to recompute the quorum frontier, whose cost grows with the set. 32 keeps
     ///         that bounded and still fits the quorum in `uint8`.
     uint256 public constant MAX_GUARDIANS_COUNT = 32;
@@ -166,22 +166,17 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function getDelegates() external view returns (address[] memory guardians, address[] memory delegates) {
-        guardians = _guardians.values();
-        delegates = new address[](guardians.length);
-        for (uint256 i; i < guardians.length; ++i) {
-            delegates[i] = _delegates[guardians[i]];
-        }
-    }
-
-    /// @inheritdoc IGuardianSignals
     function getGuardianCount() external view returns (uint256) {
         return _guardians.length();
     }
 
     /// @inheritdoc IGuardianSignals
-    function getGuardians() external view returns (address[] memory) {
-        return _guardians.values();
+    function getGuardians() external view returns (address[] memory guardians, address[] memory delegates) {
+        guardians = _guardians.values();
+        delegates = new address[](guardians.length);
+        for (uint256 i; i < guardians.length; ++i) {
+            delegates[i] = _delegates[guardians[i]];
+        }
     }
 
     // ---
@@ -195,8 +190,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function syncQuorumBlock() external {
-        _syncQuorumBlock();
+    function syncQuorumFrontier() external {
+        _syncQuorumFrontier();
     }
 
     /// @inheritdoc IGuardianSignals
@@ -223,17 +218,11 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function flag(
-        Id marketId,
-        address onBehalf,
-        address[] calldata accounts,
-        BlockInfoWithHash calldata lastScannedBlock
-    ) external {
+    function flag(Id marketId, address onBehalf, address[] calldata accounts) external {
         if (!_isSenderAuthorized(onBehalf)) revert Unauthorized();
         for (uint256 i; i < accounts.length; ++i) {
             _flag(onBehalf, marketId, accounts[i]);
         }
-        if (lastScannedBlock.hash != bytes32(0)) _heartbeat(onBehalf, lastScannedBlock);
     }
 
     /// @inheritdoc IGuardianSignals
@@ -245,17 +234,11 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
-    function suspect(
-        Id marketId,
-        address onBehalf,
-        address[] calldata accounts,
-        BlockInfoWithHash calldata lastScannedBlock
-    ) external {
+    function suspect(Id marketId, address onBehalf, address[] calldata accounts) external {
         if (!_isSenderAuthorized(onBehalf)) revert Unauthorized();
         for (uint256 i; i < accounts.length; ++i) {
             _suspect(onBehalf, marketId, accounts[i]);
         }
-        if (lastScannedBlock.hash != bytes32(0)) _heartbeat(onBehalf, lastScannedBlock);
     }
 
     /// @inheritdoc IGuardianSignals
@@ -371,15 +354,16 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         return msg.sender == onBehalf || msg.sender == _delegates[onBehalf];
     }
 
-    /// @dev Record `guardian`'s last-scanned block. The quorum frontier is recomputed by `_syncQuorumBlock`.
+    /// @dev Record `guardian`'s last-scanned block, then opportunistically advance the quorum frontier.
     function _heartbeat(address guardian, BlockInfoWithHash calldata lastScannedBlock) internal {
+        uint40 previousTimestamp = _heartbeats[guardian];
         // a guardian cannot have scanned a block that does not exist yet
         if (lastScannedBlock.number > block.number) revert BlockInTheFuture();
         // The chain cannot attest an arbitrary block's timestamp by number, so the frontier trusts the reported
         // timestamp. Bound it to the past and force it non-decreasing per guardian, so a guardian cannot backdate
         // or fast-forward the quorum-scan frontier it feeds.
         if (lastScannedBlock.timestamp > block.timestamp) revert TimestampInTheFuture();
-        if (lastScannedBlock.timestamp < _heartbeats[guardian]) revert HeartbeatTimestampRegressed();
+        if (lastScannedBlock.timestamp < previousTimestamp) revert HeartbeatTimestampRegressed();
         // number + hash only prove the reported block is real and un-reorged; the frontier orders by timestamp.
         // Reject a zero hash: `blockhash` returns zero for the current or out-of-window block, which it would match.
         if (lastScannedBlock.hash == bytes32(0)) revert InvalidBlockHash();
@@ -387,11 +371,18 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
         _heartbeats[guardian] = lastScannedBlock.timestamp;
         emit Heartbeat(guardian, lastScannedBlock.number, lastScannedBlock.timestamp);
+
+        // The frontier is the quorum-th largest heartbeat, so this one can only raise it by crossing from at or
+        // below the frontier to above it. The cheap guard skips the O(n log n) resort otherwise; `syncQuorumFrontier`
+        // stays a permissionless fallback for the cases it misses (e.g. a quorum change moving the order statistic).
+        if (previousTimestamp <= _quorumFrontierTimestamp && lastScannedBlock.timestamp > _quorumFrontierTimestamp) {
+            _syncQuorumFrontier();
+        }
     }
 
     /// @dev Recompute the quorum frontier (the quorum-th largest heartbeat timestamp) and ratchet it up.
     ///      Monotonic: adding fresh zero-heartbeat guardians cannot pull it back.
-    function _syncQuorumBlock() internal {
+    function _syncQuorumFrontier() internal {
         uint256 quorum = _quorum;
         uint256 n = _guardians.length();
         if (quorum == 0 || n < quorum) return;
@@ -401,7 +392,10 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
             timestamps[i] = _heartbeats[guardians[i]];
         }
         uint40 frontierTimestamp = Arrays.sort(timestamps)[n - quorum].toUint40();
-        if (frontierTimestamp > _quorumFrontierTimestamp) _quorumFrontierTimestamp = frontierTimestamp;
+        if (frontierTimestamp > _quorumFrontierTimestamp) {
+            _quorumFrontierTimestamp = frontierTimestamp;
+            emit QuorumFrontierAdvanced(frontierTimestamp);
+        }
     }
 
     function _setQuorum(uint256 newQuorum) internal {

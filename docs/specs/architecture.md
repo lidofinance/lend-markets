@@ -119,7 +119,7 @@ A supply routed through a trusted caller skips the gate entirely — instant act
 
 A `maxGuardiansQuorumDelay` fallback matures a lot anyway if the committee stalls, so a slow watch cannot freeze maturation forever. Set to `0` it drops the scan requirement, and the lot matures on the timer alone.
 
-> **Example.** The timer elapses but the quorum frontier's timestamp is still behind the supplied lot's `unlockTime`, so the lot waits. When a guardian heartbeats past it and `syncQuorumBlock` advances the frontier so its timestamp clears `unlockTime`, the next `syncActivation` matures it. If the committee stalls, the lot matures anyway once `maxGuardiansQuorumDelay` from its start has passed.
+> **Example.** The timer elapses but the quorum frontier's timestamp is still behind the supplied lot's `unlockTime`, so the lot waits. When a guardian heartbeats past it, the heartbeat advances the frontier in the same call so its timestamp clears `unlockTime`, and the next `syncActivation` matures it. If the committee stalls, the lot matures anyway once `maxGuardiansQuorumDelay` from its start has passed.
 
 #### Inflow delay
 
@@ -193,7 +193,7 @@ Two override roles sit above the guardians, split by risk direction. The committ
 
 The controller reads `getOpinion(market, account) → GuardiansOpinion{banned, strikeCount, suspectCount, suspectExpiryTimestamp, quorumFrontierTimestamp}` and forwards it to the activation lib, which owns the delay math: `strikeCount × delayPerStrike`, plus `suspectCount × delayPerSuspect` for a lot whose activation started before `suspectExpiryTimestamp`. `banned` blocks borrowing (and pins the unlock at infinity); `quorumFrontierTimestamp` is the liveness frontier that gates maturation.
 
-**Heartbeats.** Guardians also report how far they have scanned, which tells whether the watch is keeping up with the chain. Each `heartbeat` carries `{number, hash, timestamp}`, recorded only if `hash` matches `blockhash(number)` — so the reported block must be on the canonical chain. A block the guardian scanned on a fork that later reorged out no longer matches and is rejected. `syncQuorumBlock` then takes the quorum-th highest reported block as the frontier and ratchets it up — monotonic, so a guardian rotation cannot pull it back.
+**Heartbeats.** Guardians also report how far they have scanned, which tells whether the watch is keeping up with the chain. Each `heartbeat` carries `{number, hash, timestamp}`, recorded only if `hash` matches `blockhash(number)` — so the reported block must be on the canonical chain. A block the guardian scanned on a fork that later reorged out no longer matches and is rejected. A heartbeat that raises the quorum-th highest reported block advances the frontier in the same call (a cheap guard skips the recompute otherwise); `syncQuorumFrontier` recomputes it on demand as a fallback. The frontier ratchets up — monotonic, so a guardian rotation cannot pull it back.
 
 > **Example (frontier).** Five guardians, quorum 3, last-scanned blocks `{100, 95, 90, 80, 70}`. The 3rd-highest is `90`, so the frontier is block 90 — at least a quorum have scanned everything up to it. A later report below 90 cannot lower it. The maturation gate compares that block's recorded timestamp against a lot's `unlockTime`, so a lot matures once block 90's time has passed its unlock.
 

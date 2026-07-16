@@ -31,11 +31,14 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @notice Emitted when the suspect window is set.
     /// @param suspectWindow The freshness horizon within which a suspect report still counts.
     event SuspectWindowSet(uint256 suspectWindow);
-    /// @notice Emitted when a guardian's liveness is recorded, directly or via `flag`/`suspect`.
+    /// @notice Emitted when a guardian's liveness is recorded.
     /// @param guardian    The guardian the scan is recorded for.
     /// @param blockNumber The block number reported as scanned past (carried for off-chain tooling).
     /// @param timestamp   The reported block's timestamp; the quorum-scan frontier orders guardians by this value.
     event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp);
+    /// @notice Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
+    /// @param timestamp The new frontier timestamp.
+    event QuorumFrontierAdvanced(uint40 timestamp);
     /// @notice Emitted when a guardian reports an account as suspect (raises the activation delay, never bans).
     /// @param marketId  The market the report is scoped to.
     /// @param account   The suspected account.
@@ -126,28 +129,26 @@ interface IGuardianSignals is IGuardianSignalsView {
     function isGuardian(address account) external view returns (bool);
     /// @notice The current delegate of `guardian`, or zero if none is set.
     function getDelegate(address guardian) external view returns (address);
+    /// @notice The number of guardians.
+    function getGuardianCount() external view returns (uint256);
     /// @notice The guardian set paired with each guardian's current delegate (zero if none), aligned by index.
     /// @return guardians The current guardian set.
     /// @return delegates Each guardian's delegate, aligned by index with `guardians`.
-    function getDelegates() external view returns (address[] memory guardians, address[] memory delegates);
-    /// @notice The number of guardians.
-    function getGuardianCount() external view returns (uint256);
-    /// @notice The current guardian set.
-    function getGuardians() external view returns (address[] memory);
+    function getGuardians() external view returns (address[] memory guardians, address[] memory delegates);
 
     // ---
     // LIVENESS
     // ---
 
     /// @notice Record `onBehalf`'s last-scanned block, validated against its block hash and timestamp. Callable by
-    ///         `onBehalf` or its delegate; the record is keyed by the guardian. The quorum frontier is recomputed
-    ///         separately by `syncQuorumBlock`.
+    ///         `onBehalf` or its delegate; the record is keyed by the guardian. When the heartbeat raises the
+    ///         quorum frontier it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
     /// @param onBehalf         The guardian the scan is recorded for.
     /// @param lastScannedBlock The block reported as scanned past.
     function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock) external;
     /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and
     ///         monotonic.
-    function syncQuorumBlock() external;
+    function syncQuorumFrontier() external;
     /// @notice The Unix timestamp of the last block `guardian` reported scanning (0 if never, or not a guardian).
     /// @return timestamp The last-scanned block timestamp.
     function getHeartbeat(address guardian) external view returns (uint40 timestamp);
@@ -164,35 +165,21 @@ interface IGuardianSignals is IGuardianSignalsView {
 
     /// @notice Flag `accounts` in `marketId` on behalf of guardian `onBehalf`. Callable by `onBehalf` or its
     ///         delegate. Per account a no-op when the guardian already flags it, so a batch never reverts on a skip.
-    ///         A non-zero `lastScannedBlock` hash also advances the guardian's heartbeat; a zero hash skips it.
-    /// @param marketId         The market to flag in.
-    /// @param onBehalf         The guardian the flags are recorded for.
-    /// @param accounts         The accounts to flag.
-    /// @param lastScannedBlock The heartbeat to record, or a zero-hash block to skip the heartbeat.
-    function flag(
-        Id marketId,
-        address onBehalf,
-        address[] calldata accounts,
-        BlockInfoWithHash calldata lastScannedBlock
-    ) external;
+    /// @param marketId The market to flag in.
+    /// @param onBehalf The guardian the flags are recorded for.
+    /// @param accounts The accounts to flag.
+    function flag(Id marketId, address onBehalf, address[] calldata accounts) external;
     /// @notice Retract guardian `onBehalf`'s flags on `accounts` in `marketId`. Callable by `onBehalf` or its
     ///         delegate. Per account a no-op when the guardian does not flag it. Never lifts a ban in effect: a
     ///         currently-effective ban (including a quorum-derived one) survives the retraction.
     function unflag(Id marketId, address onBehalf, address[] calldata accounts) external;
     /// @notice Report `accounts` as suspect in `marketId` on behalf of guardian `onBehalf`. Callable by `onBehalf`
     ///         or its delegate. A suspect report never latches a ban; it raises the activation delay like a flag,
-    ///         but only while inside the suspect window. A non-zero `lastScannedBlock` hash also advances the
-    ///         guardian's heartbeat.
-    /// @param marketId         The market to report in.
-    /// @param onBehalf         The guardian the reports are recorded for.
-    /// @param accounts         The accounts to report as suspect.
-    /// @param lastScannedBlock The heartbeat to record, or a zero-hash block to skip the heartbeat.
-    function suspect(
-        Id marketId,
-        address onBehalf,
-        address[] calldata accounts,
-        BlockInfoWithHash calldata lastScannedBlock
-    ) external;
+    ///         but only while inside the suspect window.
+    /// @param marketId The market to report in.
+    /// @param onBehalf The guardian the reports are recorded for.
+    /// @param accounts The accounts to report as suspect.
+    function suspect(Id marketId, address onBehalf, address[] calldata accounts) external;
     /// @notice Retract guardian `onBehalf`'s suspect reports on `accounts` in `marketId`. Callable by `onBehalf` or
     ///         its delegate. Per account a no-op when the guardian has no live report on it.
     function unsuspect(Id marketId, address onBehalf, address[] calldata accounts) external;

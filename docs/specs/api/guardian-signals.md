@@ -126,7 +126,21 @@ event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp);
 | `blockNumber` | `uint40` | The block number reported as scanned past (carried for off-chain tooling). |
 | `timestamp` | `uint40` | The reported block's timestamp; the quorum-scan frontier orders guardians by this value. |
 
-Emitted when a guardian's liveness is recorded, directly or via `flag`/`suspect`.
+Emitted when a guardian's liveness is recorded.
+
+### `QuorumFrontierAdvanced`
+
+```solidity
+event QuorumFrontierAdvanced(uint40 timestamp);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `timestamp` | `uint40` | The new frontier timestamp. |
+
+Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
 
 ### `Suspected`
 
@@ -392,21 +406,6 @@ function getDelegate(address guardian) external view returns (address);
 
 The current delegate of `guardian`, or zero if none is set.
 
-### `getDelegates`
-
-```solidity
-function getDelegates() external view returns (address[] memory guardians, address[] memory delegates);
-```
-
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `guardians` | `address[]` | The current guardian set. |
-| `delegates` | `address[]` | Each guardian's delegate, aligned by index with `guardians`. |
-
-The guardian set paired with each guardian's current delegate (zero if none), aligned by index.
-
 ### `getGuardianCount`
 
 ```solidity
@@ -418,10 +417,17 @@ The number of guardians.
 ### `getGuardians`
 
 ```solidity
-function getGuardians() external view returns (address[] memory);
+function getGuardians() external view returns (address[] memory guardians, address[] memory delegates);
 ```
 
-The current guardian set.
+**Returns**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `guardians` | `address[]` | The current guardian set. |
+| `delegates` | `address[]` | Each guardian's delegate, aligned by index with `guardians`. |
+
+The guardian set paired with each guardian's current delegate (zero if none), aligned by index.
 
 ### `heartbeat`
 
@@ -439,12 +445,12 @@ function heartbeat(
 | `onBehalf` | `address` | The guardian the scan is recorded for. |
 | `lastScannedBlock` | `BlockInfoWithHash` | The block reported as scanned past. |
 
-Record `onBehalf`'s last-scanned block, validated against its block hash and timestamp. Callable by `onBehalf` or its delegate; the record is keyed by the guardian. The quorum frontier is recomputed separately by `syncQuorumBlock`.
+Record `onBehalf`'s last-scanned block, validated against its block hash and timestamp. Callable by `onBehalf` or its delegate; the record is keyed by the guardian. When the heartbeat raises the quorum frontier it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
 
-### `syncQuorumBlock`
+### `syncQuorumFrontier`
 
 ```solidity
-function syncQuorumBlock() external;
+function syncQuorumFrontier() external;
 ```
 
 Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and monotonic.
@@ -494,8 +500,7 @@ Highest block timestamp at least a quorum of guardians have ever scanned past. M
 function flag(
     Id marketId,
     address onBehalf,
-    address[] calldata accounts,
-    BlockInfoWithHash calldata lastScannedBlock
+    address[] calldata accounts
 ) external;
 ```
 
@@ -506,9 +511,8 @@ function flag(
 | `marketId` | `Id` | The market to flag in. |
 | `onBehalf` | `address` | The guardian the flags are recorded for. |
 | `accounts` | `address[]` | The accounts to flag. |
-| `lastScannedBlock` | `BlockInfoWithHash` | The heartbeat to record, or a zero-hash block to skip the heartbeat. |
 
-Flag `accounts` in `marketId` on behalf of guardian `onBehalf`. Callable by `onBehalf` or its delegate. Per account a no-op when the guardian already flags it, so a batch never reverts on a skip. A non-zero `lastScannedBlock` hash also advances the guardian's heartbeat; a zero hash skips it.
+Flag `accounts` in `marketId` on behalf of guardian `onBehalf`. Callable by `onBehalf` or its delegate. Per account a no-op when the guardian already flags it, so a batch never reverts on a skip.
 
 ### `unflag`
 
@@ -528,8 +532,7 @@ Retract guardian `onBehalf`'s flags on `accounts` in `marketId`. Callable by `on
 function suspect(
     Id marketId,
     address onBehalf,
-    address[] calldata accounts,
-    BlockInfoWithHash calldata lastScannedBlock
+    address[] calldata accounts
 ) external;
 ```
 
@@ -540,9 +543,8 @@ function suspect(
 | `marketId` | `Id` | The market to report in. |
 | `onBehalf` | `address` | The guardian the reports are recorded for. |
 | `accounts` | `address[]` | The accounts to report as suspect. |
-| `lastScannedBlock` | `BlockInfoWithHash` | The heartbeat to record, or a zero-hash block to skip the heartbeat. |
 
-Report `accounts` as suspect in `marketId` on behalf of guardian `onBehalf`. Callable by `onBehalf` or its delegate. A suspect report never latches a ban; it raises the activation delay like a flag, but only while inside the suspect window. A non-zero `lastScannedBlock` hash also advances the guardian's heartbeat.
+Report `accounts` as suspect in `marketId` on behalf of guardian `onBehalf`. Callable by `onBehalf` or its delegate. A suspect report never latches a ban; it raises the activation delay like a flag, but only while inside the suspect window.
 
 ### `unsuspect`
 

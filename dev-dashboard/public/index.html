@@ -576,12 +576,12 @@ const VAULT = ["function totalAssets() view returns (uint256)","function totalSu
 const CORE = ["function market(bytes32) view returns (uint128 totalSupplyAssets, uint128 totalSupplyShares, uint128 totalBorrowAssets, uint128 totalBorrowShares, uint128 lastUpdate, uint128 fee)"];
 const CONTROLLER = ["function freeze()","function unfreeze()","function pauseFor(uint256)","function resume()","function isFrozen() view returns (bool)","function isPaused() view returns (bool)"];
 const GUARDIAN = [
-  "function flag(bytes32,address,address[],(bytes32,uint40,uint40))","function unflag(bytes32,address,address[])",
-  "function suspect(bytes32,address,address[],(bytes32,uint40,uint40))","function unsuspect(bytes32,address,address[])",
+  "function flag(bytes32,address,address[])","function unflag(bytes32,address,address[])",
+  "function suspect(bytes32,address,address[])","function unsuspect(bytes32,address,address[])",
   "function ban(bytes32,address)","function unban(bytes32,address)",
   "function addGuardian(address)","function removeGuardian(address)","function setDelegate(address)","function setQuorum(uint256)","function setSuspectWindow(uint256)",
   "function getOpinion(bytes32,address) view returns (bool banned, uint256 strikeCount, uint256 suspectCount, uint256 suspectExpiryTimestamp, uint256 quorumFrontierTimestamp)",
-  "function getQuorum() view returns (uint256)","function getSuspectWindow() view returns (uint256)","function getGuardians() view returns (address[])","function getDelegate(address) view returns (address)","function getDelegates() view returns (address[] guardians, address[] delegates)"
+  "function getQuorum() view returns (uint256)","function getSuspectWindow() view returns (uint256)","function getGuardians() view returns (address[] guardians, address[] delegates)","function getDelegate(address) view returns (address)"
 ];
 
 function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
@@ -766,7 +766,7 @@ async function refreshGuardian(){ try{ const m=activeMarket(); const a=$("gAccou
 $("gAccount").onchange = refreshGuardian;
 $("gMeBtn").onclick=()=>{ if(signer){ $("gAccount").value=signer.address; refreshGuardian(); } };
 // committee is project-level (the guardian singleton), not per-market
-async function refreshCommittee(){ try{ if(!guardianSignals||!provider){ $("gCommittee").innerHTML=""; return; } const c=new E.Contract(guardianSignals,GUARDIAN,provider); const [q,w,pairs]=await Promise.all([c.getQuorum(),c.getSuspectWindow(),c.getDelegates()]); const gs=pairs.guardians, dl=pairs.delegates; const roster=gs.map((g,i)=> dl[i]&&dl[i]!==E.ZeroAddress ? short(g)+" → "+short(dl[i]) : short(g)); $("gCommittee").innerHTML=kv({ quorum:q.toString()+" / "+gs.length+" guardians", "suspect window":w.toString()+"s", "guardians (→ delegate)":roster.join(", ")||"—" }); $("gQuorum").value=q.toString(); $("gWindow").value=w.toString(); }catch(e){ $("gCommittee").innerHTML=""; } }
+async function refreshCommittee(){ try{ if(!guardianSignals||!provider){ $("gCommittee").innerHTML=""; return; } const c=new E.Contract(guardianSignals,GUARDIAN,provider); const [q,w,pairs]=await Promise.all([c.getQuorum(),c.getSuspectWindow(),c.getGuardians()]); const gs=pairs.guardians, dl=pairs.delegates; const roster=gs.map((g,i)=> dl[i]&&dl[i]!==E.ZeroAddress ? short(g)+" → "+short(dl[i]) : short(g)); $("gCommittee").innerHTML=kv({ quorum:q.toString()+" / "+gs.length+" guardians", "suspect window":w.toString()+"s", "guardians (→ delegate)":roster.join(", ")||"—" }); $("gQuorum").value=q.toString(); $("gWindow").value=w.toString(); }catch(e){ $("gCommittee").innerHTML=""; } }
 async function gSignal(fn, verb){ try{ const g=await guard(); if(!g)return; const a=gAcct(); if(!a)return; const tx=await g.c[fn](g.id,[a],await lastScanned()); await tx.wait(); ok(verb+" "+short(a)); refreshGuardian(); }catch(e){bad(errMsg(e));} }
 $("flagBtn").onclick=act("flag",()=>({account:$("gAccount").value.trim(),onBehalf:$("gOnBehalf").value.trim()}));
 $("unflagBtn").onclick=act("unflag",()=>({account:$("gAccount").value.trim(),onBehalf:$("gOnBehalf").value.trim()}));
@@ -979,6 +979,7 @@ const CURATED_EVENTS = [
   "event GuardianAdded(address indexed guardian)","event GuardianRemoved(address indexed guardian)",
   "event QuorumSet(uint256 quorum)","event SuspectWindowSet(uint256 suspectWindow)",
   "event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp)",
+  "event QuorumFrontierAdvanced(uint40 timestamp)",
   "event FrozenSet(bool frozen, address indexed account)","event SupplyCapSet(uint256 cap, address indexed account)","event InstantActivationSet(address indexed caller, bool enabled)",
   "event BorrowRateUpdate(bytes32 indexed id, uint256 avgBorrowRate, uint256 rateAtTarget)","event MarketIrmSet(bytes32 indexed id, address indexed irm)","event ConfigDeployed(bytes32 indexed paramsHash, address indexed config)",
   "event OwnershipTransferred(address indexed previousOwner, address indexed newOwner)","event ManagerSet(address indexed manager)","event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender)"
@@ -1143,9 +1144,9 @@ const ACTIONS = {
   marketPause: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CONTROLLER,signer).pauseFor(BigInt(p.seconds))).wait(); ok("market paused "+p.seconds+"s"); refreshMktCtl(); },
   marketResume: async()=>{ const m=mustMarket(); await (await new E.Contract(m.controller,CONTROLLER,signer).resume()).wait(); ok("market resumed"); refreshMktCtl(); },
   // guardian
-  flag: async(p)=>{ const m=mustMarket(); const g=await onBehalf(p); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).flag(m.marketId,g,[E.getAddress(p.account)],await lastScanned())).wait(); ok("flagged "+short(p.account)); refreshGuardian(); },
+  flag: async(p)=>{ const m=mustMarket(); const g=await onBehalf(p); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).flag(m.marketId,g,[E.getAddress(p.account)])).wait(); ok("flagged "+short(p.account)); refreshGuardian(); },
   unflag: async(p)=>{ const m=mustMarket(); const g=await onBehalf(p); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unflag(m.marketId,g,[E.getAddress(p.account)])).wait(); ok("unflagged "+short(p.account)); refreshGuardian(); },
-  suspect: async(p)=>{ const m=mustMarket(); const g=await onBehalf(p); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).suspect(m.marketId,g,[E.getAddress(p.account)],await lastScanned())).wait(); ok("suspected "+short(p.account)); refreshGuardian(); },
+  suspect: async(p)=>{ const m=mustMarket(); const g=await onBehalf(p); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).suspect(m.marketId,g,[E.getAddress(p.account)])).wait(); ok("suspected "+short(p.account)); refreshGuardian(); },
   unsuspect: async(p)=>{ const m=mustMarket(); const g=await onBehalf(p); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unsuspect(m.marketId,g,[E.getAddress(p.account)])).wait(); ok("unsuspected "+short(p.account)); refreshGuardian(); },
   ban: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).ban(m.marketId,E.getAddress(p.account))).wait(); ok("banned "+short(p.account)); refreshGuardian(); },
   unban: async(p)=>{ const m=mustMarket(); await (await new E.Contract(m.guardianSignals,GUARDIAN,signer).unban(m.marketId,E.getAddress(p.account))).wait(); ok("unbanned "+short(p.account)); refreshGuardian(); },

@@ -13,9 +13,9 @@ import {BlockInfoWithHash, GuardiansOpinion} from "../../src/types/GuardianSigna
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 /// @notice Unit suite for `GuardianSignals`. A flat guardian committee: each guardian flag is one strike, status
-///         latches to `Banned` at quorum (a retraction never lifts a ban in effect), and `syncQuorumBlock` advances
-///         a monotonic quorum liveness frontier. A guardian may appoint one delegate to act on its behalf. Deployed
-///         behind `OssifiableProxy` (the impl disables initializers).
+///         latches to `Banned` at quorum (a retraction never lifts a ban in effect), and a heartbeat advances the
+///         monotonic quorum liveness frontier in the same call (`syncQuorumFrontier` is a fallback). A guardian may
+///         appoint a delegate to act on its behalf. Deployed behind `OssifiableProxy` (the impl disables initializers).
 contract GuardianSignalsTest is Test {
     GuardianSignals internal gs;
 
@@ -42,6 +42,7 @@ contract GuardianSignalsTest is Test {
     event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
     event Banned(Id indexed marketId, address indexed account);
+    event QuorumFrontierAdvanced(uint40 timestamp);
 
     function setUp() public {
         vm.roll(1000);
@@ -84,10 +85,10 @@ contract GuardianSignalsTest is Test {
         accounts[0] = account;
     }
 
-    /// @dev Guardian `guardian` flags `account` on its own behalf, also advancing its heartbeat.
+    /// @dev Guardian `guardian` flags `account` on its own behalf.
     function _flag(address guardian, address account) internal {
         vm.prank(guardian);
-        gs.flag(MARKET, guardian, _one(account), _validBlock());
+        gs.flag(MARKET, guardian, _one(account));
     }
 
     /// @dev Guardian `guardian` retracts its own flag on `account`.
@@ -99,7 +100,7 @@ contract GuardianSignalsTest is Test {
     /// @dev Guardian `guardian` reports `account` as suspect on its own behalf.
     function _suspect(address guardian, address account) internal {
         vm.prank(guardian);
-        gs.suspect(MARKET, guardian, _one(account), _validBlock());
+        gs.suspect(MARKET, guardian, _one(account));
     }
 
     /// @dev Records a heartbeat for `guardian` at block/timestamp `at`.
@@ -229,7 +230,7 @@ contract GuardianSignalsTest is Test {
         assertEq(gs.getDelegate(GUARDIAN_1), DELEGATE, "delegate recorded");
 
         vm.prank(DELEGATE);
-        gs.flag(MARKET, GUARDIAN_1, _one(BOB), _validBlock());
+        gs.flag(MARKET, GUARDIAN_1, _one(BOB));
 
         assertEq(_flagCount(BOB), 1, "delegate's flag counted");
         assertEq(gs.getFlaggedBy(MARKET, BOB)[0], GUARDIAN_1, "keyed by the guardian, not the delegate");
@@ -247,7 +248,7 @@ contract GuardianSignalsTest is Test {
 
         gs.setSuspectWindow(1 days);
         vm.prank(DELEGATE);
-        gs.suspect(MARKET, GUARDIAN_1, _one(BOB), _validBlock());
+        gs.suspect(MARKET, GUARDIAN_1, _one(BOB));
         assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 1, "delegate's suspect counted");
     }
 
@@ -262,7 +263,7 @@ contract GuardianSignalsTest is Test {
 
         vm.prank(DELEGATE); // the old delegate
         vm.expectRevert(IGuardianSignals.Unauthorized.selector);
-        gs.flag(MARKET, GUARDIAN_1, _one(BOB), _validBlock());
+        gs.flag(MARKET, GUARDIAN_1, _one(BOB));
     }
 
     /// @dev Clearing the delegate (zero address) revokes it.
@@ -275,7 +276,7 @@ contract GuardianSignalsTest is Test {
 
         vm.prank(DELEGATE);
         vm.expectRevert(IGuardianSignals.Unauthorized.selector);
-        gs.flag(MARKET, GUARDIAN_1, _one(BOB), _validBlock());
+        gs.flag(MARKET, GUARDIAN_1, _one(BOB));
     }
 
     /// @dev `setDelegate` emits `DelegateSet(guardian, old, new)`.
@@ -293,14 +294,14 @@ contract GuardianSignalsTest is Test {
         gs.setDelegate(DELEGATE);
     }
 
-    /// @dev `getDelegate` reads one guardian's delegate; `getDelegates` returns all, aligned with the guardian set.
-    function test_getDelegates_pairsSetWithDelegates() public {
+    /// @dev `getDelegate` reads one guardian's delegate; `getGuardians` returns the set paired with each delegate.
+    function test_getGuardians_pairsSetWithDelegates() public {
         vm.prank(GUARDIAN_2);
         gs.setDelegate(DELEGATE);
         assertEq(gs.getDelegate(GUARDIAN_2), DELEGATE, "single-guardian getter");
         assertEq(gs.getDelegate(GUARDIAN_1), address(0), "no delegate reads zero");
 
-        (address[] memory guardians, address[] memory delegates) = gs.getDelegates();
+        (address[] memory guardians, address[] memory delegates) = gs.getGuardians();
         assertEq(guardians.length, 3, "three guardians");
         assertEq(delegates[0], address(0), "GUARDIAN_1 has no delegate");
         assertEq(delegates[1], DELEGATE, "GUARDIAN_2's delegate aligned by index");
@@ -321,21 +322,21 @@ contract GuardianSignalsTest is Test {
     function testRevert_flag_unauthorizedCaller() public {
         vm.prank(BOB); // not GUARDIAN_1, not its delegate
         vm.expectRevert(IGuardianSignals.Unauthorized.selector);
-        gs.flag(MARKET, GUARDIAN_1, _one(BOB), _validBlock());
+        gs.flag(MARKET, GUARDIAN_1, _one(BOB));
     }
 
     /// @dev Acting on behalf of a non-guardian reverts even from the caller's own address.
     function testRevert_flag_onBehalfOfNonGuardian() public {
         vm.prank(BOB);
         vm.expectRevert(IGuardianSignals.Unauthorized.selector);
-        gs.flag(MARKET, BOB, _one(BOB), _validBlock());
+        gs.flag(MARKET, BOB, _one(BOB));
     }
 
     /// @dev A guardian cannot flag on behalf of a *different* guardian.
     function testRevert_flag_onBehalfOfAnotherGuardian() public {
         vm.prank(GUARDIAN_1);
         vm.expectRevert(IGuardianSignals.Unauthorized.selector);
-        gs.flag(MARKET, GUARDIAN_2, _one(BOB), _validBlock());
+        gs.flag(MARKET, GUARDIAN_2, _one(BOB));
     }
 
     /// @dev unflag/unsuspect/heartbeat share the same authorization gate.
@@ -364,12 +365,12 @@ contract GuardianSignalsTest is Test {
         vm.expectEmit(true, true, true, true, address(gs));
         emit Flagged(MARKET, BOB, GUARDIAN_1, GUARDIAN_1, 1); // guardian and actor coincide (self-flag)
         vm.prank(GUARDIAN_1);
-        gs.flag(MARKET, GUARDIAN_1, _one(BOB), _validBlock());
+        gs.flag(MARKET, GUARDIAN_1, _one(BOB));
 
         vm.expectEmit(true, true, false, false, address(gs));
         emit Banned(MARKET, BOB);
         vm.prank(GUARDIAN_2);
-        gs.flag(MARKET, GUARDIAN_2, _one(BOB), _validBlock());
+        gs.flag(MARKET, GUARDIAN_2, _one(BOB));
     }
 
     /// @dev A delegate's flag records the guardian as `guardian` and the delegate as `actor`.
@@ -379,7 +380,7 @@ contract GuardianSignalsTest is Test {
         vm.expectEmit(true, true, true, true, address(gs));
         emit Flagged(MARKET, BOB, GUARDIAN_1, DELEGATE, 1);
         vm.prank(DELEGATE);
-        gs.flag(MARKET, GUARDIAN_1, _one(BOB), _validBlock());
+        gs.flag(MARKET, GUARDIAN_1, _one(BOB));
     }
 
     /// @dev `Banned` fires exactly once, on the crossing flag.
@@ -401,7 +402,7 @@ contract GuardianSignalsTest is Test {
         accounts[0] = BOB;
         accounts[1] = address(0x5002);
         vm.prank(GUARDIAN_1);
-        gs.flag(MARKET, GUARDIAN_1, accounts, _validBlock());
+        gs.flag(MARKET, GUARDIAN_1, accounts);
         assertEq(_flagCount(BOB), 1, "first account flagged");
         assertEq(_flagCount(address(0x5002)), 1, "second account flagged");
     }
@@ -413,34 +414,59 @@ contract GuardianSignalsTest is Test {
         accounts[1] = address(0);
         vm.prank(GUARDIAN_1);
         vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
-        gs.flag(MARKET, GUARDIAN_1, accounts, _validBlock());
+        gs.flag(MARKET, GUARDIAN_1, accounts);
         assertEq(_flagCount(BOB), 0, "batch is atomic");
     }
 
-    /// @dev A zero-hash `lastScannedBlock` skips the heartbeat leg, so a flag can be cast without one.
-    function test_flag_zeroHashSkipsHeartbeat() public {
-        BlockInfoWithHash memory noBeat = BlockInfoWithHash({hash: bytes32(0), number: 0, timestamp: 0});
-        vm.prank(GUARDIAN_1);
-        gs.flag(MARKET, GUARDIAN_1, _one(BOB), noBeat);
-        assertEq(_flagCount(BOB), 1, "flag landed");
-        assertEq(gs.getHeartbeat(GUARDIAN_1), 0, "heartbeat not advanced by a zero-hash block");
+    /// @dev A flag records no heartbeat: liveness is a standalone `heartbeat` call.
+    function test_flag_doesNotHeartbeat() public {
+        _flag(GUARDIAN_1, BOB);
+        assertEq(gs.getHeartbeat(GUARDIAN_1), 0, "flag leaves the heartbeat untouched");
+    }
+
+    /// @dev A suspect report records no heartbeat: liveness is a standalone `heartbeat` call.
+    function test_suspect_doesNotHeartbeat() public {
+        _suspect(GUARDIAN_1, BOB);
+        assertEq(gs.getHeartbeat(GUARDIAN_1), 0, "suspect leaves the heartbeat untouched");
     }
 
     // ── liveness frontier ──
 
-    /// @dev A heartbeat is lazy: it records the scan but does not move the frontier until `syncQuorumBlock`.
-    function test_frontier_heartbeatIsLazy_advancesOnlyOnSync() public {
+    /// @dev A heartbeat advances the frontier in the same call once a quorum has reported — no separate sync tx.
+    function test_frontier_heartbeatAdvancesEagerly() public {
         _heartbeat(GUARDIAN_1, 999);
+        assertEq(gs.getQuorumFrontier(), 0, "one heartbeat is below quorum: frontier stays 0");
         _heartbeat(GUARDIAN_2, 998);
-        assertEq(gs.getQuorumFrontier(), 0, "heartbeats alone do not move the frontier");
-        gs.syncQuorumBlock();
-        assertEq(gs.getQuorumFrontier(), 998, "sync advances to the quorum-th largest");
+        assertEq(gs.getQuorumFrontier(), 998, "the quorum-th heartbeat advances the frontier without an explicit sync");
+    }
+
+    /// @dev A heartbeat that raises the frontier emits `QuorumFrontierAdvanced`; a sub-quorum one emits none.
+    function test_frontier_heartbeatEmitsAdvanced() public {
+        vm.recordLogs();
+        _heartbeat(GUARDIAN_1, 999); // below quorum: frontier holds at 0
+        Vm.Log[] memory subQuorum = vm.getRecordedLogs();
+        bytes32 advancedSig = keccak256("QuorumFrontierAdvanced(uint40)");
+        for (uint256 i; i < subQuorum.length; ++i) {
+            assertTrue(subQuorum[i].topics[0] != advancedSig, "a sub-quorum heartbeat emits no advance");
+        }
+
+        vm.expectEmit(false, false, false, true, address(gs));
+        emit QuorumFrontierAdvanced(998);
+        _heartbeat(GUARDIAN_2, 998);
+    }
+
+    /// @dev A guardian already above the frontier cannot raise the quorum-th largest, so the frontier holds.
+    function test_frontier_heartbeatAboveFrontier_noAdvance() public {
+        _heartbeat(GUARDIAN_1, 997);
+        _heartbeat(GUARDIAN_2, 996); // frontier 996
+        _heartbeat(GUARDIAN_1, 998); // GUARDIAN_1 already at 997 > frontier 996
+        assertEq(gs.getQuorumFrontier(), 996, "a leader's heartbeat above the frontier does not raise it");
     }
 
     /// @dev Fewer than quorum heartbeats keep the frontier at zero.
     function test_frontier_belowQuorumHeartbeats_noAdvance() public {
         _heartbeat(GUARDIAN_1, 999);
-        gs.syncQuorumBlock();
+        gs.syncQuorumFrontier();
         assertEq(gs.getQuorumFrontier(), 0, "fewer than quorum heartbeats -> frontier stays 0");
     }
 
@@ -449,7 +475,7 @@ contract GuardianSignalsTest is Test {
         _heartbeat(GUARDIAN_1, 999);
         _heartbeat(GUARDIAN_2, 998);
         _heartbeat(GUARDIAN_3, 997);
-        gs.syncQuorumBlock();
+        gs.syncQuorumFrontier();
         assertEq(gs.getQuorumFrontier(), 998, "quorum-th largest of {999,998,997} at quorum 2");
     }
 
@@ -457,25 +483,19 @@ contract GuardianSignalsTest is Test {
     function test_frontier_monotonic_doesNotRegress() public {
         _heartbeat(GUARDIAN_1, 999);
         _heartbeat(GUARDIAN_2, 998);
-        gs.syncQuorumBlock(); // frontier 998
+        gs.syncQuorumFrontier(); // frontier 998
         _heartbeat(GUARDIAN_3, 990);
-        gs.syncQuorumBlock();
+        gs.syncQuorumFrontier();
         assertEq(gs.getQuorumFrontier(), 998, "monotonic ratchet");
     }
 
     /// @dev Recomputing the frontier is permissionless.
-    function test_syncQuorumBlock_isPermissionless() public {
+    function test_syncQuorumFrontier_isPermissionless() public {
         _heartbeat(GUARDIAN_1, 999);
         _heartbeat(GUARDIAN_2, 998);
         vm.prank(BOB);
-        gs.syncQuorumBlock();
+        gs.syncQuorumFrontier();
         assertEq(gs.getQuorumFrontier(), 998, "anyone can advance the frontier");
-    }
-
-    /// @dev A flag carrying a real block advances the guardian's heartbeat too (to the reported block timestamp).
-    function test_flag_advancesHeartbeat() public {
-        _flag(GUARDIAN_1, BOB); // _validBlock() reports block.number - 1 == 999 with timestamp 999
-        assertEq(gs.getHeartbeat(GUARDIAN_1), 999, "flag heartbeated the guardian to the reported timestamp");
     }
 
     // ── heartbeat validation ──
@@ -587,7 +607,7 @@ contract GuardianSignalsTest is Test {
         address guardian4 = address(0x4004);
         vm.prank(guardian4);
         vm.expectRevert(IGuardianSignals.Unauthorized.selector);
-        gs.flag(MARKET, guardian4, _one(BOB), _validBlock());
+        gs.flag(MARKET, guardian4, _one(BOB));
 
         gs.addGuardian(guardian4);
         _flag(guardian4, BOB);
@@ -614,7 +634,7 @@ contract GuardianSignalsTest is Test {
         // Revoked in practice: the ex-guardian cannot signal, the rest can.
         vm.prank(GUARDIAN_3);
         vm.expectRevert(IGuardianSignals.Unauthorized.selector);
-        gs.flag(MARKET, GUARDIAN_3, _one(BOB), _validBlock());
+        gs.flag(MARKET, GUARDIAN_3, _one(BOB));
         _flag(GUARDIAN_1, BOB);
         assertEq(_flagCount(BOB), 1, "remaining guardian still flags");
     }
@@ -639,7 +659,7 @@ contract GuardianSignalsTest is Test {
     }
 
     function test_getGuardians_returnsFullSet() public view {
-        address[] memory set = gs.getGuardians();
+        (address[] memory set,) = gs.getGuardians();
         assertEq(set.length, 3, "three guardians");
         assertEq(set[0], GUARDIAN_1, "index 0");
         assertEq(set[1], GUARDIAN_2, "index 1");
@@ -891,7 +911,7 @@ contract GuardianSignalsTest is Test {
         _heartbeat(GUARDIAN_1, b1);
         _heartbeat(GUARDIAN_2, b2);
         _heartbeat(GUARDIAN_3, b3);
-        gs.syncQuorumBlock();
+        gs.syncQuorumFrontier();
         assertEq(gs.getQuorumFrontier(), _sort3(b1, b2, b3), "frontier = quorum-th largest heartbeat");
     }
 }
