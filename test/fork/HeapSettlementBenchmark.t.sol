@@ -87,11 +87,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer, ForkTest {
     }
 
     function setUp() public {
-        if (!_fork()) return;
-        if (!_hasAddr("external.weth") || !_hasAddr("external.wstEth")) {
-            vm.skip(true);
-            return;
-        }
+        _fork();
         WETH_ADDRESS = _addr("external.weth");
         WSTETH_ADDRESS = _addr("external.wstEth");
         WETH = IWETH(WETH_ADDRESS);

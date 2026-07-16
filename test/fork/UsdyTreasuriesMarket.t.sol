@@ -80,14 +80,7 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer, ForkTest {
     }
 
     function setUp() public {
-        if (!_fork()) return;
-        if (
-            !_hasAddr("external.usdy") || !_hasAddr("external.usdt") || !_hasAddr("external.ondoOracle")
-                || !_hasAddr("external.usdtUsdFeed") || !_hasAddr("external.usdyBlocklist")
-        ) {
-            vm.skip(true);
-            return;
-        }
+        _fork();
         USDY = _addr("external.usdy");
         USDT = _addr("external.usdt");
         ONDO_ORACLE = _addr("external.ondoOracle");

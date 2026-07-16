@@ -512,11 +512,9 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
     function _fundCollateral(address to, uint256 amount) internal virtual;
     function _setStakingIndex(uint256 index) internal virtual;
     function _currentStakingIndex() internal view virtual returns (uint256);
-    function _skip() internal view virtual returns (bool);
 
     // --- run one IRM through the scenario ---
     function _run(IrmKind kind) internal {
-        vm.skip(_skip(), "scenario setup unavailable (mainnet fork required?)");
         _irmKind = kind;
         _deployStack();
         Metrics memory r = _runScenario();
@@ -1107,10 +1105,6 @@ contract IrmModelSelectionMockTest is IrmScenarioBase {
 
     function _currentStakingIndex() internal view override returns (uint256) {
         return mockWst.stEthPerToken();
-    }
-
-    function _skip() internal view override returns (bool) {
-        return false;
     }
 
     /// @dev Runs the multi-year IRM comparison scenario driven by the adaptive-curve IRM (mock tokens, no fork).

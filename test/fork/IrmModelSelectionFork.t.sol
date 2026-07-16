@@ -29,7 +29,8 @@ interface IWstETHFork {
 
 /// @notice Fork mirror of the simulation against real WETH/wstETH. Loan funding wraps ETH to WETH;
 ///         collateral funding submits ETH to Lido and wraps stETH to wstETH; staking moves are simulated by
-///         mocking the real wstETH `stEthPerToken`. `setUp` acquires the pinned fork (or skips without an RPC).
+///         mocking the real wstETH `stEthPerToken`. `setUp` creates the fork and reads the token addresses
+///         from the `DEPLOYMENT` map.
 contract IrmModelSelectionForkTest is IrmScenarioBase, ForkTest {
     // Populated in setUp from deployments/deployed-<network>.json (external.*).
     address internal WETH;
@@ -37,11 +38,7 @@ contract IrmModelSelectionForkTest is IrmScenarioBase, ForkTest {
     address internal WSTETH;
 
     function setUp() public {
-        if (!_fork()) return;
-        if (!_hasAddr("external.weth") || !_hasAddr("external.stEth") || !_hasAddr("external.wstEth")) {
-            vm.skip(true);
-            return;
-        }
+        _fork();
         WETH = _addr("external.weth");
         STETH = _addr("external.stEth");
         WSTETH = _addr("external.wstEth");
@@ -81,11 +78,6 @@ contract IrmModelSelectionForkTest is IrmScenarioBase, ForkTest {
 
     function _currentStakingIndex() internal view override returns (uint256) {
         return IWstETHFork(WSTETH).stEthPerToken();
-    }
-
-    /// @dev `setUp` already forks or skips, so the base's in-`_run` gate is a no-op here.
-    function _skip() internal view override returns (bool) {
-        return false;
     }
 
     /// @dev Runs the multi-year IRM comparison scenario driven by the adaptive-curve IRM against real fork tokens.

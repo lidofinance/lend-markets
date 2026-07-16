@@ -10,11 +10,15 @@ The suites are network-blind: give them an RPC to fork and a path to the address
 network.
 
 ```sh
-ETH_RPC_URL=<rpc>  DEPLOYMENT=deployments/deployed-mainnet.json  make fork-test
+make test-fork ETH_RPC_URL=<rpc> DEPLOYMENT=deployments/deployed-mainnet.json
 ```
 
-`ForkTest._fork()` forks `ETH_RPC_URL` (latest block) and loads the `DEPLOYMENT` JSON. It self-skips (no
-failure) when either is unset or the RPC is unreachable, so a plain `forge test` / `make test` stays green.
+Pass the variables as make command-line assignments, as above: they override a `.env`, whereas plain
+`VAR=x make test-fork` is silently beaten by `.env` values loaded by the Makefile.
+
+`ForkTest._fork()` forks `ETH_RPC_URL` (latest block) and loads the `DEPLOYMENT` JSON. It reverts when
+either env var is unset, the map file is missing, or the RPC does not answer, and `_addr` reverts on a key
+the map does not define — a fork suite runs or it fails, it never skips.
 
 ## Adding a network
 
@@ -22,11 +26,12 @@ Config only — no Solidity or `foundry.toml` changes. Drop a `deployments/deplo
 below) and point the two env vars at it:
 
 ```sh
-ETH_RPC_URL=<network-rpc>  DEPLOYMENT=deployments/deployed-<network>.json  make fork-test
+make test-fork ETH_RPC_URL=<network-rpc> DEPLOYMENT=deployments/deployed-<network>.json
 ```
 
-A suite that needs an address the map does not define self-skips (guard with `_hasAddr`), so e.g. a
-USDY-market suite runs against a mainnet map but skips against a map with no `external.usdy`.
+A suite that needs an address the map does not define fails (`_addr` reverts naming the missing key), so
+a network's map must define every key the suites read — e.g. a map without `external.usdy` fails the
+USDY-market suite.
 
 ## Schema
 
@@ -36,7 +41,7 @@ USDY-market suite runs against a mainnet map but skips against a map with no `ex
     "weth": "0x…",
     "stEth": "0x…",
     "wstEth": "0x…",
-    "usdy": "0x…",       // omit on networks without it — dependent suites skip
+    "usdy": "0x…",       // the USDY suite reads it — a map without it fails that suite
     "usdt": "0x…",
     "ondoOracle": "0x…",
     "usdtUsdFeed": "0x…",

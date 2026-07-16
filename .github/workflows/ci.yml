@@ -26,7 +26,7 @@ jobs:
         run: make lint
 
       - name: test (local, excludes test/fork/)
-        run: make test
+        run: make test-local
 
   fork:
     name: fork tests
@@ -45,4 +45,4 @@ jobs:
           DEPLOYMENT: deployments/deployed-mainnet.json
         run: |
           test -n "$ETH_RPC_URL" || { echo "::error::MAINNET_RPC_URL secret required for the fork job"; exit 1; }
-          make fork-test
+          make test-fork

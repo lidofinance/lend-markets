@@ -86,7 +86,8 @@ Then:
 - [ ] Record the deployed addresses under `protocol` in `deployments/deployed-<network>.json` (the
       `test/fork/` suites read it; see `deployments/README.md`).
 - [ ] Run the fork suites against the deployed addresses:
-      `ETH_RPC_URL=<rpc> DEPLOYMENT=deployments/deployed-<network>.json make fork-test`.
+      `make test-fork ETH_RPC_URL=<rpc> DEPLOYMENT=deployments/deployed-<network>.json`
+      (command-line assignments so a `.env` cannot override them).
 
 ## Open items
 

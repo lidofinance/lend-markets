@@ -16,7 +16,7 @@ interface IWstETHReal {
 
 /// @notice L3-style fork scenario for the eth/steth market against the REAL mainnet wstETH (the unit suites
 ///         cover the same math against mocks). Deploys a fresh protocol on a fork with wstETH collateral
-///         priced by the live `WstEthRateOracle`, and borrows against it. Skips with no mainnet fork.
+///         priced by the live `WstEthRateOracle`, and borrows against it.
 contract EthStethForkTest is LidoLendSetup, ForkTest {
     using MarketActions for Market;
 
@@ -24,11 +24,7 @@ contract EthStethForkTest is LidoLendSetup, ForkTest {
     MockERC20 internal weth;
 
     function setUp() public {
-        if (!_fork()) return;
-        if (!_hasAddr("external.wstEth")) {
-            vm.skip(true);
-            return;
-        }
+        _fork();
         WSTETH = _addr("external.wstEth");
         weth = new MockERC20("Wrapped Ether", "WETH", 18);
         _deployProtocol(_defaultConfig(address(weth), WSTETH, WSTETH));

@@ -18,17 +18,17 @@ Build:
 forge build --force
 ```
 
-Run the local test suite:
+Run the local test suite (everything except `test/fork/`):
 
 ```sh
-forge test
+forge test --no-match-path 'test/fork/**'
 ```
 
-Run the fork tests against a real network. The suites under `test/fork/` require `ETH_RPC_URL` and a path to that network's address map `DEPLOYMENT` (skips if either is unset):
+Run the fork tests against a real network. The suites under `test/fork/` require `ETH_RPC_URL` and a path to that network's address map `DEPLOYMENT` — they revert if either is unset or the map file is missing (a plain `forge test` runs local and fork suites together):
 
 ```sh
 ETH_RPC_URL=<rpc-url> DEPLOYMENT=deployments/deployed-mainnet.json forge test --match-path 'test/fork/**'
-ETH_RPC_URL=<rpc-url> DEPLOYMENT=deployments/deployed-hoodi.json   forge test --match-path 'test/fork/**'
+ETH_RPC_URL=<rpc-url> DEPLOYMENT=deployments/deployed-<network>.json forge test --match-path 'test/fork/**'  # needs that network's map (see deployments/README.md)
 ```
 
 Format Solidity:
@@ -44,16 +44,17 @@ Most everyday commands are wrapped in a `Makefile`:
 ```sh
 make help            # list available targets
 make build           # forge build
-make test            # local suites only (excludes test/fork/); no RPC, deterministic
-make fork-test       # test/fork/ only; needs ETH_RPC_URL + DEPLOYMENT in .env (copy .env.example to .env), else self-skips
-make fmt-check       # forge fmt --check on tracked paths (CI gate)
+make test            # all tests, local + fork; fork suites revert without the fork setup (ETH_RPC_URL + DEPLOYMENT)
+make test-local      # local suites only (excludes test/fork/); no RPC
+make test-fork       # test/fork/ only; the suites revert without the fork setup (copy .env.example to .env)
+make fmt-check       # forge fmt --check on tracked paths (local only; CI does not fail on style)
 make lint            # forge lint
 make coverage        # forge coverage --ir-minimum --report summary
 make snapshot        # gas snapshot of the whole suite
 make snapshot-diff   # fresh run diffed against .gas-snapshot
 make slither         # static analysis (requires `slither` in PATH)
 make solhint         # stylistic/security checks (requires `solhint` in PATH)
-make ci              # everything CI runs on PRs: build + fmt-check + lint + test
+make ci              # everything CI runs on PRs: build + lint + local tests
 ```
 
 Environment variables are documented in `.env.example`. Copy it to `.env` and set `ETH_RPC_URL` + `DEPLOYMENT` to enable fork tests locally.

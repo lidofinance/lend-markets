@@ -252,11 +252,7 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
     }
 
     function setUp() public {
-        if (!_fork()) return;
-        if (!_hasAddr("external.weth") || !_hasAddr("external.stEth") || !_hasAddr("external.wstEth")) {
-            vm.skip(true);
-            return;
-        }
+        _fork();
         WETH_ADDRESS = _addr("external.weth");
         STETH_ADDRESS = _addr("external.stEth");
         WSTETH_ADDRESS = _addr("external.wstEth");

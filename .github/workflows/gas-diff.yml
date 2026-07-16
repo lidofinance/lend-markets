@@ -16,10 +16,10 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      # One suite, no fork split: this job is secret-free, so the fork suites self-skip and the diff covers
-      # the local suites. Only the heap benchmark is excluded — its 100M+ gas swamps every other line.
-      # TEST_SEED is held constant so base and head differ only by code, not by the seeded oracle price.
-      SNAPSHOT_EXCLUDE: test/fork/HeapSettlementBenchmark.t.sol
+      # This job is secret-free (no RPC), and the fork suites revert without one, so the whole test/fork/
+      # tree is excluded and the diff covers the local suites. TEST_SEED is held constant so base and head
+      # differ only by code, not by the seeded oracle price.
+      SNAPSHOT_EXCLUDE: test/fork/**
       TEST_SEED: "1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -95,7 +95,7 @@ jobs:
             echo
             cat /tmp/gas-top.md
             echo
-            echo '<sub>Heap settlement benchmark excluded. Full diff in `gas-diff` artefact.</sub>'
+            echo '<sub>Fork suites excluded. Full diff in `gas-diff` artefact.</sub>'
           } > /tmp/gas-comment.md
           cat /tmp/gas-comment.md >> "$GITHUB_STEP_SUMMARY"
 

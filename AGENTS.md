@@ -30,12 +30,14 @@
 ## Build, Test, And Formatting Commands
 
 - Build: `forge build --force`.
-- Test (local suites): `forge test --no-match-path 'test/fork/**'`, or `make test`.
-- Fork tests (needs `ETH_RPC_URL` + `DEPLOYMENT` set, e.g. in `.env`): `forge test --match-path 'test/fork/**'`,
-  or `make fork-test`.
+- All tests (local + fork): `make test`. The fork suites require a working fork setup — `ETH_RPC_URL` and
+  `DEPLOYMENT` set (e.g. in `.env`), the address map on disk, the RPC answering — and revert without it;
+  a fork suite runs or it fails, it never skips.
+- Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
+- Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
 - Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot` (heap benchmark excluded). The
-  fork suites join when `ETH_RPC_URL` + `DEPLOYMENT` are set, forking the latest block unless `FORK_BLOCK`
-  pins one; without them they self-skip. `TEST_SEED` comes from the env when set; otherwise foundry picks
+  fork suites are included — they revert without the fork setup — forking the latest block unless
+  `FORK_BLOCK` pins one. `TEST_SEED` comes from the env when set; otherwise foundry picks
   one random seed per run and the suites log it (fork suites also log their block), so a run is always
   replayable by exporting the logged `TEST_SEED`/`FORK_BLOCK`. `make snapshot-diff` diffs a fresh run
   against `.gas-snapshot` — run both at the same `TEST_SEED`, or the diff picks up seed noise on top of the
@@ -43,9 +45,11 @@
 - Format check for local Solidity files:
   `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
-- Writing a fork test: put it under `test/fork/`, extend `helpers/ForkTest.sol`, call `if (!_fork()) return;`
-  first in `setUp`, and read addresses via `_addr("external.wstEth")` (guard optional keys with `_hasAddr`).
-  `_fork()` forks `ETH_RPC_URL` at latest and loads the `DEPLOYMENT` map, self-skipping when either is unset. `FORK_BLOCK` pins a block for replay.
+- Writing a fork test: put it under `test/fork/`, extend `helpers/ForkTest.sol`, call `_fork()` first in
+  `setUp`, and read addresses via `_addr("external.wstEth")`. `_fork()` forks `ETH_RPC_URL` at latest and
+  loads the `DEPLOYMENT` map, reverting when either is unset, the RPC is unreachable, or the map file is
+  missing; `_addr` reverts on a key the map does not define. `FORK_BLOCK` pins a block for replay
+  (why latest: ADR 033).
 
 ## Dependency Policy
 
@@ -111,7 +115,7 @@ test/
   `setup/`), on the local EVM with mock tokens.
 - `invariant/<Area>.invariant.t.sol` — handler-based stateful properties (actors, ghosts, bounded
   actions). Handlers under `invariant/handlers/`.
-- `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make fork-test` to run.
+- `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
 
 ### Setup Infra (`test/setup/`)
 
@@ -173,7 +177,8 @@ contract or the test setup.
 ### Discipline
 
 - Tests land with the change. Separate "tests follow-up" PRs are not accepted for new functionality.
-- After source changes, run at least `forge build --force` and `forge test`.
+- After source changes, run at least `forge build --force` and `make test-local` (`make test` when a fork
+  setup is configured).
 
 ## Commit Messages
 
