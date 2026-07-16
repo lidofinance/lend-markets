@@ -8,8 +8,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Local suites: unit + scenario + invariant. No RPC, no fork, deterministic — this is the gate that
-  # must pass on every change and needs no secret.
   local:
     name: build + lint + local tests
     runs-on: ubuntu-latest
@@ -30,8 +28,6 @@ jobs:
       - name: test (local, excludes test/fork/)
         run: make test
 
-  # Fork suites under test/fork/. They self-fork (see test/fork/helpers/ForkTest.sol) from ETH_RPC_URL and read
-  # addresses from DEPLOYMENT — no --fork-url flag. foundry-toolchain caches ~/.foundry/cache by default.
   fork:
     name: fork tests
     runs-on: ubuntu-latest
@@ -43,11 +39,6 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      # The fork suites are network-blind: they fork ETH_RPC_URL and read addresses from DEPLOYMENT. This job
-      # picks mainnet purely by what it provides (a mainnet RPC + the mainnet address map). To cover another
-      # network, add a job with that network's RPC and its deployments/deployed-<network>.json.
-      # Fork tests skip themselves without an RPC; in CI we want them to actually run, so fail loudly if the
-      # secret is missing rather than pass a vacuous (all-skipped) job.
       - name: fork tests (mainnet)
         env:
           ETH_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
