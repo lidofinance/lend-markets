@@ -174,7 +174,7 @@ Emitted when a guardian's suspect report on an account is retracted.
 event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
 ```
 
-Emitted when a suspect report cast by a removed guardian is pruned.
+Emitted when a suspect report is pruned — its guardian was removed from the committee, or its suspect window lapsed.
 
 ### `Flagged`
 

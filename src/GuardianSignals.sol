@@ -119,7 +119,11 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     function removeGuardian(address guardian) external onlyRole(MANAGER_ROLE) {
         if (!_guardians.remove(guardian)) revert NotGuardian();
         if (_guardians.length() < _quorum) revert WouldBreakQuorum();
-        delete _delegates[guardian];
+        address oldDelegate = _delegates[guardian];
+        if (oldDelegate != address(0)) {
+            delete _delegates[guardian];
+            emit DelegateSet(guardian, oldDelegate, address(0));
+        }
         delete _heartbeats[guardian];
         emit GuardianRemoved(guardian);
     }

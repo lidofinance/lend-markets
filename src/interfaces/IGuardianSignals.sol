@@ -50,7 +50,8 @@ interface IGuardianSignals is IGuardianSignalsView {
     );
     /// @notice Emitted when a guardian's suspect report on an account is retracted.
     event SuspectCleared(Id indexed marketId, address indexed account, address indexed guardian, address actor);
-    /// @notice Emitted when a suspect report cast by a removed guardian is pruned.
+    /// @notice Emitted when a suspect report is pruned — its guardian was removed from the committee, or its suspect
+    ///         window lapsed.
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
     /// @notice Emitted when a guardian flags an account.
     /// @param marketId The market id.

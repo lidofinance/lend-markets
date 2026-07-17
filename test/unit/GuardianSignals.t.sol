@@ -308,10 +308,13 @@ contract GuardianSignalsTest is Test {
         assertEq(delegates[2], address(0), "GUARDIAN_3 has no delegate");
     }
 
-    /// @dev Removing a guardian clears its delegate, so re-adding it starts with none.
+    /// @dev Removing a guardian with a delegate emits `DelegateSet(.., 0)` and clears the delegate, so re-adding
+    ///      it starts with none.
     function test_removeGuardian_clearsDelegate() public {
         vm.prank(GUARDIAN_3);
         gs.setDelegate(DELEGATE);
+        vm.expectEmit(true, true, true, false, address(gs));
+        emit DelegateSet(GUARDIAN_3, DELEGATE, address(0));
         gs.removeGuardian(GUARDIAN_3);
         assertEq(gs.getDelegate(GUARDIAN_3), address(0), "delegate cleared on removal");
     }
