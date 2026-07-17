@@ -6,11 +6,12 @@ import {BlockInfoWithHash} from "../types/GuardianSignalsTypes.sol";
 import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
-/// @notice Guardian-committee signal layer over accounts, keyed per market. Each guardian is a single committee
-///         address that may appoint a **delegate** (at most one at a time) to act on its behalf: it raises signals
-///         (flag, suspect) and retracts them (unflag, unsuspect), and the delegate may act for it. A `quorum` of
-///         distinct guardians' flags latches a ban in the market it was raised in. The minimal read surface the
-///         controller depends on (`getOpinion`, `isBanned`) is {IGuardianSignalsView}; this interface adds the rest.
+/// @notice Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address
+///         that may appoint one **delegate** (at most one at a time) to act on its behalf. A guardian (or its
+///         delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of
+///         distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface
+///         the controller depends on (`getOpinion`, `isBanned`) lives in {IGuardianSignalsView}; this interface adds
+///         the rest.
 interface IGuardianSignals is IGuardianSignalsView {
     // ---
     // EVENTS
@@ -114,13 +115,13 @@ interface IGuardianSignals is IGuardianSignalsView {
     function addGuardian(address guardian) external;
     /// @notice Remove `guardian` from the committee (reverts if it would drop the set below the quorum).
     function removeGuardian(address guardian) external;
-    /// @notice Appoint (or clear, with the zero address) the caller-guardian's delegate — a hot key that may act on
-    ///         the guardian's behalf. Guardian-only. The guardian's signals and heartbeat are unaffected.
+    /// @notice Set the caller-guardian's delegate — a hot key that may act on its behalf. The zero address clears
+    ///         it. Guardian-only; the guardian's signals and heartbeat are untouched.
     function setDelegate(address newDelegate) external;
     /// @notice Set the quorum — the distinct guardians' flags that latch a ban.
     function setQuorum(uint256 newQuorum) external;
-    /// @notice Set the suspect window — the freshness horizon within which a suspect report still counts. Never
-    ///         touches the guardian set. The per-flag and per-suspect delays live in the market's activation config.
+    /// @notice Set the suspect window — how long a suspect report keeps counting. The per-flag and per-suspect
+    ///         delays live in the market's activation config.
     function setSuspectWindow(uint256 suspectWindow) external;
     /// @notice The quorum: distinct guardians' flags that latch a ban.
     function getQuorum() external view returns (uint256);
@@ -141,9 +142,9 @@ interface IGuardianSignals is IGuardianSignalsView {
     // LIVENESS
     // ---
 
-    /// @notice Record `onBehalf`'s last-scanned block, validated against its block hash and timestamp. Callable by
-    ///         `onBehalf` or its delegate; the record is keyed by the guardian. When the heartbeat raises the
-    ///         quorum frontier it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
+    /// @notice Record `onBehalf`'s last-scanned block, validated against its block hash and timestamp; callable by
+    ///         the guardian or its delegate, and keyed by the guardian. If the heartbeat raises the quorum frontier,
+    ///         it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
     /// @param onBehalf         The guardian the scan is recorded for.
     /// @param lastScannedBlock The block reported as scanned past.
     function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock) external;
@@ -164,31 +165,28 @@ interface IGuardianSignals is IGuardianSignalsView {
     // SIGNALLING
     // ---
 
-    /// @notice Flag `accounts` in `marketId` on behalf of guardian `onBehalf`. Callable by `onBehalf` or its
-    ///         delegate. Per account a no-op when the guardian already flags it, so a batch never reverts on a skip.
+    /// @notice Flag `accounts` in `marketId` on behalf of guardian `onBehalf`. Per account a no-op if the guardian
+    ///         already flags it, so a batch won't revert on a repeat.
     /// @param marketId The market to flag in.
     /// @param onBehalf The guardian the flags are recorded for.
     /// @param accounts The accounts to flag.
     function flag(Id marketId, address onBehalf, address[] calldata accounts) external;
-    /// @notice Retract guardian `onBehalf`'s flags on `accounts` in `marketId`. Callable by `onBehalf` or its
-    ///         delegate. Per account a no-op when the guardian does not flag it. Never lifts a ban in effect: a
-    ///         currently-effective ban (including a quorum-derived one) survives the retraction.
+    /// @notice Retract guardian `onBehalf`'s flags on `accounts` in `marketId`. Per account a no-op if the guardian
+    ///         doesn't flag it. Never lifts a ban already in effect (including a quorum-derived one).
     function unflag(Id marketId, address onBehalf, address[] calldata accounts) external;
-    /// @notice Report `accounts` as suspect in `marketId` on behalf of guardian `onBehalf`. Callable by `onBehalf`
-    ///         or its delegate. A suspect report never latches a ban; it raises the activation delay like a flag,
-    ///         but only while inside the suspect window.
+    /// @notice Report `accounts` as suspect in `marketId` on behalf of guardian `onBehalf`. A suspect report never
+    ///         bans; it raises the activation delay like a flag, but only while inside the suspect window.
     /// @param marketId The market to report in.
     /// @param onBehalf The guardian the reports are recorded for.
     /// @param accounts The accounts to report as suspect.
     function suspect(Id marketId, address onBehalf, address[] calldata accounts) external;
-    /// @notice Retract guardian `onBehalf`'s suspect reports on `accounts` in `marketId`. Callable by `onBehalf` or
-    ///         its delegate. Per account a no-op when the guardian has no live report on it.
+    /// @notice Retract guardian `onBehalf`'s suspect reports on `accounts` in `marketId`. Per account a no-op if the
+    ///         guardian has no live report on it.
     function unsuspect(Id marketId, address onBehalf, address[] calldata accounts) external;
-    /// @notice Permissionless: prune `account`'s flags and suspect reports in `marketId` cast by guardians that were
-    ///         since removed, lowering the flag count. When any suspect report is pruned the active-suspect snapshot
-    ///         is re-taken, so the pruned reports stop counting toward the activation delay immediately. A latched
-    ///         ban is never lifted; after pruning, if the surviving current-committee flags still meet quorum the
-    ///         (quorum-derived) ban is latched, otherwise that still-unlatched ban lapses.
+    /// @notice Permissionless: on `account` in `marketId`, drop the flags and suspect reports left by guardians that
+    ///         were since removed. Pruning a suspect report re-takes the active-suspect snapshot, so it stops
+    ///         counting toward the delay at once. A latched ban is never lifted; after pruning, if the surviving
+    ///         flags still meet quorum the ban latches, otherwise a still-unlatched quorum-derived ban lapses.
     function prune(Id marketId, address account) external;
 
     // ---
