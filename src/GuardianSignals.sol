@@ -186,7 +186,29 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @inheritdoc IGuardianSignals
     function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock) external {
         if (!_isSenderAuthorized(onBehalf)) revert Unauthorized();
-        _heartbeat(onBehalf, lastScannedBlock);
+
+        uint40 previousTimestamp = _heartbeats[onBehalf];
+        // a guardian cannot have scanned a block that does not exist yet
+        if (lastScannedBlock.number > block.number) revert BlockInTheFuture();
+        // The chain cannot attest an arbitrary block's timestamp by number, so the frontier trusts the reported
+        // timestamp. Bound it to the past and force it non-decreasing per guardian, so a guardian cannot backdate
+        // or fast-forward the quorum-scan frontier it feeds.
+        if (lastScannedBlock.timestamp > block.timestamp) revert TimestampInTheFuture();
+        if (lastScannedBlock.timestamp < previousTimestamp) revert HeartbeatTimestampRegressed();
+        // number + hash only prove the reported block is real and un-reorged; the frontier orders by timestamp.
+        // Reject a zero hash: `blockhash` returns zero for the current or out-of-window block, which it would match.
+        if (lastScannedBlock.hash == bytes32(0)) revert InvalidBlockHash();
+        if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) revert InvalidBlockHash();
+
+        _heartbeats[onBehalf] = lastScannedBlock.timestamp;
+        emit Heartbeat(onBehalf, lastScannedBlock.number, lastScannedBlock.timestamp);
+
+        // The frontier is the quorum-th largest heartbeat, so this one can only raise it by crossing from at or
+        // below the frontier to above it. The cheap guard skips the O(n log n) resort otherwise; `syncQuorumFrontier`
+        // stays a permissionless fallback for the cases it misses (e.g. a quorum change moving the order statistic).
+        if (previousTimestamp <= _quorumFrontierTimestamp && lastScannedBlock.timestamp > _quorumFrontierTimestamp) {
+            _syncQuorumFrontier();
+        }
     }
 
     /// @inheritdoc IGuardianSignals
@@ -352,32 +374,6 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     function _isSenderAuthorized(address onBehalf) internal view returns (bool) {
         if (!_guardians.contains(onBehalf)) return false;
         return msg.sender == onBehalf || msg.sender == _delegates[onBehalf];
-    }
-
-    /// @dev Record `guardian`'s last-scanned block, then opportunistically advance the quorum frontier.
-    function _heartbeat(address guardian, BlockInfoWithHash calldata lastScannedBlock) internal {
-        uint40 previousTimestamp = _heartbeats[guardian];
-        // a guardian cannot have scanned a block that does not exist yet
-        if (lastScannedBlock.number > block.number) revert BlockInTheFuture();
-        // The chain cannot attest an arbitrary block's timestamp by number, so the frontier trusts the reported
-        // timestamp. Bound it to the past and force it non-decreasing per guardian, so a guardian cannot backdate
-        // or fast-forward the quorum-scan frontier it feeds.
-        if (lastScannedBlock.timestamp > block.timestamp) revert TimestampInTheFuture();
-        if (lastScannedBlock.timestamp < previousTimestamp) revert HeartbeatTimestampRegressed();
-        // number + hash only prove the reported block is real and un-reorged; the frontier orders by timestamp.
-        // Reject a zero hash: `blockhash` returns zero for the current or out-of-window block, which it would match.
-        if (lastScannedBlock.hash == bytes32(0)) revert InvalidBlockHash();
-        if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) revert InvalidBlockHash();
-
-        _heartbeats[guardian] = lastScannedBlock.timestamp;
-        emit Heartbeat(guardian, lastScannedBlock.number, lastScannedBlock.timestamp);
-
-        // The frontier is the quorum-th largest heartbeat, so this one can only raise it by crossing from at or
-        // below the frontier to above it. The cheap guard skips the O(n log n) resort otherwise; `syncQuorumFrontier`
-        // stays a permissionless fallback for the cases it misses (e.g. a quorum change moving the order statistic).
-        if (previousTimestamp <= _quorumFrontierTimestamp && lastScannedBlock.timestamp > _quorumFrontierTimestamp) {
-            _syncQuorumFrontier();
-        }
     }
 
     /// @dev Recompute the quorum frontier (the quorum-th largest heartbeat timestamp) and ratchet it up.

@@ -174,7 +174,7 @@ strikes == 0          Normal — clean, normal activation
 strikes >= quorum     Banned — borrowing hard-blocked, collateral never matures
 ```
 
-Below quorum an account is only slowed, not stopped — the extra delay buys reaction time while sparing a possible false positive. An account is banned while its strikes meet the **current** quorum, so lowering the quorum can ban one whose existing strikes now reach it. Once a ban is in effect it is sticky: neither retracting a flag nor lowering the quorum back lifts it — only `unban` does, so an attacker cannot un-flag their way back in. The ban blocks new borrowing, not exit — a banned borrower can still withdraw its own collateral.
+Below quorum an account is only slowed, not stopped — the extra delay buys reaction time while sparing a possible false positive. An account is banned while its strikes meet the **current** quorum, so lowering the quorum can ban one whose existing strikes now reach it. Reaching quorum **latches** the ban; a latched ban is sticky — retracting a flag can't lift it (the retraction latches the in-effect ban first), so only `unban` clears it and an attacker can't un-flag their way back in. A ban that exists only because the quorum was lowered is not latched until a later flag, retraction, or prune materializes it, so raising the quorum back before then lifts it. The ban blocks new borrowing, not exit — a banned borrower can still withdraw its own collateral.
 
 ```mermaid
 stateDiagram-v2
@@ -187,7 +187,7 @@ stateDiagram-v2
     end note
 ```
 
-Alongside strikes, a guardian can raise a softer **suspect** report: it never bans, only lengthening the activation delay (`delayPerSuspect` per report). The delay reads one per-account snapshot — a count plus an expiry `now + suspectWindow` — re-taken on each report or retraction, counting the reports still fresh at that moment. So a still-fresh earlier suspect is counted into the new snapshot and rides its extended expiry, while an already-expired one is left out. A `prune` does not re-take the snapshot, so a departed guardian's report stays counted until the next report or retraction.
+Alongside strikes, a guardian can raise a softer **suspect** report: it never bans, only lengthening the activation delay (`delayPerSuspect` per report). The delay reads one per-account snapshot — a count plus an expiry `now + suspectWindow` — re-taken on each report or retraction, counting the reports still fresh at that moment. So a still-fresh earlier suspect is counted into the new snapshot and rides its extended expiry, while an already-expired one is left out. A `prune` that removes a departed guardian's report re-takes the snapshot too, so that report stops counting immediately.
 
 Two override roles sit above the guardians, split by risk direction. The committee acts fast to reduce risk — `ACCESS_LIMITER_ROLE` forces a `ban` past the quorum. Governance moves slowly to increase it — `ACCESS_RESTORER_ROLE` `unban`s, clearing the flag set so guardians re-evaluate from scratch.
 
@@ -195,7 +195,7 @@ The controller reads `getOpinion(market, account) → GuardiansOpinion{banned, s
 
 **Heartbeats.** Guardians also report how far they have scanned, which tells whether the watch is keeping up with the chain. Each `heartbeat` carries `{number, hash, timestamp}`, recorded only if `hash` matches `blockhash(number)` — so the reported block must be on the canonical chain. A block the guardian scanned on a fork that later reorged out no longer matches and is rejected. A heartbeat that raises the quorum-th highest reported block advances the frontier in the same call (a cheap guard skips the recompute otherwise); `syncQuorumFrontier` recomputes it on demand as a fallback. The frontier ratchets up — monotonic, so a guardian rotation cannot pull it back.
 
-> **Example (frontier).** Five guardians, quorum 3, last-scanned blocks `{100, 95, 90, 80, 70}`. The 3rd-highest is `90`, so the frontier is block 90 — at least a quorum have scanned everything up to it. A later report below 90 cannot lower it. The maturation gate compares that block's recorded timestamp against a lot's `unlockTime`, so a lot matures once block 90's time has passed its unlock.
+> **Example (frontier).** Five guardians, quorum 3, whose last-scanned blocks carry timestamps `{100, 95, 90, 80, 70}`. The 3rd-highest timestamp is `90`, so the frontier is `90` — at least a quorum have scanned up to that time. A later report below `90` cannot lower it. The maturation gate compares the frontier against a lot's `unlockTime`, so a lot matures once `90` has passed its unlock.
 
 ### Settlement queue
 
