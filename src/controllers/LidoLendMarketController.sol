@@ -167,6 +167,11 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     /// @inheritdoc ILidoLendMarketController
+    function guardianSignals() external view returns (address) {
+        return address(_guardianSignals);
+    }
+
+    /// @inheritdoc ILidoLendMarketController
     function currentInflow() external view returns (uint256) {
         return _activation.calcDecayedInflow();
     }

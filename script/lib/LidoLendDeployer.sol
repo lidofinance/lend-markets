@@ -100,9 +100,9 @@ abstract contract LidoLendDeployer {
         bool enableSettlement;
         CollateralActivationConfigParams activation;
         SettlementConfigParams settlementConfig;
-        // Guardian-signals registry bootstrap, seeded in `initialize`. The registry rejects `quorum` 0, so pass at
-        // least one guardian and `1 <= quorum <= guardians.length`; rotate to the real set post-deploy via
-        // `addGuardian` / `removeGuardian`.
+        // Guardian-signals registry, seeded in `initialize`. The registry rejects `quorum` 0, so pass at least one
+        // guardian and `1 <= quorum <= guardians.length`. Guardians appoint their delegates post-deploy via
+        // `setDelegate`.
         address[] guardians;
         uint256 quorum;
         uint256 suspectWindow;

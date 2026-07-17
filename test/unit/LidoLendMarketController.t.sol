@@ -12,7 +12,6 @@ import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketCon
 
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
-import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
@@ -70,16 +69,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         if (borrow > 0) m.borrow(borrower, borrow);
     }
 
-    function _validBlock() internal view returns (BlockInfoWithHash memory) {
-        uint40 n = uint40(block.number - 1);
-        return BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: n});
-    }
-
     /// @dev Flag `account` to quorum (the default registry has the test as the sole guardian, quorum 1).
     function _ban(address account) internal {
         address[] memory a = new address[](1);
         a[0] = account;
-        protocol.guardianSignals.flag(_m().id, a, _validBlock());
+        protocol.guardianSignals.flag(_m().id, address(this), a);
     }
 
     // ── mutations ──
@@ -846,6 +840,12 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     }
 
     // ── views ──
+
+    /// @dev The controller exposes the guardian-signals registry it was wired with at deploy.
+    function test_guardianSignals_returnsWiredRegistry() public view {
+        Market storage m = _m();
+        assertEq(m.controller.guardianSignals(), address(m.guardianSignals), "controller exposes its registry");
+    }
 
     // ── lender limits: maxDeposit / maxWithdrawableAssets ──
 

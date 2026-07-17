@@ -4,7 +4,6 @@ pragma solidity 0.8.35;
 import {Test} from "forge-std/Test.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
-import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 /// @notice Regression for audit finding M1: the effective ban must track the CURRENT quorum, so lowering it bans
@@ -32,21 +31,16 @@ contract GuardianSignalsQuorumBanTest is Test {
         gs.grantRole(gs.ACCESS_RESTORER_ROLE(), address(this));
     }
 
-    function _guardians() internal pure returns (address[] memory g) {
-        g = new address[](3);
-        (g[0], g[1], g[2]) = (G1, G2, G3);
+    function _guardians() internal pure returns (address[] memory guardians) {
+        guardians = new address[](3);
+        (guardians[0], guardians[1], guardians[2]) = (G1, G2, G3);
     }
 
-    function _validBlock() internal view returns (BlockInfoWithHash memory) {
-        uint40 n = uint40(block.number - 1);
-        return BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)});
-    }
-
-    function _flag(address g, address account) internal {
-        address[] memory a = new address[](1);
-        a[0] = account;
-        vm.prank(g);
-        gs.flag(MARKET, a, _validBlock());
+    function _flag(address guardian, address account) internal {
+        address[] memory accounts = new address[](1);
+        accounts[0] = account;
+        vm.prank(guardian);
+        gs.flag(MARKET, guardian, accounts);
     }
 
     /// Two strikes below a quorum of 3 do not ban; lowering the quorum to 2 bans immediately, without a re-flag.
