@@ -3,7 +3,6 @@ pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams, Position, Market} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
@@ -11,55 +10,15 @@ import {Test, console2} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
-import {ForkTest} from "./helpers/ForkTest.sol";
+import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 
-interface IWETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function deposit() external payable;
-}
-
-interface IWstETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function stEthPerToken() external view returns (uint256);
-}
-
-interface IOracle {
-    function price() external view returns (uint256);
-}
-
-contract ControllableWstEthOracle is IOracle {
-    IWstETH public immutable WSTETH;
-    uint256 private _override;
-
-    constructor(address wstETH_) {
-        WSTETH = IWstETH(wstETH_);
-    }
-
-    function price() external view override returns (uint256) {
-        if (_override != 0) return _override;
-        return WSTETH.stEthPerToken() * 1e18;
-    }
-
-    function setOverridePrice(uint256 p) external {
-        _override = p;
-    }
-
-    function clearOverride() external {
-        _override = 0;
-    }
-}
-
-contract HeapSettlementBenchmark is Test, LidoLendDeployer, ForkTest {
-    using MarketParamsLib for MarketParams;
-
-    // Populated in setUp from deployments/deployed-<network>.json (external.*).
-    address internal WETH_ADDRESS;
-    address internal WSTETH_ADDRESS;
-
-    IWETH internal WETH;
-    IWstETH internal WSTETH;
+/// @notice Gas benchmark of the settlement heap walk: seed a queue of borrower positions in a chosen
+///         shape, drive a lender exit through repeated `settle` cuts, and log iterations and gas.
+/// @dev Local-EVM only: mock tokens and a constant-price oracle, deployed fresh per test through
+///      `LidoLendDeployer`, so the numbers are deterministic and no RPC is involved.
+contract HeapSettlementBenchmark is Test, LidoLendDeployer {
+    MockERC20 internal WETH;
+    MockERC20 internal WSTETH;
 
     uint256 internal constant LLTV = 0.8e18;
     address internal constant LENDER = address(0x9000);
@@ -68,12 +27,14 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer, ForkTest {
     uint96 internal constant SLICE_FLOOR = 1 ether;
     uint128 internal constant DUST_THRESHOLD = 0.005 ether;
     uint256 internal constant MIN_COLLATERAL_ACTIVATION = 10e18;
-    uint256 internal _wstEthRate;
+    // Fixed collateral rate for the mock oracle: one wstETH is worth 1.2 WETH. A constant (rather than
+    // a seeded price) keeps the benchmark's gas numbers comparable across runs.
+    uint256 internal constant WSTETH_RATE = 1.2e18;
 
     struct Ctx {
         ILidoLend market;
         ILidoLendMarketController controller;
-        ControllableWstEthOracle oracle;
+        MockPriceOracle oracle;
         MarketParams marketParams;
         Id id;
         uint256 price;
@@ -87,11 +48,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer, ForkTest {
     }
 
     function setUp() public {
-        _fork();
-        WETH_ADDRESS = _addr("external.weth");
-        WSTETH_ADDRESS = _addr("external.wstEth");
-        WETH = IWETH(WETH_ADDRESS);
-        WSTETH = IWstETH(WSTETH_ADDRESS);
+        WETH = new MockERC20("Wrapped Ether", "WETH", 18);
+        WSTETH = new MockERC20("Wrapped stETH", "wstETH", 18);
     }
 
     // ── Uniform-LTV scenarios
@@ -458,7 +416,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer, ForkTest {
     function _seedOneBorrower(Ctx memory ctx, uint256 idx, uint256 debt, uint256 ltv) internal {
         address b = _borrowerAddr(idx);
         uint256 requiredCol = _collateralForDebt(debt, ltv, ctx.price);
-        uint256 ethForCol = (requiredCol * _wstEthRate / 1e18) * 13 / 10;
+        uint256 ethForCol = requiredCol * WSTETH_RATE * 13 / (1e18 * 10);
         if (ethForCol < 15 ether) ethForCol = 15 ether;
         uint256 col = _mintWstETH(ctx.market, b, ethForCol);
         vm.prank(b);
@@ -574,17 +532,15 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer, ForkTest {
     // ─────────────────────────────────────────────────
 
     function _deployCtx() internal returns (Ctx memory ctx) {
-        if (_wstEthRate == 0) _wstEthRate = WSTETH.stEthPerToken();
-
         address[] memory guardians = new address[](1);
         guardians[0] = address(this);
 
         Deployed memory d = _deployForkStack(
             DeployConfig({
                 admin: address(this),
-                loanToken: WETH_ADDRESS,
-                collateralToken: WSTETH_ADDRESS,
-                oracleSource: WSTETH_ADDRESS,
+                loanToken: address(WETH),
+                collateralToken: address(WSTETH),
+                oracleSource: address(0), // unused — `_deployOracle` is overridden below
                 lltv: LLTV,
                 enableSettlement: true,
                 activation: CollateralActivationConfigParams({
@@ -613,7 +569,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer, ForkTest {
         );
 
         ctx.market = ILidoLend(d.core);
-        ctx.oracle = ControllableWstEthOracle(d.oracle);
+        ctx.oracle = MockPriceOracle(d.oracle);
         ctx.controller = ILidoLendMarketController(d.controllerProxy);
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
@@ -631,10 +587,12 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer, ForkTest {
             );
     }
 
-    /// @dev Override the default `WstEthRateOracle` with a per-test controllable oracle so
-    ///      benchmark scenarios can pin a known price (off the live wstETH rate).
-    function _deployOracle(address oracleSource, address) internal override returns (address) {
-        return address(new ControllableWstEthOracle(oracleSource));
+    /// @dev Overrides the default `WstEthRateOracle` with a constant-price mock at the fixed rate, in the
+    ///      Morpho 1e36 convention (both tokens have 18 decimals).
+    function _deployOracle(address, address) internal override returns (address) {
+        MockPriceOracle oracle = new MockPriceOracle();
+        oracle.initialize(WSTETH_RATE * 1e18);
+        return address(oracle);
     }
 
     // ── Helpers
@@ -701,19 +659,17 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer, ForkTest {
     }
 
     function _mintWETH(ILidoLend market, address user, uint256 amount) internal {
-        vm.deal(user, amount);
-        vm.prank(user);
-        WETH.deposit{value: amount}();
+        WETH.mint(user, amount);
         vm.prank(user);
         WETH.approve(address(market), type(uint256).max);
     }
 
+    /// @dev `ethAmount` is denominated in loan-token (WETH) terms and converted to wstETH at the fixed rate.
     function _mintWstETH(ILidoLend market, address user, uint256 ethAmount) internal returns (uint256) {
-        uint256 wstETHAmount = (ethAmount * 1e18) / _wstEthRate;
-        bytes32 balSlot = keccak256(abi.encode(user, uint256(0)));
-        vm.store(WSTETH_ADDRESS, balSlot, bytes32(wstETHAmount));
-        bytes32 allowSlot = keccak256(abi.encode(address(market), keccak256(abi.encode(user, uint256(1)))));
-        vm.store(WSTETH_ADDRESS, allowSlot, bytes32(type(uint256).max));
-        return wstETHAmount;
+        uint256 wstEthAmount = (ethAmount * 1e18) / WSTETH_RATE;
+        WSTETH.mint(user, wstEthAmount);
+        vm.prank(user);
+        WSTETH.approve(address(market), type(uint256).max);
+        return wstEthAmount;
     }
 }

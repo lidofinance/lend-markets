@@ -35,7 +35,7 @@
   a fork suite runs or it fails, it never skips.
 - Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
 - Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
-- Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot` (heap benchmark excluded). The
+- Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot`. The
   fork suites are included — they revert without the fork setup — forking the latest block unless
   `FORK_BLOCK` pins one. `TEST_SEED` comes from the env when set; otherwise foundry picks
   one random seed per run and the suites log it (fork suites also log their block), so a run is always

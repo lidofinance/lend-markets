@@ -7,9 +7,6 @@ export
 FMT_PATHS := src/LidoBlueERC4626.sol src/SuspectsRegistry.sol src/controllers src/interfaces src/oracle src/libs src/utils test
 FORK_PATH := test/fork/**
 
-# The heap benchmark's 100M+ gas swamps every other line of a snapshot/diff — keep it out of gas profiling.
-SNAPSHOT_EXCLUDE := test/fork/HeapSettlementBenchmark.t.sol
-
 .PHONY: help build sizes test test-local test-fork fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
 
 help:
@@ -22,8 +19,8 @@ help:
 	@echo "  fmt           forge fmt on tracked paths (local only; rewrites files)"
 	@echo "  fmt-check     forge fmt --check on tracked paths (local only; CI does not fail on style)"
 	@echo "  lint          forge lint"
-	@echo "  coverage      forge coverage --ir-minimum --report summary"
-	@echo "  snapshot      forge snapshot of the whole suite -> .gas-snapshot; fork suites revert without the fork setup (heap benchmark excluded)"
+	@echo "  coverage      forge coverage over the whole suite; fork suites revert without the fork setup"
+	@echo "  snapshot      forge snapshot of the whole suite -> .gas-snapshot; fork suites revert without the fork setup"
 	@echo "  snapshot-diff same run, diffed against .gas-snapshot (run both at the same TEST_SEED)"
 	@echo "  slither       slither . (needs slither installed)"
 	@echo "  solhint       solhint 'src/**/*.sol' (needs node + solhint installed)"
@@ -60,8 +57,9 @@ fmt-check:
 lint:
 	forge lint
 
+# Coverage of the whole suite, fork suites included — they revert without a working fork setup.
 coverage:
-	forge coverage --ir-minimum --report summary --no-match-path '$(FORK_PATH)'
+	forge coverage --ir-minimum --report summary
 
 # One snapshot for the whole suite, fork suites included — they revert without a working fork setup, so
 # nothing is silently skipped. No entropy is minted here: foundry seeds one RNG per run, so every suite that falls back to
@@ -72,7 +70,7 @@ coverage:
 # those too.
 snapshot-diff: SNAP_FLAGS := --diff
 snapshot snapshot-diff:
-	forge snapshot --no-match-path '$(SNAPSHOT_EXCLUDE)' $(SNAP_FLAGS) -vv
+	forge snapshot $(SNAP_FLAGS) -vv
 
 slither:
 	slither .
