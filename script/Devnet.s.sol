@@ -102,7 +102,9 @@ contract Devnet is Script {
         );
         m.irm = address(
             new OssifiableProxy(
-                address(new IrmRouter(core)), admin, abi.encodeWithSignature("initialize(address,address)", admin, admin)
+                address(new IrmRouter(core)),
+                admin,
+                abi.encodeWithSignature("initialize(address,address)", admin, admin)
             )
         );
 
@@ -117,10 +119,7 @@ contract Devnet is Script {
         m.vault = _deployVault(core, params, m.controller, admin);
     }
 
-    function _routeAdaptiveIrm(address router, MarketParams memory params, address admin)
-        private
-        returns (address)
-    {
+    function _routeAdaptiveIrm(address router, MarketParams memory params, address admin) private returns (address) {
         IrmMarketParams memory irmParams = IrmMarketParams({
             loanToken: params.loanToken,
             collateralToken: params.collateralToken,
@@ -135,6 +134,7 @@ contract Devnet is Script {
     }
 
     function _deployGuardian(address admin) private returns (address guardian) {
+        // `admin` is the sole guardian; it may appoint a delegate from the UI via `setDelegate`.
         address[] memory guardians = new address[](1);
         guardians[0] = admin;
         guardian = address(
@@ -155,23 +155,20 @@ contract Devnet is Script {
         private
         returns (address controller)
     {
-        LidoLendDeployer.CollateralActivationConfigParams memory activation = LidoLendDeployer
-            .CollateralActivationConfigParams({
-            minActivationDelay: 10 minutes,
-            maxActivationDelay: 2 hours,
-            activatingLockAmount: 0,
-            activatingLockDuration: 0,
-            maxDelayInflow: 10_000 ether,
-            minActivationAmount: minActivation,
-            maxGuardiansQuorumDelay: 0,
-            delayPerStrike: 2 hours,
-            delayPerSuspect: 0
-        });
+        LidoLendDeployer.CollateralActivationConfigParams memory activation =
+            LidoLendDeployer.CollateralActivationConfigParams({
+                minActivationDelay: 10 minutes,
+                maxActivationDelay: 2 hours,
+                activatingLockAmount: 0,
+                activatingLockDuration: 0,
+                maxDelayInflow: 10_000 ether,
+                minActivationAmount: minActivation,
+                maxGuardiansQuorumDelay: 0,
+                delayPerStrike: 2 hours,
+                delayPerSuspect: 0
+            });
         LidoLendDeployer.SettlementConfigParams memory settlement = LidoLendDeployer.SettlementConfigParams({
-            sliceFloorBps: 100,
-            sliceFloorAssets: 10 ether,
-            fullCutBelowCollateral: 10 ether,
-            ltvStepBps: 100
+            sliceFloorBps: 100, sliceFloorAssets: 10 ether, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
         });
         controller = address(
             new OssifiableProxy(

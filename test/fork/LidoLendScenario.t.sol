@@ -34,7 +34,7 @@ interface IWstETH {
 
 /// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests.
 interface IRegistryLike {
-    function flag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
+    function flag(Id market, address onBehalf, address[] calldata accounts) external;
 }
 
 /// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
@@ -553,17 +553,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
         // registry's sole guardian (set in `_deployMarket`).
         address[] memory toFlag = new address[](1);
         toFlag[0] = BORROWER;
-        IRegistryLike(ctx.guardianSignals)
-            .flag(
-                ctx.id,
-                toFlag,
-                BlockInfoWithHash({
-                // Prior block: `blockhash` of the current block is zero, which the registry rejects.
-                hash: blockhash(block.number - 1),
-                number: uint40(block.number - 1),
-                timestamp: uint40(block.timestamp)
-            })
-            );
+        IRegistryLike(ctx.guardianSignals).flag(ctx.id, address(this), toFlag);
 
         // Warp far past any normal activation delay — a banned address never settles.
         vm.warp(block.timestamp + 30 days);
