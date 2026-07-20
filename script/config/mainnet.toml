@@ -1,0 +1,22 @@
+# Deploy config for "mainnet", read by DeployProtocol.s.sol (CONFIG=mainnet). One config = one full
+# protocol configuration deployed from scratch (backbone + optional exit books + each market's oracle,
+# guardian registry, and inert components). Markets are listed by NAME; each name's details live in its own
+# markets/<name>.toml, oracles/<name>.toml, guardians/<name>.toml. Fill placeholders before broadcasting.
+
+# Lido Agent — high-trust (C1). Aragon Agent, docs.lido.fi/deployed-contracts. Must differ from executor.
+agent = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
+# EasyTrack EVMScriptExecutor — routine roles. Must differ from agent.
+evm_script_executor = "0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"
+# CircuitBreaker — ONE instance for all markets (deployed from the circuit-breaker repo with
+# admin = evm_script_executor); granted each controller's PAUSER_ROLE. Zero is a placeholder — fill with the
+# deployed address before broadcasting; a zero-CB deploy leaves markets with no pauser.
+circuit_breaker = "0x0000000000000000000000000000000000000000"
+
+# Whether to deploy the protocol's two exit books (MorphoExitBook + Erc4626ExitBook). Optional per deploy.
+exit_books = true
+# Cap on an exit-book request's lifetime (seconds); used only when exit_books = true. Must be non-zero.
+exit_book_max_request_lifetime = 31536000  # 365 days
+
+# Markets to deploy in this protocol (config names). Each needs markets/<name>.toml + oracles/<name>.toml +
+# guardians/<name>.toml.
+markets = ["weth-wsteth"]

@@ -10,6 +10,8 @@ import {
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
 import {Test} from "forge-std/Test.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkTest} from "./helpers/ForkTest.sol";
 
@@ -157,7 +159,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer, ForkTest {
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     activatingLockAmount: 0,
@@ -168,7 +170,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer, ForkTest {
                     delayPerStrike: 0,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 20 ether, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,

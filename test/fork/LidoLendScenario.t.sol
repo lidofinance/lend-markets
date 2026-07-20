@@ -10,6 +10,8 @@ import {Test} from "forge-std/Test.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 import {ForkTest} from "./helpers/ForkTest.sol";
 
@@ -665,7 +667,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
                 enableSettlement: enableSettlement,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     activatingLockAmount: 0,
@@ -676,7 +678,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
                     delayPerStrike: 0,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,

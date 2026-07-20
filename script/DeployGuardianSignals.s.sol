@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+pragma solidity 0.8.35;
+
+import {Script, console2} from "forge-std/Script.sol";
+
+import {LidoLendMarketBuilder, GuardianConfig} from "../src/periphery/LidoLendMarketBuilder.sol";
+
+import {ConfigToml} from "./lib/ConfigToml.sol";
+import {GuardianSignalsConfigFile, GuardianSignalsConfig} from "./lib/GuardianSignalsConfigFile.sol";
+
+/// @notice Deploys a standalone `GuardianSignals` instance (via the builder) for a committee shared across a
+///         group of markets; its address is recorded to `deployed/guardian-<name>.toml` for markets that
+///         leave `guardian_signals` zero to resolve.
+/// @dev Draft, not production-ready. `GUARDIANS` selects `script/config/guardians/<name>.toml`, which names
+///      the builder (`.builder`).
+///
+/// Usage:
+///   GUARDIANS=usdy forge script script/DeployGuardianSignals.s.sol --rpc-url "$RPC_URL" --broadcast
+contract DeployGuardianSignals is Script {
+    function run() external returns (address guardianSignals) {
+        string memory name = vm.envString("GUARDIANS");
+        string memory toml = vm.readFile(GuardianSignalsConfigFile.configPath(name));
+        address builder = vm.parseTomlAddress(toml, ".builder");
+        if (builder == address(0)) revert ConfigToml.MissingConfigValue(".builder");
+
+        GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.parse(toml);
+        address[] memory managers = new address[](1);
+        managers[0] = cfg.evmScriptExecutor;
+
+        vm.startBroadcast();
+        guardianSignals = LidoLendMarketBuilder(builder)
+            .buildGuardianSignals(
+                GuardianConfig({
+                    guardians: cfg.guardians,
+                    quorum: cfg.quorum,
+                    suspectWindow: cfg.suspectWindow,
+                    accessLimiter: cfg.accessLimiter
+                }),
+                cfg.admin,
+                managers,
+                cfg.proxyAdmin
+            );
+        vm.stopBroadcast();
+
+        console2.log("guardians       :", name);
+        console2.log("  guardianSignals :", guardianSignals);
+        console2.log("  recorded        :", GuardianSignalsConfigFile.writeDeployed(name, guardianSignals));
+    }
+}

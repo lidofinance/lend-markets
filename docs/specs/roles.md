@@ -2,7 +2,7 @@
 
 Code-accurate map of every privileged action in a deployed market to its role, contract, intended holder, and impact class. The governance model it rests on — the non-custody rule, the impact classification, and the execution mechanisms — comes from ADR 004, ADR 006, and ADR 007. This is the detailed catalogue behind the [architecture](architecture.md) overview.
 
-A single `LidoLend` core and a single `GuardianSignals` registry are shared across a deployment's markets, and each market adds its own controller, vault, and oracle. So the core-owner and guardian-registry roles below are deployment-wide — one holder for every market — while the controller roles exist once per market. Initially the deployer EOA holds every role and every proxy admin, and hands them to Lido governance before the market opens.
+A single `LidoLend` core is shared across a deployment's markets, and each market adds its own controller, vault, and oracle, plus a `GuardianSignals` registry it either deploys or shares. The registry is per guardian-set, not strictly per-market: a group of markets under one committee can share a single registry (its guardian set, quorum, and suspect window are registry-wide; bans stay keyed by market id), while a market needing a different set gets its own. So the core-owner roles below are deployment-wide — one holder for every market — the controller roles exist once per market, and the guardian-registry roles exist once per registry (shared by the markets on it). Initially the deployer EOA holds every role and every proxy admin, and hands them to Lido governance before the market opens.
 
 ## Non-custody rule
 
@@ -32,11 +32,11 @@ No C0 role exists in the deployed surface.
 
 ## Proxy ownership and upgrades
 
-Every contract is deployed behind an `OssifiableProxy`: the shared `LidoLend` core and `GuardianSignals` registry (one each per deployment), plus each market's controller, vault, and oracle. The proxy admin is the upgrade authority and is a proxy-level surface, not an in-contract role.
+Every contract is deployed behind an `OssifiableProxy`: the shared `LidoLend` core (one per deployment), plus each market's controller, vault, oracle, and `GuardianSignals` registry. The proxy admin is the upgrade authority and is a proxy-level surface, not an in-contract role.
 
 | Surface | Powers | Class | Holder |
 |---|---|---|---|
-| Proxy admin (shared core and registry, plus each market's controller, vault, oracle) | `proxy__upgradeTo` / `proxy__upgradeToAndCall` (replace implementation), `proxy__changeAdmin` (transfer control), `proxy__ossify` (permanently lock by setting admin to `address(0)`) | C1 | Lido DAO (Voting + Dual Governance) |
+| Proxy admin (shared core, plus each market's controller, vault, oracle, `GuardianSignals`) | `proxy__upgradeTo` / `proxy__upgradeToAndCall` (replace implementation), `proxy__changeAdmin` (transfer control), `proxy__ossify` (permanently lock by setting admin to `address(0)`) | C1 | Lido DAO (Voting + Dual Governance) |
 
 An upgrade can change core mechanics and is therefore the only path that could introduce a custody-like power, so it sits behind the slowest authority — and behind Dual Governance for the stETH-exposed core, per ADR 007. A proxy can be ossified to give up upgradeability for good. The core is upgradeable, kept honest by a strong lender-exit delay (ADR 005). Initially the admin of all proxies is the deployer EOA, handed to governance with `proxy__changeAdmin` before the market opens.
 
@@ -63,11 +63,18 @@ The core authorizes its admin surface against a single in-contract `owner`. The 
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
 | `MANAGER_ROLE` | `setCollateralActivationConfig`, `setSettlementConfig`, `setSupplyCap`, `grantInstantActivation`, `revokeInstantActivation` | C4 | routine delay mechanism |
 | `FREEZER_ROLE` | `freeze` | C3 | risk steward committee |
-| `UNFREEZER_ROLE` | `unfreeze` | C3 | risk steward committee (splittable from the freezer) |
+| `UNFREEZER_ROLE` | `unfreeze` | C4 | EasyTrack (objection window) |
 | `PAUSER_ROLE` | `pauseFor` (stops every controller hook) | C2 | emergency-seal committee, bounded |
 | `RESUMER_ROLE` | `resume` | C2 | Lido DAO, slow |
 
-Every `MANAGER_ROLE` lever is risk-increasing, so it takes the delay mechanism. `pauseFor` accepts an indefinite duration at the contract level, but the fast holder is an emergency-seal committee bounded to a finite pause — extending it or pausing indefinitely is a DAO action. Pause and resume sit on separate roles so the fast pauser can never resume.
+Every `MANAGER_ROLE` lever is risk-increasing, so it takes the delay mechanism. `freeze` is risk-reducing and stays with a fast committee; `unfreeze` restores service and is therefore risk-increasing, so it takes the routine delay mechanism — an EasyTrack motion with an objection window — rather than an immediate call. `pauseFor` accepts an indefinite duration at the contract level, but the fast holder is an emergency-seal committee bounded to a finite pause — extending it or pausing indefinitely is a DAO action. Pause and resume sit on separate roles so the fast pauser can never resume.
+
+The operational roles are arrays, not single addresses: `LidoLendMarketBuilder.MarketRoles` carries
+`managers` / `pausers` / `freezers` / `unfreezers` / `resumers` as `address[]`, so any role can have any
+number of holders — an empty array grants nobody, and a zero entry reverts (`ZeroRoleHolder`) as a config
+mistake rather than silently granting the zero address. `AdaptiveCurveIrm` is a protocol-wide singleton (see IRM,
+above), so there is no per-market curve owner/manager to wire at deploy — its owner/manager are set once with
+the backbone, and per-market curve params are activation calldata, not a deploy input.
 
 ### `RiskStewardDashboard`
 
@@ -76,34 +83,36 @@ One dashboard serves every market of a core, with the tighten-only risk levers g
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke `STEWARD_ADMIN_ROLE` | C1 | Lido DAO |
-| `STEWARD_ADMIN_ROLE` | `addMarketSteward`, `removeMarketSteward` | C3 | Lido DAO |
+| `STEWARD_ADMIN_ROLE` | `addMarketSteward`, `removeMarketSteward` | C3 | EasyTrack (objection window) |
 | per-market steward | `increaseActivationDelays`, `increaseActivatingLock`, `revokeInstantActivation` | C3 | risk steward committee |
 
 `STEWARD_ADMIN_ROLE` administers only the tighten-only C3 levers and cannot introduce a C0 or upgrade power, so its class follows a role-admin-tier convention over the bare impact definition.
 
 A steward is appointed per market id, not as an AccessControl role, so the set scopes to one market. Every steward lever is one-directional toward tighter policy, so the committee can act fast.
 
+The dashboard is a protocol-wide singleton, deployed once by `DeployProtocol` (via `ProtocolDeployer`) with `STEWARD_ADMIN_ROLE` → the EasyTrack executor and `DEFAULT_ADMIN_ROLE` → the DAO Agent. For its levers to write config it must additionally hold each market controller's `MANAGER_ROLE`; `LidoLendMarketBuilder` grants it that on every controller `LidoLendMarketFactory` deploys — the factory itself holds no role (it grants the new controller's `DEFAULT_ADMIN_ROLE` directly to its caller, the builder), and the builder holds that admin only transiently, for the duration of `buildMarket`. `MANAGER_ROLE` is broader than the tighten-only levers, so this trusts the dashboard's (non-upgradeable) code to only tighten.
+
 ### `GuardianSignals`
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | the guardian set, quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C1 / C3 | Lido DAO |
+| `MANAGER_ROLE` | guardian set, quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C4 | EasyTrack (objection window) |
 | `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum) | C3 | risk steward committee |
-| `ACCESS_RESTORER_ROLE` | `unban` | C4 | Lido DAO, timelocked |
+| `ACCESS_RESTORER_ROLE` | `unban` | C4 | EasyTrack (objection window) |
 
-The committee holds the fast risk-reducing side (`ban`); governance holds the slow risk-increasing side (`unban`). Changing who is a guardian stays DAO-only: a fast power to shrink the set could quietly switch off detection, and a simple count floor can't tell a legitimate removal from sabotage.
+The committee holds the fast risk-reducing side (`ban`); `unban` is risk-increasing, so it takes the routine delay mechanism — an EasyTrack motion with an objection window (ADR 006) — rather than an immediate call. Guardian-set management (`addGuardian`/`removeGuardian`/`setQuorum`) runs through the same EasyTrack objection window, not a fast committee: a removal or quorum change is visible and vetoable before it takes effect, so it cannot quietly disable detection. `DEFAULT_ADMIN_ROLE` stays with the DAO and can re-grant `MANAGER_ROLE` for a direct action with no factory yet (e.g. `setSuspectWindow`).
 
 ### `ExitBookBase`
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO (Voting + Dual Governance) |
-| `ALLOWLIST_MANAGER_ROLE` | the concrete book's source allow-list (`setMarketAllowed` / `setVaultAllowed`) | C4 | EasyTrack (objection window) |
+| `ALLOWLIST_MANAGER_ROLE` | the concrete book's source allow-list (`setMarketAllowed` / `setVaultAllowed`) | C4 | EasyTrack (activation motion) + Lido DAO Agent (standalone allow-list / de-list) |
 | `FEE_MANAGER_ROLE` | `setServiceFee` (fee recipient and rate, capped at `MAX_SERVICE_FEE` = 25%) | C4 | Lido DAO |
 | `RECOVERER_ROLE` | asset recovery (`recoverEther` / `recoverERC20` / `recoverERC721` / `recoverERC1155`) | C4 | Lido DAO |
 
-The exit book is `AccessControl` set at construction, not behind an `OssifiableProxy` — its roles are its only privileged surface, with no separate upgrade authority. Each capability sits on its own role so it can be delegated independently: `ALLOWLIST_MANAGER_ROLE` splits the source allow-list off so enabling a market or vault is a routine risk-increase that can run through the EasyTrack objection window; `FEE_MANAGER_ROLE` sets the service fee (a cut of the filler's gross reward within the 25% cap, reaching no lender or borrower funds); `RECOVERER_ROLE` recovers tokens held by the contract. `DEFAULT_ADMIN_ROLE` only administers the roles. At construction `admin` holds all of them, and a deploy delegates each capability role to its final holder and revokes it from `admin`.
+The exit book is `AccessControl` set at construction, not behind an `OssifiableProxy` — its roles are its only privileged surface, with no separate upgrade authority. Each capability sits on its own role so it can be delegated independently: `ALLOWLIST_MANAGER_ROLE` splits the source allow-list off so enabling a market or vault is a routine risk-increase that can run through the EasyTrack objection window; `FEE_MANAGER_ROLE` sets the service fee (a cut of the filler's gross reward within the 25% cap, reaching no lender or borrower funds); `RECOVERER_ROLE` recovers tokens held by the contract. `DEFAULT_ADMIN_ROLE` only administers the roles; the constructor grants it alone, and the capability roles are assigned after deploy. Exit books are optional: `MorphoExitBook` over lenders' core supply positions and `Erc4626ExitBook` over lenders' vault shares (the two ways a lender holds the same market). `DeployProtocol` deploys them (via `ProtocolDeployer`) only when the deploy config's `exit_books` flag is set — and wired with `ALLOWLIST_MANAGER_ROLE` → both the EasyTrack executor (so an activation motion can allow-list a market on the Morpho book by id and the ERC-4626 book by the market's vault) and the DAO Agent (a standalone allow-list / de-list has no dedicated factory, so the Agent holds the role for a direct action), and `FEE_MANAGER_ROLE` / `RECOVERER_ROLE` / `DEFAULT_ADMIN_ROLE` → the DAO Agent.
 
 ## Non-role actors
 

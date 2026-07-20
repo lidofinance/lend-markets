@@ -5,6 +5,8 @@ import {Test} from "forge-std/Test.sol";
 
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {ForkTest} from "./helpers/ForkTest.sol";
@@ -98,7 +100,7 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer, ForkTest {
                 oracleSource: USDY, // ignored — _deployOracle overridden
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     maxDelayInflow: 10_000 ether,
@@ -109,7 +111,7 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer, ForkTest {
                     delayPerStrike: 0,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,

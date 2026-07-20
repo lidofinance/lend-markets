@@ -12,7 +12,7 @@
   `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO
   token surface).
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
-- `src/GuardianSignals.sol`: guardian-signal registry (one per project).
+- `src/GuardianSignals.sol`: guardian-signal registry (one per market; wired into the controller at deploy).
 - `src/interfaces/`: local interfaces and hook payload structs.
 - `src/oracle/`: local oracle adapters.
 - `src/libs/`: pure libraries (math, data structures). Internal — they inline into call sites.
@@ -20,9 +20,20 @@
 - `test/scenario/`: end-to-end flows on **freshly deployed** core / controller / vault, on the local
   EVM with mock tokens. Driven through shared helpers; happy path first, then revert and
   edge cases. Pure-library fuzz tests live here too.
-- `test/fork/`: test suite that runs against a forked network.
+- `test/fork/`: test suite that runs against a forked network, loading addresses from
+  `deployments/deployed-<network>.json` via `DEPLOYMENT`.
+- `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
+  deployed stack is correctly wired, fully role-wired (event-completeness scan), and either ready for the
+  activation motion or live after it. Live addresses come from a deploy registry (`deployed/<name>-<unix-ms>.toml`
+  via `ACCEPTANCE_REGISTRY`); expected values from the committed `script/config/*`. Deploy addresses are never
+  committed, so the suite skips unless pointed at a registry.
 - `script/`: deployment scripts.
-- `deployments/deployed-<network>.json`: per-network address map that a fork test loads via `DEPLOYMENT`. See `deployments/README.md` for the schema.
+- `deployments/deployed-<network>.json`: per-network address map a fork test loads via `DEPLOYMENT`. See
+  `deployments/README.md` for the schema.
+- `deployed/<name>-<unix-ms>.toml`: per-run registry of deployed addresses a deploy produces (dated, one per
+  run — no auto-overwritten alias). Read by `test/acceptance/` for verification. Alongside it a deploy also
+  writes `deployed/activation-<name>-<unix-ms>.toml`: the per-market activation-motion inputs (marketParams,
+  curveParams, controller), so the EasyTrack motion is assembled from a file, not scraped from logs.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).
@@ -92,7 +103,7 @@ needs before reading code, not what the code already says.
   variables — rendered from the Solidity NatSpec by `tools/gen_api_from_artifacts.py` (`make doc`). It is
   the single source for per-member behaviour, so never hand-write or hand-edit it: keep the NatSpec
   accurate and regenerate. The forked Morpho core is documented under `lib/lido-lend/`.
-- Invariants are **testable**: each one maps to a scenario or fork assertion in `test/`.
+- Invariants are **testable**: each one maps to a scenario, fork, or acceptance assertion in `test/`.
 - Threat model lists the actors (lender, borrower, liquidator, controller admin, guardian, oracle, IRM)
   and what each is trusted not to do.
 - Behaviour-changing PRs update the NatSpec (which regenerates the API reference) and any conceptual spec
@@ -110,7 +121,8 @@ test/
 ├── unit/         # L0+L1 — one file per contract / pure library, method-by-method
 ├── scenario/     # L2 — end-to-end flows on a freshly deployed stack (local EVM, mock tokens)
 ├── invariant/    # L4 — handler-based stateful properties
-└── fork/         # fork tests (fork == integration)
+├── fork/         # fork tests vs the deployed protocol (deployments/deployed-<network>.json)
+└── acceptance/   # L3 — mainnet fork vs the already-deployed protocol (deployed/<name>-<unix-ms>.toml)
 ```
 
 - `unit/<Contract>.t.sol` — single contract or pure library in isolation; **flat, one file per
@@ -121,6 +133,10 @@ test/
 - `invariant/<Area>.invariant.t.sol` — handler-based stateful properties (actors, ghosts, bounded
   actions). Handlers under `invariant/handlers/`.
 - `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
+- `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
+  addresses from `deployed/<name>-<unix-ms>.toml` (via `ACCEPTANCE_REGISTRY`), expected values from the
+  committed `script/config/*`. Run with `ACCEPTANCE_RPC_URL=$MAINNET_RPC_URL` (or `--fork-url`); skips without
+  a registry. See `script/DEPLOYMENT.md`.
 
 ### Setup Infra (`test/setup/`)
 

@@ -10,6 +10,8 @@ import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {WAD, BPS} from "../../src/libs/Constants.sol";
 import {ForkTest} from "./helpers/ForkTest.sol";
@@ -340,7 +342,7 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
                 enableSettlement: false,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     activatingLockAmount: 0,
@@ -351,7 +353,7 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
                     delayPerStrike: 0,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,

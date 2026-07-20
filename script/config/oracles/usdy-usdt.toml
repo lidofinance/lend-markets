@@ -1,0 +1,13 @@
+# Oracle deploy config for the usdy-usdt market, consumed by DeployUsdyOracle. The oracle is a standalone leaf
+# dependency: deploy it with `ORACLE=usdy-usdt forge script script/DeployUsdyOracle.s.sol ...`, then paste the
+# printed address into `script/config/markets/usdy-usdt.toml -> [market].oracle`. Per market: the loan token
+# bakes into the price at initialize, so each market needs its own instance. Fill placeholders before broadcasting.
+
+# USDY price source passed to the oracle's constructor.
+usdy_oracle = "0x0000000000000000000000000000000000000000"
+# Chainlink aggregator for the loan token's USD price (initialize).
+feed = "0x0000000000000000000000000000000000000000"
+# The market's loan token (e.g. USDT); its decimals bake into the price scaling (initialize).
+loan_token = "0x0000000000000000000000000000000000000000"
+# OssifiableProxy admin for the oracle (upgrade authority) — the protocol's proxy-admin holder.
+proxy_admin = "0x0000000000000000000000000000000000000000"
