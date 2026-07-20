@@ -181,11 +181,13 @@ contract OssifiableProxyTest is Test {
     // ── receive ──
 
     /// @dev A plain value transfer routes through the proxy's receive/fallback delegatecall path and the ether is
-    /// retained.
+    /// retained. Asserts the balance delta, not the absolute balance: on a mainnet fork the proxy's deterministic
+    /// deploy address carries pre-existing dust.
     function test_receive_delegatesAndHoldsEther() public {
+        uint256 balanceBefore = address(proxy).balance;
         vm.deal(address(this), 1 ether);
         (bool ok,) = address(proxy).call{value: 1 ether}("");
         assertTrue(ok, "receive path succeeded");
-        assertEq(address(proxy).balance, 1 ether, "ether held by the proxy");
+        assertEq(address(proxy).balance - balanceBefore, 1 ether, "ether held by the proxy");
     }
 }

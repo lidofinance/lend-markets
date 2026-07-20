@@ -14,7 +14,7 @@ import {LidoLendDeployer} from "./lib/LidoLendDeployer.sol";
 ///      placeholders — tune them (governance values) before any real deploy. See `script/DEPLOYMENT.md`.
 ///
 /// Usage (dry run against a fork):
-///   forge script script/DeployMarket.s.sol --fork-url "$MAINNET_RPC_URL" --sender "$DEPLOYER" -vvv
+///   forge script script/DeployMarket.s.sol --fork-url "$ETH_RPC_URL" --sender "$DEPLOYER" -vvv
 ///
 /// Usage (broadcast):
 ///   forge script script/DeployMarket.s.sol --rpc-url "$RPC_URL" --broadcast --private-key "$PK" \

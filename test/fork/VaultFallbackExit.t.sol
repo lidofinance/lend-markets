@@ -7,6 +7,7 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
+import {ForkTest} from "./helpers/ForkTest.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -32,14 +33,15 @@ interface IWstETH {
 ///         (idle + Morpho-withdrawable) covers, then settles the remainder against an unhealthy-but-
 ///         solvent borrower for collateral. This also removes the front-run griefing vector — a
 ///         top-up of idle before the call just flows to the owner instead of reverting the settle.
-contract VaultFallbackExitTest is Test, LidoLendDeployer {
-    address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address internal constant STETH_ADDRESS = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
-    address internal constant WSTETH_ADDRESS = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
+    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    address internal WETH_ADDRESS;
+    address internal STETH_ADDRESS;
+    address internal WSTETH_ADDRESS;
 
-    IWETH internal constant WETH = IWETH(WETH_ADDRESS);
-    IStETH internal constant STETH = IStETH(STETH_ADDRESS);
-    IWstETH internal constant WSTETH = IWstETH(WSTETH_ADDRESS);
+    IWETH internal WETH;
+    IStETH internal STETH;
+    IWstETH internal WSTETH;
 
     address internal constant LENDER = address(0x1000);
     address internal constant BORROWER = address(0x2000);
@@ -51,12 +53,14 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer {
     MarketParams internal params;
     Id internal marketId;
 
-    function _hasFork() internal view returns (bool) {
-        return block.chainid == 1 && WSTETH_ADDRESS.code.length != 0;
-    }
-
     function setUp() public {
-        if (!_hasFork()) return;
+        _fork();
+        WETH_ADDRESS = _addr("external.weth");
+        STETH_ADDRESS = _addr("external.stEth");
+        WSTETH_ADDRESS = _addr("external.wstEth");
+        WETH = IWETH(WETH_ADDRESS);
+        STETH = IStETH(STETH_ADDRESS);
+        WSTETH = IWstETH(WSTETH_ADDRESS);
 
         address[] memory guardians = new address[](1);
         guardians[0] = address(this);
@@ -133,8 +137,6 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer {
     /* fallbackExit: redeem available, then settle the remainder via the risk queue */
 
     function test_fallbackExit_redeemsAvailableThenSettles() public {
-        vm.skip(!_hasFork(), "mainnet fork with Lido contracts required");
-
         uint256 idle = _setupExitWithIdle();
 
         // Request more than idle covers, so the redeem leg pays the idle and the settle leg covers the rest.
@@ -148,8 +150,6 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer {
     /* settle: liquidity-neutral targeted cut — seizes collateral, withdraws NO ordinary liquidity */
 
     function test_settle_seizesCollateralWithoutWithdrawingLiquidity() public {
-        vm.skip(!_hasFork(), "mainnet fork with Lido contracts required");
-
         _setupExitWithIdle();
 
         address[] memory borrowers = new address[](1);
@@ -176,8 +176,6 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer {
        cut that the old `debtCanceled > availableLiquidity` gate rejected now goes through. */
 
     function test_settle_smallCutBelowLiquiditySucceeds() public {
-        vm.skip(!_hasFork(), "mainnet fork with Lido contracts required");
-
         _setupExitWithIdle(); // ~2 WETH of ordinary liquidity sits in the market
 
         address[] memory borrowers = new address[](1);

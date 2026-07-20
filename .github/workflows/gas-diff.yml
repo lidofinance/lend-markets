@@ -10,19 +10,21 @@ concurrency:
 jobs:
   gas-diff:
     name: gas snapshot diff
-    # PRs from forks can't access secrets, so the mainnet-fork tests would skip and produce a
-    # zero-gas diff. Skip the whole job to avoid noise.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
       pull-requests: write
     env:
-      MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
-      # Heap-deleverage benchmark uses 100M+ gas and drowns out everything else. Path may not
-      # exist on every branch — forge ignores a non-match silently.
-      SNAPSHOT_EXCLUDE: test/integration/HeapDeleverageBenchmark.t.sol
+      # The whole suite is snapshotted, fork suites included: `ETH_RPC_URL` comes from the
+      # `MAINNET_RPC_URL` secret and `FORK_BLOCK` is pinned once below, so base and head fork the
+      # same chain state and the diff reflects only the code change. The seeds are held constant for
+      # the same reason: TEST_SEED fixes the seeded oracle price, FOUNDRY_FUZZ_SEED fixes the
+      # fuzz/invariant inputs.
+      ETH_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+      DEPLOYMENT: deployments/deployed-mainnet.json
+      TEST_SEED: "1"
+      FOUNDRY_FUZZ_SEED: "1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -30,6 +32,12 @@ jobs:
           fetch-depth: 0
 
       - uses: ./.github/actions/repo-setup
+
+      # One block for both snapshot runs; also fails fast with a clear error when the secret is unset.
+      - name: pin fork block
+        run: |
+          test -n "$ETH_RPC_URL" || { echo "::error::MAINNET_RPC_URL secret required for the gas-diff job"; exit 1; }
+          echo "FORK_BLOCK=$(cast block-number --rpc-url "$ETH_RPC_URL")" >> "$GITHUB_ENV"
 
       # Snapshot the base ref in an isolated worktree so we don't have to swap branches in the
       # main checkout. Submodule pins on the base ref may differ from head.
@@ -42,10 +50,7 @@ jobs:
           (
             cd /tmp/base-tree
             git submodule update --init --recursive
-            forge snapshot \
-              --no-match-path "$SNAPSHOT_EXCLUDE" \
-              --fork-url "$MAINNET_RPC_URL" \
-              --snap /tmp/snap.base
+            forge snapshot --snap /tmp/snap.base
           ) || {
             echo "::warning::base snapshot failed; gas-diff comment will be skipped"
             : > /tmp/snap.base
@@ -62,8 +67,6 @@ jobs:
             exit 0
           fi
           forge snapshot \
-            --no-match-path "$SNAPSHOT_EXCLUDE" \
-            --fork-url "$MAINNET_RPC_URL" \
             --diff /tmp/snap.base \
             2>&1 | tee /tmp/gas-diff.txt
           echo 'has_diff=true' >> "$GITHUB_OUTPUT"
@@ -71,10 +74,7 @@ jobs:
       - name: snapshot (head, push to main)
         if: github.event_name == 'push'
         run: |
-          forge snapshot \
-            --no-match-path "$SNAPSHOT_EXCLUDE" \
-            --fork-url "$MAINNET_RPC_URL" \
-            --snap /tmp/snap.head 2>&1 | tee /tmp/gas-snapshot.txt
+          forge snapshot --snap /tmp/snap.head 2>&1 | tee /tmp/gas-snapshot.txt
           {
             echo '## Gas snapshot (main)'
             echo
@@ -100,7 +100,7 @@ jobs:
             echo
             cat /tmp/gas-top.md
             echo
-            echo '<sub>Heap deleverage benchmark excluded. Full diff in `gas-diff` artefact.</sub>'
+            echo '<sub>Full diff in `gas-diff` artefact.</sub>'
           } > /tmp/gas-comment.md
           cat /tmp/gas-comment.md >> "$GITHUB_STEP_SUMMARY"
 
