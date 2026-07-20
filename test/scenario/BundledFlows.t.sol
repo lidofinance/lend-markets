@@ -16,7 +16,7 @@ import {MarketActions} from "../setup/MarketActions.sol";
 import {Market} from "../setup/Types.sol";
 
 /// @notice End-to-end bundled user flows on a freshly deployed stack: the main lender and borrower
-///         operations sent through the stock Bundler3 and general adapter plus the Lido vault adapter,
+///         operations sent through the stock Bundler3, the vendored general adapter, and the Lido vault adapter,
 ///         the fallback exit that ends in stETH, and the controller rules a bundle can run into. Every
 ///         bundle runs through `_exec`, which also checks that nothing is left behind on the dispatcher
 ///         or the adapters.
@@ -293,7 +293,7 @@ contract BundledFlowsTest is BundlerSetup {
     ///      for stETH, wrap it into wstETH, supply it, and finally return any stETH crumbs to the
     ///      user (on mainnet, Lido transfers can come up 1-2 wei short).
     function testFuzz_bundle_supplyCollateralFromNativeEth(uint256 amount) public {
-        // From 2 wei up: a 1 wei stake mints zero stETH shares, and the stock adapter's share-price
+        // From 2 wei up: a 1 wei stake mints zero stETH shares, and the general adapter's share-price
         // check then divides by zero and reverts.
         amount = bound(amount, 2, 1_000_000 ether);
         Market storage m = _m();

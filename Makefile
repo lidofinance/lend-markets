@@ -4,7 +4,7 @@
 -include .env
 export
 
-FMT_PATHS := src/LidoBlueERC4626.sol src/SuspectsRegistry.sol src/controllers src/interfaces src/oracle src/libs src/utils test
+FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test
 # Heap-benchmark gas runs into the 100M+ range and skews any gas snapshot / diff. Skip it.
 SNAPSHOT_EXCLUDE := test/scenario/HeapDeleverageBenchmark.t.sol
 

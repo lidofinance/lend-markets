@@ -7,8 +7,10 @@
 - `lib/lido-lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported
   via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
 - `lib/bundler3`: stock Morpho bundler3, pinned as a submodule and imported via
-  the `@bundler3/` remapping — the one-transaction bundling dispatcher and its general adapter. The only
-  Lido bundler code is `src/periphery/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`).
+  the `@bundler3/` remapping — the one-transaction bundling dispatcher and its adapter base contracts.
+  The Lido bundler code is `src/periphery/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and
+  `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO
+  token surface).
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
 - `src/GuardianSignals.sol`: guardian-signal registry (one per project).
 - `src/interfaces/`: local interfaces and hook payload structs.
@@ -40,7 +42,7 @@
 - Build: `forge build --force`.
 - Test: `forge test`.
 - Format check for local Solidity files:
-  `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
+  `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
 - Mainnet-fork tests skip when no mainnet fork context is available; guard with
   `vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required")`.

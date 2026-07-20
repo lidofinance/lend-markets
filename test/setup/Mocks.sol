@@ -89,16 +89,6 @@ contract MockWstETH is ERC20 {
     }
 }
 
-/// @dev Answers the one `underlying()` probe the stock `EthereumGeneralAdapter1` constructor makes on
-///      its MORPHO-wrapper argument; the wrapper actions themselves are never used in these suites.
-contract MockWrapperStub {
-    address public immutable underlying;
-
-    constructor(address underlying_) {
-        underlying = underlying_;
-    }
-}
-
 /// @dev Constant-price oracle in the Morpho 1e36 convention (collateral-per-loan, scaled 1e36). Deployed
 ///      behind an `OssifiableProxy` like the real oracles, so the price lives in proxy storage and is set
 ///      via `initialize` (a constructor would write the impl's storage, not the proxy's). The setup seeds

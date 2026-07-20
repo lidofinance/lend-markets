@@ -101,7 +101,7 @@ contract BundledFlowsDecimalsTest is BundlerSetup {
     }
 
     /// @dev Deposit then redeem, with the minimum share price computed exactly from the vault's own
-    ///      preview: the share-price check in the stock adapter must hold at 6 decimals too, and the
+    ///      preview: the share-price check in the general adapter must hold at 6 decimals too, and the
     ///      round trip may lose at most 1 unit of the loan token to rounding.
     function test_bundle_depositThenRedeem_roundTripSixDecimals() public {
         Market storage m = _m6();

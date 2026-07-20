@@ -10,13 +10,14 @@ import {LidoLendVaultAdapter} from "../../src/periphery/LidoLendVaultAdapter.sol
 
 import {IGeneralAdapter1} from "./IGeneralAdapter1.sol";
 import {LidoLendSetup} from "./LidoLendSetup.sol";
-import {MockStETH, MockWETH, MockWrapperStub, MockWstETH} from "./Mocks.sol";
+import {MockStETH, MockWETH, MockWstETH} from "./Mocks.sol";
 import {Market} from "./Types.sol";
 
 /// @notice Base for bundle tests: a WETH/wstETH market from `LidoLendSetup` plus a freshly deployed
-///         bundler stack — the stock Bundler3 and general adapter (artifact-deployed; they pin solc
-///         0.8.28) and the Lido vault adapter — with call builders and the residue invariant every
-///         bundle must satisfy. Execute bundles through `_exec` so the invariant is asserted uniformly.
+///         bundler stack — the stock Bundler3 and the vendored general adapter (artifact-deployed;
+///         they pin solc 0.8.28) and the Lido vault adapter — with call builders and the residue
+///         invariant every bundle must satisfy. Execute bundles through `_exec` so the invariant is
+///         asserted uniformly.
 abstract contract BundlerSetup is LidoLendSetup {
     /// @dev Loose share-price rail for legs whose price is not under test (actual prices are ~1e21 ray).
     uint256 internal constant MAX_SHARE_PRICE_E27 = 1e30;
@@ -40,19 +41,10 @@ abstract contract BundlerSetup is LidoLendSetup {
         m = _deployProtocol(_defaultConfig(address(weth), address(wsteth), address(0)));
 
         bundler3 = IBundler3(deployCode("Bundler3.sol:Bundler3"));
-        // The MORPHO-token constructor arguments are dead weight here: the token is any nonzero
-        // address and the wrapper stub only answers the constructor's `underlying()` probe.
         adapter = IGeneralAdapter1(
             deployCode(
                 "EthereumGeneralAdapter1.sol:EthereumGeneralAdapter1",
-                abi.encode(
-                    address(bundler3),
-                    address(protocol.core),
-                    address(weth),
-                    address(wsteth),
-                    makeAddr("morphoToken"),
-                    address(new MockWrapperStub(makeAddr("legacyMorphoToken")))
-                )
+                abi.encode(address(bundler3), address(protocol.core), address(weth), address(wsteth))
             )
         );
         vaultAdapter = new LidoLendVaultAdapter(address(bundler3));
