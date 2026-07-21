@@ -88,26 +88,29 @@ A steward is appointed per market id, not as an AccessControl role, so the set s
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | guardian set, quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C1 / C3 | Lido DAO |
+| `MANAGER_ROLE` | the guardian set, quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C1 / C3 | Lido DAO |
 | `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum) | C3 | risk steward committee |
 | `ACCESS_RESTORER_ROLE` | `unban` | C4 | Lido DAO, timelocked |
 
-The committee holds the fast risk-reducing side (`ban`) and governance the slow risk-increasing side (`unban`). Guardian-set membership stays DAO-only: a fast authority to shrink the set could quietly disable detection, and a bare count floor cannot tell a legitimate excision from sabotage.
+The committee holds the fast risk-reducing side (`ban`); governance holds the slow risk-increasing side (`unban`). Changing who is a guardian stays DAO-only: a fast power to shrink the set could quietly switch off detection, and a simple count floor can't tell a legitimate removal from sabotage.
 
 ### `ExitBookBase`
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
-| owner | `setServiceFee` (fee recipient and rate, capped at `MAX_SERVICE_FEE` = 25%), `transferOwnership`, `renounceOwnership`, plus the concrete book's source allow-list (`setVaultAllowed` / `setMarketAllowed`) | C4 | Lido DAO (Voting + Dual Governance) |
+| `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO (Voting + Dual Governance) |
+| `ALLOWLIST_MANAGER_ROLE` | the concrete book's source allow-list (`setMarketAllowed` / `setVaultAllowed`) | C4 | EasyTrack (objection window) |
+| `FEE_MANAGER_ROLE` | `setServiceFee` (fee recipient and rate, capped at `MAX_SERVICE_FEE` = 25%) | C4 | Lido DAO |
+| `RECOVERER_ROLE` | asset recovery (`recoverEther` / `recoverERC20` / `recoverERC721` / `recoverERC1155`) | C4 | Lido DAO |
 
-The exit book is plain `Ownable` set at construction, not behind an `OssifiableProxy` — the owner is its only privileged surface, with no separate upgrade authority. `setServiceFee` directs the service's cut of the filler's gross reward within the 25% cap, and cannot reach lender or borrower funds. Ownership transfers and renounces through `Ownable`, and `renounceOwnership` permanently abandons `setServiceFee` and allow-list control. A concrete book additionally gates which sources it serves through an owner allow-list.
+The exit book is `AccessControl` set at construction, not behind an `OssifiableProxy` — its roles are its only privileged surface, with no separate upgrade authority. Each capability sits on its own role so it can be delegated independently: `ALLOWLIST_MANAGER_ROLE` splits the source allow-list off so enabling a market or vault is a routine risk-increase that can run through the EasyTrack objection window; `FEE_MANAGER_ROLE` sets the service fee (a cut of the filler's gross reward within the 25% cap, reaching no lender or borrower funds); `RECOVERER_ROLE` recovers tokens held by the contract. `DEFAULT_ADMIN_ROLE` only administers the roles. At construction `admin` holds all of them, and a deploy delegates each capability role to its final holder and revokes it from `admin`.
 
 ## Non-role actors
 
-- **Guardians** — the registry's guardian set, not an AccessControl role but off-chain services run by trusted parties. `flag` adds the caller as a flagger of an account, and at `quorum` distinct flaggers a ban latches automatically. `unflag` retracts the caller's flag before the ban latches. `heartbeat` reports a last-scanned block for the liveness frontier.
+- **Guardians** — off-chain parties, not an AccessControl role; each guardian is a single committee address. A guardian raises signals with `flag` and `suspect` (once `quorum` distinct guardians flag an account, its ban latches automatically) and retracts them with `unflag`/`unsuspect` (which never lift a ban already in effect). `heartbeat` reports a last-scanned block for the liveness frontier, advancing it in the same call when it rises. A guardian may appoint one **delegate** with `setDelegate` — a hot key that acts on its behalf (one at a time); signals are stored under the guardian, so swapping the delegate keeps its standing.
 - **Borrower** — `supplyCollateral` and `repay` are permissionless add-value, `borrow` and `withdrawCollateral` are authorized and pass the controller's hook gates, `setSettlementLtv` is self-scoped with no role.
 - **Lender** — `supply` and `withdraw` on the core, `deposit` / `mint` / `withdraw` / `redeem` / `fallbackExit` / `settle` on the vault, and `setAuthorization` to let the vault or an operator act over a core position.
-- **Permissionless** — `liquidate`, `flashLoan`, `accrueInterest`.
+- **Permissionless** — `liquidate`, `flashLoan`, `accrueInterest`, and on the guardian registry `syncQuorumFrontier` (a fallback recompute of the liveness frontier — heartbeats normally advance it) and `prune` (clears the flags and reports left by removed guardians on an account; this lowers the flag count and can let a still-unlatched, quorum-derived ban lapse, but never lifts a latched ban).
 - **Contract callers** — the core is the sole caller of `controller.on(...)` and of the IRM `borrowRate`, the vault acts on the core for lenders under their authorization, and the deployer performs the one-shot `initialize` and holds placeholder roles until handover.
 
 ## Routine risk-increasing actions

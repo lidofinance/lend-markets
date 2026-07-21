@@ -512,11 +512,9 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
     function _fundCollateral(address to, uint256 amount) internal virtual;
     function _setStakingIndex(uint256 index) internal virtual;
     function _currentStakingIndex() internal view virtual returns (uint256);
-    function _skip() internal view virtual returns (bool);
 
     // --- run one IRM through the scenario ---
     function _run(IrmKind kind) internal {
-        vm.skip(_skip(), "scenario setup unavailable (mainnet fork required?)");
         _irmKind = kind;
         _deployStack();
         Metrics memory r = _runScenario();
@@ -1109,105 +1107,22 @@ contract IrmModelSelectionMockTest is IrmScenarioBase {
         return mockWst.stEthPerToken();
     }
 
-    function _skip() internal view override returns (bool) {
-        return false;
-    }
-
+    /// @dev Runs the multi-year IRM comparison scenario driven by the adaptive-curve IRM (mock tokens, no fork).
     function test_scenario_adaptive() public {
         _run(IrmKind.Adaptive);
     }
 
+    /// @dev Runs the multi-year IRM comparison scenario driven by the staking-pegged IRM (mock tokens, no fork).
     function test_scenario_pegged() public {
         _run(IrmKind.Pegged);
     }
 
+    /// @dev Runs the multi-year IRM comparison scenario driven by the linear-kink IRM (mock tokens, no fork).
     function test_scenario_kinked() public {
         _run(IrmKind.Kinked);
     }
 
-    function test_scenario_capD() public {
-        _run(IrmKind.CapD);
-    }
-}
-
-interface IWETHFork {
-    function deposit() external payable;
-    function approve(address, uint256) external returns (bool);
-}
-
-interface IStETHFork {
-    function submit(address) external payable returns (uint256);
-    function approve(address, uint256) external returns (bool);
-    function balanceOf(address) external view returns (uint256);
-}
-
-interface IWstETHFork {
-    function wrap(uint256) external returns (uint256);
-    function approve(address, uint256) external returns (bool);
-    function balanceOf(address) external view returns (uint256);
-    function stEthPerToken() external view returns (uint256);
-}
-
-/// @notice Fork mirror of the simulation against real WETH/wstETH. Loan funding wraps ETH to WETH;
-///         collateral funding submits ETH to Lido and wraps stETH to wstETH; staking moves are simulated by
-///         mocking the real wstETH `stEthPerToken`. Skips unless run with `--fork-url $MAINNET_RPC_URL`.
-contract IrmModelSelectionForkTest is IrmScenarioBase {
-    address internal constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address internal constant STETH = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
-    address internal constant WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
-
-    function _setupTokens() internal override {
-        loanToken = WETH;
-        collateralToken = WSTETH;
-    }
-
-    function _fundLoan(address to, uint256 amount) internal override {
-        vm.deal(to, amount);
-        vm.prank(to);
-        IWETHFork(WETH).deposit{value: amount}();
-        vm.prank(to);
-        IWETHFork(WETH).approve(address(market), type(uint256).max);
-    }
-
-    function _fundCollateral(address to, uint256 amount) internal override {
-        uint256 eth = amount * 13 / 10 + 1 ether;
-        vm.deal(to, eth);
-        vm.prank(to);
-        IStETHFork(STETH).submit{value: eth}(address(0));
-        uint256 st = IStETHFork(STETH).balanceOf(to);
-        vm.prank(to);
-        IStETHFork(STETH).approve(WSTETH, st);
-        vm.prank(to);
-        IWstETHFork(WSTETH).wrap(st);
-        vm.prank(to);
-        IWstETHFork(WSTETH).approve(address(market), type(uint256).max);
-        require(IWstETHFork(WSTETH).balanceOf(to) >= amount, "fork: insufficient wstETH wrapped");
-    }
-
-    function _setStakingIndex(uint256 index) internal override {
-        vm.mockCall(WSTETH, abi.encodeWithSelector(IWstETHFork.stEthPerToken.selector), abi.encode(index));
-    }
-
-    function _currentStakingIndex() internal view override returns (uint256) {
-        return IWstETHFork(WSTETH).stEthPerToken();
-    }
-
-    function _skip() internal view override returns (bool) {
-        return !(block.chainid == 1 && WETH.code.length != 0 && WSTETH.code.length != 0);
-    }
-
-    function test_scenario_adaptive() public {
-        _run(IrmKind.Adaptive);
-    }
-
-    function test_scenario_pegged() public {
-        _run(IrmKind.Pegged);
-    }
-
-    function test_scenario_kinked() public {
-        _run(IrmKind.Kinked);
-    }
-
+    /// @dev Runs the multi-year IRM comparison scenario driven by the capD dynamic-ceiling IRM (mock tokens, no fork).
     function test_scenario_capD() public {
         _run(IrmKind.CapD);
     }
@@ -1247,6 +1162,8 @@ contract AdaptiveIrmUpgradeTest is Test {
         id = params.id();
     }
 
+    /// @dev A retune whose new bounds still contain the adapted `rateAtTarget` keeps the stored rate and the borrow
+    ///      rate continues unchanged — no spike.
     function test_upgrade_statePersists_noSpike_whenBoundsContainRate() public {
         _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
         _adaptDown();
@@ -1260,6 +1177,8 @@ contract AdaptiveIrmUpgradeTest is Test {
         assertEq(_borrowAtTarget(), borrowBefore, "no spike: borrow continues from the persisted rate");
     }
 
+    /// @dev A retune whose new minimum exceeds the stored `rateAtTarget` clamps it up into the new band at the swap,
+    ///      producing an upward rate jump (spike).
     function test_upgrade_rateJumps_whenNewBoundsExcludeStoredRate() public {
         _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
         _adaptDown();
@@ -1276,6 +1195,8 @@ contract AdaptiveIrmUpgradeTest is Test {
         assertGt(ratAfter, ratBefore, "rate jumped up after the retune (the spike)");
     }
 
+    /// @dev A retune whose new maximum sits below the stored `rateAtTarget` clamps it down into the new band at the
+    ///      swap, dropping the rate.
     function test_upgrade_rateDrops_whenNewMaxBelowStoredRate() public {
         _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
         _adaptDown();
@@ -1375,6 +1296,7 @@ contract AdaptiveHardCapTest is Test {
         c.setMarketCurveParams(_toIrmParams(pc), _cfg(CAP));
     }
 
+    /// @dev The hard cap clamps the high-utilization tip to `MAX_BORROW_RATE`, below the uncapped MAX*steepness peak.
     function test_hardCap_clampsTip() public {
         // First call uses INITIAL_RATE_AT_TARGET (= MAX here), so the 100%-util tip is the natural peak MAX*steepness.
         uint256 tipUncapped = IIrm(uncapped).borrowRateView(pu, _market(1 ether)) * uint256(Y);

@@ -29,9 +29,9 @@ contract GuardianSignalsAuditFixesTest is Test {
         gs.grantRole(gs.MANAGER_ROLE(), address(this));
     }
 
-    function _guardians() internal pure returns (address[] memory g) {
-        g = new address[](3);
-        (g[0], g[1], g[2]) = (G1, G2, G3);
+    function _guardians() internal pure returns (address[] memory guardians) {
+        guardians = new address[](3);
+        (guardians[0], guardians[1], guardians[2]) = (G1, G2, G3);
     }
 
     function _validBlock() internal view returns (BlockInfoWithHash memory) {
@@ -45,7 +45,7 @@ contract GuardianSignalsAuditFixesTest is Test {
             BlockInfoWithHash({hash: bytes32(0), number: uint40(block.number), timestamp: uint40(block.timestamp)});
         vm.prank(G1);
         vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
-        gs.heartbeat(forged);
+        gs.heartbeat(G1, forged);
     }
 
     /// W1: a zero-hash proof for a block outside the 256-block window (also `blockhash` zero) is rejected.
@@ -56,13 +56,13 @@ contract GuardianSignalsAuditFixesTest is Test {
             BlockInfoWithHash({hash: bytes32(0), number: stale, timestamp: uint40(block.timestamp)});
         vm.prank(G1);
         vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
-        gs.heartbeat(forged);
+        gs.heartbeat(G1, forged);
     }
 
     /// W1: a canonical in-window past block still records the heartbeat.
     function test_W1_heartbeatAcceptsCanonicalBlock() public {
         vm.prank(G1);
-        gs.heartbeat(_validBlock());
+        gs.heartbeat(G1, _validBlock());
         assertEq(gs.getHeartbeat(G1), uint40(block.timestamp), "canonical heartbeat recorded");
     }
 }

@@ -50,7 +50,7 @@ Full surface: [API reference](api/lido-lend-market-controller.md).
 
 ### GuardianSignals
 
-The shared registry of guardian opinions per `(market, account)` — how the controller learns which borrowers the guardians have flagged as malicious. It holds the guardian set (capped at `MAX_GUARDIANS_COUNT = 32`) and quorum, each account's strike count and flagged/banned status, and per-guardian liveness heartbeats. `MANAGER_ROLE` manages the guardian set and quorum — `addGuardian`, `removeGuardian`, `setQuorum`. One registry can serve many markets, and a deployment runs several only when markets need different guardian sets or quorums.
+The shared registry of guardian opinions per `(market, account)` — how the controller learns which borrowers the guardians have flagged as malicious. It holds the guardian committee (a flat set, capped at `MAX_GUARDIANS_COUNT = 32`) and quorum, each account's strike count and flagged/banned status, and per-guardian liveness heartbeats. `MANAGER_ROLE` manages the set and quorum — `addGuardian`, `removeGuardian`, `setQuorum`. One registry can serve many markets, and a deployment runs several only when markets need different guardian sets or quorums.
 
 Full surface: [API reference](api/guardian-signals.md).
 
@@ -119,7 +119,7 @@ A supply routed through a trusted caller skips the gate entirely — instant act
 
 A `maxGuardiansQuorumDelay` fallback matures a lot anyway if the committee stalls, so a slow watch cannot freeze maturation forever. Set to `0` it drops the scan requirement, and the lot matures on the timer alone.
 
-> **Example.** The timer elapses but the quorum frontier's timestamp is still behind the supplied lot's `unlockTime`, so the lot waits. When a guardian heartbeats past it and `syncQuorumBlock` advances the frontier so its timestamp clears `unlockTime`, the next `syncActivation` matures it. If the committee stalls, the lot matures anyway once `maxGuardiansQuorumDelay` from its start has passed.
+> **Example.** The timer elapses but the quorum frontier's timestamp is still behind the supplied lot's `unlockTime`, so the lot waits. When a guardian heartbeats past it, the heartbeat advances the frontier in the same call so its timestamp clears `unlockTime`, and the next `syncActivation` matures it. If the committee stalls, the lot matures anyway once `maxGuardiansQuorumDelay` from its start has passed.
 
 #### Inflow delay
 
@@ -164,15 +164,21 @@ A borrower with open debt cannot withdraw all of its collateral: a withdrawal mu
 
 ### Guardian signals
 
-Guardians are off-chain services run by trusted actors that watch each market and flag accounts they judge malicious — a hijacked account pushing stolen collateral toward a borrow is the case they exist to catch. No guardian acts alone: each flag is one **strike**, and an account's ban latches as strikes accumulate.
+Guardians are off-chain services, run by trusted actors, that watch each market and flag accounts they judge malicious. The case they exist to catch: a hijacked account pushing stolen collateral toward a borrow. No guardian acts alone. Each flag is one **strike**, and a ban latches once enough strikes pile up.
+
+A guardian is a single committee address. It can appoint one **delegate** with `setDelegate` — a hot key allowed to act on its behalf (only one at a time). Every signalling and liveness call names the guardian it acts for (`onBehalf`), and the caller must be that guardian or its current delegate. Flags, suspect reports, and heartbeats are all stored under the guardian, never the delegate. So if a delegate key is compromised, swapping it out keeps all the guardian's existing signals — no re-flagging needed. One guardian is one strike: a guardian and its own delegate flagging the same account still count as a single strike.
 
 ```
 strikes == 0          Normal — clean, normal activation
-0 < strikes < quorum  Normal — activation delay scaled up by the strike count
-strikes >= quorum     Banned — borrowing hard-blocked, collateral never matures
+0 < strikes < quorum  Normal — activation delay grows with the strike count
+strikes >= quorum     Banned — borrowing blocked, collateral never matures
 ```
 
-Below quorum an account is only slowed, not stopped — the extra delay buys reaction time while sparing a possible false positive. An account is banned while its strikes meet the **current** quorum; reaching the quorum also latches the ban, so retracting a flag no longer lifts a latched ban and an attacker cannot un-flag their way back in. The ban blocks new borrowing, not exit — a banned borrower can still withdraw its own collateral.
+Below quorum an account is only slowed, not stopped. The extra delay buys reaction time and spares a possible false positive. An account counts as banned whenever its strikes meet the **current** quorum, so lowering the quorum can ban one whose existing strikes now reach it.
+
+Reaching quorum **latches** the ban — it writes the banned flag into storage. A latched ban is sticky: retracting a flag can't lift it, because the retraction writes the latch first. So only `unban` clears it, and an attacker can't un-flag their way back in. One case is not yet latched: a ban that exists *only* because the quorum was lowered. Until a later flag, retraction, or prune writes the latch, raising the quorum back lifts it.
+
+The ban blocks new borrowing, not exit — a banned borrower can still withdraw its own collateral.
 
 ```mermaid
 stateDiagram-v2
@@ -185,15 +191,20 @@ stateDiagram-v2
     end note
 ```
 
-Alongside strikes, a guardian can raise a softer **suspect** report: it never bans, only lengthening the activation delay (`delayPerSuspect` per report). The delay reads one per-account snapshot — a count plus an expiry `now + suspectWindow` — re-taken on each report or retraction, counting the reports still fresh at that moment. So a still-fresh earlier suspect is counted into the new snapshot and rides its extended expiry, while an already-expired one is left out. A `prune` does not re-take the snapshot, so a departed guardian's report stays counted until the next report or retraction.
+Alongside strikes, a guardian can raise a softer **suspect** report. It never bans — it only lengthens the activation delay (`delayPerSuspect` per report). The delay reads a single per-account snapshot: a count of reports plus an expiry of `now + suspectWindow`. The snapshot is re-taken on every report or retraction, and counts only the reports still fresh at that moment. So a still-fresh earlier report is folded into the new snapshot and rides its longer expiry, while an already-expired one is dropped. A `prune` that removes a departed guardian's report re-takes the snapshot too, so that report stops counting right away.
 
-Two override roles sit above the guardians, split by risk direction. The committee acts fast to reduce risk — `ACCESS_LIMITER_ROLE` forces a `ban` past the quorum. Governance moves slowly to increase it — `ACCESS_RESTORER_ROLE` `unban`s, clearing the flag set so guardians re-evaluate from scratch.
+Two override roles sit above the guardians, one per risk direction. To reduce risk fast, `ACCESS_LIMITER_ROLE` can force a `ban` without waiting for a quorum. To restore access (a slower, more careful step), `ACCESS_RESTORER_ROLE` can `unban`; that also clears the flag set, so the guardians start their judgement over.
 
-The controller reads `getOpinion(market, account) → GuardiansOpinion{banned, strikeCount, suspectCount, suspectExpiryTimestamp, quorumFrontierTimestamp}` and forwards it to the activation lib, which owns the delay math: `strikeCount × delayPerStrike`, plus `suspectCount × delayPerSuspect` for a lot whose activation started before `suspectExpiryTimestamp`. `banned` blocks borrowing (and pins the unlock at infinity); `quorumFrontierTimestamp` is the liveness frontier that gates maturation.
+The controller reads everything about an account in one call: `getOpinion(market, account) → GuardiansOpinion{banned, strikeCount, suspectCount, suspectExpiryTimestamp, quorumFrontierTimestamp}`. It hands that to the activation lib, which does the delay math: `strikeCount × delayPerStrike`, plus `suspectCount × delayPerSuspect` for a lot whose activation started before `suspectExpiryTimestamp`. `banned` blocks borrowing and pins the unlock at infinity. `quorumFrontierTimestamp` is the liveness frontier that gates maturation, described next.
 
-**Heartbeats.** Guardians also report how far they have scanned, which tells whether the watch is keeping up with the chain. Each `heartbeat` carries `{number, hash, timestamp}`, recorded only if `hash` matches `blockhash(number)` — so the reported block must be on the canonical chain. A block the guardian scanned on a fork that later reorged out no longer matches and is rejected. `syncQuorumBlock` then takes the quorum-th highest reported block as the frontier and ratchets it up — monotonic, so a guardian rotation cannot pull it back.
+**Heartbeats.** Guardians also report how far they have scanned the chain, which shows whether the watch is keeping up. Each `heartbeat` carries `{number, hash, timestamp}`, and is accepted only if two checks pass:
 
-> **Example (frontier).** Five guardians, quorum 3, last-scanned blocks `{100, 95, 90, 80, 70}`. The 3rd-highest is `90`, so the frontier is block 90 — at least a quorum have scanned everything up to it. A later report below 90 cannot lower it. The maturation gate compares that block's recorded timestamp against a lot's `unlockTime`, so a lot matures once block 90's time has passed its unlock.
+- `hash` matches `blockhash(number)` — so the block is really on the canonical chain. A block scanned on a fork that later reorged out won't match, and is rejected.
+- `timestamp` is in the past and not below the guardian's previous heartbeat — so a guardian can't backdate or fast-forward the frontier it feeds.
+
+The frontier is the quorum-th highest reported timestamp: the point at least a quorum of guardians have all scanned past. A heartbeat that pushes this value up advances the frontier in the same call (a cheap check skips the work when it can't). `syncQuorumFrontier` recomputes it on demand as a fallback. The frontier only ever moves forward (monotonic), so swapping a guardian can't pull it back.
+
+> **Example (frontier).** Five guardians, quorum 3, with last-scanned timestamps `{100, 95, 90, 80, 70}`. The 3rd-highest is `90`, so the frontier is `90` — at least a quorum have scanned up to that time. A later report below `90` can't lower it. The maturation gate checks the frontier against a lot's `unlockTime`: the lot matures once `90` has passed that unlock.
 
 ### Settlement queue
 

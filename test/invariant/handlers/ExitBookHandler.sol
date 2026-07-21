@@ -48,7 +48,8 @@ contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
     mapping(uint256 id => bool) public wasClosed;
 
     uint256 public fillCount;
-    uint256 public sumAssetsOut; // running sum of measured three-way distribution per fill
+    // Independent vault-side measure of what the book redeemed per fill: `deposit + (vaultBefore - vaultAfter)`.
+    uint256 public sumAssetsOut;
     uint256 public sumLenderPaid;
     uint256 public sumFillerPaid;
     uint256 public sumServicePaid;
@@ -201,20 +202,21 @@ contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
         }
 
         uint256[3] memory pre = [ASSET.balanceOf(r.owner), ASSET.balanceOf(FILLER), ASSET.balanceOf(FEE_RECIPIENT)];
+        uint256 vaultBefore = ASSET.balanceOf(address(VAULT));
 
         vm.prank(FILLER);
         BOOK.fillExitRequest(id, deposit, 0);
 
         uint256 lenderGot = ASSET.balanceOf(r.owner) - pre[0];
-        // The filler paid `deposit` in and received its leg back; net leg = received - deposit.
-        uint256 fillerGot = ASSET.balanceOf(FILLER) + deposit - pre[1];
+        uint256 fillerGot = ASSET.balanceOf(FILLER) + deposit - pre[1]; // + deposit recovers the gross leg
         uint256 feeGot = ASSET.balanceOf(FEE_RECIPIENT) - pre[2];
+        uint256 redeemed = deposit + vaultBefore - ASSET.balanceOf(address(VAULT));
 
         fillCount += 1;
         sumLenderPaid += lenderGot;
         sumFillerPaid += fillerGot;
         sumServicePaid += feeGot;
-        sumAssetsOut += (lenderGot + fillerGot + feeGot);
+        sumAssetsOut += redeemed;
 
         if (!bringLiquidity) {
             // `p.assetsOut` is `previewRedeem(filledShares)` snapped BEFORE this fill — with no liquidity

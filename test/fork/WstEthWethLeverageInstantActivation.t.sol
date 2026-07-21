@@ -12,6 +12,7 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {WAD, BPS} from "../../src/libs/Constants.sol";
+import {ForkTest} from "./helpers/ForkTest.sol";
 
 interface IWETH {
     function deposit() external payable;
@@ -225,14 +226,15 @@ contract WstEthWethLeverageHelper {
 ///         With the router granted instant activation every supply is active at once, so the loop reaches its
 ///         target and all collateral is active. Without it the supplied collateral lands in the activation
 ///         timer, and the next borrow reverts on insufficient active collateral.
-contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer {
-    address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address internal constant STETH_ADDRESS = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
-    address internal constant WSTETH_ADDRESS = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, ForkTest {
+    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    address internal WETH_ADDRESS;
+    address internal STETH_ADDRESS;
+    address internal WSTETH_ADDRESS;
 
-    IWETH internal constant WETH = IWETH(WETH_ADDRESS);
-    IStETH internal constant STETH = IStETH(STETH_ADDRESS);
-    IWstETH internal constant WSTETH = IWstETH(WSTETH_ADDRESS);
+    IWETH internal WETH;
+    IStETH internal STETH;
+    IWstETH internal WSTETH;
 
     uint256 internal constant LLTV = 0.8e18;
 
@@ -249,10 +251,19 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer {
         Id id;
     }
 
+    function setUp() public {
+        _fork();
+        WETH_ADDRESS = _addr("external.weth");
+        STETH_ADDRESS = _addr("external.stEth");
+        WSTETH_ADDRESS = _addr("external.wstEth");
+        WETH = IWETH(WETH_ADDRESS);
+        STETH = IStETH(STETH_ADDRESS);
+        WSTETH = IWstETH(WSTETH_ADDRESS);
+    }
+
     /// @notice Granted instant activation, the router compounds the loop: it reaches the collateral target and
     ///         every wstETH it supplied is active (none stuck in the timer), with real debt drawn.
     function test_leverageLoop_compoundsAllActive_withInstantActivation() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         (Stack memory s, WstEthWethLeverageHelper helper, uint256 initialCollateral) = _setup();
 
         // Trust the router: its supplies skip the timer and are active immediately.
@@ -282,7 +293,6 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer {
     /// @notice Without instant activation the router's first supply lands in the activation timer, so the
     ///         second iteration borrows against collateral that is not yet active and the loop reverts.
     function testRevert_leverageLoop_revertsWithoutInstantActivation() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         (Stack memory s, WstEthWethLeverageHelper helper, uint256 initialCollateral) = _setup();
 
         // No instant-activation grant for the router this time.
@@ -379,10 +389,5 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer {
         vm.prank(user);
         WSTETH.approve(address(core), type(uint256).max);
         return wstETHAmount;
-    }
-
-    function _hasMainnetLidoContracts() internal view returns (bool) {
-        return block.chainid == 1 && WETH_ADDRESS.code.length != 0 && STETH_ADDRESS.code.length != 0
-            && WSTETH_ADDRESS.code.length != 0;
     }
 }

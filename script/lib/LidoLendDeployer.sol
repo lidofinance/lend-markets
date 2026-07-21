@@ -100,9 +100,9 @@ abstract contract LidoLendDeployer {
         bool enableSettlement;
         CollateralActivationConfigParams activation;
         SettlementConfigParams settlementConfig;
-        // Guardian-signals registry bootstrap, seeded in `initialize`. The registry rejects `quorum` 0, so pass at
-        // least one guardian and `1 <= quorum <= guardians.length`; rotate to the real set post-deploy via
-        // `addGuardian` / `removeGuardian`.
+        // Guardian-signals registry, seeded in `initialize`. The registry rejects `quorum` 0, so pass at least one
+        // guardian and `1 <= quorum <= guardians.length`. Guardians appoint their delegates post-deploy via
+        // `setDelegate`.
         address[] guardians;
         uint256 quorum;
         uint256 suspectWindow;
@@ -160,7 +160,7 @@ abstract contract LidoLendDeployer {
     /// @dev Deploys impl + `OssifiableProxy`. Proxy admin is `admin`; init calls `initialize(admin)` so
     ///      `admin` becomes the core's owner.
     function _deployCore(address admin) internal virtual returns (address) {
-        address impl = _deployArtifact("lib/lido-lend/src/LidoLend.sol:LidoLend", "");
+        address impl = _deployArtifact("LidoLend", "");
         bytes memory initData = abi.encodeWithSignature("initialize(address)", admin);
         return _deployArtifact("src/proxy/OssifiableProxy.sol:OssifiableProxy", abi.encode(impl, admin, initData));
     }

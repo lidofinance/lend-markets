@@ -3,7 +3,7 @@ pragma solidity 0.8.35;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IExitBook} from "../interfaces/IExitBook.sol";
@@ -17,7 +17,7 @@ import {WAD} from "../libs/Constants.sol";
 /// @notice Shared base of the exit books. A lender posts a request to exit a position; a filler later
 ///         closes it against available liquidity for a fee. A concrete book binds it to a source by
 ///         implementing the source operations, so any position that supports them can reuse this primitive.
-abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
+abstract contract ExitBookBase is IExitBook, AccessControl, AssetRecoverer {
     using SafeERC20 for IERC20;
     using ExitBookLib for ExitBookLib.State;
 
@@ -25,6 +25,7 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     // ERRORS
     // ---
 
+    error ZeroAddress();
     error ZeroShares();
     error ZeroMaxLifetime();
     error FeeTooHigh();
@@ -71,6 +72,13 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     // CONSTANTS
     // ---
 
+    /// @notice Role allowed to manage the source allow-list (which markets or vaults may be exited).
+    bytes32 public constant ALLOWLIST_MANAGER_ROLE = keccak256("ALLOWLIST_MANAGER_ROLE");
+    /// @notice Role allowed to set the service fee and its recipient.
+    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
+    /// @notice Role allowed to recover tokens held by the contract.
+    bytes32 public constant RECOVERER_ROLE = keccak256("RECOVERER_ROLE");
+
     /// @notice Cap on a request's priority-fee rate (WAD), checked at `place` — 10%.
     uint256 public constant MAX_PRIORITY_FEE = 0.1e18;
 
@@ -101,19 +109,24 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     // CONSTRUCTOR
     // ---
 
-    constructor(address owner, uint256 maxLifetime_) Ownable(owner) {
+    /// @param admin        Holder of `DEFAULT_ADMIN_ROLE`.
+    /// @param maxLifetime_ Cap on a request's lifetime; must be non-zero.
+    constructor(address admin, uint256 maxLifetime_) {
+        if (admin == address(0)) revert ZeroAddress();
         if (maxLifetime_ == 0) revert ZeroMaxLifetime();
 
         MAX_REQUEST_LIFETIME = maxLifetime_;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
 
     // ---
     // PERMISSIONS
     // ---
 
-    /// @dev Asset recovery is owner-only.
+    /// @dev Asset recovery is `RECOVERER_ROLE`-only.
     function _checkRecoverer() internal view override {
-        _checkOwner();
+        _checkRole(RECOVERER_ROLE);
     }
 
     // ---
@@ -121,7 +134,7 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     // ---
 
     /// @inheritdoc IExitBook
-    function setServiceFee(address recipient, uint256 fee) external onlyOwner {
+    function setServiceFee(address recipient, uint256 fee) external onlyRole(FEE_MANAGER_ROLE) {
         if (fee > MAX_SERVICE_FEE) revert FeeTooHigh();
 
         if (recipient == address(0) && fee != 0) revert FeeRecipientRequired();

@@ -22,14 +22,12 @@ struct BlockInfoWithHash {
 /// @notice Per-account guardian signal, stored per `(market, account)`.
 /// @param banned           Latched ban. A quorum of flags or a forced `ban` sets it, held until `unban`.
 /// @param suspectReportedAt Timestamp of the last suspect report or retraction. Anchors the suspect snapshot.
-/// @param suspectCount     Active suspect reports at `suspectReportedAt`. Snapshotted on report/retraction so the
-///        activation delay need not re-scan the suspect set: the surcharge `suspectCount * delayPerSuspect` applies
-///        to a lot whose activation began before the snapshot lapses (`suspectReportedAt + suspectWindow`).
-/// @param flaggedBy        Live set of guardians currently flagging the account. Its size is the raw flag count,
-///        which is the effective strikes. `unban` clears it in one call.
-/// @param suspectedBy      Live set of guardians who reported the account as suspect. Unlike a flag, a suspect
-///        report never latches a ban; it scales the activation delay like a strike, but only while fresh —
-///        counted only when its `suspectedAt` timestamp falls inside the market's suspect window.
+/// @param suspectCount     Active suspect reports at `suspectReportedAt`, snapshotted on report/retraction so the
+///        delay needn't re-scan. The surcharge `suspectCount * delayPerSuspect` applies to a lot whose activation
+///        began before the snapshot lapses (`suspectReportedAt + suspectWindow`).
+/// @param flaggedBy        Live set of guardians flagging the account; its size is the strike count. `unban` clears it.
+/// @param suspectedBy      Live set of guardians reporting the account as suspect. A suspect report never bans; it
+///        scales the delay like a strike, but only while its `suspectedAt` falls inside the suspect window.
 /// @param suspectedAt      Per-guardian timestamp of the last suspect report, kept so stale reports can be excluded.
 struct GuardiansSignal {
     bool banned;

@@ -488,6 +488,14 @@ function maxWithdrawableAssets(
 
 Loan assets `supplier` can withdraw from its market supply right now: its position capped by the idle liquidity, 0 while paused.
 
+### `guardianSignals`
+
+```solidity
+function guardianSignals() external view returns (address);
+```
+
+The guardian-signals registry this controller reads for the borrow gate and activation scaling.
+
 ### `currentInflow`
 
 ```solidity

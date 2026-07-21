@@ -11,6 +11,7 @@ import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-bl
 import {Test} from "forge-std/Test.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {WAD} from "../../src/libs/Constants.sol";
+import {ForkTest} from "./helpers/ForkTest.sol";
 
 struct LidoMarketParams {
     address loanToken;
@@ -75,7 +76,7 @@ interface ILidoLendLike {
         returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral);
 }
 
-contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
+contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer, ForkTest {
     using AdapterMarketParamsLib for AdapterMarketParams;
 
     address internal constant CURATOR = address(0x1001);
@@ -86,13 +87,14 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
     address internal constant DIRECT_LENDER = address(0x1006);
     address internal constant LOW_LTV_BORROWER = address(0x1007);
 
-    address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address internal constant STETH_ADDRESS = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
-    address internal constant WSTETH_ADDRESS = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    address internal WETH_ADDRESS;
+    address internal STETH_ADDRESS;
+    address internal WSTETH_ADDRESS;
 
-    IWETH internal constant WETH = IWETH(WETH_ADDRESS);
-    IStETH internal constant STETH = IStETH(STETH_ADDRESS);
-    IWstETH internal constant WSTETH = IWstETH(WSTETH_ADDRESS);
+    IWETH internal WETH;
+    IStETH internal STETH;
+    IWstETH internal WSTETH;
 
     uint256 internal constant LLTV = 0.8e18;
 
@@ -107,9 +109,20 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
         IMorphoMarketV1AdapterLike adapter;
     }
 
-    function test_metaMorphoV2_allocatesIntoForkAndForceDeallocates() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+    function setUp() public {
+        _fork();
+        WETH_ADDRESS = _addr("external.weth");
+        STETH_ADDRESS = _addr("external.stEth");
+        WSTETH_ADDRESS = _addr("external.wstEth");
+        WETH = IWETH(WETH_ADDRESS);
+        STETH = IStETH(STETH_ADDRESS);
+        WSTETH = IWstETH(WSTETH_ADDRESS);
+    }
 
+    /// @dev A vault-v2 allocator supplies into the Lido fork market via the Morpho adapter; borrowers drain all
+    ///      liquidity so a plain vault withdraw reverts, then forceDeallocate exits the vault user and a
+    ///      direct-lender fallback settle seizes the borrower's collateral to exit the direct lender.
+    function test_metaMorphoV2_allocatesIntoForkAndForceDeallocates() public {
         IntegrationContext memory ctx = _setupIntegrationContext();
         uint256 directSupplySharesBefore = _seedVaultAndDirectLender(ctx);
         _seedBorrowersAndDrainLiquidity(ctx);
@@ -277,11 +290,6 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer {
             uint256(borrowerRawCollateralBefore) - collateralSeized,
             "fallback debited borrower collateral"
         );
-    }
-
-    function _hasMainnetLidoContracts() internal view returns (bool) {
-        return block.chainid == 1 && WETH_ADDRESS.code.length != 0 && STETH_ADDRESS.code.length != 0
-            && WSTETH_ADDRESS.code.length != 0;
     }
 
     function _mintWETH(address user, uint256 amount) internal {

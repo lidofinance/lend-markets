@@ -65,7 +65,7 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     // CONSTRUCTOR
     // ---
 
-    constructor(address morpho, address owner, uint256 maxLifetime_) ExitBookBase(owner, maxLifetime_) {
+    constructor(address morpho, address admin, uint256 maxLifetime_) ExitBookBase(admin, maxLifetime_) {
         if (morpho == address(0)) revert ZeroMorpho();
 
         MORPHO = IMorpho(morpho);
@@ -76,7 +76,10 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     // ---
 
     /// @inheritdoc IMorphoExitBook
-    function setMarketAllowed(MarketParams calldata marketParams, bool allowed) external onlyOwner {
+    function setMarketAllowed(MarketParams calldata marketParams, bool allowed)
+        external
+        onlyRole(ALLOWLIST_MANAGER_ROLE)
+    {
         Id marketId = marketParams.id();
 
         if (MORPHO.market(marketId).lastUpdate == 0) revert MarketNotCreated();

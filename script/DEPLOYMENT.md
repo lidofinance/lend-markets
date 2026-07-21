@@ -22,7 +22,7 @@ activation parameters and suspects-registry bootstrap in the script are placehol
 
 ## Pre-flight
 
-- `MAINNET_RPC_URL` set (see `.env.example`).
+- `ETH_RPC_URL` set to the target chain's RPC (see `.env.example`).
 - `forge --version` matches `.foundryref`.
 - `git submodule update --init --recursive` is up to date.
 - Deployer address is funded on the target chain.
@@ -38,7 +38,7 @@ activation parameters and suspects-registry bootstrap in the script are placehol
 
 ```sh
 forge script script/DeployMarket.s.sol \
-  --fork-url "$MAINNET_RPC_URL" \
+  --fork-url "$ETH_RPC_URL" \
   --sender "$DEPLOYER" \
   -vvv
 ```
@@ -83,8 +83,11 @@ Then:
       lock (`setActivatingLock`) if used.
 - [ ] Confirm each proxy points at the expected implementation
       (`OssifiableProxy.proxy__getImplementation()`).
-- [ ] Record the deployed addresses in `deployed-<network>.toml` (the integration tests read it).
-- [ ] Run the integration smoke tests against the deployed addresses.
+- [ ] Record the deployed addresses under `protocol` in `deployments/deployed-<network>.json` (the
+      `test/fork/` suites read it; see `deployments/README.md`).
+- [ ] Run the fork suites against the deployed addresses:
+      `make test-fork ETH_RPC_URL=<rpc> DEPLOYMENT=deployments/deployed-<network>.json`
+      (command-line assignments so a `.env` cannot override them).
 
 ## Open items
 

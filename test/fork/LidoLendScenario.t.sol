@@ -11,6 +11,7 @@ import {Test} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
+import {ForkTest} from "./helpers/ForkTest.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -33,7 +34,7 @@ interface IWstETH {
 
 /// @dev Minimal guardian surface used to flag (and thereby ban, at quorum) an account in tests.
 interface IRegistryLike {
-    function flag(Id market, address[] calldata accounts, BlockInfoWithHash calldata lastScannedBlock) external;
+    function flag(Id market, address onBehalf, address[] calldata accounts) external;
 }
 
 /// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
@@ -48,16 +49,17 @@ contract FlashRoundTrip {
 /// @notice End-to-end scenario over a freshly deployed ILidoLend + LidoLendMarketController stack on a
 ///         mainnet fork (real Lido stETH/wstETH). Drives supply/borrow/maturation and the settle
 ///         queue (heap ordering, settlement LTV, bad-debt guard) through the controller's hooks.
-contract LidoLendScenarioTest is Test, LidoLendDeployer {
+contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
     using MarketParamsLib for MarketParams;
 
-    address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address internal constant STETH_ADDRESS = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
-    address internal constant WSTETH_ADDRESS = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    address internal WETH_ADDRESS;
+    address internal STETH_ADDRESS;
+    address internal WSTETH_ADDRESS;
 
-    IWETH internal constant WETH = IWETH(WETH_ADDRESS);
-    IStETH internal constant STETH = IStETH(STETH_ADDRESS);
-    IWstETH internal constant WSTETH = IWstETH(WSTETH_ADDRESS);
+    IWETH internal WETH;
+    IStETH internal STETH;
+    IWstETH internal WSTETH;
 
     address internal constant LENDER = address(0x1000);
     address internal constant BORROWER = address(0x2000);
@@ -76,9 +78,19 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         uint256 price;
     }
 
-    function test_supplyCollateral_promotesDustAndBorrowsAfterMaturity() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
+    function setUp() public {
+        _fork();
+        WETH_ADDRESS = _addr("external.weth");
+        STETH_ADDRESS = _addr("external.stEth");
+        WSTETH_ADDRESS = _addr("external.wstEth");
+        WETH = IWETH(WETH_ADDRESS);
+        STETH = IStETH(STETH_ADDRESS);
+        WSTETH = IWstETH(WSTETH_ADDRESS);
+    }
 
+    /// @dev A sub-threshold (dust) deposit is promoted to activating once a top-up crosses the activation minimum,
+    ///      matures after the delay, then borrows real WETH against the now-active collateral.
+    function test_supplyCollateral_promotesDustAndBorrowsAfterMaturity() public {
         TestMarket memory ctx = _deployMarket(false);
 
         _mintWETH(ctx.market, LENDER, 10 ether);
@@ -110,8 +122,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     /// @notice Instant activation (whitelist): a trusted borrower's collateral is active on deposit, so it
     ///         borrows with no maturation wait. Revoking restores the timer for fresh deposits.
     function test_instantActivation_skipsMaturationDelay() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
         TestMarket memory ctx = _deployMarket(false);
         ctx.controller.grantInstantActivation(BORROWER);
         assertTrue(ctx.controller.hasInstantActivation(BORROWER), "borrower whitelisted");
@@ -143,8 +153,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     ///         collateral has zero borrow capacity, so the open debt fails the health gate. Repaying to zero
     ///         lifts the constraint.
     function test_withdraw_collateralFloorWithOpenDebt() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
         TestMarket memory ctx = _deployMarket(false); // minActivationAmount = 10 ether
 
         _mintWETH(ctx.market, LENDER, 10 ether);
@@ -182,8 +190,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     ///         cannot open debt — its borrow capacity is zero. Symmetric to the withdraw case, but binds before
     ///         any debt exists.
     function test_borrow_belowPositionFloorReverts() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
         TestMarket memory ctx = _deployMarket(false); // minActivationAmount = 10 ether
 
         _mintWETH(ctx.market, LENDER, 10 ether);
@@ -208,9 +214,9 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         ctx.market.borrow(ctx.marketParams, 1 ether, 0, BORROWER, BORROWER);
     }
 
+    /// @dev Happy-path settle: with two active borrowers, cutting the allowed slice against the queue root seizes
+    ///      collateral at the oracle rate and pays the lender real wstETH.
     function test_settle_happyPath() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
         TestMarket memory ctx = _deployMarket(true);
 
         _mintWETH(ctx.market, LENDER, 10 ether);
@@ -250,8 +256,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     ///        - the root opts another borrower in via a settlement LTV, so a non-root cut succeeds;
     ///        - the lowest-LTV borrower is never touched throughout the scenario.
     function test_settle_heapPicksTopBorrower() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
         TestMarket memory ctx = _deployMarket(true);
 
         // Lender saturates the market so every cut below has to go through settle and not
@@ -317,8 +321,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     ///      pushes the root underwater (debt > collateral value). Cutting the healthy tail must also
     ///      revert while the root is insolvent — the whole queue halts until bad debt is resolved.
     function testRevert_settle_whenHeapRootBadDebt() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
         TestMarket memory ctx = _deployMarket(true);
 
         _mintWETH(ctx.market, LENDER, 20 ether);
@@ -373,8 +375,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     ///      over-cap check plus the bad-debt guard. A negative rebase pushes the borrower above LLTV
     ///      (unhealthy) while keeping their collateral worth more than their debt (solvent).
     function test_settle_worksOnUnhealthyButSolventPosition() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
-
         TestMarket memory ctx = _deployMarket(true);
 
         uint256 borrowAmount = 18 ether;
@@ -418,7 +418,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
 
     /// @notice setSettlementLtv stores the borrower's target LTV; rejects ltv >= 1e18.
     function test_setSettlementLtv_storesAndRejectsOutOfRange() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
         (uint256 wm0,) = ctx.controller.settlementLtv(BORROWER);
@@ -445,7 +444,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     ///         the borrower's LTV down to it. Close runner-up key keeps the algorithmic
     ///         slice small so the settlement-LTV slice dominates.
     function test_settlementLtv_bumpsHeapSlice() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
         _mintWETH(ctx.market, LENDER, 40 ether);
@@ -490,7 +488,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     ///         settlement LTV set. Without one its policy slice is zero, so the controller hook reverts
     ///         `SettlementExceedsAllowed` on any cut.
     function test_settle_eligibleViaPersonalSettlementLtv() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(true);
 
         _mintWETH(ctx.market, LENDER, 10 ether);
@@ -541,7 +538,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     /// @notice A banned borrower's collateral never settles into `active`, and its borrow is hard-blocked.
     ///         Exercises the guardian-ban path: a ban skips maturation (like a freeze) and hard-blocks the borrow.
     function test_ban_bannedCollateralNeverMaturesAndBorrowBlocked() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(false);
 
         _mintWETH(ctx.market, LENDER, 10 ether);
@@ -557,14 +553,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         // registry's sole guardian (set in `_deployMarket`).
         address[] memory toFlag = new address[](1);
         toFlag[0] = BORROWER;
-        IRegistryLike(ctx.guardianSignals)
-            .flag(
-                ctx.id,
-                toFlag,
-                BlockInfoWithHash({
-                    hash: blockhash(block.number), number: uint40(block.number), timestamp: uint40(block.timestamp)
-                })
-            );
+        IRegistryLike(ctx.guardianSignals).flag(ctx.id, address(this), toFlag);
 
         // Warp far past any normal activation delay — a banned address never settles.
         vm.warp(block.timestamp + 30 days);
@@ -572,16 +561,14 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         assertTrue(pv.banned, "banned");
         _assertCollateralState(ctx.controller, BORROWER, 0, col, 0); // still activating, never active
 
-        // No active collateral + banned -> borrow reverts.
         vm.prank(BORROWER);
-        vm.expectRevert();
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
         ctx.market.borrow(ctx.marketParams, 1 ether, 0, BORROWER, BORROWER);
     }
 
     /// @notice The activation delay is inflow-scaled (a larger inflow adds more to the throttle and
     ///         earns a longer delay) and is enforced (collateral does not settle before its unlock).
     function test_maturation_delayScalesWithInflowAndIsEnforced() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(false);
 
         uint256 smallCol = _mintWstETH(ctx.market, BORROWER, 30 ether);
@@ -608,7 +595,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
     /// @notice A same-tx supplyCollateral -> withdrawCollateral round-trip is inflow-neutral: the deposit's
     ///         inflow addition is reversed on the same-tx withdrawal, so a flash loan cannot pump the inflow.
     function test_flashUndo_sameTxRoundTripIsInflowNeutral() public {
-        vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required");
         TestMarket memory ctx = _deployMarket(false);
 
         // Seed real inflow with a committed deposit so `currentInflow()` is observably non-zero.
@@ -651,11 +637,6 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer {
         Market memory _m = ctx.market.market(ctx.id);
         (uint128 totalSupplyAssets, uint128 totalSupplyShares) = (_m.totalSupplyAssets, _m.totalSupplyShares);
         return SharesMathLib.toSharesDown(sliceAssets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
-    }
-
-    function _hasMainnetLidoContracts() internal view returns (bool) {
-        return block.chainid == 1 && WETH_ADDRESS.code.length != 0 && STETH_ADDRESS.code.length != 0
-            && WSTETH_ADDRESS.code.length != 0;
     }
 
     function _maxBorrow(uint256 collateral, uint256 price) internal pure returns (uint256) {

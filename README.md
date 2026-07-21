@@ -18,16 +18,17 @@ Build:
 forge build --force
 ```
 
-Run the local test suite:
+Run the local test suite (everything except `test/fork/`):
 
 ```sh
-forge test
+forge test --no-match-path 'test/fork/**'
 ```
 
-Run mainnet-fork integration tests against real Lido contracts:
+Run the fork tests against a real network. The suites under `test/fork/` require `ETH_RPC_URL` and a path to that network's address map `DEPLOYMENT` — they revert if either is unset or the map file is missing (a plain `forge test` runs local and fork suites together):
 
 ```sh
-MAINNET_RPC_URL=<rpc-url> forge test --match-path 'test/integration/*.t.sol' --fork-url "$MAINNET_RPC_URL"
+ETH_RPC_URL=<rpc-url> DEPLOYMENT=deployments/deployed-mainnet.json forge test --match-path 'test/fork/**'
+ETH_RPC_URL=<rpc-url> DEPLOYMENT=deployments/deployed-<network>.json forge test --match-path 'test/fork/**'  # needs that network's map (see deployments/README.md)
 ```
 
 Format Solidity:
@@ -43,19 +44,22 @@ Most everyday commands are wrapped in a `Makefile`:
 ```sh
 make help            # list available targets
 make build           # forge build
-make test            # forge test (unit + benchmark, fork tests auto-skip without RPC)
-make fork-test       # forge test --fork-url $MAINNET_RPC_URL (copy .env.example to .env first)
-make fmt-check       # forge fmt --check on tracked paths (CI gate)
+make test            # all tests, local + fork; fork suites revert without the fork setup (ETH_RPC_URL + DEPLOYMENT)
+make test-local      # local suites only (excludes test/fork/); no RPC
+make test-fork       # test/fork/ only; the suites revert without the fork setup (copy .env.example to .env)
+make fmt-check       # forge fmt --check on tracked paths (local only; CI does not fail on style)
 make lint            # forge lint
-make coverage        # forge coverage --ir-minimum --report summary
+make coverage        # coverage of the whole suite; fork suites revert without the fork setup
+make snapshot        # gas snapshot of the whole suite
+make snapshot-diff   # fresh run diffed against .gas-snapshot
 make slither         # static analysis (requires `slither` in PATH)
 make solhint         # stylistic/security checks (requires `solhint` in PATH)
-make ci              # everything CI runs on PRs: build + fmt-check + lint + test
+make ci              # everything CI runs on PRs: build + lint + local tests
 ```
 
-Environment variables are documented in `.env.example`. Copy it to `.env` and fill in `MAINNET_RPC_URL` to enable fork tests locally.
+Environment variables are documented in `.env.example`. Copy it to `.env` and set `ETH_RPC_URL` + `DEPLOYMENT` to enable fork tests locally.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`). Locally `forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`: `ci.yml` (build/fmt/lint/test on every PR), `fork-test.yml` (mainnet-fork integration with the `MAINNET_RPC_URL` secret), `static.yml` (Slither + Solhint), `coverage.yml`, `gas-diff.yml` (gas snapshot diff posted as a PR comment), and `fuzz.yml` (deep fuzz on a nightly cron).
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`). Locally `forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that runs `test/fork/` with `ETH_RPC_URL` from the `MAINNET_RPC_URL` secret), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same secret), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
 
 To run the local pre-commit fmt check, point Git at the bundled hook:
 

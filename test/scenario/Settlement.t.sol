@@ -45,6 +45,8 @@ contract SettlementTest is LidoLendSetup {
         return debt * 1e36 / oraclePrice;
     }
 
+    /// @dev `fallbackExit` redeems the idle liquidity first, then one settle cut equal to the predicted slice; the
+    ///      seized collateral equals the cancelled debt valued at the oracle price.
     function test_fallbackExit_redeemsIdleThenSettlesOneCut() public {
         Market storage m = _m();
         address borrower = _actor("borrower");
@@ -64,6 +66,8 @@ contract SettlementTest is LidoLendSetup {
         assertApproxEqAbs(collateralSeized, _collateralFor(debtCanceled), 1, "seized == debt valued at price");
     }
 
+    /// @dev Targeted `settle` cancels exactly the controller's predicted slice, seizing collateral worth the
+    ///      cancelled debt at the oracle price.
     function test_settle_cutsExactlyThePredictedSlice() public {
         Market storage m = _m();
         address borrower = _actor("borrower");

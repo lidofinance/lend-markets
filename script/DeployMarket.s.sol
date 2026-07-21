@@ -14,7 +14,7 @@ import {LidoLendDeployer} from "./lib/LidoLendDeployer.sol";
 ///      placeholders — tune them (governance values) before any real deploy. See `script/DEPLOYMENT.md`.
 ///
 /// Usage (dry run against a fork):
-///   forge script script/DeployMarket.s.sol --fork-url "$MAINNET_RPC_URL" --sender "$DEPLOYER" -vvv
+///   forge script script/DeployMarket.s.sol --fork-url "$ETH_RPC_URL" --sender "$DEPLOYER" -vvv
 ///
 /// Usage (broadcast):
 ///   forge script script/DeployMarket.s.sol --rpc-url "$RPC_URL" --broadcast --private-key "$PK" \
@@ -27,7 +27,7 @@ contract DeployMarket is Script, LidoLendDeployer {
 
     function run() external returns (Deployed memory d) {
         // Placeholder bootstrap: deployer is the sole guardian, quorum 1 (the registry rejects quorum 0).
-        // Replace with the real guardian set + quorum post-deploy.
+        // Replace with the real guardian/manager set + quorum post-deploy.
         address[] memory guardians = new address[](1);
         guardians[0] = msg.sender;
 

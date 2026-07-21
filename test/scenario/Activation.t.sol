@@ -2,7 +2,6 @@
 pragma solidity 0.8.35;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -13,7 +12,7 @@ import {MockERC20} from "../setup/Mocks.sol";
 /// @notice L2 collateral-activation scenarios end-to-end through the controller hooks: fresh collateral is
 ///         locked in a maturation timer before it can back a loan; maturing it unlocks borrowing; a guardian
 ///         ban keeps it locked regardless; and instant activation bypasses the timer. The activation/guardian
-///         math is unit-tested in isolation (§4/§5) — here the focus is the integrated supply->hook->borrow path.
+///         math is unit-tested in isolation — here the focus is the integrated supply->hook->borrow path.
 contract ActivationTest is LidoLendSetup {
     using MarketActions for Market;
 
@@ -46,13 +45,19 @@ contract ActivationTest is LidoLendSetup {
     }
 
     function _ban(address account) internal {
-        uint40 n = uint40(block.number - 1);
-        address[] memory a = new address[](1);
-        a[0] = account;
-        protocol.guardianSignals
-            .flag(_m().id, a, BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)}));
+        _flagAs(address(this), account);
     }
 
+    /// @dev Guardian `guardian` flags `account` on its own behalf.
+    function _flagAs(address guardian, address account) internal {
+        address[] memory accounts = new address[](1);
+        accounts[0] = account;
+        vm.prank(guardian);
+        protocol.guardianSignals.flag(_m().id, guardian, accounts);
+    }
+
+    /// @dev Fresh collateral cannot back a loan while activating: borrow reverts InsufficientActiveCollateral
+    ///      before maturation and succeeds with exact deltas once the timer matures it.
     function test_freshCollateral_isLockedUntilMatured() public {
         Market storage m = _m();
         address borrower = _seedLenderAndCollateral(100 ether);
@@ -69,6 +74,8 @@ contract ActivationTest is LidoLendSetup {
         assertEq(m.loanToken.balanceOf(borrower), borrowAmt, "borrow unlocked after maturation");
     }
 
+    /// @dev A banned borrower's collateral never matures: even after warping past the delay, borrow reverts
+    ///      AddressBanned.
     function test_bannedBorrower_staysLocked_evenPastTheTimer() public {
         Market storage m = _m();
         address borrower = _seedLenderAndCollateral(100 ether);
@@ -81,6 +88,57 @@ contract ActivationTest is LidoLendSetup {
         m.core.borrow(m.params, _safeBorrow(100 ether), 0, borrower, borrower);
     }
 
+    /// @dev End-to-end delegate path: a guardian appoints a delegate, the delegate raises the flag on the
+    ///      guardian's behalf, and the resulting ban blocks borrowing through the controller just like a direct
+    ///      flag — proving the `onBehalf`/delegate wiring works across the full stack.
+    function test_delegateBan_blocksBorrow() public {
+        Market storage m = _m();
+        address borrower = _seedLenderAndCollateral(100 ether);
+
+        // The test contract is the sole guardian; it appoints a delegate to act for it.
+        address delegate = _actor("delegate");
+        protocol.guardianSignals.setDelegate(delegate);
+
+        // The delegate flags the borrower on the guardian's behalf, latching the ban.
+        address[] memory accounts = new address[](1);
+        accounts[0] = borrower;
+        vm.prank(delegate);
+        protocol.guardianSignals.flag(_m().id, address(this), accounts);
+
+        m.activateCollateral(); // warp past the delay; a banned lot never matures
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
+        m.core.borrow(m.params, _safeBorrow(100 ether), 0, borrower, borrower);
+    }
+
+    /// @dev End-to-end: pruning a departed guardian's stale flag cannot un-ban a borrower whose ban is latched —
+    ///      the controller keeps blocking its borrow. (Only `unban` clears a latched ban.)
+    function test_prune_cannotUnbanLatchedBanThroughController() public {
+        Market storage m = _m();
+        address borrower = _seedLenderAndCollateral(100 ether);
+
+        // Three guardians at quorum 2; two flag the borrower, latching the ban.
+        address guardian2 = _actor("guardian2");
+        address guardian3 = _actor("guardian3");
+        protocol.guardianSignals.addGuardian(guardian2);
+        protocol.guardianSignals.addGuardian(guardian3);
+        protocol.guardianSignals.setQuorum(2);
+        _flagAs(address(this), borrower);
+        _flagAs(guardian2, borrower);
+        assertTrue(protocol.guardianSignals.isBanned(m.id, borrower), "latched at quorum");
+
+        protocol.guardianSignals.removeGuardian(guardian2);
+        protocol.guardianSignals.prune(m.id, borrower); // stale flag pruned, but the latched ban stays
+
+        m.activateCollateral();
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
+        m.core.borrow(m.params, _safeBorrow(100 ether), 0, borrower, borrower);
+    }
+
+    /// @dev A borrower granted instant activation routes collateral straight to active, so borrowing succeeds
+    ///      with no warp past the timer.
     function test_instantActivation_bypassesTheTimer() public {
         Market storage m = _m();
         m.controller.grantInstantActivation(_actor("borrower"));

@@ -145,6 +145,9 @@ interface ILidoLendMarketController is
     ///         the idle liquidity, 0 while paused.
     function maxWithdrawableAssets(address supplier) external view returns (uint256);
 
+    /// @notice The guardian-signals registry this controller reads for the borrow gate and activation scaling.
+    function guardianSignals() external view returns (address);
+
     // ---
     // COLLATERAL ACTIVATION
     // ---
