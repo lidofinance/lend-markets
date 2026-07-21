@@ -8,7 +8,7 @@
   via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
 - `lib/bundler3`: stock Morpho bundler3, pinned as a submodule and imported via
   the `@bundler3/` remapping — the one-transaction bundling dispatcher and its adapter base contracts.
-  The Lido bundler code is `src/periphery/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and
+  The Lido bundler code is `src/adapters/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and
   `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO
   token surface).
 - `src/controllers/`: the Lido-specific market controller and its hook policy.

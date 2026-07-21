@@ -6,7 +6,7 @@ import {AUTHORIZATION_TYPEHASH} from "@lido-lend/src/libraries/ConstantsLib.sol"
 
 import {Call, IBundler3} from "@bundler3/src/interfaces/IBundler3.sol";
 
-import {LidoLendVaultAdapter} from "../../src/periphery/LidoLendVaultAdapter.sol";
+import {LidoLendVaultAdapter} from "../../src/adapters/LidoLendVaultAdapter.sol";
 
 import {IGeneralAdapter1} from "./IGeneralAdapter1.sol";
 import {LidoLendSetup} from "./LidoLendSetup.sol";

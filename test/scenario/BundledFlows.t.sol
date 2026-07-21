@@ -6,7 +6,7 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {Call} from "@bundler3/src/interfaces/IBundler3.sol";
 import {ErrorsLib as BundlerErrorsLib} from "@bundler3/src/libraries/ErrorsLib.sol";
-import {LidoLendVaultAdapter} from "../../src/periphery/LidoLendVaultAdapter.sol";
+import {LidoLendVaultAdapter} from "../../src/adapters/LidoLendVaultAdapter.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";

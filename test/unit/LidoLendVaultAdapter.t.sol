@@ -6,7 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {Call, IBundler3} from "@bundler3/src/interfaces/IBundler3.sol";
 import {ErrorsLib} from "@bundler3/src/libraries/ErrorsLib.sol";
 
-import {LidoLendVaultAdapter} from "../../src/periphery/LidoLendVaultAdapter.sol";
+import {LidoLendVaultAdapter} from "../../src/adapters/LidoLendVaultAdapter.sol";
 
 /// @dev Vault stand-in recording the exit arguments and returning settable payouts, so the adapter's
 ///      owner pinning, sentinel resolution, and both payout floors are checkable in isolation.
