@@ -254,10 +254,15 @@ library CollateralActivationLib {
         return position.dust + position.activating;
     }
 
-    /// @notice Forced seizure of `amount` (liquidation, settle): drains the un-matured buckets with no lock floor.
-    ///         Returns the post-seize inactive (`activating + dust`); the caller derives `active = total - inactive`.
+    /// @notice Forced seizure of `amount` (liquidation, settle): drains the un-matured buckets with no lock floor,
+    ///         then reverses the same-tx inflow the seized activating collateral added. Returns the post-seize
+    ///         inactive (`activating + dust`); the caller derives `active = total - inactive`.
     function seize(State storage $, address borrower, uint256 amount) internal returns (uint256 inactive) {
-        return _drain($, borrower, amount, 0);
+        Position storage position = $.positions[borrower];
+        uint256 activatingBefore = position.activating;
+
+        inactive = _drain($, borrower, amount, 0);
+        _applyInflowDecrement($, borrower, activatingBefore - position.activating);
     }
 
     // ---

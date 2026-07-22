@@ -59,7 +59,8 @@ contract ActivationHarness {
         $.credit(borrower, assets, true);
     }
 
-    function debit(address borrower, uint256 amount) external returns (uint256) {
+    /// @dev Forced seizure path ($.seize): drains with no lock floor and runs the same-tx inflow undo.
+    function seize(address borrower, uint256 amount) external returns (uint256) {
         _total[borrower] -= amount;
         uint256 inactive = $.seize(borrower, amount);
         return _total[borrower] - inactive;
@@ -494,6 +495,80 @@ contract CollateralActivationLibTest is Test {
         (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
         assertEq(active + activating + dust, 0, "position emptied");
         assertEq(h.currentInflow(), 0, "an emptied position leaves no reversible same-tx inflow behind");
+    }
+
+    // ── ACT-05: forced seizure reverses the same-tx inflow of the seized activating collateral ──
+
+    /// @notice A forced seizure in the same tx as the deposit reverses its inflow, just as a voluntary withdrawal
+    ///         does. Both forced entry points — liquidation and settlement — route the seized collateral through
+    ///         `seize`, so this is the shared reversal both rely on. Pre-fix `seize` left the inflow stale.
+    function test_seize_reversesSameTxInflow() public {
+        h.setMinActivationAmount(1 ether);
+        address borrower = address(0xAC05);
+
+        h.deposit(borrower, 10 ether); // crosses -> activating = 10, inflow = 10
+        assertEq(h.currentInflow(), 10 ether, "deposit bumps inflow");
+
+        h.seize(borrower, 10 ether); // forced full seizure (liquidation / self-settlement)
+        assertEq(h.currentInflow(), 0, "seizure reverses the full same-tx inflow, no stale amount left");
+    }
+
+    /// @notice A seizure that removes only part of the fresh activating collateral reverses inflow proportionally,
+    ///         leaving the inflow matched to the activating that survives.
+    function test_seize_partialActivating_reversesProportionally() public {
+        h.setMinActivationAmount(1 ether);
+        address borrower = address(0xAC5A);
+
+        h.deposit(borrower, 10 ether); // activating = 10, inflow = 10
+        h.seize(borrower, 4 ether); // drains 4 activating
+
+        (, uint256 activating,) = h.bucketsOf(borrower);
+        assertEq(activating, 6 ether, "partial seizure leaves the remainder activating");
+        assertEq(h.currentInflow(), 6 ether, "inflow reversed by exactly the seized activating (10 - 4)");
+    }
+
+    /// @notice A seizure waterfalls dust first, then activating. Only the activating it drains carries throttle
+    ///         inflow, so the reversal counts that alone — the dust it consumes moves no inflow.
+    function test_seize_drainsDustThenActivating_reversesActivatingOnly() public {
+        h.setMinActivationAmount(1 ether);
+        address borrower = address(0xAC5D);
+
+        h.deposit(borrower, 10 ether); // activating = 10, inflow = 10
+        h.deposit(borrower, 0.5 ether); // sub-threshold -> dust = 0.5, inflow unchanged
+        assertEq(h.currentInflow(), 10 ether, "dust top-up does not bump inflow");
+
+        h.seize(borrower, 3 ether); // drains 0.5 dust, then 2.5 activating
+        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(dust, 0, "dust drained first");
+        assertEq(activating, 7.5 ether, "then 2.5 of activating drained");
+        assertEq(h.currentInflow(), 7.5 ether, "inflow reversed by the 2.5 activating only, not the 0.5 dust");
+    }
+
+    /// @notice Reconciliation at the `maxDelayInflow` cap: a deposit above the cap records only the capped inflow
+    ///         it actually applied, so seizing it back reverses the whole applied amount to zero (the decrement
+    ///         clamps to the same-tx contribution).
+    function test_seize_reconciliationAtMaxDelayInflow() public {
+        h.setMinActivationAmount(1 ether);
+        address borrower = address(0xAC5C);
+
+        h.deposit(borrower, 15_000 ether); // activating = 15_000, inflow caps at 10_000 (maxDelayInflow)
+        assertEq(h.currentInflow(), 10_000 ether, "inflow saturates at the cap");
+
+        h.seize(borrower, 15_000 ether); // full seizure
+        assertEq(h.currentInflow(), 0, "the capped same-tx contribution is fully reversed");
+    }
+
+    /// @notice Invariant: seizing a borrower's entire fresh activating in the same tx it was deposited leaves no
+    ///         residual inflow, for any threshold and deposit size.
+    function testFuzz_seize_fullSeizureLeavesNoResidualInflow(uint128 minAmount, uint256 depositAmount) public {
+        minAmount = uint128(bound(minAmount, 1, 1_000 ether));
+        depositAmount = bound(depositAmount, minAmount, 100_000 ether); // crosses the threshold
+        h.setMinActivationAmount(minAmount);
+        address borrower = address(0xF05C);
+
+        h.deposit(borrower, depositAmount);
+        h.seize(borrower, depositAmount); // forced full seizure in the same tx
+        assertEq(h.currentInflow(), 0, "full same-tx seizure leaves no residual inflow");
     }
 
     // ── setConfig bound reverts not reached by the single-field setter helpers ──
