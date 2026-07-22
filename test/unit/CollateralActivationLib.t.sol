@@ -2,6 +2,7 @@
 pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {GuardiansOpinion} from "../../src/types/GuardianSignalsTypes.sol";
@@ -106,6 +107,13 @@ contract ActivationHarness {
 
     function currentInflow() external view returns (uint256) {
         return $.calcDecayedInflow();
+    }
+
+    /// @dev Test-only: prime the persistent accumulator as if a prior tx left it here, without touching the
+    ///      per-tx transient state — so the next activation mutation snapshots this value as its baseline.
+    function primeInflow(uint128 value) external {
+        $.inflow = value;
+        $.inflowUpdatedAt = uint40(block.timestamp);
     }
 
     function bucketsOf(address borrower) external view returns (uint256 active, uint256 activating, uint256 dust) {
@@ -571,6 +579,170 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.currentInflow(), 0, "full same-tx seizure leaves no residual inflow");
     }
 
+    // ── ACT-06: post-cap attribution no longer erases activation inflow ──
+
+    /// @notice The two-borrower exploit, temp filling the cap BEFORE the permanent deposit. A temporary borrower
+    ///         fills the accumulator to the cap, a permanent borrower deposits on top (recorded, not dropped to a
+    ///         post-cap zero), then the temp borrower withdraws in the same tx. Pre-fix the temp leg carried the
+    ///         whole cap and drove the accumulator to zero; post-fix the accumulator tracks gross net, so it stays
+    ///         at the permanent borrower's still-activating volume.
+    function test_capFilling_tempBeforePermanent_withdrawKeepsInflow() public {
+        uint256 cap = 10_000 ether; // maxDelayInflow from setUp
+        h.setMinActivationAmount(1 ether);
+        address temp = address(0xA6A);
+        address perm = address(0xA6B);
+
+        h.deposit(temp, cap); // fills the accumulator to the cap
+        assertEq(h.currentInflow(), cap, "temp fills the cap");
+
+        h.deposit(perm, cap); // on top of a full cap — must still be recorded as gross
+        assertEq(h.currentInflow(), cap, "still capped, but the perm volume is now tracked");
+
+        h.withdraw(temp, cap); // temp exits in the same tx
+        assertEq(h.currentInflow(), cap, "accumulator holds the perm borrower's still-activating volume");
+    }
+
+    /// @notice Same exploit, temp filling the cap AFTER the permanent deposit. Order does not matter: the temp
+    ///         leg only reverses its own gross contribution, so the permanent volume survives.
+    function test_capFilling_tempAfterPermanent_withdrawKeepsInflow() public {
+        uint256 cap = 10_000 ether;
+        h.setMinActivationAmount(1 ether);
+        address perm = address(0xA6C);
+        address temp = address(0xA6D);
+
+        h.deposit(perm, cap);
+        h.deposit(temp, cap); // pushes gross to 2*cap, stored inflow stays capped
+        assertEq(h.currentInflow(), cap, "capped");
+
+        h.withdraw(temp, cap);
+        assertEq(h.currentInflow(), cap, "perm volume preserved regardless of order");
+    }
+
+    /// @notice Single borrower depositing above the cap then withdrawing only the pre-fix "recorded" (post-cap)
+    ///         amount. Pre-fix that erased the accumulator; post-fix the gross net still exceeds the cap, so it
+    ///         stays pinned at the cap.
+    function test_singleDepositAboveCap_partialWithdraw_keepsCappedInflow() public {
+        uint256 cap = 10_000 ether;
+        h.setMinActivationAmount(1 ether);
+        address borrower = address(0xA6E);
+
+        h.deposit(borrower, 2 * cap); // gross 2*cap, stored inflow = cap
+        assertEq(h.currentInflow(), cap, "stored inflow capped");
+
+        h.withdraw(borrower, cap); // withdraw the post-cap amount; gross net still = cap
+        assertEq(h.currentInflow(), cap, "gross net still at the cap, accumulator not erased");
+    }
+
+    /// @notice Several borrowers whose combined gross contribution exceeds the cap. As they exit one by one, the
+    ///         accumulator tracks the surviving gross, never collapsing to zero while activating volume remains.
+    function test_multipleBorrowers_grossExceedsCap_reversalTracksRemainder() public {
+        uint256 cap = 10_000 ether;
+        h.setMinActivationAmount(1 ether);
+        address b1 = address(0xB61);
+        address b2 = address(0xB62);
+        address b3 = address(0xB63);
+
+        h.deposit(b1, 5_000 ether);
+        h.deposit(b2, 5_000 ether);
+        h.deposit(b3, 5_000 ether); // gross 15_000 > cap 10_000
+        assertEq(h.currentInflow(), cap, "capped at 10_000 with 15_000 gross");
+
+        h.withdraw(b1, 5_000 ether); // gross net 10_000
+        assertEq(h.currentInflow(), cap, "still 10_000 gross remaining");
+
+        h.withdraw(b2, 5_000 ether); // gross net 5_000
+        assertEq(h.currentInflow(), 5_000 ether, "tracks b3's surviving 5_000, not zero");
+    }
+
+    /// @notice A single-tx mix of every activation mutation — credit, voluntary debit, demotion, and forced
+    ///         seizure (liquidation / settlement) — keeps the invariant `storedInflow == min(cap, baseline + net)`
+    ///         at every step. Here baseline is 0 (fresh, first mutation), so it reduces to `min(cap, gross net)`.
+    function test_mixedOps_maintainInvariant() public {
+        uint256 cap = 10_000 ether;
+        h.setMinActivationAmount(1 ether);
+        address a = address(0x6A);
+        address b = address(0x6B);
+        address c = address(0x6C);
+
+        h.deposit(a, 6_000 ether); // net 6_000
+        assertEq(h.currentInflow(), 6_000 ether, "credit A");
+
+        h.deposit(b, 6_000 ether); // net 12_000 -> capped
+        assertEq(h.currentInflow(), cap, "credit B crosses the cap");
+
+        h.withdraw(a, 6_000 ether); // voluntary debit, full: net 6_000
+        assertEq(h.currentInflow(), 6_000 ether, "debit A reverses only A's gross, B's survives");
+
+        h.deposit(c, 3_000 ether); // net 9_000
+        assertEq(h.currentInflow(), 9_000 ether, "credit C");
+
+        h.seize(c, 3_000 ether); // forced seizure (settlement/liquidation), full: net 6_000
+        assertEq(h.currentInflow(), 6_000 ether, "seize C reverses C's gross");
+
+        h.withdraw(b, 5_999.5 ether); // leaves 0.5 (< 1) -> demotion; full 6_000 leaves activating: net 0
+        assertEq(h.currentInflow(), 0, "demotion reverses the whole remainder, accumulator empty");
+    }
+
+    /// @notice The per-tx inflow invariant holds across FUZZED configs (cap and threshold), not just the default:
+    ///         a two-borrower cap-crossing flow always stores `min(cap, gross net)` (baseline 0 on a fresh harness).
+    function testFuzz_invariant_acrossConfigs(uint128 cap, uint128 minAct, uint256 depA, uint256 depB) public {
+        cap = uint128(bound(cap, 1 ether, 1_000_000 ether));
+        minAct = uint128(bound(minAct, 1, 1 ether));
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.maxDelayInflow = cap;
+        cfg.minActivationAmount = minAct;
+        h.setConfig(cfg);
+
+        depA = bound(depA, minAct, 10_000_000 ether);
+        depB = bound(depB, minAct, 10_000_000 ether);
+        address a = address(0xC01);
+        address b = address(0xC02);
+
+        h.deposit(a, depA);
+        assertEq(h.currentInflow(), Math.min(uint256(cap), depA), "after A: min(cap, depA)");
+        h.deposit(b, depB);
+        assertEq(h.currentInflow(), Math.min(uint256(cap), depA + depB), "after B: min(cap, depA + depB)");
+        h.seize(a, depA);
+        assertEq(h.currentInflow(), Math.min(uint256(cap), depB), "after A removed: min(cap, depB)");
+    }
+
+    /// @notice Invariant `storedInflow == min(cap, baseline + netTxActivating)` for a fuzzed two-borrower flow.
+    ///         Baseline is 0 (fresh harness, first mutation this tx), so the stored inflow tracks the capped gross
+    ///         net across deposits and a full seizure.
+    function testFuzz_invariant_cappedBaselinePlusNet(uint256 depA, uint256 depB) public {
+        uint256 cap = 10_000 ether; // maxDelayInflow from setUp
+        h.setMinActivationAmount(1 ether);
+        depA = bound(depA, 1 ether, 1_000_000 ether);
+        depB = bound(depB, 1 ether, 1_000_000 ether);
+        address a = address(0xF6A);
+        address b = address(0xF6B);
+
+        h.deposit(a, depA);
+        assertEq(h.currentInflow(), Math.min(cap, depA), "after A: min(cap, depA)");
+
+        h.deposit(b, depB);
+        assertEq(h.currentInflow(), Math.min(cap, depA + depB), "after B: min(cap, depA + depB)");
+
+        h.seize(a, depA); // full seizure of A -> net = depB
+        assertEq(h.currentInflow(), Math.min(cap, depB), "after A removed: min(cap, depB)");
+    }
+
+    /// @notice Governance lowers `maxDelayInflow` below the standing accumulator. The next activation mutation
+    ///         snapshots a baseline that exceeds the new cap, so the stored inflow must clamp to the cap instead
+    ///         of underflowing.
+    function test_capLoweredBelowBaseline_clampsWithoutUnderflow() public {
+        h.primeInflow(10_000 ether); // prior-tx accumulator at the old cap
+        assertEq(h.currentInflow(), 10_000 ether, "primed to the old cap");
+
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.maxDelayInflow = 5_000 ether; // governance cut, below the standing accumulator
+        h.setConfig(cfg);
+
+        // baseline snapshot = 10_000 > cap 5_000 -> must clamp to 5_000 without reverting on underflow.
+        h.deposit(address(0xCA9), 1 ether);
+        assertEq(h.currentInflow(), 5_000 ether, "clamped to the new cap, no underflow");
+    }
+
     // ── setConfig bound reverts not reached by the single-field setter helpers ──
 
     /// @dev A valid config to mutate one field at a time. Mirrors `setUp`.
@@ -664,5 +836,46 @@ contract CollateralActivationLibTest is Test {
             2 * 30 minutes,
             "surcharge = suspectCount * delayPerSuspect when the lot started before the suspect expiry"
         );
+    }
+}
+
+/// @notice ACT-06 clamp, checked across a real transaction boundary and independently of the library's `net`
+///         arithmetic: a borrower's prior-tx activating collateral is committed in `setUp` (a separate tx), so
+///         in the test tx only the fresh contribution is reversible. Over-withdrawing (past the fresh amount,
+///         into the prior lot) must reverse ONLY the same-tx contribution — the prior inflow is untouched (it
+///         decays, never reverses). Expected is computed directly (the pre-fresh baseline), not via `net`.
+contract ActivationInflowCrossTxTest is Test {
+    ActivationHarness internal h;
+    address internal constant B = address(0xB0B);
+
+    function setUp() public {
+        h = new ActivationHarness();
+        h.setConfig(
+            CollateralActivationConfig({
+                minActivationDelay: 1 minutes,
+                maxActivationDelay: 1 hours,
+                activatingLockAmount: 0,
+                activatingLockDuration: 0,
+                maxDelayInflow: 10_000 ether,
+                minActivationAmount: 1 ether,
+                maxGuardiansQuorumDelay: 0,
+                delayPerStrike: 0,
+                delayPerSuspect: 0
+            })
+        );
+        h.deposit(B, 100 ether); // prior tx: activating 100, inflow 100
+    }
+
+    function test_overWithdraw_reversesOnlyThisTxContribution() public {
+        uint256 priorInflow = h.currentInflow(); // no warp -> undecayed prior-tx inflow
+        assertEq(priorInflow, 100 ether, "prior-tx inflow present");
+
+        h.deposit(B, 50 ether); // this tx: activating 150, contribution[B] = 50
+        assertEq(h.currentInflow(), 150 ether, "this-tx deposit raised inflow");
+
+        // Withdraw 120 > this-tx 50: drains 70 of the prior lot too, but only the 50 same-tx contribution
+        // is reversible. The prior 100 stays (decays, never reverses).
+        h.withdraw(B, 120 ether);
+        assertEq(h.currentInflow(), priorInflow, "over-withdraw reversed only the same-tx contribution");
     }
 }

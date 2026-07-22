@@ -30,7 +30,7 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 ///      rate, draining from the cap to zero over `maxActivationDelay`.
 /// @dev The caller embeds `State`, forwards calls, and supplies the external reads the lib cannot make (the
 ///      guardian-owned activation delay surcharge and quorum-scan frontier). The only state outside `State` is
-///      the per-tx transient same-tx-undo counter.
+///      the per-tx transient inflow accounting (uncapped inflow and per-borrower contribution).
 library CollateralActivationLib {
     using SafeCast for uint256;
 
@@ -41,9 +41,14 @@ library CollateralActivationLib {
     /// @dev Sanity ceiling for governance-set delays.
     uint256 internal constant MAX_DELAY_DURATION = 7 days;
 
-    /// @dev Transient-storage namespace for the inflow a position added in the current tx (same-tx undo).
-    bytes32 private constant TRANSIENT_INFLOW_INCREASE_NAMESPACE =
-        keccak256("lido.lend.CollateralActivationLib.TransientInflowIncrease");
+    /// @dev Transient slot: uncapped tx inflow (`baseline + remaining same-tx contributions`). Zero is also the
+    ///      uninitialized state: recomputing a genuinely zero value from the persistent accumulator is harmless.
+    bytes32 private constant TRANSIENT_TX_UNCAPPED_INFLOW_SLOT =
+        keccak256("lido.lend.CollateralActivationLib.TxUncappedInflow");
+
+    /// @dev Transient per-borrower namespace: the borrower's reversible gross contribution this tx.
+    bytes32 private constant TRANSIENT_CONTRIBUTION_NAMESPACE =
+        keccak256("lido.lend.CollateralActivationLib.TxContribution");
 
     // ---
     // EVENTS
@@ -334,35 +339,47 @@ library CollateralActivationLib {
         return position.dust + position.activating;
     }
 
+    /// @dev Book `increment` of gross activating into the tx-wide accumulator and the borrower's reversible
+    ///      contribution, then recompute the capped persistent inflow. Returns the recomputed persistent inflow.
     function _applyInflowIncrement(State storage $, address borrower, uint256 increment)
         private
         returns (uint256 newInflow)
     {
-        uint256 prevInflow = calcDecayedInflow($);
-        // Cap the throttle accumulator at maxDelayInflow: the delay clamps there, and the cap keeps the uint128
-        // store within range.
-        newInflow = Math.min(prevInflow + increment, $.config.maxDelayInflow);
+        uint256 uncappedInflow = _loadTxUncappedInflow($) + increment;
+        _tstore(TRANSIENT_TX_UNCAPPED_INFLOW_SLOT, uncappedInflow);
 
-        $.inflow = uint128(newInflow);
-        $.inflowUpdatedAt = block.timestamp.toUint40();
+        bytes32 slot = _borrowerContributionSlot(borrower);
+        _tstore(slot, _tload(slot) + increment);
 
-        // Record the post-cap applied delta so the same-tx undo reverses exactly what was added. Zero-floored for
-        // a governance cap-lowering.
-        uint256 inflowIncrement = Math.saturatingSub(newInflow, prevInflow);
-        _storeTransientInflowIncrease(borrower, _loadTransientInflowIncrease(borrower) + inflowIncrement);
+        _storePersistentInflow($, uncappedInflow);
+        return $.inflow;
     }
 
+    /// @dev Reverse up to `decrement` of the borrower's own gross contribution (clamped so it cannot touch
+    ///      another borrower's or prior-tx collateral), drop it from the uncapped inflow, and recompute persistent.
     function _applyInflowDecrement(State storage $, address borrower, uint256 decrement) private {
-        uint256 inflowInTx = _loadTransientInflowIncrease(borrower);
-        uint256 inflowDecrement = Math.min(inflowInTx, decrement);
+        bytes32 slot = _borrowerContributionSlot(borrower);
+        uint256 contribution = _tload(slot);
+        uint256 removed = Math.min(contribution, decrement);
+        if (removed == 0) return;
 
-        if (inflowDecrement == 0) return;
+        _tstore(slot, contribution - removed);
 
-        $.inflow = uint128(Math.saturatingSub(calcDecayedInflow($), inflowDecrement));
+        uint256 uncappedInflow = _loadTxUncappedInflow($) - removed;
+        _tstore(TRANSIENT_TX_UNCAPPED_INFLOW_SLOT, uncappedInflow);
+        _storePersistentInflow($, uncappedInflow);
+    }
+
+    /// @dev Return the uncapped tx inflow, lazily initializing it from the decayed prior-tx baseline.
+    function _loadTxUncappedInflow(State storage $) private view returns (uint256 uncappedInflow) {
+        uncappedInflow = _tload(TRANSIENT_TX_UNCAPPED_INFLOW_SLOT);
+        if (uncappedInflow == 0) uncappedInflow = calcDecayedInflow($);
+    }
+
+    /// @dev Clamp the uncapped tx inflow to the current governance cap for the persistent accumulator.
+    function _storePersistentInflow(State storage $, uint256 uncappedInflow) private {
+        $.inflow = uint128(Math.min(uncappedInflow, $.config.maxDelayInflow));
         $.inflowUpdatedAt = block.timestamp.toUint40();
-
-        // within a tx no time elapses, so this nets the same-tx addition exactly
-        _storeTransientInflowIncrease(borrower, inflowInTx - inflowDecrement);
     }
 
     /// @dev Unlock = start + frozen base delay + the guardian surcharge: `strikeCount * delayPerStrike`, plus
@@ -394,20 +411,18 @@ library CollateralActivationLib {
         return cfg.minActivationDelay + Math.mulDiv(delaySpan, effectiveInflow, cfg.maxDelayInflow);
     }
 
-    /// @dev Per-tx, per-borrower transient slot for the inflow added this tx (same-tx undo).
-    function _borrowerTransientInflowSlot(address borrower) private pure returns (bytes32 slot) {
-        slot = keccak256(abi.encode(TRANSIENT_INFLOW_INCREASE_NAMESPACE, borrower));
+    /// @dev Per-tx, per-borrower transient slot for the borrower's reversible gross contribution this tx.
+    function _borrowerContributionSlot(address borrower) private pure returns (bytes32 slot) {
+        slot = keccak256(abi.encode(TRANSIENT_CONTRIBUTION_NAMESPACE, borrower));
     }
 
-    function _loadTransientInflowIncrease(address borrower) private view returns (uint256 value) {
-        bytes32 slot = _borrowerTransientInflowSlot(borrower);
+    function _tload(bytes32 slot) private view returns (uint256 value) {
         assembly ("memory-safe") {
             value := tload(slot)
         }
     }
 
-    function _storeTransientInflowIncrease(address borrower, uint256 value) private {
-        bytes32 slot = _borrowerTransientInflowSlot(borrower);
+    function _tstore(bytes32 slot, uint256 value) private {
         assembly ("memory-safe") {
             tstore(slot, value)
         }
