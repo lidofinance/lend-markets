@@ -195,10 +195,9 @@ library CollateralActivationLib {
         emit CollateralActivating(borrower, assetsWithDust, position);
     }
 
-    /// @notice Voluntary withdrawal: drain `amount` from the un-matured buckets honoring the activating lock,
-    ///         then reverse any inflow this collateral added earlier in the same tx, and — when no lock is in
-    ///         force — demote a sub-threshold activating remainder to dust. Returns the post-debit inactive
-    ///         (`activating + dust`); the caller derives `active = total - inactive`.
+    /// @notice Voluntary withdrawal: drain `amount` from the un-matured buckets honoring the lock, demote a
+    ///         sub-threshold activating remainder to dust (unless locked), and reverse this collateral's same-tx
+    ///         inflow over the full activating reduction. Returns the post-debit inactive (`activating + dust`).
     /// @dev Forced seizure uses `seize`, which drains with no lock floor.
     function debit(State storage $, address borrower, uint256 amount) internal returns (uint256 inactive) {
         Position storage position = $.positions[borrower];
@@ -210,17 +209,21 @@ library CollateralActivationLib {
 
         inactive = _drain($, borrower, amount, activatingLockAmount);
 
-        uint256 activatingAfter = position.activating;
-        _applyInflowDecrement($, borrower, activatingBefore - activatingAfter);
-
-        // Fold a sub-threshold activating remainder into dust. Skip under an active lock — dust is freely
-        // withdrawable, so demoting a locked remainder would bypass it.
-        if (activatingLockAmount == 0 && activatingAfter != 0 && activatingAfter < $.config.minActivationAmount) {
-            position.dust += activatingAfter.toUint128();
+        // Demote a sub-threshold remainder to dust before reconciling inflow, so the demoted amount is reversed
+        // too. Skip under a lock — demoting a locked remainder into freely-withdrawable dust would bypass it.
+        uint256 activatingAfterDrain = position.activating;
+        if (
+            activatingLockAmount == 0 && activatingAfterDrain != 0
+                && activatingAfterDrain < $.config.minActivationAmount
+        ) {
+            position.dust += activatingAfterDrain.toUint128();
             position.activating = 0;
             _clearTimer(position);
-            emit CollateralDemoted(borrower, activatingAfter, position);
+            emit CollateralDemoted(borrower, activatingAfterDrain, position);
         }
+
+        // Reverse the same-tx inflow over the full activating reduction (drained + demoted).
+        _applyInflowDecrement($, borrower, activatingBefore - position.activating);
     }
 
     /// @notice Mature the borrower's activating lot once its timer has elapsed and the guardian quorum has

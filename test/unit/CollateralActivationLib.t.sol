@@ -146,9 +146,10 @@ contract CollateralActivationLibTest is Test {
     }
 
     /// @notice A flash-loaned deposit cannot inflate the throttle. The deposit bumps the inflow, but withdrawing
-    ///         it in the same tx undoes that bump, bounded by the activating actually removed. A sub-threshold
-    ///         dust top-up cannot shield the crossed deposit from the drain, so the only inflow left is matched
-    ///         1:1 by the dust collateral left behind (no cheaper than an honest deposit of that size).
+    ///         it in the same tx undoes that bump. The withdrawal leaves a sub-threshold remainder, which is
+    ///         demoted to dust; dust is off the throttle, so its inflow is reversed too (ACT-04) and the throttle
+    ///         returns to zero even though the dust collateral stays behind — dust is not borrowable, so it need
+    ///         not be throttled.
     function test_flashDepositDustWithdraw_doesNotInflateThrottle() public {
         h.setMinActivationAmount(1 ether); // raise the threshold so a sub-threshold dust deposit is possible
 
@@ -165,12 +166,14 @@ contract CollateralActivationLibTest is Test {
         // repay the flash loan: withdraw the 10 ether in the same tx, so the transient undo applies
         h.withdraw(attacker, 10 ether);
 
-        // the inflow falls back to the 0.5 ether dust left behind, not the flash-loaned 10
-        assertEq(h.currentInflow(), 0.5 ether, "same-tx undo reverses all inflow but the collateral kept");
+        // The drain leaves 0.5 ether activating, which is demoted to dust; demoted collateral leaves the throttle,
+        // so its inflow is reversed alongside the drained amount and the throttle falls to zero.
+        assertEq(h.currentInflow(), 0, "same-tx undo reverses all inflow, including the demoted remainder");
 
         (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(attacker);
         assertEq(active, 0, "no matured collateral");
-        assertEq(activating + dust, 0.5 ether, "only the sub-threshold dust remains, matched 1:1 by the inflow");
+        assertEq(activating, 0, "remainder demoted out of activating");
+        assertEq(dust, 0.5 ether, "the sub-threshold remainder stays as dust, carrying no throttle inflow");
     }
 
     /// @notice Dust that predates a crossing deposit is released into the timed lot: a sub-threshold deposit parks
@@ -359,6 +362,138 @@ contract CollateralActivationLibTest is Test {
         (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
         assertEq(activating, 1 ether, "locked remainder stays activating, not demoted");
         assertEq(dust, 0, "locked remainder not folded into freely-withdrawable dust");
+    }
+
+    // ── ACT-04: withdrawal demotion reverses the same-tx inflow of the demoted remainder ──
+
+    /// @notice The finding's canonical sequence: deposit exactly the threshold, withdraw one raw unit so the drain
+    ///         leaves a sub-threshold remainder, which is demoted to dust. The demoted remainder leaves the
+    ///         throttle, so its same-tx inflow is reversed too — the throttle returns to zero, not to a phantom
+    ///         `~minActivationAmount`. Then withdrawing the dust empties the position, still at zero inflow.
+    function test_debit_demotionReversesSameTxInflow() public {
+        uint128 m = 2 ether;
+        h.setMinActivationAmount(m);
+        address borrower = address(0xAC04);
+
+        h.deposit(borrower, m); // crosses -> activating = m, inflow = m
+        assertEq(h.currentInflow(), m, "deposit bumps inflow to the threshold");
+
+        // Withdraw one raw unit: the drain leaves m - 1 activating (< m), which is demoted to dust.
+        h.withdraw(borrower, 1);
+        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(activating, 0, "sub-threshold remainder demoted out of activating");
+        assertEq(dust, uint256(m) - 1, "remainder folded into dust");
+        // Pre-fix this was m - 1 (phantom); post-fix the demoted remainder's inflow is reversed too.
+        assertEq(h.currentInflow(), 0, "demotion reverses the full same-tx inflow, no phantom left");
+
+        // Withdrawing the dust empties the position; dust is off the throttle, so inflow stays zero.
+        h.withdraw(borrower, uint256(m) - 1);
+        (uint256 active, uint256 activatingEnd, uint256 dustEnd) = h.bucketsOf(borrower);
+        assertEq(active + activatingEnd + dustEnd, 0, "position fully emptied");
+        assertEq(h.currentInflow(), 0, "empty position leaves no phantom inflow");
+    }
+
+    /// @notice Boundary `minActivationAmount = 1`: a remainder can never be sub-threshold (any nonzero remainder
+    ///         is `>= 1 = threshold`), so demotion never fires; a full drain still reverses the inflow exactly.
+    function test_debit_demotion_minAmountBoundaryOne() public {
+        h.setMinActivationAmount(1);
+        address borrower = address(0xAC01);
+
+        h.deposit(borrower, 1); // activating = 1, inflow = 1
+        assertEq(h.currentInflow(), 1, "deposit bumps inflow");
+
+        h.withdraw(borrower, 1); // fully drains activating; nothing to demote
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active + activating + dust, 0, "position emptied, no demotion");
+        assertEq(h.currentInflow(), 0, "full drain reverses inflow exactly");
+    }
+
+    /// @notice Boundary `minActivationAmount = 2`: the smallest threshold that admits a sub-threshold remainder
+    ///         (of 1). Withdrawing one unit demotes the remaining 1 to dust and reverses the full inflow.
+    function test_debit_demotion_minAmountBoundaryTwo() public {
+        h.setMinActivationAmount(2);
+        address borrower = address(0xAC02);
+
+        h.deposit(borrower, 2); // activating = 2, inflow = 2
+        h.withdraw(borrower, 1); // leaves 1 (< 2) -> demoted to dust
+        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(activating, 0, "remainder demoted");
+        assertEq(dust, 1, "1 unit held as dust");
+        assertEq(h.currentInflow(), 0, "demoted remainder's inflow reversed too");
+    }
+
+    /// @notice With an active lock, the sub-threshold remainder is NOT demoted (that would bypass the lock via
+    ///         freely-withdrawable dust). The inflow is still reconciled correctly: the drained amount is reversed
+    ///         and the locked remainder — which stays activating — keeps its matching inflow. No phantom either
+    /// way.
+    function test_debit_demotion_withActiveLock_reconcilesInflow() public {
+        h.setConfig(
+            CollateralActivationConfig({
+                minActivationDelay: 1 minutes,
+                maxActivationDelay: 1 hours,
+                activatingLockAmount: 1 ether,
+                activatingLockDuration: 1 hours,
+                maxDelayInflow: 10_000 ether,
+                minActivationAmount: 2 ether, // lock floor (1 ether) is a sub-threshold remainder
+                maxGuardiansQuorumDelay: 0,
+                delayPerStrike: 1 hours,
+                delayPerSuspect: 30 minutes
+            })
+        );
+        address borrower = address(0x10CC);
+
+        h.deposit(borrower, 10 ether); // activating = 10, inflow = 10
+        h.withdraw(borrower, 9 ether); // drain to the 1 ether lock floor
+
+        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(activating, 1 ether, "locked remainder stays activating (not demoted)");
+        assertEq(dust, 0, "no demotion under a lock");
+        // Drained 9 reversed; the locked 1 stays activating and keeps its 1 ether inflow. No phantom.
+        assertEq(h.currentInflow(), 1 ether, "inflow reconciled: only the locked activating remainder's share left");
+    }
+
+    /// @notice Repeated demotion cycles in one tx never accumulate phantom inflow. Each cycle deposits the
+    ///         threshold, withdraws one unit (demoting the remainder), then withdraws the dust — returning the
+    ///         position to empty. Pre-fix each cycle stranded `~minActivationAmount` of inflow, accumulating to
+    ///         the `maxDelayInflow` cap; post-fix every cycle fully reverses, so the throttle stays at zero.
+    function test_debit_repeatedDemotionCycles_noInflowAccumulation() public {
+        uint128 m = 1_000 ether; // 11 pre-fix cycles would have reached the 10_000 ether cap
+        h.setMinActivationAmount(m);
+        address borrower = address(0xC04C);
+
+        for (uint256 i = 0; i < 15; ++i) {
+            h.deposit(borrower, m);
+            h.withdraw(borrower, 1); // demote m - 1 to dust, reverse the full inflow
+            h.withdraw(borrower, uint256(m) - 1); // drain the dust back to empty
+            assertEq(h.currentInflow(), 0, "no phantom accumulates across cycles");
+        }
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active + activating + dust, 0, "position empty after all cycles");
+        assertEq(h.currentInflow(), 0, "throttle stays at zero, never climbs toward maxDelayInflow");
+    }
+
+    /// @notice Invariant: once a position is fully emptied in the same tx it added its inflow, nothing of that
+    ///         contribution remains in the throttle — whether it left via a plain drain or via demotion.
+    function testFuzz_debit_emptyPositionHasNoResidualInflow(
+        uint128 minAmount,
+        uint256 depositAmount,
+        uint256 firstWithdraw
+    ) public {
+        minAmount = uint128(bound(minAmount, 1, 1_000 ether));
+        depositAmount = bound(depositAmount, minAmount, 100_000 ether); // crosses the threshold
+        firstWithdraw = bound(firstWithdraw, 1, depositAmount); // partial or full first withdrawal
+        h.setMinActivationAmount(minAmount);
+        address borrower = address(0xF04C);
+
+        h.deposit(borrower, depositAmount);
+        h.withdraw(borrower, firstWithdraw);
+        uint256 remaining = depositAmount - firstWithdraw;
+        if (remaining != 0) h.withdraw(borrower, remaining); // drain whatever is left (dust or activating) to empty
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active + activating + dust, 0, "position emptied");
+        assertEq(h.currentInflow(), 0, "an emptied position leaves no reversible same-tx inflow behind");
     }
 
     // ── setConfig bound reverts not reached by the single-field setter helpers ──
