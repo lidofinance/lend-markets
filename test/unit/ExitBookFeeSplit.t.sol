@@ -11,6 +11,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
+import {IExitBook} from "../../src/interfaces/IExitBook.sol";
 import {ExitBookLib} from "../../src/libs/ExitBookLib.sol";
 import {Request, RequestPreview, PriorityRamp, ExitStatus} from "../../src/types/ExitBookTypes.sol";
 
@@ -49,16 +50,84 @@ contract ZeroPriceVault is ERC4626 {
     }
 }
 
+/// @notice A vault with 36-decimal shares and a caller-set linear rate `assets = shares * num / den`, modelling
+///         the share-decimal offset where the old fixed-WAD sample underpriced. Shares are minted directly.
+contract ScaledVault is ERC4626 {
+    uint256 public immutable num;
+    uint256 public immutable den;
+
+    constructor(IERC20 asset_, uint256 num_, uint256 den_) ERC20("Scaled", "sc") ERC4626(asset_) {
+        num = num_;
+        den = den_;
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 36;
+    }
+
+    function convertToAssets(uint256 shares) public view override returns (uint256) {
+        return Math.mulDiv(shares, num, den);
+    }
+
+    function previewRedeem(uint256 shares) public view override returns (uint256) {
+        return Math.mulDiv(shares, num, den, Math.Rounding.Ceil);
+    }
+
+    function maxRedeem(address owner) public view virtual override returns (uint256) {
+        return balanceOf(owner);
+    }
+
+    function redeem(uint256 shares, address receiver, address owner) public virtual override returns (uint256 assets) {
+        if (msg.sender != owner) _spendAllowance(owner, msg.sender, shares);
+        assets = previewRedeem(shares);
+        _burn(owner, shares);
+        IERC20(asset()).transfer(receiver, assets);
+    }
+
+    function mintShares(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+}
+
+/// @notice A scaled vault that re-enters the same request during the first redeem. The first `maxRedeem` exposes
+///         only `firstFillShares`; the nested fill sees the rest.
+contract ReentrantScaledVault is ScaledVault {
+    Erc4626ExitBook internal exitBook;
+    uint256 internal requestId;
+    uint256 internal firstFillShares;
+    bool internal entered;
+
+    constructor(IERC20 asset_) ScaledVault(asset_, 19, 10) {}
+
+    function arm(Erc4626ExitBook exitBook_, uint256 requestId_, uint256 firstFillShares_) external {
+        exitBook = exitBook_;
+        requestId = requestId_;
+        firstFillShares = firstFillShares_;
+    }
+
+    function maxRedeem(address owner) public view override returns (uint256) {
+        return entered ? balanceOf(owner) : Math.min(firstFillShares, balanceOf(owner));
+    }
+
+    function redeem(uint256 shares, address receiver, address owner) public override returns (uint256 assets) {
+        assets = super.redeem(shares, receiver, owner);
+        if (!entered) {
+            entered = true;
+            exitBook.fillExitRequest(requestId, 0, 0);
+        }
+    }
+}
+
 /// @notice Exact three-way conservation of `ExitBookBase.fillExitRequest` — the fee split that the deleted
 ///         `WithdrawalMathLib` once covered, now inlined in the base. For a fill that arrives with `assetsOut`:
-///           owed        = min(filledShares * pricePerShare / WAD, assetsOut)
+///           owed        = min(placement quote apportioned to the fill, assetsOut)
 ///           fee         = owed * priorityRate / WAD
 ///           lenderAssets= owed - fee
 ///           fillerGross = (assetsOut - owed) + fee
 ///           serviceCut  = fillerGross * serviceFee / WAD
 ///           fillerFee   = fillerGross - serviceCut
 ///         The invariant is `lenderAssets + fillerFee + serviceCut == assetsOut` with NO remainder. Every
-///         component is recomputed independently from the on-chain `pricePerShare`, the previewed `assetsOut`,
+///         component is recomputed independently from the on-chain placement quote, the previewed `assetsOut`,
 ///         the ramp rate, and `serviceFee`, then matched against the actual token deltas. Plus the priority
 ///         ramp (hold → linear → plateau).
 contract ExitBookFeeSplitTest is Test {
@@ -121,13 +190,14 @@ contract ExitBookFeeSplitTest is Test {
         uint256 assetsOut;
     }
 
-    /// @dev Independent recompute, mirroring `ExitBookBase.fillExitRequest`.
-    function _expectedSplit(uint256 shares, uint256 pricePerShare, uint256 assetsOut, uint256 rate, uint256 serviceFee)
+    /// @dev Independent recompute, mirroring `ExitBookBase.fillExitRequest`. For a FULL fill the telescoping
+    ///      payout is the whole placement quote, capped at what arrived.
+    function _expectedSplit(uint256 quotedAssets, uint256 assetsOut, uint256 rate, uint256 serviceFee)
         internal
         pure
         returns (Split memory s)
     {
-        uint256 owed = Math.min(Math.mulDiv(shares, pricePerShare, WAD), assetsOut);
+        uint256 owed = Math.min(quotedAssets, assetsOut);
         uint256 fee = Math.mulDiv(owed, rate, WAD);
         uint256 fillerGross = (assetsOut - owed) + fee;
         s.serviceCut = Math.mulDiv(fillerGross, serviceFee, WAD);
@@ -140,13 +210,9 @@ contract ExitBookFeeSplitTest is Test {
     ///      `elapsed` is the time since placement (sets the ramp rate); `serviceFee` already set.
     function _fillAndAssert(uint256 id, uint256 shares, uint256 elapsed, uint256 serviceFee) internal {
         vm.warp(block.timestamp + elapsed);
-        Split memory s = _expectedSplit(
-            shares,
-            book.getExitRequest(id).pricePerShare,
-            vault.previewRedeem(shares),
-            _priorityRate(_ramp(), elapsed),
-            serviceFee
-        );
+        uint256 quotedAssets = book.getExitRequest(id).quotedAssets;
+        Split memory s =
+            _expectedSplit(quotedAssets, vault.previewRedeem(shares), _priorityRate(_ramp(), elapsed), serviceFee);
 
         uint256[3] memory pre = [asset.balanceOf(lender), asset.balanceOf(filler), asset.balanceOf(feeRecipient)];
         vm.prank(filler);
@@ -230,6 +296,270 @@ contract ExitBookFeeSplitTest is Test {
         _fillAndAssert(id, shares, elapsed, serviceFee);
     }
 
+    // ── EXT-02: high-precision quoting (telescoping fills) ──
+
+    /// @dev A zero-priority ramp so the lender leg isolates `owed`.
+    function _zeroRamp() internal pure returns (PriorityRamp memory) {
+        return PriorityRamp({startRate: 0, endRate: 0, rampStart: 0, rampEnd: 1 days});
+    }
+
+    /// @dev The finding's case: `convertToAssets(1e18)` floors to 1, but 1e36 shares are worth 1.9e18. The old
+    ///      sample model paid `shares * 1 / 1e18 = 1e18`; the total quote pays the full 1.9e18.
+    function test_highPrecisionVault_lenderGetsFullQuote() public {
+        ScaledVault sv = new ScaledVault(IERC20(address(asset)), 19, 1e19); // assets = shares * 1.9 / 1e18
+        book.setVaultAllowed(IERC4626(address(sv)), true);
+        _setServiceFee(0);
+
+        uint256 shares = 1e36; // fits uint128
+        sv.mintShares(lender, shares);
+        asset.mint(address(sv), 2e18); // fund the redeem
+        vm.prank(lender);
+        sv.approve(address(book), shares);
+        vm.prank(lender);
+        uint256 id = book.placeExitRequest(IERC4626(address(sv)), shares, _zeroRamp(), block.timestamp + 30 days, false);
+
+        assertEq(
+            book.getExitRequest(id).quotedAssets,
+            1.9e18,
+            "quote is the exact full-request value, not the floored sample"
+        );
+        assertEq(Math.mulDiv(shares, sv.convertToAssets(1e18), WAD), 1e18, "old sample model would underpay to 1e18");
+
+        uint256 pre = asset.balanceOf(lender);
+        vm.prank(filler);
+        book.fillExitRequest(id, 0, 0);
+        assertEq(asset.balanceOf(lender) - pre, 1.9e18, "lender gets the full 1.9e18");
+    }
+
+    /// @dev The ERC-4626 request stores the vault's exact full-share quote across arbitrary representable rates.
+    function testFuzz_place_quoteMatchesVaultConversion(uint128 sharesSeed, uint96 numSeed, uint96 denSeed) public {
+        uint256 shares = bound(sharesSeed, 1e18, 1e24);
+        uint256 num = bound(numSeed, 1, 1e18);
+        uint256 den = bound(denSeed, 1, 1e18);
+        ScaledVault sv = new ScaledVault(IERC20(address(asset)), num, den);
+        book.setVaultAllowed(IERC4626(address(sv)), true);
+
+        sv.mintShares(lender, shares);
+        vm.startPrank(lender);
+        sv.approve(address(book), shares);
+        uint256 id = book.placeExitRequest(IERC4626(address(sv)), shares, _zeroRamp(), block.timestamp + 30 days, false);
+        vm.stopPrank();
+
+        assertEq(book.getExitRequest(id).quotedAssets, Math.mulDiv(shares, num, den), "exact ERC-4626 quote");
+    }
+
+    /// @dev Partial fills telescope to the full placement quote regardless of how the request is partitioned.
+    function test_partialFills_telescopeToQuote() public {
+        ScaledVault sv = new ScaledVault(IERC20(address(asset)), 1, 1); // 1:1
+        book.setVaultAllowed(IERC4626(address(sv)), true);
+        _setServiceFee(0);
+
+        uint256 shares = 10 ether;
+        sv.mintShares(lender, shares);
+        asset.mint(address(sv), shares); // fund the redeems
+        vm.prank(lender);
+        sv.approve(address(book), shares);
+        vm.prank(lender);
+        uint256 id = book.placeExitRequest(IERC4626(address(sv)), shares, _zeroRamp(), block.timestamp + 30 days, false);
+        uint256 quoted = book.getExitRequest(id).quotedAssets;
+
+        // Fill in an uneven partition (2, 3, 5) by capping the live allowance before each fill.
+        uint256[3] memory step = [uint256(2 ether), 3 ether, 5 ether];
+        uint256 pre = asset.balanceOf(lender);
+        for (uint256 i = 0; i < 3; ++i) {
+            vm.prank(lender);
+            sv.approve(address(book), step[i]);
+            vm.prank(filler);
+            book.fillExitRequest(id, 0, 0);
+        }
+
+        assertEq(asset.balanceOf(lender) - pre, quoted, "partitioned fills sum to the full quote");
+        assertEq(book.getExitRequest(id).sizeRemaining, 0, "fully filled");
+    }
+
+    /// @dev Any positive three-part partition telescopes to the exact full-request quote. The non-integral
+    ///      share price exercises cumulative rounding rather than a trivial 1:1 split.
+    function testFuzz_partialFills_telescopeAcrossPartitions(uint256 firstSeed, uint256 secondSeed) public {
+        ScaledVault sv = new ScaledVault(IERC20(address(asset)), 19, 10);
+        book.setVaultAllowed(IERC4626(address(sv)), true);
+        _setServiceFee(0);
+
+        uint256 shares = 10 ether + 1;
+        uint256 first = bound(firstSeed, 1, shares - 2);
+        uint256 second = bound(secondSeed, 1, shares - first - 1);
+        uint256[3] memory step = [first, second, shares - first - second];
+
+        sv.mintShares(lender, shares);
+        asset.mint(address(sv), sv.previewRedeem(shares) + step.length);
+        vm.prank(lender);
+        sv.approve(address(book), shares);
+        vm.prank(lender);
+        uint256 id = book.placeExitRequest(IERC4626(address(sv)), shares, _zeroRamp(), block.timestamp + 30 days, false);
+
+        uint256 quotedAssets = book.getExitRequest(id).quotedAssets;
+        uint256 lenderBefore = asset.balanceOf(lender);
+        for (uint256 i; i < step.length; ++i) {
+            vm.prank(lender);
+            sv.approve(address(book), step[i]);
+            vm.prank(filler);
+            book.fillExitRequest(id, 0, 0);
+        }
+
+        assertEq(asset.balanceOf(lender) - lenderBefore, quotedAssets, "all partitions telescope to the quote");
+        assertEq(book.getExitRequest(id).sizeRemaining, 0, "partition fully fills the request");
+    }
+
+    /// @dev The current fill's cumulative quote interval is snapshotted before the external redeem. A nested fill
+    ///      may advance the request, but cannot move the outer fill's boundaries and capture a rounding unit twice.
+    function test_fill_reentrantNestedFill_preservesCumulativeQuote() public {
+        ReentrantScaledVault rv = new ReentrantScaledVault(IERC20(address(asset)));
+        book.setVaultAllowed(IERC4626(address(rv)), true);
+        _setServiceFee(0);
+
+        uint256 shares = 10;
+        rv.mintShares(lender, shares);
+        asset.mint(address(rv), 20);
+        vm.startPrank(lender);
+        rv.approve(address(book), shares);
+        uint256 id = book.placeExitRequest(IERC4626(address(rv)), shares, _zeroRamp(), block.timestamp + 30 days, false);
+        vm.stopPrank();
+        rv.arm(book, id, 4);
+
+        uint256 quotedAssets = book.getExitRequest(id).quotedAssets;
+        uint256 lenderBefore = asset.balanceOf(lender);
+        vm.prank(filler);
+        book.fillExitRequest(id, 0, 0);
+
+        assertEq(asset.balanceOf(lender) - lenderBefore, quotedAssets, "nested fills distribute the quote once");
+        assertEq(book.getExitRequest(id).sizeRemaining, 0, "nested fill drains the request");
+    }
+
+    /// @dev Each partial fill receives the delta of two cumulative quotients. This gives the final fill every
+    ///      remainder left by preceding floors, rather than rounding each fill's standalone proportion down.
+    function test_partialFills_finalFillGetsRoundingRemainder() public {
+        ScaledVault sv = new ScaledVault(IERC20(address(asset)), 19, 10);
+        book.setVaultAllowed(IERC4626(address(sv)), true);
+        _setServiceFee(0);
+
+        uint256 shares = 10 ether + 1;
+        uint256[3] memory step = [uint256(2 ether), 3 ether, 5 ether + 1];
+        sv.mintShares(lender, shares);
+        asset.mint(address(sv), 20 ether);
+        vm.prank(lender);
+        sv.approve(address(book), shares);
+        vm.prank(lender);
+        uint256 id = book.placeExitRequest(IERC4626(address(sv)), shares, _zeroRamp(), block.timestamp + 30 days, false);
+        uint256 quoted = book.getExitRequest(id).quotedAssets;
+
+        uint256 filled;
+        uint256 lenderBefore = asset.balanceOf(lender);
+        uint256 owedBefore;
+        for (uint256 i; i < step.length; ++i) {
+            vm.prank(lender);
+            sv.approve(address(book), step[i]);
+            vm.prank(filler);
+            book.fillExitRequest(id, 0, 0);
+
+            filled += step[i];
+            uint256 owedAfter = Math.mulDiv(quoted, filled, shares);
+            uint256 received = asset.balanceOf(lender) - lenderBefore;
+            assertEq(received - owedBefore, owedAfter - owedBefore, "fill receives its cumulative entitlement delta");
+            owedBefore = owedAfter;
+        }
+
+        uint256 lastStandalone = Math.mulDiv(quoted, step[2], shares);
+        uint256 lastCumulative = quoted - Math.mulDiv(quoted, step[0] + step[1], shares);
+        assertGt(lastCumulative, lastStandalone, "final fill receives the prior rounding remainder");
+        assertEq(asset.balanceOf(lender) - lenderBefore, quoted, "all partitions sum to the full quote");
+    }
+
+    /// @dev The normal 18-decimal ERC-4626 path preserves the former WAD quote to raw-asset precision.
+    function test_normalizedVault_quoteMatchesWadSampleWithinOneUnit() public {
+        (uint256 id, uint256 shares) = _lenderPlace(100 ether, _zeroRamp());
+        uint256 sampled = Math.mulDiv(shares, vault.convertToAssets(WAD), WAD);
+
+        assertApproxEqAbs(book.getExitRequest(id).quotedAssets, sampled, 1, "normalized vault quote remains unchanged");
+    }
+
+    /// @dev A post-placement loss still caps the lender entitlement at assetsOut; the filler receives only the
+    ///      priority fee, never artificial yield from the missing assets.
+    function test_fill_conservation_withLoss() public {
+        _setServiceFee(0);
+        (uint256 id, uint256 shares) = _lenderPlace(100 ether, _ramp());
+        vm.prank(address(vault));
+        asset.transfer(address(0xBEEF), 10 ether);
+
+        _fillAndAssert(id, shares, 12 hours, 0);
+    }
+
+    /// @dev For any non-total post-placement loss, the lender's entitlement is capped at the assets that remain.
+    function testFuzz_fill_lossCapsEntitlement(
+        uint256 depositSeed,
+        uint256 lossSeed,
+        uint256 elapsedSeed,
+        uint256 serviceFeeSeed
+    ) public {
+        uint256 depositAmt = bound(depositSeed, 1 ether, 1e24);
+        uint256 loss = bound(lossSeed, 1, depositAmt - 1);
+        uint256 elapsed = bound(elapsedSeed, 0, 25 days);
+        uint256 serviceFee = bound(serviceFeeSeed, 0, 0.25e18);
+
+        _setServiceFee(serviceFee);
+        (uint256 id, uint256 shares) = _lenderPlace(depositAmt, _ramp());
+        vm.prank(address(vault));
+        asset.transfer(address(0xBEEF), loss);
+
+        _fillAndAssert(id, shares, elapsed, serviceFee);
+    }
+
+    /// @dev A quote can exceed `uint128` even though shares fit it, so the common full-request quote is stored
+    ///      as uint256.
+    function testFuzz_quotedAssetsExceedsUint128(uint256 sharesSeed) public {
+        uint256 shares = bound(sharesSeed, 1, 1e18);
+        uint256 rate = uint256(type(uint128).max) / shares + 1;
+        ScaledVault sv = new ScaledVault(IERC20(address(asset)), rate, 1);
+        book.setVaultAllowed(IERC4626(address(sv)), true);
+
+        sv.mintShares(lender, shares);
+        vm.prank(lender);
+        sv.approve(address(book), shares);
+        vm.prank(lender);
+        uint256 id = book.placeExitRequest(IERC4626(address(sv)), shares, _zeroRamp(), block.timestamp + 30 days, false);
+
+        uint256 quotedAssets = book.getExitRequest(id).quotedAssets;
+        assertGt(quotedAssets, type(uint128).max, "quote stored as uint256, above uint128");
+        assertEq(quotedAssets, shares * rate, "exact quote");
+    }
+
+    /// @dev A tiny share amount can quote to zero even when the per-1e18 sample is nonzero — the case the old
+    ///      sample guard missed. The total-quote guard rejects it.
+    function testRevert_place_smallSharesZeroQuote() public {
+        ScaledVault sv = new ScaledVault(IERC20(address(asset)), 1, 1000); // price 0.001: convertToAssets(1) == 0
+        book.setVaultAllowed(IERC4626(address(sv)), true);
+        assertGt(sv.convertToAssets(WAD), 0, "the per-1e18 sample is nonzero (old guard would pass)");
+
+        sv.mintShares(lender, 1);
+        vm.startPrank(lender);
+        sv.approve(address(book), 1);
+        vm.expectRevert(IExitBook.ZeroAssetQuote.selector);
+        book.placeExitRequest(IERC4626(address(sv)), 1, _ramp(), block.timestamp + 30 days, false);
+        vm.stopPrank();
+    }
+
+    /// @dev Any share amount priced strictly below one asset unit is rejected through the common zero-quote guard.
+    function testFuzz_place_zeroAssetQuoteRejected(uint128 sharesSeed) public {
+        uint256 shares = bound(sharesSeed, 1, 1e24);
+        ScaledVault sv = new ScaledVault(IERC20(address(asset)), 1, shares + 1);
+        book.setVaultAllowed(IERC4626(address(sv)), true);
+
+        sv.mintShares(lender, shares);
+        vm.startPrank(lender);
+        sv.approve(address(book), shares);
+        vm.expectRevert(IExitBook.ZeroAssetQuote.selector);
+        book.placeExitRequest(IERC4626(address(sv)), shares, _zeroRamp(), block.timestamp + 30 days, false);
+        vm.stopPrank();
+    }
+
     // ── priority ramp: hold → linear → plateau ──
 
     /// @dev The implied fee (`owed - lenderAssets`) tracks the ramp rate exactly at three regimes. Service fee
@@ -251,11 +581,11 @@ contract ExitBookFeeSplitTest is Test {
         (uint256 id, uint256 shares) = _lenderPlace(100 ether, ramp);
         // no donation: assetsOut <= owed snapshot, so owed == assetsOut and fee = owed*rate/WAD
         uint256 startTs = block.timestamp;
-        uint256 pricePerShare = book.getExitRequest(id).pricePerShare;
+        uint256 quotedAssets = book.getExitRequest(id).quotedAssets;
         vm.warp(startTs + elapsed);
 
         uint256 assetsOut = vault.previewRedeem(shares);
-        uint256 owed = Math.min(Math.mulDiv(shares, pricePerShare, WAD), assetsOut);
+        uint256 owed = Math.min(quotedAssets, assetsOut);
         uint256 expectedFee = Math.mulDiv(owed, expectedRate, WAD);
 
         uint256 lenderBefore = asset.balanceOf(lender);
@@ -406,13 +736,20 @@ contract ExitBookFeeSplitTest is Test {
         book.placeExitRequest(IERC4626(address(vault)), shares + 1, _ramp(), block.timestamp + 30 days, false);
     }
 
-    /// @dev A vault whose snapshot price is 0 is rejected up front — the check precedes the backing check, so no
-    ///      shares or allowance are needed to trip it.
-    function testRevert_place_zeroPricePerShare() public {
+    /// @dev A vault whose total quote is 0 (`convertToAssets(shares) == 0`) is rejected: it would pay the lender
+    ///      nothing on every fill and route the whole redemption to the filler.
+    function testRevert_place_zeroAssetQuote() public {
         ZeroPriceVault zeroPrice = new ZeroPriceVault(IERC20(address(asset)));
         book.setVaultAllowed(IERC4626(address(zeroPrice)), true);
-        vm.expectRevert(Erc4626ExitBook.ZeroPricePerShare.selector);
-        book.placeExitRequest(IERC4626(address(zeroPrice)), 1 ether, _ramp(), block.timestamp + 30 days, false);
+
+        asset.mint(lender, 1 ether);
+        vm.startPrank(lender);
+        asset.approve(address(zeroPrice), 1 ether);
+        uint256 shares = zeroPrice.deposit(1 ether, lender);
+        zeroPrice.approve(address(book), shares);
+        vm.expectRevert(IExitBook.ZeroAssetQuote.selector);
+        book.placeExitRequest(IERC4626(address(zeroPrice)), shares, _ramp(), block.timestamp + 30 days, false);
+        vm.stopPrank();
     }
 
     /// @dev Allow-listing the zero-address vault reverts ZeroVault.

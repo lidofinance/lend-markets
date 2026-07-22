@@ -13,7 +13,6 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {ExitBookBase} from "./ExitBookBase.sol";
 import {IMorphoExitBook} from "../interfaces/IMorphoExitBook.sol";
 import {Request, PriorityRamp} from "../types/ExitBookTypes.sol";
-import {WAD} from "../libs/Constants.sol";
 
 /// @title MorphoExitBook
 /// @author Lido
@@ -119,10 +118,9 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
         if (MORPHO.position(marketId, msg.sender).supplyShares < shares) revert InsufficientBacking();
 
         MarketParams memory marketParams = _marketParams[marketId];
-        uint256 pricePerShare = _supplySharesToAssets(marketParams, WAD);
-
+        uint256 quotedAssets = _supplySharesToAssets(marketParams, shares);
         id = _createRequest(
-            msg.sender, IERC20(marketParams.loanToken), shares, pricePerShare, ramp, deadline, fullFillOnly
+            msg.sender, IERC20(marketParams.loanToken), shares, quotedAssets, ramp, deadline, fullFillOnly
         );
 
         _marketIdOf[id] = marketId;

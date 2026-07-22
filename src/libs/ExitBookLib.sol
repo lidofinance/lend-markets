@@ -46,7 +46,7 @@ library ExitBookLib {
         address owner,
         IERC20 asset,
         uint256 shares,
-        uint256 pricePerShare,
+        uint256 quotedAssets,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
@@ -54,18 +54,18 @@ library ExitBookLib {
         id = ++self.nextId;
         self.requests[id] = Request({
             owner: owner,
-            asset: asset,
-            sizeRemaining: SafeCast.toUint128(shares),
-            sizeTotal: SafeCast.toUint128(shares),
-            pricePerShare: SafeCast.toUint128(pricePerShare),
-            startRate: SafeCast.toUint96(ramp.startRate),
-            endRate: SafeCast.toUint96(ramp.endRate),
-            rampStart: SafeCast.toUint32(ramp.rampStart),
-            rampEnd: SafeCast.toUint32(ramp.rampEnd),
             createdAt: SafeCast.toUint40(block.timestamp),
             deadline: SafeCast.toUint40(deadline),
             fullFillOnly: fullFillOnly,
-            status: ExitStatus.Open
+            status: ExitStatus.Open,
+            asset: asset,
+            sizeRemaining: SafeCast.toUint128(shares),
+            sizeTotal: SafeCast.toUint128(shares),
+            quotedAssets: quotedAssets,
+            startRate: SafeCast.toUint96(ramp.startRate),
+            endRate: SafeCast.toUint96(ramp.endRate),
+            rampStart: SafeCast.toUint32(ramp.rampStart),
+            rampEnd: SafeCast.toUint32(ramp.rampEnd)
         });
         self.ownerRequestIds[owner].push(id);
     }

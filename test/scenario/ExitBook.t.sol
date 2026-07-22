@@ -160,8 +160,8 @@ contract ExitBookTest is Test, LidoLendDeployer {
         assertEq(request.sizeRemaining, shares, "size is the requested shares");
         assertEq(uint8(request.status), uint8(ExitStatus.Open), "open");
 
-        // Independently recompute the split: flat fee, flat price → owed = snapshot.
-        uint256 owed = shares * request.pricePerShare / WAD;
+        // Independently recompute the split: flat fee, flat price → owed = placement quote.
+        uint256 owed = request.quotedAssets;
         uint256 fee = owed * PRIORITY_FEE / WAD;
         uint256 serviceCut = fee * SERVICE_FEE / WAD;
         uint256 expectedLender = owed - fee;
@@ -422,8 +422,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         wantRate[2] = endRate;
 
         for (uint256 i; i < 3; ++i) {
-            Request memory request = vaultBook.getExitRequest(ids[i]);
-            uint256 owed = uint256(request.sizeRemaining) * request.pricePerShare / WAD;
+            uint256 owed = vaultBook.getExitRequest(ids[i]).quotedAssets;
             uint256 fee = owed * wantRate[i] / WAD; // flat price -> no yield -> reward is the fee only
             uint256 serviceCut = fee * SERVICE_FEE / WAD;
 
@@ -473,8 +472,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         wantRate[2] = endRate;
 
         for (uint256 i; i < 3; ++i) {
-            Request memory request = vaultBook.getExitRequest(ids[i]);
-            uint256 owed = uint256(request.sizeRemaining) * request.pricePerShare / WAD;
+            uint256 owed = vaultBook.getExitRequest(ids[i]).quotedAssets;
             uint256 fee = owed * wantRate[i] / WAD; // flat price -> no yield -> reward is the fee only
             uint256 serviceCut = fee * SERVICE_FEE / WAD;
 
@@ -591,8 +589,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         uint256 id = morphoBook.placeExitRequest(d.marketId, supplyShares, _flat(PRIORITY_FEE), deadline, false);
 
-        Request memory request = morphoBook.getExitRequest(id);
-        uint256 owed = supplyShares * request.pricePerShare / WAD;
+        uint256 owed = morphoBook.getExitRequest(id).quotedAssets;
         uint256 fee = owed * PRIORITY_FEE / WAD;
         uint256 serviceCut = fee * SERVICE_FEE / WAD;
 

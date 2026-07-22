@@ -9,7 +9,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ExitBookBase} from "./ExitBookBase.sol";
 import {IErc4626ExitBook} from "../interfaces/IErc4626ExitBook.sol";
 import {Request, PriorityRamp} from "../types/ExitBookTypes.sol";
-import {WAD} from "../libs/Constants.sol";
 
 /// @title Erc4626ExitBook
 /// @author Lido
@@ -25,7 +24,6 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
     error VaultNotAllowed();
     error InsufficientBacking();
     error ZeroVault();
-    error ZeroPricePerShare();
 
     // ---
     // EVENTS
@@ -74,18 +72,13 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
     ) external returns (uint256 id) {
         if (!isVaultAllowed[vault]) revert VaultNotAllowed();
 
-        uint256 pricePerShare = vault.convertToAssets(WAD);
-
-        // A zero snapshot price pays the lender `owed = 0` on every fill and hands the whole redemption to the
-        // filler. Reject it.
-        if (pricePerShare == 0) revert ZeroPricePerShare();
-
         // Permission-only: shares stay with the lender; sanity-check now, the fill re-checks live.
         if (vault.allowance(msg.sender, address(this)) < shares || vault.balanceOf(msg.sender) < shares) {
             revert InsufficientBacking();
         }
 
-        id = _createRequest(msg.sender, IERC20(vault.asset()), shares, pricePerShare, ramp, deadline, fullFillOnly);
+        uint256 quotedAssets = vault.convertToAssets(shares);
+        id = _createRequest(msg.sender, IERC20(vault.asset()), shares, quotedAssets, ramp, deadline, fullFillOnly);
 
         vaultOf[id] = vault;
     }

@@ -8,6 +8,9 @@ import {Request, RequestPreview} from "../types/ExitBookTypes.sol";
 ///         read them (with optional live fill previews). Concrete books (ERC-4626, Morpho, ...) add their own
 ///         `placeExitRequest` and allow-list admin on top.
 interface IExitBook {
+    /// @notice Thrown when a request's full share amount quotes to zero assets at placement.
+    error ZeroAssetQuote();
+
     // ---
     // CONFIG
     // ---

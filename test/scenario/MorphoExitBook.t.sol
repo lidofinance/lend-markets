@@ -9,6 +9,7 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
+import {IExitBook} from "../../src/interfaces/IExitBook.sol";
 import {Request, ExitStatus, PriorityRamp, RequestPreview} from "../../src/types/ExitBookTypes.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 
@@ -21,7 +22,7 @@ import {MockERC20} from "../setup/Mocks.sol";
 ///         supply position. Built on the `new`-based `LidoLendSetup` (one core, one market). The lender's
 ///         backing is its CORE supply position (not a vault share); the book is authorized on the core to
 ///         withdraw on the lender's behalf at fill time. Every payout is recomputed independently from the
-///         on-chain `pricePerShare` snapshot, the previewed `assetsOut`, the ramp rate, and `serviceFee`
+///         on-chain full-request quote, the previewed `assetsOut`, the ramp rate, and `serviceFee`
 ///         (mirrors `ExitBookFeeSplit.t.sol`): owed/fee/fillerGross/serviceCut/lenderAssets are derived and
 ///         `assertEq`'d, with the three legs reconstructing `assetsOut` exactly.
 contract MorphoExitBookTest is LidoLendSetup {
@@ -79,6 +80,17 @@ contract MorphoExitBookTest is LidoLendSetup {
         id = book.placeExitRequest(_m().id, shares, _ramp(), block.timestamp + MAX_LIFETIME, fullFillOnly);
     }
 
+    /// @dev Forge a malformed but representable market price where the lender's full share amount quotes to zero.
+    ///      This reaches the placement guard without relying on an economically realistic share rate.
+    function _forceSupplyQuoteZero() internal {
+        Market storage m = _m();
+        bytes32 base = keccak256(abi.encode(Id.unwrap(m.id), uint256(3)));
+        vm.store(address(m.core), base, bytes32((uint256(1e36) << 128) | uint256(1)));
+
+        assertEq(m.core.market(m.id).totalSupplyAssets, 1, "slot check: TSA");
+        assertEq(m.core.market(m.id).totalSupplyShares, 1e36, "slot check: TSS");
+    }
+
     function _priorityRate(PriorityRamp memory ramp, uint256 elapsed) internal pure returns (uint256) {
         if (elapsed < ramp.rampStart) return ramp.startRate;
         if (elapsed >= ramp.rampEnd) return ramp.endRate;
@@ -94,13 +106,20 @@ contract MorphoExitBookTest is LidoLendSetup {
         uint256 assetsOut;
     }
 
-    /// @dev Independent recompute, mirroring `ExitBookBase.fillExitRequest`.
-    function _expectedSplit(uint256 shares, uint256 pricePerShare, uint256 assetsOut, uint256 rate, uint256 serviceFee)
-        internal
-        pure
-        returns (Split memory s)
-    {
-        uint256 owed = Math.min(Math.mulDiv(shares, pricePerShare, WAD), assetsOut);
+    /// @dev Independent cumulative-quote recompute, mirroring `ExitBookBase.fillExitRequest`.
+    function _expectedSplit(
+        uint256 quotedAssets,
+        uint256 sizeTotal,
+        uint256 sizeRemaining,
+        uint256 filledShares,
+        uint256 assetsOut,
+        uint256 rate,
+        uint256 serviceFee
+    ) internal pure returns (Split memory s) {
+        uint256 filledBefore = sizeTotal - sizeRemaining;
+        uint256 owedBefore = Math.mulDiv(quotedAssets, filledBefore, sizeTotal);
+        uint256 owedAfter = Math.mulDiv(quotedAssets, filledBefore + filledShares, sizeTotal);
+        uint256 owed = Math.min(owedAfter - owedBefore, assetsOut);
         uint256 fee = Math.mulDiv(owed, rate, WAD);
         uint256 fillerGross = (assetsOut - owed) + fee;
         s.serviceCut = Math.mulDiv(fillerGross, serviceFee, WAD);
@@ -110,18 +129,21 @@ contract MorphoExitBookTest is LidoLendSetup {
     }
 
     /// @dev Fill request `id` (filler brings no liquidity) and assert the exact three-way split + conservation.
-    ///      `elapsed` is the time since placement (sets the ramp rate). Reads `pricePerShare` from the request
-    ///      and `filledShares`/`assetsOut` from the contract's own preview, then recomputes the split.
+    ///      `elapsed` is the time since placement (sets the ramp rate). Reads the placement quote and
+    ///      `filledShares`/`assetsOut` from the contract's own preview, then recomputes the split.
     function _fillAndAssert(uint256 id, uint256 elapsed) internal {
         Market storage m = _m();
         vm.warp(block.timestamp + elapsed);
 
         RequestPreview memory pv = book.previewFill(id);
+        Request memory request = pv.request;
         Split memory s = _expectedSplit(
+            request.quotedAssets,
+            request.sizeTotal,
+            request.sizeRemaining,
             pv.filledShares,
-            book.getExitRequest(id).pricePerShare,
             pv.assetsOut,
-            _priorityRate(_ramp(), elapsed),
+            _priorityRate(_ramp(), block.timestamp - request.createdAt),
             SERVICE_FEE
         );
 
@@ -154,6 +176,15 @@ contract MorphoExitBookTest is LidoLendSetup {
         m.supplyCollateral(borrower, collat);
         m.activateCollateral();
         m.borrow(borrower, amount);
+    }
+
+    function _repayAndFillRemainder(uint256 id, address borrower) internal {
+        Market storage m = _m();
+        uint256 borrowShares = m.core.position(m.id, borrower).borrowShares;
+        _fund(m.loanToken, borrower, m.repayAssets(borrowShares));
+        m.repay(borrower, borrowShares);
+
+        _fillAndAssert(id, 0);
     }
 
     // ---
@@ -234,6 +265,33 @@ contract MorphoExitBookTest is LidoLendSetup {
         vm.prank(lender);
         vm.expectRevert(MorphoExitBook.InsufficientBacking.selector);
         book.placeExitRequest(_m().id, shares + 1, _ramp(), block.timestamp + MAX_LIFETIME, false);
+    }
+
+    /// @dev A zero full-request quote would pay the lender nothing on every fill, so placement rejects it even
+    ///      when the request is otherwise authorized and fully backed.
+    function testRevert_place_zeroAssetQuote() public {
+        address lender = _actor("lender");
+        uint256 shares = _lenderSupply(lender, 10 ether);
+        _forceSupplyQuoteZero();
+
+        vm.prank(lender);
+        vm.expectRevert(IExitBook.ZeroAssetQuote.selector);
+        book.placeExitRequest(_m().id, shares, _ramp(), block.timestamp + MAX_LIFETIME, false);
+    }
+
+    /// @dev The Morpho request stores the exact full-share quote derived from the live market totals.
+    function testFuzz_place_quoteMatchesSupplyShareConversion(uint128 amountSeed) public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        uint256 amount = bound(amountSeed, 1, 1e24);
+        uint256 shares = _lenderSupply(lender, amount);
+
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
+            MorphoBalancesLib.expectedMarketBalances(m.core, m.params);
+        uint256 expectedQuote = shares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
+
+        uint256 id = _place(lender, shares, false);
+        assertEq(book.getExitRequest(id).quotedAssets, expectedQuote, "exact Morpho quote");
     }
 
     // ---
@@ -319,8 +377,9 @@ contract MorphoExitBookTest is LidoLendSetup {
     // BONUS — partial fill when a borrower drains idle below the owed
     // ---
 
-    /// @dev A borrower drains most idle liquidity so `idleAssets < owed`. The request is NOT full-fill, so it
-    ///      fills the partial idle amount, stays Open, and the partial split conserves exactly.
+    /// @dev A borrower drains most idle liquidity so `idleAssets < owed`. The request first fills the partial
+    ///      idle amount and stays Open. Once the borrower repays, the final fill closes it and receives the
+    ///      cumulative quote remainder; both splits conserve exactly.
     function test_partialFill_borrowerDrainsIdle() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -341,8 +400,7 @@ contract MorphoExitBookTest is LidoLendSetup {
             m.loanToken.balanceOf(lender), m.loanToken.balanceOf(address(0x2000)), m.loanToken.balanceOf(feeRecipient)
         ];
 
-        uint128 sizeBefore = book.getExitRequest(id).sizeRemaining;
-        uint256 pricePerShare = book.getExitRequest(id).pricePerShare;
+        Request memory requestBefore = book.getExitRequest(id);
 
         vm.prank(address(0x2000));
         book.fillExitRequest(id, 0, 0);
@@ -356,7 +414,15 @@ contract MorphoExitBookTest is LidoLendSetup {
         // not the pre-fill preview. Recompute every leg from that measured `assetsOut` and assert exact.
         uint256 assetsOut = lenderGot + fillerGot + feeGot;
         uint256 rate = _priorityRate(_ramp(), block.timestamp - createdAt);
-        Split memory s = _expectedSplit(pv.filledShares, pricePerShare, assetsOut, rate, SERVICE_FEE);
+        Split memory s = _expectedSplit(
+            requestBefore.quotedAssets,
+            requestBefore.sizeTotal,
+            requestBefore.sizeRemaining,
+            pv.filledShares,
+            assetsOut,
+            rate,
+            SERVICE_FEE
+        );
 
         assertEq(lenderGot, s.lenderAssets, "partial: lender share exact");
         assertEq(fillerGot, s.fillerFee, "partial: filler share exact");
@@ -366,7 +432,16 @@ contract MorphoExitBookTest is LidoLendSetup {
         // Request stays Open, size reduced by exactly the filled shares.
         Request memory req = book.getExitRequest(id);
         assertEq(uint8(req.status), uint8(ExitStatus.Open), "partial: request stays open");
-        assertEq(uint256(sizeBefore) - req.sizeRemaining, pv.filledShares, "partial: size reduced by filled shares");
+        assertEq(
+            uint256(requestBefore.sizeRemaining) - req.sizeRemaining,
+            pv.filledShares,
+            "partial: size reduced by filled shares"
+        );
+
+        _repayAndFillRemainder(id, borrower);
+        assertEq(
+            uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "final cumulative fill closes request"
+        );
     }
 
     // ---

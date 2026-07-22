@@ -29,37 +29,37 @@ struct PriorityRamp {
     uint256 rampEnd;
 }
 
-/// @notice One exit request — lifecycle and pricing only. The backing source (which vault / which market)
-///         lives in the concrete book's per-id mappings, not here, so this struct is source-agnostic. Shares
-///         and the price snapshot are `uint128` (capped via SafeCast at creation) so the record packs tighter.
+/// @notice One exit request's source-agnostic lifecycle state. The backing source (which vault / which market)
+///         lives in a per-id mapping outside this record. Shares are `uint128` (capped via SafeCast at creation)
+///         so the record packs tighter.
 /// @param owner The exiting lender, credited the proceeds and the only address that may cancel.
-/// @param asset The underlying loan token paid out — proceeds and fees are denominated in it.
-/// @param sizeRemaining Outstanding shares to fill. The fixed-price amount owed is `sizeRemaining * pricePerShare`.
-/// @param sizeTotal Original shares at creation (informational).
-/// @param pricePerShare Assets per share (WAD), snapshotted at creation; yield above it is the filler's.
-/// @param startRate Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold.
-/// @param endRate Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline.
-/// @param rampStart Seconds from `createdAt` the rate holds at `startRate` before the climb begins.
-/// @param rampEnd Seconds from `createdAt` the climb reaches `endRate`.
 /// @param createdAt Creation timestamp: the fee schedule's start.
 /// @param deadline Last timestamp the request may be filled. Chosen by the lender, capped at
 ///        `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`.
 /// @param fullFillOnly When true a fill must cover the whole remaining size in one shot or be rejected.
 /// @param status Open / Filled / Cancelled (Expired is derived).
+/// @param asset The underlying loan token paid out — proceeds and fees are denominated in it.
+/// @param sizeRemaining Outstanding shares to fill. The concrete book defines the fixed placement entitlement.
+/// @param sizeTotal Original shares used to apportion the full placement quote across fills.
+/// @param quotedAssets Asset value quoted for all `sizeTotal` shares at placement.
+/// @param startRate Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold.
+/// @param endRate Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline.
+/// @param rampStart Seconds from `createdAt` the rate holds at `startRate` before the climb begins.
+/// @param rampEnd Seconds from `createdAt` the climb reaches `endRate`.
 struct Request {
     address owner;
-    IERC20 asset;
-    uint128 sizeRemaining;
-    uint128 sizeTotal;
-    uint128 pricePerShare;
-    uint96 startRate;
-    uint96 endRate;
-    uint32 rampStart;
-    uint32 rampEnd;
     uint40 createdAt;
     uint40 deadline;
     bool fullFillOnly;
     ExitStatus status;
+    IERC20 asset;
+    uint128 sizeRemaining;
+    uint128 sizeTotal;
+    uint256 quotedAssets;
+    uint96 startRate;
+    uint96 endRate;
+    uint32 rampStart;
+    uint32 rampEnd;
 }
 
 /// @notice A request paired with its live fill preview, for one-call scans. `id` is the registry key (a

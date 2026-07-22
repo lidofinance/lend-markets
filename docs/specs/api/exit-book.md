@@ -51,40 +51,40 @@ Lender-set priority-fee schedule — a Dutch auction on the fee carved out of th
 ```solidity
 struct Request {
     address owner;
-    IERC20 asset;
-    uint128 sizeRemaining;
-    uint128 sizeTotal;
-    uint128 pricePerShare;
-    uint96 startRate;
-    uint96 endRate;
-    uint32 rampStart;
-    uint32 rampEnd;
     uint40 createdAt;
     uint40 deadline;
     bool fullFillOnly;
     ExitStatus status;
+    IERC20 asset;
+    uint128 sizeRemaining;
+    uint128 sizeTotal;
+    uint256 quotedAssets;
+    uint96 startRate;
+    uint96 endRate;
+    uint32 rampStart;
+    uint32 rampEnd;
 }
 ```
 
-One exit request — lifecycle and pricing only. The backing source (which vault / which market) lives in the concrete book's per-id mappings, not here, so this struct is source-agnostic. Shares and the price snapshot are `uint128` (capped via SafeCast at creation) so the record packs tighter.
+One exit request's source-agnostic lifecycle state. The backing source (which vault / which market) lives in a per-id mapping outside this record. Shares are `uint128` (capped via SafeCast at creation) so the record packs tighter.
 
 **Fields**
 
 | Name | Type | Description |
 | --- | --- | --- |
 | `owner` | `address` | The exiting lender, credited the proceeds and the only address that may cancel. |
-| `asset` | `IERC20` | The underlying loan token paid out — proceeds and fees are denominated in it. |
-| `sizeRemaining` | `uint128` | Outstanding shares to fill. The fixed-price amount owed is `sizeRemaining * pricePerShare`. |
-| `sizeTotal` | `uint128` | Original shares at creation (informational). |
-| `pricePerShare` | `uint128` | Assets per share (WAD), snapshotted at creation; yield above it is the filler's. |
-| `startRate` | `uint96` | Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold. |
-| `endRate` | `uint96` | Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline. |
-| `rampStart` | `uint32` | Seconds from `createdAt` the rate holds at `startRate` before the climb begins. |
-| `rampEnd` | `uint32` | Seconds from `createdAt` the climb reaches `endRate`. |
 | `createdAt` | `uint40` | Creation timestamp: the fee schedule's start. |
 | `deadline` | `uint40` | Last timestamp the request may be filled. Chosen by the lender, capped at `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`. |
 | `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot or be rejected. |
 | `status` | `ExitStatus` | Open / Filled / Cancelled (Expired is derived). |
+| `asset` | `IERC20` | The underlying loan token paid out — proceeds and fees are denominated in it. |
+| `sizeRemaining` | `uint128` | Outstanding shares to fill. The concrete book defines the fixed placement entitlement. |
+| `sizeTotal` | `uint128` | Original shares used to apportion the full placement quote across fills. |
+| `quotedAssets` | `uint256` | Asset value quoted for all `sizeTotal` shares at placement. |
+| `startRate` | `uint96` | Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold. |
+| `endRate` | `uint96` | Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline. |
+| `rampStart` | `uint32` | Seconds from `createdAt` the rate holds at `startRate` before the climb begins. |
+| `rampEnd` | `uint32` | Seconds from `createdAt` the climb reaches `endRate`. |
 
 #### `RequestPreview`
 
@@ -135,6 +135,14 @@ event ServiceFeeSet(address indexed feeRecipient, uint256 serviceFee);
 ```
 
 ### Errors
+
+#### `ZeroAssetQuote`
+
+```solidity
+error ZeroAssetQuote();
+```
+
+Thrown when a request's full share amount quotes to zero assets at placement.
 
 #### `ZeroAddress`
 
@@ -433,12 +441,6 @@ error InsufficientBacking();
 
 ```solidity
 error ZeroVault();
-```
-
-#### `ZeroPricePerShare`
-
-```solidity
-error ZeroPricePerShare();
 ```
 
 ### Functions
