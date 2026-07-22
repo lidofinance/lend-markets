@@ -56,7 +56,7 @@ Full surface: [API reference](api/guardian-signals.md).
 
 ### LidoLendERC4626
 
-The tokenized lender position for one market — a standard ERC-4626 vault over the market's supply, freely transferable and ungated, plus the griefing-resistant fallback exit for when pool liquidity is short. `totalAssets` counts only the Morpho supply position, so idle or donated loan tokens stay inert, and a virtual-share decimals offset hardens the share price against inflation.
+The tokenized lender position for one market — a standard ERC-4626 vault over the market's supply, freely transferable and ungated, plus the griefing-resistant fallback exit for when pool liquidity is short. `totalAssets` counts only the vault's own supply shares (`_managedSupplyShares`), so idle or donated loan tokens — and permissionless core `supply` credited to the vault address — stay inert, and a virtual-share decimals offset hardens the share price against inflation.
 
 Full surface: [API reference](api/lido-lend-erc4626.md).
 
@@ -313,6 +313,8 @@ Trust within the policy layer. Core-level actors — proxy admin, owner, oracle,
 | Governance | set parameters and roles within bounds | bypass timelocks for risk-increasing changes, take custody |
 
 **Borrow-share-price invariant.** On a market whose total borrow assets are dust, a 1-wei borrow mints a slice of the whole outstanding share pool (`toSharesUp(1, TBA, TBS) ≈ TBS/TBA`). Repaying borrow assets to zero one share at a time and re-minting doubles the borrow-share supply each cheap cycle until it overflows `uint128` and every borrow reverts. The borrow hook fences this: while total borrow assets sit below `DUST_MARKET_MIN_BORROW`, a borrow must draw at least that much, so the market never enters the degenerate low-assets regime where a tiny borrow mints disproportionately. The floor sets the attack's cost — reaching the overflow takes on the order of `floor · log_floor(2^128)` transactions — for a payoff of only a temporary, recoverable borrow-DoS on an unused market, and leaves honest borrows on a market above the floor untouched.
+
+**Supply-share-accounting invariant.** The core `supply` is permissionless and accepts any `onBehalf`, so a third party can credit supply shares to the vault address without receiving vault shares. Backing shares with the vault's full core position would let that credit inflate the share price and the settlement budgets — a `deposit` could mint zero shares, or a single share could command settle budget it never paid for. The vault instead backs shares with `_managedSupplyShares` (supply shares from its own operations only: `supply` in, `withdraw`/settlement burn out), used in `totalAssets`, both settlement budgets, and `previewFallbackExit`; the invariant `_managedSupplyShares <= coreSupplyShares` holds by construction, and a nonzero deposit that would mint zero shares reverts as defense in depth.
 
 Each invariant here maps to a scenario or integration test in `test/`.
 

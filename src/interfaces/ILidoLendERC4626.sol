@@ -38,9 +38,12 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @notice Thrown when the market's collateral token is the zero address at initialization.
     error ZeroCollateralToken();
 
-    /// @notice Thrown when an exit reaches its settle leg but the vault holds no Morpho supply shares to cut
-    ///         against, so the requested slice maps to a zero supply-share budget.
+    /// @notice Thrown when an exit maps to a zero core supply-share budget.
     error ZeroMorphoSupplyShares();
+
+    /// @notice Thrown when a nonzero deposit receives zero core supply shares.
+    /// @param assets The deposited assets that mapped to zero core supply shares.
+    error ZeroCoreSupplySharesMinted(uint256 assets);
 
     /// @notice Thrown when the requested exit shares exceed the owner's balance.
     /// @param owner The account whose balance was checked.
@@ -50,6 +53,10 @@ interface ILidoLendERC4626 is IERC4626 {
 
     /// @notice Thrown when `settle` is called with an empty borrowers list.
     error EmptyBorrowers();
+
+    /// @notice Thrown when a nonzero-asset deposit would mint zero vault shares.
+    /// @param assets The deposited assets that mapped to zero shares.
+    error ZeroSharesMinted(uint256 assets);
 
     // ---
     // EVENTS
@@ -128,6 +135,11 @@ interface ILidoLendERC4626 is IERC4626 {
 
     /// @notice The wrapped market's params (loan/collateral/oracle/irm/lltv), as cached at init.
     function marketParams() external view returns (MarketParams memory);
+
+    /// @notice Core supply shares the vault acquired through its own operations — the backing that counts for
+    ///         `totalAssets` and the settlement budgets. Excludes permissionless core `supply` credits made
+    ///         directly to the vault address, and is always `<=` the vault's live core supply-share position.
+    function managedSupplyShares() external view returns (uint256);
 
     /// @notice Returns the loan assets and Morpho supply shares `fallbackExit(shares, ...)` would consume.
     /// @param shares Vault shares to preview the exit for.
