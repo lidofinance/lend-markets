@@ -177,6 +177,30 @@ contract SettlementQueueLibTest is Test {
         assertEq(q.size(), 1, "still one (re-key, not insert)");
     }
 
+    /// @dev The full risk key is `borrowShares * 1e18 / rawCollateral`; it must order positions above the former
+    ///      uint96 saturation boundary by their real ratio, not insertion history.
+    function test_sync_ordersKeysAboveUint96Boundary() public {
+        uint256 lower = uint256(type(uint96).max) + 1;
+        uint256 higher = lower + 1;
+        q.sync(_b(1), _pos(lower, WAD));
+        q.sync(_b(2), _pos(higher, WAD));
+
+        assertEq(q.peekRoot(), _b(2), "higher full-precision key is root");
+        (, uint256[] memory keys) = q.settlementBorrowers(0, 1);
+        assertEq(keys[0], higher, "root exposes full key");
+    }
+
+    /// @dev An ordinary 80%-LTV position with an 18-decimal loan and 6-decimal collateral has a risk key far
+    ///      above uint96, so its exact key must remain usable for ordering.
+    function test_sync_sixDecimalCollateral_retainsOrdinaryLtvKey() public {
+        uint256 rawCollateral = 1e6;
+        uint256 borrowShares = 8e23;
+        q.sync(_b(1), _pos(borrowShares, rawCollateral));
+
+        (, uint256[] memory keys) = q.settlementBorrowers(0, 1);
+        assertEq(keys[0], 8e35, "ordinary 6-decimal collateral key retained");
+    }
+
     /// @dev A position synced with zero borrow shares (no debt) is removed from the queue.
     function test_sync_zeroBorrowShares_removes() public {
         q.sync(_b(1), _pos(50, 100));
