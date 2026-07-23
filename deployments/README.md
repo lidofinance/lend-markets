@@ -2,7 +2,7 @@
 
 Fork tests no longer read this directory. External network addresses live in
 `script/config/<network>.toml`, selected with `NETWORK`. An optional per-run
-`deployed/<run>/registry.toml`, selected with `FORK_REGISTRY`, supplies deployed protocol addresses.
+`deployed/<run>/protocol.toml`, selected with `FORK_REGISTRY`, supplies deployed protocol addresses.
 
 ## Running the fork tests
 

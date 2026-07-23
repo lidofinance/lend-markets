@@ -55,13 +55,45 @@ library OracleConfigFile {
         internal
         returns (string memory path)
     {
+        return _write(name, oracle, false, metadata);
+    }
+
+    function writeReference(string memory name, address oracle, ArtifactMetadata memory metadata)
+        internal
+        returns (string memory path)
+    {
+        return _write(name, oracle, true, metadata);
+    }
+
+    function _write(string memory name, address oracle, bool reused, ArtifactMetadata memory metadata)
+        private
+        returns (string memory path)
+    {
         ArtifactMetadataFile.ensureArtifactsDir();
+        string memory dir = string.concat(ArtifactMetadataFile.artifactsDir(), "/oracles");
+        if (!vm.exists(dir)) vm.createDir(dir, false);
         path = deployedPath(name);
         if (vm.exists(path)) revert ArtifactAlreadyExists(path);
         string memory artifact = ArtifactMetadataFile.header(metadata, "oracle");
         artifact = string.concat(artifact, "\n[oracle]\n");
-        artifact = string.concat(artifact, "config = \"", name, "\"\n");
+        artifact = string.concat(artifact, "name = \"", name, "\"\n");
         artifact = string.concat(artifact, "address = \"", vm.toString(oracle), "\"\n");
+        artifact = string.concat(artifact, reused ? "reused = true\n" : "reused = false\n");
+        string memory raw = readRaw(name);
+        if (hasKey(raw, ".wsteth")) {
+            WstEthOracleConfig memory cfg = readWstEth(name);
+            artifact = string.concat(artifact, "kind = \"wsteth-rate\"\n");
+            artifact = string.concat(artifact, "wsteth = \"", vm.toString(cfg.wstETH), "\"\n");
+            artifact = string.concat(artifact, "proxy_admin = \"", vm.toString(cfg.proxyAdmin), "\"\n");
+        } else {
+            UsdyOracleConfig memory cfg = readUsdy(name);
+            artifact = string.concat(artifact, "kind = \"usdy-stable\"\n");
+            artifact = string.concat(artifact, "usdy_oracle = \"", vm.toString(cfg.usdyOracle), "\"\n");
+            artifact = string.concat(artifact, "feed = \"", vm.toString(cfg.feed), "\"\n");
+            artifact = string.concat(artifact, "loan_token = \"", vm.toString(cfg.loanToken), "\"\n");
+            artifact = string.concat(artifact, "collateral_token = \"", vm.toString(cfg.collateralToken), "\"\n");
+            artifact = string.concat(artifact, "proxy_admin = \"", vm.toString(cfg.proxyAdmin), "\"\n");
+        }
         vm.writeFile(path, artifact);
     }
 
@@ -77,6 +109,6 @@ library OracleConfigFile {
     }
 
     function deployedPath(string memory name) internal view returns (string memory) {
-        return string.concat(ArtifactMetadataFile.artifactsDir(), "/oracle-", name, ".toml");
+        return string.concat(ArtifactMetadataFile.artifactsDir(), "/oracles/", name, ".toml");
     }
 }

@@ -20,8 +20,8 @@ RPC_URL ?=
 DEPLOYER_PRIVATE_KEY ?=
 VERIFY ?= true
 RESUME ?= false
-CHAIN_ID ?= $(shell if [ -n "$(RUN)" ] && [ -f "deployed/$(RUN)/registry.toml" ]; then \
-	awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' "deployed/$(RUN)/registry.toml"; \
+CHAIN_ID ?= $(shell if [ -n "$(RUN)" ] && [ -f "deployed/$(RUN)/protocol.toml" ]; then \
+	awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' "deployed/$(RUN)/protocol.toml"; \
 	else \
 	awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' "script/config/$(CONFIG).toml"; \
 	fi)
@@ -60,8 +60,8 @@ help:
 	@echo "  deploy-wizard interactive wrapper around the deploy targets"
 	@echo "  acceptance-run RUN=<run> MARKET=<name>"
 	@echo "  acceptance-run-multi RUN=<run> MARKET_A=<name> MARKET_B=<name>"
-	@echo "  fork-run CONFIG=<config> RUN=<run>  (read-only fork tests against this registry)"
-	@echo "               deploy targets snapshot inputs and archive broadcast JSON under deployed/<run>/"
+	@echo "  fork-run CONFIG=<config> RUN=<run>  (read-only fork tests against this deployment)"
+	@echo "               deploy targets write immutable artifacts and archive broadcast JSON under deployed/<run>/"
 	@echo "  fmt           forge fmt on tracked paths (local only; rewrites files)"
 	@echo "  fmt-check     forge fmt --check on tracked paths (local only; CI does not fail on style)"
 	@echo "  lint          forge lint"
@@ -150,19 +150,19 @@ acceptance-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(MARKET)" || { echo "ERROR: set MARKET"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/registry.toml" MARKET="$(MARKET)" forge test --match-path 'test/acceptance/*' --no-match-contract MultiMarketActivatedAcceptance -vvv
+	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/protocol.toml" MARKET="$(MARKET)" forge test --match-path 'test/acceptance/*' --no-match-contract MultiMarketActivatedAcceptance -vvv
 
 acceptance-run-multi:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(MARKET_A)" || { echo "ERROR: set MARKET_A"; exit 1; }
 	@test -n "$(MARKET_B)" || { echo "ERROR: set MARKET_B"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/registry.toml" MARKET="$(MARKET_A)" MARKET_A="$(MARKET_A)" MARKET_B="$(MARKET_B)" forge test --match-contract MultiMarketActivatedAcceptance -vvv
+	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/protocol.toml" MARKET="$(MARKET_A)" MARKET_A="$(MARKET_A)" MARKET_B="$(MARKET_B)" forge test --match-contract MultiMarketActivatedAcceptance -vvv
 
 fork-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ETH_RPC_URL="$(RPC_URL)" FORK_REGISTRY="deployed/$(RUN)/registry.toml" NETWORK="$(NETWORK)" forge test --match-path '$(FORK_PATH)'
+	ETH_RPC_URL="$(RPC_URL)" FORK_REGISTRY="deployed/$(RUN)/protocol.toml" NETWORK="$(NETWORK)" forge test --match-path '$(FORK_PATH)'
 
 # Convenience only. The normal targets above remain scriptable and CI-friendly.
 deploy-wizard:

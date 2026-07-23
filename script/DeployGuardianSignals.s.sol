@@ -25,9 +25,9 @@ contract DeployGuardianSignals is Script {
         address builder = vm.parseTomlAddress(toml, ".builder");
         if (builder == address(0)) revert ConfigToml.MissingConfigValue(".builder");
         {
-            string memory registry = vm.readFile(ProtocolConfigFile.deployedPath());
-            DeployConfigFile.requireRegistryGovernance(deployConfig, registry);
-            address registryBuilder = vm.parseTomlAddress(registry, ".protocol.builder");
+            string memory protocolArtifact = vm.readFile(ProtocolConfigFile.protocolPath());
+            DeployConfigFile.requireRegistryGovernance(deployConfig, protocolArtifact);
+            address registryBuilder = vm.parseTomlAddress(protocolArtifact, ".protocol.builder");
             if (builder != registryBuilder) revert RegistryBuilderMismatch(registryBuilder, builder);
         }
 
@@ -40,8 +40,6 @@ contract DeployGuardianSignals is Script {
             configHash: deployConfig.configHash
         });
         GuardianSignalsConfigFile.requireUndeployed(name);
-        ArtifactMetadataFile.snapshotInput("deploy", DeployConfigFile.configPath(config));
-        ArtifactMetadataFile.snapshotInput(string.concat("guardian-", name), GuardianSignalsConfigFile.configPath(name));
         address[] memory managers = new address[](0);
         uint256 deployedBlock = vm.getBlockNumber();
 

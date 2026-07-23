@@ -54,7 +54,7 @@ contract ForkRegistryTest is Test {
         string memory path = "deployed/fork-registry-unit.toml";
         vm.writeFile(
             path,
-            "[artifact]\nkind = \"protocol-registry\"\ndeployment = \"unit\"\nchain_id = 1\n\n[protocol]\ncore = \"0x0000000000000000000000000000000000001001\"\n"
+            "[artifact]\nkind = \"protocol-deployment\"\ndeployment = \"unit\"\nchain_id = 1\n\n[protocol]\ncore = \"0x0000000000000000000000000000000000001001\"\n"
         );
         h.loadRegistry(path);
         vm.removeFile(path);

@@ -25,8 +25,6 @@ contract DeployLinearKinkIrm is Script {
         string memory path = _artifactPath();
         if (vm.exists(path)) revert ArtifactAlreadyExists(path);
 
-        ArtifactMetadataFile.snapshotInput("deploy", DeployConfigFile.configPath(config));
-
         vm.startBroadcast();
         irm = address(new LinearKinkIrm(deployConfig.agent, deployConfig.evmScriptExecutor));
         vm.stopBroadcast();

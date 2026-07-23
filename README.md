@@ -30,7 +30,7 @@ only needed by a suite that reads an existing deployment:
 
 ```sh
 ETH_RPC_URL=<rpc-url> NETWORK=mainnet forge test --match-path 'test/fork/**'
-ETH_RPC_URL=<rpc-url> NETWORK=mainnet FORK_REGISTRY=deployed/<run>/registry.toml forge test --match-path 'test/fork/**'
+ETH_RPC_URL=<rpc-url> NETWORK=mainnet FORK_REGISTRY=deployed/<run>/protocol.toml forge test --match-path 'test/fork/**'
 ```
 
 Format Solidity:

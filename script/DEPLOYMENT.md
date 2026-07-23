@@ -14,8 +14,22 @@ Configuration lives under `script/config/`:
 
 Set `RPC_URL`, `DEPLOYER_PRIVATE_KEY`, and `ETHERSCAN_API_KEY` in `.env`. Deployment targets broadcast and
 verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`;
-all steps for one deployment must use the same `RUN`. Registry and deployment records are not overwritten;
-input snapshots are convenience copies.
+all steps for one deployment must use the same `RUN`. Artifacts are immutable and are not overwritten.
+
+The run directory contains:
+
+```text
+protocol.toml
+markets/<market>.toml
+guardians/<group>.toml
+oracles/<oracle>.toml
+exit-books.toml
+transactions/<step>.json
+```
+
+Each market artifact contains its resolved addresses, market ID, final controller role holders,
+CircuitBreaker, activation, settlement, and curve parameters. Separate oracle and GuardianSignals artifacts
+contain their resolved configuration.
 
 Before deployment, create each CircuitBreaker with `ADMIN = evm_script_executor` and place it first in the
 market's `roles.pausers`. Later entries are additional pausers. One CircuitBreaker may serve several markets.
@@ -58,13 +72,15 @@ make deploy-linear-kink-irm CONFIG=mainnet RUN=mainnet-weth-wsteth
 make deploy-exit-books CONFIG=mainnet RUN=mainnet-weth-wsteth
 ```
 
-The kinked IRM is recorded but not routed. `deploy-exit-books` appends missing exit books to an existing
-registry.
+The kinked IRM is recorded but not routed. `deploy-exit-books` writes `exit-books.toml` without modifying the
+protocol artifact.
 
 ## Activate
 
-Maintain the activation motion inputs manually in the EasyTrack repository. The motion sets the curve,
-routes the IRM, creates the market through `LidoLendOwner`, and registers the CircuitBreaker pauser.
+Activation inputs are runtime EasyTrack motion choices, not deployment artifacts. No separate activation
+artifact is generated or required. EasyTrack acceptance reads reviewed values and resolved addresses from
+`deployed/<RUN>/markets/<market-name>.toml`. The motion sets the curve, routes the IRM, creates the market
+through `LidoLendOwner`, and registers the CircuitBreaker pauser.
 
 Exit-book allow-listing is a separate `LidoLendSetMarketExitBookAllowed` motion.
 

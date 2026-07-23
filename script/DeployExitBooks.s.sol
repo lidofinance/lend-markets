@@ -8,10 +8,11 @@ import {MorphoExitBook} from "../src/periphery/MorphoExitBook.sol";
 
 import {ProtocolDeployer} from "./lib/ProtocolDeployer.sol";
 import {ExitBookConfig} from "./lib/ExitBookConfigFile.sol";
-import {ProtocolConfigFile} from "./lib/ProtocolConfigFile.sol";
+import {ProtocolConfigFile, ExitBooksDeployment} from "./lib/ProtocolConfigFile.sol";
 import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
+import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
 
-/// @notice Deploys both exit books for an existing protocol and appends them to its run registry.
+/// @notice Deploys and records both exit books for an existing protocol.
 contract DeployExitBooks is Script, ProtocolDeployer {
     error CoreNotContract(address core);
     error UnexpectedCore(address expected, address actual);
@@ -23,15 +24,14 @@ contract DeployExitBooks is Script, ProtocolDeployer {
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
         DeployConfigFile.requireChainId(deployConfig);
         DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
-        string memory registryPath = ProtocolConfigFile.deployedPath();
-        string memory registry = vm.readFile(registryPath);
-        DeployConfigFile.requireRegistryGovernance(deployConfig, registry);
-        ProtocolConfigFile.requireExitBooksAbsent(registryPath);
+        string memory protocolArtifact = vm.readFile(ProtocolConfigFile.protocolPath());
+        DeployConfigFile.requireRegistryGovernance(deployConfig, protocolArtifact);
+        ProtocolConfigFile.requireExitBooksUndeployed();
 
-        address core = vm.parseTomlAddress(registry, ".protocol.core");
+        address core = vm.parseTomlAddress(protocolArtifact, ".protocol.core");
         if (core.code.length == 0) revert CoreNotContract(core);
-        address agent = vm.parseTomlAddress(registry, ".protocol.agent");
-        address executor = vm.parseTomlAddress(registry, ".protocol.evm_script_executor");
+        address agent = vm.parseTomlAddress(protocolArtifact, ".protocol.agent");
+        address executor = vm.parseTomlAddress(protocolArtifact, ".protocol.evm_script_executor");
         uint256 maxRequestLifetime = deployConfig.exitBookMaxRequestLifetime;
         uint256 deployedBlock = vm.getBlockNumber();
         address deployer = msg.sender;
@@ -49,11 +49,26 @@ contract DeployExitBooks is Script, ProtocolDeployer {
         _validateExitBook(erc4626, address(0), agent, executor, deployer);
         _requireMaxRequestLifetime(morpho, maxRequestLifetime);
         _requireMaxRequestLifetime(erc4626, maxRequestLifetime);
-        ProtocolConfigFile.appendExitBooks(registryPath, morpho, erc4626, deployedBlock, deployer, maxRequestLifetime);
+        string memory artifactPath = ProtocolConfigFile.writeExitBooks(
+            ExitBooksDeployment({
+                morpho: morpho,
+                erc4626: erc4626,
+                deployedBlock: deployedBlock,
+                deployer: deployer,
+                agent: agent,
+                evmScriptExecutor: executor,
+                maxRequestLifetime: maxRequestLifetime
+            }),
+            ArtifactMetadata({
+                deployment: ArtifactMetadataFile.deployment(),
+                chainId: deployConfig.chainId,
+                configHash: deployConfig.configHash
+            })
+        );
 
         console2.log("morphoExitBook  :", morpho);
         console2.log("erc4626ExitBook :", erc4626);
-        console2.log("registry        :", registryPath);
+        console2.log("recorded        :", artifactPath);
     }
 
     function _validateExitBook(address book, address expectedCore, address agent, address executor, address deployer)

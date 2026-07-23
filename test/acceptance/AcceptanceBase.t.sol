@@ -161,8 +161,8 @@ interface IReadCircuitBreaker {
 
 /// @notice Base for market acceptance tests. Forks the node the protocol is deployed on
 ///         (`ACCEPTANCE_RPC_URL` or `--fork-url`) and exposes the shared assertion + activation helpers.
-///         Live addresses come from the deploy registry and construction inputs from the run snapshots.
-///         Skips only when no registry is provided; a wrong RPC or network fails.
+///         Expected values and deployed addresses come from immutable run artifacts.
+///         Skips only when no protocol artifact is provided; a wrong RPC or network fails.
 ///
 /// @dev This is the repo's verify tool. It independently binds deployed runtime code to the local sources,
 ///      checks backbone wiring and operational state, calls the builder's detailed instance validators, and
@@ -248,25 +248,23 @@ abstract contract AcceptanceContext is Test {
     uint256 internal expectedSuspectWindow;
     address internal expectedAccessLimiter;
 
-    // Deployed addresses come from the registry; construction inputs come from run-local snapshots.
-    string internal toml; // deployed/<run>/inputs/market-<MARKET>.toml
-    string internal guardiansCfg; // deployed/<run>/inputs/guardian-<guardian_group>.toml
-    string internal oracleCfg; // deployed/<run>/inputs/oracle-<oracle_artifact>.toml
-    string internal registry; // deployed/<name>-<unix-ms>.toml via ACCEPTANCE_REGISTRY
+    string internal toml;
+    string internal guardiansCfg;
+    string internal oracleCfg;
+    string internal exitBooksArtifact;
+    string internal registry;
 
     function setUp() public virtual {
-        // Live addresses come from the deploy registry (per-run, never committed); without one there is
-        // nothing to verify — skip.
         string memory regPath = vm.envOr("ACCEPTANCE_REGISTRY", string(""));
         if (bytes(regPath).length == 0 || !vm.exists(regPath)) {
-            vm.skip(true, "acceptance: set ACCEPTANCE_REGISTRY to a deploy registry");
+            vm.skip(true, "acceptance: set ACCEPTANCE_REGISTRY to protocol.toml");
             return;
         }
         registry = vm.readFile(regPath);
 
         string memory rpc = vm.envOr("ACCEPTANCE_RPC_URL", string(""));
         if (bytes(rpc).length != 0) vm.createSelectFork(rpc);
-        assertEq(block.chainid, vm.parseTomlUint(registry, ".protocol.chain_id"), "registry chain ID");
+        assertEq(block.chainid, vm.parseTomlUint(registry, ".protocol.chain_id"), "protocol artifact chain ID");
         _loadMarket(vm.envString("MARKET"));
         assertGt(core.code.length, 0, "core missing code on acceptance RPC");
         assertGt(controller.code.length, 0, "controller missing code on acceptance RPC");
@@ -274,21 +272,17 @@ abstract contract AcceptanceContext is Test {
 
     function _loadMarket(string memory market) internal {
         string memory deployment = vm.parseTomlString(registry, ".artifact.deployment");
-        string memory inputsDir = string.concat("deployed/", deployment, "/inputs/");
-        toml = vm.readFile(string.concat(inputsDir, "market-", market, ".toml"));
+        string memory artifactsDir = string.concat("deployed/", deployment, "/");
+        toml = vm.readFile(string.concat(artifactsDir, "markets/", market, ".toml"));
         string memory guardianGroup = vm.parseTomlString(toml, ".market.guardian_group");
-        guardiansCfg = vm.readFile(string.concat(inputsDir, "guardian-", guardianGroup, ".toml"));
+        guardiansCfg = vm.readFile(string.concat(artifactsDir, "guardians/", guardianGroup, ".toml"));
         string memory oracleArtifact = vm.parseTomlString(toml, ".market.oracle_artifact");
-        oracleCfg = vm.readFile(string.concat(inputsDir, "oracle-", oracleArtifact, ".toml"));
-        string memory mk = string.concat(".markets.", market, ".");
+        oracleCfg = vm.readFile(string.concat(artifactsDir, "oracles/", oracleArtifact, ".toml"));
 
-        // Governance holders come from the deployment registry; guardian config contains only registry-local
-        // policy and role inputs.
         agent = _reg(".protocol.agent");
         executor = _reg(".protocol.evm_script_executor");
         deployer = _reg(".protocol.deployer");
 
-        // Deployed addresses: the registry.
         core = _reg(".protocol.core");
         facade = _reg(".protocol.owner_facade");
         router = _reg(".protocol.irm_router");
@@ -296,26 +290,30 @@ abstract contract AcceptanceContext is Test {
         factory = _reg(".protocol.factory");
         builder = _reg(".protocol.builder");
         dashboard = _reg(".protocol.risk_steward_dashboard");
-        bool hasMorphoBook = vm.keyExistsToml(registry, ".exit_books.morpho");
-        bool hasErc4626Book = vm.keyExistsToml(registry, ".exit_books.erc4626");
-        assertEq(hasMorphoBook, hasErc4626Book, "partial exit-books registry");
-        if (hasMorphoBook) {
-            morphoBook = _reg(".exit_books.morpho");
-            erc4626Book = _reg(".exit_books.erc4626");
-            expectedExitBookMaxRequestLifetime = vm.parseTomlUint(registry, ".exit_books.max_request_lifetime");
-            exitBooksDeployedBlock = vm.keyExistsToml(registry, ".exit_books.deployed_block")
-                ? vm.parseTomlUint(registry, ".exit_books.deployed_block")
-                : vm.parseTomlUint(registry, ".protocol.deployed_block");
+        string memory exitBooksPath = string.concat(artifactsDir, "exit-books.toml");
+        if (vm.exists(exitBooksPath)) {
+            exitBooksArtifact = vm.readFile(exitBooksPath);
+            morphoBook = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.morpho");
+            erc4626Book = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.erc4626");
+            expectedExitBookMaxRequestLifetime = vm.parseTomlUint(exitBooksArtifact, ".exit_books.max_request_lifetime");
+            exitBooksDeployedBlock = vm.parseTomlUint(exitBooksArtifact, ".exit_books.deployed_block");
         }
-        oracle = _reg(string.concat(mk, "oracle"));
-        guardianSignals = _reg(string.concat(mk, "guardian_signals"));
-        controller = _reg(string.concat(mk, "controller"));
-        vault = _reg(string.concat(mk, "vault"));
-        marketId = vm.parseTomlBytes32(registry, string.concat(mk, "id"));
+        oracle = _addr(".market.oracle");
+        guardianSignals = _addr(".market.guardian_signals");
+        controller = _addr(".market.controller");
+        vault = _addr(".market.vault");
+        marketId = vm.parseTomlBytes32(toml, ".market.id");
+        assertEq(_addr(".market.builder"), builder, "market builder != protocol builder");
+        assertEq(_addr(".market.irm"), router, "market IRM != protocol router");
+        assertEq(vm.parseTomlAddress(oracleCfg, ".oracle.address"), oracle, "oracle artifact address");
+        assertEq(
+            vm.parseTomlAddress(guardiansCfg, ".guardian_signals.address"),
+            guardianSignals,
+            "GuardianSignals artifact address"
+        );
 
-        // Event-scan starting points: the registry's per-protocol and per-market blocks.
         protocolDeployedBlock = vm.parseTomlUint(registry, ".protocol.deployed_block");
-        marketDeployedBlock = vm.parseTomlUint(registry, string.concat(mk, "deployed_block"));
+        marketDeployedBlock = vm.parseTomlUint(toml, ".market.deployed_block");
 
         loanToken = _addr(".market.loan_token");
         collateralToken = _addr(".market.collateral_token");
@@ -324,25 +322,24 @@ abstract contract AcceptanceContext is Test {
         rAdmin = _addr(".roles.admin");
         rProxyAdmin = _addr(".roles.proxy_admin");
         rManagers = vm.parseTomlAddressArray(toml, ".roles.managers");
-        rPausers = vm.parseTomlAddressArray(registry, string.concat(mk, "pausers"));
+        rPausers = vm.parseTomlAddressArray(toml, ".roles.pausers");
         rFreezers = vm.parseTomlAddressArray(toml, ".roles.freezers");
         rUnfreezers = vm.parseTomlAddressArray(toml, ".roles.unfreezers");
         rResumers = vm.parseTomlAddressArray(toml, ".roles.resumers");
 
-        assertGt(rPausers.length, 0, "registry has no CircuitBreaker");
-        circuitBreaker = rPausers[0];
+        assertGt(rPausers.length, 0, "market artifact has no CircuitBreaker");
+        circuitBreaker = _addr(".market.circuit_breaker");
+        assertEq(circuitBreaker, rPausers[0], "CircuitBreaker must be the first pauser");
 
         // Test-only activation choices. Production motion inputs are maintained manually in EasyTrack.
         pauserCommittee = agent;
         enableSettlement = true;
 
-        // Expected guardian state: EasyTrack reaches the registry only through the owner facade, so the
-        // deployment configures no direct manager/restorer.
-        expectedGuardians = vm.parseTomlAddressArray(guardiansCfg, ".guardians");
-        gProxyAdmin = _grd(".proxy_admin");
-        expectedQuorum = vm.parseTomlUint(guardiansCfg, ".quorum");
-        expectedSuspectWindow = vm.parseTomlUint(guardiansCfg, ".suspect_window");
-        expectedAccessLimiter = vm.keyExistsToml(guardiansCfg, ".access_limiter") ? _grd(".access_limiter") : address(0);
+        expectedGuardians = vm.parseTomlAddressArray(guardiansCfg, ".guardian_signals.guardians");
+        gProxyAdmin = _grd(".guardian_signals.proxy_admin");
+        expectedQuorum = vm.parseTomlUint(guardiansCfg, ".guardian_signals.quorum");
+        expectedSuspectWindow = vm.parseTomlUint(guardiansCfg, ".guardian_signals.suspect_window");
+        expectedAccessLimiter = _grd(".guardian_signals.access_limiter");
         gManagers = new address[](0);
     }
 
@@ -434,21 +431,21 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         address implementation = IReadProxy(oracle).proxy__getImplementation();
         assertGt(implementation.code.length, 0, "oracle implementation missing code");
 
-        bool isWstEth = vm.keyExistsToml(oracleCfg, ".wsteth");
-        bool isUsdy = vm.keyExistsToml(oracleCfg, ".usdy_oracle");
+        bool isWstEth = vm.keyExistsToml(oracleCfg, ".oracle.wsteth");
+        bool isUsdy = vm.keyExistsToml(oracleCfg, ".oracle.usdy_oracle");
         assertTrue(isWstEth != isUsdy, "unknown or ambiguous oracle config");
 
         if (isWstEth) {
-            address expectedWstEth = vm.parseTomlAddress(oracleCfg, ".wsteth");
+            address expectedWstEth = vm.parseTomlAddress(oracleCfg, ".oracle.wsteth");
             assertEq(expectedWstEth, collateralToken, "oracle WstETH != collateral token");
             address expectedImplementation = address(new WstEthRateOracle(expectedWstEth));
             assertEq(implementation.codehash, expectedImplementation.codehash, "WstETH oracle implementation");
             assertEq(IReadWstEthOracle(oracle).WSTETH(), expectedWstEth, "oracle.WSTETH");
         } else {
-            address expectedUsdyOracle = vm.parseTomlAddress(oracleCfg, ".usdy_oracle");
-            address expectedFeed = vm.parseTomlAddress(oracleCfg, ".feed");
-            address expectedLoanToken = vm.parseTomlAddress(oracleCfg, ".loan_token");
-            address expectedCollateralToken = vm.parseTomlAddress(oracleCfg, ".collateral_token");
+            address expectedUsdyOracle = vm.parseTomlAddress(oracleCfg, ".oracle.usdy_oracle");
+            address expectedFeed = vm.parseTomlAddress(oracleCfg, ".oracle.feed");
+            address expectedLoanToken = vm.parseTomlAddress(oracleCfg, ".oracle.loan_token");
+            address expectedCollateralToken = vm.parseTomlAddress(oracleCfg, ".oracle.collateral_token");
             assertEq(expectedLoanToken, loanToken, "oracle loan token != market loan token");
             assertEq(expectedCollateralToken, collateralToken, "oracle USDY != collateral token");
             address expectedImplementation = address(new UsdyStableOracle(expectedUsdyOracle));
@@ -751,11 +748,10 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
             roles[5] = RESUMER_ROLE;
             address[][] memory holders = new address[][](6);
             holders[0] = _arr1(rAdmin);
-            holders[1] = _append(rManagers, dashboard);
-            holders[1] = _append(holders[1], facade);
+            holders[1] = rManagers;
             holders[2] = rPausers;
             holders[3] = rFreezers;
-            holders[4] = _append(rUnfreezers, facade);
+            holders[4] = rUnfreezers;
             holders[5] = rResumers;
             _assertExactRoleHolders(controller, marketDeployedBlock, roles, holders);
         }

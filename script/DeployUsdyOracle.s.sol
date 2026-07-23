@@ -27,8 +27,6 @@ contract DeployUsdyOracle is Script, LidoLendPrimitives {
             configHash: deployConfig.configHash
         });
         OracleConfigFile.requireUndeployed(name);
-        ArtifactMetadataFile.snapshotInput("deploy", DeployConfigFile.configPath(config));
-        ArtifactMetadataFile.snapshotInput(string.concat("oracle-", name), OracleConfigFile.configPath(name));
 
         vm.startBroadcast();
         address impl = address(new UsdyStableOracle(c.usdyOracle));

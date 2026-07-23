@@ -41,11 +41,4 @@ library ArtifactMetadataFile {
     function deployment() internal view returns (string memory) {
         return vm.envString("ARTIFACTS_DIR");
     }
-
-    function snapshotInput(string memory name, string memory sourcePath) internal {
-        ensureArtifactsDir();
-        string memory inputsDir = string.concat(artifactsDir(), "/inputs");
-        if (!vm.exists(inputsDir)) vm.createDir(inputsDir, false);
-        vm.writeFile(string.concat(inputsDir, "/", name, ".toml"), vm.readFile(sourcePath));
-    }
 }

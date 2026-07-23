@@ -25,14 +25,11 @@
   existing deployment.
 - `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
   deployed stack is correctly wired, fully role-wired (event-completeness scan), and either ready for the
-  activation motion or live after it. Live addresses come from a deploy registry (`deployed/<name>-<unix-ms>.toml`
-  via `ACCEPTANCE_REGISTRY`); expected values from the committed `script/config/*`. Deploy addresses are never
-  committed, so the suite skips unless pointed at a registry.
+  activation motion or live after it. Expected values and addresses come from immutable artifacts under
+  `deployed/<run>/`; the suite skips unless `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
 - `script/`: deployment scripts.
-- `deployed/<name>-<unix-ms>.toml`: per-run registry of deployed addresses a deploy produces (dated, one per
-  run — no auto-overwritten alias). Read by `test/acceptance/` for verification. Alongside it a deploy also
-  writes `deployed/activation-<name>-<unix-ms>.toml`: the per-market activation-motion inputs (marketParams,
-  curveParams, controller), so the EasyTrack motion is assembled from a file, not scraped from logs.
+- `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `guardians/`, `oracles/`,
+  optional `exit-books.toml`, and archived transaction records.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).
@@ -122,7 +119,7 @@ test/
 ├── scenario/     # L2 — end-to-end flows on a freshly deployed stack (local EVM, mock tokens)
 ├── invariant/    # L4 — handler-based stateful properties
 ├── fork/         # fork tests using script/config/<NETWORK>.toml; registry optional for deployed addresses
-└── acceptance/   # L3 — mainnet fork vs the already-deployed protocol (deployed/<name>-<unix-ms>.toml)
+└── acceptance/   # L3 — mainnet fork vs immutable artifacts under deployed/<run>/
 ```
 
 - `unit/<Contract>.t.sol` — single contract or pure library in isolation; **flat, one file per
@@ -134,9 +131,9 @@ test/
   actions). Handlers under `invariant/handlers/`.
 - `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
 - `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
-  addresses from `deployed/<name>-<unix-ms>.toml` (via `ACCEPTANCE_REGISTRY`), expected values from the
-  committed `script/config/*`. Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`); skips without
-  a registry. See `script/DEPLOYMENT.md`.
+  addresses and expected values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
+  Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`); skips without an artifact. See
+  `script/DEPLOYMENT.md`.
 
 ### Setup Infra (`test/setup/`)
 
