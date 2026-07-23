@@ -31,6 +31,11 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     error AgentCannotBeDeployer();
     error AgentCannotBeExecutor();
     error ExecutorCannotBeDeployer();
+    error UnexpectedChainId(uint256 expected, uint256 actual);
+
+    function _requireChainId(uint256 expected) internal view {
+        if (block.chainid != expected) revert UnexpectedChainId(expected, block.chainid);
+    }
 
     /// @dev Backbone: core, facade, router, dashboard, factory/builder + the C1/routine role split. Dashboard
     ///      is deployed before the builder so the builder can grant it each new controller's `MANAGER_ROLE`.

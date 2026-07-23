@@ -4,6 +4,7 @@ pragma solidity 0.8.35;
 import {Vm} from "forge-std/Vm.sol";
 
 import {ConfigToml} from "./ConfigToml.sol";
+import {ArtifactMetadata} from "./ArtifactMetadata.sol";
 
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 
@@ -17,9 +18,14 @@ import {GuardianSignalsConfigFile} from "./GuardianSignalsConfigFile.sol";
 library MarketConfigFile {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
+    struct ArtifactRefs {
+        string oracle;
+        string guardianGroup;
+    }
+
     /// @notice Read `script/config/markets/<name>.toml`, resolving the oracle and guardian from their
     ///         recorded artifacts when left zero. Reverts if no oracle can be resolved.
-    function read(string memory name)
+    function read(string memory name, ArtifactMetadata memory artifacts)
         internal
         view
         returns (
@@ -32,13 +38,14 @@ library MarketConfigFile {
         string memory toml = vm.readFile(marketPath(name));
         builder = vm.parseTomlAddress(toml, ".builder");
         (market, roles, curveParams) = parse(toml);
+        ArtifactRefs memory refs = _parseArtifactRefs(toml);
 
-        if (market.oracle == address(0)) market.oracle = OracleConfigFile.readDeployed(name);
+        if (market.oracle == address(0)) market.oracle = OracleConfigFile.readDeployed(refs.oracle, artifacts);
         if (market.oracle == address(0)) revert ConfigToml.MissingConfigValue(".market.oracle");
 
         // A zero guardian is not an error: it still means "deploy a fresh per-market instance".
         if (market.guardianSignals == address(0)) {
-            market.guardianSignals = GuardianSignalsConfigFile.readDeployed(name);
+            market.guardianSignals = GuardianSignalsConfigFile.readDeployed(refs.guardianGroup, artifacts);
         }
     }
 
@@ -58,6 +65,23 @@ library MarketConfigFile {
 
     function marketPath(string memory name) internal pure returns (string memory) {
         return string.concat("script/config/markets/", name, ".toml");
+    }
+
+    /// @notice Guardian deployment group selected by a market config.
+    function guardianGroup(string memory name) internal view returns (string memory) {
+        return _parseArtifactRefs(vm.readFile(marketPath(name))).guardianGroup;
+    }
+
+    /// @notice Oracle artifact selected by a market config.
+    function oracleArtifact(string memory name) internal view returns (string memory) {
+        return _parseArtifactRefs(vm.readFile(marketPath(name))).oracle;
+    }
+
+    function _parseArtifactRefs(string memory toml) private view returns (ArtifactRefs memory) {
+        return ArtifactRefs({
+            oracle: ConfigToml.requireString(toml, ".market.oracle_artifact"),
+            guardianGroup: ConfigToml.requireString(toml, ".market.guardian_group")
+        });
     }
 
     // ---

@@ -5,24 +5,39 @@ stack; **activation** (binding a market on the core) is a governance EasyTrack m
 split and CircuitBreaker wiring: `docs/specs/roles.md`.
 
 There is **one protocol deployment**: one `LidoLend` core hosting every market as a storage entry, one
-backbone of singletons around it. The `CONFIG` selector just picks the TOML describing
-that deployment (`script/config/<name>.toml`), nothing more. (A second fully independent instance
+backbone of singletons around it. The script argument picks the TOML describing
+that deployment (`script/config/<name>.toml`). The `ARTIFACTS_DIR` directory is its immutable identity. (A second fully independent instance
 would remain deployable from a second config by construction, but none is planned.)
 
 ## Scripts
 
 Config files live under `script/config/`.
 
+`ARTIFACTS_DIR` selects one run-local directory below `deployed/`; use the same value for each step of that
+deployment. The first step creates `manifest.toml`, which binds that directory to the network, chain ID, and
+deployment-config hash. Every later step verifies it before broadcasting. For example:
+
+```sh
+make deploy-run CONFIG=mainnet RUN=mainnet-weth-wsteth ORACLE=weth-wsteth
+```
+
+Every generated TOML begins with `[artifact]` (`kind`, `deployment`, `chain_id`, `config_hash`). Resolver records are
+accepted only when this metadata matches the current deployment operation. Writers reject an existing artifact
+path rather than overwriting it.
+
+Each deploy step also snapshots its TOML inputs to `inputs/` and the Make wrapper copies Foundry's broadcast
+record to `transactions/`. The run directory is therefore a reproducible dossier, not only an address registry.
+
 | Script | Deploys | Selector → config |
 |---|---|---|
-| `DeployProtocol.s.sol` | The whole protocol from scratch: backbone (core, `LidoLendOwner` facade, `IrmRouter`, `LidoLendMarketFactory` + `LidoLendMarketBuilder`, `RiskStewardDashboard`), optional exit books, and per-market guardian registry + inert components. | `CONFIG` → `<name>.toml` (+ the files it names) |
-| `AddMarket.s.sol` | One market onto the live protocol: its guardian registry (via `LidoLendMarketBuilder.buildGuardianSignals`, its own transaction, when the config leaves it zero) + inert components (via `buildMarketContracts`). | `MARKET` → `markets/`, `guardians/<name>.toml`; `REGISTRY` → the deployed-address registry (optional — only for appending the result) |
-| `DeployWstEthOracle.s.sol` / `DeployUsdyOracle.s.sol` | One standalone oracle behind a proxy; prints its address and records it to `deployed/oracle-<name>.toml`. | `ORACLE` → `oracles/<name>.toml` |
-| `DeployGuardianSignals.s.sol` | One standalone `GuardianSignals` registry (for a guardian committee shared by a market group), via the same `buildGuardianSignals` entry point; prints its address and records it to `deployed/guardian-<name>.toml`. | `GUARDIANS` → `guardians/<name>.toml` (which also names the builder, `.builder`, pasted in after the protocol deploy) |
+| `DeployProtocol.s.sol` | The whole protocol from scratch: backbone (core, `LidoLendOwner` facade, `IrmRouter`, `LidoLendMarketFactory` + `LidoLendMarketBuilder`, `RiskStewardDashboard`), optional exit books, and per-market guardian registry + inert components. | `run(config)` → `<config>.toml` (+ the files it names) |
+| `AddMarket.s.sol` | One market onto the live protocol, appended to that deployment's registry. | `run(config, market)` → `markets/`, `guardians/<group>.toml` |
+| `DeployWstEthOracle.s.sol` / `DeployUsdyOracle.s.sol` | One standalone oracle behind a proxy; records it to `deployed/<ARTIFACTS_DIR>/oracle-<name>.toml`. | `run(config, oracle)` → `oracles/<name>.toml` |
+| `DeployGuardianSignals.s.sol` | One standalone `GuardianSignals` registry for a shared market group; records it to `deployed/<ARTIFACTS_DIR>/guardian-<group>.toml`. | `run(config, group)` → `guardians/<group>.toml` |
 | `Devnet.s.sol` | Local devnet bring-up. | — |
 
 A market's oracle is a **pre-deployed address**: deploy it first with its script, which records the address
-to `deployed/oracle-<name>.toml`. With `markets/<name>.toml → [market].oracle` left zero, the market deploy
+to `deployed/<ARTIFACTS_DIR>/oracle-<name>.toml`. With `markets/<name>.toml → [market].oracle` left zero, the market deploy
 resolves it from that record automatically; a non-zero value pins an explicit address instead.
 
 A market's guardian registry is likewise a **pre-deployed address** by the time the market itself deploys —
@@ -32,7 +47,7 @@ through the one path a registry is ever deployed: `LidoLendMarketBuilder.buildGu
 to **fresh per market**: `guardian_signals = 0` makes the orchestrator (`DeployProtocol` / `AddMarket`) call
 `buildGuardianSignals` from `guardians/<name>.toml`, at the shared `GuardianSignals`
 implementation. For a group of markets under one committee, deploy the registry once with
-`DeployGuardianSignals` (same entry point) — its recorded address (`deployed/guardian-<name>.toml`) is then
+`DeployGuardianSignals` (same entry point) — its recorded address (`deployed/<ARTIFACTS_DIR>/guardian-<group>.toml`) is then
 picked up automatically by any market whose `guardian_signals` is left zero, mirroring the oracle resolver;
 no manual paste needed. Sharing is always an explicit or auto-resolved address (bans stay separated by
 market id).
@@ -45,18 +60,18 @@ market id).
    list) and the per-market files it names (`markets/`, `guardians/`).
 3. Deploy each market's oracle (the address is recorded and picked up by the market deploy automatically):
    ```sh
-   ORACLE=weth-wsteth forge script script/DeployWstEthOracle.s.sol --rpc-url "$RPC_URL" --broadcast
+   make deploy-oracle CONFIG=mainnet RUN=mainnet-weth-wsteth ORACLE=weth-wsteth
    ```
-4. Deploy the protocol (backbone + configured markets):
+4. Deploy the protocol (backbone + configured markets). Its TOML owns the deployment identity and declares the
+   matching `chain_id`; writers reject an existing artifact path.
    ```sh
    # dry run
-   CONFIG=mainnet forge script script/DeployProtocol.s.sol --fork-url "$MAINNET_RPC_URL" --sender "$DEPLOYER" -vvv
+   make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
    # broadcast
-   CONFIG=mainnet forge script script/DeployProtocol.s.sol --rpc-url "$RPC_URL" --broadcast --verify
+   make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
    ```
-   Addresses are logged; the registry is written to a dated `deployed/<name>-<unix-ms>.toml` (one per run —
-   no auto-overwritten "current" alias, since the freshest deploy is not necessarily the relevant one; pass
-   the file you mean explicitly). The deployer holds no role afterward.
+   Addresses are logged; the registry is written to `deployed/<ARTIFACTS_DIR>/registry.toml`, with `deployment`,
+   and `chain_id` recorded under `[protocol]`. There is no auto-overwritten "current" alias.
 5. External to this repo: whitelist the EasyTrack activation factory (DAO Voting).
 
 ## Add a market later
@@ -64,19 +79,21 @@ market id).
 1. Deploy its oracle (step 2 above).
 2. Optional: if it shares a guardian committee with other markets, deploy that registry once, up front:
    ```sh
-   GUARDIANS=usdy forge script script/DeployGuardianSignals.s.sol --rpc-url "$RPC_URL" --broadcast
+   make deploy-guardian CONFIG=mainnet RUN=mainnet-weth-wsteth GUARDIAN_GROUP=usdy
    ```
    Skip this when the market wants its own fresh registry — `guardian_signals` stays `0` and step 3 deploys
    one for it.
 3. Build the market:
    ```sh
-   MARKET=weth-wsteth REGISTRY=deployed/mainnet-<ts>.toml \
-     forge script script/AddMarket.s.sol --rpc-url "$RPC_URL" --broadcast
+   make deploy-market CONFIG=mainnet RUN=mainnet-weth-wsteth MARKET=weth-wsteth
    ```
+   Before broadcasting, this checks that the registry belongs to the selected run and that its recorded
+   builder matches the market config.
    With `guardian_signals` left zero (and no record from step 2 under this market's name), this first calls
    `LidoLendMarketBuilder.buildGuardianSignals` — its own transaction — before `buildMarketContracts`.
-4. Out come inert controller/vault + guardian registry at known addresses, recorded to `REGISTRY` (appended)
-   or a standalone `deployed/market-<name>-<unix-ms>.toml` when `REGISTRY` is unset.
+4. Out come inert controller/vault + guardian registry at known addresses, appended to
+   `deployed/<ARTIFACTS_DIR>/registry.toml`. The matching activation plan is
+   `deployed/<ARTIFACTS_DIR>/activation-<market>.toml`.
 
 ## Activation
 
@@ -98,7 +115,7 @@ exit books.
 duplicates its checks. Point it at the node the deployment lives on and the registry the deploy produced:
 
 ```sh
-ACCEPTANCE_RPC_URL="$RPC_URL" ACCEPTANCE_REGISTRY=deployed/mainnet-<ts>.toml \
+ACCEPTANCE_RPC_URL="$RPC_URL" ACCEPTANCE_REGISTRY=deployed/<ARTIFACTS_DIR>/registry.toml \
   ACCEPTANCE_PAUSER_COMMITTEE=0x… MARKET=weth-wsteth \
   forge test --match-path "test/acceptance/*" -vvv
 ```
@@ -140,7 +157,7 @@ Both share `AcceptanceBase`'s assertions:
 - No `Upgrade.s.sol`; proxy upgrades are out of scope for this prototype.
 - The `LidoLendActivateMarket` EasyTrack factory exists (EasyTrack repo) but is not whitelisted yet — that is
   a DAO Voting step outside this repo.
-- `DeployProtocol` / `AddMarket` emit a per-market `deployed/activation-<name>-<unix-ms>.toml` with the
+- `DeployProtocol` / `AddMarket` emit a per-market `deployed/<ARTIFACTS_DIR>/activation-<market>.toml` with the
   deploy-known motion inputs (marketParams, curveParams, controller); `pauser_committee` and
   `enable_settlement` are activation-time governance decisions, left as flagged `# TODO` placeholders for the
   operator to fill before assembling the motion.

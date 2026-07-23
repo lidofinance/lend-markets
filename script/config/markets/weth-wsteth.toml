@@ -18,12 +18,14 @@ collateral_token = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"  # wstETH
 # deployed/oracle-weth-wsteth.toml; the deploy reverts only when neither is set. Non-zero pins an explicit
 # address instead. The factory neither deploys nor checks it.
 oracle = "0x0000000000000000000000000000000000000000"  # resolved from deployed/oracle-weth-wsteth.toml
+oracle_artifact = "weth-wsteth"  # resolver key for the generated oracle artifact
 lltv = 800000000000000000            # 0.8e18 (WAD), must be < 1e18
 # GuardianSignals registry. Zero → the orchestrator deploys a fresh registry for this market (from
 # guardians/<name>.toml). Non-zero → reuse an existing registry, i.e. share one guardian committee across a
 # group of markets (its set / quorum / suspect-window are registry-wide; bans stay keyed by market id). The
 # orchestrator slots the resulting address in here.
 guardian_signals = "0x0000000000000000000000000000000000000000"
+guardian_group = "weth-wsteth"  # resolver key; markets sharing a committee use the same group
 vault_name = "Lido wstETH/WETH Vault"
 vault_symbol = "lidoWSTETH-WETH"
 

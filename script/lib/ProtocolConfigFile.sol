@@ -5,6 +5,8 @@ import {Vm} from "forge-std/Vm.sol";
 
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 
+import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
+
 /// @notice Governance inputs for the protocol backbone.
 struct ProtocolConfig {
     address agent;
@@ -15,6 +17,10 @@ struct ProtocolConfig {
 ///         activation-time decisions left as placeholders (see `writeActivationPlan`).
 struct ActivationPlan {
     string name;
+    string deployment;
+    string network;
+    uint256 chainId;
+    bytes32 configHash;
     address loanToken;
     address collateralToken;
     address oracle;
@@ -28,6 +34,10 @@ struct ActivationPlan {
 ///         as a lower bound for acceptance's event scan; `deployer` is the EOA that ran the deploy, recorded
 ///         so acceptance can assert it retained no role.
 struct ProtocolDeployment {
+    string deployment;
+    string network;
+    uint256 chainId;
+    bytes32 configHash;
     address core;
     address ownerFacade;
     address irmRouter;
@@ -69,10 +79,23 @@ library ProtocolConfigFile {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
     error MarketAlreadyRecorded(string name);
+    error ArtifactAlreadyExists(string path);
 
     /// @notice Compose and write the full deployment registry to a dated per-run file; returns the path.
-    function writeDeployment(string memory name, Deployment memory d) internal returns (string memory path) {
-        string memory s = "[protocol]\n";
+    function writeDeployment(Deployment memory d) internal returns (string memory path) {
+        ArtifactMetadataFile.ensureArtifactsDir();
+        string memory s = ArtifactMetadataFile.header(
+            ArtifactMetadata({
+                deployment: d.protocol.deployment,
+                chainId: d.protocol.chainId,
+                configHash: d.protocol.configHash
+            }),
+            "protocol-registry"
+        );
+        s = string.concat(s, "\n[protocol]\n");
+        s = string.concat(s, _kv("deployment", d.protocol.deployment));
+        s = string.concat(s, _kv("chain_id", d.protocol.chainId));
+        s = string.concat(s, _kv("config_hash", d.protocol.configHash));
         s = string.concat(s, _kv("core", d.protocol.core));
         s = string.concat(s, _kv("owner_facade", d.protocol.ownerFacade));
         s = string.concat(s, _kv("irm_router", d.protocol.irmRouter));
@@ -95,8 +118,14 @@ library ProtocolConfigFile {
             s = string.concat(s, _marketSection(d.markets[i]));
         }
 
-        path = deployedPath(name);
+        path = deployedPath();
+        _requireArtifactAbsent(path);
         vm.writeFile(path, s);
+    }
+
+    /// @notice Fail before broadcast when this run already has a protocol registry.
+    function requireDeploymentUndeployed() internal view {
+        _requireArtifactAbsent(deployedPath());
     }
 
     /// @notice Append one market's section to an existing registry; reverts on a duplicate name.
@@ -114,9 +143,14 @@ library ProtocolConfigFile {
     }
 
     /// @notice Write one market's section as a standalone artifact; the `AddMarket` fallback when no `REGISTRY`.
-    function writeMarketOnly(MarketDeployment memory m) internal returns (string memory path) {
-        path = string.concat("deployed/market-", m.name, "-", vm.toString(vm.unixTime()), ".toml");
-        vm.writeFile(path, _marketSection(m));
+    function writeMarketOnly(MarketDeployment memory m, ArtifactMetadata memory metadata)
+        internal
+        returns (string memory path)
+    {
+        ArtifactMetadataFile.ensureArtifactsDir();
+        path = string.concat(ArtifactMetadataFile.artifactsDir(), "/market-", m.name, ".toml");
+        _requireArtifactAbsent(path);
+        vm.writeFile(path, string.concat(ArtifactMetadataFile.header(metadata, "market-deployment"), _marketSection(m)));
     }
 
     function _marketSection(MarketDeployment memory m) private pure returns (string memory s) {
@@ -131,6 +165,10 @@ library ProtocolConfigFile {
     }
 
     /// @dev Address/bytes32 values are quoted (so `vm.parseToml*` reads them back); integers are not.
+    function _kv(string memory key, string memory value) private pure returns (string memory) {
+        return string.concat(key, " = \"", value, "\"\n");
+    }
+
     function _kv(string memory key, address value) private pure returns (string memory) {
         return string.concat(key, " = \"", vm.toString(value), "\"\n");
     }
@@ -155,16 +193,30 @@ library ProtocolConfigFile {
         s = string.concat(s, "]\n");
     }
 
-    function deployedPath(string memory name) internal view returns (string memory) {
-        return string.concat("deployed/", name, "-", vm.toString(vm.unixTime()), ".toml");
+    function deployedPath() internal view returns (string memory) {
+        return string.concat(ArtifactMetadataFile.artifactsDir(), "/registry.toml");
     }
 
-    /// @notice Write a market's activation plan to `deployed/activation-<name>-<unix-ms>.toml`; returns the
-    ///         path. `pauser_committee` / `enable_settlement` are emitted as `# TODO` placeholders for the
+    /// @notice Write a market's activation plan to `deployed/activation-<network>-<name>-<run-id>.toml`; returns
+    ///         the path. `pauser_committee` / `enable_settlement` are emitted as `# TODO` placeholders for the
     ///         operator to fill.
     function writeActivationPlan(ActivationPlan memory p) internal returns (string memory path) {
-        string memory s = string.concat("# Activation plan for market '", p.name, "'.\n");
+        ArtifactMetadataFile.ensureArtifactsDir();
+        string memory s = ArtifactMetadataFile.header(
+            ArtifactMetadata({
+                deployment: p.deployment, chainId: p.chainId, configHash: p.configHash
+            }),
+            "activation-plan"
+        );
+        s = string.concat(s, "\n# Activation plan for market '", p.name, "'.\n");
         s = string.concat(s, "# Inputs to the LidoLendActivateMarket EasyTrack motion. FILL the two # TODO fields.\n");
+
+        s = string.concat(s, "\n[activation]\n");
+        s = string.concat(s, _kv("controller", p.controller));
+        s = string.concat(s, "# TODO: the pauser committee registered on the CircuitBreaker at activation.\n");
+        s = string.concat(s, _kv("pauser_committee", address(0)));
+        s = string.concat(s, "# TODO: bind-time decision - whether the market is created with settlement enabled.\n");
+        s = string.concat(s, "enable_settlement = false\n");
 
         s = string.concat(s, "\n[market_params]\n");
         s = string.concat(s, _kv("loan_token", p.loanToken));
@@ -172,8 +224,6 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("oracle", p.oracle));
         s = string.concat(s, _kv("irm", p.irm));
         s = string.concat(s, _kv("lltv", p.lltv));
-
-        s = string.concat(s, "\ncontroller = \"", vm.toString(p.controller), "\"\n");
 
         s = string.concat(s, "\n[curve_params]\n");
         s = string.concat(s, _kv("curve_steepness", p.curveParams.curveSteepness));
@@ -184,12 +234,17 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("max_rate_at_target", p.curveParams.maxRateAtTarget));
         s = string.concat(s, _kv("max_borrow_rate", p.curveParams.maxBorrowRate));
 
-        s = string.concat(s, "\n# TODO: the pauser committee registered on the CircuitBreaker at activation.\n");
-        s = string.concat(s, _kv("pauser_committee", address(0)));
-        s = string.concat(s, "# TODO: bind-time decision - whether the market is created with settlement enabled.\n");
-        s = string.concat(s, "enable_settlement = false\n");
-
-        path = string.concat("deployed/activation-", p.name, "-", vm.toString(vm.unixTime()), ".toml");
+        path = string.concat(ArtifactMetadataFile.artifactsDir(), "/activation-", p.name, ".toml");
+        _requireArtifactAbsent(path);
         vm.writeFile(path, s);
+    }
+
+    /// @notice Fail before broadcast when the market's activation plan path is already occupied.
+    function requireActivationPlanUndeployed(string memory name) internal view {
+        _requireArtifactAbsent(string.concat(ArtifactMetadataFile.artifactsDir(), "/activation-", name, ".toml"));
+    }
+
+    function _requireArtifactAbsent(string memory path) private view {
+        if (vm.exists(path)) revert ArtifactAlreadyExists(path);
     }
 }

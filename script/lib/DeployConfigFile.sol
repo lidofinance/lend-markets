@@ -9,6 +9,9 @@ import {ConfigToml} from "./ConfigToml.sol";
 ///         include + the list of market NAMES; each market's details live in its own `markets/`, `oracles/`,
 ///         `guardians/` files (composed by name, so no array-of-tables to parse).
 struct DeployConfig {
+    string network;
+    uint256 chainId;
+    bytes32 configHash;
     address agent;
     address evmScriptExecutor;
     address circuitBreaker; // one CircuitBreaker for all markets; each controller's PAUSER_ROLE holder
@@ -22,8 +25,13 @@ struct DeployConfig {
 library DeployConfigFile {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
+    error UnexpectedChainId(uint256 expected, uint256 actual);
+
     function read(string memory name) internal view returns (DeployConfig memory cfg) {
         string memory toml = vm.readFile(configPath(name));
+        cfg.configHash = keccak256(bytes(toml));
+        cfg.network = ConfigToml.requireString(toml, ".network");
+        cfg.chainId = ConfigToml.requireUint(toml, ".chain_id");
         cfg.agent = ConfigToml.requireAddress(toml, ".agent");
         cfg.evmScriptExecutor = ConfigToml.requireAddress(toml, ".evm_script_executor");
         // Optional: zero at the template stage. Zero deploys markets with no PAUSER_ROLE holder (inert but
@@ -36,5 +44,9 @@ library DeployConfigFile {
 
     function configPath(string memory name) internal pure returns (string memory) {
         return string.concat("script/config/", name, ".toml");
+    }
+
+    function requireChainId(DeployConfig memory cfg) internal view {
+        if (block.chainid != cfg.chainId) revert UnexpectedChainId(cfg.chainId, block.chainid);
     }
 }

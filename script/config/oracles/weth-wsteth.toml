@@ -1,5 +1,5 @@
 # Oracle deploy config for the weth-wsteth market, consumed by DeployWstEthOracle. The oracle is a standalone
-# leaf dependency: deploy it with `ORACLE=weth-wsteth forge script script/DeployWstEthOracle.s.sol ...`, then
+# leaf dependency: deploy it with `forge script script/DeployWstEthOracle.s.sol --sig "run(string,string)" <config> weth-wsteth ...`, then
 # paste the printed address into `script/config/markets/weth-wsteth.toml -> [market].oracle`. Per market.
 # Fill placeholders before broadcasting.
 

@@ -1,5 +1,5 @@
 # Oracle deploy config for the usdy-usdt market, consumed by DeployUsdyOracle. The oracle is a standalone leaf
-# dependency: deploy it with `ORACLE=usdy-usdt forge script script/DeployUsdyOracle.s.sol ...`, then paste the
+# dependency: deploy it with `forge script script/DeployUsdyOracle.s.sol --sig "run(string,string)" <config> usdy-usdt ...`, then paste the
 # printed address into `script/config/markets/usdy-usdt.toml -> [market].oracle`. Per market: the loan token
 # bakes into the price at initialize, so each market needs its own instance. Fill placeholders before broadcasting.
 

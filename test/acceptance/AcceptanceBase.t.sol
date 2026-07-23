@@ -12,6 +12,7 @@ import {CollateralActivationConfig} from "../../src/types/CollateralActivationTy
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendMarketBuilder, MarketRoles, GuardianConfig} from "../../src/periphery/LidoLendMarketBuilder.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+import {ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
 
 // --- Minimal read/write surfaces (UDVT `Id` is ABI-identical to bytes32, so bytes32 params match) ---
 
@@ -208,6 +209,7 @@ abstract contract AcceptanceBase is Test {
 
         string memory rpc = vm.envOr("ACCEPTANCE_RPC_URL", string(""));
         if (bytes(rpc).length != 0) vm.createSelectFork(rpc);
+        ArtifactMetadataFile.requireKindChain(registry, "protocol-registry", block.chainid);
 
         // Expected values from the committed config for this market.
         string memory market = vm.envOr("MARKET", string("weth-wsteth"));

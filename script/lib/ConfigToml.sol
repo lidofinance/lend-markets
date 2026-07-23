@@ -17,4 +17,18 @@ library ConfigToml {
         value = vm.parseTomlAddress(toml, key);
         if (value == address(0)) revert MissingConfigValue(key);
     }
+
+    /// @notice Parse an unsigned integer that must be present and non-zero.
+    function requireUint(string memory toml, string memory key) internal view returns (uint256 value) {
+        if (!vm.keyExistsToml(toml, key)) revert MissingConfigValue(key);
+        value = vm.parseTomlUint(toml, key);
+        if (value == 0) revert MissingConfigValue(key);
+    }
+
+    /// @notice Parse a non-empty string from a required TOML key.
+    function requireString(string memory toml, string memory key) internal view returns (string memory value) {
+        if (!vm.keyExistsToml(toml, key)) revert MissingConfigValue(key);
+        value = vm.parseTomlString(toml, key);
+        if (bytes(value).length == 0) revert MissingConfigValue(key);
+    }
 }

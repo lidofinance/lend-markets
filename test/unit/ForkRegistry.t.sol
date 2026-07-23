@@ -4,52 +4,78 @@ pragma solidity 0.8.35;
 import {Test} from "forge-std/Test.sol";
 
 import {ForkTest} from "../fork/helpers/ForkTest.sol";
+import {ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
 
-/// @dev Exercises `ForkTest`'s address-map loader and accessor WITHOUT a fork (`readFile`/`parseJson` need no
-///      RPC), using the committed mainnet map as sample input. This is the ONLY no-RPC coverage of the map
-///      machinery: offline, `_fork()` reverts at the missing-`ETH_RPC_URL` check *before* it loads a map, so
-///      `_loadRegistry`/`_addr` would otherwise run only on a real fork. It asserts mechanism (dotted-key
-///      resolution, missing-file and absent-key reverts) using only keys that are permanently present or
-///      absent regardless of deploy state — never address VALUES, which live only in the JSON.
+/// @dev Exercises fork artifact readers without creating an RPC fork.
 contract ForkRegistryHarness is ForkTest {
-    function load(string memory path) external {
+    function loadExternals(string memory path) external {
+        _loadExternals(path);
+    }
+
+    function loadRegistry(string memory path) external {
         _loadRegistry(path);
     }
 
-    function addr(string memory key) external view returns (address) {
-        return _addr(key);
+    function ext(string memory key) external view returns (address) {
+        return _ext(key);
+    }
+
+    function deployed(string memory key) external view returns (address) {
+        return _deployed(key);
+    }
+
+    function validateRegistry(string memory toml, uint256 chainId) external view {
+        ArtifactMetadataFile.requireKindChain(toml, "protocol-registry", chainId);
     }
 }
 
 contract ForkRegistryTest is Test {
     ForkRegistryHarness internal h;
-    string internal constant MAP = "deployments/deployed-mainnet.json";
 
     function setUp() public {
         h = new ForkRegistryHarness();
-        h.load(MAP);
+        h.loadExternals("script/config/mainnet.toml");
     }
 
-    /// @dev A present dotted key resolves to a (non-zero) address parsed from the map. `external.wstEth` is
-    ///      the core collateral — permanently present in the mainnet map.
-    function test_registry_presentKeyResolves() public view {
-        assertTrue(h.addr("external.wstEth") != address(0), "present key resolves to an address");
+    function test_externals_presentKeyResolves() public view {
+        assertTrue(h.ext("wstEth") != address(0), "present key resolves");
     }
 
-    /// @dev A missing map file reverts at load — a bad `DEPLOYMENT` path fails the suite instead of exposing
-    ///      an empty map.
-    function testRevert_registry_missingFileReverts() public {
+    function testRevert_externals_missingFileReverts() public {
         ForkRegistryHarness h2 = new ForkRegistryHarness();
-        vm.expectRevert(bytes("ForkTest: DEPLOYMENT file not found: deployments/does-not-exist.json"));
-        h2.load("deployments/does-not-exist.json");
+        vm.expectRevert(bytes("ForkTest: network config not found: script/config/missing.toml"));
+        h2.loadExternals("script/config/missing.toml");
     }
 
-    /// @dev `_addr` on an absent key reverts — including under a section — using names that never exist, so
-    ///      the assertion is stable across deploys (the `protocol` section fills in over time).
-    function testRevert_registry_addrAbsentKeyReverts() public {
-        vm.expectRevert(bytes("ForkTest: address map missing key 'external.doesNotExist'"));
-        h.addr("external.doesNotExist");
-        vm.expectRevert(bytes("ForkTest: address map missing key 'protocol.doesNotExist'"));
-        h.addr("protocol.doesNotExist");
+    function test_registry_generatedArtifactResolves() public {
+        string memory path = "deployed/fork-registry-unit.toml";
+        vm.writeFile(
+            path,
+            "[artifact]\nkind = \"protocol-registry\"\ndeployment = \"unit\"\nchain_id = 1\n\n[protocol]\ncore = \"0x0000000000000000000000000000000000001001\"\n"
+        );
+        h.loadRegistry(path);
+        vm.removeFile(path);
+        assertEq(h.deployed("protocol.core"), address(0x1001), "protocol.core");
+    }
+
+    function testRevert_registry_missingKeyReverts() public {
+        string memory path = "deployed/fork-registry-unit-missing.toml";
+        vm.writeFile(path, "[artifact]\nchain_id = 1\n");
+        h.loadRegistry(path);
+        vm.removeFile(path);
+        vm.expectRevert(bytes("ForkTest: registry missing key 'protocol.core'"));
+        h.deployed("protocol.core");
+    }
+
+    function testRevert_registryMetadata_wrongKindReverts() public {
+        string memory registry = "[artifact]\nkind = \"activation-plan\"\nchain_id = 1\n";
+        vm.expectRevert(ArtifactMetadataFile.ArtifactKindMismatch.selector);
+        h.validateRegistry(registry, 1);
+    }
+
+    function testRevert_registryMetadata_wrongChainReverts() public {
+        string memory registry = "[artifact]\nkind = \"protocol-registry\"\nchain_id = 11155111\n";
+        vm.expectRevert(ArtifactMetadataFile.ArtifactChainIdMismatch.selector);
+        h.validateRegistry(registry, 1);
     }
 }

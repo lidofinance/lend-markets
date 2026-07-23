@@ -135,7 +135,7 @@ test/
 - `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
 - `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
   addresses from `deployed/<name>-<unix-ms>.toml` (via `ACCEPTANCE_REGISTRY`), expected values from the
-  committed `script/config/*`. Run with `ACCEPTANCE_RPC_URL=$MAINNET_RPC_URL` (or `--fork-url`); skips without
+  committed `script/config/*`. Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`); skips without
   a registry. See `script/DEPLOYMENT.md`.
 
 ### Setup Infra (`test/setup/`)
