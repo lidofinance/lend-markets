@@ -127,6 +127,8 @@ contract LidoLendMarketBuilderValidateTest is Test {
 
         LidoLendMarketController c = LidoLendMarketController(controller);
         c.grantRole(c.MANAGER_ROLE(), manager);
+        c.grantRole(c.MANAGER_ROLE(), address(facade));
+        c.grantRole(c.UNFREEZER_ROLE(), address(facade));
         c.grantRole(c.PAUSER_ROLE(), pauser);
         c.grantRole(c.DEFAULT_ADMIN_ROLE(), admin);
         c.revokeRole(c.DEFAULT_ADMIN_ROLE(), address(this));
@@ -145,6 +147,8 @@ contract LidoLendMarketBuilderValidateTest is Test {
         gg.revokeRole(gg.MANAGER_ROLE(), address(this));
         gg.grantRole(gg.MANAGER_ROLE(), gManager);
         gg.grantRole(gg.ACCESS_RESTORER_ROLE(), gManager);
+        gg.grantRole(gg.MANAGER_ROLE(), address(facade));
+        gg.grantRole(gg.ACCESS_RESTORER_ROLE(), address(facade));
         gg.grantRole(gg.ACCESS_LIMITER_ROLE(), gAccessLimiter);
         gg.grantRole(gg.DEFAULT_ADMIN_ROLE(), gAdmin);
         gg.revokeRole(gg.DEFAULT_ADMIN_ROLE(), address(this));

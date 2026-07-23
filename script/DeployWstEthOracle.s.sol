@@ -18,10 +18,13 @@ import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
 ///   forge script script/DeployWstEthOracle.s.sol --sig "run(string,string)" mainnet weth-wsteth --rpc-url "$RPC_URL"
 /// --broadcast
 contract DeployWstEthOracle is Script, LidoLendPrimitives {
+    error UnexpectedProxyAdmin(address expected, address actual);
+
     function run(string memory config, string memory name) external returns (address oracle) {
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
         DeployConfigFile.requireChainId(deployConfig);
         WstEthOracleConfig memory c = OracleConfigFile.readWstEth(name);
+        if (c.proxyAdmin != deployConfig.agent) revert UnexpectedProxyAdmin(deployConfig.agent, c.proxyAdmin);
         ArtifactMetadata memory metadata = ArtifactMetadata({
             deployment: ArtifactMetadataFile.deployment(),
             chainId: deployConfig.chainId,

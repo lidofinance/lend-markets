@@ -131,9 +131,7 @@ library MarketConfigFile {
             admin: ConfigToml.requireAddress(toml, ".roles.admin"),
             proxyAdmin: ConfigToml.requireAddress(toml, ".roles.proxy_admin"),
             managers: vm.parseTomlAddressArray(toml, ".roles.managers"),
-            // `pausers` is not read from the market config: the CircuitBreaker is one instance for all markets
-            // (deploy config), injected by the orchestrator.
-            pausers: new address[](0),
+            pausers: vm.parseTomlAddressArray(toml, ".roles.pausers"),
             freezers: vm.parseTomlAddressArray(toml, ".roles.freezers"),
             unfreezers: vm.parseTomlAddressArray(toml, ".roles.unfreezers"),
             resumers: vm.parseTomlAddressArray(toml, ".roles.resumers")

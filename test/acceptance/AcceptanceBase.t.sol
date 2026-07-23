@@ -81,6 +81,10 @@ interface IReadVault {
     function asset() external view returns (address);
 }
 
+interface IReadProxy {
+    function proxy__getAdmin() external view returns (address);
+}
+
 interface IReadCore {
     function marketController(bytes32 id) external view returns (address);
     function isSettlementEnabled(bytes32 id) external view returns (bool);
@@ -130,6 +134,8 @@ abstract contract AcceptanceBase is Test {
     bytes32 internal constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 internal constant RESUMER_ROLE = keccak256("RESUMER_ROLE");
     bytes32 internal constant MARKET_CREATOR_ROLE = keccak256("MARKET_CREATOR_ROLE");
+    bytes32 internal constant MARKET_MANAGER_ROLE = keccak256("MARKET_MANAGER_ROLE");
+    bytes32 internal constant GUARDIAN_MANAGER_ROLE = keccak256("GUARDIAN_MANAGER_ROLE");
     bytes32 internal constant STEWARD_ADMIN_ROLE = keccak256("STEWARD_ADMIN_ROLE");
     bytes32 internal constant ALLOWLIST_MANAGER_ROLE = keccak256("ALLOWLIST_MANAGER_ROLE");
     bytes32 internal constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
@@ -217,9 +223,10 @@ abstract contract AcceptanceBase is Test {
         guardiansCfg = vm.readFile(string.concat("script/config/guardians/", market, ".toml"));
         string memory mk = string.concat(".markets.", market, ".");
 
-        // Governance holders + guardian committee: the committed guardians config.
-        agent = _grd(".admin");
-        executor = _grd(".evm_script_executor");
+        // Governance holders come from the deployment registry; guardian config contains only registry-local
+        // policy and role inputs.
+        agent = _reg(".protocol.agent");
+        executor = _reg(".protocol.evm_script_executor");
         deployer = _reg(".protocol.deployer");
 
         // Deployed addresses: the registry.
@@ -250,26 +257,24 @@ abstract contract AcceptanceBase is Test {
         rAdmin = _addr(".roles.admin");
         rProxyAdmin = _addr(".roles.proxy_admin");
         rManagers = vm.parseTomlAddressArray(toml, ".roles.managers");
+        rPausers = vm.parseTomlAddressArray(registry, string.concat(mk, "pausers"));
         rFreezers = vm.parseTomlAddressArray(toml, ".roles.freezers");
         rUnfreezers = vm.parseTomlAddressArray(toml, ".roles.unfreezers");
         rResumers = vm.parseTomlAddressArray(toml, ".roles.resumers");
 
-        // One CircuitBreaker for all markets (registry `[protocol]`); it is the controller's sole PAUSER_ROLE
-        // holder. The pauser committee it registers at activation is an env-supplied input.
-        circuitBreaker = _reg(".protocol.circuit_breaker");
-        rPausers = new address[](1);
-        rPausers[0] = circuitBreaker;
+        // The market registry records the CircuitBreaker granted this controller's PAUSER_ROLE. Production
+        // policy allows exactly one; an empty template remains deployable but is not activation-ready.
+        circuitBreaker = rPausers.length == 1 ? rPausers[0] : address(0);
         pauserCommittee = vm.envOr("ACCEPTANCE_PAUSER_COMMITTEE", address(0));
 
-        // Expected guardian state: the committed guardians config. The deploy grants the executor the sole
-        // registry MANAGER_ROLE (see `ProtocolDeployer._buildGuardianSignals`).
+        // Expected guardian state: EasyTrack reaches the registry only through the owner facade, so the
+        // deployment configures no direct manager/restorer.
         expectedGuardians = vm.parseTomlAddressArray(guardiansCfg, ".guardians");
         gProxyAdmin = _grd(".proxy_admin");
         expectedQuorum = vm.parseTomlUint(guardiansCfg, ".quorum");
         expectedSuspectWindow = vm.parseTomlUint(guardiansCfg, ".suspect_window");
         expectedAccessLimiter = vm.keyExistsToml(guardiansCfg, ".access_limiter") ? _grd(".access_limiter") : address(0);
-        gManagers = new address[](1);
-        gManagers[0] = executor;
+        gManagers = new address[](0);
 
         if (core.code.length == 0 || controller.code.length == 0) {
             vm.skip(true, "acceptance: run with a fork (ACCEPTANCE_RPC_URL / --fork-url) carrying this deployment");
@@ -279,7 +284,7 @@ abstract contract AcceptanceBase is Test {
     // --- shared assertions (state that must hold whether or not the market is activated) ---
 
     function _assertComponentsDeployed() internal view {
-        address[14] memory a = [
+        address[13] memory a = [
             core,
             facade,
             router,
@@ -288,7 +293,6 @@ abstract contract AcceptanceBase is Test {
             dashboard,
             morphoBook,
             erc4626Book,
-            circuitBreaker,
             oracle,
             guardianSignals,
             curve,
@@ -297,6 +301,9 @@ abstract contract AcceptanceBase is Test {
         ];
         for (uint256 i; i < a.length; ++i) {
             assertGt(a[i].code.length, 0, "component missing code");
+        }
+        for (uint256 i; i < rPausers.length; ++i) {
+            assertGt(rPausers[i].code.length, 0, "pauser missing code");
         }
     }
 
@@ -317,6 +324,13 @@ abstract contract AcceptanceBase is Test {
         assertEq(IReadBuilder(builder).IRM_ROUTER(), router, "builder.IRM_ROUTER");
         assertEq(IReadBuilder(builder).CORE(), core, "builder.CORE");
         assertEq(IReadBuilder(builder).RISK_STEWARD_DASHBOARD(), dashboard, "builder.RISK_STEWARD_DASHBOARD");
+
+        assertEq(IReadProxy(core).proxy__getAdmin(), agent, "core proxy admin");
+        assertEq(IReadProxy(router).proxy__getAdmin(), agent, "router proxy admin");
+        assertEq(IReadProxy(controller).proxy__getAdmin(), agent, "controller proxy admin");
+        assertEq(IReadProxy(vault).proxy__getAdmin(), agent, "vault proxy admin");
+        assertEq(IReadProxy(guardianSignals).proxy__getAdmin(), agent, "guardian proxy admin");
+        assertEq(IReadProxy(oracle).proxy__getAdmin(), agent, "oracle proxy admin");
 
         // controller/vault <-> core bindings `validateMarketContracts` has no notion of (it knows nothing about "core"
         // or "loan token"); everything else about the pair — impl codehash, proxy admins, marketId/guardian
@@ -425,6 +439,7 @@ abstract contract AcceptanceBase is Test {
 
     /// @dev The activation motion is run by the executor, so it must hold the CircuitBreaker admin (registerPauser).
     function _assertCircuitBreakerReadyAsPauser() internal view {
+        assertEq(rPausers.length, 1, "market must configure one CircuitBreaker");
         assertEq(IReadCircuitBreaker(circuitBreaker).ADMIN(), executor, "cb.ADMIN=executor");
     }
 
@@ -506,9 +521,10 @@ abstract contract AcceptanceBase is Test {
             address[][] memory holders = new address[][](6);
             holders[0] = _arr1(rAdmin);
             holders[1] = _append(rManagers, dashboard);
+            holders[1] = _append(holders[1], facade);
             holders[2] = rPausers;
             holders[3] = rFreezers;
-            holders[4] = rUnfreezers;
+            holders[4] = _append(rUnfreezers, facade);
             holders[5] = rResumers;
             _assertExactRoleHolders(controller, marketDeployedBlock, roles, holders);
         }
@@ -520,18 +536,24 @@ abstract contract AcceptanceBase is Test {
             roles[3] = ACCESS_LIMITER_ROLE;
             address[][] memory holders = new address[][](4);
             holders[0] = _arr1(agent);
-            holders[1] = gManagers;
-            holders[2] = gManagers;
+            holders[1] = _append(gManagers, facade);
+            holders[2] = _append(gManagers, facade);
             holders[3] = _maybeArr1(expectedAccessLimiter);
             _assertExactRoleHolders(guardianSignals, marketDeployedBlock, roles, holders);
         }
         {
-            bytes32[] memory roles = new bytes32[](2);
+            bytes32[] memory roles = new bytes32[](5);
             roles[0] = DEFAULT_ADMIN_ROLE;
             roles[1] = MARKET_CREATOR_ROLE;
-            address[][] memory holders = new address[][](2);
+            roles[2] = FEE_MANAGER_ROLE;
+            roles[3] = MARKET_MANAGER_ROLE;
+            roles[4] = GUARDIAN_MANAGER_ROLE;
+            address[][] memory holders = new address[][](5);
             holders[0] = _arr1(agent);
             holders[1] = _arr1(executor);
+            holders[2] = _arr1(executor);
+            holders[3] = _arr1(executor);
+            holders[4] = _arr1(executor);
             _assertExactRoleHolders(facade, protocolDeployedBlock, roles, holders);
         }
         {
@@ -657,6 +679,8 @@ abstract contract AcceptanceBase is Test {
         if (role == PAUSER_ROLE) return "PAUSER_ROLE";
         if (role == RESUMER_ROLE) return "RESUMER_ROLE";
         if (role == MARKET_CREATOR_ROLE) return "MARKET_CREATOR_ROLE";
+        if (role == MARKET_MANAGER_ROLE) return "MARKET_MANAGER_ROLE";
+        if (role == GUARDIAN_MANAGER_ROLE) return "GUARDIAN_MANAGER_ROLE";
         if (role == STEWARD_ADMIN_ROLE) return "STEWARD_ADMIN_ROLE";
         if (role == ALLOWLIST_MANAGER_ROLE) return "ALLOWLIST_MANAGER_ROLE";
         if (role == FEE_MANAGER_ROLE) return "FEE_MANAGER_ROLE";

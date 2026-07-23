@@ -2,12 +2,16 @@
 pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+
+import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
+import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 /// @title ILidoLendOwner
 /// @notice Role-gated owner of the `LidoLend` core. The core has a single `owner`; this facade holds it and
-///         splits the core's owner-only surface (market creation, fees, ownership transfer) across distinct
-///         roles, so each capability can be delegated independently.
+///         splits the core's owner-only surface and per-market governance surface across distinct roles, so each
+///         capability can be delegated independently. Per-market calls resolve the target controller and guardian
+///         registry from the core, giving governance one stable facade address for every market.
 /// @dev Role-management events and the unauthorized-caller error come from OpenZeppelin's `IAccessControl`.
 interface ILidoLendOwner {
     // ---
@@ -16,6 +20,9 @@ interface ILidoLendOwner {
 
     /// @notice Thrown when the core or an ownership target is the zero address.
     error ZeroAddress();
+
+    /// @notice The market id has no controller on the core (unknown or controller-less).
+    error UnknownMarket(Id marketId);
 
     // ---
     // VIEWS
@@ -41,6 +48,47 @@ interface ILidoLendOwner {
     function setFee(MarketParams calldata marketParams, uint256 newFee) external;
     /// @notice Set the global fee recipient.
     function setFeeRecipient(address newFeeRecipient) external;
+
+    // ---
+    // MARKET MANAGEMENT (MARKET_MANAGER_ROLE)
+    // ---
+
+    /// @notice Set a market's supply cap. A zero cap disables it.
+    function setMarketSupplyCap(Id marketId, uint256 cap) external;
+
+    /// @notice Lift a market's freeze.
+    function unfreezeMarket(Id marketId) external;
+
+    /// @notice Replace a market's collateral-activation configuration.
+    function setMarketCollateralActivationConfig(Id marketId, CollateralActivationConfig calldata config) external;
+
+    /// @notice Replace a market's settlement configuration.
+    function setMarketSettlementConfig(Id marketId, SettlementConfig calldata config) external;
+
+    /// @notice Allow a trusted caller to supply collateral with instant activation on a market.
+    function grantMarketInstantActivation(Id marketId, address caller) external;
+
+    // ---
+    // GUARDIAN MANAGEMENT (GUARDIAN_MANAGER_ROLE)
+    // ---
+
+    /// @notice Add a guardian to the registry used by a market.
+    function addGuardian(Id marketId, address guardian) external;
+
+    /// @notice Replace one guardian with another in the registry used by a market.
+    function replaceGuardian(Id marketId, address oldGuardian, address newGuardian) external;
+
+    /// @notice Remove a guardian from the registry used by a market.
+    function removeGuardian(Id marketId, address guardian) external;
+
+    /// @notice Set the quorum of the guardian registry used by a market.
+    function setGuardiansQuorum(Id marketId, uint256 quorum) external;
+
+    /// @notice Set the suspect window of the guardian registry used by a market.
+    function setGuardiansSuspectWindow(Id marketId, uint256 suspectWindow) external;
+
+    /// @notice Lift `account`'s ban in each market, resolving that market's guardian registry independently.
+    function unbanGuardianSignals(Id[] calldata marketIds, address account) external;
 
     // ---
     // OWNERSHIP (DEFAULT_ADMIN_ROLE)

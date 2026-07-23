@@ -11,7 +11,6 @@ import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 struct GuardianSignalsConfig {
     address admin; // Agent — final DEFAULT_ADMIN_ROLE
     address proxyAdmin; // OssifiableProxy admin (upgrade authority)
-    address evmScriptExecutor; // EasyTrack executor — MANAGER_ROLE + ACCESS_RESTORER_ROLE
     uint256 quorum;
     uint256 suspectWindow;
     address[] guardians;
@@ -32,7 +31,6 @@ library GuardianSignalsConfigFile {
     function parse(string memory toml) internal view returns (GuardianSignalsConfig memory cfg) {
         cfg.admin = ConfigToml.requireAddress(toml, ".admin");
         cfg.proxyAdmin = ConfigToml.requireAddress(toml, ".proxy_admin");
-        cfg.evmScriptExecutor = ConfigToml.requireAddress(toml, ".evm_script_executor");
         cfg.quorum = vm.parseTomlUint(toml, ".quorum");
         cfg.suspectWindow = vm.parseTomlUint(toml, ".suspect_window");
         cfg.guardians = vm.parseTomlAddressArray(toml, ".guardians");

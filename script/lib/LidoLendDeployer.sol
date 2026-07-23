@@ -68,6 +68,8 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         // `admin` gets MARKET_CREATOR_ROLE so the deploy can create the market through the facade.
         d.ownerFacade = _deployOwnerFacade(d.core, cfg.admin, cfg.admin, address(0));
         ILidoLend(d.core).setOwner(d.ownerFacade);
+        LidoLendOwner(d.ownerFacade).grantRole(LidoLendOwner(d.ownerFacade).MARKET_MANAGER_ROLE(), cfg.admin);
+        LidoLendOwner(d.ownerFacade).grantRole(LidoLendOwner(d.ownerFacade).GUARDIAN_MANAGER_ROLE(), cfg.admin);
 
         d.guardianSignals =
             _deployGuardianSignals(address(new GuardianSignals()), cfg.admin, cfg.admin, cfg.guardians, cfg.quorum);
@@ -88,12 +90,16 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
 
         d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
-        // Grant `admin` MANAGER_ROLE on the controller and registry for post-deploy policy/roster changes.
+        // Keep `admin` as a direct manager and grant the stable facade the capabilities it dispatches.
         LidoLendMarketController controller = LidoLendMarketController(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
+        controller.grantRole(controller.MANAGER_ROLE(), d.ownerFacade);
+        controller.grantRole(controller.UNFREEZER_ROLE(), d.ownerFacade);
 
         GuardianSignals guardianSignals = GuardianSignals(d.guardianSignals);
         guardianSignals.grantRole(guardianSignals.MANAGER_ROLE(), cfg.admin);
+        guardianSignals.grantRole(guardianSignals.MANAGER_ROLE(), d.ownerFacade);
+        guardianSignals.grantRole(guardianSignals.ACCESS_RESTORER_ROLE(), d.ownerFacade);
         guardianSignals.setSuspectWindow(cfg.suspectWindow);
     }
 

@@ -12,17 +12,22 @@ import {ILidoLendOwner} from "../../src/interfaces/ILidoLendOwner.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
-import {LidoLendMarketBuilder, GuardianConfig} from "../../src/periphery/LidoLendMarketBuilder.sol";
+import {LidoLendMarketBuilder, MarketRoles, GuardianConfig} from "../../src/periphery/LidoLendMarketBuilder.sol";
 import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {LidoLendPrimitives} from "./LidoLendPrimitives.sol";
 import {ProtocolConfig, ProtocolDeployment} from "./ProtocolConfigFile.sol";
 import {GuardianSignalsConfig, GuardianSignalsConfigFile} from "./GuardianSignalsConfigFile.sol";
 import {ExitBookConfig} from "./ExitBookConfigFile.sol";
+
+interface ICircuitBreakerConfig {
+    function ADMIN() external view returns (address);
+}
 
 /// @notice Production deploy engine: backbone (core, facade, router, curve, dashboard, factory/builder) +
 ///         optional exit books + per-market components, over `LidoLendPrimitives`. `DeployProtocol` and
@@ -32,6 +37,12 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     error AgentCannotBeExecutor();
     error ExecutorCannotBeDeployer();
     error UnexpectedChainId(uint256 expected, uint256 actual);
+    error UnexpectedAdmin(address expected, address actual);
+    error UnexpectedProxyAdmin(address expected, address actual);
+    error ExecutorHasDirectMarketRole();
+    error MultipleCircuitBreakersPerMarket();
+    error CircuitBreakerNotContract(address circuitBreaker);
+    error UnexpectedCircuitBreakerAdmin(address expected, address actual);
 
     function _requireChainId(uint256 expected) internal view {
         if (block.chainid != expected) revert UnexpectedChainId(expected, block.chainid);
@@ -44,7 +55,10 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         returns (ProtocolDeployment memory d)
     {
         if (cfg.agent == deployer) revert AgentCannotBeDeployer();
+        if (cfg.evmScriptExecutor == deployer) revert ExecutorCannotBeDeployer();
         if (cfg.agent == cfg.evmScriptExecutor) revert AgentCannotBeExecutor();
+        d.agent = cfg.agent;
+        d.evmScriptExecutor = cfg.evmScriptExecutor;
 
         d.core = _deployCore(deployer);
         d.ownerFacade = _deployOwnerFacade(d.core, deployer, address(0), address(0));
@@ -79,19 +93,28 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
 
         LidoLendOwner facade = LidoLendOwner(d.ownerFacade);
         facade.grantRole(facade.MARKET_CREATOR_ROLE(), cfg.evmScriptExecutor);
+        facade.grantRole(facade.FEE_MANAGER_ROLE(), cfg.evmScriptExecutor);
+        facade.grantRole(facade.MARKET_MANAGER_ROLE(), cfg.evmScriptExecutor);
+        facade.grantRole(facade.GUARDIAN_MANAGER_ROLE(), cfg.evmScriptExecutor);
         IrmRouter(d.irmRouter).setManager(cfg.evmScriptExecutor);
 
         facade.grantRole(facade.DEFAULT_ADMIN_ROLE(), cfg.agent);
         facade.revokeRole(facade.DEFAULT_ADMIN_ROLE(), deployer);
         IrmRouter(d.irmRouter).transferOwnership(cfg.agent);
+        OssifiableProxy(payable(d.core)).proxy__changeAdmin(cfg.agent);
+        OssifiableProxy(payable(d.irmRouter)).proxy__changeAdmin(cfg.agent);
     }
 
-    /// @dev Deploys a market's `GuardianSignals` instance via the builder, mapping `guardians/<name>.toml`
-    ///      onto its arguments (the executor is the sole `manager`).
-    function _buildGuardianSignals(string memory name, address builder) internal returns (address guardianSignals) {
+    /// @dev Deploys a market's `GuardianSignals` instance via the builder. No direct operational manager is
+    ///      configured: EasyTrack reaches the registry exclusively through `LidoLendOwner`.
+    function _buildGuardianSignals(string memory name, address builder, address agent)
+        internal
+        returns (address guardianSignals)
+    {
         GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.read(name);
-        address[] memory managers = new address[](1);
-        managers[0] = cfg.evmScriptExecutor;
+        if (cfg.admin != agent) revert UnexpectedAdmin(agent, cfg.admin);
+        if (cfg.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, cfg.proxyAdmin);
+        address[] memory managers = new address[](0);
 
         guardianSignals = LidoLendMarketBuilder(builder)
             .buildGuardianSignals(
@@ -105,6 +128,30 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
                 managers,
                 cfg.proxyAdmin
             );
+    }
+
+    function _requireMarketRolePolicy(MarketRoles memory roles, address agent, address executor) internal view {
+        if (roles.admin != agent) revert UnexpectedAdmin(agent, roles.admin);
+        if (roles.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, roles.proxyAdmin);
+        if (roles.pausers.length > 1) revert MultipleCircuitBreakersPerMarket();
+        if (roles.pausers.length == 1) {
+            address circuitBreaker = roles.pausers[0];
+            if (circuitBreaker.code.length == 0) revert CircuitBreakerNotContract(circuitBreaker);
+            address actualAdmin = ICircuitBreakerConfig(circuitBreaker).ADMIN();
+            if (actualAdmin != executor) revert UnexpectedCircuitBreakerAdmin(executor, actualAdmin);
+        }
+
+        for (uint256 i; i < roles.managers.length; ++i) {
+            if (roles.managers[i] == executor) revert ExecutorHasDirectMarketRole();
+        }
+        for (uint256 i; i < roles.unfreezers.length; ++i) {
+            if (roles.unfreezers[i] == executor) revert ExecutorHasDirectMarketRole();
+        }
+    }
+
+    function _requireProxyAdmin(address target, address agent) internal view {
+        address actual = OssifiableProxy(payable(target)).proxy__getAdmin();
+        if (actual != agent) revert UnexpectedProxyAdmin(agent, actual);
     }
 
     /// @dev The protocol's two exit books; `ALLOWLIST_MANAGER_ROLE` → executor, fee/recovery/admin → agent.

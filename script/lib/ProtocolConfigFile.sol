@@ -14,7 +14,8 @@ struct ProtocolConfig {
 }
 
 /// @notice Deploy-known inputs to a market's activation motion; `pauserCommittee` / `enableSettlement` are
-///         activation-time decisions left as placeholders (see `writeActivationPlan`).
+///         activation-time decisions left as placeholders (see `writeActivationPlan`). The CircuitBreaker
+///         is selected by this market's role config.
 struct ActivationPlan {
     string name;
     string deployment;
@@ -27,12 +28,14 @@ struct ActivationPlan {
     address irm;
     uint256 lltv;
     address controller;
+    address circuitBreaker;
     AdaptiveCurveParams curveParams;
 }
 
 /// @notice The shared protocol addresses a deploy produces. `deployedBlock` is captured before the broadcast
 ///         as a lower bound for acceptance's event scan; `deployer` is the EOA that ran the deploy, recorded
-///         so acceptance can assert it retained no role.
+///         so acceptance can assert it retained no role. Final governance holders are recorded once here,
+///         rather than repeated in component configs.
 struct ProtocolDeployment {
     string deployment;
     string network;
@@ -48,7 +51,8 @@ struct ProtocolDeployment {
     address guardianSignalsImpl;
     uint256 deployedBlock;
     address deployer;
-    address circuitBreaker; // one instance for all markets; each controller's PAUSER_ROLE holder
+    address agent;
+    address evmScriptExecutor;
 }
 
 /// @notice One market's deployed components, written under `[markets.<name>]`. `deployedBlock` is per market:
@@ -86,9 +90,7 @@ library ProtocolConfigFile {
         ArtifactMetadataFile.ensureArtifactsDir();
         string memory s = ArtifactMetadataFile.header(
             ArtifactMetadata({
-                deployment: d.protocol.deployment,
-                chainId: d.protocol.chainId,
-                configHash: d.protocol.configHash
+                deployment: d.protocol.deployment, chainId: d.protocol.chainId, configHash: d.protocol.configHash
             }),
             "protocol-registry"
         );
@@ -106,7 +108,8 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("guardian_signals_impl", d.protocol.guardianSignalsImpl));
         s = string.concat(s, _kv("deployed_block", d.protocol.deployedBlock));
         s = string.concat(s, _kv("deployer", d.protocol.deployer));
-        s = string.concat(s, _kv("circuit_breaker", d.protocol.circuitBreaker));
+        s = string.concat(s, _kv("agent", d.protocol.agent));
+        s = string.concat(s, _kv("evm_script_executor", d.protocol.evmScriptExecutor));
 
         if (d.hasExitBooks) {
             s = string.concat(s, "\n[exit_books]\n");
@@ -203,9 +206,7 @@ library ProtocolConfigFile {
     function writeActivationPlan(ActivationPlan memory p) internal returns (string memory path) {
         ArtifactMetadataFile.ensureArtifactsDir();
         string memory s = ArtifactMetadataFile.header(
-            ArtifactMetadata({
-                deployment: p.deployment, chainId: p.chainId, configHash: p.configHash
-            }),
+            ArtifactMetadata({deployment: p.deployment, chainId: p.chainId, configHash: p.configHash}),
             "activation-plan"
         );
         s = string.concat(s, "\n# Activation plan for market '", p.name, "'.\n");
@@ -213,6 +214,7 @@ library ProtocolConfigFile {
 
         s = string.concat(s, "\n[activation]\n");
         s = string.concat(s, _kv("controller", p.controller));
+        s = string.concat(s, _kv("circuit_breaker", p.circuitBreaker));
         s = string.concat(s, "# TODO: the pauser committee registered on the CircuitBreaker at activation.\n");
         s = string.concat(s, _kv("pauser_committee", address(0)));
         s = string.concat(s, "# TODO: bind-time decision - whether the market is created with settlement enabled.\n");

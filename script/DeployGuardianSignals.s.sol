@@ -20,6 +20,9 @@ import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
 ///   forge script script/DeployGuardianSignals.s.sol --sig "run(string,string)" mainnet usdy --rpc-url "$RPC_URL"
 /// --broadcast
 contract DeployGuardianSignals is Script {
+    error UnexpectedAdmin(address expected, address actual);
+    error UnexpectedProxyAdmin(address expected, address actual);
+
     function run(string memory config, string memory name) external returns (address guardianSignals) {
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
         DeployConfigFile.requireChainId(deployConfig);
@@ -28,6 +31,8 @@ contract DeployGuardianSignals is Script {
         if (builder == address(0)) revert ConfigToml.MissingConfigValue(".builder");
 
         GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.parse(toml);
+        if (cfg.admin != deployConfig.agent) revert UnexpectedAdmin(deployConfig.agent, cfg.admin);
+        if (cfg.proxyAdmin != deployConfig.agent) revert UnexpectedProxyAdmin(deployConfig.agent, cfg.proxyAdmin);
         ArtifactMetadata memory metadata = ArtifactMetadata({
             deployment: ArtifactMetadataFile.deployment(),
             chainId: deployConfig.chainId,
@@ -37,8 +42,7 @@ contract DeployGuardianSignals is Script {
         ArtifactMetadataFile.snapshotInput("deploy", DeployConfigFile.configPath(config));
         ArtifactMetadataFile.snapshotInput(string.concat("guardian-", name), GuardianSignalsConfigFile.configPath(name));
         GuardianSignalsConfigFile.requireUndeployed(name, metadata);
-        address[] memory managers = new address[](1);
-        managers[0] = cfg.evmScriptExecutor;
+        address[] memory managers = new address[](0);
 
         vm.startBroadcast();
         guardianSignals = LidoLendMarketBuilder(builder)

@@ -38,9 +38,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
         _requireChainId(cfg.chainId);
         address deployer = msg.sender;
         ArtifactMetadata memory artifacts = ArtifactMetadata({
-            deployment: ArtifactMetadataFile.deployment(),
-            chainId: cfg.chainId,
-            configHash: cfg.configHash
+            deployment: ArtifactMetadataFile.deployment(), chainId: cfg.chainId, configHash: cfg.configHash
         });
         ArtifactMetadataFile.ensureManifest(artifacts);
         _snapshotInputs(config, cfg.markets);
@@ -59,7 +57,6 @@ contract DeployProtocol is Script, ProtocolDeployer {
         protocol.configHash = cfg.configHash;
         protocol.deployedBlock = deployedBlock;
         protocol.deployer = deployer;
-        protocol.circuitBreaker = cfg.circuitBreaker;
 
         Deployment memory registry;
         registry.protocol = protocol;
@@ -83,7 +80,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
 
         registry.markets = new MarketDeployment[](cfg.markets.length);
         for (uint256 i; i < cfg.markets.length; ++i) {
-            registry.markets[i] = _addMarket(cfg.markets[i], protocol, deployedBlock);
+            registry.markets[i] = _addMarket(cfg.markets[i], protocol, cfg.agent, cfg.evmScriptExecutor, deployedBlock);
         }
 
         vm.stopBroadcast();
@@ -108,7 +105,11 @@ contract DeployProtocol is Script, ProtocolDeployer {
             string memory name = cfg.markets[i];
             ProtocolConfigFile.requireActivationPlanUndeployed(name);
             string memory guardianGroup = MarketConfigFile.guardianGroup(name);
-            (, LidoLendMarketBuilder.MarketSpec memory market,,) = MarketConfigFile.read(name, artifacts);
+            (, LidoLendMarketBuilder.MarketSpec memory market, MarketRoles memory roles,) =
+                MarketConfigFile.read(name, artifacts);
+            _requireMarketRolePolicy(roles, cfg.agent, cfg.evmScriptExecutor);
+            _requireProxyAdmin(market.oracle, cfg.agent);
+            if (market.guardianSignals != address(0)) _requireProxyAdmin(market.guardianSignals, cfg.agent);
             if (
                 market.guardianSignals == address(0)
                     && !_contains(freshGuardianGroups, freshGuardianGroupsCount, guardianGroup)
@@ -143,10 +144,13 @@ contract DeployProtocol is Script, ProtocolDeployer {
 
     /// @dev Deploys one market via the builder, deploying a fresh `GuardianSignals` instance first when the
     ///      config leaves it zero.
-    function _addMarket(string memory name, ProtocolDeployment memory protocol, uint256 deployedBlock)
-        internal
-        returns (MarketDeployment memory md)
-    {
+    function _addMarket(
+        string memory name,
+        ProtocolDeployment memory protocol,
+        address agent,
+        address executor,
+        uint256 deployedBlock
+    ) internal returns (MarketDeployment memory md) {
         string memory guardianGroup = MarketConfigFile.guardianGroup(name);
         (
             ,
@@ -156,41 +160,24 @@ contract DeployProtocol is Script, ProtocolDeployer {
         ) = MarketConfigFile.read(
             name,
             ArtifactMetadata({
-                deployment: protocol.deployment,
-                chainId: protocol.chainId,
-                configHash: protocol.configHash
+                deployment: protocol.deployment, chainId: protocol.chainId, configHash: protocol.configHash
             })
         );
-
-        // One CircuitBreaker for all markets, from the deploy config; granted this controller's PAUSER_ROLE.
-        // Zero (template) leaves the market without a pauser.
-        if (protocol.circuitBreaker != address(0)) {
-            roles.pausers = new address[](1);
-            roles.pausers[0] = protocol.circuitBreaker;
-        }
+        _requireMarketRolePolicy(roles, agent, executor);
 
         if (market.guardianSignals == address(0)) {
-            market.guardianSignals = _buildGuardianSignals(guardianGroup, protocol.builder);
+            market.guardianSignals = _buildGuardianSignals(guardianGroup, protocol.builder, agent);
             GuardianSignalsConfigFile.writeDeployed(
                 guardianGroup,
                 market.guardianSignals,
                 ArtifactMetadata({
-                    deployment: protocol.deployment,
-                    chainId: protocol.chainId,
-                    configHash: protocol.configHash
+                    deployment: protocol.deployment, chainId: protocol.chainId, configHash: protocol.configHash
                 })
             );
         }
 
         LidoLendMarketBuilder.MarketContracts memory built =
             LidoLendMarketBuilder(protocol.builder).buildMarketContracts(market, roles);
-
-        console2.log("--- market:", name);
-        console2.log("  oracle          :", market.oracle);
-        console2.log("  guardianSignals :", market.guardianSignals);
-        console2.log("  controller      :", built.controller);
-        console2.log("  vault           :", built.vault);
-        console2.log("  activationPlan  :", _writeActivationPlan(name, market, built, protocol, curve));
 
         md = MarketDeployment({
             name: name,
@@ -202,19 +189,25 @@ contract DeployProtocol is Script, ProtocolDeployer {
             pausers: roles.pausers,
             deployedBlock: deployedBlock
         });
+
+        console2.log("--- market:", name);
+        console2.log("  oracle          :", market.oracle);
+        console2.log("  guardianSignals :", market.guardianSignals);
+        console2.log("  controller      :", built.controller);
+        console2.log("  vault           :", built.vault);
+        console2.log("  activationPlan  :", _writeActivationPlan(market, md, protocol, curve));
     }
 
     /// @dev Writes this market's activation-motion inputs to a per-market artifact.
     function _writeActivationPlan(
-        string memory name,
         LidoLendMarketBuilder.MarketSpec memory market,
-        LidoLendMarketBuilder.MarketContracts memory built,
+        MarketDeployment memory deployed,
         ProtocolDeployment memory protocol,
         AdaptiveCurveParams memory curve
     ) internal returns (string memory) {
         return ProtocolConfigFile.writeActivationPlan(
             ActivationPlan({
-                name: name,
+                name: deployed.name,
                 deployment: protocol.deployment,
                 network: protocol.network,
                 chainId: protocol.chainId,
@@ -224,7 +217,8 @@ contract DeployProtocol is Script, ProtocolDeployer {
                 oracle: market.oracle,
                 irm: protocol.irmRouter,
                 lltv: market.lltv,
-                controller: built.controller,
+                controller: deployed.controller,
+                circuitBreaker: deployed.pausers.length == 1 ? deployed.pausers[0] : address(0),
                 curveParams: curve
             })
         );

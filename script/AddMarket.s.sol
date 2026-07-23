@@ -20,8 +20,7 @@ import {OracleConfigFile} from "./lib/OracleConfigFile.sol";
 /// @notice Adds one market to an already-deployed protocol, via the same builder steps
 ///         `DeployProtocol` uses. Output is INERT; activation is a separate motion. With `REGISTRY` set the
 ///         result is appended to the deployment's registry.
-/// @dev Draft, not production-ready. The builder address is read from the market config; the CircuitBreaker
-///      from the deploy config (`CONFIG`, default mainnet).
+/// @dev Draft, not production-ready. The builder and CircuitBreaker addresses are read from the market config.
 ///
 /// Usage:
 ///   forge script script/AddMarket.s.sol --sig "run(string,string)" mainnet weth-wsteth \
@@ -34,6 +33,8 @@ contract AddMarket is Script, ProtocolDeployer {
         string network;
         uint256 chainId;
         bytes32 configHash;
+        address agent;
+        address executor;
     }
 
     struct MarketRecordInput {
@@ -51,6 +52,7 @@ contract AddMarket is Script, ProtocolDeployer {
         LidoLendMarketBuilder.MarketSpec market;
         LidoLendMarketBuilder.MarketContracts built;
         address irmRouter;
+        address circuitBreaker;
         AdaptiveCurveParams curve;
         RunContext context;
     }
@@ -59,10 +61,7 @@ contract AddMarket is Script, ProtocolDeployer {
         external
         returns (LidoLendMarketBuilder.MarketContracts memory built)
     {
-        // One CircuitBreaker for all markets, from the deploy config (`CONFIG`, default mainnet); granted this
-        // controller's PAUSER_ROLE, same as `DeployProtocol`.
         RunContext memory context;
-        address circuitBreaker;
         {
             DeployConfig memory deployConfig = DeployConfigFile.read(config);
             _requireChainId(deployConfig.chainId);
@@ -70,9 +69,10 @@ contract AddMarket is Script, ProtocolDeployer {
                 deployment: ArtifactMetadataFile.deployment(),
                 network: deployConfig.network,
                 chainId: deployConfig.chainId,
-                configHash: deployConfig.configHash
+                configHash: deployConfig.configHash,
+                agent: deployConfig.agent,
+                executor: deployConfig.evmScriptExecutor
             });
-            circuitBreaker = deployConfig.circuitBreaker;
         }
 
         string memory guardianGroup = MarketConfigFile.guardianGroup(name);
@@ -83,23 +83,16 @@ contract AddMarket is Script, ProtocolDeployer {
             AdaptiveCurveParams memory curve
         ) = MarketConfigFile.read(
             name,
-            ArtifactMetadata({
-                deployment: context.deployment,
-                chainId: context.chainId,
-                configHash: context.configHash
-            })
+            ArtifactMetadata({deployment: context.deployment, chainId: context.chainId, configHash: context.configHash})
         );
+        _requireMarketRolePolicy(roles, context.agent, context.executor);
+        _requireProxyAdmin(market.oracle, context.agent);
+        if (market.guardianSignals != address(0)) _requireProxyAdmin(market.guardianSignals, context.agent);
         if (builder == address(0)) revert ConfigToml.MissingConfigValue(".builder");
-        if (circuitBreaker != address(0)) {
-            roles.pausers = new address[](1);
-            roles.pausers[0] = circuitBreaker;
-        }
 
         // Fail a doomed record before any contract is deployed, not after the broadcast.
         ArtifactMetadata memory artifacts = ArtifactMetadata({
-            deployment: context.deployment,
-            chainId: context.chainId,
-            configHash: context.configHash
+            deployment: context.deployment, chainId: context.chainId, configHash: context.configHash
         });
         ArtifactMetadataFile.requireManifest(artifacts);
         ArtifactMetadataFile.snapshotInput("deploy", DeployConfigFile.configPath(config));
@@ -130,7 +123,7 @@ contract AddMarket is Script, ProtocolDeployer {
         vm.startBroadcast();
 
         if (market.guardianSignals == address(0)) {
-            market.guardianSignals = _buildGuardianSignals(guardianGroup, builder);
+            market.guardianSignals = _buildGuardianSignals(guardianGroup, builder, context.agent);
             GuardianSignalsConfigFile.writeDeployed(guardianGroup, market.guardianSignals, artifacts);
         }
 
@@ -161,6 +154,7 @@ contract AddMarket is Script, ProtocolDeployer {
             activation.market = market;
             activation.built = built;
             activation.irmRouter = irmRouter;
+            activation.circuitBreaker = roles.pausers.length == 1 ? roles.pausers[0] : address(0);
             activation.curve = curve;
             activation.context = context;
             console2.log("  activationPlan  :", _writeActivationPlan(activation));
@@ -182,6 +176,7 @@ contract AddMarket is Script, ProtocolDeployer {
                 irm: input.irmRouter,
                 lltv: input.market.lltv,
                 controller: input.built.controller,
+                circuitBreaker: input.circuitBreaker,
                 curveParams: input.curve
             })
         );

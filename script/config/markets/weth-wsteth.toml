@@ -1,56 +1,31 @@
-# Per-market config for a WETH/wstETH market, consumed by the deploy engine (via DeployProtocol / AddMarket). Deploys
-# the INERT components (curve, controller, vault); binding them (route + create on core + registerPauser) is
-# the separate EasyTrack activation motion.
-#
-# Every parameter the market is deployed with lives here. Addresses are placeholders (zero) — fill before
-# broadcasting. The economic values below are DRAFT. `oracle` is a pre-deployed address you fill in (see
-# below); `guardian_signals` is slotted in by the orchestrator from this run's deploy, so it may be left zero.
-
-# The protocol's LidoLendMarketBuilder (from the protocol's deployed registry). AddMarket reads it from here;
-# DeployProtocol overrides it with the builder it just deployed.
+# Economic values are draft.
+# Required by AddMarket; ignored by DeployProtocol.
 builder = "0x0000000000000000000000000000000000000000"
 
 [market]
 loan_token = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"        # WETH
 collateral_token = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"  # wstETH
-# Market oracle — a pre-deployed address. Deploy the oracle first with its own script (DeployWstEthOracle for
-# this market; see oracles/weth-wsteth.toml). Zero → resolved from the address that deploy recorded in
-# deployed/oracle-weth-wsteth.toml; the deploy reverts only when neither is set. Non-zero pins an explicit
-# address instead. The factory neither deploys nor checks it.
-oracle = "0x0000000000000000000000000000000000000000"  # resolved from deployed/oracle-weth-wsteth.toml
-oracle_artifact = "weth-wsteth"  # resolver key for the generated oracle artifact
-lltv = 800000000000000000            # 0.8e18 (WAD), must be < 1e18
-# GuardianSignals registry. Zero → the orchestrator deploys a fresh registry for this market (from
-# guardians/<name>.toml). Non-zero → reuse an existing registry, i.e. share one guardian committee across a
-# group of markets (its set / quorum / suspect-window are registry-wide; bans stay keyed by market id). The
-# orchestrator slots the resulting address in here.
+# Zero resolves the oracle artifact recorded under this name.
+oracle = "0x0000000000000000000000000000000000000000"
+oracle_artifact = "weth-wsteth"
+lltv = 800000000000000000  # 0.8 WAD
+# Zero deploys or resolves the registry identified by guardian_group.
 guardian_signals = "0x0000000000000000000000000000000000000000"
-guardian_group = "weth-wsteth"  # resolver key; markets sharing a committee use the same group
+guardian_group = "weth-wsteth"
 vault_name = "Lido wstETH/WETH Vault"
 vault_symbol = "lidoWSTETH-WETH"
 
-# Operational roles are ARRAYS — any number of holders per role; an empty array grants nobody. Zero entries
-# are rejected by the factory (a zero can only be a config mistake).
 [roles]
-# Controller DEFAULT_ADMIN. High-trust (Agent).
 admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"        # Agent
-# OssifiableProxy admin for controller + vault + fresh guardian registry (upgrade authority).
 proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"  # Agent
-# Controller MANAGER_ROLE + guardian-registry MANAGER/ACCESS_RESTORER. Include the EVMScriptExecutor so
-# routine config-change motions (SetCollateralActivationConfig / SetSettlementConfig / SetSupplyCap) work.
-managers = ["0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"]   # EVMScriptExecutor
-# PAUSER_ROLE is NOT set here — the CircuitBreaker is one instance for all markets, configured once in the
-# deploy config (`script/config/<name>.toml -> circuit_breaker`) and granted PAUSER_ROLE by the orchestrator.
-# freezers: fast risk-reducing holders (emergency-seal / risk-steward committee). Fork test: left unset.
+managers = []
+# CircuitBreaker; exactly one is required before activation.
+pausers = []
 freezers = []
-# unfreeze is risk-increasing, so the EVMScriptExecutor — it runs through the Unfreeze EasyTrack factory and
-# its objection window.
-unfreezers = ["0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"] # EVMScriptExecutor
+unfreezers = []
 resumers = ["0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"]   # Agent
 
-# Collateral-activation policy (DRAFT — governance values). Validated by the controller on init.
-# Wei amounts are quoted strings: TOML integers are 64-bit, so any value >= 2^63 (~9.2e18) must be a
-# string; kept consistent across all amount fields so the operator never hits the boundary by surprise.
+# Amounts are strings because TOML integers are limited to int64.
 [activation]
 min_activation_delay = 600            # 10 minutes
 max_activation_delay = 7200           # 2 hours
@@ -62,15 +37,13 @@ max_guardians_quorum_delay = 0
 delay_per_strike = 7200               # 2 hours
 delay_per_suspect = 0
 
-# Settlement slice policy (DRAFT).
 [settlement]
 slice_floor_bps = 100                 # 1%
 slice_floor_assets = "0"
 full_cut_below_collateral = "10000000000000000000"  # 10 ether
 ltv_step_bps = 100                    # 1%
 
-# Adaptive IRM curve (DRAFT). Rate fields are WAD-per-second (annual figure / 365 days), stored as
-# the exact truncated integers that hit the contract so a governance reviewer can check them directly.
+# Rates are WAD per second.
 [curve]
 curve_steepness = 4000000000000000000     # 4x
 adjustment_speed = 1585489599188          # 50e18 / 365 days

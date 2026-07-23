@@ -69,13 +69,17 @@ contract ForkRegistryTest is Test {
 
     function testRevert_registryMetadata_wrongKindReverts() public {
         string memory registry = "[artifact]\nkind = \"activation-plan\"\nchain_id = 1\n";
-        vm.expectRevert(ArtifactMetadataFile.ArtifactKindMismatch.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ArtifactMetadataFile.ArtifactKindMismatch.selector, "protocol-registry", "activation-plan"
+            )
+        );
         h.validateRegistry(registry, 1);
     }
 
     function testRevert_registryMetadata_wrongChainReverts() public {
         string memory registry = "[artifact]\nkind = \"protocol-registry\"\nchain_id = 11155111\n";
-        vm.expectRevert(ArtifactMetadataFile.ArtifactChainIdMismatch.selector);
+        vm.expectRevert(abi.encodeWithSelector(ArtifactMetadataFile.ArtifactChainIdMismatch.selector, 1, 11155111));
         h.validateRegistry(registry, 1);
     }
 }

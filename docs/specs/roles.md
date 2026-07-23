@@ -2,7 +2,7 @@
 
 Code-accurate map of every privileged action in a deployed market to its role, contract, intended holder, and impact class. The governance model it rests on — the non-custody rule, the impact classification, and the execution mechanisms — comes from ADR 004, ADR 006, and ADR 007. This is the detailed catalogue behind the [architecture](architecture.md) overview.
 
-A single `LidoLend` core is shared across a deployment's markets, and each market adds its own controller, vault, and oracle, plus a `GuardianSignals` registry it either deploys or shares. The registry is per guardian-set, not strictly per-market: a group of markets under one committee can share a single registry (its guardian set, quorum, and suspect window are registry-wide; bans stay keyed by market id), while a market needing a different set gets its own. So the core-owner roles below are deployment-wide — one holder for every market — the controller roles exist once per market, and the guardian-registry roles exist once per registry (shared by the markets on it). Initially the deployer EOA holds every role and every proxy admin, and hands them to Lido governance before the market opens.
+A single `LidoLend` core is shared across a deployment's markets, and each market adds its own controller, vault, and oracle, plus a `GuardianSignals` registry it either deploys or shares. The registry is per guardian-set, not strictly per-market: a group of markets under one committee can share a single registry (its guardian set, quorum, and suspect window are registry-wide; bans stay keyed by market id), while a market needing a different set gets its own. So the core-owner roles below are deployment-wide — one holder for every market — the controller roles exist once per market, and the guardian-registry roles exist once per registry (shared by the markets on it). The deployer holds only transient setup authority during a deployment transaction; the completed deployment leaves it with no role or proxy-admin authority.
 
 ## Non-custody rule
 
@@ -38,7 +38,7 @@ Every contract is deployed behind an `OssifiableProxy`: the shared `LidoLend` co
 |---|---|---|---|
 | Proxy admin (shared core, plus each market's controller, vault, oracle, `GuardianSignals`) | `proxy__upgradeTo` / `proxy__upgradeToAndCall` (replace implementation), `proxy__changeAdmin` (transfer control), `proxy__ossify` (permanently lock by setting admin to `address(0)`) | C1 | Lido DAO (Voting + Dual Governance) |
 
-An upgrade can change core mechanics and is therefore the only path that could introduce a custody-like power, so it sits behind the slowest authority — and behind Dual Governance for the stETH-exposed core, per ADR 007. A proxy can be ossified to give up upgradeability for good. The core is upgradeable, kept honest by a strong lender-exit delay (ADR 005). Initially the admin of all proxies is the deployer EOA, handed to governance with `proxy__changeAdmin` before the market opens.
+An upgrade can change core mechanics and is therefore the only path that could introduce a custody-like power, so it sits behind the slowest authority — and behind Dual Governance for the stETH-exposed core, per ADR 007. A proxy can be ossified to give up upgradeability for good. The core is upgradeable, kept honest by a strong lender-exit delay (ADR 005). Every completed deployment assigns all proxy admins to the DAO Agent; core and IRM-router proxy authority is transferred from the transient deployer before the backbone deploy returns, while per-market and oracle proxies are created with the Agent directly.
 
 ## IRM
 
@@ -48,22 +48,34 @@ The interest-rate model (`AdaptiveCurveIRM`) is the one contract deployed bare �
 
 ### `LidoLend` core
 
-The core authorizes its admin surface against a single in-contract `owner`. The deployed owner is the `LidoLendOwner` facade, wired in through the core's `setOwner`, which re-exposes each owner-only call behind a distinct role so the capabilities delegate independently. The core's `onlyOwner` is held by the facade, not the DAO directly.
+The core authorizes its admin surface against a single in-contract `owner`. The deployed owner is the
+`LidoLendOwner` facade, wired in through the core's `setOwner`. The same fixed facade is the governance
+entrypoint for per-market controller and guardian-registry calls: it resolves each target from the core by
+market id. This lets delayed governance authorize one stable target and selector per action even as markets
+are added. The core's `onlyOwner` is held by the facade, not the DAO directly.
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
-| `MARKET_CREATOR_ROLE` | `createMarket` (controller-less and controlled) | C4 / C1 | Lido DAO |
-| `FEE_MANAGER_ROLE` | `setFee` (≤ `MAX_FEE` = 25%), `setFeeRecipient` | C4 | Lido DAO |
-| `DEFAULT_ADMIN_ROLE` | `transferLidoLendOwnership` (the only path to the core's `setOwner`), plus administers the two roles above | C1 | Lido DAO |
+| `MARKET_CREATOR_ROLE` | `createMarket` (controller-less and controlled) | C4 / C1 | EVMScriptExecutor |
+| `FEE_MANAGER_ROLE` | `setFee` (≤ `MAX_FEE` = 25%), `setFeeRecipient` | C4 | EVMScriptExecutor |
+| `MARKET_MANAGER_ROLE` | per-market `setSupplyCap`, `unfreeze`, `setCollateralActivationConfig`, `setSettlementConfig`, and `grantInstantActivation` through the resolved controller | C3 / C4 | EVMScriptExecutor |
+| `GUARDIAN_MANAGER_ROLE` | guardian roster (`addGuardian`, `removeGuardian`, `replaceGuardian`), quorum, suspect window, and per-market `unban` through the resolved registry | C1 / C3 / C4 | EVMScriptExecutor |
+| `DEFAULT_ADMIN_ROLE` | `transferLidoLendOwnership` (the only path to the core's `setOwner`), plus administers the capability roles above | C1 | Lido DAO |
+
+The facade holds `MANAGER_ROLE` and `UNFREEZER_ROLE` on every controller, and `MANAGER_ROLE` and
+`ACCESS_RESTORER_ROLE` on every guardian registry. Those downstream grants only let the facade dispatch:
+callers must still hold the matching capability role on the facade. EVMScriptExecutor holds no direct
+controller manager/unfreezer or guardian manager/restorer role, making the facade the sole stable EasyTrack
+target for those actions.
 
 ### Market controller
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | `setCollateralActivationConfig`, `setSettlementConfig`, `setSupplyCap`, `grantInstantActivation`, `revokeInstantActivation` | C4 | routine delay mechanism |
+| `MANAGER_ROLE` | `setCollateralActivationConfig`, `setSettlementConfig`, `setSupplyCap`, `grantInstantActivation`, `revokeInstantActivation` | C4 | `LidoLendOwner` for EasyTrack governance actions; `RiskStewardDashboard` for bounded tighten-only actions |
 | `FREEZER_ROLE` | `freeze` | C3 | risk steward committee |
-| `UNFREEZER_ROLE` | `unfreeze` | C4 | EasyTrack (objection window) |
+| `UNFREEZER_ROLE` | `unfreeze` | C4 | `LidoLendOwner` (EasyTrack motion, objection window) |
 | `PAUSER_ROLE` | `pauseFor` (stops every controller hook) | C2 | emergency-seal committee, bounded |
 | `RESUMER_ROLE` | `resume` | C2 | Lido DAO, slow |
 
@@ -71,10 +83,15 @@ Every `MANAGER_ROLE` lever is risk-increasing, so it takes the delay mechanism. 
 
 The operational roles are arrays, not single addresses: `LidoLendMarketBuilder.MarketRoles` carries
 `managers` / `pausers` / `freezers` / `unfreezers` / `resumers` as `address[]`, so any role can have any
-number of holders — an empty array grants nobody, and a zero entry reverts (`ZeroRoleHolder`) as a config
-mistake rather than silently granting the zero address. `AdaptiveCurveIrm` is a protocol-wide singleton (see IRM,
-above), so there is no per-market curve owner/manager to wire at deploy — its owner/manager are set once with
-the backbone, and per-market curve params are activation calldata, not a deploy input.
+number of additional holders — an empty array grants nobody from configuration, and a zero entry reverts
+(`ZeroRoleHolder`) as a config mistake rather than silently granting the zero address. Independently of those
+arrays, the builder always grants the facade `MANAGER_ROLE` and `UNFREEZER_ROLE`. Production deployment
+policy narrows `pausers` to at most one CircuitBreaker per market/controller, with the
+`EVMScriptExecutor` as its admin so the activation motion can register the committee. One CircuitBreaker
+may be reused across several markets; the assignment remains explicit in each market config.
+`AdaptiveCurveIrm` is a protocol-wide singleton (see IRM, above), so there is no per-market curve
+owner/manager to wire at deploy — its owner/manager are set once with the backbone, and per-market curve
+params are activation calldata, not a deploy input.
 
 ### `RiskStewardDashboard`
 
@@ -97,11 +114,14 @@ The dashboard is a protocol-wide singleton, deployed once by `DeployProtocol` (v
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | guardian set, quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C4 | EasyTrack (objection window) |
+| `MANAGER_ROLE` | guardian set, quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C4 | `LidoLendOwner` (EasyTrack motion, objection window) |
 | `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum) | C3 | risk steward committee |
-| `ACCESS_RESTORER_ROLE` | `unban` | C4 | EasyTrack (objection window) |
+| `ACCESS_RESTORER_ROLE` | `unban` | C4 | `LidoLendOwner` (EasyTrack motion, objection window) |
 
-The committee holds the fast risk-reducing side (`ban`); `unban` is risk-increasing, so it takes the routine delay mechanism — an EasyTrack motion with an objection window (ADR 006) — rather than an immediate call. Guardian-set management (`addGuardian`/`removeGuardian`/`setQuorum`) runs through the same EasyTrack objection window, not a fast committee: a removal or quorum change is visible and vetoable before it takes effect, so it cannot quietly disable detection. `DEFAULT_ADMIN_ROLE` stays with the DAO and can re-grant `MANAGER_ROLE` for a direct action with no factory yet (e.g. `setSuspectWindow`).
+The committee holds the fast risk-reducing side (`ban`); `unban` is risk-increasing, so it takes the routine delay mechanism — an EasyTrack motion with an objection window (ADR 006) — rather than an immediate call. Guardian-set management (`addGuardian`/`removeGuardian`/`replaceGuardian`/`setQuorum`) runs through the same EasyTrack objection window, not a fast committee: a removal or quorum change is visible and vetoable before it takes effect, so it cannot quietly disable detection. `DEFAULT_ADMIN_ROLE` stays with the DAO and can re-grant `MANAGER_ROLE` for a direct action with no factory yet (e.g. `setSuspectWindow`).
+
+The builder always grants the facade `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` in addition to the configured
+guardian managers, so every registry remains reachable through the stable governance target.
 
 ### `ExitBookBase`
 

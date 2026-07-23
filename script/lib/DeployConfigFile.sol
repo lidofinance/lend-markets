@@ -14,7 +14,6 @@ struct DeployConfig {
     bytes32 configHash;
     address agent;
     address evmScriptExecutor;
-    address circuitBreaker; // one CircuitBreaker for all markets; each controller's PAUSER_ROLE holder
     bool exitBooks; // deploy the protocol's two exit books
     uint256 exitBookMaxRequestLifetime; // used only when exitBooks is true
     string[] markets; // per-market config names (markets/<name>.toml, oracles/<name>.toml, guardians/<name>.toml)
@@ -34,9 +33,6 @@ library DeployConfigFile {
         cfg.chainId = ConfigToml.requireUint(toml, ".chain_id");
         cfg.agent = ConfigToml.requireAddress(toml, ".agent");
         cfg.evmScriptExecutor = ConfigToml.requireAddress(toml, ".evm_script_executor");
-        // Optional: zero at the template stage. Zero deploys markets with no PAUSER_ROLE holder (inert but
-        // incomplete); fill it with the deployed CircuitBreaker before a real broadcast.
-        cfg.circuitBreaker = vm.parseTomlAddress(toml, ".circuit_breaker");
         cfg.exitBooks = vm.parseTomlBool(toml, ".exit_books");
         cfg.exitBookMaxRequestLifetime = vm.parseTomlUint(toml, ".exit_book_max_request_lifetime");
         cfg.markets = vm.parseTomlStringArray(toml, ".markets");

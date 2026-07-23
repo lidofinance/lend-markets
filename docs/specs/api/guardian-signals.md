@@ -334,6 +334,22 @@ Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
 
 ## Functions
 
+### `MAX_GUARDIANS_COUNT`
+
+```solidity
+function MAX_GUARDIANS_COUNT() external view returns (uint256);
+```
+
+Maximum number of guardians in the registry.
+
+### `MAX_SUSPECT_WINDOW`
+
+```solidity
+function MAX_SUSPECT_WINDOW() external view returns (uint256);
+```
+
+Maximum duration of the suspect window.
+
 ### `addGuardian`
 
 ```solidity

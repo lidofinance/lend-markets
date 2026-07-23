@@ -133,6 +133,8 @@ contract MarketBuilderScenarioTest is Test {
         assertFalse(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), address(factory)), "factory keeps no admin");
         assertTrue(controller.hasRole(controller.MANAGER_ROLE(), manager1), "manager1");
         assertTrue(controller.hasRole(controller.MANAGER_ROLE(), manager2), "manager2");
+        assertTrue(controller.hasRole(controller.MANAGER_ROLE(), address(facade)), "facade manager");
+        assertTrue(controller.hasRole(controller.UNFREEZER_ROLE(), address(facade)), "facade unfreezer");
         assertTrue(controller.hasRole(controller.MANAGER_ROLE(), riskStewardDashboard), "dashboard manager");
         assertTrue(controller.hasRole(controller.PAUSER_ROLE(), pauser1), "pauser1");
         assertTrue(controller.hasRole(controller.PAUSER_ROLE(), pauser2), "pauser2");
@@ -343,8 +345,10 @@ contract MarketBuilderScenarioTest is Test {
         assertTrue(g.hasRole(g.DEFAULT_ADMIN_ROLE(), gAdmin), "admin");
         assertTrue(g.hasRole(g.MANAGER_ROLE(), gManager1), "manager1");
         assertTrue(g.hasRole(g.MANAGER_ROLE(), gManager2), "manager2");
+        assertTrue(g.hasRole(g.MANAGER_ROLE(), address(facade)), "facade manager");
         assertTrue(g.hasRole(g.ACCESS_RESTORER_ROLE(), gManager1), "restorer1");
         assertTrue(g.hasRole(g.ACCESS_RESTORER_ROLE(), gManager2), "restorer2");
+        assertTrue(g.hasRole(g.ACCESS_RESTORER_ROLE(), address(facade)), "facade restorer");
         assertTrue(g.hasRole(g.ACCESS_LIMITER_ROLE(), accessLimiter), "limiter");
 
         assertFalse(g.hasRole(g.DEFAULT_ADMIN_ROLE(), address(builder)), "builder keeps no admin");

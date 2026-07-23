@@ -13,6 +13,12 @@ import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 ///         the controller depends on (`getOpinion`, `isBanned`) lives in {IGuardianSignalsView}; this interface adds
 ///         the rest.
 interface IGuardianSignals is IGuardianSignalsView {
+    /// @notice Maximum number of guardians in the registry.
+    function MAX_GUARDIANS_COUNT() external view returns (uint256);
+
+    /// @notice Maximum duration of the suspect window.
+    function MAX_SUSPECT_WINDOW() external view returns (uint256);
+
     // ---
     // EVENTS
     // ---

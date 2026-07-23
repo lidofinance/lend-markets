@@ -228,6 +228,8 @@ contract LidoLendMarketBuilder {
         IReadController ctrl = IReadController(controller);
 
         _grantAll(controller, ctrl.MANAGER_ROLE(), roles.managers);
+        IAccessControl(controller).grantRole(ctrl.MANAGER_ROLE(), address(LIDO_LEND_OWNER));
+        IAccessControl(controller).grantRole(ctrl.UNFREEZER_ROLE(), address(LIDO_LEND_OWNER));
         // Domain risk-steward dashboard also holds MANAGER_ROLE so its tighten-only levers can write config.
         if (RISK_STEWARD_DASHBOARD != address(0)) {
             IAccessControl(controller).grantRole(ctrl.MANAGER_ROLE(), RISK_STEWARD_DASHBOARD);
@@ -287,6 +289,8 @@ contract LidoLendMarketBuilder {
 
         _grantAll(guardianSignals, managerRole, managers);
         _grantAll(guardianSignals, gs.ACCESS_RESTORER_ROLE(), managers);
+        IAccessControl(guardianSignals).grantRole(managerRole, address(LIDO_LEND_OWNER));
+        IAccessControl(guardianSignals).grantRole(gs.ACCESS_RESTORER_ROLE(), address(LIDO_LEND_OWNER));
         if (cfg.accessLimiter != address(0)) {
             IAccessControl(guardianSignals).grantRole(gs.ACCESS_LIMITER_ROLE(), cfg.accessLimiter);
         }
@@ -361,6 +365,8 @@ contract LidoLendMarketBuilder {
 
         _requireHas(controller, adminRole, roles.admin);
         _requireAllHave(controller, ctrl.MANAGER_ROLE(), roles.managers);
+        _requireHas(controller, ctrl.MANAGER_ROLE(), address(LIDO_LEND_OWNER));
+        _requireHas(controller, ctrl.UNFREEZER_ROLE(), address(LIDO_LEND_OWNER));
         _requireAllHave(controller, ctrl.PAUSER_ROLE(), roles.pausers);
         _requireAllHave(controller, ctrl.FREEZER_ROLE(), roles.freezers);
         _requireAllHave(controller, ctrl.UNFREEZER_ROLE(), roles.unfreezers);
@@ -421,6 +427,8 @@ contract LidoLendMarketBuilder {
         _requireHas(guardianSignals, adminRole, admin);
         _requireAllHave(guardianSignals, managerRole, managers);
         _requireAllHave(guardianSignals, gs.ACCESS_RESTORER_ROLE(), managers);
+        _requireHas(guardianSignals, managerRole, address(LIDO_LEND_OWNER));
+        _requireHas(guardianSignals, gs.ACCESS_RESTORER_ROLE(), address(LIDO_LEND_OWNER));
         if (accessLimiter != address(0)) _requireHas(guardianSignals, gs.ACCESS_LIMITER_ROLE(), accessLimiter);
 
         _requireNotHolder(guardianSignals, adminRole, builder);

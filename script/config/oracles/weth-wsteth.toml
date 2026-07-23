@@ -1,9 +1,2 @@
-# Oracle deploy config for the weth-wsteth market, consumed by DeployWstEthOracle. The oracle is a standalone
-# leaf dependency: deploy it with `forge script script/DeployWstEthOracle.s.sol --sig "run(string,string)" <config> weth-wsteth ...`, then
-# paste the printed address into `script/config/markets/weth-wsteth.toml -> [market].oracle`. Per market.
-# Fill placeholders before broadcasting.
-
-# The underlying wstETH the rate is read from (mainnet wstETH).
 wsteth = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
-# OssifiableProxy admin for the oracle (upgrade authority) — the protocol's proxy-admin holder.
 proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"  # Agent
