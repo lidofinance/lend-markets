@@ -9,8 +9,6 @@ import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
-/// @notice Low-level, market-agnostic deploy steps shared by every deploy path (core, owner facade,
-///         GuardianSignals, IRM router, and the `OssifiableProxy` wrapper). No market or curve logic.
 abstract contract LidoLendPrimitives {
     function _deployCore(address admin) internal virtual returns (address) {
         address impl = address(new LidoLend());
@@ -25,8 +23,7 @@ abstract contract LidoLendPrimitives {
         return address(new LidoLendOwner(ILidoLend(core), admin, marketCreator, feeManager));
     }
 
-    /// @dev `proxyAdmin` is separate from `initAdmin` so the two can end at different holders; the suspect
-    ///      window is set after deploy.
+    /// @dev Initialization and proxy administration may have different holders.
     function _deployGuardianSignals(
         address impl,
         address initAdmin,
@@ -44,8 +41,6 @@ abstract contract LidoLendPrimitives {
     }
 
     function _deployIrm(address core, address owner) internal virtual returns (address) {
-        // The market's immutable `irm` points at this router, which forwards `borrowRate` to a switchable
-        // per-market model. owner == manager == `owner`.
         address impl = address(new IrmRouter(core));
         return _behindProxy(impl, owner, abi.encodeCall(IrmRouter.initialize, (owner, owner)));
     }

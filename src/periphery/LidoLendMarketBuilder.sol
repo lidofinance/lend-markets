@@ -12,6 +12,7 @@ import {ILidoLendOwner} from "../interfaces/ILidoLendOwner.sol";
 import {LidoLendMarketFactory} from "./LidoLendMarketFactory.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../types/SettlementTypes.sol";
+import {WAD} from "../libs/Constants.sol";
 
 /// @notice The addresses that must hold a market controller's roles. The operational roles are arrays — a
 ///         role can have any number of holders (an empty array means nobody).
@@ -46,6 +47,7 @@ struct GuardianConfig {
 }
 
 interface IReadController {
+    function LIDO_LEND() external view returns (address);
     function marketId() external view returns (Id);
     function guardianSignals() external view returns (address);
     function DEFAULT_ADMIN_ROLE() external view returns (bytes32);
@@ -57,6 +59,7 @@ interface IReadController {
 }
 
 interface IReadVault {
+    function LIDO_LEND() external view returns (address);
     function controller() external view returns (address);
     function marketId() external view returns (Id);
 }
@@ -125,6 +128,8 @@ contract LidoLendMarketBuilder {
     error ZeroIrmRouter();
     error ZeroCore();
     error CoreMismatch();
+    error ImplementationCoreMismatch(address implementation, address expected, address actual);
+    error InvalidLltv(uint256 lltv);
     error MarketAlreadyExists(Id marketId);
     error OracleNotContract();
     error GuardianSignalsNotContract();
@@ -151,6 +156,7 @@ contract LidoLendMarketBuilder {
         address vault,
         address guardianSignals,
         address oracle,
+        address riskStewardDashboard,
         MarketRoles roles
     );
 
@@ -171,6 +177,8 @@ contract LidoLendMarketBuilder {
         address core = address(lidoLendOwner.LIDO_LEND());
         if (core == address(0)) revert ZeroCore();
         if (irmRouter.MORPHO() != core) revert CoreMismatch();
+        _requireImplementationCore(factory.CONTROLLER_IMPL(), core);
+        _requireImplementationCore(factory.VAULT_IMPL(), core);
 
         FACTORY = factory;
         LIDO_LEND_OWNER = lidoLendOwner;
@@ -191,6 +199,7 @@ contract LidoLendMarketBuilder {
     {
         if (roles.admin == address(0)) revert ZeroAdmin();
         if (roles.proxyAdmin == address(0)) revert ZeroProxyAdmin();
+        if (market.lltv >= WAD) revert InvalidLltv(market.lltv);
 
         MarketParams memory params = MarketParams({
             loanToken: market.loanToken,
@@ -316,7 +325,9 @@ contract LidoLendMarketBuilder {
         address guardianSignals,
         MarketRoles calldata roles
     ) internal {
-        emit MarketContractsDeployed(built.marketId, built.controller, built.vault, guardianSignals, oracle, roles);
+        emit MarketContractsDeployed(
+            built.marketId, built.controller, built.vault, guardianSignals, oracle, RISK_STEWARD_DASHBOARD, roles
+        );
     }
 
     // ---
@@ -335,6 +346,7 @@ contract LidoLendMarketBuilder {
     ) public view {
         _requireImplCodehash(controller, FACTORY.CONTROLLER_IMPL());
         _requireImplCodehash(vault, FACTORY.VAULT_IMPL());
+        _requireImplCodehash(guardianSignals, FACTORY.GUARDIAN_SIGNALS_IMPL());
         _requireProxyAdmin(controller, roles.proxyAdmin);
         _requireProxyAdmin(vault, roles.proxyAdmin);
         _validateBindings(controller, vault, marketId, guardianSignals);
@@ -367,6 +379,9 @@ contract LidoLendMarketBuilder {
         _requireAllHave(controller, ctrl.MANAGER_ROLE(), roles.managers);
         _requireHas(controller, ctrl.MANAGER_ROLE(), address(LIDO_LEND_OWNER));
         _requireHas(controller, ctrl.UNFREEZER_ROLE(), address(LIDO_LEND_OWNER));
+        if (RISK_STEWARD_DASHBOARD != address(0)) {
+            _requireHas(controller, ctrl.MANAGER_ROLE(), RISK_STEWARD_DASHBOARD);
+        }
         _requireAllHave(controller, ctrl.PAUSER_ROLE(), roles.pausers);
         _requireAllHave(controller, ctrl.FREEZER_ROLE(), roles.freezers);
         _requireAllHave(controller, ctrl.UNFREEZER_ROLE(), roles.unfreezers);
@@ -445,6 +460,11 @@ contract LidoLendMarketBuilder {
         if (actual.codehash != expectedImpl.codehash) {
             revert CodehashMismatch(proxy, expectedImpl.codehash, actual.codehash);
         }
+    }
+
+    function _requireImplementationCore(address implementation, address expected) private view {
+        address actual = IReadController(implementation).LIDO_LEND();
+        if (actual != expected) revert ImplementationCoreMismatch(implementation, expected, actual);
     }
 
     function _requireProxyAdmin(address proxy, address expected) internal view {

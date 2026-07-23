@@ -3,39 +3,13 @@ pragma solidity 0.8.35;
 
 import {Vm} from "forge-std/Vm.sol";
 
-import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
-
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 
-/// @notice Governance inputs for the protocol backbone.
 struct ProtocolConfig {
     address agent;
     address evmScriptExecutor;
 }
 
-/// @notice Deploy-known inputs to a market's activation motion; `pauserCommittee` / `enableSettlement` are
-///         activation-time decisions left as placeholders (see `writeActivationPlan`). The CircuitBreaker
-///         is selected by this market's role config.
-struct ActivationPlan {
-    string name;
-    string deployment;
-    string network;
-    uint256 chainId;
-    bytes32 configHash;
-    address loanToken;
-    address collateralToken;
-    address oracle;
-    address irm;
-    uint256 lltv;
-    address controller;
-    address circuitBreaker;
-    AdaptiveCurveParams curveParams;
-}
-
-/// @notice The shared protocol addresses a deploy produces. `deployedBlock` is captured before the broadcast
-///         as a lower bound for acceptance's event scan; `deployer` is the EOA that ran the deploy, recorded
-///         so acceptance can assert it retained no role. Final governance holders are recorded once here,
-///         rather than repeated in component configs.
 struct ProtocolDeployment {
     string deployment;
     string network;
@@ -55,8 +29,6 @@ struct ProtocolDeployment {
     address evmScriptExecutor;
 }
 
-/// @notice One market's deployed components, written under `[markets.<name>]`. `deployedBlock` is per market:
-///         one added via `AddMarket` deploys in a different block range than the backbone.
 struct MarketDeployment {
     string name;
     bytes32 id;
@@ -68,24 +40,25 @@ struct MarketDeployment {
     uint256 deployedBlock;
 }
 
-/// @notice The full result of one `DeployProtocol` run: backbone, optional exit books, every market.
 struct Deployment {
     ProtocolDeployment protocol;
     bool hasExitBooks;
     address morphoExitBook;
     address erc4626ExitBook;
+    uint256 exitBooksDeployedBlock;
+    address exitBooksDeployer;
+    uint256 exitBookMaxRequestLifetime;
     MarketDeployment[] markets;
 }
 
-/// @notice Composes and writes a deploy's TOML artifacts: the deployed-address registry and per-market
-///         activation plans.
 library ProtocolConfigFile {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
     error MarketAlreadyRecorded(string name);
+    error MarketIdAlreadyRecorded(bytes32 id);
+    error ExitBooksAlreadyRecorded();
     error ArtifactAlreadyExists(string path);
 
-    /// @notice Compose and write the full deployment registry to a dated per-run file; returns the path.
     function writeDeployment(Deployment memory d) internal returns (string memory path) {
         ArtifactMetadataFile.ensureArtifactsDir();
         string memory s = ArtifactMetadataFile.header(
@@ -96,6 +69,7 @@ library ProtocolConfigFile {
         );
         s = string.concat(s, "\n[protocol]\n");
         s = string.concat(s, _kv("deployment", d.protocol.deployment));
+        s = string.concat(s, _kv("network", d.protocol.network));
         s = string.concat(s, _kv("chain_id", d.protocol.chainId));
         s = string.concat(s, _kv("config_hash", d.protocol.configHash));
         s = string.concat(s, _kv("core", d.protocol.core));
@@ -112,9 +86,16 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("evm_script_executor", d.protocol.evmScriptExecutor));
 
         if (d.hasExitBooks) {
-            s = string.concat(s, "\n[exit_books]\n");
-            s = string.concat(s, _kv("morpho", d.morphoExitBook));
-            s = string.concat(s, _kv("erc4626", d.erc4626ExitBook));
+            s = string.concat(
+                s,
+                _exitBooksSection(
+                    d.morphoExitBook,
+                    d.erc4626ExitBook,
+                    d.exitBooksDeployedBlock,
+                    d.exitBooksDeployer,
+                    d.exitBookMaxRequestLifetime
+                )
+            );
         }
 
         for (uint256 i; i < d.markets.length; ++i) {
@@ -126,26 +107,68 @@ library ProtocolConfigFile {
         vm.writeFile(path, s);
     }
 
-    /// @notice Fail before broadcast when this run already has a protocol registry.
     function requireDeploymentUndeployed() internal view {
         _requireArtifactAbsent(deployedPath());
     }
 
-    /// @notice Append one market's section to an existing registry; reverts on a duplicate name.
     function appendMarket(string memory path, MarketDeployment memory m) internal {
         requireMarketAbsent(path, m.name);
         vm.writeFile(path, string.concat(vm.readFile(path), _marketSection(m)));
     }
 
-    /// @notice Revert when the registry at `path` already carries `[markets.<name>]`. Callable before the
-    ///         broadcast so a doomed append fails before any contract is deployed.
+    function appendExitBooks(
+        string memory path,
+        address morpho,
+        address erc4626,
+        uint256 deployedBlock,
+        address deployer,
+        uint256 maxRequestLifetime
+    ) internal {
+        requireExitBooksAbsent(path);
+        vm.writeFile(
+            path,
+            string.concat(
+                vm.readFile(path), _exitBooksSection(morpho, erc4626, deployedBlock, deployer, maxRequestLifetime)
+            )
+        );
+    }
+
+    function requireExitBooksAbsent(string memory path) internal view {
+        string memory registry = vm.readFile(path);
+        if (vm.keyExistsToml(registry, ".exit_books.morpho") || vm.keyExistsToml(registry, ".exit_books.erc4626")) {
+            revert ExitBooksAlreadyRecorded();
+        }
+    }
+
     function requireMarketAbsent(string memory path, string memory name) internal view {
         if (vm.keyExistsToml(vm.readFile(path), string.concat(".markets.", name))) {
             revert MarketAlreadyRecorded(name);
         }
     }
 
-    /// @notice Write one market's section as a standalone artifact; the `AddMarket` fallback when no `REGISTRY`.
+    /// @dev Matches the exact market-id line to avoid other bytes32 fields.
+    function requireMarketIdAbsent(string memory path, bytes32 id) internal view {
+        if (containsMarketId(vm.readFile(path), id)) revert MarketIdAlreadyRecorded(id);
+    }
+
+    function containsMarketId(string memory registry, bytes32 id) internal pure returns (bool) {
+        bytes memory haystack = bytes(registry);
+        bytes memory needle = bytes(string.concat("id = \"", vm.toString(id), "\""));
+        if (needle.length > haystack.length) return false;
+
+        for (uint256 i; i <= haystack.length - needle.length; ++i) {
+            bool matches = true;
+            for (uint256 j; j < needle.length; ++j) {
+                if (haystack[i + j] != needle[j]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) return true;
+        }
+        return false;
+    }
+
     function writeMarketOnly(MarketDeployment memory m, ArtifactMetadata memory metadata)
         internal
         returns (string memory path)
@@ -167,7 +190,21 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("deployed_block", m.deployedBlock));
     }
 
-    /// @dev Address/bytes32 values are quoted (so `vm.parseToml*` reads them back); integers are not.
+    function _exitBooksSection(
+        address morpho,
+        address erc4626,
+        uint256 deployedBlock,
+        address deployer,
+        uint256 maxRequestLifetime
+    ) private pure returns (string memory s) {
+        s = "\n[exit_books]\n";
+        s = string.concat(s, _kv("morpho", morpho));
+        s = string.concat(s, _kv("erc4626", erc4626));
+        s = string.concat(s, _kv("deployed_block", deployedBlock));
+        s = string.concat(s, _kv("deployer", deployer));
+        s = string.concat(s, _kv("max_request_lifetime", maxRequestLifetime));
+    }
+
     function _kv(string memory key, string memory value) private pure returns (string memory) {
         return string.concat(key, " = \"", value, "\"\n");
     }
@@ -184,10 +221,6 @@ library ProtocolConfigFile {
         return string.concat(key, " = ", vm.toString(value), "\n");
     }
 
-    function _kv(string memory key, int256 value) private pure returns (string memory) {
-        return string.concat(key, " = ", vm.toString(value), "\n");
-    }
-
     function _kvArray(string memory key, address[] memory values) private pure returns (string memory s) {
         s = string.concat(key, " = [");
         for (uint256 i; i < values.length; ++i) {
@@ -198,52 +231,6 @@ library ProtocolConfigFile {
 
     function deployedPath() internal view returns (string memory) {
         return string.concat(ArtifactMetadataFile.artifactsDir(), "/registry.toml");
-    }
-
-    /// @notice Write a market's activation plan to `deployed/activation-<network>-<name>-<run-id>.toml`; returns
-    ///         the path. `pauser_committee` / `enable_settlement` are emitted as `# TODO` placeholders for the
-    ///         operator to fill.
-    function writeActivationPlan(ActivationPlan memory p) internal returns (string memory path) {
-        ArtifactMetadataFile.ensureArtifactsDir();
-        string memory s = ArtifactMetadataFile.header(
-            ArtifactMetadata({deployment: p.deployment, chainId: p.chainId, configHash: p.configHash}),
-            "activation-plan"
-        );
-        s = string.concat(s, "\n# Activation plan for market '", p.name, "'.\n");
-        s = string.concat(s, "# Inputs to the LidoLendActivateMarket EasyTrack motion. FILL the two # TODO fields.\n");
-
-        s = string.concat(s, "\n[activation]\n");
-        s = string.concat(s, _kv("controller", p.controller));
-        s = string.concat(s, _kv("circuit_breaker", p.circuitBreaker));
-        s = string.concat(s, "# TODO: the pauser committee registered on the CircuitBreaker at activation.\n");
-        s = string.concat(s, _kv("pauser_committee", address(0)));
-        s = string.concat(s, "# TODO: bind-time decision - whether the market is created with settlement enabled.\n");
-        s = string.concat(s, "enable_settlement = false\n");
-
-        s = string.concat(s, "\n[market_params]\n");
-        s = string.concat(s, _kv("loan_token", p.loanToken));
-        s = string.concat(s, _kv("collateral_token", p.collateralToken));
-        s = string.concat(s, _kv("oracle", p.oracle));
-        s = string.concat(s, _kv("irm", p.irm));
-        s = string.concat(s, _kv("lltv", p.lltv));
-
-        s = string.concat(s, "\n[curve_params]\n");
-        s = string.concat(s, _kv("curve_steepness", p.curveParams.curveSteepness));
-        s = string.concat(s, _kv("adjustment_speed", p.curveParams.adjustmentSpeed));
-        s = string.concat(s, _kv("target_utilization", p.curveParams.targetUtilization));
-        s = string.concat(s, _kv("initial_rate_at_target", p.curveParams.initialRateAtTarget));
-        s = string.concat(s, _kv("min_rate_at_target", p.curveParams.minRateAtTarget));
-        s = string.concat(s, _kv("max_rate_at_target", p.curveParams.maxRateAtTarget));
-        s = string.concat(s, _kv("max_borrow_rate", p.curveParams.maxBorrowRate));
-
-        path = string.concat(ArtifactMetadataFile.artifactsDir(), "/activation-", p.name, ".toml");
-        _requireArtifactAbsent(path);
-        vm.writeFile(path, s);
-    }
-
-    /// @notice Fail before broadcast when the market's activation plan path is already occupied.
-    function requireActivationPlanUndeployed(string memory name) internal view {
-        _requireArtifactAbsent(string.concat(ArtifactMetadataFile.artifactsDir(), "/activation-", name, ".toml"));
     }
 
     function _requireArtifactAbsent(string memory path) private view {

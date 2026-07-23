@@ -5,8 +5,6 @@ import {Script, console2} from "forge-std/Script.sol";
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
-import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
-
 import {LidoLendMarketBuilder, MarketRoles} from "../src/periphery/LidoLendMarketBuilder.sol";
 
 import {ProtocolDeployer} from "./lib/ProtocolDeployer.sol";
@@ -16,35 +14,42 @@ import {
     ProtocolConfig,
     ProtocolDeployment,
     Deployment,
-    MarketDeployment,
-    ActivationPlan
+    MarketDeployment
 } from "./lib/ProtocolConfigFile.sol";
 import {ExitBookConfig} from "./lib/ExitBookConfigFile.sol";
 import {MarketConfigFile} from "./lib/MarketConfigFile.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
 import {GuardianSignalsConfigFile} from "./lib/GuardianSignalsConfigFile.sol";
 import {OracleConfigFile} from "./lib/OracleConfigFile.sol";
+import {OraclePreflight} from "./lib/OraclePreflight.sol";
 
-/// @notice Deploys the full protocol from scratch for the config named by `CONFIG` (`script/config/<name>.toml`):
-///         backbone, optional exit books, and each configured market's inert components. Output is INERT;
-///         activation is a separate governance motion.
-/// @dev Draft, not production-ready. Thin orchestrator over `ProtocolDeployer`.
-///
-/// Usage:
-///   forge script script/DeployProtocol.s.sol --sig "run(string)" mainnet --rpc-url "$RPC_URL" --broadcast
+/// @notice Deploys and records the protocol backbone, optional exit books, and configured inert markets.
 contract DeployProtocol is Script, ProtocolDeployer {
+    error ReusedGuardianSignalsUnsupported(address guardianSignals);
+
+    struct MarketBuildContext {
+        ProtocolDeployment protocol;
+        address agent;
+        address executor;
+        address deployer;
+        uint256 deployedBlock;
+        string[] guardianGroups;
+        address[] guardianSignals;
+        uint256 guardianCount;
+    }
+
     function run(string memory config) external returns (ProtocolDeployment memory protocol) {
         DeployConfig memory cfg = DeployConfigFile.read(config);
         _requireChainId(cfg.chainId);
         address deployer = msg.sender;
+        DeployConfigFile.requireActorSeparation(cfg, deployer);
         ArtifactMetadata memory artifacts = ArtifactMetadata({
             deployment: ArtifactMetadataFile.deployment(), chainId: cfg.chainId, configHash: cfg.configHash
         });
-        ArtifactMetadataFile.ensureManifest(artifacts);
+        _preflight(cfg, deployer);
         _snapshotInputs(config, cfg.markets);
-        _preflight(cfg, artifacts);
 
-        // Captured before the broadcast: a lower bound for this run's events, where acceptance's scan starts.
+        // Lower bound for reconstructing roles from events.
         uint256 deployedBlock = vm.getBlockNumber();
 
         vm.startBroadcast();
@@ -74,16 +79,37 @@ contract DeployProtocol is Script, ProtocolDeployer {
             registry.hasExitBooks = true;
             registry.morphoExitBook = morpho;
             registry.erc4626ExitBook = erc4626;
+            registry.exitBooksDeployedBlock = deployedBlock;
+            registry.exitBooksDeployer = deployer;
+            registry.exitBookMaxRequestLifetime = cfg.exitBookMaxRequestLifetime;
             console2.log("morphoExitBook  :", morpho);
             console2.log("erc4626ExitBook :", erc4626);
         }
 
         registry.markets = new MarketDeployment[](cfg.markets.length);
+        string[] memory freshGuardianGroups = new string[](cfg.markets.length);
+        address[] memory freshGuardianSignals = new address[](cfg.markets.length);
+        MarketBuildContext memory marketContext = MarketBuildContext({
+            protocol: protocol,
+            agent: cfg.agent,
+            executor: cfg.evmScriptExecutor,
+            deployer: deployer,
+            deployedBlock: deployedBlock,
+            guardianGroups: freshGuardianGroups,
+            guardianSignals: freshGuardianSignals,
+            guardianCount: 0
+        });
         for (uint256 i; i < cfg.markets.length; ++i) {
-            registry.markets[i] = _addMarket(cfg.markets[i], protocol, cfg.agent, cfg.evmScriptExecutor, deployedBlock);
+            (registry.markets[i], marketContext.guardianCount) = _addMarket(cfg.markets[i], marketContext);
         }
 
         vm.stopBroadcast();
+
+        for (uint256 i; i < marketContext.guardianCount; ++i) {
+            GuardianSignalsConfigFile.writeDeployed(
+                freshGuardianGroups[i], freshGuardianSignals[i], deployedBlock, artifacts
+            );
+        }
 
         console2.log("=== protocol ===");
         console2.log("core            :", protocol.core);
@@ -95,29 +121,37 @@ contract DeployProtocol is Script, ProtocolDeployer {
         console2.log("registry        :", ProtocolConfigFile.writeDeployment(registry));
     }
 
-    /// @dev Validate every output path and resolver dependency before the first deployment transaction.
-    function _preflight(DeployConfig memory cfg, ArtifactMetadata memory artifacts) internal view {
+    function _preflight(DeployConfig memory cfg, address deployer) internal {
         ProtocolConfigFile.requireDeploymentUndeployed();
         string[] memory freshGuardianGroups = new string[](cfg.markets.length);
+        LidoLendMarketBuilder.MarketSpec[] memory markets = new LidoLendMarketBuilder.MarketSpec[](cfg.markets.length);
         uint256 freshGuardianGroupsCount;
 
         for (uint256 i; i < cfg.markets.length; ++i) {
             string memory name = cfg.markets[i];
-            ProtocolConfigFile.requireActivationPlanUndeployed(name);
             string memory guardianGroup = MarketConfigFile.guardianGroup(name);
-            (, LidoLendMarketBuilder.MarketSpec memory market, MarketRoles memory roles,) =
-                MarketConfigFile.read(name, artifacts);
-            _requireMarketRolePolicy(roles, cfg.agent, cfg.evmScriptExecutor);
-            _requireProxyAdmin(market.oracle, cfg.agent);
-            if (market.guardianSignals != address(0)) _requireProxyAdmin(market.guardianSignals, cfg.agent);
+            (, LidoLendMarketBuilder.MarketSpec memory market, MarketRoles memory roles,) = MarketConfigFile.read(name);
+            markets[i] = market;
+            _requireMarketRolePolicy(roles, cfg.agent, cfg.evmScriptExecutor, deployer);
+            OraclePreflight.validate(
+                MarketConfigFile.oracleArtifact(name),
+                market.oracle,
+                market.loanToken,
+                market.collateralToken,
+                cfg.agent
+            );
+            if (market.guardianSignals != address(0)) {
+                revert ReusedGuardianSignalsUnsupported(market.guardianSignals);
+            }
             if (
                 market.guardianSignals == address(0)
                     && !_contains(freshGuardianGroups, freshGuardianGroupsCount, guardianGroup)
             ) {
-                GuardianSignalsConfigFile.requireUndeployed(guardianGroup, artifacts);
+                GuardianSignalsConfigFile.requireUndeployed(guardianGroup);
                 freshGuardianGroups[freshGuardianGroupsCount++] = guardianGroup;
             }
         }
+        _requireUniqueMarketIds(cfg.markets, markets);
     }
 
     function _snapshotInputs(string memory config, string[] memory markets) internal {
@@ -142,42 +176,28 @@ contract DeployProtocol is Script, ProtocolDeployer {
         return false;
     }
 
-    /// @dev Deploys one market via the builder, deploying a fresh `GuardianSignals` instance first when the
-    ///      config leaves it zero.
-    function _addMarket(
-        string memory name,
-        ProtocolDeployment memory protocol,
-        address agent,
-        address executor,
-        uint256 deployedBlock
-    ) internal returns (MarketDeployment memory md) {
+    function _addMarket(string memory name, MarketBuildContext memory context)
+        internal
+        returns (MarketDeployment memory md, uint256 updatedGuardianCount)
+    {
         string memory guardianGroup = MarketConfigFile.guardianGroup(name);
-        (
-            ,
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
-            AdaptiveCurveParams memory curve
-        ) = MarketConfigFile.read(
-            name,
-            ArtifactMetadata({
-                deployment: protocol.deployment, chainId: protocol.chainId, configHash: protocol.configHash
-            })
-        );
-        _requireMarketRolePolicy(roles, agent, executor);
+        (, LidoLendMarketBuilder.MarketSpec memory market, MarketRoles memory roles,) = MarketConfigFile.read(name);
+        _requireMarketRolePolicy(roles, context.agent, context.executor, context.deployer);
 
         if (market.guardianSignals == address(0)) {
-            market.guardianSignals = _buildGuardianSignals(guardianGroup, protocol.builder, agent);
-            GuardianSignalsConfigFile.writeDeployed(
-                guardianGroup,
-                market.guardianSignals,
-                ArtifactMetadata({
-                    deployment: protocol.deployment, chainId: protocol.chainId, configHash: protocol.configHash
-                })
+            market.guardianSignals = _findGuardianSignals(
+                guardianGroup, context.guardianGroups, context.guardianSignals, context.guardianCount
             );
+            if (market.guardianSignals == address(0)) {
+                market.guardianSignals = _buildGuardianSignals(guardianGroup, context.protocol.builder, context.agent);
+                context.guardianGroups[context.guardianCount] = guardianGroup;
+                context.guardianSignals[context.guardianCount] = market.guardianSignals;
+                ++context.guardianCount;
+            }
         }
 
         LidoLendMarketBuilder.MarketContracts memory built =
-            LidoLendMarketBuilder(protocol.builder).buildMarketContracts(market, roles);
+            LidoLendMarketBuilder(context.protocol.builder).buildMarketContracts(market, roles);
 
         md = MarketDeployment({
             name: name,
@@ -187,7 +207,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
             oracle: market.oracle,
             guardianSignals: market.guardianSignals,
             pausers: roles.pausers,
-            deployedBlock: deployedBlock
+            deployedBlock: context.deployedBlock
         });
 
         console2.log("--- market:", name);
@@ -195,32 +215,19 @@ contract DeployProtocol is Script, ProtocolDeployer {
         console2.log("  guardianSignals :", market.guardianSignals);
         console2.log("  controller      :", built.controller);
         console2.log("  vault           :", built.vault);
-        console2.log("  activationPlan  :", _writeActivationPlan(market, md, protocol, curve));
+        updatedGuardianCount = context.guardianCount;
     }
 
-    /// @dev Writes this market's activation-motion inputs to a per-market artifact.
-    function _writeActivationPlan(
-        LidoLendMarketBuilder.MarketSpec memory market,
-        MarketDeployment memory deployed,
-        ProtocolDeployment memory protocol,
-        AdaptiveCurveParams memory curve
-    ) internal returns (string memory) {
-        return ProtocolConfigFile.writeActivationPlan(
-            ActivationPlan({
-                name: deployed.name,
-                deployment: protocol.deployment,
-                network: protocol.network,
-                chainId: protocol.chainId,
-                configHash: protocol.configHash,
-                loanToken: market.loanToken,
-                collateralToken: market.collateralToken,
-                oracle: market.oracle,
-                irm: protocol.irmRouter,
-                lltv: market.lltv,
-                controller: deployed.controller,
-                circuitBreaker: deployed.pausers.length == 1 ? deployed.pausers[0] : address(0),
-                curveParams: curve
-            })
-        );
+    function _findGuardianSignals(
+        string memory group,
+        string[] memory groups,
+        address[] memory guardianSignals,
+        uint256 length
+    ) private pure returns (address) {
+        bytes32 groupHash = keccak256(bytes(group));
+        for (uint256 i; i < length; ++i) {
+            if (keccak256(bytes(groups[i])) == groupHash) return guardianSignals[i];
+        }
+        return address(0);
     }
 }

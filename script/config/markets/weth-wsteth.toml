@@ -8,7 +8,7 @@ collateral_token = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"  # wstETH
 # Zero resolves the oracle artifact recorded under this name.
 oracle = "0x0000000000000000000000000000000000000000"
 oracle_artifact = "weth-wsteth"
-lltv = 800000000000000000  # 0.8 WAD
+lltv = "800000000000000000"  # 0.8 WAD
 # Zero deploys or resolves the registry identified by guardian_group.
 guardian_signals = "0x0000000000000000000000000000000000000000"
 guardian_group = "weth-wsteth"
@@ -19,7 +19,7 @@ vault_symbol = "lidoWSTETH-WETH"
 admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"        # Agent
 proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"  # Agent
 managers = []
-# CircuitBreaker; exactly one is required before activation.
+# Required: CircuitBreaker first; additional pausers may follow.
 pausers = []
 freezers = []
 unfreezers = []
@@ -45,10 +45,10 @@ ltv_step_bps = 100                    # 1%
 
 # Rates are WAD per second.
 [curve]
-curve_steepness = 4000000000000000000     # 4x
-adjustment_speed = 1585489599188          # 50e18 / 365 days
-target_utilization = 900000000000000000   # 0.9e18
-initial_rate_at_target = 1268391679       # 4e16 / 365 days (~4%/yr)
-min_rate_at_target = 31709791             # 1e15 / 365 days
-max_rate_at_target = 63419583967          # 2e18 / 365 days
-max_borrow_rate = 0                       # 0 disables the ceiling
+curve_steepness = "4000000000000000000"     # 4x
+adjustment_speed = "1585489599188"          # 50e18 / 365 days
+target_utilization = "900000000000000000"   # 0.9e18
+initial_rate_at_target = "1268391679"        # 4e16 / 365 days (~4%/yr)
+min_rate_at_target = "31709791"              # 1e15 / 365 days
+max_rate_at_target = "63419583967"           # 2e18 / 365 days
+max_borrow_rate = "0"                        # 0 disables the ceiling

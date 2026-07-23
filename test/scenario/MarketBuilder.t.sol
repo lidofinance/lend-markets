@@ -169,7 +169,7 @@ contract MarketBuilderScenarioTest is Test {
 
         vm.expectEmit(true, false, false, false, address(builder));
         emit LidoLendMarketBuilder.MarketContractsDeployed(
-            expectedId, address(0), address(0), address(0), address(0), roles
+            expectedId, address(0), address(0), address(0), address(0), riskStewardDashboard, roles
         );
         _buildMarketContracts(market, roles);
     }
@@ -288,6 +288,81 @@ contract MarketBuilderScenarioTest is Test {
         );
         vm.expectRevert(LidoLendMarketBuilder.CoreMismatch.selector);
         new LidoLendMarketBuilder(factory, ILidoLendOwner(address(facade)), mismatchedRouter, riskStewardDashboard);
+    }
+
+    function testRevert_constructor_controllerImplementationUsesAnotherCore() external {
+        ILidoLend otherCore = ILidoLend(
+            address(
+                new OssifiableProxy(
+                    address(new LidoLend()), GOVERNANCE, abi.encodeWithSignature("initialize(address)", GOVERNANCE)
+                )
+            )
+        );
+        address otherControllerImpl = address(new LidoLendMarketController(IMorpho(address(otherCore))));
+        address otherVaultImpl = address(new LidoLendERC4626(address(otherCore)));
+        LidoLendMarketFactory mismatchedFactory =
+            new LidoLendMarketFactory(otherControllerImpl, otherVaultImpl, address(new GuardianSignals()));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketBuilder.ImplementationCoreMismatch.selector,
+                otherControllerImpl,
+                address(core),
+                address(otherCore)
+            )
+        );
+        new LidoLendMarketBuilder(mismatchedFactory, ILidoLendOwner(address(facade)), router, riskStewardDashboard);
+    }
+
+    function testRevert_constructor_vaultImplementationUsesAnotherCore() external {
+        ILidoLend otherCore = ILidoLend(
+            address(
+                new OssifiableProxy(
+                    address(new LidoLend()), GOVERNANCE, abi.encodeWithSignature("initialize(address)", GOVERNANCE)
+                )
+            )
+        );
+        address otherVaultImpl = address(new LidoLendERC4626(address(otherCore)));
+        LidoLendMarketFactory mismatchedFactory =
+            new LidoLendMarketFactory(controllerImpl, otherVaultImpl, address(new GuardianSignals()));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketBuilder.ImplementationCoreMismatch.selector,
+                otherVaultImpl,
+                address(core),
+                address(otherCore)
+            )
+        );
+        new LidoLendMarketBuilder(mismatchedFactory, ILidoLendOwner(address(facade)), router, riskStewardDashboard);
+    }
+
+    function testRevert_buildMarketContracts_invalidLltv() external {
+        (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
+        LidoLendMarketBuilder.MarketSpec memory market = _marketSpec(loan, collateral, oracle, "A");
+        market.lltv = 1e18;
+
+        vm.expectRevert(abi.encodeWithSelector(LidoLendMarketBuilder.InvalidLltv.selector, 1e18));
+        vm.prank(deployer);
+        builder.buildMarketContracts(market, _roles(marketAdmin, marketProxyAdmin));
+    }
+
+    function testRevert_buildMarketContracts_wrongGuardianImplementation() external {
+        (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
+        address wrongGuardian = address(new OssifiableProxy(controllerImpl, marketProxyAdmin, ""));
+        LidoLendMarketBuilder.MarketSpec memory market = _marketSpec(loan, collateral, oracle, "A");
+        market.guardianSignals = wrongGuardian;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketBuilder.CodehashMismatch.selector,
+                wrongGuardian,
+                factory.GUARDIAN_SIGNALS_IMPL().codehash,
+                controllerImpl.codehash
+            )
+        );
+        vm.prank(deployer);
+        builder.buildMarketContracts(market, _roles(marketAdmin, marketProxyAdmin));
     }
 
     function testRevert_buildMarketContracts_zeroAdmin() external {

@@ -229,7 +229,7 @@ contract WstEthWethLeverageHelper {
 ///         target and all collateral is active. Without it the supplied collateral lands in the activation
 ///         timer, and the next borrow reverts on insufficient active collateral.
 contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, ForkTest {
-    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    // Populated in setUp from script/config/<NETWORK>.toml.
     address internal WETH_ADDRESS;
     address internal STETH_ADDRESS;
     address internal WSTETH_ADDRESS;
@@ -255,9 +255,9 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
 
     function setUp() public {
         _fork();
-        WETH_ADDRESS = _addr("external.weth");
-        STETH_ADDRESS = _addr("external.stEth");
-        WSTETH_ADDRESS = _addr("external.wstEth");
+        WETH_ADDRESS = _ext("weth");
+        STETH_ADDRESS = _ext("stEth");
+        WSTETH_ADDRESS = _ext("wstEth");
         WETH = IWETH(WETH_ADDRESS);
         STETH = IStETH(STETH_ADDRESS);
         WSTETH = IWstETH(WSTETH_ADDRESS);

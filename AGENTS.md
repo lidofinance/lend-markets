@@ -12,7 +12,7 @@
   `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO
   token surface).
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
-- `src/GuardianSignals.sol`: guardian-signal registry (one per market; wired into the controller at deploy).
+- `src/GuardianSignals.sol`: guardian-signal registry (one per guardian group; markets may share one).
 - `src/interfaces/`: local interfaces and hook payload structs.
 - `src/oracle/`: local oracle adapters.
 - `src/libs/`: pure libraries (math, data structures). Internal — they inline into call sites.
@@ -20,16 +20,15 @@
 - `test/scenario/`: end-to-end flows on **freshly deployed** core / controller / vault, on the local
   EVM with mock tokens. Driven through shared helpers; happy path first, then revert and
   edge cases. Pure-library fuzz tests live here too.
-- `test/fork/`: test suite that runs against a forked network, loading addresses from
-  `deployments/deployed-<network>.json` via `DEPLOYMENT`.
+- `test/fork/`: test suite that runs against a forked network. `NETWORK` selects committed external
+  addresses from `script/config/<network>.toml`; `FORK_REGISTRY` is optional for suites that inspect an
+  existing deployment.
 - `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
   deployed stack is correctly wired, fully role-wired (event-completeness scan), and either ready for the
   activation motion or live after it. Live addresses come from a deploy registry (`deployed/<name>-<unix-ms>.toml`
   via `ACCEPTANCE_REGISTRY`); expected values from the committed `script/config/*`. Deploy addresses are never
   committed, so the suite skips unless pointed at a registry.
 - `script/`: deployment scripts.
-- `deployments/deployed-<network>.json`: per-network address map a fork test loads via `DEPLOYMENT`. See
-  `deployments/README.md` for the schema.
 - `deployed/<name>-<unix-ms>.toml`: per-run registry of deployed addresses a deploy produces (dated, one per
   run — no auto-overwritten alias). Read by `test/acceptance/` for verification. Alongside it a deploy also
   writes `deployed/activation-<name>-<unix-ms>.toml`: the per-market activation-motion inputs (marketParams,
@@ -46,8 +45,8 @@
 ## Build, Test, And Formatting Commands
 
 - Build: `forge build --force`.
-- All tests (local + fork): `make test`. The fork suites require a working fork setup — `ETH_RPC_URL` and
-  `DEPLOYMENT` set (e.g. in `.env`), the address map on disk, the RPC answering — and revert without it;
+- All tests (local + fork): `make test`. The fork suites require a working fork setup — `ETH_RPC_URL`,
+  `NETWORK` (e.g. in `.env`), its committed config, and a matching RPC — and revert without it;
   a fork suite runs or it fails, it never skips.
 - Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
 - Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
@@ -62,9 +61,10 @@
   `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
 - Writing a fork test: put it under `test/fork/`, extend `helpers/ForkTest.sol`, call `_fork()` first in
-  `setUp`, and read addresses via `_addr("external.wstEth")`. `_fork()` forks `ETH_RPC_URL` at latest and
-  loads the `DEPLOYMENT` map, reverting when either is unset, the RPC is unreachable, or the map file is
-  missing; `_addr` reverts on a key the map does not define. `FORK_BLOCK` pins a block for replay
+  `setUp`, and read external addresses via `_ext("wstEth")`. `_fork()` forks `ETH_RPC_URL` at latest and
+  loads `script/config/<NETWORK>.toml`, reverting when the RPC is unreachable, the config is missing, or
+  its chain ID differs. Set `FORK_REGISTRY` only when the suite reads deployed protocol addresses through
+  `_deployed`; its chain ID is checked too. `FORK_BLOCK` pins a block for replay
   (why latest: ADR 033).
 
 ## Dependency Policy
@@ -121,7 +121,7 @@ test/
 ├── unit/         # L0+L1 — one file per contract / pure library, method-by-method
 ├── scenario/     # L2 — end-to-end flows on a freshly deployed stack (local EVM, mock tokens)
 ├── invariant/    # L4 — handler-based stateful properties
-├── fork/         # fork tests vs the deployed protocol (deployments/deployed-<network>.json)
+├── fork/         # fork tests using script/config/<NETWORK>.toml; registry optional for deployed addresses
 └── acceptance/   # L3 — mainnet fork vs the already-deployed protocol (deployed/<name>-<unix-ms>.toml)
 ```
 

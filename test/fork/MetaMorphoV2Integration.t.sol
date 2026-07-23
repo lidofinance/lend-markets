@@ -89,7 +89,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer, ForkTest {
     address internal constant DIRECT_LENDER = address(0x1006);
     address internal constant LOW_LTV_BORROWER = address(0x1007);
 
-    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    // Populated in setUp from script/config/<NETWORK>.toml.
     address internal WETH_ADDRESS;
     address internal STETH_ADDRESS;
     address internal WSTETH_ADDRESS;
@@ -113,9 +113,9 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer, ForkTest {
 
     function setUp() public {
         _fork();
-        WETH_ADDRESS = _addr("external.weth");
-        STETH_ADDRESS = _addr("external.stEth");
-        WSTETH_ADDRESS = _addr("external.wstEth");
+        WETH_ADDRESS = _ext("weth");
+        STETH_ADDRESS = _ext("stEth");
+        WSTETH_ADDRESS = _ext("wstEth");
         WETH = IWETH(WETH_ADDRESS);
         STETH = IStETH(STETH_ADDRESS);
         WSTETH = IWstETH(WSTETH_ADDRESS);

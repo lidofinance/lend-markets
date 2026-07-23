@@ -10,19 +10,14 @@ import {OracleConfigFile, WstEthOracleConfig} from "./lib/OracleConfigFile.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
 import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
 
-/// @notice Deploys a standalone `WstEthRateOracle` behind an `OssifiableProxy`, recording its address to
-///         `deployed/oracle-<name>.toml` for a market to resolve.
-/// @dev Draft, not production-ready. `ORACLE` selects `script/config/oracles/<name>.toml`.
-///
-/// Usage:
-///   forge script script/DeployWstEthOracle.s.sol --sig "run(string,string)" mainnet weth-wsteth --rpc-url "$RPC_URL"
-/// --broadcast
+/// @notice Deploys and records a proxied `WstEthRateOracle`.
 contract DeployWstEthOracle is Script, LidoLendPrimitives {
     error UnexpectedProxyAdmin(address expected, address actual);
 
     function run(string memory config, string memory name) external returns (address oracle) {
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
         DeployConfigFile.requireChainId(deployConfig);
+        DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
         WstEthOracleConfig memory c = OracleConfigFile.readWstEth(name);
         if (c.proxyAdmin != deployConfig.agent) revert UnexpectedProxyAdmin(deployConfig.agent, c.proxyAdmin);
         ArtifactMetadata memory metadata = ArtifactMetadata({
@@ -30,10 +25,9 @@ contract DeployWstEthOracle is Script, LidoLendPrimitives {
             chainId: deployConfig.chainId,
             configHash: deployConfig.configHash
         });
-        ArtifactMetadataFile.ensureManifest(metadata);
+        OracleConfigFile.requireUndeployed(name);
         ArtifactMetadataFile.snapshotInput("deploy", DeployConfigFile.configPath(config));
         ArtifactMetadataFile.snapshotInput(string.concat("oracle-", name), OracleConfigFile.configPath(name));
-        OracleConfigFile.requireUndeployed(name, metadata);
 
         vm.startBroadcast();
         address impl = address(new WstEthRateOracle(c.wstETH));

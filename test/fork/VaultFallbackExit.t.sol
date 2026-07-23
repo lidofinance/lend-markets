@@ -36,7 +36,7 @@ interface IWstETH {
 ///         solvent borrower for collateral. This also removes the front-run griefing vector — a
 ///         top-up of idle before the call just flows to the owner instead of reverting the settle.
 contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
-    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    // Populated in setUp from script/config/<NETWORK>.toml.
     address internal WETH_ADDRESS;
     address internal STETH_ADDRESS;
     address internal WSTETH_ADDRESS;
@@ -57,9 +57,9 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
 
     function setUp() public {
         _fork();
-        WETH_ADDRESS = _addr("external.weth");
-        STETH_ADDRESS = _addr("external.stEth");
-        WSTETH_ADDRESS = _addr("external.wstEth");
+        WETH_ADDRESS = _ext("weth");
+        STETH_ADDRESS = _ext("stEth");
+        WSTETH_ADDRESS = _ext("wstEth");
         WETH = IWETH(WETH_ADDRESS);
         STETH = IStETH(STETH_ADDRESS);
         WSTETH = IWstETH(WSTETH_ADDRESS);

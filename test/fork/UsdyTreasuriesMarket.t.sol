@@ -53,7 +53,7 @@ interface IUsdyBlocklist {
 ///         the fallback-exit receiver — while an eligible (non-blocklisted) address can.
 contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer, ForkTest {
     // Real mainnet addresses.
-    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    // Populated in setUp from script/config/<NETWORK>.toml.
     address internal USDY; // 18 dec, transfer-gated
     address internal USDT; // 6 dec
     address internal ONDO_ORACLE; // getPrice() 1e18
@@ -83,11 +83,11 @@ contract UsdyTreasuriesMarketTest is Test, LidoLendDeployer, ForkTest {
 
     function setUp() public {
         _fork();
-        USDY = _addr("external.usdy");
-        USDT = _addr("external.usdt");
-        ONDO_ORACLE = _addr("external.ondoOracle");
-        USDT_USD_FEED = _addr("external.usdtUsdFeed");
-        USDY_BLOCKLIST = _addr("external.usdyBlocklist");
+        USDY = _ext("usdy");
+        USDT = _ext("usdt");
+        ONDO_ORACLE = _ext("ondoOracle");
+        USDT_USD_FEED = _ext("usdtUsdFeed");
+        USDY_BLOCKLIST = _ext("usdyBlocklist");
 
         address[] memory guardians = new address[](1);
         guardians[0] = address(this);

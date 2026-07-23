@@ -4,7 +4,7 @@
 -include .env
 export
 
-FMT_PATHS := src/LidoBlueERC4626.sol src/SuspectsRegistry.sol src/controllers src/interfaces src/oracle src/libs src/utils test
+FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test
 FORK_PATH := test/fork/**
 
 # Deployment workflow. `RUN` is the sole artifact identity: every deploy target writes below
@@ -18,10 +18,18 @@ GUARDIAN_GROUP ?= $(MARKET)
 NETWORK ?= $(CONFIG)
 RPC_URL ?=
 DEPLOYER_PRIVATE_KEY ?=
-CHAIN_ID ?= $(shell awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' script/config/$(CONFIG).toml)
+VERIFY ?= true
+RESUME ?= false
+CHAIN_ID ?= $(shell if [ -n "$(RUN)" ] && [ -f "deployed/$(RUN)/registry.toml" ]; then \
+	awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' "deployed/$(RUN)/registry.toml"; \
+	else \
+	awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' "script/config/$(CONFIG).toml"; \
+	fi)
 
 DEPLOY_ENV = ARTIFACTS_DIR="$(RUN)"
-DEPLOY_FLAGS = --rpc-url "$(RPC_URL)" --private-key "$(DEPLOYER_PRIVATE_KEY)" --broadcast
+VERIFY_FLAGS = $(if $(filter true,$(VERIFY)),--verify,)
+RESUME_FLAGS = $(if $(filter true,$(RESUME)),--resume,)
+DEPLOY_FLAGS = --rpc-url "$(RPC_URL)" --private-key "$(DEPLOYER_PRIVATE_KEY)" --broadcast $(VERIFY_FLAGS) $(RESUME_FLAGS)
 
 define archive_broadcast
 	@test -n "$(CHAIN_ID)" || { echo "ERROR: could not read chain_id from script/config/$(CONFIG).toml"; exit 1; }
@@ -31,22 +39,27 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-guardian deploy-protocol deploy-market deploy-run deploy-wizard acceptance-run fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
+.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-guardian deploy-linear-kink-irm deploy-exit-books deploy-protocol deploy-market deploy-run deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
 
 help:
 	@echo "Targets:"
 	@echo "  build         forge build"
 	@echo "  sizes         forge build --sizes"
-	@echo "  test          all tests, local + fork in one run; fork suites revert without the fork setup (ETH_RPC_URL + DEPLOYMENT)"
+	@echo "  test          all tests, local + fork in one run; fork suites require ETH_RPC_URL + NETWORK"
 	@echo "  test-local    forge test on the local suites only (excludes test/fork/; no RPC)"
 	@echo "  test-fork     forge test on test/fork/ only; the suites revert without the fork setup"
 	@echo "  deploy-oracle CONFIG=<config> RUN=<run> ORACLE=<name>"
 	@echo "  deploy-protocol CONFIG=<config> RUN=<run>"
 	@echo "  deploy-guardian CONFIG=<config> RUN=<run> GUARDIAN_GROUP=<group>"
+	@echo "  deploy-linear-kink-irm CONFIG=<config> RUN=<run>"
+	@echo "  deploy-exit-books CONFIG=<config> RUN=<existing-run>"
 	@echo "  deploy-market CONFIG=<config> RUN=<run> MARKET=<name>"
 	@echo "  deploy-run CONFIG=<config> RUN=<run> ORACLE=<name>  (current WstETH workflow)"
+	@echo "                 deploy targets verify by default; set VERIFY=false for local networks"
+	@echo "                 retry an interrupted target immediately with RESUME=true"
 	@echo "  deploy-wizard interactive wrapper around the deploy targets"
-	@echo "  acceptance-run CONFIG=<config> RUN=<run> MARKET=<name>"
+	@echo "  acceptance-run RUN=<run> MARKET=<name>"
+	@echo "  acceptance-run-multi RUN=<run> MARKET_A=<name> MARKET_B=<name>"
 	@echo "  fork-run CONFIG=<config> RUN=<run>  (read-only fork tests against this registry)"
 	@echo "               deploy targets snapshot inputs and archive broadcast JSON under deployed/<run>/"
 	@echo "  fmt           forge fmt on tracked paths (local only; rewrites files)"
@@ -68,8 +81,8 @@ sizes:
 	forge build --sizes
 
 # All tests, local + fork, in one run. The fork suites revert without a working fork setup — ETH_RPC_URL and
-# DEPLOYMENT set (see .env.example), the map on disk, the RPC answering — so missing configuration fails the
-# run. Use test-local / test-fork for one side on its own.
+# NETWORK set (see .env.example) and the RPC answering. FORK_REGISTRY is optional and only needed by suites
+# that read an existing deployment. Use test-local / test-fork for one side on its own.
 test:
 	forge test
 
@@ -87,6 +100,9 @@ define require_deploy_context
 	@test -n "$(RUN)" || { echo "ERROR: set RUN (for example RUN=mainnet-weth-wsteth)"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
 	@test -n "$(DEPLOYER_PRIVATE_KEY)" || { echo "ERROR: set DEPLOYER_PRIVATE_KEY in .env"; exit 1; }
+	@test "$(VERIFY)" = "true" || test "$(VERIFY)" = "false" || { echo "ERROR: VERIFY must be true or false"; exit 1; }
+	@test "$(RESUME)" = "true" || test "$(RESUME)" = "false" || { echo "ERROR: RESUME must be true or false"; exit 1; }
+	@test "$(VERIFY)" = "false" || test -n "$(ETHERSCAN_API_KEY)" || { echo "ERROR: set ETHERSCAN_API_KEY or use VERIFY=false"; exit 1; }
 endef
 
 deploy-oracle:
@@ -103,6 +119,16 @@ deploy-guardian:
 	$(require_deploy_context)
 	@$(DEPLOY_ENV) forge script script/DeployGuardianSignals.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(GUARDIAN_GROUP)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployGuardianSignals.s.sol,guardian-$(GUARDIAN_GROUP))
+
+deploy-linear-kink-irm:
+	$(require_deploy_context)
+	@$(DEPLOY_ENV) forge script script/DeployLinearKinkIrm.s.sol --sig 'run(string)' "$(CONFIG)" $(DEPLOY_FLAGS)
+	$(call archive_broadcast,DeployLinearKinkIrm.s.sol,linear-kink-irm)
+
+deploy-exit-books:
+	$(require_deploy_context)
+	@$(DEPLOY_ENV) forge script script/DeployExitBooks.s.sol --sig 'run(string)' "$(CONFIG)" $(DEPLOY_FLAGS)
+	$(call archive_broadcast,DeployExitBooks.s.sol,exit-books)
 
 deploy-protocol:
 	$(require_deploy_context)
@@ -122,8 +148,16 @@ deploy-run:
 
 acceptance-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
+	@test -n "$(MARKET)" || { echo "ERROR: set MARKET"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/registry.toml" MARKET="$(MARKET)" forge test --match-path 'test/acceptance/*' -vvv
+	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/registry.toml" MARKET="$(MARKET)" forge test --match-path 'test/acceptance/*' --no-match-contract MultiMarketActivatedAcceptance -vvv
+
+acceptance-run-multi:
+	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
+	@test -n "$(MARKET_A)" || { echo "ERROR: set MARKET_A"; exit 1; }
+	@test -n "$(MARKET_B)" || { echo "ERROR: set MARKET_B"; exit 1; }
+	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
+	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/registry.toml" MARKET="$(MARKET_A)" MARKET_A="$(MARKET_A)" MARKET_B="$(MARKET_B)" forge test --match-contract MultiMarketActivatedAcceptance -vvv
 
 fork-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
@@ -134,12 +168,14 @@ fork-run:
 deploy-wizard:
 	@printf 'Config [mainnet]: '; read config; config=$${config:-mainnet}; \
 	printf 'Run directory (required): '; read run; test -n "$$run" || { echo 'ERROR: run directory is required'; exit 1; }; \
-	printf 'Step (oracle, oracle-usdy, guardian, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
+	printf 'Step (oracle, oracle-usdy, guardian, kink-irm, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
 	printf 'Market/oracle name [weth-wsteth]: '; read name; name=$${name:-weth-wsteth}; \
 	case "$$step" in \
 		oracle) exec $(MAKE) deploy-oracle CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		oracle-usdy) exec $(MAKE) deploy-oracle-usdy CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		guardian) exec $(MAKE) deploy-guardian CONFIG="$$config" RUN="$$run" GUARDIAN_GROUP="$$name" ;; \
+		kink-irm) exec $(MAKE) deploy-linear-kink-irm CONFIG="$$config" RUN="$$run" ;; \
+		exit-books) exec $(MAKE) deploy-exit-books CONFIG="$$config" RUN="$$run" ;; \
 		protocol) exec $(MAKE) deploy-protocol CONFIG="$$config" RUN="$$run" ;; \
 		market) exec $(MAKE) deploy-market CONFIG="$$config" RUN="$$run" MARKET="$$name" ;; \
 		full) exec $(MAKE) deploy-run CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \

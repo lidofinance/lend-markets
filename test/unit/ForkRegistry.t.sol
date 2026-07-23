@@ -4,7 +4,6 @@ pragma solidity 0.8.35;
 import {Test} from "forge-std/Test.sol";
 
 import {ForkTest} from "../fork/helpers/ForkTest.sol";
-import {ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
 
 /// @dev Exercises fork artifact readers without creating an RPC fork.
 contract ForkRegistryHarness is ForkTest {
@@ -24,8 +23,12 @@ contract ForkRegistryHarness is ForkTest {
         return _deployed(key);
     }
 
-    function validateRegistry(string memory toml, uint256 chainId) external view {
-        ArtifactMetadataFile.requireKindChain(toml, "protocol-registry", chainId);
+    function validateNetworkChainId() external view {
+        _validateNetworkChainId();
+    }
+
+    function validateRegistryChainId() external view {
+        _validateRegistryChainId();
     }
 }
 
@@ -67,19 +70,54 @@ contract ForkRegistryTest is Test {
         h.deployed("protocol.core");
     }
 
-    function testRevert_registryMetadata_wrongKindReverts() public {
-        string memory registry = "[artifact]\nkind = \"activation-plan\"\nchain_id = 1\n";
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ArtifactMetadataFile.ArtifactKindMismatch.selector, "protocol-registry", "activation-plan"
-            )
-        );
-        h.validateRegistry(registry, 1);
+    function testRevert_deployed_requiresRegistry() public {
+        ForkRegistryHarness h2 = new ForkRegistryHarness();
+        vm.expectRevert(bytes("ForkTest: FORK_REGISTRY is required for deployed addresses"));
+        h2.deployed("protocol.core");
     }
 
-    function testRevert_registryMetadata_wrongChainReverts() public {
-        string memory registry = "[artifact]\nkind = \"protocol-registry\"\nchain_id = 11155111\n";
-        vm.expectRevert(abi.encodeWithSelector(ArtifactMetadataFile.ArtifactChainIdMismatch.selector, 1, 11155111));
-        h.validateRegistry(registry, 1);
+    function testRevert_networkChainIdMismatch() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(ForkTest.ForkChainIdMismatch.selector, "network config", 1, block.chainid)
+        );
+        h.validateNetworkChainId();
+    }
+
+    function test_networkChainIdMatch() public {
+        vm.chainId(1);
+        h.validateNetworkChainId();
+    }
+
+    function testRevert_registryChainIdMismatch() public {
+        string memory path = "deployed/fork-registry-unit-chain.toml";
+        vm.writeFile(path, "[artifact]\nchain_id = 1\n");
+        h.loadRegistry(path);
+        vm.removeFile(path);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ForkTest.ForkChainIdMismatch.selector, "fork registry artifact", 1, block.chainid)
+        );
+        h.validateRegistryChainId();
+    }
+
+    function testRevert_registryConflictingChainIds() public {
+        string memory path = "deployed/fork-registry-unit-conflicting-chain.toml";
+        vm.writeFile(path, "[artifact]\nchain_id = 1\n\n[protocol]\nchain_id = 11155111\n");
+        h.loadRegistry(path);
+        vm.removeFile(path);
+        vm.chainId(1);
+
+        vm.expectRevert(abi.encodeWithSelector(ForkTest.ForkRegistryChainIdConflict.selector, 1, 11155111));
+        h.validateRegistryChainId();
+    }
+
+    function test_registryProtocolChainIdFallbackMatches() public {
+        string memory path = "deployed/fork-registry-unit-protocol-chain.toml";
+        vm.writeFile(path, "[protocol]\nchain_id = 1\n");
+        h.loadRegistry(path);
+        vm.removeFile(path);
+        vm.chainId(1);
+
+        h.validateRegistryChainId();
     }
 }

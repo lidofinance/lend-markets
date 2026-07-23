@@ -32,17 +32,21 @@ No C0 role exists in the deployed surface.
 
 ## Proxy ownership and upgrades
 
-Every contract is deployed behind an `OssifiableProxy`: the shared `LidoLend` core (one per deployment), plus each market's controller, vault, oracle, and `GuardianSignals` registry. The proxy admin is the upgrade authority and is a proxy-level surface, not an in-contract role.
+The shared `LidoLend` core and `IrmRouter`, plus each market's controller, vault, oracle, and
+`GuardianSignals` registry, are deployed behind an `OssifiableProxy`. The proxy admin is the upgrade
+authority and is a proxy-level surface, not an in-contract role.
 
 | Surface | Powers | Class | Holder |
 |---|---|---|---|
-| Proxy admin (shared core, plus each market's controller, vault, oracle, `GuardianSignals`) | `proxy__upgradeTo` / `proxy__upgradeToAndCall` (replace implementation), `proxy__changeAdmin` (transfer control), `proxy__ossify` (permanently lock by setting admin to `address(0)`) | C1 | Lido DAO (Voting + Dual Governance) |
+| Proxy admin (shared core and IRM router, plus each market's controller, vault, oracle, `GuardianSignals`) | `proxy__upgradeTo` / `proxy__upgradeToAndCall` (replace implementation), `proxy__changeAdmin` (transfer control), `proxy__ossify` (permanently lock by setting admin to `address(0)`) | C1 | Lido DAO (Voting + Dual Governance) |
 
 An upgrade can change core mechanics and is therefore the only path that could introduce a custody-like power, so it sits behind the slowest authority — and behind Dual Governance for the stETH-exposed core, per ADR 007. A proxy can be ossified to give up upgradeability for good. The core is upgradeable, kept honest by a strong lender-exit delay (ADR 005). Every completed deployment assigns all proxy admins to the DAO Agent; core and IRM-router proxy authority is transferred from the transient deployer before the backbone deploy returns, while per-market and oracle proxies are created with the Agent directly.
 
 ## IRM
 
-The interest-rate model (`AdaptiveCurveIRM`) is the one contract deployed bare — no proxy, no roles. It is bound into a market's `MarketParams` at `createMarket` and is immutable for that market: no role can swap it, and changing the curve means creating a new market. So the IRM carries no upgrade authority and no operational role of its own. The core flips `isIrmEnabled` on first use rather than through a dedicated lever.
+Each market's immutable `irm` points to the proxied `IrmRouter`. The DAO Agent owns the router and its
+proxy; EVMScriptExecutor manages per-market routes. `AdaptiveCurveIrm` is a bare protocol singleton whose
+owner is the Agent and manager is EVMScriptExecutor; its per-market curve parameters are set at activation.
 
 ## On-chain roles
 
@@ -57,7 +61,7 @@ are added. The core's `onlyOwner` is held by the facade, not the DAO directly.
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `MARKET_CREATOR_ROLE` | `createMarket` (controller-less and controlled) | C4 / C1 | EVMScriptExecutor |
-| `FEE_MANAGER_ROLE` | `setFee` (≤ `MAX_FEE` = 25%), `setFeeRecipient` | C4 | EVMScriptExecutor |
+| `FEE_MANAGER_ROLE` | `setFee` (≤ `MAX_FEE` = 25%), `setFeeRecipient` | C4 | Lido DAO Agent |
 | `MARKET_MANAGER_ROLE` | per-market `setSupplyCap`, `unfreeze`, `setCollateralActivationConfig`, `setSettlementConfig`, and `grantInstantActivation` through the resolved controller | C3 / C4 | EVMScriptExecutor |
 | `GUARDIAN_MANAGER_ROLE` | guardian roster (`addGuardian`, `removeGuardian`, `replaceGuardian`), quorum, suspect window, and per-market `unban` through the resolved registry | C1 / C3 / C4 | EVMScriptExecutor |
 | `DEFAULT_ADMIN_ROLE` | `transferLidoLendOwnership` (the only path to the core's `setOwner`), plus administers the capability roles above | C1 | Lido DAO |
@@ -86,9 +90,9 @@ The operational roles are arrays, not single addresses: `LidoLendMarketBuilder.M
 number of additional holders — an empty array grants nobody from configuration, and a zero entry reverts
 (`ZeroRoleHolder`) as a config mistake rather than silently granting the zero address. Independently of those
 arrays, the builder always grants the facade `MANAGER_ROLE` and `UNFREEZER_ROLE`. Production deployment
-policy narrows `pausers` to at most one CircuitBreaker per market/controller, with the
-`EVMScriptExecutor` as its admin so the activation motion can register the committee. One CircuitBreaker
-may be reused across several markets; the assignment remains explicit in each market config.
+policy requires `pausers[0]` to be a CircuitBreaker with the `EVMScriptExecutor` as its admin so the
+activation motion can register the committee. Later entries are optional additional pausers. One
+CircuitBreaker may be reused across several markets; the assignment remains explicit in each market config.
 `AdaptiveCurveIrm` is a protocol-wide singleton (see IRM, above), so there is no per-market curve
 owner/manager to wire at deploy — its owner/manager are set once with the backbone, and per-market curve
 params are activation calldata, not a deploy input.
@@ -128,11 +132,11 @@ guardian managers, so every registry remains reachable through the stable govern
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO (Voting + Dual Governance) |
-| `ALLOWLIST_MANAGER_ROLE` | the concrete book's source allow-list (`setMarketAllowed` / `setVaultAllowed`) | C4 | EasyTrack (activation motion) + Lido DAO Agent (standalone allow-list / de-list) |
+| `ALLOWLIST_MANAGER_ROLE` | the concrete book's source allow-list (`setMarketAllowed` / `setVaultAllowed`) | C4 | EasyTrack (allow-list motion) + Lido DAO Agent (standalone allow-list / de-list) |
 | `FEE_MANAGER_ROLE` | `setServiceFee` (fee recipient and rate, capped at `MAX_SERVICE_FEE` = 25%) | C4 | Lido DAO |
 | `RECOVERER_ROLE` | asset recovery (`recoverEther` / `recoverERC20` / `recoverERC721` / `recoverERC1155`) | C4 | Lido DAO |
 
-The exit book is `AccessControl` set at construction, not behind an `OssifiableProxy` — its roles are its only privileged surface, with no separate upgrade authority. Each capability sits on its own role so it can be delegated independently: `ALLOWLIST_MANAGER_ROLE` splits the source allow-list off so enabling a market or vault is a routine risk-increase that can run through the EasyTrack objection window; `FEE_MANAGER_ROLE` sets the service fee (a cut of the filler's gross reward within the 25% cap, reaching no lender or borrower funds); `RECOVERER_ROLE` recovers tokens held by the contract. `DEFAULT_ADMIN_ROLE` only administers the roles; the constructor grants it alone, and the capability roles are assigned after deploy. Exit books are optional: `MorphoExitBook` over lenders' core supply positions and `Erc4626ExitBook` over lenders' vault shares (the two ways a lender holds the same market). `DeployProtocol` deploys them (via `ProtocolDeployer`) only when the deploy config's `exit_books` flag is set — and wired with `ALLOWLIST_MANAGER_ROLE` → both the EasyTrack executor (so an activation motion can allow-list a market on the Morpho book by id and the ERC-4626 book by the market's vault) and the DAO Agent (a standalone allow-list / de-list has no dedicated factory, so the Agent holds the role for a direct action), and `FEE_MANAGER_ROLE` / `RECOVERER_ROLE` / `DEFAULT_ADMIN_ROLE` → the DAO Agent.
+The exit book is `AccessControl` set at construction, not behind an `OssifiableProxy` — its roles are its only privileged surface, with no separate upgrade authority. Each capability sits on its own role so it can be delegated independently: `ALLOWLIST_MANAGER_ROLE` splits the source allow-list off so enabling a market or vault is a routine risk-increase that can run through the EasyTrack objection window; `FEE_MANAGER_ROLE` sets the service fee (a cut of the filler's gross reward within the 25% cap, reaching no lender or borrower funds); `RECOVERER_ROLE` recovers tokens held by the contract. `DEFAULT_ADMIN_ROLE` only administers the roles; the constructor grants it alone, and the capability roles are assigned after deploy. Exit books are optional: `MorphoExitBook` over lenders' core supply positions and `Erc4626ExitBook` over lenders' vault shares (the two ways a lender holds the same market). `DeployProtocol` deploys them (via `ProtocolDeployer`) only when the deploy config's `exit_books` flag is set — and wired with `ALLOWLIST_MANAGER_ROLE` → both the EasyTrack executor (for the separate allow-list motion) and the DAO Agent (for direct allow-list / de-list actions), and `FEE_MANAGER_ROLE` / `RECOVERER_ROLE` / `DEFAULT_ADMIN_ROLE` → the DAO Agent.
 
 ## Non-role actors
 

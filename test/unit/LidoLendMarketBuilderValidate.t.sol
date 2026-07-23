@@ -234,7 +234,9 @@ contract LidoLendMarketBuilderValidateTest is Test {
     }
 
     function test_validateMarketContracts_revertsOnGuardianSignalsMismatch() external {
-        address wrongGuardian = makeAddr("wrongGuardian");
+        address[] memory guardians = new address[](1);
+        guardians[0] = GOVERNANCE;
+        address wrongGuardian = factory.deployGuardianSignals(proxyAdmin, guardians, 1);
         vm.expectRevert(
             abi.encodeWithSelector(
                 LidoLendMarketBuilder.GuardianSignalsMismatch.selector, wrongGuardian, guardianSignals
@@ -257,6 +259,24 @@ contract LidoLendMarketBuilderValidateTest is Test {
             )
         );
         builder.validateMarketContracts(controller, vault, marketId, guardianSignals, address(this), roles);
+    }
+
+    function test_validateMarketContracts_revertsOnMissingDashboardManager() external {
+        address dashboard = makeAddr("dashboard");
+        LidoLendMarketBuilder builderWithDashboard =
+            new LidoLendMarketBuilder(factory, ILidoLendOwner(address(facade)), router, dashboard);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketBuilder.MissingRoleHolder.selector,
+                controller,
+                LidoLendMarketController(controller).MANAGER_ROLE(),
+                dashboard
+            )
+        );
+        builderWithDashboard.validateMarketContracts(
+            controller, vault, marketId, guardianSignals, address(this), _roles()
+        );
     }
 
     function test_validateMarketContracts_revertsWhenBuilderStillHoldsAdmin() external {

@@ -5,9 +5,6 @@ import {Vm} from "forge-std/Vm.sol";
 
 import {ConfigToml} from "./ConfigToml.sol";
 
-/// @notice A deploy config, read from `script/config/<name>.toml`. Governance + which optional peripherals to
-///         include + the list of market NAMES; each market's details live in its own `markets/`, `oracles/`,
-///         `guardians/` files (composed by name, so no array-of-tables to parse).
 struct DeployConfig {
     string network;
     uint256 chainId;
@@ -19,11 +16,15 @@ struct DeployConfig {
     string[] markets; // per-market config names (markets/<name>.toml, oracles/<name>.toml, guardians/<name>.toml)
 }
 
-/// @title DeployConfigFile
-/// @notice Reads the deploy config for `DeployProtocol.s.sol`.
 library DeployConfigFile {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
+    error AgentCannotBeDeployer();
+    error AgentCannotBeExecutor();
+    error ExecutorCannotBeDeployer();
+    error RegistryAgentMismatch(address expected, address actual);
+    error RegistryChainIdMismatch(uint256 expected, uint256 actual);
+    error RegistryExecutorMismatch(address expected, address actual);
     error UnexpectedChainId(uint256 expected, uint256 actual);
 
     function read(string memory name) internal view returns (DeployConfig memory cfg) {
@@ -44,5 +45,24 @@ library DeployConfigFile {
 
     function requireChainId(DeployConfig memory cfg) internal view {
         if (block.chainid != cfg.chainId) revert UnexpectedChainId(cfg.chainId, block.chainid);
+    }
+
+    function requireActorSeparation(DeployConfig memory cfg, address deployer) internal pure {
+        if (cfg.agent == deployer) revert AgentCannotBeDeployer();
+        if (cfg.evmScriptExecutor == deployer) revert ExecutorCannotBeDeployer();
+        if (cfg.agent == cfg.evmScriptExecutor) revert AgentCannotBeExecutor();
+    }
+
+    function requireRegistryGovernance(DeployConfig memory cfg, string memory registry) internal view {
+        uint256 registryChainId = vm.parseTomlUint(registry, ".protocol.chain_id");
+        if (registryChainId != cfg.chainId) revert RegistryChainIdMismatch(cfg.chainId, registryChainId);
+
+        address registryAgent = vm.parseTomlAddress(registry, ".protocol.agent");
+        if (registryAgent != cfg.agent) revert RegistryAgentMismatch(cfg.agent, registryAgent);
+
+        address registryExecutor = vm.parseTomlAddress(registry, ".protocol.evm_script_executor");
+        if (registryExecutor != cfg.evmScriptExecutor) {
+            revert RegistryExecutorMismatch(cfg.evmScriptExecutor, registryExecutor);
+        }
     }
 }

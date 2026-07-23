@@ -9,4 +9,5 @@ suspect_window = 0
 # Optional ACCESS_LIMITER_ROLE holder.
 access_limiter = "0x0000000000000000000000000000000000000000"
 
-guardians = ["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"]  # deployer (anvil #0)
+# Required: production guardian committee.
+guardians = []

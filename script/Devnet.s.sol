@@ -14,16 +14,8 @@ import {SettlementConfig} from "../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "./lib/LidoLendDeployer.sol";
 import {MockERC20, MockPriceOracle} from "../test/setup/Mocks.sol";
 
-/// @notice Split, broadcastable devnet actions for the dev-UI dashboard, composed from the shared
-///         `LidoLendDeployer` steps (mock oracle and role wiring are the devnet-only parts). Three
-///         independent steps the panel drives via `forge script --sig`:
-///           - `deployCore()`        — the singleton `LidoLend` core (one core hosts many markets),
-///           - `deployToken(sym,dec)` — a standalone mock ERC-20 (loan or collateral, reusable),
-///           - `createMarket(core,loan,collateral,price,lltv,minActivation)` — the per-market stack
-///             (settable `MockPriceOracle`, IRM route, guardian, controller, `createMarket`, vault).
-///         The broadcast key is `admin`, so no `vm.prank`. `console2.log("<label> :", <addr>)` lines are
-///         parsed by the backend. No owner facade: devnet does not exercise the governance path, so the
-///         broadcast key owns the core and calls `createMarket` on it directly.
+/// @notice Broadcastable devnet deployment entrypoints consumed by the UI.
+/// @dev Log labels are parsed by the backend; devnet intentionally omits the governance facade.
 contract Devnet is Script, LidoLendDeployer {
     using MarketParamsLib for MarketParams;
 
@@ -41,7 +33,6 @@ contract Devnet is Script, LidoLendDeployer {
         address admin = msg.sender;
         vm.startBroadcast();
         address core = _deployCore(admin);
-        // The guardian registry is a project-level singleton (keyed by market Id), shared across every market.
         address guardianSignals = _deployGuardian(admin);
         vm.stopBroadcast();
         console2.log("core               :", core);
@@ -88,7 +79,7 @@ contract Devnet is Script, LidoLendDeployer {
         uint128 minActivation,
         address admin
     ) private returns (Mkt memory m) {
-        // Settable mock oracle — the devnet-only piece (the panel moves the price to trigger flows).
+        // The UI changes this oracle to exercise market states.
         m.oracle = _behindProxy(
             address(new MockPriceOracle()), admin, abi.encodeCall(MockPriceOracle.initialize, (oraclePrice))
         );
@@ -105,7 +96,6 @@ contract Devnet is Script, LidoLendDeployer {
         m.vault = _deployVault(core, params, m.controller, admin, "Lido Devnet Vault", "devVAULT");
     }
 
-    /// @dev Shared registry deploy + devnet convenience: every guardian role goes to `admin`.
     function _deployGuardian(address admin) private returns (address guardianSignals) {
         address[] memory guardians = new address[](1);
         guardians[0] = admin;
@@ -117,8 +107,6 @@ contract Devnet is Script, LidoLendDeployer {
         gs.setSuspectWindow(0);
     }
 
-    /// @dev Shared controller deploy with devnet policy values + devnet convenience: every operational role
-    ///      goes to `admin`.
     function _deployDevnetController(address core, Id id, address guardianSignals, address admin, uint128 minActivation)
         private
         returns (address controller)

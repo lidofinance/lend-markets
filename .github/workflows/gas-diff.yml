@@ -22,7 +22,7 @@ jobs:
       # the same reason: TEST_SEED fixes the seeded oracle price, FOUNDRY_FUZZ_SEED fixes the
       # fuzz/invariant inputs.
       ETH_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
-      DEPLOYMENT: deployments/deployed-mainnet.json
+      NETWORK: mainnet
       TEST_SEED: "1"
       FOUNDRY_FUZZ_SEED: "1"
     steps:

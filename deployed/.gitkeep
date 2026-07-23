@@ -1,2 +1,1 @@
-# Genesis address registries written by script/DeployCore.s.sol land here as
-# deployed/<domain>-<unix-ms>.toml. This .gitkeep just ensures the directory exists.
+# Deployment artifacts are written under deployed/<RUN>/.

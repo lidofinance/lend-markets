@@ -1,94 +1,76 @@
 # Deployment
 
-Deployment scripts create an inert protocol; market activation is a separate EasyTrack motion.
-Role ownership is documented in `docs/specs/roles.md`.
+Scripts deploy inert markets. Activation is a separate EasyTrack motion. Role ownership is documented in
+`docs/specs/roles.md`.
 
-## Inputs and artifacts
+## Setup
 
 Configuration lives under `script/config/`:
 
-- `<config>.toml`: network, governance addresses, optional exit books, and market names;
+- `<config>.toml`: network, governance, optional exit books, and market names;
 - `markets/<market>.toml`: market parameters, roles, and artifact references;
-- `oracles/<name>.toml`: oracle deployment;
-- `guardians/<group>.toml`: GuardianSignals deployment.
+- `oracles/<name>.toml`: oracle inputs;
+- `guardians/<group>.toml`: GuardianSignals inputs.
 
-`RUN` selects `deployed/<RUN>/`. Reuse the same `CONFIG` and `RUN` for every step. The directory contains
-the manifest, input snapshots, transaction records, address registry, and activation plans. Existing
-artifacts are never overwritten.
+Set `RPC_URL`, `DEPLOYER_PRIVATE_KEY`, and `ETHERSCAN_API_KEY` in `.env`. Deployment targets broadcast and
+verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`;
+all steps for one deployment must use the same `RUN`. Registry and deployment records are not overwritten;
+input snapshots are convenience copies.
 
-Set `RPC_URL` and `DEPLOYER_PRIVATE_KEY` in `.env`. Make deployment targets always broadcast.
+Before deployment, create each CircuitBreaker with `ADMIN = evm_script_executor` and place it first in the
+market's `roles.pausers`. Later entries are additional pausers. One CircuitBreaker may serve several markets.
 
-### Address resolution
+Zero `market.oracle` resolves `oracle_artifact`. `deploy-protocol` requires zero `market.guardian_signals`
+and deploys or shares the configured group. `deploy-market` may reuse a non-zero instance.
 
-- `market.oracle = 0`: resolve `oracle_artifact` from `oracle-<name>.toml`.
-- `market.guardian_signals = 0`: resolve `guardian_group` if already deployed; otherwise deploy it.
-- Non-zero values pin existing addresses.
-- `roles.pausers` contains the market's CircuitBreaker. One breaker may serve several markets.
+## Deploy
 
-## Deploy a protocol
-
-1. Deploy the required CircuitBreakers externally with `ADMIN = evm_script_executor`, then set one under
-   each market's `roles.pausers`.
-2. Fill the protocol, market, oracle, and guardian configs.
-3. Deploy each oracle:
-
-   ```sh
-   make deploy-oracle CONFIG=mainnet RUN=mainnet-weth-wsteth ORACLE=weth-wsteth
-   ```
-
-   Use `deploy-oracle-usdy` for `DeployUsdyOracle`.
-
-4. Deploy the backbone and configured markets:
-
-   ```sh
-   make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
-   ```
-
-For the current single-WstETH-oracle flow, steps 3–4 can be combined:
+Deploy the required oracle, then the protocol:
 
 ```sh
-make deploy-run CONFIG=mainnet RUN=mainnet-weth-wsteth ORACLE=weth-wsteth
+make deploy-oracle CONFIG=mainnet RUN=mainnet-weth-wsteth ORACLE=weth-wsteth
+make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
 ```
 
-The resulting registry is `deployed/<RUN>/registry.toml`.
+`deploy-protocol` includes exit books when `exit_books = true`. Use `deploy-oracle-usdy` for USDY or
+`deploy-run` for the current single-WstETH-oracle flow.
 
-## Add a market
+If broadcast or verification is interrupted, immediately repeat the same target and arguments with
+`RESUME=true`. Do not send another transaction from the deployer first: Foundry resumes the saved nonce
+sequence.
 
-Deploy its oracle first. If several markets share one GuardianSignals registry, deploy it once:
-
-```sh
-make deploy-guardian CONFIG=mainnet RUN=mainnet-weth-wsteth GUARDIAN_GROUP=shared-group
-```
-
-Then deploy the market:
+To add a market to an existing run:
 
 ```sh
 make deploy-market CONFIG=mainnet RUN=mainnet-weth-wsteth MARKET=weth-wsteth
 ```
 
-The market is appended to `registry.toml`; its activation inputs are written to
-`activation-<market>.toml`.
+Deploy a shared GuardianSignals instance for an existing run when needed:
 
-## Activate a market
+```sh
+make deploy-guardian CONFIG=mainnet RUN=mainnet-weth-wsteth GUARDIAN_GROUP=shared-group
+```
 
-`LidoLendActivateMarket` executes atomically through the EVMScriptExecutor:
+Optional standalone deployments:
 
-1. `AdaptiveCurveIrm.setMarketCurveParams`;
-2. `IrmRouter.setMarketIrm`;
-3. `LidoLendOwner.createMarket`;
-4. `CircuitBreaker.registerPauser`.
+```sh
+make deploy-linear-kink-irm CONFIG=mainnet RUN=mainnet-weth-wsteth
+make deploy-exit-books CONFIG=mainnet RUN=mainnet-weth-wsteth
+```
 
-The generated activation plan contains the deploy-known inputs. Fill its `pauser_committee` and
-`enable_settlement` before assembling the motion.
+The kinked IRM is recorded but not routed. `deploy-exit-books` appends missing exit books to an existing
+registry.
+
+## Activate
+
+Maintain the activation motion inputs manually in the EasyTrack repository. The motion sets the curve,
+routes the IRM, creates the market through `LidoLendOwner`, and registers the CircuitBreaker pauser.
 
 Exit-book allow-listing is a separate `LidoLendSetMarketExitBookAllowed` motion.
 
 ## Verify
 
 ```sh
-ACCEPTANCE_PAUSER_COMMITTEE=0x… \
-  make acceptance-run CONFIG=mainnet RUN=mainnet-weth-wsteth MARKET=weth-wsteth
+make acceptance-run RUN=mainnet-weth-wsteth MARKET=weth-wsteth
+make acceptance-run-multi RUN=mainnet-weth-wsteth MARKET_A=market-a MARKET_B=market-b
 ```
-
-The acceptance suite checks deployment wiring, proxy admins, exact role holders, configured parameters,
-inert state, and simulated activation.

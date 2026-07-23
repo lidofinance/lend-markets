@@ -3,34 +3,29 @@ pragma solidity 0.8.35;
 
 import {Script, console2} from "forge-std/Script.sol";
 
-import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 
-import {LidoLendMarketBuilder, MarketRoles} from "../src/periphery/LidoLendMarketBuilder.sol";
+import {LidoLendMarketBuilder, MarketRoles, GuardianConfig} from "../src/periphery/LidoLendMarketBuilder.sol";
 
 import {ConfigToml} from "./lib/ConfigToml.sol";
 import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
 import {ProtocolDeployer} from "./lib/ProtocolDeployer.sol";
 import {MarketConfigFile} from "./lib/MarketConfigFile.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
-import {ProtocolConfigFile, MarketDeployment, ActivationPlan} from "./lib/ProtocolConfigFile.sol";
-import {GuardianSignalsConfigFile} from "./lib/GuardianSignalsConfigFile.sol";
+import {ProtocolConfigFile, MarketDeployment} from "./lib/ProtocolConfigFile.sol";
+import {GuardianSignalsConfigFile, GuardianSignalsConfig} from "./lib/GuardianSignalsConfigFile.sol";
 import {OracleConfigFile} from "./lib/OracleConfigFile.sol";
+import {OraclePreflight} from "./lib/OraclePreflight.sol";
 
-/// @notice Adds one market to an already-deployed protocol, via the same builder steps
-///         `DeployProtocol` uses. Output is INERT; activation is a separate motion. With `REGISTRY` set the
-///         result is appended to the deployment's registry.
-/// @dev Draft, not production-ready. The builder and CircuitBreaker addresses are read from the market config.
-///
-/// Usage:
-///   forge script script/AddMarket.s.sol --sig "run(string,string)" mainnet weth-wsteth \
-///     --rpc-url "$RPC_URL" --broadcast --private-key "$PK"
+/// @notice Deploys and records inert components for one market in an existing protocol.
 contract AddMarket is Script, ProtocolDeployer {
+    using MarketParamsLib for MarketParams;
+
     error RegistryBuilderMismatch(address registryBuilder, address configBuilder);
 
     struct RunContext {
         string deployment;
-        string network;
         uint256 chainId;
         bytes32 configHash;
         address agent;
@@ -44,17 +39,6 @@ contract AddMarket is Script, ProtocolDeployer {
         LidoLendMarketBuilder.MarketContracts built;
         string registryPath;
         uint256 deployedBlock;
-        RunContext context;
-    }
-
-    struct ActivationPlanInput {
-        string name;
-        LidoLendMarketBuilder.MarketSpec market;
-        LidoLendMarketBuilder.MarketContracts built;
-        address irmRouter;
-        address circuitBreaker;
-        AdaptiveCurveParams curve;
-        RunContext context;
     }
 
     function run(string memory config, string memory name)
@@ -65,9 +49,9 @@ contract AddMarket is Script, ProtocolDeployer {
         {
             DeployConfig memory deployConfig = DeployConfigFile.read(config);
             _requireChainId(deployConfig.chainId);
+            DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
             context = RunContext({
                 deployment: ArtifactMetadataFile.deployment(),
-                network: deployConfig.network,
                 chainId: deployConfig.chainId,
                 configHash: deployConfig.configHash,
                 agent: deployConfig.agent,
@@ -76,25 +60,44 @@ contract AddMarket is Script, ProtocolDeployer {
         }
 
         string memory guardianGroup = MarketConfigFile.guardianGroup(name);
-        (
-            address builder,
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
-            AdaptiveCurveParams memory curve
-        ) = MarketConfigFile.read(
-            name,
-            ArtifactMetadata({deployment: context.deployment, chainId: context.chainId, configHash: context.configHash})
+        (address builder, LidoLendMarketBuilder.MarketSpec memory market, MarketRoles memory roles,) =
+            MarketConfigFile.read(name);
+        _requireMarketRolePolicy(roles, context.agent, context.executor, msg.sender);
+        OraclePreflight.validate(
+            MarketConfigFile.oracleArtifact(name),
+            market.oracle,
+            market.loanToken,
+            market.collateralToken,
+            context.agent
         );
-        _requireMarketRolePolicy(roles, context.agent, context.executor);
-        _requireProxyAdmin(market.oracle, context.agent);
         if (market.guardianSignals != address(0)) _requireProxyAdmin(market.guardianSignals, context.agent);
         if (builder == address(0)) revert ConfigToml.MissingConfigValue(".builder");
 
-        // Fail a doomed record before any contract is deployed, not after the broadcast.
         ArtifactMetadata memory artifacts = ArtifactMetadata({
             deployment: context.deployment, chainId: context.chainId, configHash: context.configHash
         });
-        ArtifactMetadataFile.requireManifest(artifacts);
+        address irmRouter = address(LidoLendMarketBuilder(builder).IRM_ROUTER());
+        Id proposedId = MarketParams({
+                loanToken: market.loanToken,
+                collateralToken: market.collateralToken,
+                oracle: market.oracle,
+                irm: irmRouter,
+                lltv: market.lltv
+            }).id();
+        string memory registryPath = ProtocolConfigFile.deployedPath();
+        {
+            string memory registry = vm.readFile(registryPath);
+            DeployConfig memory deployConfig = DeployConfigFile.read(config);
+            DeployConfigFile.requireRegistryGovernance(deployConfig, registry);
+            address registryBuilder = vm.parseTomlAddress(registry, ".protocol.builder");
+            if (builder != registryBuilder) revert RegistryBuilderMismatch(registryBuilder, builder);
+        }
+        if (market.guardianSignals != address(0)) {
+            _validateReusedGuardianSignals(guardianGroup, builder, market.guardianSignals, context.agent);
+        }
+        ProtocolConfigFile.requireMarketAbsent(registryPath, name);
+        ProtocolConfigFile.requireMarketIdAbsent(registryPath, Id.unwrap(proposedId));
+        if (market.guardianSignals == address(0)) GuardianSignalsConfigFile.requireUndeployed(guardianGroup);
         ArtifactMetadataFile.snapshotInput("deploy", DeployConfigFile.configPath(config));
         ArtifactMetadataFile.snapshotInput(string.concat("market-", name), MarketConfigFile.marketPath(name));
         ArtifactMetadataFile.snapshotInput(
@@ -104,33 +107,24 @@ contract AddMarket is Script, ProtocolDeployer {
             string.concat("oracle-", MarketConfigFile.oracleArtifact(name)),
             OracleConfigFile.configPath(MarketConfigFile.oracleArtifact(name))
         );
-        string memory registryPath = ProtocolConfigFile.deployedPath();
-        {
-            string memory registry = vm.readFile(registryPath);
-            ArtifactMetadataFile.requireMatch(registry, artifacts, "protocol-registry");
-            address registryBuilder = vm.parseTomlAddress(registry, ".protocol.builder");
-            if (builder != registryBuilder) revert RegistryBuilderMismatch(registryBuilder, builder);
-        }
-        ProtocolConfigFile.requireMarketAbsent(registryPath, name);
-        ProtocolConfigFile.requireActivationPlanUndeployed(name);
-        if (market.guardianSignals == address(0)) {
-            GuardianSignalsConfigFile.requireUndeployed(guardianGroup, artifacts);
-        }
 
-        // Captured before the broadcast: a lower bound for this run's events, where acceptance's scan starts.
+        // Lower bound for reconstructing roles from events.
         uint256 deployedBlock = vm.getBlockNumber();
+        bool guardianCreated;
 
         vm.startBroadcast();
 
         if (market.guardianSignals == address(0)) {
             market.guardianSignals = _buildGuardianSignals(guardianGroup, builder, context.agent);
-            GuardianSignalsConfigFile.writeDeployed(guardianGroup, market.guardianSignals, artifacts);
+            guardianCreated = true;
         }
 
         built = LidoLendMarketBuilder(builder).buildMarketContracts(market, roles);
         vm.stopBroadcast();
 
-        address irmRouter = address(LidoLendMarketBuilder(builder).IRM_ROUTER());
+        if (guardianCreated) {
+            GuardianSignalsConfigFile.writeDeployed(guardianGroup, market.guardianSignals, deployedBlock, artifacts);
+        }
 
         console2.log("market     :", name);
         console2.log("  oracle          :", market.oracle);
@@ -145,44 +139,10 @@ contract AddMarket is Script, ProtocolDeployer {
             record.built = built;
             record.registryPath = registryPath;
             record.deployedBlock = deployedBlock;
-            record.context = context;
             console2.log("  recorded        :", _record(record));
         }
-        {
-            ActivationPlanInput memory activation;
-            activation.name = name;
-            activation.market = market;
-            activation.built = built;
-            activation.irmRouter = irmRouter;
-            activation.circuitBreaker = roles.pausers.length == 1 ? roles.pausers[0] : address(0);
-            activation.curve = curve;
-            activation.context = context;
-            console2.log("  activationPlan  :", _writeActivationPlan(activation));
-        }
     }
 
-    /// @dev Writes this market's activation-motion inputs to a per-market artifact.
-    function _writeActivationPlan(ActivationPlanInput memory input) internal returns (string memory) {
-        return ProtocolConfigFile.writeActivationPlan(
-            ActivationPlan({
-                name: input.name,
-                deployment: input.context.deployment,
-                network: input.context.network,
-                chainId: input.context.chainId,
-                configHash: input.context.configHash,
-                loanToken: input.market.loanToken,
-                collateralToken: input.market.collateralToken,
-                oracle: input.market.oracle,
-                irm: input.irmRouter,
-                lltv: input.market.lltv,
-                controller: input.built.controller,
-                circuitBreaker: input.circuitBreaker,
-                curveParams: input.curve
-            })
-        );
-    }
-
-    /// @dev Append to the `REGISTRY` file, else write a standalone artifact; returns the path.
     function _record(MarketRecordInput memory input) internal returns (string memory path) {
         MarketDeployment memory md = MarketDeployment({
             name: input.name,
@@ -197,5 +157,31 @@ contract AddMarket is Script, ProtocolDeployer {
 
         ProtocolConfigFile.appendMarket(input.registryPath, md);
         path = input.registryPath;
+    }
+
+    function _validateReusedGuardianSignals(
+        string memory guardianGroup,
+        address builder,
+        address guardianSignals,
+        address agent
+    ) private view {
+        GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.read(guardianGroup);
+        if (cfg.admin != agent) revert UnexpectedAdmin(agent, cfg.admin);
+        if (cfg.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, cfg.proxyAdmin);
+        address[] memory managers = new address[](0);
+        LidoLendMarketBuilder(builder)
+            .validateGuardianSignals(
+                guardianSignals,
+                builder,
+                agent,
+                agent,
+                managers,
+                GuardianConfig({
+                    guardians: cfg.guardians,
+                    quorum: cfg.quorum,
+                    suspectWindow: cfg.suspectWindow,
+                    accessLimiter: cfg.accessLimiter
+                })
+            );
     }
 }

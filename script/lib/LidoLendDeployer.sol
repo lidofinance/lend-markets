@@ -9,8 +9,7 @@ import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCu
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
 import {IIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.sol";
-// The IRM submodule vendors its own copy of the core interfaces, so its `MarketParams` is a distinct type
-// from `@lido-lend/`'s despite being field-identical. Aliased to build the tuple its setters expect.
+// The IRM dependency uses its own otherwise identical MarketParams type.
 import {MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
@@ -24,9 +23,7 @@ import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
 import {LidoLendPrimitives} from "./LidoLendPrimitives.sol";
 
-/// @notice Legacy one-shot fork-stack deploy of a single market — created, routed, and live in one call — for
-///         `Devnet.s.sol` and scenario tests. NOT the production path (`DeployProtocol` / `ProtocolDeployer`),
-///         which builds inert markets through the factory.
+/// @notice One-shot live market deployment for devnet and scenario tests.
 abstract contract LidoLendDeployer is LidoLendPrimitives {
     using MarketParamsLib for MarketParams;
 
@@ -47,13 +44,11 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         address admin;
         address loanToken;
         address collateralToken;
-        // Underlying source for the default oracle; ignored if `_deployOracle` is overridden.
         address oracleSource;
         uint256 lltv;
         bool enableSettlement;
         CollateralActivationConfig activation;
         SettlementConfig settlementConfig;
-        // Guardian set + quorum seeded at init; requires `1 <= quorum <= guardians.length`.
         address[] guardians;
         uint256 quorum;
         uint256 suspectWindow;
@@ -61,11 +56,9 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         string vaultSymbol;
     }
 
-    /// @notice One-shot deploy of the whole market stack.
     function _deployForkStack(DeployConfig memory cfg) internal returns (Deployed memory d) {
         d.core = _deployCore(cfg.admin);
 
-        // `admin` gets MARKET_CREATOR_ROLE so the deploy can create the market through the facade.
         d.ownerFacade = _deployOwnerFacade(d.core, cfg.admin, cfg.admin, address(0));
         ILidoLend(d.core).setOwner(d.ownerFacade);
         LidoLendOwner(d.ownerFacade).grantRole(LidoLendOwner(d.ownerFacade).MARKET_MANAGER_ROLE(), cfg.admin);
@@ -90,7 +83,6 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
 
         d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
-        // Keep `admin` as a direct manager and grant the stable facade the capabilities it dispatches.
         LidoLendMarketController controller = LidoLendMarketController(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
         controller.grantRole(controller.MANAGER_ROLE(), d.ownerFacade);
@@ -103,13 +95,11 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         guardianSignals.setSuspectWindow(cfg.suspectWindow);
     }
 
-    /// @dev Default `WstEthRateOracle` behind a proxy; override for mock oracles.
     function _deployOracle(address oracleSource, address admin) internal virtual returns (address) {
         address impl = address(new WstEthRateOracle(oracleSource));
         return _behindProxy(impl, admin, "");
     }
 
-    /// @dev Morpho mainnet-like adaptive curve params.
     function _curveConfig() internal pure virtual returns (AdaptiveCurveParams memory) {
         return AdaptiveCurveParams({
             curveSteepness: 4e18,
@@ -122,8 +112,7 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         });
     }
 
-    /// @dev Sets the curve params, then routes the market to the IRM. `setMarketIrm` probes the IRM, so it
-    ///      must run after the curve is set.
+    /// @dev The router probes the model, so curve parameters must be set first.
     function _configureAdaptiveIrm(address router, MarketParams memory params, address owner)
         internal
         virtual
@@ -143,7 +132,6 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         return address(irm);
     }
 
-    /// @dev Controller behind a proxy; the impl bakes `lidoLend` into an immutable.
     function _deployController(
         address core,
         Id marketId,
@@ -160,7 +148,6 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         proxy = _behindProxy(impl, admin, initData);
     }
 
-    /// @dev ERC-4626 vault behind a proxy, admin'd by the controller's `admin`.
     function _deployVault(
         address core,
         MarketParams memory params,
