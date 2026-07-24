@@ -90,9 +90,10 @@ The operational roles are arrays, not single addresses: `LidoLendMarketBuilder.M
 number of additional holders — an empty array grants nobody from configuration, and a zero entry reverts
 (`ZeroRoleHolder`) as a config mistake rather than silently granting the zero address. Independently of those
 arrays, the builder always grants the facade `MANAGER_ROLE` and `UNFREEZER_ROLE`. Production deployment
-policy requires `pausers[0]` to be a CircuitBreaker with the `EVMScriptExecutor` as its admin so the
-activation motion can register the committee. Later entries are optional additional pausers. One
-CircuitBreaker may be reused across several markets; the assignment remains explicit in each market config.
+policy resolves `market.circuit_breaker_artifact` to a CircuitBreaker with the `EVMScriptExecutor` as its
+admin and prepends it to `pausers`, so the activation motion can register the committee. Configured
+`roles.pausers` entries are optional additional direct pausers. One CircuitBreaker may be reused across
+several markets; the artifact reference remains explicit in each market config.
 `AdaptiveCurveIrm` is a protocol-wide singleton (see IRM, above), so there is no per-market curve
 owner/manager to wire at deploy — its owner/manager are set once with the backbone, and per-market curve
 params are activation calldata, not a deploy input.

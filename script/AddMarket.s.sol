@@ -37,6 +37,7 @@ contract AddMarket is Script, ProtocolDeployer {
         string name;
         string oracleArtifact;
         string guardianGroup;
+        string circuitBreakerArtifact;
         address builder;
         address irm;
         address ownerFacade;
@@ -112,6 +113,7 @@ contract AddMarket is Script, ProtocolDeployer {
         input.name = name;
         input.guardianGroup = MarketConfigFile.guardianGroup(name);
         input.oracleArtifact = MarketConfigFile.oracleArtifact(name);
+        input.circuitBreakerArtifact = MarketConfigFile.circuitBreakerArtifact(name);
         (input.builder, input.market, input.roles, input.curveParams) = MarketConfigFile.read(name);
 
         _requireMarketRolePolicy(input.roles, context.agent, context.executor, msg.sender);
@@ -175,6 +177,7 @@ contract AddMarket is Script, ProtocolDeployer {
             name: input.name,
             oracleArtifact: input.oracleArtifact,
             guardianGroup: input.guardianGroup,
+            circuitBreakerArtifact: input.circuitBreakerArtifact,
             id: Id.unwrap(built.marketId),
             builder: input.builder,
             controller: built.controller,

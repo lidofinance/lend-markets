@@ -225,6 +225,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
             name: name,
             oracleArtifact: MarketConfigFile.oracleArtifact(name),
             guardianGroup: guardianGroup,
+            circuitBreakerArtifact: MarketConfigFile.circuitBreakerArtifact(name),
             id: Id.unwrap(built.marketId),
             builder: context.protocol.builder,
             controller: built.controller,

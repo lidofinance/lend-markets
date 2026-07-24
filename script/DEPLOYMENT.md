@@ -9,6 +9,7 @@ Configuration lives under `script/config/`:
 
 - `<config>.toml`: network, governance, optional exit books, and market names;
 - `markets/<market>.toml`: market parameters, roles, and artifact references;
+- `circuit-breakers/<name>.toml`: immutable bounds and initial pause/heartbeat settings;
 - `oracles/<name>.toml`: oracle inputs;
 - `guardians/<group>.toml`: GuardianSignals inputs.
 
@@ -21,6 +22,7 @@ The run directory contains:
 ```text
 protocol.toml
 markets/<market>.toml
+circuit-breakers/<name>.toml
 guardians/<group>.toml
 oracles/<oracle>.toml
 exit-books.toml
@@ -28,26 +30,30 @@ transactions/<step>.json
 ```
 
 Each market artifact contains its resolved addresses, market ID, final controller role holders,
-CircuitBreaker, activation, settlement, and curve parameters. Separate oracle and GuardianSignals artifacts
-contain their resolved configuration.
+CircuitBreaker reference, activation, settlement, and curve parameters. Separate CircuitBreaker, oracle, and
+GuardianSignals artifacts contain their resolved configuration.
 
-Before deployment, create each CircuitBreaker with `ADMIN = evm_script_executor` and place it first in the
-market's `roles.pausers`. Later entries are additional pausers. One CircuitBreaker may serve several markets.
+Deploy each referenced CircuitBreaker before the protocol. The script fixes `ADMIN = evm_script_executor`;
+the remaining immutable bounds and initial settings come from `circuit-breakers/<name>.toml`. A market names
+the artifact through `market.circuit_breaker_artifact`; the resolved address is prepended to
+`roles.pausers`, whose configured entries are additional direct pausers. One CircuitBreaker may serve several
+markets.
 
 Zero `market.oracle` resolves `oracle_artifact`. `deploy-protocol` requires zero `market.guardian_signals`
 and deploys or shares the configured group. `deploy-market` may reuse a non-zero instance.
 
 ## Deploy
 
-Deploy the required oracle, then the protocol:
+Deploy the required CircuitBreaker and oracle, then the protocol:
 
 ```sh
+make deploy-circuit-breaker CONFIG=mainnet RUN=mainnet-weth-wsteth CIRCUIT_BREAKER=lido-lend
 make deploy-oracle CONFIG=mainnet RUN=mainnet-weth-wsteth ORACLE=weth-wsteth
 make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
 ```
 
 `deploy-protocol` includes exit books when `exit_books = true`. Use `deploy-oracle-usdy` for USDY or
-`deploy-run` for the current single-WstETH-oracle flow.
+`deploy-run` for the current single-CircuitBreaker, single-WstETH-oracle flow.
 
 If broadcast or verification is interrupted, immediately repeat the same target and arguments with
 `RESUME=true`. Do not send another transaction from the deployer first: Foundry resumes the saved nonce

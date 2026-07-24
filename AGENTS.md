@@ -11,6 +11,8 @@
   The Lido bundler code is `src/adapters/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and
   `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO
   token surface).
+- `lib/circuit-breaker`: pinned upstream emergency-pause manager, imported via the
+  `@circuit-breaker/` remapping and deployed as a reusable per-run dependency.
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
 - `src/GuardianSignals.sol`: guardian-signal registry (one per guardian group; markets may share one).
 - `src/interfaces/`: local interfaces and hook payload structs.
@@ -28,8 +30,8 @@
   activation motion or live after it. Expected values and addresses come from immutable artifacts under
   `deployed/<run>/`; the suite skips unless `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
 - `script/`: deployment scripts.
-- `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `guardians/`, `oracles/`,
-  optional `exit-books.toml`, and archived transaction records.
+- `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `circuit-breakers/`,
+  `guardians/`, `oracles/`, optional `exit-books.toml`, and archived transaction records.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).

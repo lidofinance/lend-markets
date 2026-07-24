@@ -155,8 +155,16 @@ interface IReadEnumerableAccessControl {
 
 interface IReadCircuitBreaker {
     function getPauser(address pausable) external view returns (address);
+    function isPauserLive(address pauser) external view returns (bool);
     function ADMIN() external view returns (address);
+    function MIN_PAUSE_DURATION() external view returns (uint256);
+    function MAX_PAUSE_DURATION() external view returns (uint256);
+    function MIN_HEARTBEAT_INTERVAL() external view returns (uint256);
+    function MAX_HEARTBEAT_INTERVAL() external view returns (uint256);
+    function pauseDuration() external view returns (uint256);
+    function heartbeatInterval() external view returns (uint256);
     function registerPauser(address pausable, address newPauser) external;
+    function pause(address pausable) external;
 }
 
 /// @notice Base for market acceptance tests. Forks the node the protocol is deployed on
@@ -198,7 +206,6 @@ abstract contract AcceptanceContext is Test {
     // governance holders
     address internal agent;
     address internal executor;
-    address internal deployer;
 
     // backbone
     address internal core;
@@ -251,6 +258,7 @@ abstract contract AcceptanceContext is Test {
     string internal toml;
     string internal guardiansCfg;
     string internal oracleCfg;
+    string internal circuitBreakerCfg;
     string internal exitBooksArtifact;
     string internal registry;
 
@@ -278,10 +286,12 @@ abstract contract AcceptanceContext is Test {
         guardiansCfg = vm.readFile(string.concat(artifactsDir, "guardians/", guardianGroup, ".toml"));
         string memory oracleArtifact = vm.parseTomlString(toml, ".market.oracle_artifact");
         oracleCfg = vm.readFile(string.concat(artifactsDir, "oracles/", oracleArtifact, ".toml"));
+        string memory circuitBreakerArtifact = vm.parseTomlString(toml, ".market.circuit_breaker_artifact");
+        circuitBreakerCfg =
+            vm.readFile(string.concat(artifactsDir, "circuit-breakers/", circuitBreakerArtifact, ".toml"));
 
         agent = _reg(".protocol.agent");
         executor = _reg(".protocol.evm_script_executor");
-        deployer = _reg(".protocol.deployer");
 
         core = _reg(".protocol.core");
         facade = _reg(".protocol.owner_facade");
@@ -330,9 +340,14 @@ abstract contract AcceptanceContext is Test {
         assertGt(rPausers.length, 0, "market artifact has no CircuitBreaker");
         circuitBreaker = _addr(".market.circuit_breaker");
         assertEq(circuitBreaker, rPausers[0], "CircuitBreaker must be the first pauser");
+        assertEq(
+            vm.parseTomlAddress(circuitBreakerCfg, ".circuit_breaker.address"),
+            circuitBreaker,
+            "CircuitBreaker artifact address"
+        );
 
-        // Test-only activation choices. Production motion inputs are maintained manually in EasyTrack.
-        pauserCommittee = agent;
+        // Test-only settlement choice for the simulated activation path.
+        // Production motion inputs are maintained manually in EasyTrack.
         enableSettlement = true;
 
         expectedGuardians = vm.parseTomlAddressArray(guardiansCfg, ".guardian_signals.guardians");
@@ -401,6 +416,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(IReadProxy(vault).proxy__getAdmin(), agent, "vault proxy admin");
         assertEq(IReadProxy(guardianSignals).proxy__getAdmin(), agent, "guardian proxy admin");
         assertEq(IReadProxy(oracle).proxy__getAdmin(), agent, "oracle proxy admin");
+        _assertCircuitBreakerConfig();
         _assertOracle();
         if (morphoBook != address(0)) {
             assertEq(
@@ -458,6 +474,35 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         }
 
         assertGt(IReadOracle(oracle).price(), 0, "oracle price is zero");
+    }
+
+    function _assertCircuitBreakerConfig() internal view {
+        IReadCircuitBreaker cb = IReadCircuitBreaker(circuitBreaker);
+        assertEq(cb.ADMIN(), executor, "CircuitBreaker.ADMIN");
+        assertEq(
+            cb.MIN_PAUSE_DURATION(),
+            vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.min_pause_duration"),
+            "CircuitBreaker.MIN_PAUSE_DURATION"
+        );
+        assertEq(
+            cb.MAX_PAUSE_DURATION(),
+            vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.max_pause_duration"),
+            "CircuitBreaker.MAX_PAUSE_DURATION"
+        );
+        assertEq(
+            cb.MIN_HEARTBEAT_INTERVAL(),
+            vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.min_heartbeat_interval"),
+            "CircuitBreaker.MIN_HEARTBEAT_INTERVAL"
+        );
+        assertEq(
+            cb.MAX_HEARTBEAT_INTERVAL(),
+            vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.max_heartbeat_interval"),
+            "CircuitBreaker.MAX_HEARTBEAT_INTERVAL"
+        );
+        assertGe(cb.pauseDuration(), cb.MIN_PAUSE_DURATION(), "CircuitBreaker.pauseDuration below min");
+        assertLe(cb.pauseDuration(), cb.MAX_PAUSE_DURATION(), "CircuitBreaker.pauseDuration above max");
+        assertGe(cb.heartbeatInterval(), cb.MIN_HEARTBEAT_INTERVAL(), "CircuitBreaker.heartbeatInterval below min");
+        assertLe(cb.heartbeatInterval(), cb.MAX_HEARTBEAT_INTERVAL(), "CircuitBreaker.heartbeatInterval above max");
     }
 
     /// @notice Calls `LidoLendMarketBuilder`'s own view checks instead of re-implementing them: impl
@@ -592,6 +637,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
             "builder"
         );
         _assertCodehash(curve, address(new AdaptiveCurveIrm(router, address(this), address(this))), "adaptive curve");
+        _assertCodehash(circuitBreaker, _deployExpectedCircuitBreaker(), "CircuitBreaker");
 
         address proxyShell = address(new OssifiableProxy(address(new GuardianSignals()), address(this), ""));
         _assertCodehash(core, proxyShell, "core proxy");
@@ -613,6 +659,26 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
                 "ERC-4626 exit book"
             );
         }
+    }
+
+    function _deployExpectedCircuitBreaker() private returns (address expected) {
+        bytes memory creationCode = vm.getCode("out/CircuitBreaker.sol/CircuitBreaker.json");
+        bytes memory initCode = abi.encodePacked(
+            creationCode,
+            abi.encode(
+                executor,
+                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.min_pause_duration"),
+                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.max_pause_duration"),
+                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.min_heartbeat_interval"),
+                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.max_heartbeat_interval"),
+                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.initial_pause_duration"),
+                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.initial_heartbeat_interval")
+            )
+        );
+        assembly ("memory-safe") {
+            expected := create(0, add(initCode, 0x20), mload(initCode))
+        }
+        assertNotEq(expected, address(0), "expected CircuitBreaker deployment failed");
     }
 
     function _assertCodehash(address actual, address expected, string memory label) private view {
@@ -647,7 +713,11 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     function _assertCircuitBreakerReadyAsPauser() internal view {
         assertGt(rPausers.length, 0, "market must configure a CircuitBreaker");
         assertEq(IReadCircuitBreaker(circuitBreaker).ADMIN(), executor, "cb.ADMIN=executor");
-        assertNotEq(pauserCommittee, address(0), "activation pauser committee is zero");
+    }
+
+    function _isMarketActivated() internal view returns (bool) {
+        (,,,, uint128 lastUpdate,) = IReadCore(core).market(marketId);
+        return lastUpdate != 0;
     }
 
     function _assertNotYetActivated() internal view {
@@ -677,7 +747,17 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         address cfg = IReadCurve(curve).marketCurveConfig(marketId);
         assertGt(cfg.code.length, 0, "curve config missing for market");
         _assertCurveParams(ICurveConfig(cfg).getCurveParams());
+        assertNotEq(pauserCommittee, address(0), "CircuitBreaker pauser is not registered");
         assertEq(IReadCircuitBreaker(circuitBreaker).getPauser(controller), pauserCommittee, "pauser not registered");
+    }
+
+    function _assertCircuitBreakerPausePath() internal {
+        IReadCircuitBreaker cb = IReadCircuitBreaker(circuitBreaker);
+        assertTrue(cb.isPauserLive(pauserCommittee), "pauser heartbeat is not live");
+        vm.prank(pauserCommittee);
+        cb.pause(controller);
+        assertTrue(IReadController(controller).isPaused(), "CircuitBreaker did not pause controller");
+        assertEq(cb.getPauser(controller), address(0), "single-use pauser registration was not cleared");
     }
 
     function _assertExitBooksAllowed() internal view {
@@ -689,13 +769,14 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
     /// @dev Mirror of the `LidoLendActivateMarket` EasyTrack motion, run by the executor. The curve params
     ///      MUST be set before `createMarket` — its first `borrowRate` ping reverts on an unset config.
-    function _activate() internal {
+    function _activate(address testPauserCommittee) internal {
+        assertNotEq(testPauserCommittee, address(0), "test pauser committee is zero");
         MarketParams memory p = _params();
         vm.startPrank(executor);
         IReadCurve(curve).setMarketCurveParams(p, _expectedCurveParams());
         IReadRouter(router).setMarketIrm(p, curve);
         IReadFacade(facade).createMarket(p, controller, enableSettlement);
-        IReadCircuitBreaker(circuitBreaker).registerPauser(controller, pauserCommittee);
+        IReadCircuitBreaker(circuitBreaker).registerPauser(controller, testPauserCommittee);
         vm.stopPrank();
     }
 

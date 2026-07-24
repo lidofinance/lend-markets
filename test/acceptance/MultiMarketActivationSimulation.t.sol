@@ -3,8 +3,8 @@ pragma solidity 0.8.35;
 
 import {AcceptanceBase} from "./AcceptanceBase.t.sol";
 
-/// @notice Acceptance: two markets activate sequentially without overwriting shared singleton state.
-contract MultiMarketActivatedAcceptance is AcceptanceBase {
+/// @notice Simulation: two markets activate sequentially without overwriting shared singleton state.
+contract MultiMarketActivationSimulation is AcceptanceBase {
     function test_twoMarketsActivateWithoutCrossMarketStateCollision() external {
         string memory marketA = vm.envString("MARKET_A");
         string memory marketB = vm.envString("MARKET_B");
@@ -13,9 +13,11 @@ contract MultiMarketActivatedAcceptance is AcceptanceBase {
         bytes32 marketIdA = marketId;
         address controllerA = controller;
         address vaultA = vault;
+        address pauserA = makeAddr("acceptancePauserCommitteeA");
 
         _assertMarketReady();
-        _activate();
+        _activate(pauserA);
+        pauserCommittee = pauserA;
         _allowlistExitBooks();
         _assertActivated();
         _assertExitBooksAllowed();
@@ -26,13 +28,16 @@ contract MultiMarketActivatedAcceptance is AcceptanceBase {
         assertNotEq(vault, vaultA, "markets share vault");
 
         _assertMarketReady();
-        _activate();
+        address pauserB = makeAddr("acceptancePauserCommitteeB");
+        _activate(pauserB);
+        pauserCommittee = pauserB;
         _allowlistExitBooks();
         _assertActivated();
         _assertExitBooksAllowed();
 
         // Activating B must not alter A's router, curve, controller, pauser, settlement, or allow-list state.
         _loadMarket(marketA);
+        pauserCommittee = pauserA;
         _assertActivated();
         _assertExitBooksAllowed();
     }

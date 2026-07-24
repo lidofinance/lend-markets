@@ -11,6 +11,12 @@ import {AcceptanceBase, IReadController, IReadDashboard} from "./AcceptanceBase.
 ///         component/role/config is in place AND that the market is not yet bound on the core — i.e. the only
 ///         thing left is governance flipping it on.
 contract MarketMotionReadinessAcceptance is AcceptanceBase {
+    function setUp() public override {
+        super.setUp();
+        if (core.code.length == 0) return; // base skipped without a registry
+        if (_isMarketActivated()) vm.skip(true, "acceptance: market is already activated");
+    }
+
     function test_deployedInertAndReadyForMotion() external {
         _assertComponentsDeployed();
         _assertWiring();
@@ -34,6 +40,12 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
 
     function testRevert_wrongFacadeBytecodeIsRejected() external {
         vm.etch(facade, hex"00");
+        vm.expectRevert();
+        this.assertComponents();
+    }
+
+    function testRevert_wrongCircuitBreakerBytecodeIsRejected() external {
+        vm.etch(circuitBreaker, hex"00");
         vm.expectRevert();
         this.assertComponents();
     }

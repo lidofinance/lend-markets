@@ -37,6 +37,7 @@ struct MarketDeployment {
     string name;
     string oracleArtifact;
     string guardianGroup;
+    string circuitBreakerArtifact;
     bytes32 id;
     address builder;
     address controller;
@@ -91,7 +92,6 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("risk_steward_dashboard", d.riskStewardDashboard));
         s = string.concat(s, _kv("guardian_signals_impl", d.guardianSignalsImpl));
         s = string.concat(s, _kv("deployed_block", d.deployedBlock));
-        s = string.concat(s, _kv("deployer", d.deployer));
         s = string.concat(s, _kv("agent", d.agent));
         s = string.concat(s, _kv("evm_script_executor", d.evmScriptExecutor));
         s = string.concat(s, "\n[proxy_admins]\n");
@@ -142,7 +142,6 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("morpho", d.morpho));
         s = string.concat(s, _kv("erc4626", d.erc4626));
         s = string.concat(s, _kv("deployed_block", d.deployedBlock));
-        s = string.concat(s, _kv("deployer", d.deployer));
         s = string.concat(s, _kv("max_request_lifetime", d.maxRequestLifetime));
         s = string.concat(s, "\n[roles]\n");
         s = string.concat(s, _kvArray("default_admins", _singleton(d.agent)));
@@ -222,6 +221,7 @@ library ProtocolConfigFile {
         s = string.concat(s, _kvQuoted("lltv", d.market.lltv));
         s = string.concat(s, _kv("guardian_signals", d.market.guardianSignals));
         s = string.concat(s, _kv("guardian_group", d.guardianGroup));
+        s = string.concat(s, _kv("circuit_breaker_artifact", d.circuitBreakerArtifact));
         s = string.concat(s, _kv("builder", d.builder));
         s = string.concat(s, _kv("controller", d.controller));
         s = string.concat(s, _kv("vault", d.vault));

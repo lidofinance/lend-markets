@@ -64,6 +64,7 @@ contract ProtocolConfigFileTest is Test {
         assertEq(vm.parseTomlAddress(artifact, ".market.oracle"), market.market.oracle);
         assertEq(vm.parseTomlAddress(artifact, ".market.controller"), market.controller);
         assertEq(vm.parseTomlAddress(artifact, ".market.circuit_breaker"), address(0xCB));
+        assertEq(vm.parseTomlString(artifact, ".market.circuit_breaker_artifact"), "breaker");
         assertEq(vm.parseTomlAddressArray(artifact, ".roles.pausers")[0], address(0xCB));
         address[] memory managers = vm.parseTomlAddressArray(artifact, ".roles.managers");
         assertEq(managers.length, 2);
@@ -117,6 +118,7 @@ contract ProtocolConfigFileTest is Test {
             name: name,
             oracleArtifact: "wsteth",
             guardianGroup: "main",
+            circuitBreakerArtifact: "breaker",
             id: id,
             builder: address(0xB0),
             controller: address(0xC0),

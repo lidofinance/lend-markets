@@ -13,6 +13,7 @@ import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {BPS} from "../../src/libs/Constants.sol";
 import {OracleConfigFile} from "./OracleConfigFile.sol";
 import {GuardianSignalsConfigFile} from "./GuardianSignalsConfigFile.sol";
+import {CircuitBreakerConfigFile} from "./CircuitBreakerConfigFile.sol";
 
 library MarketConfigFile {
     using SafeCast for uint256;
@@ -29,6 +30,7 @@ library MarketConfigFile {
     struct ArtifactRefs {
         string oracle;
         string guardianGroup;
+        string circuitBreaker;
     }
 
     /// @dev Resolves zero oracle and guardian addresses from run artifacts.
@@ -53,6 +55,10 @@ library MarketConfigFile {
         if (market.guardianSignals == address(0)) {
             market.guardianSignals = GuardianSignalsConfigFile.readDeployed(refs.guardianGroup);
         }
+
+        address circuitBreaker = CircuitBreakerConfigFile.readDeployed(refs.circuitBreaker);
+        if (circuitBreaker == address(0)) revert ConfigToml.MissingConfigValue(".market.circuit_breaker_artifact");
+        roles.pausers = _prepend(circuitBreaker, roles.pausers);
     }
 
     function parse(string memory toml)
@@ -81,11 +87,24 @@ library MarketConfigFile {
         return _parseArtifactRefs(vm.readFile(marketPath(name))).oracle;
     }
 
+    function circuitBreakerArtifact(string memory name) internal view returns (string memory) {
+        return _parseArtifactRefs(vm.readFile(marketPath(name))).circuitBreaker;
+    }
+
     function _parseArtifactRefs(string memory toml) private view returns (ArtifactRefs memory) {
         return ArtifactRefs({
             oracle: ConfigToml.requireString(toml, ".market.oracle_artifact"),
-            guardianGroup: ConfigToml.requireString(toml, ".market.guardian_group")
+            guardianGroup: ConfigToml.requireString(toml, ".market.guardian_group"),
+            circuitBreaker: ConfigToml.requireString(toml, ".market.circuit_breaker_artifact")
         });
+    }
+
+    function _prepend(address first, address[] memory values) private pure returns (address[] memory result) {
+        result = new address[](values.length + 1);
+        result[0] = first;
+        for (uint256 i; i < values.length; ++i) {
+            result[i + 1] = values[i];
+        }
     }
 
     function _parseMarket(string memory toml) private pure returns (LidoLendMarketBuilder.MarketSpec memory) {

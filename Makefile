@@ -15,6 +15,7 @@ RUN ?=
 MARKET ?= weth-wsteth
 ORACLE ?= weth-wsteth
 GUARDIAN_GROUP ?= $(MARKET)
+CIRCUIT_BREAKER ?= lido-lend
 NETWORK ?= $(CONFIG)
 RPC_URL ?=
 DEPLOYER_PRIVATE_KEY ?=
@@ -39,7 +40,7 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-guardian deploy-linear-kink-irm deploy-exit-books deploy-protocol deploy-market deploy-run deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
+.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-linear-kink-irm deploy-exit-books deploy-protocol deploy-market deploy-run deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
 
 help:
 	@echo "Targets:"
@@ -49,12 +50,14 @@ help:
 	@echo "  test-local    forge test on the local suites only (excludes test/fork/; no RPC)"
 	@echo "  test-fork     forge test on test/fork/ only; the suites revert without the fork setup"
 	@echo "  deploy-oracle CONFIG=<config> RUN=<run> ORACLE=<name>"
+	@echo "  deploy-circuit-breaker CONFIG=<config> RUN=<run> CIRCUIT_BREAKER=<name>"
 	@echo "  deploy-protocol CONFIG=<config> RUN=<run>"
 	@echo "  deploy-guardian CONFIG=<config> RUN=<run> GUARDIAN_GROUP=<group>"
 	@echo "  deploy-linear-kink-irm CONFIG=<config> RUN=<run>"
 	@echo "  deploy-exit-books CONFIG=<config> RUN=<existing-run>"
 	@echo "  deploy-market CONFIG=<config> RUN=<run> MARKET=<name>"
-	@echo "  deploy-run CONFIG=<config> RUN=<run> ORACLE=<name>  (current WstETH workflow)"
+	@echo "  deploy-run CONFIG=<config> RUN=<run> CIRCUIT_BREAKER=<name> ORACLE=<name>"
+	@echo "             (current CircuitBreaker + WstETH workflow)"
 	@echo "                 deploy targets verify by default; set VERIFY=false for local networks"
 	@echo "                 retry an interrupted target immediately with RESUME=true"
 	@echo "  deploy-wizard interactive wrapper around the deploy targets"
@@ -115,6 +118,11 @@ deploy-oracle-usdy:
 	@$(DEPLOY_ENV) forge script script/DeployUsdyOracle.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(ORACLE)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployUsdyOracle.s.sol,oracle-$(ORACLE))
 
+deploy-circuit-breaker:
+	$(require_deploy_context)
+	@$(DEPLOY_ENV) forge script script/DeployCircuitBreaker.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(CIRCUIT_BREAKER)" $(DEPLOY_FLAGS)
+	$(call archive_broadcast,DeployCircuitBreaker.s.sol,circuit-breaker-$(CIRCUIT_BREAKER))
+
 deploy-guardian:
 	$(require_deploy_context)
 	@$(DEPLOY_ENV) forge script script/DeployGuardianSignals.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(GUARDIAN_GROUP)" $(DEPLOY_FLAGS)
@@ -143,6 +151,7 @@ deploy-market:
 # The current mainnet profile has one WstETH oracle. Keep the composition explicit until the config itself
 # contains a typed oracle deploy plan; do not guess an oracle implementation from a market name in Make.
 deploy-run:
+	$(MAKE) deploy-circuit-breaker CONFIG="$(CONFIG)" RUN="$(RUN)" CIRCUIT_BREAKER="$(CIRCUIT_BREAKER)"
 	$(MAKE) deploy-oracle CONFIG="$(CONFIG)" RUN="$(RUN)" ORACLE="$(ORACLE)"
 	$(MAKE) deploy-protocol CONFIG="$(CONFIG)" RUN="$(RUN)"
 
@@ -150,14 +159,14 @@ acceptance-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(MARKET)" || { echo "ERROR: set MARKET"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/protocol.toml" MARKET="$(MARKET)" forge test --match-path 'test/acceptance/*' --no-match-contract MultiMarketActivatedAcceptance -vvv
+	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/protocol.toml" MARKET="$(MARKET)" forge test --match-path 'test/acceptance/*' --no-match-contract MultiMarketActivationSimulation -vvv
 
 acceptance-run-multi:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(MARKET_A)" || { echo "ERROR: set MARKET_A"; exit 1; }
 	@test -n "$(MARKET_B)" || { echo "ERROR: set MARKET_B"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/protocol.toml" MARKET="$(MARKET_A)" MARKET_A="$(MARKET_A)" MARKET_B="$(MARKET_B)" forge test --match-contract MultiMarketActivatedAcceptance -vvv
+	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/protocol.toml" MARKET="$(MARKET_A)" MARKET_A="$(MARKET_A)" MARKET_B="$(MARKET_B)" forge test --match-contract MultiMarketActivationSimulation -vvv
 
 fork-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
@@ -168,9 +177,11 @@ fork-run:
 deploy-wizard:
 	@printf 'Config [mainnet]: '; read config; config=$${config:-mainnet}; \
 	printf 'Run directory (required): '; read run; test -n "$$run" || { echo 'ERROR: run directory is required'; exit 1; }; \
-	printf 'Step (oracle, oracle-usdy, guardian, kink-irm, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
-	printf 'Market/oracle name [weth-wsteth]: '; read name; name=$${name:-weth-wsteth}; \
+	printf 'Step (circuit-breaker, oracle, oracle-usdy, guardian, kink-irm, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
+	printf 'Resource name (blank uses lido-lend for CircuitBreaker, weth-wsteth otherwise): '; read name; \
+	if [ -z "$$name" ]; then if [ "$$step" = "circuit-breaker" ]; then name=lido-lend; else name=weth-wsteth; fi; fi; \
 	case "$$step" in \
+		circuit-breaker) exec $(MAKE) deploy-circuit-breaker CONFIG="$$config" RUN="$$run" CIRCUIT_BREAKER="$$name" ;; \
 		oracle) exec $(MAKE) deploy-oracle CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		oracle-usdy) exec $(MAKE) deploy-oracle-usdy CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		guardian) exec $(MAKE) deploy-guardian CONFIG="$$config" RUN="$$run" GUARDIAN_GROUP="$$name" ;; \
