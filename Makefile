@@ -46,7 +46,7 @@ help:
 	@echo "Targets:"
 	@echo "  build         forge build"
 	@echo "  sizes         forge build --sizes"
-	@echo "  test          all tests, local + fork in one run; fork suites require ETH_RPC_URL + NETWORK"
+	@echo "  test          all tests, local + fork in one run; fork suites require RPC_URL + NETWORK"
 	@echo "  test-local    forge test on the local suites only (excludes test/fork/; no RPC)"
 	@echo "  test-fork     forge test on test/fork/ only; the suites revert without the fork setup"
 	@echo "  deploy-oracle CONFIG=<config> RUN=<run> ORACLE=<name>"
@@ -83,7 +83,7 @@ build:
 sizes:
 	forge build --sizes
 
-# All tests, local + fork, in one run. The fork suites revert without a working fork setup — ETH_RPC_URL and
+# All tests, local + fork, in one run. The fork suites revert without a working fork setup — RPC_URL and
 # NETWORK set (see .env.example) and the RPC answering. FORK_REGISTRY is optional and only needed by suites
 # that read an existing deployment. Use test-local / test-fork for one side on its own.
 test:
@@ -171,7 +171,7 @@ acceptance-run-multi:
 fork-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ETH_RPC_URL="$(RPC_URL)" FORK_REGISTRY="deployed/$(RUN)/protocol.toml" NETWORK="$(NETWORK)" forge test --match-path '$(FORK_PATH)'
+	FORK_REGISTRY="deployed/$(RUN)/protocol.toml" NETWORK="$(NETWORK)" forge test --match-path '$(FORK_PATH)'
 
 # Convenience only. The normal targets above remain scriptable and CI-friendly.
 deploy-wizard:

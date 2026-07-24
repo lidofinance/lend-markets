@@ -9,13 +9,13 @@ Fork tests no longer read this directory. External network addresses live in
 Select the committed network config and provide its RPC:
 
 ```sh
-make test-fork ETH_RPC_URL=<rpc> NETWORK=mainnet
+make test-fork RPC_URL=<rpc> NETWORK=mainnet
 ```
 
 Pass the variables as make command-line assignments, as above: they override a `.env`, whereas plain
 `VAR=x make test-fork` is silently beaten by `.env` values loaded by the Makefile.
 
-`ForkTest._fork()` forks `ETH_RPC_URL` and loads `script/config/<NETWORK>.toml`. It verifies the network
+`ForkTest._fork()` forks `RPC_URL` and loads `script/config/<NETWORK>.toml`. It verifies the network
 chain ID. When `FORK_REGISTRY` is set, it loads that registry and verifies its chain ID too.
 
 ## Adding a network
@@ -23,7 +23,7 @@ chain ID. When `FORK_REGISTRY` is set, it loads that registry and verifies its c
 Add `script/config/<network>.toml` with `chain_id` and an `[external]` table, then select it:
 
 ```sh
-make test-fork ETH_RPC_URL=<network-rpc> NETWORK=<network>
+make test-fork RPC_URL=<network-rpc> NETWORK=<network>
 ```
 
 A suite fails when its external key is absent. Existing deployment addresses are read with

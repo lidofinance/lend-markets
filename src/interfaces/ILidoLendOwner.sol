@@ -95,6 +95,7 @@ interface ILidoLendOwner {
     // ---
 
     /// @notice Hand the core's `owner` to `newOwner`, relinquishing this facade's control of the core. The
-    ///         escape hatch for migrating to a different owner; irreversible from the facade's side.
+    ///         escape hatch for migrating to a different owner; irreversible from the facade's side. Only
+    ///         core ownership moves: facade role memberships remain unchanged and are not granted to `newOwner`.
     function transferLidoLendOwnership(address newOwner) external;
 }

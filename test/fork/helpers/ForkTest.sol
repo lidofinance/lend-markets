@@ -16,8 +16,8 @@ abstract contract ForkTest is CommonBase {
     bool private _registryLoaded;
 
     function _fork() internal {
-        string memory url = vm.envOr("ETH_RPC_URL", string(""));
-        require(bytes(url).length != 0, "ForkTest: ETH_RPC_URL is unset (see .env.example)");
+        string memory url = vm.envOr("RPC_URL", string(""));
+        require(bytes(url).length != 0, "ForkTest: RPC_URL is unset (see .env.example)");
 
         uint256 pin = vm.envOr("FORK_BLOCK", uint256(0));
         if (pin == 0) vm.createSelectFork(url);

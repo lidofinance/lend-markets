@@ -44,7 +44,7 @@
 ## Build, Test, And Formatting Commands
 
 - Build: `forge build --force`.
-- All tests (local + fork): `make test`. The fork suites require a working fork setup — `ETH_RPC_URL`,
+- All tests (local + fork): `make test`. The fork suites require a working fork setup — `RPC_URL`,
   `NETWORK` (e.g. in `.env`), its committed config, and a matching RPC — and revert without it;
   a fork suite runs or it fails, it never skips.
 - Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
@@ -60,7 +60,7 @@
   `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
 - Writing a fork test: put it under `test/fork/`, extend `helpers/ForkTest.sol`, call `_fork()` first in
-  `setUp`, and read external addresses via `_ext("wstEth")`. `_fork()` forks `ETH_RPC_URL` at latest and
+  `setUp`, and read external addresses via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and
   loads `script/config/<NETWORK>.toml`, reverting when the RPC is unreachable, the config is missing, or
   its chain ID differs. Set `FORK_REGISTRY` only when the suite reads deployed protocol addresses through
   `_deployed`; its chain ID is checked too. `FORK_BLOCK` pins a block for replay
