@@ -7,6 +7,7 @@ import {IStEth} from "@bundler3/src/interfaces/IStEth.sol";
 import {GeneralAdapter1, ErrorsLib, SafeERC20, IERC20} from "@bundler3/src/adapters/GeneralAdapter1.sol";
 import {MathRayLib} from "@bundler3/src/libraries/MathRayLib.sol";
 
+/// @author Morpho Labs. Modified by Lido.
 /// @notice Adapter contract specific to Ethereum n°1.
 /// @dev Vendored from bundler3's `EthereumGeneralAdapter1` with the MORPHO token surface removed
 ///      (`MORPHO_TOKEN`, `MORPHO_TOKEN_LEGACY`, `MORPHO_WRAPPER`, their constructor arguments, and the
