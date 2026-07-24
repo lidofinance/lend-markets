@@ -24,11 +24,13 @@ Run the local test suite (everything except `test/fork/`):
 forge test --no-match-path 'test/fork/**'
 ```
 
-Run the fork tests against a real network. The suites under `test/fork/` require `ETH_RPC_URL` and a path to that network's address map `DEPLOYMENT` — they revert if either is unset or the map file is missing (a plain `forge test` runs local and fork suites together):
+Run the fork tests against a real network. `NETWORK` selects
+`script/config/<network>.toml`; the RPC and config chain IDs must match. `FORK_REGISTRY` is optional and
+only needed by a suite that reads an existing deployment:
 
 ```sh
-ETH_RPC_URL=<rpc-url> DEPLOYMENT=deployments/deployed-mainnet.json forge test --match-path 'test/fork/**'
-ETH_RPC_URL=<rpc-url> DEPLOYMENT=deployments/deployed-<network>.json forge test --match-path 'test/fork/**'  # needs that network's map (see deployments/README.md)
+RPC_URL=<rpc-url> NETWORK=mainnet forge test --match-path 'test/fork/**'
+RPC_URL=<rpc-url> NETWORK=mainnet FORK_REGISTRY=deployed/<run>/protocol.toml forge test --match-path 'test/fork/**'
 ```
 
 Format Solidity:
@@ -44,7 +46,7 @@ Most everyday commands are wrapped in a `Makefile`:
 ```sh
 make help            # list available targets
 make build           # forge build
-make test            # all tests, local + fork; fork suites revert without the fork setup (ETH_RPC_URL + DEPLOYMENT)
+make test            # all tests, local + fork; fork suites require RPC_URL + NETWORK
 make test-local      # local suites only (excludes test/fork/); no RPC
 make test-fork       # test/fork/ only; the suites revert without the fork setup (copy .env.example to .env)
 make fmt-check       # forge fmt --check on tracked paths (local only; CI does not fail on style)
@@ -57,9 +59,10 @@ make solhint         # stylistic/security checks (requires `solhint` in PATH)
 make ci              # everything CI runs on PRs: build + lint + local tests
 ```
 
-Environment variables are documented in `.env.example`. Copy it to `.env` and set `ETH_RPC_URL` + `DEPLOYMENT` to enable fork tests locally.
+Environment variables are documented in `.env.example`. Copy it to `.env` and set `RPC_URL` plus
+`NETWORK` to enable fork tests locally.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`). Locally `forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that runs `test/fork/` with `ETH_RPC_URL` from the `MAINNET_RPC_URL` secret), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same secret), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`). Locally `forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that runs `test/fork/` with the `RPC_URL` secret), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same secret), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
 
 To run the local pre-commit fmt check, point Git at the bundled hook:
 

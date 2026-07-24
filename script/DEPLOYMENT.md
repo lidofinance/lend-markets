@@ -1,97 +1,98 @@
-# Deployment runbook
+# Deployment
 
-The deploy script `DeployMarket.s.sol` is a starting point for a
-wstETH/WETH lending market on the Lido Blue fork; tune it before any real broadcast. The
-activation parameters and suspects-registry bootstrap in the script are placeholders.
+Scripts deploy inert markets. Activation is a separate EasyTrack motion. Role ownership is documented in
+`docs/specs/roles.md`.
 
-## What gets deployed
+## Setup
 
-1. `LidoLend` — core implementation + `OssifiableProxy`; `initialize(owner = msg.sender)`.
-2. `GuardianSignals` implementation + `OssifiableProxy`; `initialize(admin, guardians, quorum)`.
-   The script ships a placeholder bootstrap (deployer is the sole guardian, `quorum = 1`); the
-   registry rejects `quorum = 0`.
-3. `WstEthRateOracle` — wraps Lido's `stEthPerToken` as a Morpho-style oracle.
-4. `AdaptiveCurveIrm` — Morpho Blue's adaptive-curve IRM (unmodified upstream).
-5. `LidoLendMarketController` implementation (constructor bakes in `core`; market id lives in storage) +
-   `OssifiableProxy`; `initialize(marketId, admin, suspectsRegistry, activationConfig, settlementConfig)`.
-6. `createMarket(params, controllerProxy, enableSettlement = true)` on the core. This owner-gated
-   call auto-enables the IRM and LLTV (the standalone `enableIrm`/`enableLltv` steps were removed).
-   The controller binding is immutable for the market.
-7. `LidoLendERC4626` — single-market ERC-4626 wrapper over the market, reading the
-   controller's settle view; constructor `(core, params, controllerProxy, name, symbol)`.
+Configuration lives under `script/config/`:
 
-## Pre-flight
+- `<config>.toml`: network, governance, optional exit books, and market names;
+- `markets/<market>.toml`: market parameters, roles, and artifact references;
+- `circuit-breakers/<name>.toml`: immutable bounds and initial pause/heartbeat settings;
+- `oracles/<name>.toml`: oracle inputs;
+- `guardians/<group>.toml`: GuardianSignals inputs.
 
-- `ETH_RPC_URL` set to the target chain's RPC (see `.env.example`).
-- `forge --version` matches `.foundryref`.
-- `git submodule update --init --recursive` is up to date.
-- Deployer address is funded on the target chain.
-- Confirm `WETH` and `WSTETH` addresses for the target chain (the script defaults are mainnet).
-- Review the **DRAFT** `activation` config in the script (delays, dust threshold, inflow reference,
-  decay window, decay floor) — these are governance values.
-- Decide the real guardian set + quorum for the suspects registry (the script uses the deployer
-  as a placeholder sole guardian).
-- Decide who holds `owner` on the core and `DEFAULT_ADMIN_ROLE` on the controller and registry.
-  All default to `msg.sender` in the script; rotate immediately after deploy.
+Set `RPC_URL`, `DEPLOYER_PRIVATE_KEY`, and `ETHERSCAN_API_KEY` in `.env`. Deployment targets broadcast and
+verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`;
+all steps for one deployment must use the same `RUN`. Artifacts are immutable and are not overwritten.
 
-## Dry run (against a fork)
+The run directory contains:
 
-```sh
-forge script script/DeployMarket.s.sol \
-  --fork-url "$ETH_RPC_URL" \
-  --sender "$DEPLOYER" \
-  -vvv
+```text
+protocol.toml
+markets/<market>.toml
+circuit-breakers/<name>.toml
+guardians/<group>.toml
+oracles/<oracle>.toml
+exit-books.toml
+transactions/<step>.json
 ```
 
-This simulates the broadcast without sending transactions. Read the logged addresses.
+Each market artifact contains its resolved addresses, market ID, final controller role holders,
+CircuitBreaker reference, activation, settlement, and curve parameters. Separate CircuitBreaker, oracle, and
+GuardianSignals artifacts contain their resolved configuration.
 
-## Broadcast
+Deploy each referenced CircuitBreaker before the protocol. The script fixes `ADMIN = evm_script_executor`;
+the remaining immutable bounds and initial settings come from `circuit-breakers/<name>.toml`. A market names
+the artifact through `market.circuit_breaker_artifact`; the resolved address is prepended to
+`roles.pausers`, whose configured entries are additional direct pausers. One CircuitBreaker may serve several
+markets.
+
+Zero `market.oracle` resolves `oracle_artifact`. `deploy-protocol` requires zero `market.guardian_signals`
+and deploys or shares the configured group. `deploy-market` may reuse a non-zero instance.
+
+## Deploy
+
+Deploy the required CircuitBreaker and oracle, then the protocol:
 
 ```sh
-forge script script/DeployMarket.s.sol \
-  --rpc-url "$RPC_URL" \
-  --broadcast \
-  --private-key "$PK" \
-  --verify \
-  --etherscan-api-key "$ETHERSCAN_API_KEY"
+make deploy-circuit-breaker CONFIG=mainnet RUN=mainnet-weth-wsteth CIRCUIT_BREAKER=lido-lend
+make deploy-oracle CONFIG=mainnet RUN=mainnet-weth-wsteth ORACLE=weth-wsteth
+make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
 ```
 
-`--verify` works on supported networks; otherwise verify manually using the per-contract
-constructor args printed in `broadcast/DeployMarket.s.sol/<chain>/run-latest.json`.
+`deploy-protocol` includes exit books when `exit_books = true`. Use `deploy-oracle-usdy` for USDY or
+`deploy-run` for the current single-CircuitBreaker, single-WstETH-oracle flow.
 
-## Post-deploy checklist
+If broadcast or verification is interrupted, immediately repeat the same target and arguments with
+`RESUME=true`. Do not send another transaction from the deployer first: Foundry resumes the saved nonce
+sequence.
 
-The script puts `msg.sender` into several privileged positions. Rotate each:
+To add a market to an existing run:
 
-- [ ] `core` owner → ops multisig (controls market creation, IRM/LLTV enable, fee setting).
-- [ ] Core `OssifiableProxy` admin (`proxy__changeAdmin(...)`) — controls core upgrades.
-- [ ] `GuardianSignals` `DEFAULT_ADMIN_ROLE` (`grantRole` + renounce on deployer) — manages
-      guardians and quorum.
-- [ ] Registry `OssifiableProxy` admin (`proxy__changeAdmin(...)`).
-- [ ] Controller `OssifiableProxy` admin (`proxy__changeAdmin(...)`) — controls controller upgrades.
-- [ ] Controller `DEFAULT_ADMIN_ROLE` (`grantRole` + renounce on deployer) — manages the policy roles.
+```sh
+make deploy-market CONFIG=mainnet RUN=mainnet-weth-wsteth MARKET=weth-wsteth
+```
 
-Then:
+Deploy a shared GuardianSignals instance for an existing run when needed:
 
-- [ ] Replace the placeholder guardian set + quorum on the registry (`addGuardian` / `removeGuardian`
-      / `setQuorum`).
-- [ ] Grant the controller policy roles to their real holders: `MANAGER_ROLE`, `FREEZER_ROLE`, `UNFREEZER_ROLE`, `PAUSER_ROLE`, `RESUMER_ROLE`. The deploy admin self-grants `MANAGER_ROLE` as `DEFAULT_ADMIN_ROLE` (its default admin) during deploy to seed the policy. Rotate it to the real holder and revoke the placeholder afterwards.
-- [ ] Grant the registry override roles to their real holders: `RISK_STEWARD_ROLE`, `GOVERNANCE_ROLE`.
-- [ ] Retune the activation config if the deploy-time placeholder needs changing (`setConfig`, or
-      the fast `increaseActivationDelays`).
-- [ ] Set the settlement config if defaults need overriding (`setSettlementConfig`), and the risk-steward Sybil
-      lock (`setActivatingLock`) if used.
-- [ ] Confirm each proxy points at the expected implementation
-      (`OssifiableProxy.proxy__getImplementation()`).
-- [ ] Record the deployed addresses under `protocol` in `deployments/deployed-<network>.json` (the
-      `test/fork/` suites read it; see `deployments/README.md`).
-- [ ] Run the fork suites against the deployed addresses:
-      `make test-fork ETH_RPC_URL=<rpc> DEPLOYMENT=deployments/deployed-<network>.json`
-      (command-line assignments so a `.env` cannot override them).
+```sh
+make deploy-guardian CONFIG=mainnet RUN=mainnet-weth-wsteth GUARDIAN_GROUP=shared-group
+```
 
-## Open items
+Optional standalone deployments:
 
-- No `script/Upgrade.s.sol` yet — controller/core/registry upgrades via
-  `OssifiableProxy.proxy__upgradeTo` are out of scope for this prototype.
-- No multi-chain config files; copy this script and override addresses when targeting a new chain.
-- Deterministic CREATE2 deploys are not wired in; no contract has a deterministic address requirement.
+```sh
+make deploy-linear-kink-irm CONFIG=mainnet RUN=mainnet-weth-wsteth
+make deploy-exit-books CONFIG=mainnet RUN=mainnet-weth-wsteth
+```
+
+The kinked IRM is recorded but not routed. `deploy-exit-books` writes `exit-books.toml` without modifying the
+protocol artifact.
+
+## Activate
+
+Activation inputs are runtime EasyTrack motion choices, not deployment artifacts. No separate activation
+artifact is generated or required. EasyTrack acceptance reads reviewed values and resolved addresses from
+`deployed/<RUN>/markets/<market-name>.toml`. The motion sets the curve, routes the IRM, creates the market
+through `LidoLendOwner`, and registers the CircuitBreaker pauser.
+
+Exit-book allow-listing is a separate `LidoLendSetMarketExitBookAllowed` motion.
+
+## Verify
+
+```sh
+make acceptance-run RUN=mainnet-weth-wsteth MARKET=weth-wsteth
+make acceptance-run-multi RUN=mainnet-weth-wsteth MARKET_A=market-a MARKET_B=market-b
+```

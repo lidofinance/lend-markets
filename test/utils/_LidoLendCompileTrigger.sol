@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Flexible pragma trigger: forces Forge to emit the `LidoLend` artifact (strict 0.8.19) under
-// `out/` for TEST runs, so `LidoLendDeployer._deployCore` can pick it up via `vm.getCode`.
-// `script/_LidoLendCompileTrigger.sol` covers `forge script` runs, which compile src+script only;
-// test runs compile src+test, so each side needs its own trigger.
+// Trigger: forces Forge to emit the `LidoLend` artifact under `out/` for TEST runs, so tests that
+// deploy the core via `vm.getCode` (`test/scenario/LidoLendOwner.t.sol`) can resolve it. A full
+// `forge test` compiles the core anyway; this keeps the artifact present under sparse (filtered,
+// `--match-*`) compilation too. The deploy scripts use a direct `new LidoLend()`, so they need no trigger.
 pragma solidity >=0.8.19;
 
 // solhint-disable-next-line no-unused-import

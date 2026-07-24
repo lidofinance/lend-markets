@@ -20,12 +20,12 @@ interface IWstETHReal {
 contract EthStethForkTest is LidoLendSetup, ForkTest {
     using MarketActions for Market;
 
-    address internal WSTETH; // from deployments/deployed-<network>.json (external.wstEth)
+    address internal WSTETH; // from script/config/<NETWORK>.toml
     MockERC20 internal weth;
 
     function setUp() public {
         _fork();
-        WSTETH = _addr("external.wstEth");
+        WSTETH = _ext("wstEth");
         weth = new MockERC20("Wrapped Ether", "WETH", 18);
         _deployProtocol(_defaultConfig(address(weth), WSTETH, WSTETH));
     }

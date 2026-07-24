@@ -6,6 +6,7 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {IRiskStewardDashboard} from "../../src/interfaces/IRiskStewardDashboard.sol";
 import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
@@ -30,7 +31,7 @@ interface IWstETH {
 ///         resolves the controller from the core by market id, and its writes land in the controller's real
 ///         config and instant-activation state, still gated by the controller's own bound validation.
 contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
-    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    // Populated in setUp from script/config/<NETWORK>.toml.
     address internal WETH_ADDRESS;
     address internal STETH_ADDRESS;
     address internal WSTETH_ADDRESS;
@@ -53,9 +54,9 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
 
     function setUp() public {
         _fork();
-        WETH_ADDRESS = _addr("external.weth");
-        STETH_ADDRESS = _addr("external.stEth");
-        WSTETH_ADDRESS = _addr("external.wstEth");
+        WETH_ADDRESS = _ext("weth");
+        STETH_ADDRESS = _ext("stEth");
+        WSTETH_ADDRESS = _ext("wstEth");
         STETH = IStETH(STETH_ADDRESS);
         WSTETH = IWstETH(WSTETH_ADDRESS);
     }
@@ -163,7 +164,7 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
                 enableSettlement: false,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     activatingLockAmount: 0,
@@ -174,7 +175,7 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
                     delayPerStrike: 0,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,

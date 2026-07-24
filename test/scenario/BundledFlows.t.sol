@@ -9,8 +9,6 @@ import {ErrorsLib as BundlerErrorsLib} from "@bundler3/src/libraries/ErrorsLib.s
 import {LidoLendVaultAdapter} from "../../src/adapters/LidoLendVaultAdapter.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
-
 import {BundlerSetup} from "../setup/BundlerSetup.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {Market} from "../setup/Types.sol";
@@ -484,14 +482,9 @@ contract BundledFlowsTest is BundlerSetup {
     function testRevert_bundle_borrow_bannedBorrower() public {
         (Market storage m,) = _setUpBorrowerWithDebt(50 ether, 1 ether);
 
-        vm.roll(block.number + 10);
         address[] memory accounts = new address[](1);
         accounts[0] = borrower;
-        uint40 n = uint40(block.number - 1);
-        protocol.guardianSignals
-            .flag(
-                m.id, accounts, BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: uint40(block.timestamp)})
-            );
+        protocol.guardianSignals.flag(m.id, address(this), accounts);
 
         Call[] memory bundle = new Call[](2);
         bundle[0] = _authorizationCall(borrowerKey, address(adapter));

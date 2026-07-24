@@ -1,0 +1,22 @@
+network = "mainnet"
+chain_id = 1
+
+agent = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
+evm_script_executor = "0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"
+
+exit_books = true
+exit_book_max_request_lifetime = 31536000  # 365 days
+
+# Names under script/config/markets/.
+markets = ["weth-wsteth"]
+
+# External addresses used by fork tests.
+[external]
+weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+stEth = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
+wstEth = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
+usdy = "0x96F6eF951840721AdBF46Ac996b59E0235CB985C"
+usdt = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+ondoOracle = "0xA0219AA5B31e65Bc920B5b6DFb8EdF0988121De0"
+usdtUsdFeed = "0x3E7d1eAB13ad0104d2750B8863b489D65364e32D"
+usdyBlocklist = "0xd8c8174691d936E2C80114EC449037b13421B0a8"

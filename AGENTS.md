@@ -11,8 +11,10 @@
   The Lido bundler code is `src/adapters/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and
   `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO
   token surface).
+- `lib/circuit-breaker`: pinned upstream emergency-pause manager, imported via the
+  `@circuit-breaker/` remapping and deployed as a reusable per-run dependency.
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
-- `src/GuardianSignals.sol`: guardian-signal registry (one per project).
+- `src/GuardianSignals.sol`: guardian-signal registry (one per guardian group; markets may share one).
 - `src/interfaces/`: local interfaces and hook payload structs.
 - `src/oracle/`: local oracle adapters.
 - `src/libs/`: pure libraries (math, data structures). Internal — they inline into call sites.
@@ -20,9 +22,16 @@
 - `test/scenario/`: end-to-end flows on **freshly deployed** core / controller / vault, on the local
   EVM with mock tokens. Driven through shared helpers; happy path first, then revert and
   edge cases. Pure-library fuzz tests live here too.
-- `test/fork/`: test suite that runs against a forked network.
+- `test/fork/`: test suite that runs against a forked network. `NETWORK` selects committed external
+  addresses from `script/config/<network>.toml`; `FORK_REGISTRY` is optional for suites that inspect an
+  existing deployment.
+- `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
+  deployed stack is correctly wired, fully role-wired (event-completeness scan), and either ready for the
+  activation motion or live after it. Expected values and addresses come from immutable artifacts under
+  `deployed/<run>/`; the suite skips unless `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
 - `script/`: deployment scripts.
-- `deployments/deployed-<network>.json`: per-network address map that a fork test loads via `DEPLOYMENT`. See `deployments/README.md` for the schema.
+- `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `circuit-breakers/`,
+  `guardians/`, `oracles/`, optional `exit-books.toml`, and archived transaction records.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).
@@ -35,8 +44,8 @@
 ## Build, Test, And Formatting Commands
 
 - Build: `forge build --force`.
-- All tests (local + fork): `make test`. The fork suites require a working fork setup — `ETH_RPC_URL` and
-  `DEPLOYMENT` set (e.g. in `.env`), the address map on disk, the RPC answering — and revert without it;
+- All tests (local + fork): `make test`. The fork suites require a working fork setup — `RPC_URL`,
+  `NETWORK` (e.g. in `.env`), its committed config, and a matching RPC — and revert without it;
   a fork suite runs or it fails, it never skips.
 - Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
 - Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
@@ -51,9 +60,10 @@
   `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
 - Writing a fork test: put it under `test/fork/`, extend `helpers/ForkTest.sol`, call `_fork()` first in
-  `setUp`, and read addresses via `_addr("external.wstEth")`. `_fork()` forks `ETH_RPC_URL` at latest and
-  loads the `DEPLOYMENT` map, reverting when either is unset, the RPC is unreachable, or the map file is
-  missing; `_addr` reverts on a key the map does not define. `FORK_BLOCK` pins a block for replay
+  `setUp`, and read external addresses via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and
+  loads `script/config/<NETWORK>.toml`, reverting when the RPC is unreachable, the config is missing, or
+  its chain ID differs. Set `FORK_REGISTRY` only when the suite reads deployed protocol addresses through
+  `_deployed`; its chain ID is checked too. `FORK_BLOCK` pins a block for replay
   (why latest: ADR 033).
 
 ## Dependency Policy
@@ -92,7 +102,7 @@ needs before reading code, not what the code already says.
   variables — rendered from the Solidity NatSpec by `tools/gen_api_from_artifacts.py` (`make doc`). It is
   the single source for per-member behaviour, so never hand-write or hand-edit it: keep the NatSpec
   accurate and regenerate. The forked Morpho core is documented under `lib/lido-lend/`.
-- Invariants are **testable**: each one maps to a scenario or fork assertion in `test/`.
+- Invariants are **testable**: each one maps to a scenario, fork, or acceptance assertion in `test/`.
 - Threat model lists the actors (lender, borrower, liquidator, controller admin, guardian, oracle, IRM)
   and what each is trusted not to do.
 - Behaviour-changing PRs update the NatSpec (which regenerates the API reference) and any conceptual spec
@@ -110,7 +120,8 @@ test/
 ├── unit/         # L0+L1 — one file per contract / pure library, method-by-method
 ├── scenario/     # L2 — end-to-end flows on a freshly deployed stack (local EVM, mock tokens)
 ├── invariant/    # L4 — handler-based stateful properties
-└── fork/         # fork tests (fork == integration)
+├── fork/         # fork tests using script/config/<NETWORK>.toml; registry optional for deployed addresses
+└── acceptance/   # L3 — mainnet fork vs immutable artifacts under deployed/<run>/
 ```
 
 - `unit/<Contract>.t.sol` — single contract or pure library in isolation; **flat, one file per
@@ -121,6 +132,10 @@ test/
 - `invariant/<Area>.invariant.t.sol` — handler-based stateful properties (actors, ghosts, bounded
   actions). Handlers under `invariant/handlers/`.
 - `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
+- `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
+  addresses and expected values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
+  Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`); skips without an artifact. See
+  `script/DEPLOYMENT.md`.
 
 ### Setup Infra (`test/setup/`)
 

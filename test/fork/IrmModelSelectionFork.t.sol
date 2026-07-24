@@ -30,18 +30,18 @@ interface IWstETHFork {
 /// @notice Fork mirror of the simulation against real WETH/wstETH. Loan funding wraps ETH to WETH;
 ///         collateral funding submits ETH to Lido and wraps stETH to wstETH; staking moves are simulated by
 ///         mocking the real wstETH `stEthPerToken`. `setUp` creates the fork and reads the token addresses
-///         from the `DEPLOYMENT` map.
+///         from the committed `NETWORK` config.
 contract IrmModelSelectionForkTest is IrmScenarioBase, ForkTest {
-    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    // Populated in setUp from script/config/<NETWORK>.toml.
     address internal WETH;
     address internal STETH;
     address internal WSTETH;
 
     function setUp() public {
         _fork();
-        WETH = _addr("external.weth");
-        STETH = _addr("external.stEth");
-        WSTETH = _addr("external.wstEth");
+        WETH = _ext("weth");
+        STETH = _ext("stEth");
+        WSTETH = _ext("wstEth");
     }
 
     function _setupTokens() internal override {

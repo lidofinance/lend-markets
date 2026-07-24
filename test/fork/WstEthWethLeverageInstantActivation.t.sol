@@ -10,6 +10,8 @@ import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {WAD, BPS} from "../../src/libs/Constants.sol";
 import {ForkTest} from "./helpers/ForkTest.sol";
@@ -227,7 +229,7 @@ contract WstEthWethLeverageHelper {
 ///         target and all collateral is active. Without it the supplied collateral lands in the activation
 ///         timer, and the next borrow reverts on insufficient active collateral.
 contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, ForkTest {
-    // Populated in setUp from deployments/deployed-<network>.json (external.*).
+    // Populated in setUp from script/config/<NETWORK>.toml.
     address internal WETH_ADDRESS;
     address internal STETH_ADDRESS;
     address internal WSTETH_ADDRESS;
@@ -253,9 +255,9 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
 
     function setUp() public {
         _fork();
-        WETH_ADDRESS = _addr("external.weth");
-        STETH_ADDRESS = _addr("external.stEth");
-        WSTETH_ADDRESS = _addr("external.wstEth");
+        WETH_ADDRESS = _ext("weth");
+        STETH_ADDRESS = _ext("stEth");
+        WSTETH_ADDRESS = _ext("wstEth");
         WETH = IWETH(WETH_ADDRESS);
         STETH = IStETH(STETH_ADDRESS);
         WSTETH = IWstETH(WSTETH_ADDRESS);
@@ -340,7 +342,7 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
                 oracleSource: WSTETH_ADDRESS,
                 lltv: LLTV,
                 enableSettlement: false,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     activatingLockAmount: 0,
@@ -351,7 +353,7 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
                     delayPerStrike: 0,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,
