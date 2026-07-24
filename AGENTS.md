@@ -6,6 +6,11 @@
   libraries.
 - `lib/lido-lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported
   via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
+- `lib/bundler3`: stock Morpho bundler3, pinned as a submodule and imported via
+  the `@bundler3/` remapping — the one-transaction bundling dispatcher and its adapter base contracts.
+  The Lido bundler code is `src/adapters/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and
+  `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO
+  token surface).
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
 - `src/GuardianSignals.sol`: guardian-signal registry (one per project).
 - `src/interfaces/`: local interfaces and hook payload structs.
@@ -43,7 +48,7 @@
   against `.gas-snapshot` — run both at the same `TEST_SEED`, or the diff picks up seed noise on top of the
   code change (CI pins `TEST_SEED=1`).
 - Format check for local Solidity files:
-  `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
+  `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
 - Writing a fork test: put it under `test/fork/`, extend `helpers/ForkTest.sol`, call `_fork()` first in
   `setUp`, and read addresses via `_addr("external.wstEth")`. `_fork()` forks `ETH_RPC_URL` at latest and
