@@ -116,8 +116,22 @@ library ProtocolConfigFile {
         internal
         returns (string memory path)
     {
-        _ensureMarketsDir();
-        path = marketPath(d.name);
+        return _writeMarket(d, metadata, ArtifactMetadataFile.artifactsDir());
+    }
+
+    function writeMarket(MarketDeployment memory d, ArtifactMetadata memory metadata, string memory deployment)
+        internal
+        returns (string memory path)
+    {
+        return _writeMarket(d, metadata, ArtifactMetadataFile.artifactsDir(deployment));
+    }
+
+    function _writeMarket(MarketDeployment memory d, ArtifactMetadata memory metadata, string memory artifactsDir)
+        private
+        returns (string memory path)
+    {
+        _ensureMarketsDir(artifactsDir);
+        path = _marketPath(artifactsDir, d.name);
         _requireArtifactAbsent(path);
 
         string memory s = ArtifactMetadataFile.header(metadata, "market-deployment");
@@ -160,7 +174,14 @@ library ProtocolConfigFile {
     }
 
     function requireMarketIdUndeployed(bytes32 id) internal view {
-        string memory dir = marketsDir();
+        _requireMarketIdUndeployed(id, marketsDir());
+    }
+
+    function requireMarketIdUndeployed(bytes32 id, string memory deployment) internal view {
+        _requireMarketIdUndeployed(id, _marketsDir(ArtifactMetadataFile.artifactsDir(deployment)));
+    }
+
+    function _requireMarketIdUndeployed(bytes32 id, string memory dir) private view {
         if (!vm.exists(dir)) return;
 
         Vm.DirEntry[] memory entries = vm.readDir(dir);
@@ -198,11 +219,11 @@ library ProtocolConfigFile {
     }
 
     function marketPath(string memory name) internal view returns (string memory) {
-        return string.concat(marketsDir(), "/", name, ".toml");
+        return _marketPath(ArtifactMetadataFile.artifactsDir(), name);
     }
 
     function marketsDir() internal view returns (string memory) {
-        return string.concat(ArtifactMetadataFile.artifactsDir(), "/markets");
+        return _marketsDir(ArtifactMetadataFile.artifactsDir());
     }
 
     function exitBooksPath() internal view returns (string memory) {
@@ -282,10 +303,18 @@ library ProtocolConfigFile {
         s = string.concat(s, _kvQuoted("max_borrow_rate", p.maxBorrowRate));
     }
 
-    function _ensureMarketsDir() private {
-        ArtifactMetadataFile.ensureArtifactsDir();
-        string memory dir = marketsDir();
+    function _ensureMarketsDir(string memory artifactsDir) private {
+        if (!vm.exists(artifactsDir)) vm.createDir(artifactsDir, false);
+        string memory dir = _marketsDir(artifactsDir);
         if (!vm.exists(dir)) vm.createDir(dir, false);
+    }
+
+    function _marketPath(string memory artifactsDir, string memory name) private pure returns (string memory) {
+        return string.concat(_marketsDir(artifactsDir), "/", name, ".toml");
+    }
+
+    function _marketsDir(string memory artifactsDir) private pure returns (string memory) {
+        return string.concat(artifactsDir, "/markets");
     }
 
     function _singleton(address value) private pure returns (address[] memory values) {

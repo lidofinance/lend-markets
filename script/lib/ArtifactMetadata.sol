@@ -24,7 +24,10 @@ library ArtifactMetadataFile {
 
     /// @dev `ARTIFACTS_DIR` must be one directory name below `deployed/`.
     function artifactsDir() internal view returns (string memory dir) {
-        string memory name = vm.envString("ARTIFACTS_DIR");
+        return artifactsDir(vm.envString("ARTIFACTS_DIR"));
+    }
+
+    function artifactsDir(string memory name) internal pure returns (string memory dir) {
         bytes memory raw = bytes(name);
         if (raw.length == 0) revert InvalidArtifactsDir(name);
         for (uint256 i; i < raw.length; ++i) {

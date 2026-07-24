@@ -17,15 +17,15 @@ contract ProtocolConfigFileHarness {
         return ProtocolConfigFile.containsMarketId(artifact, id);
     }
 
-    function writeMarket(MarketDeployment memory market, ArtifactMetadata memory metadata)
+    function writeMarket(MarketDeployment memory market, ArtifactMetadata memory metadata, string memory deployment)
         external
         returns (string memory)
     {
-        return ProtocolConfigFile.writeMarket(market, metadata);
+        return ProtocolConfigFile.writeMarket(market, metadata, deployment);
     }
 
-    function requireMarketIdUndeployed(bytes32 id) external view {
-        ProtocolConfigFile.requireMarketIdUndeployed(id);
+    function requireMarketIdUndeployed(bytes32 id, string memory deployment) external view {
+        ProtocolConfigFile.requireMarketIdUndeployed(id, deployment);
     }
 }
 
@@ -57,7 +57,7 @@ contract ProtocolConfigFileTest is Test {
     function test_writeMarket_recordsCompleteSeparateImmutableArtifacts() external {
         string memory run = _prepareRun("protocol-config-file-unit");
         MarketDeployment memory market = _market("first", bytes32(uint256(0x1234)), address(0xCB));
-        string memory path = harness.writeMarket(market, _metadata(run));
+        string memory path = harness.writeMarket(market, _metadata(run), run);
         string memory artifact = vm.readFile(path);
 
         assertEq(vm.parseTomlString(artifact, ".artifact.kind"), "market-deployment");
@@ -83,7 +83,7 @@ contract ProtocolConfigFileTest is Test {
         );
         assertEq(vm.parseTomlInt(artifact, ".curve.curve_steepness"), market.curveParams.curveSteepness);
         string memory second =
-            harness.writeMarket(_market("second", bytes32(uint256(2)), address(0xCB)), _metadata(run));
+            harness.writeMarket(_market("second", bytes32(uint256(2)), address(0xCB)), _metadata(run), run);
 
         assertNotEq(path, second);
         assertTrue(vm.exists(path));
@@ -92,12 +92,11 @@ contract ProtocolConfigFileTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(ProtocolConfigFile.MarketIdAlreadyRecorded.selector, bytes32(uint256(0x1234)))
         );
-        harness.requireMarketIdUndeployed(bytes32(uint256(0x1234)));
+        harness.requireMarketIdUndeployed(bytes32(uint256(0x1234)), run);
         vm.removeDir(string.concat("deployed/", run), true);
     }
 
     function _prepareRun(string memory run) private returns (string memory) {
-        vm.setEnv("ARTIFACTS_DIR", run);
         string memory dir = string.concat("deployed/", run);
         if (vm.exists(dir)) vm.removeDir(dir, true);
         return run;
