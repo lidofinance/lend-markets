@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {Test} from "forge-std/Test.sol";
 import {Id, MarketParams, Authorization, Signature, IMorphoStaticTyping} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
@@ -9,12 +8,9 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
-import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
-import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {WAD, BPS} from "../../src/libs/Constants.sol";
-import {ForkTest} from "./helpers/ForkTest.sol";
+import {ForkStack} from "./helpers/ForkStack.sol";
 
 interface IWETH {
     function deposit() external payable;
@@ -224,24 +220,30 @@ contract WstEthWethLeverageHelper {
 }
 
 /// @notice Scenario proving the controller's instant-activation is what lets a trusted leverage router compound
-///         `(borrow -> swap -> supply)` against a freshly deployed real core + controller on a mainnet fork.
-///         With the router granted instant activation every supply is active at once, so the loop reaches its
-///         target and all collateral is active. Without it the supplied collateral lands in the activation
-///         timer, and the next borrow reverts on insufficient active collateral.
-contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, ForkTest {
-    // Populated in setUp from script/config/<NETWORK>.toml.
-    address internal WETH_ADDRESS;
-    address internal STETH_ADDRESS;
-    address internal WSTETH_ADDRESS;
+///         `(borrow -> swap -> supply)` against the ALREADY-DEPLOYED `weth-wsteth` market (bound via {ForkStack},
+///         never re-deployed). With the router granted instant activation every supply is active at once, so the
+///         loop reaches its target and all collateral is active. Without it the supplied collateral lands in the
+///         activation timer, and the next borrow reverts on insufficient active collateral.
+///
+///         State-robustness / live-config contract (a shared deployed market may carry pre-existing state and
+///         real governance config): actors are fresh and market-clean (`_freshActor`), so per-position reads are
+///         deltas; lender liquidity is deposited through the vault and MEASURED to cover the loop's fully-levered
+///         draw; and both the seed collateral and the loop target are sized from the LIVE dust floor and LLTV, so
+///         every supply that must activate clears `minActivationAmount` at any live wstETH rate.
+contract WstEthWethLeverageInstantActivationTest is ForkStack {
+    BoundMarket internal m;
 
     IWETH internal WETH;
     IStETH internal STETH;
     IWstETH internal WSTETH;
 
-    uint256 internal constant LLTV = 0.8e18;
+    address internal WETH_ADDRESS;
+    address internal STETH_ADDRESS;
+    address internal WSTETH_ADDRESS;
 
-    address internal constant LENDER = address(0x1000);
-    address internal constant USER = address(0x2000);
+    // Fresh, market-clean actors (start at zero position and zero vault shares), so per-actor reads are deltas.
+    address internal LENDER;
+    address internal USER;
 
     uint256 internal constant MIN_SWAP_OUT_BPS = 9900;
     uint256 internal constant MAX_ITERATIONS = 10;
@@ -255,12 +257,19 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
 
     function setUp() public {
         _fork();
-        WETH_ADDRESS = _ext("weth");
+        m = _bindMarket("fork-weth-wsteth");
+        _pokeAccrue(m); // fold in pending interest so the fresh borrows below start from an accrued clock
+        _grantSelfManager(m); // regain MANAGER_ROLE so `grantInstantActivation` call sites stay unchanged
+
+        WETH_ADDRESS = address(m.loanToken);
         STETH_ADDRESS = _ext("stEth");
-        WSTETH_ADDRESS = _ext("wstEth");
+        WSTETH_ADDRESS = address(m.collateralToken);
         WETH = IWETH(WETH_ADDRESS);
         STETH = IStETH(STETH_ADDRESS);
         WSTETH = IWstETH(WSTETH_ADDRESS);
+
+        LENDER = _freshActor(m, "wstEthWethLeverage.lender");
+        USER = _freshActor(m, "wstEthWethLeverage.user");
     }
 
     /// @notice Granted instant activation, the router compounds the loop: it reaches the collateral target and
@@ -271,7 +280,14 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
         // Trust the router: its supplies skip the timer and are active immediately.
         s.controller.grantInstantActivation(address(helper));
 
-        uint256 target = initialCollateral * 5 / 2; // ~2.5x, within the LTV asymptote (1 / (1 - lltv) = 5x)
+        // The router's own token/ETH balances are asserted as DELTAS: its CREATE deployment address may carry a
+        // pre-existing balance on the mainnet fork (a real account can already sit there), so "strands nothing"
+        // means the loop leaves those balances unchanged, not that they are zero.
+        uint256 helperWethBefore = WETH.balanceOf(address(helper));
+        uint256 helperWstEthBefore = WSTETH.balanceOf(address(helper));
+        uint256 helperEthBefore = address(helper).balance;
+
+        uint256 target = _loopTarget(initialCollateral);
         vm.prank(USER);
         helper.openLeveragedPosition(s.marketParams, target, MIN_SWAP_OUT_BPS, MAX_ITERATIONS);
 
@@ -286,10 +302,11 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
         uint128 borrowShares = s.core.position(s.id, USER).borrowShares;
         assertGt(borrowShares, 0, "real debt drawn against the leveraged collateral");
 
-        // The router strands nothing: each iteration borrows, swaps, and supplies the full output.
-        assertEq(WETH.balanceOf(address(helper)), 0, "no WETH left in the router");
-        assertEq(WSTETH.balanceOf(address(helper)), 0, "no wstETH left in the router");
-        assertEq(address(helper).balance, 0, "no ETH left in the router");
+        // The router strands nothing: each iteration borrows, swaps, and supplies the full output, so its
+        // balances are unchanged by the loop (measured against the pre-loop snapshot, not against zero).
+        assertEq(WETH.balanceOf(address(helper)), helperWethBefore, "router stranded no WETH");
+        assertEq(WSTETH.balanceOf(address(helper)), helperWstEthBefore, "router stranded no wstETH");
+        assertEq(address(helper).balance, helperEthBefore, "router stranded no ETH");
     }
 
     /// @notice Without instant activation the router's first supply lands in the activation timer, so the
@@ -297,8 +314,10 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
     function testRevert_leverageLoop_revertsWithoutInstantActivation() public {
         (Stack memory s, WstEthWethLeverageHelper helper, uint256 initialCollateral) = _setup();
 
-        // No instant-activation grant for the router this time.
-        uint256 target = initialCollateral * 5 / 2;
+        // No instant-activation grant for the router this time. The first loop supply clears the live dust floor
+        // (seed is 2x the floor, so its full-LTV supply is well above it) and lands in the activation timer; the
+        // second borrow then sizes off the raw (timer-held) collateral and trips the active-collateral gate.
+        uint256 target = _loopTarget(initialCollateral);
         vm.prank(USER);
         vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
         helper.openLeveragedPosition(s.marketParams, target, MIN_SWAP_OUT_BPS, MAX_ITERATIONS);
@@ -308,88 +327,68 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
     // HARNESS
     // ---
 
-    /// @dev Deploys the stack, seeds WETH lending liquidity, gives USER active initial collateral, deploys the
-    ///      router and authorizes it. Leaves the instant-activation grant to the individual test.
+    /// @dev Binds the deployed stack into the suite's `Stack`, seeds WETH lending liquidity through the vault
+    ///      (measured to cover the loop's fully-levered draw), gives USER active initial collateral sized from
+    ///      the live dust floor, deploys the router and authorizes it. Leaves the instant-activation grant to the
+    ///      individual test.
     function _setup() internal returns (Stack memory s, WstEthWethLeverageHelper helper, uint256 initialCollateral) {
-        s = _deployStack();
+        s.core = m.core;
+        s.controller = m.controller;
+        s.marketParams = m.params;
+        s.id = m.id;
 
-        // Lending liquidity so the router has WETH to borrow.
-        _mintWETH(s.core, LENDER, 100 ether);
+        // USER's initial collateral is 2x the LIVE dust floor: comfortably above `minActivationAmount`, so it
+        // enters activation (not dust) and — matured below — becomes borrowable active collateral.
+        initialCollateral = 2 * uint256(m.activation.minActivationAmount);
+        uint256 target = _loopTarget(initialCollateral);
+
+        // Lending liquidity so the router has WETH to borrow. The loop's debt tops out at `target` collateral
+        // fully levered at the market LLTV; deposit that plus headroom through the vault (the lender path), gated
+        // by the live supply-cap headroom, then MEASURE free liquidity so a pre-existing borrow cannot starve the
+        // loop (a shared market may already carry supply/borrow).
+        uint256 maxLoopDebt = target * m.oracle.price() / ORACLE_PRICE_SCALE * m.params.lltv / WAD;
+        uint256 liquidity = maxLoopDebt + 10 ether;
+        _requireDepositHeadroom(m, liquidity);
+        _mintWETH(LENDER, liquidity);
         vm.prank(LENDER);
-        s.core.supply(s.marketParams, 100 ether, 0, LENDER, "");
+        m.vault.deposit(liquidity, LENDER);
+        require(
+            _freeLiquidity(m) >= maxLoopDebt,
+            "WstEthWethLeverage: market free liquidity does not cover the loop's fully-levered draw"
+        );
 
-        // USER's initial collateral, matured to active by warping past the activation cap (no instant needed
-        // for the seed; the test isolates the router's instant grant).
-        initialCollateral = _mintWstETH(s.core, USER, 12 ether);
-        vm.prank(USER);
+        // Seed USER's collateral directly and mature it: USER is not a trusted caller, so the supply enters the
+        // timer; warping past the LIVE activation cap makes it active before the loop, isolating the router's
+        // instant grant as the only variable the two tests differ on.
+        deal(WSTETH_ADDRESS, USER, initialCollateral);
+        vm.startPrank(USER);
+        WSTETH.approve(address(s.core), initialCollateral);
         s.core.supplyCollateral(s.marketParams, initialCollateral, USER, "");
-        vm.warp(block.timestamp + 2 hours + 1);
+        vm.stopPrank();
+        _warpPastActivation(m);
 
         helper = new WstEthWethLeverageHelper(address(s.core), WETH_ADDRESS, STETH_ADDRESS, WSTETH_ADDRESS);
         vm.prank(USER);
         s.core.setAuthorization(address(helper), true);
     }
 
-    function _deployStack() internal returns (Stack memory s) {
-        address[] memory guardians = new address[](1);
-        guardians[0] = address(this);
-
-        Deployed memory d = _deployForkStack(
-            DeployConfig({
-                admin: address(this),
-                loanToken: WETH_ADDRESS,
-                collateralToken: WSTETH_ADDRESS,
-                oracleSource: WSTETH_ADDRESS,
-                lltv: LLTV,
-                enableSettlement: false,
-                activation: CollateralActivationConfig({
-                    minActivationDelay: 10 minutes,
-                    maxActivationDelay: 2 hours,
-                    activatingLockAmount: 0,
-                    activatingLockDuration: 0,
-                    maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 1, // every loop supply activates; the test is not about the dust floor
-                    maxGuardiansQuorumDelay: 0,
-                    delayPerStrike: 0,
-                    delayPerSuspect: 0
-                }),
-                settlementConfig: SettlementConfig({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
-                }),
-                guardians: guardians,
-                quorum: 1,
-                suspectWindow: 0,
-                vaultName: "Lido wstETH/WETH Vault",
-                vaultSymbol: "lidoWSTETH-WETH"
-            })
-        );
-
-        s.core = ILidoLend(d.core);
-        s.controller = ILidoLendMarketController(d.controllerProxy);
-        s.marketParams = d.params;
-        s.id = d.marketId;
+    /// @dev Collateral target for the loop, sized from the live dust floor and LLTV so the success path lands
+    ///      dust-free. The loop's wstETH trajectory is price-independent: each full iteration supplies
+    ///      `lltv * collateral - debt`, so after the first full supply raw collateral is `initial * (1 + lltv)`.
+    ///      Setting the remaining gap to `1.1x` the dust floor makes the loop close it with a single PARTIAL
+    ///      supply that is above the floor (so it activates immediately rather than settling into `dust`) yet
+    ///      below the second full supply (`initial * lltv^2`, i.e. `1.28x` the floor at `initial = 2x` floor and
+    ///      `lltv = 0.8`), so the loop lands that partial and stops just above `2x` the seed.
+    function _loopTarget(uint256 initialCollateral) internal view returns (uint256) {
+        uint256 firstReach = initialCollateral + initialCollateral * m.params.lltv / WAD;
+        return firstReach + uint256(m.activation.minActivationAmount) * 11 / 10;
     }
 
-    function _mintWETH(ILidoLend core, address user, uint256 amount) internal {
+    function _mintWETH(address user, uint256 amount) internal {
         vm.deal(user, amount);
-        vm.prank(user);
+        vm.startPrank(user);
         WETH.deposit{value: amount}();
-        vm.prank(user);
-        WETH.approve(address(core), type(uint256).max);
-    }
-
-    function _mintWstETH(ILidoLend core, address user, uint256 ethAmount) internal returns (uint256) {
-        vm.deal(user, ethAmount);
-        vm.prank(user);
-        STETH.submit{value: ethAmount}(address(0));
-
-        uint256 stETHAmount = STETH.balanceOf(user);
-        vm.prank(user);
-        STETH.approve(WSTETH_ADDRESS, stETHAmount);
-        vm.prank(user);
-        uint256 wstETHAmount = WSTETH.wrap(stETHAmount);
-        vm.prank(user);
-        WSTETH.approve(address(core), type(uint256).max);
-        return wstETHAmount;
+        WETH.approve(address(m.vault), type(uint256).max);
+        vm.stopPrank();
     }
 }

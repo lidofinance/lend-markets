@@ -2,8 +2,8 @@
 pragma solidity 0.8.35;
 
 // IRM model-selection harness.
-// The adaptive candidate is the real `AdaptiveCurveIrm` from the `lido-lend-irm` submodule; the pegged and kinked
-// candidates, the mock tokens, the scenario harness (mock + mainnet-fork token sources), and the adaptive
+// Both candidates are the real submodule IRMs — `AdaptiveCurveIrm` and `LinearKinkIrm` from `lido-lend-irm`;
+// the mock tokens, the scenario harness (mock + mainnet-fork token sources), and the adaptive
 // parameter-upgrade tests live in this file. Not production code.
 
 import {Test, console2} from "forge-std/Test.sol";
@@ -16,10 +16,9 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
-// The adaptive and kinked candidates are the real `AdaptiveCurveIrm` / `LinearKinkIrm` from the `lido-lend-irm`
-// submodule, reached through the `IrmRouter` a market's immutable `irm` points at. They carry their own
-// `IIrm` / `MarketParams` / `Id` types (its own nested copy of the core) that do not unify with the core's, so
-// those are imported under `Irm*` aliases and the ABI-identical structs are converted at the call boundary.
+// The two candidates are reached through the `IrmRouter` a market's immutable `irm` points at. They carry their
+// own `IIrm` / `MarketParams` / `Id` types (its own nested copy of the core) that do not unify with the core's,
+// so those are imported under `Irm*` aliases and the ABI-identical structs are converted at the call boundary.
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.sol";
@@ -29,12 +28,6 @@ import {IIrm as IrmIIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.
 import {MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
-// Adaptive-curve math, reused by the local CapD prototype. These libraries are pragma ^0.8.0 (not strict
-// 0.8.19 like AdaptiveCurveIrm), so they share this 0.8.35 compilation unit.
-import {MathLib as MorphoMathLib} from "@lido-lend/src/libraries/MathLib.sol";
-import {MathLib as IrmMathLib, WAD_INT} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/MathLib.sol";
-import {ExpLib} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/ExpLib.sol";
-import {UtilsLib} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/UtilsLib.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
@@ -42,316 +35,6 @@ import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 ///      `Id` type (the submodule's `AdaptiveCurveIrm` carries its own `Id` that does not unify with the core's).
 interface IRateAtTargetLike {
     function rateAtTarget(Id id) external view returns (int256);
-}
-
-// ==========================================================================================================
-// Candidate IRMs. The adaptive and kinked candidates are the real `AdaptiveCurveIrm` / `LinearKinkIrm` (see
-// above). The pegged and capD candidates are local variants declared here rather than in the submodule.
-// ==========================================================================================================
-
-/// @dev Source of the collateral's accumulating exchange rate (wstETH's `stEthPerToken`).
-interface IRateSource {
-    function stEthPerToken() external view returns (uint256);
-}
-
-/// @notice Hard staking-peg IRM: measures realized staking APR from the growth of the collateral's
-///         `stEthPerToken`, then sets `borrow = stakingAPR - MARGIN` at target utilization and
-///         `MAX_MULTIPLE * stakingAPR` at 100% (a hard cap that tracks staking). `WINDOW > 0` measures over a
-///         lookback (a ring-buffer TWAP) so per-report noise is absorbed.
-contract StakingPeggedIrm is IIrm {
-    uint256 internal constant WAD = 1e18;
-    uint256 internal constant CARD = 8;
-
-    error NotRouter();
-    error ZeroAddress();
-
-    // Router-routed: the `IrmRouter` probes and delegates `borrowRate`, so the gate is the router, not the core.
-    address public immutable ROUTER;
-    IRateSource public immutable RATE_SOURCE;
-    uint256 public immutable TARGET_UTIL;
-    uint256 public immutable MARGIN;
-    uint256 public immutable MAX_MULTIPLE;
-    uint256 public immutable WINDOW;
-    uint256 public immutable SAMPLE_GAP;
-
-    uint256 public stakingApr;
-
-    uint256 internal _lastRate;
-    uint64 internal _lastTs;
-
-    struct Sample {
-        uint64 ts;
-        uint192 rate;
-    }
-
-    Sample[CARD] internal _ring;
-    uint256 internal _head;
-
-    constructor(
-        address router,
-        address rateSource,
-        uint256 targetUtil,
-        uint256 margin,
-        uint256 maxMultiple,
-        uint256 window
-    ) {
-        if (router == address(0) || rateSource == address(0)) revert ZeroAddress();
-        ROUTER = router;
-        RATE_SOURCE = IRateSource(rateSource);
-        TARGET_UTIL = targetUtil;
-        MARGIN = margin;
-        MAX_MULTIPLE = maxMultiple;
-        WINDOW = window;
-        SAMPLE_GAP = window / CARD;
-
-        uint256 r = IRateSource(rateSource).stEthPerToken();
-        _lastRate = r;
-        _lastTs = uint64(block.timestamp);
-        _ring[0] = Sample({ts: uint64(block.timestamp), rate: uint192(r)});
-    }
-
-    function borrowRateView(MarketParams memory, Market memory market) external view returns (uint256) {
-        return _rate(_peekApr(), market);
-    }
-
-    function borrowRate(MarketParams memory, Market memory market) external returns (uint256) {
-        if (msg.sender != ROUTER) revert NotRouter();
-        return _rate(_updateApr(), market);
-    }
-
-    function _updateApr() internal returns (uint256) {
-        return WINDOW == 0 ? _updateSinglePeriod() : _updateWindowed();
-    }
-
-    function _peekApr() internal view returns (uint256) {
-        return WINDOW == 0 ? _peekSinglePeriod() : _windowApr(RATE_SOURCE.stEthPerToken(), block.timestamp);
-    }
-
-    function _updateSinglePeriod() internal returns (uint256) {
-        uint256 current = RATE_SOURCE.stEthPerToken();
-        uint256 elapsed = block.timestamp - _lastTs;
-        if (elapsed != 0 && _lastRate != 0 && current > _lastRate) {
-            stakingApr = (current - _lastRate) * WAD / _lastRate / elapsed;
-            _lastRate = current;
-            _lastTs = uint64(block.timestamp);
-        }
-        return stakingApr;
-    }
-
-    function _peekSinglePeriod() internal view returns (uint256) {
-        uint256 current = RATE_SOURCE.stEthPerToken();
-        uint256 elapsed = block.timestamp - _lastTs;
-        if (elapsed != 0 && _lastRate != 0 && current > _lastRate) {
-            return (current - _lastRate) * WAD / _lastRate / elapsed;
-        }
-        return stakingApr;
-    }
-
-    function _updateWindowed() internal returns (uint256) {
-        uint256 current = RATE_SOURCE.stEthPerToken();
-        uint256 nowTs = block.timestamp;
-        Sample memory newest = _ring[_head];
-        if (current > newest.rate && nowTs - newest.ts >= SAMPLE_GAP) {
-            _head = (_head + 1) % CARD;
-            _ring[_head] = Sample({ts: uint64(nowTs), rate: uint192(current)});
-        }
-        stakingApr = _windowApr(current, nowTs);
-        return stakingApr;
-    }
-
-    function _windowApr(uint256 current, uint256 nowTs) internal view returns (uint256) {
-        uint256 cutoff = nowTs > WINDOW ? nowTs - WINDOW : 0;
-        Sample memory anchor;
-        for (uint256 i; i < CARD; ++i) {
-            Sample memory s = _ring[(_head + 1 + i) % CARD];
-            if (s.ts != 0 && s.ts >= cutoff) {
-                anchor = s;
-                break;
-            }
-        }
-        if (anchor.ts == 0 || nowTs <= anchor.ts || current <= anchor.rate) return stakingApr;
-        return (current - anchor.rate) * WAD / anchor.rate / (nowTs - anchor.ts);
-    }
-
-    function _rate(uint256 apr, Market memory market) internal view returns (uint256) {
-        uint256 u =
-            market.totalSupplyAssets == 0 ? 0 : uint256(market.totalBorrowAssets) * WAD / market.totalSupplyAssets;
-        uint256 atTarget = apr > MARGIN ? apr - MARGIN : 0;
-        if (u >= TARGET_UTIL) {
-            uint256 atMax = apr * MAX_MULTIPLE / WAD;
-            return atTarget + (atMax - atTarget) * (u - TARGET_UTIL) / (WAD - TARGET_UTIL);
-        }
-        return atTarget * u / TARGET_UTIL;
-    }
-}
-
-/// @notice capD: adaptive-curve IRM with a dynamic, staking-pegged ceiling.
-///         The curve and `rateAtTarget` adaptation are Morpho's adaptive curve (steepness `C`); on
-///         top, both the charged rate and the adapting `rateAtTarget` are capped at `k * stakingAPR`. Staking
-///         APR is measured from the collateral's `stEthPerToken` growth over a lookback window (ring-buffer
-///         TWAP), as in `StakingPeggedIrm`. Unlike a static `MAX_BORROW_RATE`, the ceiling tracks the yield
-///         down, so `rateAtTarget` cannot stay wound up ("hangover") when staking falls.
-contract CapDIrm is IIrm {
-    using IrmMathLib for int256;
-    using UtilsLib for int256;
-    using MorphoMathLib for uint128;
-    using MarketParamsLib for MarketParams;
-
-    uint256 internal constant WAD = 1e18;
-    uint256 internal constant CARD = 8;
-
-    event BorrowRateUpdate(Id indexed id, uint256 avgBorrowRate, uint256 rateAtTarget);
-
-    error NotRouter();
-    error ZeroAddress();
-    error InvalidParams();
-
-    struct Config {
-        int256 curveSteepness; // WAD, >= 1e18
-        int256 adjustmentSpeed; // WAD per second, >= 0
-        int256 targetUtilization; // WAD, in (0, 1e18)
-        int256 initialRateAtTarget; // WAD per second
-        int256 minRateAtTarget; // WAD per second, > 0
-        int256 maxRateAtTarget; // WAD per second, >= min (static upper bound; the dynamic k*sd cap sits under it)
-        int256 capMultiple; // WAD, k >= 1e18: ceiling = k * stakingAPR
-        uint256 window; // staking-APR lookback (seconds), > 0
-    }
-
-    // Router-routed: the `IrmRouter` probes and delegates `borrowRate`, so the gate is the router, not the core.
-    address public immutable ROUTER;
-    IRateSource public immutable RATE_SOURCE;
-    int256 public immutable CURVE_STEEPNESS;
-    int256 public immutable ADJUSTMENT_SPEED;
-    int256 public immutable TARGET_UTILIZATION;
-    int256 public immutable INITIAL_RATE_AT_TARGET;
-    int256 public immutable MIN_RATE_AT_TARGET;
-    int256 public immutable MAX_RATE_AT_TARGET;
-    int256 public immutable CAP_MULTIPLE;
-    uint256 public immutable WINDOW;
-    uint256 public immutable SAMPLE_GAP;
-
-    mapping(Id => int256) public rateAtTarget;
-
-    // Staking-APR measurement (ring-buffer TWAP of stEthPerToken growth), mirroring StakingPeggedIrm.
-    uint256 public stakingApr; // per-second WAD
-
-    struct Sample {
-        uint64 ts;
-        uint192 rate;
-    }
-
-    Sample[CARD] internal _ring;
-    uint256 internal _head;
-
-    constructor(address router, address rateSource, Config memory cfg) {
-        if (router == address(0) || rateSource == address(0)) revert ZeroAddress();
-        if (
-            cfg.curveSteepness < WAD_INT || cfg.adjustmentSpeed < 0 || cfg.targetUtilization <= 0
-                || cfg.targetUtilization >= WAD_INT || cfg.minRateAtTarget <= 0
-                || cfg.maxRateAtTarget < cfg.minRateAtTarget || cfg.capMultiple < WAD_INT || cfg.window == 0
-        ) revert InvalidParams();
-
-        ROUTER = router;
-        RATE_SOURCE = IRateSource(rateSource);
-        CURVE_STEEPNESS = cfg.curveSteepness;
-        ADJUSTMENT_SPEED = cfg.adjustmentSpeed;
-        TARGET_UTILIZATION = cfg.targetUtilization;
-        INITIAL_RATE_AT_TARGET = cfg.initialRateAtTarget;
-        MIN_RATE_AT_TARGET = cfg.minRateAtTarget;
-        MAX_RATE_AT_TARGET = cfg.maxRateAtTarget;
-        CAP_MULTIPLE = cfg.capMultiple;
-        WINDOW = cfg.window;
-        SAMPLE_GAP = cfg.window / CARD;
-
-        _ring[0] = Sample({ts: uint64(block.timestamp), rate: uint192(IRateSource(rateSource).stEthPerToken())});
-    }
-
-    function borrowRateView(MarketParams memory marketParams, Market memory market) external view returns (uint256) {
-        (uint256 avgRate,) = _borrowRate(marketParams.id(), market, _peekStakingApr());
-        return avgRate;
-    }
-
-    function borrowRate(MarketParams memory marketParams, Market memory market) external returns (uint256) {
-        if (msg.sender != ROUTER) revert NotRouter();
-        Id id = marketParams.id();
-        (uint256 avgRate, int256 endRateAtTarget) = _borrowRate(id, market, _updateStakingApr());
-        rateAtTarget[id] = endRateAtTarget;
-        emit BorrowRateUpdate(id, avgRate, uint256(endRateAtTarget));
-        return avgRate;
-    }
-
-    /// @dev Adaptive curve with the dynamic `k * stakingAPR` ceiling on both `rateAtTarget` and the charged rate.
-    function _borrowRate(Id id, Market memory market, uint256 sd) private view returns (uint256, int256) {
-        int256 capRate = CAP_MULTIPLE.wMulToZero(int256(sd)); // k * stakingAPR (per-second WAD)
-        int256 dynMax = capRate < MAX_RATE_AT_TARGET ? capRate : MAX_RATE_AT_TARGET;
-
-        int256 utilization =
-            int256(market.totalSupplyAssets > 0 ? market.totalBorrowAssets.wDivDown(market.totalSupplyAssets) : 0);
-        int256 errNormFactor = utilization > TARGET_UTILIZATION ? WAD_INT - TARGET_UTILIZATION : TARGET_UTILIZATION;
-        int256 err = (utilization - TARGET_UTILIZATION).wDivToZero(errNormFactor);
-
-        int256 startRateAtTarget = rateAtTarget[id];
-        int256 avgRateAtTarget;
-        int256 endRateAtTarget;
-
-        if (startRateAtTarget == 0) {
-            // First interaction: seed at the initial rate, clamped under the dynamic ceiling.
-            avgRateAtTarget = INITIAL_RATE_AT_TARGET.bound(MIN_RATE_AT_TARGET, dynMax);
-            endRateAtTarget = avgRateAtTarget;
-        } else {
-            int256 speed = ADJUSTMENT_SPEED.wMulToZero(err);
-            int256 elapsed = int256(block.timestamp - market.lastUpdate);
-            int256 linearAdaptation = speed * elapsed;
-            // _newRateAtTarget re-clamps to dynMax every step, so the ceiling rides the yield down even when
-            // linearAdaptation is small (no hangover).
-            endRateAtTarget = _newRateAtTarget(startRateAtTarget, linearAdaptation, dynMax);
-            int256 midRateAtTarget = _newRateAtTarget(startRateAtTarget, linearAdaptation / 2, dynMax);
-            avgRateAtTarget = (startRateAtTarget + endRateAtTarget + 2 * midRateAtTarget) / 4;
-        }
-
-        uint256 rate = uint256(_curve(avgRateAtTarget, err));
-        if (rate > uint256(capRate)) rate = uint256(capRate); // charged rate clipped at k * stakingAPR
-        return (rate, endRateAtTarget);
-    }
-
-    function _curve(int256 _rateAtTarget, int256 err) private view returns (int256) {
-        int256 coeff = err < 0 ? WAD_INT - WAD_INT.wDivToZero(CURVE_STEEPNESS) : CURVE_STEEPNESS - WAD_INT;
-        return (coeff.wMulToZero(err) + WAD_INT).wMulToZero(_rateAtTarget);
-    }
-
-    function _newRateAtTarget(int256 start, int256 linearAdaptation, int256 dynMax) private view returns (int256) {
-        return start.wMulToZero(ExpLib.wExp(linearAdaptation)).bound(MIN_RATE_AT_TARGET, dynMax);
-    }
-
-    function _updateStakingApr() internal returns (uint256) {
-        uint256 current = RATE_SOURCE.stEthPerToken();
-        uint256 nowTs = block.timestamp;
-        Sample memory newest = _ring[_head];
-        if (current > newest.rate && nowTs - newest.ts >= SAMPLE_GAP) {
-            _head = (_head + 1) % CARD;
-            _ring[_head] = Sample({ts: uint64(nowTs), rate: uint192(current)});
-        }
-        stakingApr = _windowApr(current, nowTs);
-        return stakingApr;
-    }
-
-    function _peekStakingApr() internal view returns (uint256) {
-        return _windowApr(RATE_SOURCE.stEthPerToken(), block.timestamp);
-    }
-
-    function _windowApr(uint256 current, uint256 nowTs) internal view returns (uint256) {
-        uint256 cutoff = nowTs > WINDOW ? nowTs - WINDOW : 0;
-        Sample memory anchor;
-        for (uint256 i; i < CARD; ++i) {
-            Sample memory s = _ring[(_head + 1 + i) % CARD];
-            if (s.ts != 0 && s.ts >= cutoff) {
-                anchor = s;
-                break;
-            }
-        }
-        if (anchor.ts == 0 || nowTs <= anchor.ts || current <= anchor.rate) return stakingApr;
-        return (current - anchor.rate) * WAD / anchor.rate / (nowTs - anchor.ts);
-    }
 }
 
 // ==========================================================================================================
@@ -435,9 +118,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
 
     enum IrmKind {
         Adaptive,
-        Pegged,
-        Kinked,
-        CapD
+        Kinked
     }
 
     uint256 internal constant WAD = 1e18;
@@ -494,7 +175,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
     uint256 internal _spikeResupplyChunk;
 
     address internal _router; // the market's `irm`: routes to the model below, which the yearly retune re-tunes
-    address internal _candidate; // the routed IRM under test (adaptive/kinked/pegged/capD), re-tuned in place
+    address internal _candidate; // the routed IRM under test (adaptive or kinked), re-tuned in place
     uint256 internal _lastRetuneYear; // last whole year the retune fired
     uint256 internal _adaptiveCapApr; // the live ceiling (annual WAD): 1.5x initial estimate, re-derived each retune
 
@@ -526,14 +207,11 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
 
     function _label() internal view returns (string memory) {
         if (_irmKind == IrmKind.Adaptive) return "ADAPTIVE";
-        if (_irmKind == IrmKind.Pegged) return "PEGGED";
-        if (_irmKind == IrmKind.CapD) return "CAPD";
         return "KINKED";
     }
 
     /// @dev Attach the IRM under test behind the market's `router` (`_deployIrm` deployed the router; the market's
-    ///      immutable `irm` points at it). The peg and capD read staking directly (their dynamic ceiling tracks the
-    ///      yield) and need no retune; adaptive and kinked are re-tuned yearly in place through their setters.
+    ///      immutable `irm` points at it). Both candidates are re-tuned yearly in place through their setters.
     ///      Initial params are scenario inputs; yearly `_retune` derives params from the trailing-year average
     ///      APR. Runs before `createMarket`, so `setMarketIrm` probes the model on a fresh (zero) market.
     function _configureAdaptiveIrm(address router, MarketParams memory params, address owner)
@@ -545,35 +223,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
         IrmMarketParams memory irmParams = _toIrmParams(params);
         IrmIIrm candidate;
 
-        if (_irmKind == IrmKind.Pegged) {
-            candidate = IrmIIrm(
-                address(
-                    new StakingPeggedIrm(
-                        router, collateralToken, TARGET_UTIL, uint256(0.001 ether) / YEAR, 1.5 ether, 14 days
-                    )
-                )
-            );
-        } else if (_irmKind == IrmKind.CapD) {
-            // Adaptive-curve initial set + k = 1.25x (matching CAP_MULT_BPS); the ceiling is the dynamic k*staking.
-            candidate = IrmIIrm(
-                address(
-                    new CapDIrm(
-                        router,
-                        collateralToken,
-                        CapDIrm.Config({
-                            curveSteepness: int256(1.5 ether),
-                            adjustmentSpeed: ADAPT_SPEED,
-                            targetUtilization: int256(TARGET_UTIL),
-                            initialRateAtTarget: int256(0.02 ether) / int256(YEAR),
-                            minRateAtTarget: int256(0.005 ether) / int256(YEAR),
-                            maxRateAtTarget: int256(0.0275 ether) / int256(YEAR),
-                            capMultiple: int256(1.25 ether),
-                            window: 14 days
-                        })
-                    )
-                )
-            );
-        } else if (_irmKind == IrmKind.Adaptive) {
+        if (_irmKind == IrmKind.Adaptive) {
             // initial set for ~2.6% staking
             _adaptiveCapApr = INITIAL_CAP_APR;
             AdaptiveCurveIrm adaptive = new AdaptiveCurveIrm(router, owner, owner);
@@ -606,9 +256,10 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
 
     /// @dev Yearly retune: rebuild the params from the trailing-year average APR and re-set them on the routed
     ///      IRM in place (adaptive/kinked). The routed instance keeps its `rateAtTarget`, so the rate resumes from
-    ///      the frozen state rather than the initial rate. Pegged and capD auto-track, so this is a no-op for them.
+    ///      the frozen state rather than the initial rate.
     function _retune(uint256 avgApr) internal {
         IrmMarketParams memory irmParams = _toIrmParams(params);
+        vm.startPrank(_candidateAdmin());
         if (_irmKind == IrmKind.Adaptive) {
             // light touch: the bounds move with the APR (initial is re-derived too, but it is inert once the
             // market's rateAtTarget is set); the rate self-adapts via utilization between retunes
@@ -621,6 +272,14 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
                     irmParams, _kinkParams(avgApr / 5 / YEAR, avgApr * 7 / 10 / YEAR, avgApr * 6 / 10 / YEAR)
                 );
         }
+        vm.stopPrank();
+    }
+
+    /// @dev The account authorized to re-tune the routed candidate's params. Locally the harness owns the freshly
+    ///      deployed candidate, so this is `address(this)` and the prank in `_retune` is a no-op; the fork subclass
+    ///      binds an already-deployed candidate and overrides this to its live owner.
+    function _candidateAdmin() internal view virtual returns (address) {
+        return address(this);
     }
 
     function _adaptiveCfgFor(uint256 avgApr) internal view returns (AdaptiveCurveParams memory) {
@@ -666,7 +325,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
         return n == 0 ? _stakingApr(dayIndex) : sum / n;
     }
 
-    function _deployStack() internal {
+    function _deployStack() internal virtual {
         _setupTokens();
         address[] memory guardians = new address[](1);
         guardians[0] = address(this);
@@ -730,7 +389,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
             vm.warp(block.timestamp + STEP_DAYS * 1 days);
             market.accrueInterest(params);
 
-            // Once a year the scenario retunes the IRM params from the trailing-year average APR (no-op for the peg).
+            // Once a year the scenario retunes the routed IRM's params from the trailing-year average APR.
             if ((i * STEP_DAYS) / 365 > _lastRetuneYear) {
                 _lastRetuneYear = (i * STEP_DAYS) / 365;
                 uint256 avg = _trailingAvgApr(i * STEP_DAYS);
@@ -1111,19 +770,9 @@ contract IrmModelSelectionMockTest is IrmScenarioBase {
         _run(IrmKind.Adaptive);
     }
 
-    /// @dev Runs the multi-year IRM comparison scenario driven by the staking-pegged IRM (mock tokens, no fork).
-    function test_scenario_pegged() public {
-        _run(IrmKind.Pegged);
-    }
-
     /// @dev Runs the multi-year IRM comparison scenario driven by the linear-kink IRM (mock tokens, no fork).
     function test_scenario_kinked() public {
         _run(IrmKind.Kinked);
-    }
-
-    /// @dev Runs the multi-year IRM comparison scenario driven by the capD dynamic-ceiling IRM (mock tokens, no fork).
-    function test_scenario_capD() public {
-        _run(IrmKind.CapD);
     }
 }
 

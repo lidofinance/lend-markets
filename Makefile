@@ -16,7 +16,6 @@ MARKET ?= weth-wsteth
 ORACLE ?= weth-wsteth
 GUARDIAN_GROUP ?= $(MARKET)
 CIRCUIT_BREAKER ?= lido-lend
-NETWORK ?= $(CONFIG)
 RPC_URL ?=
 DEPLOYER_PRIVATE_KEY ?=
 VERIFY ?= true
@@ -46,7 +45,7 @@ help:
 	@echo "Targets:"
 	@echo "  build         forge build"
 	@echo "  sizes         forge build --sizes"
-	@echo "  test          all tests, local + fork in one run; fork suites require RPC_URL + NETWORK"
+	@echo "  test          all tests, local + fork in one run; fork suites require RPC_URL + ARTIFACTS_DIR"
 	@echo "  test-local    forge test on the local suites only (excludes test/fork/; no RPC)"
 	@echo "  test-fork     forge test on test/fork/ only; the suites revert without the fork setup"
 	@echo "  deploy-oracle CONFIG=<config> RUN=<run> ORACLE=<name>"
@@ -63,7 +62,7 @@ help:
 	@echo "  deploy-wizard interactive wrapper around the deploy targets"
 	@echo "  acceptance-run RUN=<run> MARKET=<name>"
 	@echo "  acceptance-run-multi RUN=<run> MARKET_A=<name> MARKET_B=<name>"
-	@echo "  fork-run CONFIG=<config> RUN=<run>  (read-only fork tests against this deployment)"
+	@echo "  fork-run RUN=<run>  (read-only fork tests against this deployment)"
 	@echo "               deploy targets write immutable artifacts and archive broadcast JSON under deployed/<run>/"
 	@echo "  fmt           forge fmt on tracked paths (local only; rewrites files)"
 	@echo "  fmt-check     forge fmt --check on tracked paths (local only; CI does not fail on style)"
@@ -84,8 +83,8 @@ sizes:
 	forge build --sizes
 
 # All tests, local + fork, in one run. The fork suites revert without a working fork setup — RPC_URL and
-# NETWORK set (see .env.example) and the RPC answering. FORK_REGISTRY is optional and only needed by suites
-# that read an existing deployment. Use test-local / test-fork for one side on its own.
+# ARTIFACTS_DIR set (see .env.example), that deploy run on disk, and the RPC answering. Use test-local /
+# test-fork for one side on its own.
 test:
 	forge test
 
@@ -168,10 +167,12 @@ acceptance-run-multi:
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
 	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/protocol.toml" MARKET="$(MARKET_A)" MARKET_A="$(MARKET_A)" MARKET_B="$(MARKET_B)" forge test --match-contract MultiMarketActivationSimulation -vvv
 
+# Run the read-only fork suites against this deploy run: they read deployed/$(RUN)/ directly, so there is
+# nothing to compose or prepare first.
 fork-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	FORK_REGISTRY="deployed/$(RUN)/protocol.toml" NETWORK="$(NETWORK)" forge test --match-path '$(FORK_PATH)'
+	ARTIFACTS_DIR="$(RUN)" forge test --match-path '$(FORK_PATH)'
 
 # Convenience only. The normal targets above remain scriptable and CI-friendly.
 deploy-wizard:
