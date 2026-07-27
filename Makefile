@@ -29,6 +29,12 @@ CHAIN_ID ?= $(shell if [ -n "$(RUN)" ] && [ -f "deployed/$(RUN)/protocol.toml" ]
 	awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' "script/config/$(CONFIG).toml"; \
 	fi)
 
+# The activation motion is broadcast as the run's own EVMScriptExecutor (impersonated on a fork), so it is
+# read from the run rather than passed in.
+EXECUTOR ?= $(shell if [ -n "$(RUN)" ] && [ -f "deployed/$(RUN)/protocol.toml" ]; then \
+	awk -F= '/^[[:space:]]*evm_script_executor[[:space:]]*=/{gsub(/[[:space:]"]/, "", $$2); print $$2; exit}' "deployed/$(RUN)/protocol.toml"; \
+	fi)
+
 DEPLOY_ENV = ARTIFACTS_DIR="$(RUN)"
 VERIFY_FLAGS = $(if $(filter true,$(VERIFY)),--verify,)
 RESUME_FLAGS = $(if $(filter true,$(RESUME)),--resume,)
@@ -42,7 +48,7 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-linear-kink-irm deploy-vault-v2 deploy-exit-books deploy-protocol deploy-market deploy-run deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
+.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-linear-kink-irm deploy-vault-v2 deploy-exit-books deploy-protocol deploy-market deploy-run activate-markets deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
 
 help:
 	@echo "Targets:"
@@ -64,6 +70,7 @@ help:
 	@echo "                 deploy targets verify by default; set VERIFY=false for local networks"
 	@echo "                 retry an interrupted target immediately with RESUME=true"
 	@echo "  deploy-wizard interactive wrapper around the deploy targets"
+	@echo "  activate-markets CONFIG=<config> RUN=<run>  (replays the activation motion; fork/devnet only)"
 	@echo "  acceptance-run RUN=<run> MARKET=<name>"
 	@echo "  acceptance-run-multi RUN=<run> MARKET_A=<name> MARKET_B=<name>"
 	@echo "  fork-run RUN=<run>  (read-only fork tests against this deployment)"
@@ -164,6 +171,15 @@ deploy-run:
 	$(MAKE) deploy-circuit-breaker CONFIG="$(CONFIG)" RUN="$(RUN)" CIRCUIT_BREAKER="$(CIRCUIT_BREAKER)"
 	$(MAKE) deploy-oracle CONFIG="$(CONFIG)" RUN="$(RUN)" ORACLE="$(ORACLE)"
 	$(MAKE) deploy-protocol CONFIG="$(CONFIG)" RUN="$(RUN)"
+
+# Replays the LidoLendActivateMarket motion for every market in the run, broadcasting as the impersonated
+# EVMScriptExecutor. Fork and devnet only: on a real network activation is an EasyTrack motion, not a script.
+activate-markets:
+	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
+	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
+	@test -n "$(EXECUTOR)" || { echo "ERROR: could not read evm_script_executor from deployed/$(RUN)/protocol.toml"; exit 1; }
+	@$(DEPLOY_ENV) forge script script/ActivateMarkets.s.sol --sig 'run(string)' "$(CONFIG)" \
+		--rpc-url "$(RPC_URL)" --unlocked --sender "$(EXECUTOR)" --broadcast
 
 acceptance-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
