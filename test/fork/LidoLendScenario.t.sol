@@ -443,9 +443,9 @@ contract LidoLendScenarioTest is ForkStack {
 
     /// @notice Settle works on an unhealthy-but-solvent position (LLTV < LTV < 100%).
     /// @dev Soft-liquidation must reach risky positions, not just healthy ones. A negative rebase — sized RELATIVE
-    ///      to the borrower's own position so it lands at a fixed post-rebase LTV inside (LLTV, 1) at any live rate
-    ///      — pushes the borrower above LLTV (unhealthy) while keeping their collateral worth more than their debt
-    ///      (solvent).
+    ///      to the borrower's own position so it lands at a post-rebase LTV inside (LLTV, 1) at any live rate AND
+    ///      any live LLTV — pushes the borrower above LLTV (unhealthy) while keeping their collateral worth more
+    ///      than their debt (solvent).
     function test_settle_worksOnUnhealthyButSolventPosition() public {
         TestMarket memory ctx = _ctx();
 
@@ -468,11 +468,13 @@ contract LidoLendScenarioTest is ForkStack {
         require(root == BORROWER, "settle_unhealthy: a pre-existing riskier borrower outranks the test borrower");
         _pinFreeLiquidity(m, 0);
 
-        // Negative rebase RELATIVE to the position: land BORROWER at a 90% LTV — above LLTV (unhealthy), below 100%
-        // (solvent) — whatever the live rate. `price = debt / (collateral * targetLtv)`.
+        // Negative rebase RELATIVE to the position: land BORROWER halfway between the live LLTV and 100% — above
+        // LLTV (unhealthy), below 100% (solvent) — whatever the live rate AND whatever the market's LLTV. Derived,
+        // not fixed: a hardcoded 90% is only unhealthy on a market whose LLTV is below it.
+        // `price = debt / (collateral * targetLtv)`.
         uint256 debtAssets = ctx.controller.positionOf(BORROWER).debtAssets;
         uint256 rc = ctx.market.position(ctx.id, BORROWER).collateral;
-        uint256 targetLtv = 0.9e18;
+        uint256 targetLtv = ctx.marketParams.lltv + (WAD - ctx.marketParams.lltv) / 2;
         uint256 droppedPrice = Math.mulDiv(debtAssets, WAD * ORACLE_PRICE_SCALE, rc * targetLtv);
         vm.mockCall(
             WSTETH_ADDRESS,
