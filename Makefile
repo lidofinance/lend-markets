@@ -48,7 +48,7 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-linear-kink-irm deploy-vault-v2 deploy-exit-books deploy-protocol deploy-market deploy-run activate-markets deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
+.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-linear-kink-irm deploy-vault-v2 deploy-exit-books deploy-protocol deploy-market deploy-run activate-markets deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop test-fork-provision
 
 help:
 	@echo "Targets:"
@@ -86,6 +86,10 @@ help:
 	@echo "  doc           forge build --ast + regenerate docs/specs/api/ from NatSpec"
 	@echo "  ci            build + lint + test-local  (mirrors ci.yml's local job)"
 	@echo "  clean         forge clean"
+	@echo "  provision-fork  deploy + activate the fork profile on a local anvil fork of mainnet; leaves anvil running"
+	@echo "                  RPC_URL must point at a real archive node — that is what anvil forks"
+	@echo "  provision-stop  stop the anvil provision-fork started"
+	@echo "  test-fork-provision  one-shot: provision-fork -> test-fork against it -> provision-stop"
 
 build:
 	forge build
@@ -260,3 +264,20 @@ ci: build lint test-local
 
 clean:
 	forge clean
+
+# Deploy + activate the `fork` profile (script/config/fork.toml) on a local anvil fork of mainnet, leaving
+# `deployed/fork/` for the fork suites to bind to. Every step is an ordinary deploy target; only the final
+# activation is a script rather than a governance motion. RPC_URL is the UPSTREAM archive node anvil forks —
+# the deploy steps themselves are pointed at the local anvil by the driver.
+provision-fork:
+	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL to a mainnet archive RPC (this is what anvil forks)"; exit 1; }
+	bash script/provision-fork.sh "$(RPC_URL)"
+
+provision-stop:
+	bash script/provision-fork.sh stop
+
+# One-shot local flow: provision, run the fork suites against the provisioned anvil, then tear it down. The
+# fork-test exit status survives the teardown.
+test-fork-provision:
+	$(MAKE) provision-fork
+	$(MAKE) test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork; status=$$?; $(MAKE) provision-stop; exit $$status
