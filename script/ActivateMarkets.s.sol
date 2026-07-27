@@ -8,7 +8,8 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 
-import {DeployConfig, DeployConfigFile} from "./lib/DeployConfigFile.sol";
+import {Vm} from "forge-std/Vm.sol";
+
 import {IrmConfigFile} from "./lib/IrmConfigFile.sol";
 import {ProtocolConfigFile} from "./lib/ProtocolConfigFile.sol";
 
@@ -58,8 +59,8 @@ interface IActivationCore {
         );
 }
 
-/// @notice Binds every market the deploy config lists, broadcasting as the `EVMScriptExecutor`. Stands in for
-///         the `LidoLendActivateMarket` motion on fork and devnet runs, where governance is not available.
+/// @notice Binds every market recorded in the run, broadcasting as the `EVMScriptExecutor`. Stands in for the
+///         `LidoLendActivateMarket` motion on fork and devnet runs, where governance is not available.
 /// @dev Call order is fixed: the routed model's per-market params precede `createMarket`, whose first
 ///      `borrowRate` ping reverts on an unset model. Inputs come from each market's recorded artifact rather
 ///      than its config. A market whose `market(id).lastUpdate` is non-zero is already bound and is skipped,
@@ -85,9 +86,7 @@ contract ActivateMarkets is Script {
 
     Backbone internal bb;
 
-    function run(string memory config) external {
-        DeployConfig memory cfg = DeployConfigFile.read(config);
-
+    function run() external {
         string memory protocol = vm.readFile(ProtocolConfigFile.protocolPath());
         bb.router = vm.parseTomlAddress(protocol, ".protocol.irm_router");
         bb.adaptiveCurveIrm = vm.parseTomlAddress(protocol, ".protocol.adaptive_curve_irm");
@@ -108,13 +107,18 @@ contract ActivateMarkets is Script {
         address executor = IActivationRouter(bb.router).manager();
         if (msg.sender != executor) revert WrongSender(executor, msg.sender);
 
-        for (uint256 i; i < cfg.markets.length; ++i) {
-            _activateOne(cfg.markets[i]);
+        // The run directory is the authoritative market set: a market added after the backbone deploy is
+        // recorded here but appears in no config.
+        Vm.DirEntry[] memory entries = vm.readDir(ProtocolConfigFile.marketsDir());
+        for (uint256 i; i < entries.length; ++i) {
+            if (entries[i].isDir || entries[i].isSymlink) continue;
+            _activateOne(entries[i].path);
         }
     }
 
-    function _activateOne(string memory name) internal {
-        string memory artifact = vm.readFile(ProtocolConfigFile.marketPath(name));
+    function _activateOne(string memory artifactPath) internal {
+        string memory artifact = vm.readFile(artifactPath);
+        string memory name = vm.parseTomlString(artifact, ".market.name");
         address controller = vm.parseTomlAddress(artifact, ".market.controller");
         address vault = vm.parseTomlAddress(artifact, ".market.vault");
         address circuitBreaker = vm.parseTomlAddress(artifact, ".market.circuit_breaker");

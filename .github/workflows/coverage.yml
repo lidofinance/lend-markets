@@ -21,7 +21,7 @@ jobs:
 
       # The whole suite is measured, fork suites included, so they need a deployment to bind to — the same
       # provisioned anvil fork as ci.yml's fork job. The secret is the upstream archive node anvil forks.
-      - name: provision the fork profile
+      - name: provision a fork deployment
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
         run: |

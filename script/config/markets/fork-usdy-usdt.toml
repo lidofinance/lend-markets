@@ -1,10 +1,9 @@
-# USD/Treasuries market (USDT loan / USDY collateral) for the `fork` profile, bound by
+# USD/Treasuries market (USDT loan / USDY collateral) for fork provisioning, bound by
 # test/fork/UsdyTreasuriesMarket.t.sol. Economic values are draft, carried over from that suite.
 
-# Required by AddMarket; ignored by DeployProtocol (it uses the builder it just deployed).
-builder = "0x0000000000000000000000000000000000000000"
-
 [market]
+# The part this market plays; consumers bind by it rather than by file name.
+role = "usdy-usdt"
 loan_token = "0xdAC17F958D2ee523a2206206994597C13D831ec7"        # USDT (6 dec)
 collateral_token = "0x96F6eF951840721AdBF46Ac996b59E0235CB985C"  # USDY (18 dec, transfer-gated)
 # Zero resolves the oracle artifact recorded under this name.
@@ -20,8 +19,6 @@ vault_name = "Lido USDY/USDT Fork Vault"
 vault_symbol = "lidoUSDY-USDT-FORK"
 
 [roles]
-admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"        # Agent
-proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"  # Agent
 managers = []
 # Additional direct pausers only; the referenced CircuitBreaker is prepended automatically.
 pausers = []

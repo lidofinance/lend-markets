@@ -1,11 +1,10 @@
-# WETH/wstETH market for the `fork` profile, bound by most fork suites. LLTV is 0.945 rather than the canonical config's
+# WETH/wstETH market for fork provisioning, bound by most fork suites. LLTV is 0.945 rather than the canonical config's
 # 0.8 because the IRM model-selection scenario sizes its 7..13x leverage cohort against that constant. Every
 # other suite reads the live `params.lltv`.
 
-# Required by AddMarket; ignored by DeployProtocol (it uses the builder it just deployed).
-builder = "0x0000000000000000000000000000000000000000"
-
 [market]
+# The part this market plays; consumers bind by it rather than by file name.
+role = "weth-wsteth"
 loan_token = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"        # WETH
 collateral_token = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"  # wstETH
 # Zero resolves the oracle artifact recorded under this name.
@@ -23,8 +22,6 @@ vault_name = "Lido wstETH/WETH Fork Vault"
 vault_symbol = "lidoWSTETH-WETH-FORK"
 
 [roles]
-admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"        # Agent
-proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"  # Agent
 managers = []
 # Additional direct pausers only; the referenced CircuitBreaker is prepended automatically.
 pausers = []

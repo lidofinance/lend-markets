@@ -8,7 +8,6 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 
 import {LidoLendMarketBuilder, MarketRoles, GuardianConfig} from "../src/periphery/LidoLendMarketBuilder.sol";
 
-import {ConfigToml} from "./lib/ConfigToml.sol";
 import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
 import {ProtocolDeployer} from "./lib/ProtocolDeployer.sol";
 import {MarketConfigFile, IrmSelection} from "./lib/MarketConfigFile.sol";
@@ -22,8 +21,8 @@ import {OraclePreflight} from "./lib/OraclePreflight.sol";
 contract AddMarket is Script, ProtocolDeployer {
     using MarketParamsLib for MarketParams;
 
-    error RegistryBuilderMismatch(address registryBuilder, address configBuilder);
     error GuardianArtifactMismatch(address artifactGuardianSignals, address configuredGuardianSignals);
+    error MissingGuardianSignals(string guardianGroup);
     error OracleArtifactMismatch(address artifactOracle, address configuredOracle);
 
     struct RunContext {
@@ -34,6 +33,7 @@ contract AddMarket is Script, ProtocolDeployer {
 
     struct MarketInput {
         string name;
+        string role;
         string oracleArtifact;
         string guardianGroup;
         string circuitBreakerArtifact;
@@ -72,23 +72,14 @@ contract AddMarket is Script, ProtocolDeployer {
 
         // Lower bound for reconstructing roles from events.
         uint256 deployedBlock = vm.getBlockNumber();
-        bool guardianCreated;
 
         vm.startBroadcast();
-
-        if (input.market.guardianSignals == address(0)) {
-            input.market.guardianSignals = _buildGuardianSignals(input.guardianGroup, input.builder, context.agent);
-            guardianCreated = true;
-        }
-
         built = LidoLendMarketBuilder(input.builder).buildMarketContracts(input.market, input.roles);
         vm.stopBroadcast();
 
-        if (guardianCreated) {
-            GuardianSignalsConfigFile.writeDeployed(
-                input.guardianGroup, input.market.guardianSignals, deployedBlock, context.artifacts
-            );
-        } else if (input.recordedGuardianSignals == address(0)) {
+        // A registry belongs to a guardian committee, not to a market, and several markets may share one, so it
+        // is its own deploy step. Recorded here only when the market names an instance this run did not deploy.
+        if (input.recordedGuardianSignals == address(0)) {
             GuardianSignalsConfigFile.writeReference(
                 input.guardianGroup, input.market.guardianSignals, deployedBlock, context.artifacts
             );
@@ -110,10 +101,14 @@ contract AddMarket is Script, ProtocolDeployer {
         returns (MarketInput memory input)
     {
         input.name = name;
+        input.role = MarketConfigFile.role(name);
         input.guardianGroup = MarketConfigFile.guardianGroup(name);
         input.oracleArtifact = MarketConfigFile.oracleArtifact(name);
         input.circuitBreakerArtifact = MarketConfigFile.circuitBreakerArtifact(name);
-        (input.builder, input.market, input.roles, input.irm) = MarketConfigFile.read(name);
+        (input.market, input.roles, input.irm) = MarketConfigFile.read(name);
+        // C1 authority over the market: the agent, never a config value.
+        input.roles.admin = context.agent;
+        input.roles.proxyAdmin = context.agent;
 
         _requireMarketRolePolicy(input.roles, context.agent, context.executor, msg.sender);
         OraclePreflight.validate(
@@ -127,26 +122,21 @@ contract AddMarket is Script, ProtocolDeployer {
         if (input.recordedOracle != address(0) && input.recordedOracle != input.market.oracle) {
             revert OracleArtifactMismatch(input.recordedOracle, input.market.oracle);
         }
-        if (input.market.guardianSignals != address(0)) {
-            _requireProxyAdmin(input.market.guardianSignals, context.agent);
-        }
-        if (input.builder == address(0)) revert ConfigToml.MissingConfigValue(".builder");
-
-        input.irmRouter = address(LidoLendMarketBuilder(input.builder).IRM_ROUTER());
+        // Zero means neither the config nor the run names a registry for the group: deploy-guardian first. A
+        // registry belongs to a guardian committee and may serve several markets, so it is its own deploy step.
+        if (input.market.guardianSignals == address(0)) revert MissingGuardianSignals(input.guardianGroup);
+        _requireProxyAdmin(input.market.guardianSignals, context.agent);
         {
             string memory protocolArtifact = vm.readFile(ProtocolConfigFile.protocolPath());
             DeployConfig memory deployConfig = DeployConfigFile.read(config);
             DeployConfigFile.requireRegistryGovernance(deployConfig, protocolArtifact);
-            address protocolBuilder = vm.parseTomlAddress(protocolArtifact, ".protocol.builder");
-            if (input.builder != protocolBuilder) revert RegistryBuilderMismatch(protocolBuilder, input.builder);
+            // The builder is a deployed address, so the run records it; a market config cannot name it.
+            input.builder = vm.parseTomlAddress(protocolArtifact, ".protocol.builder");
             input.ownerFacade = vm.parseTomlAddress(protocolArtifact, ".protocol.owner_facade");
             input.riskStewardDashboard = vm.parseTomlAddress(protocolArtifact, ".protocol.risk_steward_dashboard");
         }
-        if (input.market.guardianSignals != address(0)) {
-            _validateReusedGuardianSignals(
-                input.guardianGroup, input.builder, input.market.guardianSignals, context.agent
-            );
-        }
+        input.irmRouter = address(LidoLendMarketBuilder(input.builder).IRM_ROUTER());
+        _validateReusedGuardianSignals(input.guardianGroup, input.builder, input.market.guardianSignals, context.agent);
         input.recordedGuardianSignals = GuardianSignalsConfigFile.readDeployed(input.guardianGroup);
         if (
             input.recordedGuardianSignals != address(0) && input.recordedGuardianSignals != input.market.guardianSignals
@@ -161,9 +151,6 @@ contract AddMarket is Script, ProtocolDeployer {
         }).id();
         ProtocolConfigFile.requireMarketUndeployed(name);
         ProtocolConfigFile.requireMarketIdUndeployed(Id.unwrap(proposedId));
-        if (input.market.guardianSignals == address(0)) {
-            GuardianSignalsConfigFile.requireUndeployed(input.guardianGroup);
-        }
     }
 
     function _record(
@@ -174,6 +161,7 @@ contract AddMarket is Script, ProtocolDeployer {
     ) internal returns (string memory path) {
         MarketDeployment memory md = MarketDeployment({
             name: input.name,
+            role: input.role,
             oracleArtifact: input.oracleArtifact,
             guardianGroup: input.guardianGroup,
             circuitBreakerArtifact: input.circuitBreakerArtifact,

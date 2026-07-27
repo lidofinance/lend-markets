@@ -82,7 +82,9 @@ contract UsdyTreasuriesMarketTest is ForkStack {
 
     function setUp() public {
         _fork();
-        m = _bindMarket("fork-usdy-usdt");
+        string memory market_ = _marketForRole("usdy-usdt");
+        if (bytes(market_).length == 0) return; // not applicable to this deployment
+        m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest up front so the sizing/liquidity math below is exact
         _grantSelfManager(m); // drive manager-only levers (instant activation used by `_pinFreeLiquidity`)
 

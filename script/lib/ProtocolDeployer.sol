@@ -41,7 +41,6 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     error MissingCircuitBreaker();
     error CircuitBreakerNotContract(address circuitBreaker);
     error UnexpectedCircuitBreakerAdmin(address expected, address actual);
-    error DuplicateMarketId(string firstMarket, string secondMarket);
 
     function _requireChainId(uint256 expected) internal view {
         if (block.chainid != expected) revert UnexpectedChainId(expected, block.chainid);
@@ -101,28 +100,6 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     }
 
     /// @dev The facade is the only operational manager.
-    function _buildGuardianSignals(string memory name, address builder, address agent)
-        internal
-        returns (address guardianSignals)
-    {
-        GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.read(name);
-        if (cfg.admin != agent) revert UnexpectedAdmin(agent, cfg.admin);
-        if (cfg.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, cfg.proxyAdmin);
-        address[] memory managers = new address[](0);
-
-        guardianSignals = LidoLendMarketBuilder(builder)
-            .buildGuardianSignals(
-                GuardianConfig({
-                    guardians: cfg.guardians,
-                    quorum: cfg.quorum,
-                    suspectWindow: cfg.suspectWindow,
-                    accessLimiter: cfg.accessLimiter
-                }),
-                cfg.admin,
-                managers,
-                cfg.proxyAdmin
-            );
-    }
 
     function _requireMarketRolePolicy(MarketRoles memory roles, address agent, address executor, address deployer)
         internal
@@ -156,17 +133,6 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     }
 
     /// @dev The shared IRM router makes these four inputs sufficient to detect duplicate market ids.
-    function _requireUniqueMarketIds(string[] memory names, LidoLendMarketBuilder.MarketSpec[] memory markets)
-        internal
-        pure
-    {
-        for (uint256 i; i < markets.length; ++i) {
-            bytes32 current = _marketIdInputHash(markets[i]);
-            for (uint256 j; j < i; ++j) {
-                if (current == _marketIdInputHash(markets[j])) revert DuplicateMarketId(names[j], names[i]);
-            }
-        }
-    }
 
     function _marketIdInputHash(LidoLendMarketBuilder.MarketSpec memory market) private pure returns (bytes32) {
         return keccak256(abi.encode(market.loanToken, market.collateralToken, market.oracle, market.lltv));

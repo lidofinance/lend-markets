@@ -23,8 +23,8 @@ interface IWETH {
     function deposit() external payable;
 }
 
-/// @notice Mainnet-fork integration of the external vault-v2 stack with the ALREADY-DEPLOYED
-///         `fork-weth-wsteth` market: a vault-v2 allocator routes deposits through the deployed Morpho adapter
+/// @notice Fork integration of the external vault-v2 stack with the ALREADY-DEPLOYED `weth-wsteth` market: a
+///         vault-v2 allocator routes deposits through the deployed Morpho adapter
 ///         into the Lido fork core, borrowers drain every last unit of liquidity so a plain vault withdraw
 ///         reverts, then `forceDeallocate` exits the vault user and a direct-lender fallback `settle` seizes the
 ///         borrower's collateral to exit the direct lender.
@@ -76,21 +76,30 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
 
     function setUp() public {
         _fork();
-        m = _bindMarket("fork-weth-wsteth");
+        string memory market_ = _marketForRole("weth-wsteth");
+        if (bytes(market_).length == 0) return; // not applicable to this deployment
+        m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest up front so the exact liquidity math below holds
 
         core = m.core;
         params = m.params;
         marketId = m.id;
 
-        vault2 = IVaultV2(_artifactAddr("vaults/fork-weth-wsteth.toml", "vault.address"));
-        adapterAddr = _artifactAddr("adapters/fork-weth-wsteth.toml", "adapter.address");
+        // The pair is recorded under the name of the market it serves, and a deployment may carry none.
+        string memory vaultArtifact = string.concat("vaults/", market_, ".toml");
+        string memory adapterArtifact = string.concat("adapters/", market_, ".toml");
+        if (!_hasArtifact(vaultArtifact) || !_hasArtifact(adapterArtifact)) {
+            vm.skip(true, string.concat("MetaMorphoV2: run has no vault-v2 pair for '", market_, "'"));
+            return;
+        }
+        vault2 = IVaultV2(_artifactAddr(vaultArtifact, "vault.address"));
+        adapterAddr = _artifactAddr(adapterArtifact, "adapter.address");
         adapter = IMorphoMarketV1AdapterLike(adapterAddr);
 
         // The adapter drives the SAME market the suite is bound to. The two param structs are ABI-identical
         // (both `{address loanToken, collateralToken, oracle, irm; uint256 lltv}`), so rebuild the adapter's from
         // the live core params and assert the derived id matches the bound market — a mismatch means the
-        // run's vault-v2 pieces point at a different market than `fork-weth-wsteth`.
+        // run's vault-v2 pieces point at a different market than the one bound.
         adapterParams = AdapterMarketParams({
             loanToken: params.loanToken,
             collateralToken: params.collateralToken,

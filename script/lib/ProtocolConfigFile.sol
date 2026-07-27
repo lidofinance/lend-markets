@@ -37,6 +37,8 @@ struct ProtocolDeployment {
 
 struct MarketDeployment {
     string name;
+    /// @dev The part this market plays, shared across networks. Consumers bind by it rather than by `name`.
+    string role;
     string oracleArtifact;
     string guardianGroup;
     string circuitBreakerArtifact;
@@ -237,6 +239,7 @@ library ProtocolConfigFile {
     function _marketSection(MarketDeployment memory d) private pure returns (string memory s) {
         s = "\n[market]\n";
         s = string.concat(s, _kv("name", d.name));
+        s = string.concat(s, _kv("role", d.role));
         s = string.concat(s, _kv("id", d.id));
         s = string.concat(s, _kv("loan_token", d.market.loanToken));
         s = string.concat(s, _kv("collateral_token", d.market.collateralToken));

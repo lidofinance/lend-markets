@@ -5,7 +5,6 @@ import {Script, console2} from "forge-std/Script.sol";
 
 import {LidoLendMarketBuilder, GuardianConfig} from "../src/periphery/LidoLendMarketBuilder.sol";
 
-import {ConfigToml} from "./lib/ConfigToml.sol";
 import {GuardianSignalsConfigFile, GuardianSignalsConfig} from "./lib/GuardianSignalsConfigFile.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
 import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
@@ -13,7 +12,6 @@ import {ProtocolConfigFile} from "./lib/ProtocolConfigFile.sol";
 
 /// @notice Deploys and records a `GuardianSignals` instance reusable across markets.
 contract DeployGuardianSignals is Script {
-    error RegistryBuilderMismatch(address registryBuilder, address configBuilder);
     error UnexpectedAdmin(address expected, address actual);
     error UnexpectedProxyAdmin(address expected, address actual);
 
@@ -22,13 +20,12 @@ contract DeployGuardianSignals is Script {
         DeployConfigFile.requireChainId(deployConfig);
         DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
         string memory toml = vm.readFile(GuardianSignalsConfigFile.configPath(name));
-        address builder = vm.parseTomlAddress(toml, ".builder");
-        if (builder == address(0)) revert ConfigToml.MissingConfigValue(".builder");
+        address builder;
         {
             string memory protocolArtifact = vm.readFile(ProtocolConfigFile.protocolPath());
             DeployConfigFile.requireRegistryGovernance(deployConfig, protocolArtifact);
-            address registryBuilder = vm.parseTomlAddress(protocolArtifact, ".protocol.builder");
-            if (builder != registryBuilder) revert RegistryBuilderMismatch(registryBuilder, builder);
+            // The builder is a deployed address, so the run records it; a config cannot name it.
+            builder = vm.parseTomlAddress(protocolArtifact, ".protocol.builder");
         }
 
         GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.parse(toml);
@@ -47,11 +44,11 @@ contract DeployGuardianSignals is Script {
         guardianSignals = LidoLendMarketBuilder(builder)
             .buildGuardianSignals(
                 GuardianConfig({
-                    guardians: cfg.guardians,
-                    quorum: cfg.quorum,
-                    suspectWindow: cfg.suspectWindow,
-                    accessLimiter: cfg.accessLimiter
-                }),
+                guardians: cfg.guardians,
+                quorum: cfg.quorum,
+                suspectWindow: cfg.suspectWindow,
+                accessLimiter: cfg.accessLimiter
+            }),
                 cfg.admin,
                 managers,
                 cfg.proxyAdmin

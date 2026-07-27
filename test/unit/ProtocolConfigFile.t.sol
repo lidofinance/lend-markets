@@ -106,6 +106,7 @@ contract ProtocolConfigFileTest is Test {
             vm.parseTomlUint(artifact, ".settlement.full_cut_below_collateral"),
             market.market.settlementConfig.fullCutBelowCollateral
         );
+        assertEq(vm.parseTomlString(artifact, ".market.role"), "wsteth-weth");
         assertEq(vm.parseTomlString(artifact, ".market.irm_artifact"), IrmConfigFile.ADAPTIVE_CURVE);
         assertEq(vm.parseTomlInt(artifact, ".curve.curve_steepness"), market.irm.curve.curveSteepness);
         assertFalse(vm.keyExistsToml(artifact, ".kink"), "an adaptive-curve market records no [kink]");
@@ -142,6 +143,7 @@ contract ProtocolConfigFileTest is Test {
         pausers[0] = circuitBreaker;
         d = MarketDeployment({
             name: name,
+            role: "wsteth-weth",
             oracleArtifact: "wsteth",
             guardianGroup: "main",
             circuitBreakerArtifact: "breaker",

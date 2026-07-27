@@ -77,7 +77,9 @@ contract VaultFallbackExitTest is ForkStack {
 
     function setUp() public {
         _fork();
-        m = _bindMarket("fork-weth-wsteth");
+        string memory market_ = _marketForRole("weth-wsteth");
+        if (bytes(market_).length == 0) return; // not applicable to this deployment
+        m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest up front so the exact idle/liquidity math below holds
 
         core = m.core;

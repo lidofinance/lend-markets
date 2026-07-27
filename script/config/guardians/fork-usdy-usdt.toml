@@ -1,7 +1,4 @@
-# GuardianSignals config for the `fork` profile's fork-usdy-usdt group.
-
-# Only read by the STANDALONE DeployGuardianSignals script (DeployProtocol / AddMarket reuse their builder).
-builder = "0x0000000000000000000000000000000000000000"
+# GuardianSignals config for fork provisioning's fork-usdy-usdt group.
 
 admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"        # Agent — final DEFAULT_ADMIN_ROLE
 proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"  # Agent — OssifiableProxy admin

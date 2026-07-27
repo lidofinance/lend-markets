@@ -2,6 +2,7 @@
 pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams, Market, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
@@ -18,6 +19,7 @@ import {ILidoLendERC4626} from "../../../src/interfaces/ILidoLendERC4626.sol";
 import {IGuardianSignals} from "../../../src/interfaces/IGuardianSignals.sol";
 import {CollateralActivationConfig} from "../../../src/types/CollateralActivationTypes.sol";
 import {WAD} from "../../../src/libs/Constants.sol";
+import {ProtocolConfigFile} from "../../../script/lib/ProtocolConfigFile.sol";
 import {ForkTest} from "./ForkTest.sol";
 
 /// @dev Read-only view of the IRM router's manager — production wiring assigns it to the EasyTrack
@@ -80,6 +82,30 @@ abstract contract ForkStack is Test, ForkTest {
     // ---
     // BINDING
     // ---
+
+    /// @notice The name of the run's market playing `role`, or an empty string when it has none — in which case
+    ///         the calling test is marked skipped and the caller returns without binding. Roles are shared across
+    ///         deployments while market names are not, so a suite names the part it drives rather than one
+    ///         deployment's market.
+    /// @dev A deployment need not contain every role: a run may carry no `usdy-usdt`, and a suite bound
+    ///      to that role is not applicable there. That is a fact about the deployment, readable from its
+    ///      artifacts. A run recording no markets at all IS a broken setup and reverts, so a mistyped role cannot
+    ///      pass as an absent one.
+    function _marketForRole(string memory role) internal returns (string memory) {
+        Vm.DirEntry[] memory entries = vm.readDir(ProtocolConfigFile.marketsDir());
+        uint256 seen;
+        for (uint256 i; i < entries.length; ++i) {
+            if (entries[i].isDir || entries[i].isSymlink) continue;
+            ++seen;
+            string memory artifact = vm.readFile(entries[i].path);
+            if (!vm.keyExistsToml(artifact, ".market.role")) continue;
+            if (keccak256(bytes(vm.parseTomlString(artifact, ".market.role"))) != keccak256(bytes(role))) continue;
+            return vm.parseTomlString(artifact, ".market.name");
+        }
+        require(seen != 0, "ForkStack: the bound run records no markets");
+        vm.skip(true, string.concat("ForkStack: run has no market for role '", role, "'"));
+        return "";
+    }
 
     /// @notice Resolve and validate the market recorded as `name` in the run, returning a fully-typed handle.
     /// @dev Loud-fails when: any artifact key is missing (the {ForkTest} accessors revert first); the core,

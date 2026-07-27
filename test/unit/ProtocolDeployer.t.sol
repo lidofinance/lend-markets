@@ -3,7 +3,7 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 
-import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
+import {MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
 import {ProtocolDeployer} from "../../script/lib/ProtocolDeployer.sol";
 
 contract CircuitBreakerConfigStub {
@@ -22,13 +22,6 @@ contract ProtocolDeployerHarness is ProtocolDeployer {
         address deploymentCaller
     ) external view {
         _requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
-    }
-
-    function requireUniqueMarketIds(string[] memory names, LidoLendMarketBuilder.MarketSpec[] memory markets)
-        external
-        pure
-    {
-        _requireUniqueMarketIds(names, markets);
     }
 }
 
@@ -95,29 +88,6 @@ contract ProtocolDeployerTest is Test {
         deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
     }
 
-    function testRevert_requireUniqueMarketIds_duplicateEconomicInputs() external {
-        string[] memory names = new string[](2);
-        names[0] = "market-a";
-        names[1] = "market-b";
-        LidoLendMarketBuilder.MarketSpec[] memory markets = new LidoLendMarketBuilder.MarketSpec[](2);
-        markets[0] = _marketSpec(0.8 ether);
-        markets[1] = _marketSpec(0.8 ether);
-
-        vm.expectRevert(abi.encodeWithSelector(ProtocolDeployer.DuplicateMarketId.selector, names[0], names[1]));
-        deployer.requireUniqueMarketIds(names, markets);
-    }
-
-    function test_requireUniqueMarketIds_acceptsDifferentLltv() external view {
-        string[] memory names = new string[](2);
-        names[0] = "market-a";
-        names[1] = "market-b";
-        LidoLendMarketBuilder.MarketSpec[] memory markets = new LidoLendMarketBuilder.MarketSpec[](2);
-        markets[0] = _marketSpec(0.8 ether);
-        markets[1] = _marketSpec(0.75 ether);
-
-        deployer.requireUniqueMarketIds(names, markets);
-    }
-
     function _roles() private view returns (MarketRoles memory roles) {
         roles.admin = agent;
         roles.proxyAdmin = agent;
@@ -136,12 +106,5 @@ contract ProtocolDeployerTest is Test {
     function _arr1(address holder) private pure returns (address[] memory holders) {
         holders = new address[](1);
         holders[0] = holder;
-    }
-
-    function _marketSpec(uint256 lltv) private pure returns (LidoLendMarketBuilder.MarketSpec memory market) {
-        market.loanToken = address(0x1001);
-        market.collateralToken = address(0x1002);
-        market.oracle = address(0x1003);
-        market.lltv = lltv;
     }
 }

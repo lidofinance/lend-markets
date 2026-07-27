@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-// Mainnet-fork mirror of the IRM model-selection scenario, run against ALREADY-DEPLOYED, ALREADY-ACTIVATED
-// markets rather than a freshly deployed stack. One market per candidate: the activation motion routed
-// `fork-weth-wsteth` to the protocol's `AdaptiveCurveIrm` and `fork-weth-wsteth-kinked` to the deployed
+// Fork mirror of the IRM model-selection scenario, run against ALREADY-DEPLOYED, ALREADY-ACTIVATED markets
+// rather than a freshly deployed stack. One market per candidate: the activation motion routed the
+// `weth-wsteth` market to the protocol's `AdaptiveCurveIrm` and `weth-wsteth-kinked` to the deployed
 // `LinearKinkIrm`, so this suite never routes anything — it binds the market whose IRM it wants to exercise and
 // reads the routed instance back off the router. The mock-token flavour, the shared `IrmScenarioBase` harness,
 // and the adaptive parameter-upgrade tests stay in `test/scenario/IrmModelSelection.t.sol`; only the fork
@@ -56,6 +56,9 @@ interface IWstETHFork {
 ///         binds the market, reads the routed candidate off the router, and sets the initial params on it in place
 ///         as its live owner — the work the local one-shot deploy path did at construction time.
 contract IrmModelSelectionForkTest is IrmScenarioBase, ForkStack {
+    /// @dev The market the running test bound, resolved from its role. Empty when the run has no such market.
+    string internal boundMarket;
+
     // Populated in setUp from the run's network config.
     address internal WETH;
     address internal STETH;
@@ -74,7 +77,7 @@ contract IrmModelSelectionForkTest is IrmScenarioBase, ForkStack {
     function _deployStack() internal override {
         _setupTokens();
 
-        BoundMarket memory m = _bindMarket(_marketName());
+        BoundMarket memory m = _bindMarket(boundMarket);
 
         // Pre-existing SUPPLY only dilutes utilization and is tolerated; pre-existing DEBT breaks the cohort
         // carry/utilization math the scenario metrics are read from. Fail loudly on a dirty market.
@@ -82,7 +85,7 @@ contract IrmModelSelectionForkTest is IrmScenarioBase, ForkStack {
             m.core.market(m.id).totalBorrowAssets == 0,
             string.concat(
                 "IrmModelSelectionFork: market '",
-                _marketName(),
+                boundMarket,
                 "' carries pre-existing debt; the scenario metrics need a quiet market"
             )
         );
@@ -148,12 +151,6 @@ contract IrmModelSelectionForkTest is IrmScenarioBase, ForkStack {
         return IWstETHFork(WSTETH).stEthPerToken();
     }
 
-    /// @dev The market the selected candidate is routed on. One market per candidate: the activation motion
-    ///      routes each market's configured `irm_artifact`, so the market name is what selects the model here.
-    function _marketName() private view returns (string memory) {
-        return _irmKind == IrmKind.Adaptive ? "fork-weth-wsteth" : "fork-weth-wsteth-kinked";
-    }
-
     /// @dev Overwrite the routed candidate's params with the scenario's initial set, mirroring
     ///      `IrmScenarioBase._configureAdaptiveIrm`. The deployment sets its params; the scenario measures
     ///      against its own initial set, and year-0 normalization needs `_adaptiveCapApr` to match the
@@ -188,11 +185,15 @@ contract IrmModelSelectionForkTest is IrmScenarioBase, ForkStack {
 
     /// @dev Runs the multi-year IRM comparison scenario on the market routed to the adaptive-curve IRM.
     function test_scenario_adaptive() public {
+        boundMarket = _marketForRole("weth-wsteth");
+        if (bytes(boundMarket).length == 0) return; // not applicable to this deployment
         _run(IrmKind.Adaptive);
     }
 
     /// @dev Runs the multi-year IRM comparison scenario on the market routed to the linear-kink IRM.
     function test_scenario_kinked() public {
+        boundMarket = _marketForRole("weth-wsteth-kinked");
+        if (bytes(boundMarket).length == 0) return; // not applicable to this deployment
         _run(IrmKind.Kinked);
     }
 }

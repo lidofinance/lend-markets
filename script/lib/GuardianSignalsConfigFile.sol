@@ -73,9 +73,8 @@ library GuardianSignalsConfigFile {
         artifact = string.concat(artifact, "\n[guardian_signals]\n");
         artifact = string.concat(artifact, "name = \"", name, "\"\n");
         artifact = string.concat(artifact, "address = \"", vm.toString(guardianSignals), "\"\n");
-        artifact = string.concat(
-            artifact, reused ? "reused = true\nrecorded_block = " : "reused = false\ndeployed_block = "
-        );
+        artifact =
+            string.concat(artifact, reused ? "reused = true\nrecorded_block = " : "reused = false\ndeployed_block = ");
         artifact = string.concat(artifact, vm.toString(blockNumber), "\n");
         artifact = string.concat(artifact, "admin = \"", vm.toString(cfg.admin), "\"\n");
         artifact = string.concat(artifact, "proxy_admin = \"", vm.toString(cfg.proxyAdmin), "\"\n");

@@ -7,7 +7,7 @@ Scripts deploy inert markets. Activation is a separate EasyTrack motion. Role ow
 
 Configuration lives under `script/config/`:
 
-- `<config>.toml`: network, governance, optional exit books, and market names;
+- `<config>.toml`: network, governance, and optional exit books;
 - `markets/<market>.toml`: market parameters, roles, and artifact references;
 - `circuit-breakers/<name>.toml`: immutable bounds and initial pause/heartbeat settings;
 - `oracles/<name>.toml`: oracle inputs;
@@ -32,6 +32,10 @@ adapters/<name>.toml
 exit-books.toml
 transactions/<step>.json
 ```
+
+A market declares `market.role` — the part it plays, e.g. `weth-wsteth` — which is recorded in its artifact.
+Roles are shared across networks while market names are not, so a consumer names the role it needs rather than
+a network's market. `test/fork/` binds by role and skips a role the deployment has no market for.
 
 Each market artifact contains its resolved addresses, market ID, final controller role holders,
 CircuitBreaker reference, activation, settlement, and curve parameters. Separate CircuitBreaker, oracle, and
@@ -66,22 +70,28 @@ make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
 `deploy-protocol` includes exit books when `exit_books = true`. Use `deploy-oracle-usdy` for USDY or
 `deploy-run` for the current single-CircuitBreaker, single-WstETH-oracle flow.
 
-Deploy any standalone IRM a market names **before** the protocol: `deploy-protocol` reads every market config,
-and a market whose `irm_artifact` does not resolve stops the run.
+`deploy-protocol` deploys the backbone and, when `exit_books = true`, the exit books. Markets are not part of
+it: each is its own `deploy-market` run against that backbone, so a run's market set is the sequence of those
+runs and is recorded in `deployed/<RUN>/markets/`.
+
+Every artifact a market references is deployed before the market, each by its own step: its CircuitBreaker, its
+oracle, any standalone IRM it names, and the `GuardianSignals` registry of its guardian group. The registry
+belongs to a committee rather than to a market — several markets under one committee share one — so it is a
+step, not a side effect of the first market that needs it. It comes after the backbone, which records the
+builder it is created through:
 
 ```sh
 make deploy-linear-kink-irm CONFIG=mainnet RUN=mainnet-weth-wsteth IRM=linear-kink
+make deploy-guardian CONFIG=mainnet RUN=mainnet-weth-wsteth GUARDIAN_GROUP=weth-wsteth
+make deploy-market CONFIG=mainnet RUN=mainnet-weth-wsteth MARKET=weth-wsteth
 ```
+
+The full order is CircuitBreaker, oracles, any standalone IRM, the protocol, the guardian registries, the
+markets, then anything optional (`deploy-vault-v2`, `deploy-exit-books`).
 
 If broadcast or verification is interrupted, immediately repeat the same target and arguments with
 `RESUME=true`. Do not send another transaction from the deployer first: Foundry resumes the saved nonce
 sequence.
-
-To add a market to an existing run:
-
-```sh
-make deploy-market CONFIG=mainnet RUN=mainnet-weth-wsteth MARKET=weth-wsteth
-```
 
 Deploy a shared GuardianSignals instance for an existing run when needed:
 
@@ -111,9 +121,8 @@ pauser.
 
 Exit-book allow-listing is a separate `LidoLendSetMarketExitBookAllowed` motion.
 
-On a fork or devnet there is no EasyTrack, so `make activate-markets CONFIG=<config> RUN=<run>` replays the
-motion for every market in the run as the impersonated `EVMScriptExecutor` (read from the run's
-`protocol.toml`). It is idempotent, so an interrupted run can be repeated. Never a substitute for the motion on
+On a fork or devnet there is no EasyTrack, so `make activate-markets RUN=<run>` replays the motion for every
+market recorded in the run, as the impersonated `EVMScriptExecutor` (read from the run's `protocol.toml`). It is idempotent, so an interrupted run can be repeated. Never a substitute for the motion on
 a real network.
 
 ## Verify
@@ -129,21 +138,26 @@ The read-only fork suites bind to a run the same way, reading `deployed/<RUN>/` 
 make fork-run RUN=mainnet-weth-wsteth
 ```
 
-## The fork profile
+## Fork provisioning
 
-`script/config/fork.toml` is an ordinary config that stands the whole stack up on a local anvil fork of
-mainnet, so `test/fork/` has a deployment to drive before any real network is live. It runs through the same
-scripts, artifact layout and activation as above; what makes it fork-only is its governance addresses —
-mainnet's Agent and EVMScriptExecutor, which only an impersonating node can act as.
+`test/fork/` needs a deployment to drive before any real network is live, so provisioning stands one up on a
+local anvil fork of a real network. There is no separate deploy config for it: `provision-fork.sh` takes an
+ordinary one and forks the network its `chain_id` names, deploying the `fork-*` market
+configs against it. Those markets differ from production only where a test needs them to — a second IRM, a
+higher LLTV — and go through the same scripts, artifact layout and activation as everything above. What confines
+the result to a fork is the governance addresses in the config: only an impersonating node can act as them.
 
 ```sh
-make provision-fork RPC_URL=<mainnet-archive-rpc>   # deploy + activate into deployed/fork/; leaves anvil up
-make test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork
+make provision-fork RPC_URL=<archive-rpc>            # CONFIG=mainnet by default; leaves anvil up
+make test-fork-live                                 # the suites against it; re-runnable without re-provisioning
 make provision-stop
 ```
 
-`make test-fork-provision RPC_URL=<mainnet-archive-rpc>` chains the three. `script/provision-fork.sh` is a thin
-driver over the `deploy-*` targets in the order this document describes: CircuitBreaker, oracles, the kinked
-IRM, the protocol, the vault-v2 pair, then `activate-markets`. It finishes by running `acceptance-run` for every
-market in the config, so provisioning only reports success once the deployed stack verifies against its own
-artifacts — the same check a real deployment gets.
+`PIN_BLOCK=<n>` on `provision-fork` pins the upstream block anvil forks from, which is what makes a run
+reproducible. `deploy-vault-v2` verifies its pair through `verify-vault-v2`, a separate target because the
+pair is created with `vm.deployCode` and `forge script --verify` cannot name those creations.
+
+`make test-fork-provision RPC_URL=<archive-rpc>` chains the three. The driver runs the `deploy-*` targets in the
+order this document describes — CircuitBreaker, oracles, the kinked IRM, the backbone, the guardian registries,
+the markets, the vault-v2 pair, then `activate-markets` — and finishes with `acceptance-run` per market, so provisioning reports success
+only once the deployed stack verifies against the artifacts it wrote.

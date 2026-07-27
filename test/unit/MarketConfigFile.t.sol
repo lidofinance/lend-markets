@@ -179,8 +179,6 @@ contract MarketConfigFileTest is Test {
             "vault_name = \"Test Vault\"\n",
             "vault_symbol = \"TEST\"\n",
             "[roles]\n",
-            "admin = \"0x0000000000000000000000000000000000000005\"\n",
-            "proxy_admin = \"0x0000000000000000000000000000000000000006\"\n",
             "managers = []\n",
             "pausers = []\n",
             "freezers = []\n",

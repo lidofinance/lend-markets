@@ -17,6 +17,7 @@ ORACLE ?= weth-wsteth
 GUARDIAN_GROUP ?= $(MARKET)
 CIRCUIT_BREAKER ?= lido-lend
 IRM ?= linear-kink
+PIN_BLOCK ?=
 VAULT ?= weth-wsteth
 ADAPTER ?= $(VAULT)
 RPC_URL ?=
@@ -48,7 +49,7 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-linear-kink-irm deploy-vault-v2 deploy-exit-books deploy-protocol deploy-market deploy-run activate-markets deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop test-fork-provision
+.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-linear-kink-irm deploy-vault-v2 verify-vault-v2 deploy-exit-books deploy-protocol deploy-market deploy-run activate-markets deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop test-fork-live test-fork-provision
 
 help:
 	@echo "Targets:"
@@ -59,18 +60,19 @@ help:
 	@echo "  test-fork     forge test on test/fork/ only; the suites revert without the fork setup"
 	@echo "  deploy-oracle CONFIG=<config> RUN=<run> ORACLE=<name>"
 	@echo "  deploy-circuit-breaker CONFIG=<config> RUN=<run> CIRCUIT_BREAKER=<name>"
-	@echo "  deploy-protocol CONFIG=<config> RUN=<run>"
-	@echo "  deploy-guardian CONFIG=<config> RUN=<run> GUARDIAN_GROUP=<group>"
+	@echo "  deploy-protocol CONFIG=<config> RUN=<run>  (backbone + exit books; markets are separate)"
+	@echo "  deploy-guardian CONFIG=<config> RUN=<run> GUARDIAN_GROUP=<group>  (before its markets)"
 	@echo "  deploy-linear-kink-irm CONFIG=<config> RUN=<run> IRM=<name>"
 	@echo "  deploy-vault-v2 CONFIG=<config> RUN=<existing-run> VAULT=<name> ADAPTER=<name>"
+	@echo "  verify-vault-v2 RUN=<run> VAULT=<name> ADAPTER=<name>  (deploy-vault-v2 runs this itself)"
 	@echo "  deploy-exit-books CONFIG=<config> RUN=<existing-run>"
 	@echo "  deploy-market CONFIG=<config> RUN=<run> MARKET=<name>"
-	@echo "  deploy-run CONFIG=<config> RUN=<run> CIRCUIT_BREAKER=<name> ORACLE=<name>"
-	@echo "             (current CircuitBreaker + WstETH workflow)"
+	@echo "  deploy-run CONFIG=<config> RUN=<run> CIRCUIT_BREAKER=<name> ORACLE=<name> MARKET=<name>"
+	@echo "             (current single-CircuitBreaker, single-oracle, single-market workflow)"
 	@echo "                 deploy targets verify by default; set VERIFY=false for local networks"
 	@echo "                 retry an interrupted target immediately with RESUME=true"
 	@echo "  deploy-wizard interactive wrapper around the deploy targets"
-	@echo "  activate-markets CONFIG=<config> RUN=<run>  (replays the activation motion; fork/devnet only)"
+	@echo "  activate-markets RUN=<run>  (replays the activation motion; fork/devnet only)"
 	@echo "  acceptance-run RUN=<run> MARKET=<name>"
 	@echo "  acceptance-run-multi RUN=<run> MARKET_A=<name> MARKET_B=<name>"
 	@echo "  fork-run RUN=<run>  (read-only fork tests against this deployment)"
@@ -86,8 +88,10 @@ help:
 	@echo "  doc           forge build --ast + regenerate docs/specs/api/ from NatSpec"
 	@echo "  ci            build + lint + test-local  (mirrors ci.yml's local job)"
 	@echo "  clean         forge clean"
-	@echo "  provision-fork  deploy + activate the fork profile on a local anvil fork of mainnet; leaves anvil running"
+	@echo "  provision-fork CONFIG=<config> [PIN_BLOCK=<n>]  deploy + activate onto a local anvil fork"
 	@echo "                  RPC_URL must point at a real archive node — that is what anvil forks"
+	@echo "                  PIN_BLOCK pins the upstream block, making the run reproducible"
+	@echo "  test-fork-live  run the fork suites against an already-provisioned local anvil"
 	@echo "  provision-stop  stop the anvil provision-fork started"
 	@echo "  test-fork-provision  one-shot: provision-fork -> test-fork against it -> provision-stop"
 
@@ -153,6 +157,28 @@ deploy-vault-v2:
 	$(require_deploy_context)
 	@$(DEPLOY_ENV) forge script script/DeployVaultV2.s.sol --sig 'run(string,string,string)' "$(CONFIG)" "$(VAULT)" "$(ADAPTER)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployVaultV2.s.sol,vault-v2-$(VAULT))
+	@test "$(VERIFY)" = "false" || $(MAKE) verify-vault-v2 RUN="$(RUN)" VAULT="$(VAULT)" ADAPTER="$(ADAPTER)"
+
+# The vault-v2 pair is created with vm.deployCode, which records the creations without a contract name, so
+# `forge script --verify` skips them. Verify them explicitly from the addresses and constructor arguments the
+# artifacts recorded.
+verify-vault-v2:
+	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
+	@test -n "$(ETHERSCAN_API_KEY)" || { echo "ERROR: set ETHERSCAN_API_KEY"; exit 1; }
+	@set -e; \
+	V="deployed/$(RUN)/vaults/$(VAULT).toml"; A="deployed/$(RUN)/adapters/$(ADAPTER).toml"; \
+	test -f "$$V" || { echo "ERROR: no vault artifact at $$V"; exit 1; }; \
+	test -f "$$A" || { echo "ERROR: no adapter artifact at $$A"; exit 1; }; \
+	key() { sed -n "s/^[[:space:]]*$$2[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$$1" | head -1; }; \
+	forge verify-contract "$$(key $$V address)" lib/vault-v2/src/VaultV2.sol:VaultV2 \
+		--chain "$(CHAIN_ID)" --watch \
+		--constructor-args "$$(cast abi-encode 'constructor(address,address)' \
+			"$$(key $$V owner)" "$$(key $$V asset)")"; \
+	forge verify-contract "$$(key $$A address)" \
+		lib/vault-v2/src/adapters/MorphoMarketV1AdapterV2.sol:MorphoMarketV1AdapterV2 \
+		--chain "$(CHAIN_ID)" --watch \
+		--constructor-args "$$(cast abi-encode 'constructor(address,address,address)' \
+			"$$(key $$A vault)" "$$(key $$A morpho)" "$$(key $$A adaptive_curve_irm)")"
 
 deploy-exit-books:
 	$(require_deploy_context)
@@ -169,12 +195,14 @@ deploy-market:
 	@$(DEPLOY_ENV) forge script script/AddMarket.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(MARKET)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,AddMarket.s.sol,market-$(MARKET))
 
-# The current mainnet profile has one WstETH oracle. Keep the composition explicit until the config itself
-# contains a typed oracle deploy plan; do not guess an oracle implementation from a market name in Make.
+# The current mainnet profile has one WstETH oracle and one market. Keep the composition explicit until the
+# config itself contains a typed deploy plan; do not guess an oracle implementation from a market name in Make.
 deploy-run:
 	$(MAKE) deploy-circuit-breaker CONFIG="$(CONFIG)" RUN="$(RUN)" CIRCUIT_BREAKER="$(CIRCUIT_BREAKER)"
 	$(MAKE) deploy-oracle CONFIG="$(CONFIG)" RUN="$(RUN)" ORACLE="$(ORACLE)"
 	$(MAKE) deploy-protocol CONFIG="$(CONFIG)" RUN="$(RUN)"
+	$(MAKE) deploy-guardian CONFIG="$(CONFIG)" RUN="$(RUN)" GUARDIAN_GROUP="$(GUARDIAN_GROUP)"
+	$(MAKE) deploy-market CONFIG="$(CONFIG)" RUN="$(RUN)" MARKET="$(MARKET)"
 
 # Replays the LidoLendActivateMarket motion for every market in the run, broadcasting as the impersonated
 # EVMScriptExecutor. Fork and devnet only: on a real network activation is an EasyTrack motion, not a script.
@@ -182,7 +210,7 @@ activate-markets:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
 	@test -n "$(EXECUTOR)" || { echo "ERROR: could not read evm_script_executor from deployed/$(RUN)/protocol.toml"; exit 1; }
-	@$(DEPLOY_ENV) forge script script/ActivateMarkets.s.sol --sig 'run(string)' "$(CONFIG)" \
+	@$(DEPLOY_ENV) forge script script/ActivateMarkets.s.sol --sig 'run()' \
 		--rpc-url "$(RPC_URL)" --unlocked --sender "$(EXECUTOR)" --broadcast
 
 acceptance-run:
@@ -265,16 +293,22 @@ ci: build lint test-local
 clean:
 	forge clean
 
-# Deploy + activate the `fork` profile (script/config/fork.toml) on a local anvil fork of mainnet, leaving
-# `deployed/fork/` for the fork suites to bind to. Every step is an ordinary deploy target; only the final
-# activation is a script rather than a governance motion. RPC_URL is the UPSTREAM archive node anvil forks —
-# the deploy steps themselves are pointed at the local anvil by the driver.
+# Deploy + activate the fork markets on a local anvil fork of CONFIG's network, leaving `deployed/fork/` for the
+# fork suites to bind to. Every step is an ordinary deploy target; only the final activation is a script rather
+# than a governance motion. RPC_URL is the UPSTREAM archive node anvil forks — the deploy steps themselves are
+# pointed at the local anvil by the driver.
 provision-fork:
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL to a mainnet archive RPC (this is what anvil forks)"; exit 1; }
-	bash script/provision-fork.sh "$(RPC_URL)"
+	bash script/provision-fork.sh "$(RPC_URL)" "$(CONFIG)" "$(PIN_BLOCK)"
 
 provision-stop:
 	bash script/provision-fork.sh stop
+
+# Run the fork suites against a provisioned local anvil without touching it — the iterative path while editing
+# tests. Fails with what to do when nothing is provisioned.
+test-fork-live:
+	bash script/provision-fork.sh check
+	$(MAKE) test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork
 
 # One-shot local flow: provision, run the fork suites against the provisioned anvil, then tear it down. The
 # fork-test exit status survives the teardown.

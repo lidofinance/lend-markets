@@ -37,6 +37,16 @@ abstract contract ForkTest is CommonBase {
         uint256 expected = _protocolUint("chain_id");
         if (block.chainid != expected) revert ForkChainIdMismatch(expected, block.chainid);
 
+        // A run whose core carries no code on the forked node describes a different deployment — a restarted
+        // provisioning node, or the wrong run. Reported here rather than as a bare `has no code` mid-suite.
+        address core = _protocol("core");
+        require(
+            core.code.length != 0,
+            string.concat(
+                "ForkTest: run '", _runDir, "' is not deployed on the forked node; re-provision or fix ARTIFACTS_DIR"
+            )
+        );
+
         // Recorded so a failure is reproducible from `ARTIFACTS_DIR` and `FORK_BLOCK`.
         console2.log("[fork] run:", _runDir);
         console2.log("[fork] chainId:", block.chainid);
@@ -89,6 +99,13 @@ abstract contract ForkTest is CommonBase {
         string memory relPath = _marketArtifact(name);
         string memory toml = _read(_artifactPath(relPath));
         return vm.parseTomlBytes32(toml, _key(toml, relPath, "market.id"));
+    }
+
+    /// @notice Whether the run records the artifact at `relPath`. A deployment need not carry every optional
+    ///         resource, so a suite that needs one checks before reading it.
+    function _hasArtifact(string memory relPath) internal view returns (bool) {
+        require(_bound, "ForkTest: _fork() not called");
+        return vm.isFile(string.concat(_runDir, "/", relPath));
     }
 
     /// @notice Address at dotted `key` in the run artifact at `relPath`, for the per-resource artifacts the

@@ -13,7 +13,6 @@ struct DeployConfig {
     address evmScriptExecutor;
     bool exitBooks; // deploy the protocol's two exit books
     uint256 exitBookMaxRequestLifetime; // used only when exitBooks is true
-    string[] markets; // per-market config names (markets/<name>.toml, oracles/<name>.toml, guardians/<name>.toml)
 }
 
 library DeployConfigFile {
@@ -36,7 +35,6 @@ library DeployConfigFile {
         cfg.evmScriptExecutor = ConfigToml.requireAddress(toml, ".evm_script_executor");
         cfg.exitBooks = vm.parseTomlBool(toml, ".exit_books");
         cfg.exitBookMaxRequestLifetime = vm.parseTomlUint(toml, ".exit_book_max_request_lifetime");
-        cfg.markets = vm.parseTomlStringArray(toml, ".markets");
     }
 
     function configPath(string memory name) internal pure returns (string memory) {

@@ -56,15 +56,9 @@ library MarketConfigFile {
     function read(string memory name)
         internal
         view
-        returns (
-            address builder,
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
-            IrmSelection memory irm
-        )
+        returns (LidoLendMarketBuilder.MarketSpec memory market, MarketRoles memory roles, IrmSelection memory irm)
     {
         string memory toml = vm.readFile(marketPath(name));
-        builder = vm.parseTomlAddress(toml, ".builder");
         (market, roles, irm) = parse(toml);
         ArtifactRefs memory refs = _parseArtifactRefs(toml);
 
@@ -112,8 +106,10 @@ library MarketConfigFile {
         return _parseArtifactRefs(vm.readFile(marketPath(name))).circuitBreaker;
     }
 
-    function irmArtifact(string memory name) internal view returns (string memory) {
-        return _parseArtifactRefs(vm.readFile(marketPath(name))).irm;
+    /// @notice The part this market plays in a deployment, e.g. `"weth-wsteth"`. Markets on different networks
+    ///         share a role, so a consumer can name what it needs without naming a network's market.
+    function role(string memory name) internal view returns (string memory) {
+        return ConfigToml.requireString(vm.readFile(marketPath(name)), ".market.role");
     }
 
     function _parseArtifactRefs(string memory toml) private view returns (ArtifactRefs memory) {
@@ -200,10 +196,12 @@ library MarketConfigFile {
         return value.toUint128();
     }
 
+    /// @dev `admin` and `proxyAdmin` are left zero: both are C1 authority the deploy assigns to the config's
+    ///      agent, so the caller fills them and `_requireMarketRolePolicy` holds it to that.
     function _parseRoles(string memory toml) private pure returns (MarketRoles memory) {
         return MarketRoles({
-            admin: ConfigToml.requireAddress(toml, ".roles.admin"),
-            proxyAdmin: ConfigToml.requireAddress(toml, ".roles.proxy_admin"),
+            admin: address(0),
+            proxyAdmin: address(0),
             managers: vm.parseTomlAddressArray(toml, ".roles.managers"),
             pausers: vm.parseTomlAddressArray(toml, ".roles.pausers"),
             freezers: vm.parseTomlAddressArray(toml, ".roles.freezers"),

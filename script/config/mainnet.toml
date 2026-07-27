@@ -7,9 +7,6 @@ evm_script_executor = "0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"
 exit_books = true
 exit_book_max_request_lifetime = 31536000  # 365 days
 
-# Names under script/config/markets/.
-markets = ["weth-wsteth"]
-
 # External addresses used by fork tests.
 [external]
 weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"

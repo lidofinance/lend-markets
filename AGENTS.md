@@ -50,10 +50,10 @@
 - All tests (local + fork): `make test`. The fork suites require a working fork setup — `RPC_URL` pointing at
   the node that HOLDS the deployment and `ARTIFACTS_DIR` naming its run on disk — and revert without it;
   a fork suite runs or it fails, it never skips.
-- Local fork setup: `make provision-fork RPC_URL=<mainnet-archive-rpc>` deploys and activates the `fork`
-  profile on a local anvil fork into `deployed/fork/` and leaves anvil running; `make provision-stop` tears it
-  down; `make test-fork-provision` does provision -> test-fork -> stop in one shot. Against a real deploy run,
-  `make fork-run RUN=<run>` is the equivalent.
+- Local fork setup: `make provision-fork RPC_URL=<archive-rpc>` deploys and activates the `fork-*` markets on a
+  local anvil fork of `CONFIG`'s network (mainnet by default) into `deployed/fork/` and leaves anvil running;
+  `make provision-stop` tears it down; `make test-fork-provision` does provision -> test-fork -> stop in one
+  shot. Against a real deploy run, `make fork-run RUN=<run>` is the equivalent.
 - Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
 - Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
 - Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot`. The
@@ -67,10 +67,11 @@
   `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
 - Writing a fork test: put it under `test/fork/`, extend `helpers/ForkStack.sol` (which extends `ForkTest`),
-  call `_fork()` first in `setUp`, bind the market with `_bindMarket("<market>")`, and read external addresses
+  call `_fork()` first in `setUp`, bind the market with `_marketForRole("<role>")` + `_bindMarket`, and read external addresses
   via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and binds the run named by `ARTIFACTS_DIR`,
   reverting when either is unset, the run has no `protocol.toml`, the network config it names is missing, or
-  its recorded chain id differs from the forked chain. Protocol addresses come from `_protocol("core")`,
+  its recorded chain id differs from the forked chain. A role the deployment has no market for skips the
+  suite; everything else reverts. Protocol addresses come from `_protocol("core")`,
   `_market(name, "controller")`, `_marketId(name)`, or `_artifactAddr("irms/linear-kink.toml", "irm.address")`
   for the per-resource artifacts; each reverts on a key the run does not define. `FORK_BLOCK` pins a block for
   replay.

@@ -34,7 +34,7 @@ jobs:
 
       # Provisioning is what needs the secret, so the guard lives here. It overrides the job-level RPC_URL with
       # the upstream archive node for this step only; everything after forks the local anvil it leaves behind.
-      - name: provision the fork profile
+      - name: provision a fork deployment
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
         run: |

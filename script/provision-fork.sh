@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
-# Deploys and activates the `fork` profile on a local anvil fork of mainnet. Driver over the `make deploy-*`
+# Deploys and activates the protocol on a local anvil fork of a real network. Driver over the `make deploy-*`
 # targets; see script/DEPLOYMENT.md.
 #
-#   bash script/provision-fork.sh [upstream-rpc]   # provision; leaves anvil running
-#   bash script/provision-fork.sh stop             # stop the anvil a previous run started
+#   bash script/provision-fork.sh [upstream-rpc] [config] [block]   # provision; leaves anvil running
+#   bash script/provision-fork.sh check                             # is the run live on the local anvil?
+#   bash script/provision-fork.sh stop                              # stop the anvil a previous run started
 #
-# The upstream to fork comes from the argument or RPC_URL and must be an archive node, not the local anvil.
-# Deploy steps receive the local anvil URL on the command line, so RPC_URL keeps one meaning.
+# `config` is an ordinary deploy config and selects the network to fork: its chain_id is
+# what the upstream must report and what anvil is started with. `block` pins the upstream block anvil forks
+# from; without it anvil forks the tip and a run is not reproducible. The upstream comes from the argument or
+# RPC_URL and must be an archive node, not the local anvil. Deploy steps receive the local anvil URL on the
+# command line, so RPC_URL keeps one meaning.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-CONFIG_NAME="fork"
+CONFIG_NAME="${2:-mainnet}"
+PIN_BLOCK="${3:-}"
+case "$PIN_BLOCK" in ""|*[!0-9]*) [ -z "$PIN_BLOCK" ] || { echo "[provision] ERROR: PIN_BLOCK must be a number" >&2; exit 1; } ;; esac
+# One run directory regardless of network: a provisioning run is cleared and rebuilt, never kept alongside
+# another, and every consumer refers to it as ARTIFACTS_DIR=fork.
 RUN_NAME="fork"
 RPC_LOCAL="http://127.0.0.1:8545"
 RUN_DIR="deployed/${RUN_NAME}"
@@ -24,21 +32,35 @@ CONFIG_TOML="script/config/${CONFIG_NAME}.toml"
 DEPLOYER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 TEN_ETHER_HEX="0x8AC7230489E80000"
 
-# Resources this profile deploys, as named by script/config/fork.toml and the market configs it lists.
-CIRCUIT_BREAKER="lido-lend"
-ORACLES_WSTETH=("weth-wsteth" "fork-weth-wsteth-kinked")
-ORACLE_USDY="fork-usdy-usdt"
-IRM_NAME="linear-kink"
+# The vault-v2 pair is standalone: no market config references it, so it cannot be derived like the resources
+# below.
 VAULT_NAME="fork-weth-wsteth"
 
 log() { echo "[provision] $*"; }
 die() { echo "[provision] ERROR: $*" >&2; exit 1; }
 
+# Quoted scalar from a TOML file. Matches the first line whose key is $2, so it reads keys unique within the
+# file and does not distinguish sections. Empty when the key is absent; use toml_req where absence is an error.
+toml_str() { sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
+
+toml_req() {
+  local value
+  value="$(toml_str "$1" "$2")"
+  [ -n "$value" ] || die "$1 is missing key '$2'"
+  printf '%s' "$value"
+}
+
+# Appends $2 to the space-separated list $1 unless already present.
+add_unique() {
+  case " $1 " in *" $2 "*) printf '%s' "$1" ;; *) printf '%s' "${1:+$1 }$2" ;; esac
+}
+
 usage() {
   cat <<EOF
 Usage:
-  bash script/provision-fork.sh [upstream-rpc]   # provision; leaves anvil running
-  bash script/provision-fork.sh stop             # kill the anvil a previous run started
+  bash script/provision-fork.sh [upstream-rpc] [config] [block]   # provision; leaves anvil running
+  bash script/provision-fork.sh check                             # is the run live on the local anvil?
+  bash script/provision-fork.sh stop                              # stop the anvil a previous run started
 EOF
 }
 
@@ -55,29 +77,63 @@ if [ "${1:-}" = "stop" ]; then
 fi
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then usage; exit 0; fi
 
+# --- check subcommand -----------------------------------------------------------------------------------------
+# Exits 0 when the local anvil hosts the deployment recorded in $RUN_DIR. Says nothing about whether that
+# deployment matches the current sources — it answers "can the fork suites run", not "is it up to date".
+if [ "${1:-}" = "check" ]; then
+  [ -f "$RUN_DIR/protocol.toml" ] || die "no run at $RUN_DIR; run: make provision-fork"
+  cast block-number --rpc-url "$RPC_LOCAL" >/dev/null 2>&1 || die "no node on $RPC_LOCAL; run: make provision-fork"
+  CORE="$(toml_req "$RUN_DIR/protocol.toml" core)"
+  CODE="$(cast code "$CORE" --rpc-url "$RPC_LOCAL" 2>/dev/null || true)"
+  case "$CODE" in
+    ""|0x) die "$RUN_DIR does not match the node on $RPC_LOCAL (core $CORE has no code); run: make provision-fork" ;;
+  esac
+  log "run $RUN_DIR is live on $RPC_LOCAL"
+  exit 0
+fi
+
 # --- 1. upstream RPC + anvil ----------------------------------------------------------------------------------
 # shellcheck disable=SC1091
 [ -f .env ] && source .env || true
 UPSTREAM="${1:-${RPC_URL:-}}"
 case "$UPSTREAM" in
-  "") die "pass an upstream mainnet RPC as the first argument, or set RPC_URL in .env" ;;
+  "") die "pass an upstream archive RPC as the first argument, or set RPC_URL in .env" ;;
   *127.0.0.1*|*localhost*) die "upstream RPC must be a real archive node, not the local anvil ($UPSTREAM)" ;;
+esac
+
+[ -f "$CONFIG_TOML" ] || die "deploy config not found: $CONFIG_TOML"
+# Bare integer, so it needs its own reader. Deliberately the config's chain id, not the run's: the Makefile
+# resolves the RUN's chain id from its protocol.toml, which at this point may still be the previous network's.
+CHAIN_ID="$(sed -n 's/^[[:space:]]*chain_id[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$CONFIG_TOML" | head -1)"
+[ -n "$CHAIN_ID" ] || die "$CONFIG_TOML is missing key 'chain_id'"
+
+# The fork market set per network. An unknown config fails here rather than provisioning an empty run.
+case "$CONFIG_NAME" in
+  mainnet) MARKETS=(fork-weth-wsteth fork-weth-wsteth-kinked fork-usdy-usdt) ;;
+  *) die "no fork market set defined for config '$CONFIG_NAME'" ;;
 esac
 
 # Probed before anvil starts: an unreachable upstream reports the node's own error instead of a 60s timeout.
 UPSTREAM_CHAIN_ID="$(cast chain-id --rpc-url "$UPSTREAM" 2>&1)" \
   || die "upstream RPC is not answering: $UPSTREAM_CHAIN_ID"
-[ "$UPSTREAM_CHAIN_ID" = "1" ] || die "upstream RPC is not mainnet (chain id $UPSTREAM_CHAIN_ID)"
-log "upstream is mainnet, block $(cast block-number --rpc-url "$UPSTREAM")"
+[ "$UPSTREAM_CHAIN_ID" = "$CHAIN_ID" ] \
+  || die "upstream chain id $UPSTREAM_CHAIN_ID does not match $CONFIG_TOML ($CHAIN_ID)"
+log "upstream chain $CHAIN_ID, block $(cast block-number --rpc-url "$UPSTREAM")"
 
 if cast block-number --rpc-url "$RPC_LOCAL" >/dev/null 2>&1; then
   REUSED_CHAIN_ID="$(cast chain-id --rpc-url "$RPC_LOCAL")"
-  [ "$REUSED_CHAIN_ID" = "1" ] || die "anvil on :8545 is not a mainnet fork (chain id $REUSED_CHAIN_ID); stop it or free the port"
+  [ "$REUSED_CHAIN_ID" = "$CHAIN_ID" ] \
+    || die "anvil on :8545 reports chain id $REUSED_CHAIN_ID, not $CHAIN_ID; stop it or free the port"
   log "reusing the anvil already listening on $RPC_LOCAL"
 else
-  log "starting anvil (fork of the upstream mainnet RPC, chain-id 1, auto-impersonate) -> $LOG_FILE"
+  # Unquoted on purpose: PIN_BLOCK is validated as digits, and an empty array cannot be expanded under
+  # `set -u` in bash 3.2.
+  PIN_ARG=""
+  [ -z "$PIN_BLOCK" ] || PIN_ARG="--fork-block-number $PIN_BLOCK"
+  log "starting anvil (fork of the upstream, chain-id $CHAIN_ID, block ${PIN_BLOCK:-tip}) -> $LOG_FILE"
   mkdir -p deployed
-  anvil --fork-url "$UPSTREAM" --port 8545 --chain-id 1 --auto-impersonate >"$LOG_FILE" 2>&1 &
+  : >"$LOG_FILE" # so a failure never reports a previous run's log
+  anvil --fork-url "$UPSTREAM" --port 8545 --chain-id "$CHAIN_ID" --auto-impersonate $PIN_ARG >"$LOG_FILE" 2>&1 &
   echo "$!" >"$PID_FILE"
   for _ in $(seq 1 60); do
     cast block-number --rpc-url "$RPC_LOCAL" >/dev/null 2>&1 && break
@@ -93,9 +149,8 @@ else
 fi
 
 # --- 2. fund the impersonated governance accounts -------------------------------------------------------------
-AGENT="$(grep -E '^\s*agent' "$CONFIG_TOML" | grep -oiE '0x[0-9a-f]{40}' | head -1)"
-EXECUTOR="$(grep -E '^\s*evm_script_executor' "$CONFIG_TOML" | grep -oiE '0x[0-9a-f]{40}' | head -1)"
-[ -n "$AGENT" ] && [ -n "$EXECUTOR" ] || die "could not read agent/evm_script_executor from $CONFIG_TOML"
+AGENT="$(toml_req "$CONFIG_TOML" agent)"
+EXECUTOR="$(toml_req "$CONFIG_TOML" evm_script_executor)"
 cast rpc anvil_setBalance "$AGENT" "$TEN_ETHER_HEX" --rpc-url "$RPC_LOCAL" >/dev/null
 cast rpc anvil_setBalance "$EXECUTOR" "$TEN_ETHER_HEX" --rpc-url "$RPC_LOCAL" >/dev/null
 log "agent $AGENT and executor $EXECUTOR funded with 10 ETH each"
@@ -104,6 +159,23 @@ log "agent $AGENT and executor $EXECUTOR funded with 10 ETH each"
 rm -rf "$RUN_DIR"
 log "cleared run dir $RUN_DIR"
 
+# Every resource below is derived from the market configs selected above, so the deploy order cannot fall out
+# of step with what they reference.
+
+BREAKERS="" ORACLES="" IRMS="" GROUPS=""
+for market in "${MARKETS[@]}"; do
+  mcfg="script/config/markets/${market}.toml"
+  [ -f "$mcfg" ] || die "market config not found: $mcfg"
+  BREAKERS="$(add_unique "$BREAKERS" "$(toml_req "$mcfg" circuit_breaker_artifact)")"
+  ORACLES="$(add_unique "$ORACLES" "$(toml_req "$mcfg" oracle_artifact)")"
+  GROUPS="$(add_unique "$GROUPS" "$(toml_req "$mcfg" guardian_group)")"
+  # An absent irm_artifact means the backbone adaptive curve, which the protocol deploy already brings.
+  irm="$(toml_str "$mcfg" irm_artifact)"
+  [ -z "$irm" ] || [ "$irm" = "adaptive-curve" ] || IRMS="$(add_unique "$IRMS" "$irm")"
+done
+log "markets: ${MARKETS[*]}"
+log "breakers: ${BREAKERS:-none}  oracles: ${ORACLES:-none}  irms: ${IRMS:-none}  guardians: ${GROUPS:-none}"
+
 # VERIFY is off: a local node has no verifier.
 deploy() {
   make "$@" CONFIG="$CONFIG_NAME" RUN="$RUN_NAME" RPC_URL="$RPC_LOCAL" \
@@ -111,29 +183,49 @@ deploy() {
 }
 
 # --- 4..8. the deploy pipeline --------------------------------------------------------------------------------
-log "deploying CircuitBreaker ($CIRCUIT_BREAKER)"
-deploy deploy-circuit-breaker CIRCUIT_BREAKER="$CIRCUIT_BREAKER"
-
-for oracle in "${ORACLES_WSTETH[@]}"; do
-  log "deploying wstETH rate oracle ($oracle)"
-  deploy deploy-oracle ORACLE="$oracle"
+for breaker in $BREAKERS; do
+  log "deploying CircuitBreaker ($breaker)"
+  deploy deploy-circuit-breaker CIRCUIT_BREAKER="$breaker"
 done
-log "deploying USDY stable oracle ($ORACLE_USDY)"
-deploy deploy-oracle-usdy ORACLE="$ORACLE_USDY"
+
+# The oracle config's own keys select the implementation, as OraclePreflight discriminates them.
+for oracle in $ORACLES; do
+  ocfg="script/config/oracles/${oracle}.toml"
+  [ -f "$ocfg" ] || die "oracle config not found: $ocfg"
+  if grep -qE '^[[:space:]]*wsteth[[:space:]]*=' "$ocfg"; then
+    log "deploying wstETH rate oracle ($oracle)"
+    deploy deploy-oracle ORACLE="$oracle"
+  elif grep -qE '^[[:space:]]*usdy_oracle[[:space:]]*=' "$ocfg"; then
+    log "deploying USDY stable oracle ($oracle)"
+    deploy deploy-oracle-usdy ORACLE="$oracle"
+  else
+    die "cannot tell which oracle implementation $ocfg configures"
+  fi
+done
 
 # Precedes the protocol: MarketConfigFile rejects a market whose irm_artifact does not resolve.
-log "deploying LinearKinkIrm ($IRM_NAME)"
-deploy deploy-linear-kink-irm IRM="$IRM_NAME"
+for irm in $IRMS; do
+  log "deploying LinearKinkIrm ($irm)"
+  deploy deploy-linear-kink-irm IRM="$irm"
+done
 
-log "deploying protocol (config=$CONFIG_NAME, run dir=$RUN_DIR)"
+log "deploying protocol backbone (config=$CONFIG_NAME, run dir=$RUN_DIR)"
 deploy deploy-protocol
+
+# After the protocol (the registry builder is recorded there) and before the markets, which require the
+# registry of the group they name. One per group, so markets sharing a committee share its registry.
+for group in $GROUPS; do
+  log "deploying GuardianSignals ($group)"
+  deploy deploy-guardian GUARDIAN_GROUP="$group"
+done
+
+for market in "${MARKETS[@]}"; do
+  log "deploying market ($market)"
+  deploy deploy-market MARKET="$market"
+done
 
 log "deploying vault-v2 vault + adapter ($VAULT_NAME)"
 deploy deploy-vault-v2 VAULT="$VAULT_NAME" ADAPTER="$VAULT_NAME"
-
-# Read from the config so that adding a market cannot skip its verification.
-read -r -a MARKETS <<<"$(sed -n 's/^markets *= *\[\(.*\)\]/\1/p' "$CONFIG_TOML" | tr -d ' "' | tr ',' ' ')"
-[ "${#MARKETS[@]}" -gt 0 ] || die "could not read the market list from $CONFIG_TOML"
 
 # Verification uses the same acceptance suite as a real deployment, against the artifacts this run wrote. Each
 # acceptance test forks the node itself, so its state changes do not reach the anvil. While the markets are

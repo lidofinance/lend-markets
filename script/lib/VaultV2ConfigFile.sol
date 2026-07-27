@@ -112,18 +112,6 @@ library VaultV2ConfigFile {
         if (vm.exists(adapterPath)) revert ArtifactAlreadyExists(adapterPath);
     }
 
-    function readDeployedVault(string memory name) internal view returns (address) {
-        string memory path = vaultDeployedPath(name);
-        if (!vm.exists(path)) return address(0);
-        return vm.parseTomlAddress(vm.readFile(path), ".vault.address");
-    }
-
-    function readDeployedAdapter(string memory name) internal view returns (address) {
-        string memory path = adapterDeployedPath(name);
-        if (!vm.exists(path)) return address(0);
-        return vm.parseTomlAddress(vm.readFile(path), ".adapter.address");
-    }
-
     function vaultDeployedPath(string memory name) internal view returns (string memory) {
         return string.concat(ArtifactMetadataFile.artifactsDir(), "/vaults/", name, ".toml");
     }

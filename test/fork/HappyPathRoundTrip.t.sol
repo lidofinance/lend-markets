@@ -41,7 +41,9 @@ contract HappyPathRoundTripTest is ForkStack {
 
     function setUp() public {
         _fork();
-        m = _bindMarket("fork-weth-wsteth");
+        string memory market_ = _marketForRole("weth-wsteth");
+        if (bytes(market_).length == 0) return; // not applicable to this deployment
+        m = _bindMarket(market_);
         _pokeAccrue(m); // fold pending interest so same-block delta assertions below are exact
 
         LENDER = _freshActor(m, "happyPath.lender");
