@@ -1,0 +1,4 @@
+# Morpho adapter for the `fork` profile's vault-v2 vault. Its only input is the parent vault: the `morpho` and
+# `adaptiveCurveIrm` immutables come from the run's protocol.toml, and it is deployed in the same operation as
+# the vault, whose address is a constructor immutable.
+vault_artifact = "fork-weth-wsteth"

@@ -1,0 +1,18 @@
+# GuardianSignals config for the `fork` profile's fork-usdy-usdt group. Field shapes mirror
+# guardians/weth-wsteth.toml.
+
+# Only read by the STANDALONE DeployGuardianSignals script (DeployProtocol / AddMarket reuse their builder).
+builder = "0x0000000000000000000000000000000000000000"
+
+admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"        # Agent — final DEFAULT_ADMIN_ROLE
+proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"  # Agent — OssifiableProxy admin
+quorum = 1
+suspect_window = 0
+
+# Optional ACCESS_LIMITER_ROLE holder.
+access_limiter = "0x0000000000000000000000000000000000000000"
+
+# Must be non-empty: GuardianSignals.initialize enforces 1 <= quorum <= guardians.length. The canonical config
+# leaves this for the production committee; the fork profile uses the Agent, which anvil impersonates, so the
+# suites can sign guardian actions.
+guardians = ["0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"]  # Agent

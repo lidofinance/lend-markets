@@ -1,0 +1,60 @@
+# USD/Treasuries market (USDT loan / USDY collateral) for the `fork` profile — the market
+# test/fork/UsdyTreasuriesMarket.t.sol binds. Field shapes mirror markets/weth-wsteth.toml; economic values are
+# draft, carried over from that suite.
+
+# Required by AddMarket; ignored by DeployProtocol (it uses the builder it just deployed).
+builder = "0x0000000000000000000000000000000000000000"
+
+[market]
+loan_token = "0xdAC17F958D2ee523a2206206994597C13D831ec7"        # USDT (6 dec)
+collateral_token = "0x96F6eF951840721AdBF46Ac996b59E0235CB985C"  # USDY (18 dec, transfer-gated)
+# Zero resolves the oracle artifact recorded under this name.
+oracle = "0x0000000000000000000000000000000000000000"
+oracle_artifact = "fork-usdy-usdt"
+lltv = "860000000000000000"  # 0.86 WAD
+# No irm_artifact key: routed to the backbone AdaptiveCurveIrm, so it carries [curve] below.
+# Zero deploys or resolves the registry identified by guardian_group.
+guardian_signals = "0x0000000000000000000000000000000000000000"
+guardian_group = "fork-usdy-usdt"
+# Resolved from deployed/<RUN>/circuit-breakers/<name>.toml and prepended to roles.pausers.
+circuit_breaker_artifact = "lido-lend"
+vault_name = "Lido USDY/USDT Fork Vault"
+vault_symbol = "lidoUSDY-USDT-FORK"
+
+[roles]
+admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"        # Agent
+proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"  # Agent
+managers = []
+# Additional direct pausers only; the referenced CircuitBreaker is prepended automatically.
+pausers = []
+freezers = []
+unfreezers = []
+resumers = ["0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"]   # Agent
+
+# Amounts are strings because TOML integers are limited to int64.
+[activation]
+min_activation_delay = 600            # 10 minutes
+max_activation_delay = 7200           # 2 hours
+max_delay_inflow = "10000000000000000000000"  # 10_000 ether
+activating_lock_amount = "0"
+activating_lock_duration = 0
+min_activation_amount = "10000000000000000000"  # 10 ether (dust threshold, USDY is 18 dec)
+max_guardians_quorum_delay = 0
+delay_per_strike = 0
+delay_per_suspect = 0
+
+[settlement]
+slice_floor_bps = 100                 # 1%
+slice_floor_assets = "0"
+full_cut_below_collateral = "10000000000000000000"  # 10 ether of USDY collateral
+ltv_step_bps = 100                    # 1%
+
+# Rates are WAD per second.
+[curve]
+curve_steepness = "4000000000000000000"     # 4x
+adjustment_speed = "1585489599188"          # 50e18 / 365 days
+target_utilization = "900000000000000000"   # 0.9e18
+initial_rate_at_target = "1268391679"       # 4e16 / 365 days (~4%/yr)
+min_rate_at_target = "31709791"             # 1e15 / 365 days
+max_rate_at_target = "63419583967"          # 2e18 / 365 days
+max_borrow_rate = "0"                       # 0 disables the ceiling

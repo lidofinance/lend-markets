@@ -1,0 +1,65 @@
+# WETH/wstETH market for the `fork` profile — the market most fork suites bind. Field shapes mirror
+# markets/weth-wsteth.toml; economic values are draft.
+#
+# LLTV is 0.945, not the canonical config's 0.8: the IRM model-selection scenario derives its 7..13x leverage cohort
+# against that constant, and this pair's realistic liquidation LTV is that high. Every other fork suite reads
+# the live `params.lltv`, so none of them depends on the number.
+
+# Required by AddMarket; ignored by DeployProtocol (it uses the builder it just deployed).
+builder = "0x0000000000000000000000000000000000000000"
+
+[market]
+loan_token = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"        # WETH
+collateral_token = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"  # wstETH
+# Zero resolves the oracle artifact recorded under this name.
+oracle = "0x0000000000000000000000000000000000000000"
+# Reuses the canonical wstETH rate oracle config; fork-weth-wsteth-kinked deploys its own instance so the two
+# markets do not hash to the same id (see the note there).
+oracle_artifact = "weth-wsteth"
+lltv = "945000000000000000"  # 0.945 WAD
+# No irm_artifact key: the market is routed to the backbone AdaptiveCurveIrm, so it carries [curve] below.
+# Zero deploys or resolves the registry identified by guardian_group.
+guardian_signals = "0x0000000000000000000000000000000000000000"
+guardian_group = "fork-weth-wsteth"
+# Resolved from deployed/<RUN>/circuit-breakers/<name>.toml and prepended to roles.pausers.
+circuit_breaker_artifact = "lido-lend"
+vault_name = "Lido wstETH/WETH Fork Vault"
+vault_symbol = "lidoWSTETH-WETH-FORK"
+
+[roles]
+admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"        # Agent
+proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"  # Agent
+managers = []
+# Additional direct pausers only; the referenced CircuitBreaker is prepended automatically.
+pausers = []
+freezers = []
+unfreezers = []
+resumers = ["0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"]   # Agent
+
+# Amounts are strings because TOML integers are limited to int64.
+[activation]
+min_activation_delay = 600            # 10 minutes
+max_activation_delay = 7200           # 2 hours
+max_delay_inflow = "10000000000000000000000"  # 10_000 ether
+activating_lock_amount = "0"
+activating_lock_duration = 0
+min_activation_amount = "10000000000000000000"  # 10 ether (dust threshold)
+max_guardians_quorum_delay = 0
+delay_per_strike = 7200               # 2 hours
+delay_per_suspect = 0
+
+[settlement]
+slice_floor_bps = 100                 # 1%
+slice_floor_assets = "0"
+full_cut_below_collateral = "10000000000000000000"  # 10 ether
+ltv_step_bps = 100                    # 1%
+
+# Rates are WAD per second.
+[curve]
+curve_steepness = "4000000000000000000"     # 4x
+adjustment_speed = "1585489599188"          # 50e18 / 365 days
+target_utilization = "900000000000000000"   # 0.9e18
+initial_rate_at_target = "1268391679"       # 4e16 / 365 days (~4%/yr)
+min_rate_at_target = "31709791"             # 1e15 / 365 days
+max_rate_at_target = "63419583967"          # 2e18 / 365 days
+max_borrow_rate = "0"                       # 0 disables the ceiling

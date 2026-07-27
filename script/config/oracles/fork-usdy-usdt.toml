@@ -1,0 +1,10 @@
+# USDY/USDT oracle for the `fork` profile, with the real mainnet sources filled in.
+#
+# The canonical oracles/usdy-usdt.toml is a fill-before-broadcast placeholder (all zeros) owned by the
+# deployment workflow; this is the fork profile's own instance, so that file stays untouched. The loan token and
+# its decimals are immutable per instance.
+usdy_oracle = "0xA0219AA5B31e65Bc920B5b6DFb8EdF0988121De0"       # Ondo USDY NAV oracle
+feed = "0x3E7d1eAB13ad0104d2750B8863b489D65364e32D"              # Chainlink USDT/USD feed
+loan_token = "0xdAC17F958D2ee523a2206206994597C13D831ec7"        # USDT
+collateral_token = "0x96F6eF951840721AdBF46Ac996b59E0235CB985C"  # USDY
+proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"       # Agent
