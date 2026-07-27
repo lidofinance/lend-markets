@@ -380,12 +380,14 @@ library CollateralActivationLib {
     /// @dev Base delay scales linearly with the inflow, clamped at both ends. The dormant lot's size is folded
     ///      into `effectiveInflow` before the call, so a lot's own size lengthens its delay.
     function _computeDelay(State storage $, uint256 effectiveInflow) private view returns (uint256) {
-        CollateralActivationConfig memory cfg = $.config;
+        uint256 maxDelayInflow = $.config.maxDelayInflow;
+        uint256 maxActivationDelay = $.config.maxActivationDelay;
+        uint256 minActivationDelay = $.config.minActivationDelay;
 
-        if (effectiveInflow >= cfg.maxDelayInflow) return cfg.maxActivationDelay;
+        if (effectiveInflow >= maxDelayInflow) return maxActivationDelay;
 
-        uint256 delaySpan = cfg.maxActivationDelay - cfg.minActivationDelay;
-        return cfg.minActivationDelay + Math.mulDiv(delaySpan, effectiveInflow, cfg.maxDelayInflow);
+        uint256 delaySpan = maxActivationDelay - minActivationDelay;
+        return minActivationDelay + Math.mulDiv(delaySpan, effectiveInflow, maxDelayInflow);
     }
 
     /// @dev Per-tx, per-borrower transient slot for the inflow added this tx (same-tx undo).
