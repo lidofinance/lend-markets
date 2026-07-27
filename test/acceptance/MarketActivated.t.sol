@@ -9,7 +9,7 @@ import {AcceptanceBase, IReadCircuitBreaker} from "./AcceptanceBase.t.sol";
 contract MarketActivatedAcceptance is AcceptanceBase {
     function setUp() public override {
         super.setUp();
-        if (core.code.length == 0) return; // base skipped without a registry
+        if (core.code.length == 0) return; // base skipped: no ACCEPTANCE_REGISTRY configured
         if (!_isMarketActivated()) vm.skip(true, "acceptance: market is not activated");
         pauserCommittee = IReadCircuitBreaker(circuitBreaker).getPauser(controller);
     }

@@ -282,10 +282,13 @@ abstract contract AcceptanceContext is Test {
 
     function setUp() public virtual {
         string memory regPath = vm.envOr("ACCEPTANCE_REGISTRY", string(""));
-        if (bytes(regPath).length == 0 || !vm.exists(regPath)) {
+        // Unset means "not verifying a deployment" — skip. Set but absent is a mistake, and must fail rather
+        // than pass while asserting nothing.
+        if (bytes(regPath).length == 0) {
             vm.skip(true, "acceptance: set ACCEPTANCE_REGISTRY to protocol.toml");
             return;
         }
+        require(vm.exists(regPath), string.concat("acceptance: ACCEPTANCE_REGISTRY not found: ", regPath));
         registry = vm.readFile(regPath);
 
         string memory rpc = vm.envOr("ACCEPTANCE_RPC_URL", string(""));
