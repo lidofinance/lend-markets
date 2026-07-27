@@ -120,6 +120,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         marketId = marketId_;
         _guardianSignals = guardianSignals;
+        emit GuardianSignalsSet(address(guardianSignals));
         _settlementQueue.init();
         _settlementQueue.setSettlementConfig(settlementConfig);
         _activation.setConfig(activationConfig);

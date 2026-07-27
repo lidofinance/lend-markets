@@ -33,6 +33,9 @@ interface ILidoLendMarketController is
     /// @notice Emitted when the supply cap is set.
     event SupplyCapSet(uint256 cap, address indexed account);
 
+    /// @notice Emitted once when the market binds its guardian-signals registry at initialization.
+    event GuardianSignalsSet(address indexed guardianSignals);
+
     // ---
     // ERRORS
     // ---
