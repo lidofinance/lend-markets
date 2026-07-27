@@ -3,7 +3,7 @@ pragma solidity 0.8.35;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IExitBook} from "../interfaces/IExitBook.sol";
@@ -17,7 +17,7 @@ import {WAD} from "../libs/Constants.sol";
 /// @notice Shared base of the exit books. A lender posts a request to exit a position; a filler later
 ///         closes it against available liquidity for a fee. A concrete book binds it to a source by
 ///         implementing the source operations, so any position that supports them can reuse this primitive.
-abstract contract ExitBookBase is IExitBook, AccessControl, AssetRecoverer {
+abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecoverer {
     using SafeERC20 for IERC20;
     using ExitBookLib for ExitBookLib.State;
 

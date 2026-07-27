@@ -3,7 +3,7 @@ pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 
 import {IGuardianSignals} from "../interfaces/IGuardianSignals.sol";
 import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
@@ -15,7 +15,7 @@ import {SettlementConfig} from "../types/SettlementTypes.sol";
 /// @author Lido Lending contributors.
 /// @notice Stable role-gated governance facade over a `LidoLend` core and all its markets. Core-owner calls and
 ///         per-market controller and guardian-registry calls sit behind independent capability roles.
-contract LidoLendOwner is AccessControl, ILidoLendOwner {
+contract LidoLendOwner is AccessControlEnumerable, ILidoLendOwner {
     // ---
     // ROLES
     // ---

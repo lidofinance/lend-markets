@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 /// @title IRiskStewardDashboard
-/// @notice Full external surface of `RiskStewardDashboard`: AccessControl (inherited), per-market steward
+/// @notice Full external surface of `RiskStewardDashboard`: AccessControlEnumerable (inherited), per-market steward
 ///         management, and the bounded tighten-only risk levers. The dashboard implements this interface, so
 ///         it is the single source for the events, errors, and the function docs the contract inherits.
-interface IRiskStewardDashboard is IAccessControl {
+interface IRiskStewardDashboard is IAccessControlEnumerable {
     // ---
     // EVENTS
     // ---

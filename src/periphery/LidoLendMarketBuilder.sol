@@ -87,7 +87,7 @@ interface IReadGuardianSignals {
 /// @dev Draft, not audited. Immutable, no versioning: a `MarketSpec` / `MarketRoles` ABI change needs a new
 ///      builder. The `public view` validators are reusable standalone, but their "listed holders are the whole
 ///      set" completeness holds only inside a build call, where this contract created the target in-transaction
-///      as its sole admin; a standalone call cannot prove it from state, as `AccessControl` has no enumeration.
+///      as its sole admin.
 contract LidoLendMarketBuilder {
     using MarketParamsLib for MarketParams;
 

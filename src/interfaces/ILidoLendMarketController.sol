@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
@@ -10,13 +10,13 @@ import {IPausableUntil} from "./IPausableUntil.sol";
 import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 /// @title ILidoLendMarketController
-/// @notice Full external surface of `LidoLendMarketController`: the core hook interface and AccessControl
+/// @notice Full external surface of `LidoLendMarketController`: the core hook interface and AccessControlEnumerable
 ///         (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the
 ///         borrower dashboard. The controller implements this interface, so it is the single source for
 ///         the dashboard struct, events, errors, and the function docs the contract inherits.
 interface ILidoLendMarketController is
     ILidoLendBaseMarketController,
-    IAccessControl,
+    IAccessControlEnumerable,
     ILidoLendMarketConfigurator,
     IPausableUntil
 {
