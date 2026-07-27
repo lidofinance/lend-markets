@@ -22,6 +22,9 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     /// @notice Emitted when the Sybil lock amount and duration are raised on a market.
     event ActivatingLockIncreased(Id indexed marketId, uint128 newAmount, uint40 newDuration);
 
+    /// @notice Emitted when a steward revokes a caller's instant activation on a market.
+    event InstantActivationRevoked(Id indexed marketId, address indexed caller);
+
     // ---
     // ERRORS
     // ---
@@ -31,6 +34,9 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
 
     /// @notice The caller is not a steward of the target market.
     error NotMarketSteward();
+
+    /// @notice A zero-address steward was supplied.
+    error ZeroSteward();
 
     /// @notice The market id has no controller on the core (unknown or not yet created).
     error UnknownMarket(Id marketId);
