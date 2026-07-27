@@ -17,6 +17,8 @@ ORACLE ?= weth-wsteth
 GUARDIAN_GROUP ?= $(MARKET)
 CIRCUIT_BREAKER ?= lido-lend
 IRM ?= linear-kink
+VAULT ?= weth-wsteth
+ADAPTER ?= $(VAULT)
 RPC_URL ?=
 DEPLOYER_PRIVATE_KEY ?=
 VERIFY ?= true
@@ -40,7 +42,7 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-linear-kink-irm deploy-exit-books deploy-protocol deploy-market deploy-run deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
+.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-linear-kink-irm deploy-vault-v2 deploy-exit-books deploy-protocol deploy-market deploy-run deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean
 
 help:
 	@echo "Targets:"
@@ -54,6 +56,7 @@ help:
 	@echo "  deploy-protocol CONFIG=<config> RUN=<run>"
 	@echo "  deploy-guardian CONFIG=<config> RUN=<run> GUARDIAN_GROUP=<group>"
 	@echo "  deploy-linear-kink-irm CONFIG=<config> RUN=<run> IRM=<name>"
+	@echo "  deploy-vault-v2 CONFIG=<config> RUN=<existing-run> VAULT=<name> ADAPTER=<name>"
 	@echo "  deploy-exit-books CONFIG=<config> RUN=<existing-run>"
 	@echo "  deploy-market CONFIG=<config> RUN=<run> MARKET=<name>"
 	@echo "  deploy-run CONFIG=<config> RUN=<run> CIRCUIT_BREAKER=<name> ORACLE=<name>"
@@ -133,6 +136,13 @@ deploy-linear-kink-irm:
 	@$(DEPLOY_ENV) forge script script/DeployLinearKinkIrm.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(IRM)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployLinearKinkIrm.s.sol,irm-$(IRM))
 
+# The vault + its Morpho adapter in one broadcast: the adapter's parent vault is a constructor immutable.
+# Needs an existing run — the adapter's other immutables are that run's core and IRM router.
+deploy-vault-v2:
+	$(require_deploy_context)
+	@$(DEPLOY_ENV) forge script script/DeployVaultV2.s.sol --sig 'run(string,string,string)' "$(CONFIG)" "$(VAULT)" "$(ADAPTER)" $(DEPLOY_FLAGS)
+	$(call archive_broadcast,DeployVaultV2.s.sol,vault-v2-$(VAULT))
+
 deploy-exit-books:
 	$(require_deploy_context)
 	@$(DEPLOY_ENV) forge script script/DeployExitBooks.s.sol --sig 'run(string)' "$(CONFIG)" $(DEPLOY_FLAGS)
@@ -179,7 +189,7 @@ fork-run:
 deploy-wizard:
 	@printf 'Config [mainnet]: '; read config; config=$${config:-mainnet}; \
 	printf 'Run directory (required): '; read run; test -n "$$run" || { echo 'ERROR: run directory is required'; exit 1; }; \
-	printf 'Step (circuit-breaker, oracle, oracle-usdy, guardian, kink-irm, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
+	printf 'Step (circuit-breaker, oracle, oracle-usdy, guardian, kink-irm, vault-v2, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
 	printf 'Resource name (blank uses lido-lend for CircuitBreaker, weth-wsteth otherwise): '; read name; \
 	if [ -z "$$name" ]; then case "$$step" in circuit-breaker) name=lido-lend ;; kink-irm) name=linear-kink ;; *) name=weth-wsteth ;; esac; fi; \
 	case "$$step" in \
@@ -188,6 +198,7 @@ deploy-wizard:
 		oracle-usdy) exec $(MAKE) deploy-oracle-usdy CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		guardian) exec $(MAKE) deploy-guardian CONFIG="$$config" RUN="$$run" GUARDIAN_GROUP="$$name" ;; \
 		kink-irm) exec $(MAKE) deploy-linear-kink-irm CONFIG="$$config" RUN="$$run" IRM="$$name" ;; \
+		vault-v2) exec $(MAKE) deploy-vault-v2 CONFIG="$$config" RUN="$$run" VAULT="$$name" ADAPTER="$$name" ;; \
 		exit-books) exec $(MAKE) deploy-exit-books CONFIG="$$config" RUN="$$run" ;; \
 		protocol) exec $(MAKE) deploy-protocol CONFIG="$$config" RUN="$$run" ;; \
 		market) exec $(MAKE) deploy-market CONFIG="$$config" RUN="$$run" MARKET="$$name" ;; \
