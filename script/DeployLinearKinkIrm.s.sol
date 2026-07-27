@@ -7,13 +7,15 @@ import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.so
 
 import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
 import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
+import {IrmConfigFile} from "./lib/IrmConfigFile.sol";
 
-/// @notice Deploys the optional bare `LinearKinkIrm` and records it in the current deployment run.
-/// @dev This does not add the IRM to the protocol registry or route any market to it.
+/// @notice Deploys a bare `LinearKinkIrm` and records it as `deployed/<RUN>/irms/<name>.toml`.
+/// @dev This neither routes any market to the instance nor sets per-market kink params: both are activation
+///      calldata. A market opts in by naming this artifact in `market.irm_artifact`.
 contract DeployLinearKinkIrm is Script {
-    error ArtifactAlreadyExists(string path);
-
-    function run(string memory config) external returns (address irm) {
+    /// @param config The deploy config name (`script/config/<config>.toml`).
+    /// @param name The artifact name markets reference as `market.irm_artifact`, e.g. `"linear-kink"`.
+    function run(string memory config, string memory name) external returns (address irm) {
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
         DeployConfigFile.requireChainId(deployConfig);
         DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
@@ -22,27 +24,20 @@ contract DeployLinearKinkIrm is Script {
             chainId: deployConfig.chainId,
             configHash: deployConfig.configHash
         });
-        string memory path = _artifactPath();
-        if (vm.exists(path)) revert ArtifactAlreadyExists(path);
+        IrmConfigFile.requireUndeployed(name);
 
         vm.startBroadcast();
         irm = address(new LinearKinkIrm(deployConfig.agent, deployConfig.evmScriptExecutor));
         vm.stopBroadcast();
 
-        string memory artifact = ArtifactMetadataFile.header(metadata, "linear-kink-irm");
-        artifact = string.concat(artifact, "\n[irm]\n");
-        artifact = string.concat(artifact, "address = \"", vm.toString(irm), "\"\n");
-        artifact = string.concat(artifact, "owner = \"", vm.toString(deployConfig.agent), "\"\n");
-        artifact = string.concat(artifact, "manager = \"", vm.toString(deployConfig.evmScriptExecutor), "\"\n");
-        vm.writeFile(path, artifact);
+        string memory path = IrmConfigFile.writeDeployed(
+            name, "linear-kink", irm, deployConfig.agent, deployConfig.evmScriptExecutor, metadata
+        );
 
         console2.log("linearKinkIrm :", irm);
+        console2.log("  artifact    :", name);
         console2.log("  owner       :", deployConfig.agent);
         console2.log("  manager     :", deployConfig.evmScriptExecutor);
         console2.log("  recorded    :", path);
-    }
-
-    function _artifactPath() private view returns (string memory) {
-        return string.concat(ArtifactMetadataFile.artifactsDir(), "/linear-kink-irm.toml");
     }
 }

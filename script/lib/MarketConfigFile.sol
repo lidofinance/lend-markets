@@ -6,6 +6,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {ConfigToml} from "./ConfigToml.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 
 import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
@@ -14,6 +15,21 @@ import {BPS} from "../../src/libs/Constants.sol";
 import {OracleConfigFile} from "./OracleConfigFile.sol";
 import {GuardianSignalsConfigFile} from "./GuardianSignalsConfigFile.sol";
 import {CircuitBreakerConfigFile} from "./CircuitBreakerConfigFile.sol";
+import {IrmConfigFile} from "./IrmConfigFile.sol";
+
+/// @notice The IRM a market is routed to at activation, with the params for that model — the two travel
+///         together, so a config can never name one model and carry the other's params.
+/// @param artifact The `market.irm_artifact` reference: `IrmConfigFile.ADAPTIVE_CURVE` for the backbone
+///        instance in `protocol.toml`, otherwise an `irms/<name>.toml` artifact in the run.
+/// @param kinked True when `artifact` names a `LinearKinkIrm`, i.e. `kink` is set and `curve` is unset.
+/// @param curve The adaptive-curve params, set when `!kinked`.
+/// @param kink The linear-kink params, set when `kinked`.
+struct IrmSelection {
+    string artifact;
+    bool kinked;
+    AdaptiveCurveParams curve;
+    LinearKinkParams kink;
+}
 
 library MarketConfigFile {
     using SafeCast for uint256;
@@ -24,6 +40,8 @@ library MarketConfigFile {
     int256 private constant MAX_ADJUSTMENT_SPEED = 10_000 ether / int256(365 days);
     int256 private constant MAX_RATE_AT_TARGET = 10_000 ether / int256(365 days);
     uint256 private constant MAX_BORROW_RATE = (10_000 ether / uint256(365 days)) * 100;
+    /// @dev `LinearKinkIrm.MAX_BORROW_RATE` — 800%/year, per second, WAD-scaled.
+    uint256 private constant MAX_KINK_BORROW_RATE = 8.0 ether / uint256(365 days);
 
     error InvalidConfigValue(string key);
 
@@ -31,6 +49,7 @@ library MarketConfigFile {
         string oracle;
         string guardianGroup;
         string circuitBreaker;
+        string irm;
     }
 
     /// @dev Resolves zero oracle and guardian addresses from run artifacts.
@@ -41,12 +60,12 @@ library MarketConfigFile {
             address builder,
             LidoLendMarketBuilder.MarketSpec memory market,
             MarketRoles memory roles,
-            AdaptiveCurveParams memory curveParams
+            IrmSelection memory irm
         )
     {
         string memory toml = vm.readFile(marketPath(name));
         builder = vm.parseTomlAddress(toml, ".builder");
-        (market, roles, curveParams) = parse(toml);
+        (market, roles, irm) = parse(toml);
         ArtifactRefs memory refs = _parseArtifactRefs(toml);
 
         if (market.oracle == address(0)) market.oracle = OracleConfigFile.readDeployed(refs.oracle);
@@ -59,20 +78,22 @@ library MarketConfigFile {
         address circuitBreaker = CircuitBreakerConfigFile.readDeployed(refs.circuitBreaker);
         if (circuitBreaker == address(0)) revert ConfigToml.MissingConfigValue(".market.circuit_breaker_artifact");
         roles.pausers = _prepend(circuitBreaker, roles.pausers);
+
+        // The activation motion resolves the reference; catch a typo here, at deploy time, rather than there.
+        // The backbone instance lives in `protocol.toml` and has no `irms/` artifact.
+        if (irm.kinked && IrmConfigFile.readDeployed(irm.artifact) == address(0)) {
+            revert ConfigToml.MissingConfigValue(".market.irm_artifact");
+        }
     }
 
     function parse(string memory toml)
         internal
-        pure
-        returns (
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
-            AdaptiveCurveParams memory curveParams
-        )
+        view
+        returns (LidoLendMarketBuilder.MarketSpec memory market, MarketRoles memory roles, IrmSelection memory irm)
     {
         market = _parseMarket(toml);
         roles = _parseRoles(toml);
-        curveParams = _parseCurve(toml);
+        irm = _parseIrm(toml);
     }
 
     function marketPath(string memory name) internal pure returns (string memory) {
@@ -91,12 +112,24 @@ library MarketConfigFile {
         return _parseArtifactRefs(vm.readFile(marketPath(name))).circuitBreaker;
     }
 
+    function irmArtifact(string memory name) internal view returns (string memory) {
+        return _parseArtifactRefs(vm.readFile(marketPath(name))).irm;
+    }
+
     function _parseArtifactRefs(string memory toml) private view returns (ArtifactRefs memory) {
         return ArtifactRefs({
             oracle: ConfigToml.requireString(toml, ".market.oracle_artifact"),
             guardianGroup: ConfigToml.requireString(toml, ".market.guardian_group"),
-            circuitBreaker: ConfigToml.requireString(toml, ".market.circuit_breaker_artifact")
+            circuitBreaker: ConfigToml.requireString(toml, ".market.circuit_breaker_artifact"),
+            irm: _irmArtifactRef(toml)
         });
+    }
+
+    /// @dev `market.irm_artifact`, defaulting to the backbone adaptive-curve IRM when the key is absent — the
+    ///      overwhelmingly common case, so an existing market config needs no new key to keep its behaviour.
+    function _irmArtifactRef(string memory toml) private view returns (string memory) {
+        if (!vm.keyExistsToml(toml, ".market.irm_artifact")) return IrmConfigFile.ADAPTIVE_CURVE;
+        return ConfigToml.requireString(toml, ".market.irm_artifact");
     }
 
     function _prepend(address first, address[] memory values) private pure returns (address[] memory result) {
@@ -177,6 +210,49 @@ library MarketConfigFile {
             unfreezers: vm.parseTomlAddressArray(toml, ".roles.unfreezers"),
             resumers: vm.parseTomlAddressArray(toml, ".roles.resumers")
         });
+    }
+
+    /// @dev The market's IRM choice and the params for exactly that model. A kinked market must carry `[kink]`
+    ///      and must NOT carry `[curve]` (and the reverse), so a config can never name one model and be
+    ///      activated with the other's params.
+    function _parseIrm(string memory toml) private view returns (IrmSelection memory irm) {
+        irm.artifact = _irmArtifactRef(toml);
+        irm.kinked = !IrmConfigFile.isAdaptiveCurve(irm.artifact);
+
+        bool hasCurve = vm.keyExistsToml(toml, ".curve");
+        bool hasKink = vm.keyExistsToml(toml, ".kink");
+        if (irm.kinked) {
+            if (!hasKink || hasCurve) revert InvalidConfigValue(".kink");
+            irm.kink = _parseKink(toml);
+        } else {
+            if (!hasCurve || hasKink) revert InvalidConfigValue(".curve");
+            irm.curve = _parseCurve(toml);
+        }
+    }
+
+    /// @dev Linear-kink params. Rates are per-second WAD and pack into `uint64`; the model's own setter caps the
+    ///      peak (`baseRate + slope1 + slope2`), so validate only what narrowing would silently corrupt.
+    function _parseKink(string memory toml) private pure returns (LinearKinkParams memory params) {
+        params = LinearKinkParams({
+            optimalUtilization: _uint64(toml, ".kink.optimal_utilization"),
+            baseRate: _uint64(toml, ".kink.base_rate"),
+            slope1: _uint64(toml, ".kink.slope1"),
+            slope2: _uint64(toml, ".kink.slope2")
+        });
+
+        // Mirrors `LinearKinkIrm.setMarketKinkParams`: zero marks an unset market, WAD is full utilization.
+        if (params.optimalUtilization == 0 || params.optimalUtilization >= uint256(WAD_INT)) {
+            revert InvalidConfigValue(".kink.optimal_utilization");
+        }
+        if (uint256(params.baseRate) + params.slope1 + params.slope2 > MAX_KINK_BORROW_RATE) {
+            revert InvalidConfigValue(".kink.peak_rate");
+        }
+    }
+
+    function _uint64(string memory toml, string memory key) private pure returns (uint64) {
+        uint256 value = vm.parseTomlUint(toml, key);
+        if (value > type(uint64).max) revert InvalidConfigValue(key);
+        return value.toUint64();
     }
 
     function _parseCurve(string memory toml) private pure returns (AdaptiveCurveParams memory params) {

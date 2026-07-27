@@ -4,7 +4,6 @@ pragma solidity 0.8.35;
 import {Script, console2} from "forge-std/Script.sol";
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 
 import {LidoLendMarketBuilder, MarketRoles} from "../src/periphery/LidoLendMarketBuilder.sol";
 
@@ -18,7 +17,7 @@ import {
     ExitBooksDeployment
 } from "./lib/ProtocolConfigFile.sol";
 import {ExitBookConfig} from "./lib/ExitBookConfigFile.sol";
-import {MarketConfigFile} from "./lib/MarketConfigFile.sol";
+import {MarketConfigFile, IrmSelection} from "./lib/MarketConfigFile.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
 import {GuardianSignalsConfigFile} from "./lib/GuardianSignalsConfigFile.sol";
 import {OracleConfigFile} from "./lib/OracleConfigFile.sol";
@@ -198,12 +197,8 @@ contract DeployProtocol is Script, ProtocolDeployer {
         returns (MarketDeployment memory md, uint256 updatedGuardianCount)
     {
         string memory guardianGroup = MarketConfigFile.guardianGroup(name);
-        (
-            ,
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
-            AdaptiveCurveParams memory curveParams
-        ) = MarketConfigFile.read(name);
+        (, LidoLendMarketBuilder.MarketSpec memory market, MarketRoles memory roles, IrmSelection memory irm) =
+            MarketConfigFile.read(name);
         _requireMarketRolePolicy(roles, context.agent, context.executor, context.deployer);
 
         if (market.guardianSignals == address(0)) {
@@ -230,12 +225,12 @@ contract DeployProtocol is Script, ProtocolDeployer {
             builder: context.protocol.builder,
             controller: built.controller,
             vault: built.vault,
-            irm: context.protocol.irmRouter,
+            irmRouter: context.protocol.irmRouter,
             ownerFacade: context.protocol.ownerFacade,
             riskStewardDashboard: context.protocol.riskStewardDashboard,
             market: market,
             roles: roles,
-            curveParams: curveParams,
+            irm: irm,
             deployedBlock: context.deployedBlock
         });
 

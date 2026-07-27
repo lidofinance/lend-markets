@@ -4,6 +4,7 @@ pragma solidity 0.8.35;
 import {Test} from "forge-std/Test.sol";
 
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 
 import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
@@ -11,6 +12,8 @@ import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
 import {ArtifactMetadata} from "../../script/lib/ArtifactMetadata.sol";
 import {ProtocolConfigFile, MarketDeployment} from "../../script/lib/ProtocolConfigFile.sol";
+import {IrmSelection} from "../../script/lib/MarketConfigFile.sol";
+import {IrmConfigFile} from "../../script/lib/IrmConfigFile.sol";
 
 contract ProtocolConfigFileHarness {
     function containsMarketId(string memory artifact, bytes32 id) external pure returns (bool) {
@@ -54,6 +57,28 @@ contract ProtocolConfigFileTest is Test {
         assertFalse(harness.containsMarketId(registry, id));
     }
 
+    /// @dev A market routed to a deployed `LinearKinkIrm` records `[kink]` and NOT `[curve]`: the artifact
+    ///      carries the params of the model it names, so the activation motion cannot read the wrong set.
+    function test_writeMarket_kinkedMarketRecordsKinkParamsOnly() external {
+        string memory run = _prepareRun("protocol-config-file-unit-kinked");
+        MarketDeployment memory market = _market("kinked", bytes32(uint256(0x4321)), address(0xCB));
+        market.irm.artifact = "linear-kink";
+        market.irm.kinked = true;
+        market.irm.kink = LinearKinkParams({
+            optimalUtilization: 0.9 ether, baseRate: 158548959, slope1: 634195839, slope2: 443937087
+        });
+
+        string memory artifact = vm.readFile(harness.writeMarket(market, _metadata(run), run));
+
+        assertEq(vm.parseTomlString(artifact, ".market.irm_artifact"), "linear-kink");
+        assertEq(vm.parseTomlUint(artifact, ".kink.optimal_utilization"), 0.9 ether);
+        assertEq(vm.parseTomlUint(artifact, ".kink.base_rate"), 158548959);
+        assertEq(vm.parseTomlUint(artifact, ".kink.slope1"), 634195839);
+        assertEq(vm.parseTomlUint(artifact, ".kink.slope2"), 443937087);
+        assertFalse(vm.keyExistsToml(artifact, ".curve"), "a kinked market records no [curve]");
+        vm.removeDir(string.concat("deployed/", run), true);
+    }
+
     function test_writeMarket_recordsCompleteSeparateImmutableArtifacts() external {
         string memory run = _prepareRun("protocol-config-file-unit");
         MarketDeployment memory market = _market("first", bytes32(uint256(0x1234)), address(0xCB));
@@ -81,7 +106,9 @@ contract ProtocolConfigFileTest is Test {
             vm.parseTomlUint(artifact, ".settlement.full_cut_below_collateral"),
             market.market.settlementConfig.fullCutBelowCollateral
         );
-        assertEq(vm.parseTomlInt(artifact, ".curve.curve_steepness"), market.curveParams.curveSteepness);
+        assertEq(vm.parseTomlString(artifact, ".market.irm_artifact"), IrmConfigFile.ADAPTIVE_CURVE);
+        assertEq(vm.parseTomlInt(artifact, ".curve.curve_steepness"), market.irm.curve.curveSteepness);
+        assertFalse(vm.keyExistsToml(artifact, ".kink"), "an adaptive-curve market records no [kink]");
         string memory second =
             harness.writeMarket(_market("second", bytes32(uint256(2)), address(0xCB)), _metadata(run), run);
 
@@ -122,7 +149,7 @@ contract ProtocolConfigFileTest is Test {
             builder: address(0xB0),
             controller: address(0xC0),
             vault: address(0xA0),
-            irm: address(0x1),
+            irmRouter: address(0x1),
             ownerFacade: address(0xFA),
             riskStewardDashboard: address(0xDA),
             market: LidoLendMarketBuilder.MarketSpec({
@@ -157,14 +184,19 @@ contract ProtocolConfigFileTest is Test {
                 unfreezers: new address[](0),
                 resumers: new address[](0)
             }),
-            curveParams: AdaptiveCurveParams({
-                curveSteepness: 4 ether,
-                adjustmentSpeed: 1,
-                targetUtilization: 0.9 ether,
-                initialRateAtTarget: 2,
-                minRateAtTarget: 1,
-                maxRateAtTarget: 3,
-                maxBorrowRate: 4
+            irm: IrmSelection({
+                artifact: IrmConfigFile.ADAPTIVE_CURVE,
+                kinked: false,
+                curve: AdaptiveCurveParams({
+                    curveSteepness: 4 ether,
+                    adjustmentSpeed: 1,
+                    targetUtilization: 0.9 ether,
+                    initialRateAtTarget: 2,
+                    minRateAtTarget: 1,
+                    maxRateAtTarget: 3,
+                    maxBorrowRate: 4
+                }),
+                kink: LinearKinkParams({optimalUtilization: 0, baseRate: 0, slope1: 0, slope2: 0})
             }),
             deployedBlock: 100
         });

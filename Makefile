@@ -16,6 +16,7 @@ MARKET ?= weth-wsteth
 ORACLE ?= weth-wsteth
 GUARDIAN_GROUP ?= $(MARKET)
 CIRCUIT_BREAKER ?= lido-lend
+IRM ?= linear-kink
 RPC_URL ?=
 DEPLOYER_PRIVATE_KEY ?=
 VERIFY ?= true
@@ -52,7 +53,7 @@ help:
 	@echo "  deploy-circuit-breaker CONFIG=<config> RUN=<run> CIRCUIT_BREAKER=<name>"
 	@echo "  deploy-protocol CONFIG=<config> RUN=<run>"
 	@echo "  deploy-guardian CONFIG=<config> RUN=<run> GUARDIAN_GROUP=<group>"
-	@echo "  deploy-linear-kink-irm CONFIG=<config> RUN=<run>"
+	@echo "  deploy-linear-kink-irm CONFIG=<config> RUN=<run> IRM=<name>"
 	@echo "  deploy-exit-books CONFIG=<config> RUN=<existing-run>"
 	@echo "  deploy-market CONFIG=<config> RUN=<run> MARKET=<name>"
 	@echo "  deploy-run CONFIG=<config> RUN=<run> CIRCUIT_BREAKER=<name> ORACLE=<name>"
@@ -129,8 +130,8 @@ deploy-guardian:
 
 deploy-linear-kink-irm:
 	$(require_deploy_context)
-	@$(DEPLOY_ENV) forge script script/DeployLinearKinkIrm.s.sol --sig 'run(string)' "$(CONFIG)" $(DEPLOY_FLAGS)
-	$(call archive_broadcast,DeployLinearKinkIrm.s.sol,linear-kink-irm)
+	@$(DEPLOY_ENV) forge script script/DeployLinearKinkIrm.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(IRM)" $(DEPLOY_FLAGS)
+	$(call archive_broadcast,DeployLinearKinkIrm.s.sol,irm-$(IRM))
 
 deploy-exit-books:
 	$(require_deploy_context)
@@ -180,13 +181,13 @@ deploy-wizard:
 	printf 'Run directory (required): '; read run; test -n "$$run" || { echo 'ERROR: run directory is required'; exit 1; }; \
 	printf 'Step (circuit-breaker, oracle, oracle-usdy, guardian, kink-irm, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
 	printf 'Resource name (blank uses lido-lend for CircuitBreaker, weth-wsteth otherwise): '; read name; \
-	if [ -z "$$name" ]; then if [ "$$step" = "circuit-breaker" ]; then name=lido-lend; else name=weth-wsteth; fi; fi; \
+	if [ -z "$$name" ]; then case "$$step" in circuit-breaker) name=lido-lend ;; kink-irm) name=linear-kink ;; *) name=weth-wsteth ;; esac; fi; \
 	case "$$step" in \
 		circuit-breaker) exec $(MAKE) deploy-circuit-breaker CONFIG="$$config" RUN="$$run" CIRCUIT_BREAKER="$$name" ;; \
 		oracle) exec $(MAKE) deploy-oracle CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		oracle-usdy) exec $(MAKE) deploy-oracle-usdy CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		guardian) exec $(MAKE) deploy-guardian CONFIG="$$config" RUN="$$run" GUARDIAN_GROUP="$$name" ;; \
-		kink-irm) exec $(MAKE) deploy-linear-kink-irm CONFIG="$$config" RUN="$$run" ;; \
+		kink-irm) exec $(MAKE) deploy-linear-kink-irm CONFIG="$$config" RUN="$$run" IRM="$$name" ;; \
 		exit-books) exec $(MAKE) deploy-exit-books CONFIG="$$config" RUN="$$run" ;; \
 		protocol) exec $(MAKE) deploy-protocol CONFIG="$$config" RUN="$$run" ;; \
 		market) exec $(MAKE) deploy-market CONFIG="$$config" RUN="$$run" MARKET="$$name" ;; \

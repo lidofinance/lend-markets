@@ -4,10 +4,12 @@ pragma solidity 0.8.35;
 import {Vm} from "forge-std/Vm.sol";
 
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 
 import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
 
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
+import {IrmSelection} from "./MarketConfigFile.sol";
 
 struct ProtocolConfig {
     address agent;
@@ -42,12 +44,14 @@ struct MarketDeployment {
     address builder;
     address controller;
     address vault;
-    address irm;
+    /// @dev The market's immutable `params.irm` — always the protocol IRM router, never the model itself.
+    address irmRouter;
     address ownerFacade;
     address riskStewardDashboard;
     LidoLendMarketBuilder.MarketSpec market;
     MarketRoles roles;
-    AdaptiveCurveParams curveParams;
+    /// @dev Which model the activation motion routes behind the router, and its params.
+    IrmSelection irm;
     uint256 deployedBlock;
 }
 
@@ -139,7 +143,7 @@ library ProtocolConfigFile {
         s = string.concat(s, _rolesSection(d.roles, d.ownerFacade, d.riskStewardDashboard));
         s = string.concat(s, _activationSection(d.market));
         s = string.concat(s, _settlementSection(d.market));
-        s = string.concat(s, _curveSection(d.curveParams));
+        s = string.concat(s, _irmParamsSection(d.irm));
         vm.writeFile(path, s);
     }
 
@@ -238,7 +242,8 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("collateral_token", d.market.collateralToken));
         s = string.concat(s, _kv("oracle", d.market.oracle));
         s = string.concat(s, _kv("oracle_artifact", d.oracleArtifact));
-        s = string.concat(s, _kv("irm", d.irm));
+        s = string.concat(s, _kv("irm", d.irmRouter));
+        s = string.concat(s, _kv("irm_artifact", d.irm.artifact));
         s = string.concat(s, _kvQuoted("lltv", d.market.lltv));
         s = string.concat(s, _kv("guardian_signals", d.market.guardianSignals));
         s = string.concat(s, _kv("guardian_group", d.guardianGroup));
@@ -290,6 +295,20 @@ library ProtocolConfigFile {
         s = string.concat(s, _kvQuoted("slice_floor_assets", m.settlementConfig.sliceFloorAssets));
         s = string.concat(s, _kvQuoted("full_cut_below_collateral", m.settlementConfig.fullCutBelowCollateral));
         s = string.concat(s, _kvQuoted("ltv_step_bps", m.settlementConfig.ltvStepBps));
+    }
+
+    /// @dev The params for the model the market names — `[kink]` or `[curve]`, never both, mirroring the
+    ///      market config. Consumers branch on `market.irm_artifact`.
+    function _irmParamsSection(IrmSelection memory irm) private pure returns (string memory) {
+        return irm.kinked ? _kinkSection(irm.kink) : _curveSection(irm.curve);
+    }
+
+    function _kinkSection(LinearKinkParams memory p) private pure returns (string memory s) {
+        s = "\n[kink]\n";
+        s = string.concat(s, _kvQuoted("optimal_utilization", uint256(p.optimalUtilization)));
+        s = string.concat(s, _kvQuoted("base_rate", uint256(p.baseRate)));
+        s = string.concat(s, _kvQuoted("slope1", uint256(p.slope1)));
+        s = string.concat(s, _kvQuoted("slope2", uint256(p.slope2)));
     }
 
     function _curveSection(AdaptiveCurveParams memory p) private pure returns (string memory s) {

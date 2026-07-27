@@ -5,14 +5,13 @@ import {Script, console2} from "forge-std/Script.sol";
 
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
-import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 
 import {LidoLendMarketBuilder, MarketRoles, GuardianConfig} from "../src/periphery/LidoLendMarketBuilder.sol";
 
 import {ConfigToml} from "./lib/ConfigToml.sol";
 import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
 import {ProtocolDeployer} from "./lib/ProtocolDeployer.sol";
-import {MarketConfigFile} from "./lib/MarketConfigFile.sol";
+import {MarketConfigFile, IrmSelection} from "./lib/MarketConfigFile.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
 import {ProtocolConfigFile, MarketDeployment} from "./lib/ProtocolConfigFile.sol";
 import {GuardianSignalsConfigFile, GuardianSignalsConfig} from "./lib/GuardianSignalsConfigFile.sol";
@@ -39,12 +38,12 @@ contract AddMarket is Script, ProtocolDeployer {
         string guardianGroup;
         string circuitBreakerArtifact;
         address builder;
-        address irm;
+        address irmRouter;
         address ownerFacade;
         address riskStewardDashboard;
         LidoLendMarketBuilder.MarketSpec market;
         MarketRoles roles;
-        AdaptiveCurveParams curveParams;
+        IrmSelection irm;
         address recordedOracle;
         address recordedGuardianSignals;
     }
@@ -114,7 +113,7 @@ contract AddMarket is Script, ProtocolDeployer {
         input.guardianGroup = MarketConfigFile.guardianGroup(name);
         input.oracleArtifact = MarketConfigFile.oracleArtifact(name);
         input.circuitBreakerArtifact = MarketConfigFile.circuitBreakerArtifact(name);
-        (input.builder, input.market, input.roles, input.curveParams) = MarketConfigFile.read(name);
+        (input.builder, input.market, input.roles, input.irm) = MarketConfigFile.read(name);
 
         _requireMarketRolePolicy(input.roles, context.agent, context.executor, msg.sender);
         OraclePreflight.validate(
@@ -133,7 +132,7 @@ contract AddMarket is Script, ProtocolDeployer {
         }
         if (input.builder == address(0)) revert ConfigToml.MissingConfigValue(".builder");
 
-        input.irm = address(LidoLendMarketBuilder(input.builder).IRM_ROUTER());
+        input.irmRouter = address(LidoLendMarketBuilder(input.builder).IRM_ROUTER());
         {
             string memory protocolArtifact = vm.readFile(ProtocolConfigFile.protocolPath());
             DeployConfig memory deployConfig = DeployConfigFile.read(config);
@@ -154,12 +153,12 @@ contract AddMarket is Script, ProtocolDeployer {
         ) revert GuardianArtifactMismatch(input.recordedGuardianSignals, input.market.guardianSignals);
 
         Id proposedId = MarketParams({
-                loanToken: input.market.loanToken,
-                collateralToken: input.market.collateralToken,
-                oracle: input.market.oracle,
-                irm: input.irm,
-                lltv: input.market.lltv
-            }).id();
+            loanToken: input.market.loanToken,
+            collateralToken: input.market.collateralToken,
+            oracle: input.market.oracle,
+            irm: input.irmRouter,
+            lltv: input.market.lltv
+        }).id();
         ProtocolConfigFile.requireMarketUndeployed(name);
         ProtocolConfigFile.requireMarketIdUndeployed(Id.unwrap(proposedId));
         if (input.market.guardianSignals == address(0)) {
@@ -182,12 +181,12 @@ contract AddMarket is Script, ProtocolDeployer {
             builder: input.builder,
             controller: built.controller,
             vault: built.vault,
-            irm: input.irm,
+            irmRouter: input.irmRouter,
             ownerFacade: input.ownerFacade,
             riskStewardDashboard: input.riskStewardDashboard,
             market: input.market,
             roles: input.roles,
-            curveParams: input.curveParams,
+            irm: input.irm,
             deployedBlock: deployedBlock
         });
 
@@ -212,11 +211,11 @@ contract AddMarket is Script, ProtocolDeployer {
                 agent,
                 managers,
                 GuardianConfig({
-                    guardians: cfg.guardians,
-                    quorum: cfg.quorum,
-                    suspectWindow: cfg.suspectWindow,
-                    accessLimiter: cfg.accessLimiter
-                })
+                guardians: cfg.guardians,
+                quorum: cfg.quorum,
+                suspectWindow: cfg.suspectWindow,
+                accessLimiter: cfg.accessLimiter
+            })
             );
     }
 }

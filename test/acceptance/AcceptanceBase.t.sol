@@ -28,6 +28,7 @@ import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 // --- Minimal read/write surfaces (UDVT `Id` is ABI-identical to bytes32, so bytes32 params match) ---
 
 interface IReadController {
@@ -67,6 +68,16 @@ interface IReadCurve {
 
 interface ICurveConfig {
     function getCurveParams() external view returns (AdaptiveCurveParams memory);
+}
+
+/// @dev The kinked model's surface. `LinearKinkIrm` is stateless: params live in its own storage keyed by
+///      market id (no per-market config contract as the adaptive curve has), and the public mapping getter
+///      returns the struct's members as a tuple.
+interface IReadKink {
+    function setMarketKinkParams(MarketParams calldata marketParams, LinearKinkParams calldata params) external;
+    function marketKinkParams(bytes32 id) external view returns (uint64, uint64, uint64, uint64);
+    function owner() external view returns (address);
+    function manager() external view returns (address);
 }
 
 interface IReadBuilder {
@@ -224,6 +235,11 @@ abstract contract AcceptanceContext is Test {
     address internal oracle;
     address internal guardianSignals;
     address internal curve;
+    /// @dev The IRM the activation motion routes for THIS market: the backbone `curve`, or the instance the
+    ///      market's `irm_artifact` names under `irms/`.
+    address internal routedIrm;
+    /// @dev True when `routedIrm` is a `LinearKinkIrm`, i.e. the market carries `[kink]` instead of `[curve]`.
+    bool internal kinked;
     address internal controller;
     address internal vault;
     uint256 internal lltv;
@@ -259,6 +275,8 @@ abstract contract AcceptanceContext is Test {
     string internal guardiansCfg;
     string internal oracleCfg;
     string internal circuitBreakerCfg;
+    /// @dev The routed IRM's `irms/<name>.toml`, loaded only for a kinked market.
+    string internal irmCfg;
     string internal exitBooksArtifact;
     string internal registry;
 
@@ -315,6 +333,7 @@ abstract contract AcceptanceContext is Test {
         marketId = vm.parseTomlBytes32(toml, ".market.id");
         assertEq(_addr(".market.builder"), builder, "market builder != protocol builder");
         assertEq(_addr(".market.irm"), router, "market IRM != protocol router");
+        _loadRoutedIrm(artifactsDir);
         assertEq(vm.parseTomlAddress(oracleCfg, ".oracle.address"), oracle, "oracle artifact address");
         assertEq(
             vm.parseTomlAddress(guardiansCfg, ".guardian_signals.address"),
@@ -356,6 +375,22 @@ abstract contract AcceptanceContext is Test {
         expectedSuspectWindow = vm.parseTomlUint(guardiansCfg, ".guardian_signals.suspect_window");
         expectedAccessLimiter = _grd(".guardian_signals.access_limiter");
         gManagers = new address[](0);
+    }
+
+    /// @dev Resolve the IRM the market is routed to from its `irm_artifact` reference: the reserved
+    ///      `"adaptive-curve"` names the backbone singleton from `protocol.toml`; anything else is an
+    ///      `irms/<name>.toml` artifact in the same run. A market records the params of exactly the model it
+    ///      names, so this also fixes which section (`[curve]` / `[kink]`) the assertions read.
+    function _loadRoutedIrm(string memory artifactsDir) internal {
+        string memory ref = vm.parseTomlString(toml, ".market.irm_artifact");
+        kinked = keccak256(bytes(ref)) != keccak256(bytes("adaptive-curve"));
+        if (!kinked) {
+            routedIrm = curve;
+            return;
+        }
+        irmCfg = vm.readFile(string.concat(artifactsDir, "irms/", ref, ".toml"));
+        routedIrm = vm.parseTomlAddress(irmCfg, ".irm.address");
+        assertGt(routedIrm.code.length, 0, "routed IRM artifact has no code");
     }
 
     function _addr(string memory key) internal view returns (address) {
@@ -578,6 +613,38 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         });
     }
 
+    /// @dev A role holder recorded in the routed IRM's artifact (`owner` / `manager`).
+    function _routedIrmRole(string memory key) internal view returns (address) {
+        return vm.parseTomlAddress(irmCfg, string.concat(".irm.", key));
+    }
+
+    /// @dev The per-market kink params used by the activation simulation.
+    function _expectedKinkParams() internal view returns (LinearKinkParams memory) {
+        return LinearKinkParams({
+            optimalUtilization: uint64(vm.parseTomlUint(toml, ".kink.optimal_utilization")),
+            baseRate: uint64(vm.parseTomlUint(toml, ".kink.base_rate")),
+            slope1: uint64(vm.parseTomlUint(toml, ".kink.slope1")),
+            slope2: uint64(vm.parseTomlUint(toml, ".kink.slope2"))
+        });
+    }
+
+    /// @dev The live params of whichever model the market names, against the artifact's recorded section.
+    function _assertRoutedIrmParams() internal view {
+        if (kinked) {
+            LinearKinkParams memory e = _expectedKinkParams();
+            (uint64 optimalUtilization, uint64 baseRate, uint64 slope1, uint64 slope2) =
+                IReadKink(routedIrm).marketKinkParams(marketId);
+            assertEq(uint256(optimalUtilization), uint256(e.optimalUtilization), "optimalUtilization");
+            assertEq(uint256(baseRate), uint256(e.baseRate), "baseRate");
+            assertEq(uint256(slope1), uint256(e.slope1), "slope1");
+            assertEq(uint256(slope2), uint256(e.slope2), "slope2");
+            return;
+        }
+        address cfg = IReadCurve(curve).marketCurveConfig(marketId);
+        assertGt(cfg.code.length, 0, "curve config missing for market");
+        _assertCurveParams(ICurveConfig(cfg).getCurveParams());
+    }
+
     function _assertCurveParams(AdaptiveCurveParams memory cp) internal view {
         AdaptiveCurveParams memory e = _expectedCurveParams();
         assertEq(cp.curveSteepness, e.curveSteepness, "curveSteepness");
@@ -597,6 +664,12 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(IReadRouter(router).manager(), executor, "router.manager=executor");
         assertEq(IReadCurve(curve).owner(), agent, "curve.owner=agent");
         assertEq(IReadCurve(curve).manager(), executor, "curve.manager=executor");
+        // A market routed to its own IRM instance splits owner/manager the same way the backbone curve does;
+        // the `irms/` artifact records both, so hold the live instance to them.
+        if (kinked) {
+            assertEq(IReadKink(routedIrm).owner(), _routedIrmRole("owner"), "routedIrm.owner");
+            assertEq(IReadKink(routedIrm).manager(), _routedIrmRole("manager"), "routedIrm.manager");
+        }
         _assertAddressSetEq(
             IReadDashboard(dashboard).marketStewards(Id.wrap(marketId)), new address[](0), "market steward"
         );
@@ -724,9 +797,14 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         (,,,, uint128 lastUpdate,) = IReadCore(core).market(marketId);
         assertEq(uint256(lastUpdate), 0, "market already created on core");
         assertEq(IReadCore(core).marketController(marketId), address(0), "controller already bound");
-        assertEq(IReadRouter(router).marketIrm(marketId), address(0), "curve already routed");
-        // Per-market curve params are activation calldata on the singleton — none may exist while inert.
-        assertEq(IReadCurve(curve).marketCurveConfig(marketId), address(0), "curve params already set");
+        assertEq(IReadRouter(router).marketIrm(marketId), address(0), "IRM already routed");
+        // Per-market IRM params are activation calldata on the routed singleton — none may exist while inert.
+        if (kinked) {
+            (uint64 optimalUtilization,,,) = IReadKink(routedIrm).marketKinkParams(marketId);
+            assertEq(uint256(optimalUtilization), 0, "kink params already set");
+        } else {
+            assertEq(IReadCurve(curve).marketCurveConfig(marketId), address(0), "curve params already set");
+        }
         assertEq(IReadCircuitBreaker(circuitBreaker).getPauser(controller), address(0), "pauser already registered");
     }
 
@@ -742,11 +820,9 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertGt(uint256(lastUpdate), 0, "market not created on core");
         assertEq(IReadCore(core).marketController(marketId), controller, "controller not bound");
         assertEq(IReadCore(core).isSettlementEnabled(marketId), enableSettlement, "settlement flag");
-        assertEq(IReadRouter(router).marketIrm(marketId), curve, "curve not routed");
-        // The motion set this market's curve params on the singleton.
-        address cfg = IReadCurve(curve).marketCurveConfig(marketId);
-        assertGt(cfg.code.length, 0, "curve config missing for market");
-        _assertCurveParams(ICurveConfig(cfg).getCurveParams());
+        assertEq(IReadRouter(router).marketIrm(marketId), routedIrm, "IRM not routed");
+        // The motion set this market's params on the routed model.
+        _assertRoutedIrmParams();
         assertNotEq(pauserCommittee, address(0), "CircuitBreaker pauser is not registered");
         assertEq(IReadCircuitBreaker(circuitBreaker).getPauser(controller), pauserCommittee, "pauser not registered");
     }
@@ -773,8 +849,9 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertNotEq(testPauserCommittee, address(0), "test pauser committee is zero");
         MarketParams memory p = _params();
         vm.startPrank(executor);
-        IReadCurve(curve).setMarketCurveParams(p, _expectedCurveParams());
-        IReadRouter(router).setMarketIrm(p, curve);
+        if (kinked) IReadKink(routedIrm).setMarketKinkParams(p, _expectedKinkParams());
+        else IReadCurve(curve).setMarketCurveParams(p, _expectedCurveParams());
+        IReadRouter(router).setMarketIrm(p, routedIrm);
         IReadFacade(facade).createMarket(p, controller, enableSettlement);
         IReadCircuitBreaker(circuitBreaker).registerPauser(controller, testPauserCommittee);
         vm.stopPrank();
