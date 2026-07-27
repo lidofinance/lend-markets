@@ -410,13 +410,15 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
         position.collateral -= hookData.assets;
-        uint256 activeCollateral = position.collateral - inactive;
+
+        if (inactive > position.collateral) revert ActivationLockActive();
 
         // With open debt, the remaining active collateral must still cover the debt at LLTV. `_getMaxBorrow`
         // returns 0 for sub-threshold dust, so a debt-bearing position cannot be drained below
         // `minActivationAmount` — to exit below it, repay the debt to zero first (a zero-debt withdraw is
         // unconstrained here).
         if (position.borrowShares != 0) {
+            uint256 activeCollateral = position.collateral - inactive;
             MarketView memory marketView = _marketView(id);
             if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, activeCollateral)) {
                 revert InsufficientActiveCollateral();

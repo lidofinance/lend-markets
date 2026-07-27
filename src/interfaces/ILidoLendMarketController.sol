@@ -58,6 +58,10 @@ interface ILidoLendMarketController is
     /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
 
+    /// @notice Thrown when a withdrawal would leave raw collateral below the amount still held in the
+    ///         un-matured buckets (a locked activating lot plus dust).
+    error ActivationLockActive();
+
     /// @notice Thrown when a borrow would mint borrow shares while transferring zero loan assets.
     error ZeroBorrowAssets();
 
