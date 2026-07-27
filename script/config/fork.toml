@@ -1,10 +1,6 @@
-# Deploy config for the fork profile: a full protocol stood up on a local anvil fork of mainnet, which the
-# read-only fork suites (test/fork/) then drive. It is an ordinary config in the canonical tree — the same
-# scripts, the same artifact layout, the same activation motion as a real run. What makes it fork-only is the
-# governance addresses: mainnet's Agent and EVMScriptExecutor, which only an impersonating node can act as.
-#
-# `network = "fork"` names THIS file as the source of the [external] table, which is where the fork suites read
-# the mainnet token and feed addresses from (protocol.toml records the network, so the suites need no selector).
+# Deploy config for the fork profile: the protocol stood up on a local anvil fork of mainnet. Restricted to a
+# fork because its governance addresses are mainnet's, which only an impersonating node can act as.
+# `network = "fork"` names this file as the source of [external].
 network = "fork"
 chain_id = 1
 
@@ -12,20 +8,15 @@ chain_id = 1
 agent = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
 evm_script_executor = "0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"
 
-# The fork suites exercise the settle / fallbackExit paths, which need both exit books.
+# Required by the settle and fallbackExit paths.
 exit_books = true
 exit_book_max_request_lifetime = 31536000  # 365 days
 
-# Three markets, one per thing the suites need to bind:
-#   fork-weth-wsteth        — the general-purpose WETH/wstETH market (adaptive-curve IRM);
-#   fork-weth-wsteth-kinked — the same pair routed to the deployed LinearKinkIrm;
-#   fork-usdy-usdt          — the USD/Treasuries market (transfer-gated USDY collateral).
-# The two WETH markets share one guardian group but deploy separate wstETH oracle instances: the routed IRM is
-# not part of MarketParams, so a distinct oracle is what gives them distinct market ids.
+# The two WETH markets share one guardian group and deploy separate wstETH oracle instances: the routed IRM is
+# not part of MarketParams, so the oracle is what distinguishes their market ids.
 markets = ["fork-weth-wsteth", "fork-weth-wsteth-kinked", "fork-usdy-usdt"]
 
-# Mainnet addresses the deploy does not create. Read by the fork suites via `_ext("wstEth")`; same set and same
-# keys as mainnet.toml.
+# Mainnet addresses the deploy does not create. Read by the fork suites through `_ext`.
 [external]
 weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 stEth = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"

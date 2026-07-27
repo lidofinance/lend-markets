@@ -10,11 +10,10 @@ import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
 import {IrmConfigFile} from "./lib/IrmConfigFile.sol";
 
 /// @notice Deploys a bare `LinearKinkIrm` and records it as `deployed/<RUN>/irms/<name>.toml`.
-/// @dev This neither routes any market to the instance nor sets per-market kink params: both are activation
-///      calldata. A market opts in by naming this artifact in `market.irm_artifact`.
+/// @dev Neither routes a market nor sets per-market params; both are activation inputs. A market selects this
+///      instance through `market.irm_artifact`.
 contract DeployLinearKinkIrm is Script {
-    /// @param config The deploy config name (`script/config/<config>.toml`).
-    /// @param name The artifact name markets reference as `market.irm_artifact`, e.g. `"linear-kink"`.
+    /// @param name The artifact name markets reference as `market.irm_artifact`.
     function run(string memory config, string memory name) external returns (address irm) {
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
         DeployConfigFile.requireChainId(deployConfig);

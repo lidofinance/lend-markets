@@ -44,13 +44,13 @@ struct MarketDeployment {
     address builder;
     address controller;
     address vault;
-    /// @dev The market's immutable `params.irm` — always the protocol IRM router, never the model itself.
+    /// @dev The market's immutable `params.irm`: the protocol IRM router, never the model itself.
     address irmRouter;
     address ownerFacade;
     address riskStewardDashboard;
     LidoLendMarketBuilder.MarketSpec market;
     MarketRoles roles;
-    /// @dev Which model the activation motion routes behind the router, and its params.
+    /// @dev The model routed behind the router at activation, and its params.
     IrmSelection irm;
     uint256 deployedBlock;
 }
@@ -297,8 +297,8 @@ library ProtocolConfigFile {
         s = string.concat(s, _kvQuoted("ltv_step_bps", m.settlementConfig.ltvStepBps));
     }
 
-    /// @dev The params for the model the market names — `[kink]` or `[curve]`, never both, mirroring the
-    ///      market config. Consumers branch on `market.irm_artifact`.
+    /// @dev Emits `[kink]` or `[curve]`, never both, mirroring the market config. Consumers branch on
+    ///      `market.irm_artifact`.
     function _irmParamsSection(IrmSelection memory irm) private pure returns (string memory) {
         return irm.kinked ? _kinkSection(irm.kink) : _curveSection(irm.curve);
     }

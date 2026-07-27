@@ -1,6 +1,5 @@
-# USD/Treasuries market (USDT loan / USDY collateral) for the `fork` profile — the market
-# test/fork/UsdyTreasuriesMarket.t.sol binds. Field shapes mirror markets/weth-wsteth.toml; economic values are
-# draft, carried over from that suite.
+# USD/Treasuries market (USDT loan / USDY collateral) for the `fork` profile, bound by
+# test/fork/UsdyTreasuriesMarket.t.sol. Economic values are draft, carried over from that suite.
 
 # Required by AddMarket; ignored by DeployProtocol (it uses the builder it just deployed).
 builder = "0x0000000000000000000000000000000000000000"
@@ -12,7 +11,6 @@ collateral_token = "0x96F6eF951840721AdBF46Ac996b59E0235CB985C"  # USDY (18 dec,
 oracle = "0x0000000000000000000000000000000000000000"
 oracle_artifact = "fork-usdy-usdt"
 lltv = "860000000000000000"  # 0.86 WAD
-# No irm_artifact key: routed to the backbone AdaptiveCurveIrm, so it carries [curve] below.
 # Zero deploys or resolves the registry identified by guardian_group.
 guardian_signals = "0x0000000000000000000000000000000000000000"
 guardian_group = "fork-usdy-usdt"

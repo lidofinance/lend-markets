@@ -1,34 +1,12 @@
 #!/usr/bin/env bash
-# Stands up a complete, activated protocol on a local anvil fork of mainnet, so the read-only fork suites
-# (test/fork/) have a deployment to bind to before any real network is live. Draft, not production-ready.
+# Deploys and activates the `fork` profile on a local anvil fork of mainnet. Driver over the `make deploy-*`
+# targets; see script/DEPLOYMENT.md.
 #
-# It is a thin driver over the ordinary deploy targets — no fork-only deploy mechanism of its own. Every step is
-# the same `make deploy-*` a real run uses, with the `fork` config (script/config/fork.toml) and the run
-# directory `deployed/fork/`, producing the same immutable artifacts. The one step a real network does NOT run
-# this way is the last: activation is an EasyTrack motion there, replayed here by
-# script/ActivateMarkets.s.sol as the impersonated EVMScriptExecutor.
-#
-# Pipeline (order is load-bearing):
-#   1. anvil, forking the upstream mainnet RPC, chain-id 1, auto-impersonate
-#   2. fund the impersonated governance accounts so their transactions pay gas
-#   3. CircuitBreaker            — every market's roles.pausers[0]; DeployProtocol requires it to exist
-#   4. oracles (3)               — resolved by the market configs; DeployProtocol runs OraclePreflight on them
-#   5. LinearKinkIrm             — fork-weth-wsteth-kinked names it, and MarketConfigFile checks it resolves
-#   6. protocol                  — backbone + exit books + the three inert markets
-#   7. vault-v2 + adapter        — needs the run's core and IRM router from protocol.toml
-#   8. acceptance (inert)        — every market verified ready for the motion, and the motion simulated
-#   9. activation                — the motion replay, as the executor
-#  10. acceptance (live)         — every market verified activated and fully wired
-#
-# Usage:
 #   bash script/provision-fork.sh [upstream-rpc]   # provision; leaves anvil running
-#   bash script/provision-fork.sh stop             # kill the anvil a previous run started
+#   bash script/provision-fork.sh stop             # stop the anvil a previous run started
 #
-# The upstream RPC to fork FROM comes from the argument or `RPC_URL`, and must be a real archive node — never
-# the local anvil, which would make it fork itself. Every deploy step is then pointed at the local anvil on the
-# command line, so `.env`'s RPC_URL keeps its one meaning: the real network.
-#
-# anvil, cast, forge and make must be on PATH.
+# The upstream to fork comes from the argument or RPC_URL and must be an archive node, not the local anvil.
+# Deploy steps receive the local anvil URL on the command line, so RPC_URL keeps one meaning.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,8 +20,7 @@ PID_FILE="deployed/${RUN_NAME}-anvil.pid"
 LOG_FILE="deployed/${RUN_NAME}-anvil.log"
 CONFIG_TOML="script/config/${CONFIG_NAME}.toml"
 
-# anvil's first well-known dev account — the provisioning deployer. It holds no protocol role afterwards, which
-# is what `DeployConfigFile.requireActorSeparation` enforces against the config's agent/executor.
+# anvil's first dev account. Holds no protocol role; requireActorSeparation enforces that against the config.
 DEPLOYER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 TEN_ETHER_HEX="0x8AC7230489E80000"
 
@@ -87,8 +64,7 @@ case "$UPSTREAM" in
   *127.0.0.1*|*localhost*) die "upstream RPC must be a real archive node, not the local anvil ($UPSTREAM)" ;;
 esac
 
-# Probe the upstream first: a bad URL or an expired key fails here in a second, with the node's own message,
-# instead of surfacing as "anvil did not come up" a minute later.
+# Probed before anvil starts: an unreachable upstream reports the node's own error instead of a 60s timeout.
 UPSTREAM_CHAIN_ID="$(cast chain-id --rpc-url "$UPSTREAM" 2>&1)" \
   || die "upstream RPC is not answering: $UPSTREAM_CHAIN_ID"
 [ "$UPSTREAM_CHAIN_ID" = "1" ] || die "upstream RPC is not mainnet (chain id $UPSTREAM_CHAIN_ID)"
@@ -124,13 +100,11 @@ cast rpc anvil_setBalance "$AGENT" "$TEN_ETHER_HEX" --rpc-url "$RPC_LOCAL" >/dev
 cast rpc anvil_setBalance "$EXECUTOR" "$TEN_ETHER_HEX" --rpc-url "$RPC_LOCAL" >/dev/null
 log "agent $AGENT and executor $EXECUTOR funded with 10 ETH each"
 
-# --- 3. fresh run directory -----------------------------------------------------------------------------------
-# The artifact writers are immutable and refuse to replace a record, so a re-run starts from a clean directory.
+# The artifact writers refuse to replace a record, so a re-run needs a clean directory.
 rm -rf "$RUN_DIR"
 log "cleared run dir $RUN_DIR"
 
-# Every step is an ordinary deploy target, pointed at the local anvil with the provisioning deployer. VERIFY is
-# off: there is no verifier for a local node.
+# VERIFY is off: a local node has no verifier.
 deploy() {
   make "$@" CONFIG="$CONFIG_NAME" RUN="$RUN_NAME" RPC_URL="$RPC_LOCAL" \
     DEPLOYER_PRIVATE_KEY="$DEPLOYER_KEY" VERIFY=false
@@ -147,8 +121,7 @@ done
 log "deploying USDY stable oracle ($ORACLE_USDY)"
 deploy deploy-oracle-usdy ORACLE="$ORACLE_USDY"
 
-# Before the protocol: a kinked market's config names this artifact, and MarketConfigFile refuses to read a
-# market whose irm_artifact does not resolve.
+# Precedes the protocol: MarketConfigFile rejects a market whose irm_artifact does not resolve.
 log "deploying LinearKinkIrm ($IRM_NAME)"
 deploy deploy-linear-kink-irm IRM="$IRM_NAME"
 
@@ -158,28 +131,20 @@ deploy deploy-protocol
 log "deploying vault-v2 vault + adapter ($VAULT_NAME)"
 deploy deploy-vault-v2 VAULT="$VAULT_NAME" ADAPTER="$VAULT_NAME"
 
-# The market list comes from the config, not from a second copy here: adding a market must not silently skip
-# its verification.
+# Read from the config so that adding a market cannot skip its verification.
 read -r -a MARKETS <<<"$(sed -n 's/^markets *= *\[\(.*\)\]/\1/p' "$CONFIG_TOML" | tr -d ' "' | tr ',' ' ')"
 [ "${#MARKETS[@]}" -gt 0 ] || die "could not read the market list from $CONFIG_TOML"
 
-# Verification is split across the lifecycle exactly as a real deployment's is, and it is what makes the
-# "production-shaped artifacts" claim checkable rather than asserted: test/acceptance/ is the same suite a real
-# run is verified with, reading the immutable artifacts this run just wrote. Every acceptance test forks the node
-# for itself, so nothing it does — pausing the controller, granting roles, simulating the motion — touches the
-# live anvil.
-#
-# While the markets are still inert, `MarketMotionReadiness` asserts each one is fully prepared and NOT yet
-# bound; `MarketActivated` self-skips. This is the only point at which that half of the suite can run.
+# Verification uses the same acceptance suite as a real deployment, against the artifacts this run wrote. Each
+# acceptance test forks the node itself, so its state changes do not reach the anvil. While the markets are
+# inert MarketMotionReadiness runs and MarketActivated self-skips.
 for market in "${MARKETS[@]}"; do
   log "verifying $market is ready for the motion (acceptance)"
   make acceptance-run RUN="$RUN_NAME" MARKET="$market" RPC_URL="$RPC_LOCAL"
 done
 
-# The two-market simulation runs the motion itself against inert markets, so it is what exercises the activation
-# WRITE path — including setting a kinked market's params — and proves activating one market does not disturb the
-# other's shared singleton state. Uses the first two markets in the config; in this profile that is the
-# adaptive-curve / kinked pair, so both routing paths are covered.
+# The two-market simulation performs the motion itself, covering the activation write path (including a kinked
+# market's params) and cross-market singleton state. The first two markets are the adaptive/kinked pair.
 if [ "${#MARKETS[@]}" -ge 2 ]; then
   log "simulating the activation motion over ${MARKETS[0]} + ${MARKETS[1]} (acceptance)"
   make acceptance-run-multi RUN="$RUN_NAME" MARKET_A="${MARKETS[0]}" MARKET_B="${MARKETS[1]}" RPC_URL="$RPC_LOCAL"
@@ -188,8 +153,7 @@ fi
 log "activating markets (motion replay as the executor)"
 deploy activate-markets
 
-# Now the mirror image: `MarketActivated` asserts each market is bound, configured and live — including the
-# params of whichever model it is routed to — and `MarketMotionReadiness` self-skips.
+# After activation the halves swap: MarketActivated runs, MarketMotionReadiness self-skips.
 for market in "${MARKETS[@]}"; do
   log "verifying $market is activated and fully wired (acceptance)"
   make acceptance-run RUN="$RUN_NAME" MARKET="$market" RPC_URL="$RPC_LOCAL"

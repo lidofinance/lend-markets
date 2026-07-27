@@ -1,7 +1,4 @@
-# A second wstETH rate oracle instance for the fork profile, identical to oracles/weth-wsteth.toml.
-#
-# It exists only to give fork-weth-wsteth-kinked a distinct market id: the routed IRM is not part of
-# MarketParams, so two markets over the same tokens, oracle and lltv would collide. Same implementation, same
-# wstETH, same proxy admin — only the proxy address differs.
+# A second wstETH rate oracle instance, identical to oracles/weth-wsteth.toml. It exists only to give
+# fork-weth-wsteth-kinked a distinct market id — see that market's config.
 wsteth = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
 proxy_admin = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"  # Agent

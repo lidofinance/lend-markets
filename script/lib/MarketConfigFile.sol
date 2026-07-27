@@ -17,8 +17,8 @@ import {GuardianSignalsConfigFile} from "./GuardianSignalsConfigFile.sol";
 import {CircuitBreakerConfigFile} from "./CircuitBreakerConfigFile.sol";
 import {IrmConfigFile} from "./IrmConfigFile.sol";
 
-/// @notice The IRM a market is routed to at activation, with the params for that model — the two travel
-///         together, so a config can never name one model and carry the other's params.
+/// @notice The IRM a market is routed to at activation and the params for that model. Holding both in one
+///         value prevents a config that names one model and carries the other's params.
 /// @param artifact The `market.irm_artifact` reference: `IrmConfigFile.ADAPTIVE_CURVE` for the backbone
 ///        instance in `protocol.toml`, otherwise an `irms/<name>.toml` artifact in the run.
 /// @param kinked True when `artifact` names a `LinearKinkIrm`, i.e. `kink` is set and `curve` is unset.
@@ -79,8 +79,8 @@ library MarketConfigFile {
         if (circuitBreaker == address(0)) revert ConfigToml.MissingConfigValue(".market.circuit_breaker_artifact");
         roles.pausers = _prepend(circuitBreaker, roles.pausers);
 
-        // The activation motion resolves the reference; catch a typo here, at deploy time, rather than there.
-        // The backbone instance lives in `protocol.toml` and has no `irms/` artifact.
+        // Resolved here so an unrecorded reference fails at deploy time rather than at activation. The
+        // backbone instance lives in `protocol.toml` and has no `irms/` artifact.
         if (irm.kinked && IrmConfigFile.readDeployed(irm.artifact) == address(0)) {
             revert ConfigToml.MissingConfigValue(".market.irm_artifact");
         }
@@ -125,8 +125,8 @@ library MarketConfigFile {
         });
     }
 
-    /// @dev `market.irm_artifact`, defaulting to the backbone adaptive-curve IRM when the key is absent — the
-    ///      overwhelmingly common case, so an existing market config needs no new key to keep its behaviour.
+    /// @dev Defaults to the backbone adaptive-curve IRM when the key is absent, so a market config that
+    ///      predates the key keeps its behaviour.
     function _irmArtifactRef(string memory toml) private view returns (string memory) {
         if (!vm.keyExistsToml(toml, ".market.irm_artifact")) return IrmConfigFile.ADAPTIVE_CURVE;
         return ConfigToml.requireString(toml, ".market.irm_artifact");
@@ -212,9 +212,7 @@ library MarketConfigFile {
         });
     }
 
-    /// @dev The market's IRM choice and the params for exactly that model. A kinked market must carry `[kink]`
-    ///      and must NOT carry `[curve]` (and the reverse), so a config can never name one model and be
-    ///      activated with the other's params.
+    /// @dev A kinked market must carry `[kink]` and no `[curve]`; an adaptive-curve market the reverse.
     function _parseIrm(string memory toml) private view returns (IrmSelection memory irm) {
         irm.artifact = _irmArtifactRef(toml);
         irm.kinked = !IrmConfigFile.isAdaptiveCurve(irm.artifact);
@@ -230,8 +228,8 @@ library MarketConfigFile {
         }
     }
 
-    /// @dev Linear-kink params. Rates are per-second WAD and pack into `uint64`; the model's own setter caps the
-    ///      peak (`baseRate + slope1 + slope2`), so validate only what narrowing would silently corrupt.
+    /// @dev Rates are per-second WAD packed into `uint64`. Validates what narrowing would silently corrupt;
+    ///      the model's setter caps the peak.
     function _parseKink(string memory toml) private pure returns (LinearKinkParams memory params) {
         params = LinearKinkParams({
             optimalUtilization: _uint64(toml, ".kink.optimal_utilization"),

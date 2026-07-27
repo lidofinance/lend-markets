@@ -6,26 +6,23 @@ import {Vm} from "forge-std/Vm.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 import {ConfigToml} from "./ConfigToml.sol";
 
-/// @param owner The vault's initial owner, i.e. the account that appoints its curator.
-/// @param asset The vault's ERC-20 asset. Must be the loan token of every market it allocates into.
+/// @param owner Appoints the vault's curator.
+/// @param asset Must be the loan token of every market the vault allocates into.
 struct VaultV2Config {
     address owner;
     address asset;
 }
 
-/// @param vaultArtifact The `vaults/<name>` this adapter's parent vault is recorded as. The adapter's parent
-///        vault is immutable, so the pairing is fixed at deploy time and asserted against it.
+/// @param vaultArtifact The `vaults/<name>` holding the parent vault. Immutable in the adapter, so the pairing
+///        is fixed at deploy time and asserted against it.
 struct VaultV2AdapterConfig {
     string vaultArtifact;
 }
 
-/// @notice Configs and run artifacts for an external vault-v2 vault and its Morpho adapter. The two are one
-///         deploy operation (the adapter's parent vault is a constructor immutable) but keep separate configs
-///         and artifacts, so several adapters can sit over different vaults in one run.
-/// @dev The adapter takes no economic inputs of its own: besides its parent vault, its immutables are the
-///      protocol core and IRM router, which the deploy reads from the run's `protocol.toml`. Its config
-///      therefore carries only the parent-vault reference — deliberately thin, so the pairing is stated in a
-///      committed file rather than inferred from the invocation.
+/// @notice Configs and run artifacts for an external vault-v2 vault and its Morpho adapter — one deploy
+///         operation, separate artifacts so several adapters can sit over different vaults in one run.
+/// @dev The adapter's only config input is its parent vault; its other immutables (core, IRM router) come from
+///      the run's `protocol.toml`.
 library VaultV2ConfigFile {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
@@ -47,7 +44,7 @@ library VaultV2ConfigFile {
         cfg.vaultArtifact = ConfigToml.requireString(toml, ".vault_artifact");
     }
 
-    /// @notice Assert the adapter config's declared parent vault is the vault being deployed with it.
+    /// @notice Assert the config's declared parent vault is the one being deployed with it.
     function requireVaultArtifact(VaultV2AdapterConfig memory cfg, string memory vaultName) internal pure {
         if (keccak256(bytes(cfg.vaultArtifact)) != keccak256(bytes(vaultName))) {
             revert VaultArtifactMismatch(cfg.vaultArtifact, vaultName);
@@ -82,9 +79,8 @@ library VaultV2ConfigFile {
         vm.writeFile(path, artifact);
     }
 
-    /// @param vaultArtifact The `vaults/<name>` holding `vault`.
-    /// @param core The protocol core the adapter allocates into (its `morpho` immutable).
-    /// @param irmRouter The protocol IRM router (its `adaptiveCurveIrm` immutable — every market's `params.irm`).
+    /// @param core The adapter's `morpho` immutable.
+    /// @param irmRouter The adapter's `adaptiveCurveIrm` immutable — every market's `params.irm`.
     function writeAdapter(
         string memory name,
         address adapter,
@@ -136,7 +132,6 @@ library VaultV2ConfigFile {
         return string.concat(ArtifactMetadataFile.artifactsDir(), "/adapters/", name, ".toml");
     }
 
-    /// @dev Create the artifact subdirectory and refuse to replace an existing record.
     function _prepare(string memory subdir, string memory path) private returns (string memory) {
         ArtifactMetadataFile.ensureArtifactsDir();
         string memory dir = string.concat(ArtifactMetadataFile.artifactsDir(), "/", subdir);

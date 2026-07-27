@@ -10,19 +10,13 @@ import {VaultV2Config, VaultV2AdapterConfig, VaultV2ConfigFile} from "./lib/Vaul
 
 /// @notice Deploys an external vault-v2 vault together with its Morpho adapter over this run's protocol, and
 ///         records them as `vaults/<vaultName>.toml` + `adapters/<adapterName>.toml`.
-/// @dev One operation, two artifacts: the adapter's parent vault is a constructor immutable, so the pair must
-///      be created together. Both are left UNCONFIGURED — no curator, no registered adapter, no caps: those
-///      are the vault owner's calls, not deployment inputs.
-///
-///      Both contracts pin solc 0.8.28 while this repo is on 0.8.35, so they are deployed from their `out/`
-///      artifacts via `vm.deployCode` rather than `new`. `test/utils/_VaultV2CompileTriggers.sol` is what makes
-///      forge emit those artifacts.
+/// @dev The adapter's parent vault is a constructor immutable, so both are created in one broadcast. Neither
+///      is configured here: curator, adapter registration and caps are owner calls, not deployment inputs.
+///      Both contracts pin solc 0.8.28 and are deployed from their `out/` artifacts via `vm.deployCode`.
 contract DeployVaultV2 is Script {
     error DeployFailed(string what);
 
     /// @param config The deploy config name (`script/config/<config>.toml`).
-    /// @param vaultName The `vaults/<vaultName>.toml` config and artifact name.
-    /// @param adapterName The `adapters/<adapterName>.toml` config and artifact name.
     function run(string memory config, string memory vaultName, string memory adapterName)
         external
         returns (address vault, address adapter)
@@ -36,7 +30,6 @@ contract DeployVaultV2 is Script {
         VaultV2ConfigFile.requireVaultArtifact(adapterCfg, vaultName);
         VaultV2ConfigFile.requireUndeployed(vaultName, adapterName);
 
-        // The adapter's `morpho` / `adaptiveCurveIrm` immutables are this run's backbone, never config inputs.
         string memory protocol = vm.readFile(ProtocolConfigFile.protocolPath());
         address core = vm.parseTomlAddress(protocol, ".protocol.core");
         address irmRouter = vm.parseTomlAddress(protocol, ".protocol.irm_router");

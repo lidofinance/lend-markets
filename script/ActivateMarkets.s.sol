@@ -12,10 +12,8 @@ import {DeployConfig, DeployConfigFile} from "./lib/DeployConfigFile.sol";
 import {IrmConfigFile} from "./lib/IrmConfigFile.sol";
 import {ProtocolConfigFile} from "./lib/ProtocolConfigFile.sol";
 
-// --- Minimal write surfaces, mirroring test/acceptance/AcceptanceBase.t.sol. The IRM submodule's setters take
-//     its own nested `MarketParams`, but that type is ABI-identical to the core's, so the core `MarketParams`
-//     matches; `setMarketIrm` takes the IRM as a plain `address` for the same reason. The CircuitBreaker pins
-//     solc 0.8.34 and cannot be imported here, so it too is reached through a local interface. ---
+// --- Minimal write surfaces. The IRM submodule's nested `MarketParams` is ABI-identical to the core's, so the
+//     core type matches; the CircuitBreaker pins solc 0.8.34 and cannot be imported here. ---
 
 interface IActivationCurve {
     function setMarketCurveParams(MarketParams calldata marketParams, AdaptiveCurveParams calldata curveParams) external;
@@ -60,26 +58,12 @@ interface IActivationCore {
         );
 }
 
-/// @notice Replays the `LidoLendActivateMarket` EasyTrack motion for every market the deploy config lists,
-///         binding the inert markets recorded under `deployed/<RUN>/` and broadcasting as the
-///         `EVMScriptExecutor`. Idempotent: an already-activated market (core `market(id).lastUpdate != 0`) is
-///         skipped with a log line, so a run can be resumed.
-/// @dev Draft, not production-ready — a real activation is the governance motion, not this script. Model of
-///      that motion, in the mandatory order (an unset IRM reverts on its first `borrowRate` ping, so params
-///      must be set before `createMarket`):
-///        1. set the routed model's per-market params — `setMarketCurveParams` or `setMarketKinkParams`
-///        2. `IrmRouter.setMarketIrm(params, routedIrm)`
-///        3. `LidoLendOwner.createMarket(params, controller, true)`
-///        4. `CircuitBreaker.registerPauser(controller, committee)`
-///        5. exit-book allowances (`setMarketAllowed` / `setVaultAllowed`) — ONLY when the run has exit books
-///      Every input comes from the market's immutable artifact, never from the config: the artifact is the
-///      reviewed record, and it is what `test/acceptance/` asserts the live stack against. `params` is
-///      rebuilt from it and cross-checked against the recorded id, so a config/artifact disagreement fails
-///      loudly.
-///
-/// Usage (as the executor, via anvil auto-impersonation):
-///   ARTIFACTS_DIR=<run> forge script script/ActivateMarkets.s.sol --sig 'run(string)' <config> \
-///     --rpc-url "$RPC_URL" --unlocked --sender "$EXECUTOR" --broadcast
+/// @notice Binds every market the deploy config lists, broadcasting as the `EVMScriptExecutor`. Stands in for
+///         the `LidoLendActivateMarket` motion on fork and devnet runs, where governance is not available.
+/// @dev Call order is fixed: the routed model's per-market params precede `createMarket`, whose first
+///      `borrowRate` ping reverts on an unset model. Inputs come from each market's recorded artifact rather
+///      than its config. A market whose `market(id).lastUpdate` is non-zero is already bound and is skipped,
+///      so a partial run can be repeated.
 contract ActivateMarkets is Script {
     using MarketParamsLib for MarketParams;
 
@@ -87,7 +71,7 @@ contract ActivateMarkets is Script {
     error MarketIdMismatch(string name, bytes32 fromParams, bytes32 fromArtifact);
     error UnknownIrmArtifact(string name, string artifactRef);
 
-    /// @dev Shared backbone addresses and activation-time inputs, resolved once in `run`.
+    /// @dev Backbone addresses and activation inputs, resolved once in `run`.
     struct Backbone {
         address router;
         address adaptiveCurveIrm;
@@ -109,8 +93,7 @@ contract ActivateMarkets is Script {
         bb.adaptiveCurveIrm = vm.parseTomlAddress(protocol, ".protocol.adaptive_curve_irm");
         bb.facade = vm.parseTomlAddress(protocol, ".protocol.owner_facade");
         bb.core = vm.parseTomlAddress(protocol, ".protocol.core");
-        // The registered pauser is a runtime motion choice (a real motion routes an emergency committee); the
-        // Agent stands in for it here. The fork suites never read it.
+        // Motion input: governance routes an emergency committee. The Agent stands in for it.
         bb.pauserCommittee = vm.parseTomlAddress(protocol, ".protocol.agent");
 
         string memory exitBooksPath = ProtocolConfigFile.exitBooksPath();
@@ -121,8 +104,7 @@ contract ActivateMarkets is Script {
             bb.erc4626Book = vm.parseTomlAddress(exitBooks, ".exit_books.erc4626");
         }
 
-        // The motion runs as the executor; the wrapper points `--sender` at it. Fail loudly when the
-        // broadcaster is not the router's manager, i.e. not the real executor.
+        // The broadcaster must be the router's manager, i.e. the executor the deployment wired.
         address executor = IActivationRouter(bb.router).manager();
         if (msg.sender != executor) revert WrongSender(executor, msg.sender);
 
@@ -149,7 +131,7 @@ contract ActivateMarkets is Script {
         bytes32 id = Id.unwrap(p.id());
         if (id != artifactId) revert MarketIdMismatch(name, id, artifactId);
 
-        // Idempotency: a bound market has a non-zero interest clock. Skip cleanly so a run can be resumed.
+        // A bound market has a non-zero interest clock.
         (,,,, uint128 lastUpdate,) = IActivationCore(bb.core).market(id);
         if (lastUpdate != 0) {
             console2.log("skip (already activated):", name);
@@ -175,8 +157,8 @@ contract ActivateMarkets is Script {
         console2.log("  routed irm:", routedIrm);
     }
 
-    /// @dev The model this market names: the backbone adaptive-curve singleton from `protocol.toml`, or the
-    ///      instance recorded under `irms/<name>.toml`.
+    /// @dev Resolves `market.irm_artifact` to the backbone adaptive curve recorded in `protocol.toml`, or to
+    ///      the instance recorded under `irms/<name>.toml`.
     function _routedIrm(string memory name, string memory artifact) internal view returns (address irm) {
         string memory artifactRef = vm.parseTomlString(artifact, ".market.irm_artifact");
         if (IrmConfigFile.isAdaptiveCurve(artifactRef)) return bb.adaptiveCurveIrm;
@@ -184,8 +166,7 @@ contract ActivateMarkets is Script {
         if (irm == address(0)) revert UnknownIrmArtifact(name, artifactRef);
     }
 
-    /// @dev Set the per-market params of whichever model is routed, from the section the artifact recorded for
-    ///      it. A market artifact carries `[curve]` or `[kink]`, never both.
+    /// @dev A market artifact carries `[curve]` or `[kink]`, never both, so the section selects the setter.
     function _setIrmParams(address routedIrm, MarketParams memory p, string memory artifact) internal {
         if (vm.keyExistsToml(artifact, ".kink")) {
             IActivationKink(routedIrm)
