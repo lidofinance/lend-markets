@@ -38,6 +38,9 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     /// @notice A zero-address steward was supplied.
     error ZeroSteward();
 
+    /// @notice Thrown when a required address argument is zero.
+    error ZeroAddress();
+
     /// @notice The market id has no controller on the core (unknown or not yet created).
     error UnknownMarket(Id marketId);
 

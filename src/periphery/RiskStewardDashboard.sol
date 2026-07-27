@@ -51,6 +51,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     // ---
 
     constructor(address admin, ILidoLend lidoLend) {
+        if (admin == address(0) || address(lidoLend) == address(0)) revert ZeroAddress();
         LIDO_LEND = lidoLend;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }

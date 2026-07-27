@@ -103,6 +103,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
     constructor(IMorpho lidoLend) {
+        if (address(lidoLend) == address(0)) revert ZeroAddress();
         LIDO_LEND = lidoLend;
         _disableInitializers();
     }
@@ -116,6 +117,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         CollateralActivationConfig calldata activationConfig,
         SettlementConfig calldata settlementConfig
     ) external initializer {
+        if (admin == address(0) || address(guardianSignals) == address(0)) {
+            revert ZeroAddress();
+        }
         __AccessControlEnumerable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         marketId = marketId_;

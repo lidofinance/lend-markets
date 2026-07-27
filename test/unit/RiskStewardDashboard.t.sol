@@ -324,4 +324,14 @@ contract RiskStewardDashboardTest is Test {
         dashboard.revokeInstantActivation(marketId, caller);
         assertTrue(controller.revoked(caller), "controller revoke called");
     }
+
+    function test_constructor_zeroAdminReverts() public {
+        vm.expectRevert(IRiskStewardDashboard.ZeroAddress.selector);
+        new RiskStewardDashboard(address(0), ILidoLend(address(core)));
+    }
+
+    function test_constructor_zeroCoreReverts() public {
+        vm.expectRevert(IRiskStewardDashboard.ZeroAddress.selector);
+        new RiskStewardDashboard(address(this), ILidoLend(address(0)));
+    }
 }

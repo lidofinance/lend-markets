@@ -43,6 +43,9 @@ interface ILidoLendMarketController is
     /// @notice Thrown when the hook caller is not the core.
     error Unauthorized();
 
+    /// @notice Thrown when a required address argument is zero.
+    error ZeroAddress();
+
     /// @notice Thrown when the hook id is not this controller's market.
     error InvalidMarketId();
 
