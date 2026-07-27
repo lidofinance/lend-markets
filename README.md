@@ -24,13 +24,25 @@ Run the local test suite (everything except `test/fork/`):
 forge test --no-match-path 'test/fork/**'
 ```
 
-Run the fork tests against a real network. `NETWORK` selects
-`script/config/<network>.toml`; the RPC and config chain IDs must match. `FORK_REGISTRY` is optional and
-only needed by a suite that reads an existing deployment:
+The suites under `test/fork/` drive an already-deployed protocol, so they need one: `RPC_URL` is the node to
+fork — the node that HOLDS the deployment — and `ARTIFACTS_DIR` names the deploy run whose artifacts under
+`deployed/<run>/` they read. They revert if either is unset, the run is absent, or its recorded chain id does
+not match the forked chain. No registry is composed and no preparation step is needed.
+
+Locally, `make provision-fork` deploys and activates the `fork` profile onto a local anvil fork of mainnet and
+leaves it running; `make test-fork-provision` chains provision -> test -> teardown:
 
 ```sh
-RPC_URL=<rpc-url> NETWORK=mainnet forge test --match-path 'test/fork/**'
-RPC_URL=<rpc-url> NETWORK=mainnet FORK_REGISTRY=deployed/<run>/protocol.toml forge test --match-path 'test/fork/**'
+make test-fork-provision RPC_URL=<mainnet-archive-rpc>     # one shot
+make provision-fork RPC_URL=<mainnet-archive-rpc>          # or keep the anvil for repeated runs
+make test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork
+make provision-stop
+```
+
+Against a real deploy run, point them at that network instead:
+
+```sh
+make fork-run RUN=<run>       # RPC_URL from .env is the network the run lives on
 ```
 
 Format Solidity:
@@ -46,7 +58,7 @@ Most everyday commands are wrapped in a `Makefile`:
 ```sh
 make help            # list available targets
 make build           # forge build
-make test            # all tests, local + fork; fork suites require RPC_URL + NETWORK
+make test            # all tests, local + fork; fork suites require RPC_URL + ARTIFACTS_DIR
 make test-local      # local suites only (excludes test/fork/); no RPC
 make test-fork       # test/fork/ only; the suites revert without the fork setup (copy .env.example to .env)
 make fmt-check       # forge fmt --check on tracked paths (local only; CI does not fail on style)
@@ -57,12 +69,15 @@ make snapshot-diff   # fresh run diffed against .gas-snapshot
 make slither         # static analysis (requires `slither` in PATH)
 make solhint         # stylistic/security checks (requires `solhint` in PATH)
 make ci              # everything CI runs on PRs: build + lint + local tests
+make provision-fork  # deploy + activate the fork profile on a local anvil fork of mainnet
+make provision-stop  # stop the anvil provision-fork started
+make test-fork-provision  # provision -> test-fork against it -> teardown
 ```
 
-Environment variables are documented in `.env.example`. Copy it to `.env` and set `RPC_URL` plus
-`NETWORK` to enable fork tests locally.
+Environment variables are documented in `.env.example`. Copy it to `.env` and set `RPC_URL`; fork tests
+additionally need `ARTIFACTS_DIR`, which the provisioning targets above pass for you.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`). Locally `forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that runs `test/fork/` with the `RPC_URL` secret), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same secret), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`). Locally `forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that provisions the `fork` profile onto a local anvil fork from the `RPC_URL` secret and runs `test/fork/` against it), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same provisioned anvil), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
 
 To run the local pre-commit fmt check, point Git at the bundled hook:
 

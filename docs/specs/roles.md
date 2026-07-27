@@ -48,6 +48,12 @@ Each market's immutable `irm` points to the proxied `IrmRouter`. The DAO Agent o
 proxy; EVMScriptExecutor manages per-market routes. `AdaptiveCurveIrm` is a bare protocol singleton whose
 owner is the Agent and manager is EVMScriptExecutor; its per-market curve parameters are set at activation.
 
+A market may instead be routed to a standalone model — a `LinearKinkIrm` deployed on its own and named by
+`market.irm_artifact`. Such an instance carries the same split (Agent owns, EVMScriptExecutor manages) and,
+like the curve singleton, may serve several markets; its per-market parameters are likewise activation
+calldata. Which model a market is routed to is the activation motion's choice, recorded in the market
+artifact so it is reviewable before the motion runs.
+
 ## On-chain roles
 
 ### `LidoLend` core
@@ -94,9 +100,9 @@ policy resolves `market.circuit_breaker_artifact` to a CircuitBreaker with the `
 admin and prepends it to `pausers`, so the activation motion can register the committee. Configured
 `roles.pausers` entries are optional additional direct pausers. One CircuitBreaker may be reused across
 several markets; the artifact reference remains explicit in each market config.
-`AdaptiveCurveIrm` is a protocol-wide singleton (see IRM, above), so there is no per-market curve
-owner/manager to wire at deploy — its owner/manager are set once with the backbone, and per-market curve
-params are activation calldata, not a deploy input.
+The routed IRM is a protocol-wide singleton either way (see IRM, above), so there is no per-market IRM
+owner/manager to wire at deploy — an instance's owner/manager are set once when it is deployed, and its
+per-market parameters are activation calldata, not a deploy input.
 
 ### `RiskStewardDashboard`
 

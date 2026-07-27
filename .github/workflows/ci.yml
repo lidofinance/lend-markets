@@ -31,7 +31,9 @@ jobs:
   fork:
     name: fork tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Provisioning deploys and activates a whole protocol before the suites run, so this is longer than a
+    # plain test job.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -39,10 +41,15 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      - name: fork tests (mainnet)
+      # The fork suites drive an already-deployed protocol, so CI deploys one: the `fork` profile onto a local
+      # anvil fork of mainnet. The secret is the UPSTREAM archive node anvil forks, not what the suites fork.
+      - name: provision the fork profile
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
-          NETWORK: mainnet
         run: |
           test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for the fork job"; exit 1; }
-          make test-fork
+          make provision-fork
+
+      # The suites fork the provisioned anvil and read its run directory; they revert if either is wrong.
+      - name: fork tests (against the provisioned deployment)
+        run: make test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork

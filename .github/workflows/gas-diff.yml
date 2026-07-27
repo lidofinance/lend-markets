@@ -16,13 +16,12 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      # The whole suite is snapshotted, fork suites included: `RPC_URL` comes from the
-      # matching secret and `FORK_BLOCK` is pinned once below, so base and head fork the
-      # same chain state and the diff reflects only the code change. The seeds are held constant for
-      # the same reason: TEST_SEED fixes the seeded oracle price, FOUNDRY_FUZZ_SEED fixes the
-      # fuzz/invariant inputs.
-      RPC_URL: ${{ secrets.RPC_URL }}
-      NETWORK: mainnet
+      # The whole suite is snapshotted, fork suites included: they fork the anvil provisioned once below and
+      # read its run directory, and `FORK_BLOCK` is pinned so base and head see the same chain state and the
+      # diff reflects only the code change. The seeds are held constant for the same reason: TEST_SEED fixes
+      # the seeded oracle price, FOUNDRY_FUZZ_SEED fixes the fuzz/invariant inputs.
+      RPC_URL: http://127.0.0.1:8545
+      ARTIFACTS_DIR: fork
       TEST_SEED: "1"
       FOUNDRY_FUZZ_SEED: "1"
     steps:
@@ -33,11 +32,18 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      # One block for both snapshot runs; also fails fast with a clear error when the secret is unset.
-      - name: pin fork block
+      # Provisioning is what needs the secret, so the guard lives here. It overrides the job-level RPC_URL with
+      # the upstream archive node for this step only; everything after forks the local anvil it leaves behind.
+      - name: provision the fork profile
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
         run: |
           test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for the gas-diff job"; exit 1; }
-          echo "FORK_BLOCK=$(cast block-number --rpc-url "$RPC_URL")" >> "$GITHUB_ENV"
+          make provision-fork
+
+      # One block for both snapshot runs, pinned against the provisioned anvil the suites actually fork.
+      - name: pin fork block
+        run: echo "FORK_BLOCK=$(cast block-number --rpc-url "$RPC_URL")" >> "$GITHUB_ENV"
 
       # Snapshot the base ref in an isolated worktree so we don't have to swap branches in the
       # main checkout. Submodule pins on the base ref may differ from head.
