@@ -2,6 +2,7 @@
 pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {GuardiansOpinion} from "../../src/types/GuardianSignalsTypes.sol";
@@ -454,5 +455,41 @@ contract CollateralActivationLibTest is Test {
             2 * 30 minutes,
             "surcharge = suspectCount * delayPerSuspect when the lot started before the suspect expiry"
         );
+    }
+
+    function test_drain_noopEmitsNothing() public {
+        address borrower = address(0xD1);
+        h.depositInstant(borrower, 100 ether); // active collateral, no un-matured buckets to drain
+
+        vm.recordLogs();
+        h.debit(borrower, 50 ether);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(
+                logs[i].topics[0] != CollateralActivationLib.CollateralDrained.selector,
+                "no CollateralDrained on a no-op drain"
+            );
+        }
+    }
+
+    function test_drain_emitsDrainedAmount() public {
+        address borrower = address(0xD2);
+        h.deposit(borrower, 100 ether); // activating bucket
+
+        vm.recordLogs();
+        h.debit(borrower, 30 ether);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 found;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == CollateralActivationLib.CollateralDrained.selector) {
+                assertEq(address(uint160(uint256(logs[i].topics[1]))), borrower, "borrower topic");
+                (uint256 amount,) = abi.decode(logs[i].data, (uint256, CollateralActivationLib.Position));
+                assertEq(amount, 30 ether, "drained amount carried by the event");
+                found++;
+            }
+        }
+        assertEq(found, 1, "exactly one CollateralDrained");
     }
 }

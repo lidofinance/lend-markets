@@ -59,7 +59,7 @@ library CollateralActivationLib {
     event CollateralDusted(address indexed borrower, uint256 amount, Position position);
 
     /// @notice Collateral is drained from the un-matured buckets. `position` is the resulting state.
-    event CollateralDrained(address indexed borrower, Position position);
+    event CollateralDrained(address indexed borrower, uint256 amount, Position position);
 
     /// @notice A withdrawal folds a sub-threshold activating remainder back into dust. `position` is the
     ///         resulting state.
@@ -322,7 +322,9 @@ library CollateralActivationLib {
 
         if (position.activating == 0) _clearTimer(position);
 
-        emit CollateralDrained(borrower, position);
+        uint256 drained = fromDust + fromActivating;
+        if (drained != 0) emit CollateralDrained(borrower, drained, position);
+
         return position.dust + position.activating;
     }
 
