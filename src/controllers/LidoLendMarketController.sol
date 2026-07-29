@@ -7,7 +7,9 @@ import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 import {WAD} from "../libs/Constants.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {
+    AccessControlEnumerableUpgradeable
+} from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
 import {IGuardianSignalsView} from "../interfaces/IGuardianSignalsView.sol";
 import {GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
@@ -23,7 +25,7 @@ import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTyp
 ///         address gating, and the settlement queue. All hook policy enters through `on`.
 contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendMarketController")
     is
-    AccessControlUpgradeable,
+    AccessControlEnumerableUpgradeable,
     PausableUntil,
     ILidoLendMarketController
 {
@@ -114,7 +116,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         CollateralActivationConfig calldata activationConfig,
         SettlementConfig calldata settlementConfig
     ) external initializer {
-        __AccessControl_init();
+        __AccessControlEnumerable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         marketId = marketId_;
         _guardianSignals = guardianSignals;

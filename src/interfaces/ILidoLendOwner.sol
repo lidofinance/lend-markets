@@ -12,7 +12,8 @@ import {SettlementConfig} from "../types/SettlementTypes.sol";
 ///         splits the core's owner-only surface and per-market governance surface across distinct roles, so each
 ///         capability can be delegated independently. Per-market calls resolve the target controller and guardian
 ///         registry from the core, giving governance one stable facade address for every market.
-/// @dev Role-management events and the unauthorized-caller error come from OpenZeppelin's `IAccessControl`.
+/// @dev Role-management events and the unauthorized-caller error come from OpenZeppelin's
+///      `IAccessControlEnumerable`.
 interface ILidoLendOwner {
     // ---
     // ERRORS

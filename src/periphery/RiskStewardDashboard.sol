@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
@@ -13,7 +13,7 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 ///         a market's current activation config, enforces a tighten-only change, and writes the full config
 ///         back. Stewards are appointed per market id, so one dashboard serves every market. The controller
 ///         still validates bounds and ordering on write, so this only adds the direction (tighten-only) guard.
-contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
+contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard {
     using EnumerableSet for EnumerableSet.AddressSet;
 
     // ---

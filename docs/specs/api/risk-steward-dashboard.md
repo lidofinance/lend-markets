@@ -2,7 +2,7 @@
 
 # RiskStewardDashboard
 
-Full external surface of `RiskStewardDashboard`: AccessControl (inherited), per-market steward management, and the bounded tighten-only risk levers. The dashboard implements this interface, so it is the single source for the events, errors, and the function docs the contract inherits.
+Full external surface of `RiskStewardDashboard`: AccessControlEnumerable (inherited), per-market steward management, and the bounded tighten-only risk levers. The dashboard implements this interface, so it is the single source for the events, errors, and the function docs the contract inherits.
 
 ## Events
 
