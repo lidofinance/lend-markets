@@ -261,16 +261,6 @@ function fallbackExit(
 
 Redeems what liquidity covers before settling, closing a griefing vector: the core blocks `settle` while idle liquidity still covers the amount, so without the redeem an attacker could add idle right before the call to force the exit to revert. That liquidity goes to the owner as loan assets; collateral goes from Morpho straight to `receiver`.
 
-### `previewFallbackExit`
-
-```solidity
-function previewFallbackExit(
-    uint256 shares
-) external view returns (uint256 loanAssets, uint256 morphoSupplyShares);
-```
-
-A `view` preview on this block's accrued totals. The figures may shift if blocks pass before the `fallbackExit`, which recomputes the pro-rata on-chain at execution so the burn matches live state.
-
 ## State variables
 
 | Name | Type | Description |

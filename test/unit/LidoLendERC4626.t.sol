@@ -402,17 +402,17 @@ contract LidoLendERC4626Test is LidoLendSetup {
     // bounded by totalBorrow — always at the boundary, never over. A strict trip needs a direct core settle
     // (the fork's own suite / scenario), not a vault-level unit.
 
-    function test_previewFallbackExit_matchesActual_pureRedeem() public {
+    function test_fallbackExit_pureRedeem_matchesPreviewRedeem() public {
         Market storage m = _market();
         address lender = _actor("lender");
         _fund(m.loanToken, lender, 100 ether);
         m.vaultDeposit(lender, 100 ether);
         uint256 shares = m.vault.balanceOf(lender);
 
-        (uint256 previewLoan,) = m.vault.previewFallbackExit(shares);
+        uint256 previewLoan = m.vault.previewRedeem(shares);
         vm.prank(lender);
         (, uint256 loanAssets,,) = m.vault.fallbackExit(shares, lender, lender, 0);
-        assertEq(loanAssets, previewLoan, "preview matches the actual redeem-leg payout");
+        assertEq(loanAssets, previewLoan, "previewRedeem matches the actual redeem-leg payout");
     }
 
     function test_maxRedeem_cappedByFreeLiquidity() public {

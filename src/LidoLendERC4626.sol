@@ -355,23 +355,6 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
             LIDO_LEND.settle(_marketParams, supplyShares, borrowShares, address(this), borrower, receiver);
     }
 
-    /// @inheritdoc ILidoLendERC4626
-    /// @dev A `view` preview on this block's accrued totals. The figures may shift if blocks pass before the
-    ///      `fallbackExit`, which recomputes the pro-rata on-chain at execution so the burn matches live state.
-    function previewFallbackExit(uint256 shares)
-        external
-        view
-        returns (uint256 loanAssets, uint256 morphoSupplyShares)
-    {
-        uint256 totalSupply_ = totalSupply();
-        if (shares == 0 || totalSupply_ == 0) return (0, 0);
-
-        // Redeem leg pays loan assets up to what the Morpho position can withdraw; the rest settles for
-        // collateral. Stray idle is uncounted, so it never appears as loan assets.
-        loanAssets = Math.min(convertToAssets(shares), _morphoWithdrawableAssets());
-        morphoSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply_);
-    }
-
     function _marketSupplyTotals() internal view returns (uint256 totalSupplyAssets, uint256 totalSupplyShares) {
         (totalSupplyAssets, totalSupplyShares,,) =
             MorphoBalancesLib.expectedMarketBalances(IMorpho(address(LIDO_LEND)), _marketParams);

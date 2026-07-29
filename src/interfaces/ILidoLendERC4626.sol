@@ -141,12 +141,6 @@ interface ILidoLendERC4626 is IERC4626 {
     ///         directly to the vault address, and is always `<=` the vault's live core supply-share position.
     function managedSupplyShares() external view returns (uint256);
 
-    /// @notice Returns the loan assets and Morpho supply shares `fallbackExit(shares, ...)` would consume.
-    /// @param shares Vault shares to preview the exit for.
-    /// @return loanAssets Loan assets the redeem leg would pay (up to what the Morpho position can withdraw).
-    /// @return morphoSupplyShares Morpho supply shares the settle leg would consume.
-    function previewFallbackExit(uint256 shares) external view returns (uint256 loanAssets, uint256 morphoSupplyShares);
-
     // ---
     // SETTLEMENT
     // ---

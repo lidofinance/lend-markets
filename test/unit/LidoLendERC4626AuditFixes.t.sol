@@ -235,17 +235,16 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
     // ── settlement budgets exclude the credit (the severe one-victim extraction path) ──
 
     /// @dev The settlement-assisted extraction relied on the settle budget scaling with the vault's FULL core
-    ///      position. With the managed counter, `previewFallbackExit` sizes the budget off managed shares only,
-    ///      so a credit leaves the attacker's exit budget exactly where it was — no borrowed-then-settled
-    ///      extraction of a later victim's assets.
+    ///      position. With the managed counter, the pro-rata budget uses managed shares only, so a credit leaves
+    ///      the attacker's exit budget exactly where it was.
     function test_settlementBudget_excludesDonation() public {
         Market storage m = _market();
         (address lender,) = _distress(m, 100 ether, 20 ether, 0.22e36);
         uint256 lenderShares = m.vault.balanceOf(lender);
 
-        (, uint256 budgetBefore) = m.vault.previewFallbackExit(lenderShares);
+        uint256 budgetBefore = m.vault.managedSupplyShares() * lenderShares / m.vault.totalSupply();
         _donateToVault(m, _actor("attacker"), 500 ether);
-        (, uint256 budgetAfter) = m.vault.previewFallbackExit(lenderShares);
+        uint256 budgetAfter = m.vault.managedSupplyShares() * lenderShares / m.vault.totalSupply();
 
         assertEq(budgetAfter, budgetBefore, "settle budget is independent of the unsolicited credit");
         // And it equals the managed pro-rata, not the full-position pro-rata.

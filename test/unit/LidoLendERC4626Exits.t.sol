@@ -231,13 +231,4 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
         assertEq(loanAssets, 0, "settle pays collateral, not loan");
         _assertExitEffects(c);
     }
-
-    // ── preview zero-shares guard ──
-
-    /// @dev Previewing a zero-share exit short-circuits to zeros without touching the pro-rata math.
-    function test_previewFallbackExit_zeroShares_returnsZero() public view {
-        (uint256 loanAssets, uint256 morphoSupplyShares) = _m().vault.previewFallbackExit(0);
-        assertEq(loanAssets, 0, "no loan assets for zero shares");
-        assertEq(morphoSupplyShares, 0, "no supply shares for zero shares");
-    }
 }
