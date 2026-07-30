@@ -5,6 +5,7 @@ import {Id, IMorpho, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 
+import {AdaptiveCurveConfig} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveConfig.sol";
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
@@ -112,7 +113,7 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         });
     }
 
-    /// @dev The router probes the model, so curve parameters must be set first.
+    /// @dev The router probes the model, so its config must be applied first.
     function _configureAdaptiveIrm(address router, MarketParams memory params, address owner)
         internal
         virtual
@@ -127,7 +128,8 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         });
 
         AdaptiveCurveIrm irm = new AdaptiveCurveIrm(router, owner, owner);
-        irm.setMarketCurveParams(irmParams, _curveConfig());
+        AdaptiveCurveConfig config = new AdaptiveCurveConfig(_curveConfig());
+        irm.applyIrmConfig(irmParams, address(config));
         IrmRouter(router).setMarketIrm(irmParams, IIrm(address(irm)));
         return address(irm);
     }

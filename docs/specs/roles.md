@@ -46,7 +46,9 @@ An upgrade can change core mechanics and is therefore the only path that could i
 
 Each market's immutable `irm` points to the proxied `IrmRouter`. The DAO Agent owns the router and its
 proxy; EVMScriptExecutor manages per-market routes. `AdaptiveCurveIrm` is a bare protocol singleton whose
-owner is the Agent and manager is EVMScriptExecutor; its per-market curve parameters are set at activation.
+owner is the Agent and manager is EVMScriptExecutor. A shared permissionless `IrmConfigFactory` deploys or
+reuses immutable configs by parameter hash during market preparation; activation resolves the config from the
+factory after deployment and applies its address to the singleton.
 
 ## On-chain roles
 
@@ -85,18 +87,19 @@ target for those actions.
 
 Every `MANAGER_ROLE` lever is risk-increasing, so it takes the delay mechanism. `freeze` is risk-reducing and stays with a fast committee; `unfreeze` restores service and is therefore risk-increasing, so it takes the routine delay mechanism — an EasyTrack motion with an objection window — rather than an immediate call. `pauseFor` accepts an indefinite duration at the contract level, but the fast holder is an emergency-seal committee bounded to a finite pause — extending it or pausing indefinitely is a DAO action. Pause and resume sit on separate roles so the fast pauser can never resume.
 
-The operational roles are arrays, not single addresses: `LidoLendMarketBuilder.MarketRoles` carries
+The operational roles are arrays, not single addresses: `LidoLendMarketFactory.MarketRoles` carries
 `managers` / `pausers` / `freezers` / `unfreezers` / `resumers` as `address[]`, so any role can have any
 number of additional holders — an empty array grants nobody from configuration, and a zero entry reverts
 (`ZeroRoleHolder`) as a config mistake rather than silently granting the zero address. Independently of those
-arrays, the builder always grants the facade `MANAGER_ROLE` and `UNFREEZER_ROLE`. Production deployment
+arrays, the factory always grants the facade `MANAGER_ROLE` and `UNFREEZER_ROLE`. Production deployment
 policy resolves `market.circuit_breaker_artifact` to a CircuitBreaker with the `EVMScriptExecutor` as its
 admin and prepends it to `pausers`, so the activation motion can register the committee. Configured
 `roles.pausers` entries are optional additional direct pausers. One CircuitBreaker may be reused across
 several markets; the artifact reference remains explicit in each market config.
 `AdaptiveCurveIrm` is a protocol-wide singleton (see IRM, above), so there is no per-market curve
-owner/manager to wire at deploy — its owner/manager are set once with the backbone, and per-market curve
-params are activation calldata, not a deploy input.
+owner/manager to wire at deploy — its owner/manager are set once with the backbone. The permissionless config
+factory holds no role; the deployment flow ensures each market's immutable config exists, and the authorized
+activation motion resolves that address through the factory and passes it to `applyIrmConfig`.
 
 ### `RiskStewardDashboard`
 
@@ -112,7 +115,7 @@ One dashboard serves every market of a core, with the tighten-only risk levers g
 
 A steward is appointed per market id, not as an AccessControl role, so the set scopes to one market. Every steward lever is one-directional toward tighter policy, so the committee can act fast.
 
-The dashboard is a protocol-wide singleton, deployed once by `DeployProtocol` (via `ProtocolDeployer`) with `STEWARD_ADMIN_ROLE` → the EasyTrack executor and `DEFAULT_ADMIN_ROLE` → the DAO Agent. For its levers to write config it must additionally hold each market controller's `MANAGER_ROLE`; `LidoLendMarketBuilder` grants it that on every controller `LidoLendMarketFactory` deploys — the factory itself holds no role (it grants the new controller's `DEFAULT_ADMIN_ROLE` directly to its caller, the builder), and the builder holds that admin only transiently, for the duration of `buildMarket`. `MANAGER_ROLE` is broader than the tighten-only levers, so this trusts the dashboard's (non-upgradeable) code to only tighten.
+The dashboard is a protocol-wide singleton, deployed once by `DeployProtocol` (via `ProtocolDeployer`) with `STEWARD_ADMIN_ROLE` → the EasyTrack executor and `DEFAULT_ADMIN_ROLE` → the DAO Agent. For its levers to write config it must additionally hold each market controller's `MANAGER_ROLE`; `LidoLendMarketFactory` grants it that while wiring every new controller. The permissionless factory holds the controller's `DEFAULT_ADMIN_ROLE` only transiently within the deployment transaction and revokes it before returning. `MANAGER_ROLE` is broader than the tighten-only levers, so this trusts the dashboard's (non-upgradeable) code to only tighten.
 
 ### `GuardianSignals`
 
@@ -125,7 +128,7 @@ The dashboard is a protocol-wide singleton, deployed once by `DeployProtocol` (v
 
 The committee holds the fast risk-reducing side (`ban`); `unban` is risk-increasing, so it takes the routine delay mechanism — an EasyTrack motion with an objection window (ADR 006) — rather than an immediate call. Guardian-set management (`addGuardian`/`removeGuardian`/`replaceGuardian`/`setQuorum`) runs through the same EasyTrack objection window, not a fast committee: a removal or quorum change is visible and vetoable before it takes effect, so it cannot quietly disable detection. `DEFAULT_ADMIN_ROLE` stays with the DAO and can re-grant `MANAGER_ROLE` for a direct action with no factory yet (e.g. `setSuspectWindow`).
 
-The builder always grants the facade `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` in addition to the configured
+The factory always grants the facade `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` in addition to the configured
 guardian managers, so every registry remains reachable through the stable governance target.
 
 ### `ExitBookBase`

@@ -10,24 +10,26 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {LidoLend} from "@lido-lend/src/LidoLend.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
-import {IIrmRouter} from "@lido-lend-irm/src/irm-router/interfaces/IIrmRouter.sol";
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
+import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+import {IrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/IrmConfigFactory.sol";
+import {IIrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/interfaces/IIrmConfigFactory.sol";
 
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
-import {LidoLendMarketBuilder, MarketRoles, GuardianConfig} from "../../src/periphery/LidoLendMarketBuilder.sol";
-import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
+import {LidoLendMarketFactory, IIrmRouterView} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
 import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {ILidoLendOwner} from "../../src/interfaces/ILidoLendOwner.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
-import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 // --- Minimal read/write surfaces (UDVT `Id` is ABI-identical to bytes32, so bytes32 params match) ---
 
 interface IReadController {
@@ -62,19 +64,11 @@ interface IReadCurve {
     function marketCurveConfig(bytes32 id) external view returns (address);
     function owner() external view returns (address);
     function manager() external view returns (address);
-    function setMarketCurveParams(MarketParams calldata marketParams, AdaptiveCurveParams calldata curveParams) external;
+    function applyIrmConfig(MarketParams calldata marketParams, address config) external;
 }
 
 interface ICurveConfig {
     function getCurveParams() external view returns (AdaptiveCurveParams memory);
-}
-
-interface IReadBuilder {
-    function FACTORY() external view returns (address);
-    function LIDO_LEND_OWNER() external view returns (address);
-    function IRM_ROUTER() external view returns (address);
-    function CORE() external view returns (address);
-    function RISK_STEWARD_DASHBOARD() external view returns (address);
 }
 
 interface IReadDashboard {
@@ -87,6 +81,10 @@ interface IReadFactory {
     function CONTROLLER_IMPL() external view returns (address);
     function VAULT_IMPL() external view returns (address);
     function GUARDIAN_SIGNALS_IMPL() external view returns (address);
+    function LIDO_LEND_OWNER() external view returns (address);
+    function IRM_ROUTER() external view returns (address);
+    function CORE() external view returns (address);
+    function RISK_STEWARD_DASHBOARD() external view returns (address);
 }
 
 interface IReadMorphoBook {
@@ -173,7 +171,7 @@ interface IReadCircuitBreaker {
 ///         Skips only when no protocol artifact is provided; a wrong RPC or network fails.
 ///
 /// @dev This is the repo's verify tool. It independently binds deployed runtime code to the local sources,
-///      checks backbone wiring and operational state, calls the builder's detailed instance validators, and
+///      checks backbone wiring and operational state, calls the factory's detailed instance validators, and
 ///      audits complete privilege sets through enumeration or event scans.
 // ============================================================================
 // CONTEXT — fork selection and run-artifact loading
@@ -212,7 +210,7 @@ abstract contract AcceptanceContext is Test {
     address internal facade;
     address internal router;
     address internal factory;
-    address internal builder;
+    address internal irmConfigFactory;
     address internal dashboard;
     address internal morphoBook;
     address internal erc4626Book;
@@ -247,8 +245,7 @@ abstract contract AcceptanceContext is Test {
     address[] internal rResumers;
 
     address[] internal expectedGuardians;
-    // `buildGuardianSignals`'s own `managers` argument — kept distinct from `rManagers` (the controller's
-    // `MarketRoles.managers`) even though this deploy happens to pass the same value to both.
+    // `deployGuardianSignals`'s configured managers, kept distinct from the controller's final manager set.
     address[] internal gManagers;
     address internal gProxyAdmin;
     uint256 internal expectedQuorum;
@@ -298,7 +295,7 @@ abstract contract AcceptanceContext is Test {
         router = _reg(".protocol.irm_router");
         curve = _reg(".protocol.adaptive_curve_irm");
         factory = _reg(".protocol.factory");
-        builder = _reg(".protocol.builder");
+        irmConfigFactory = _reg(".protocol.irm_config_factory");
         dashboard = _reg(".protocol.risk_steward_dashboard");
         string memory exitBooksPath = string.concat(artifactsDir, "exit-books.toml");
         if (vm.exists(exitBooksPath)) {
@@ -313,7 +310,7 @@ abstract contract AcceptanceContext is Test {
         controller = _addr(".market.controller");
         vault = _addr(".market.vault");
         marketId = vm.parseTomlBytes32(toml, ".market.id");
-        assertEq(_addr(".market.builder"), builder, "market builder != protocol builder");
+        assertEq(_addr(".market.factory"), factory, "market factory != protocol factory");
         assertEq(_addr(".market.irm"), router, "market IRM != protocol router");
         assertEq(vm.parseTomlAddress(oracleCfg, ".oracle.address"), oracle, "oracle artifact address");
         assertEq(
@@ -379,11 +376,23 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     using MarketParamsLib for MarketParams;
 
     function _assertComponentsDeployed() internal {
-        address[11] memory a =
-            [core, facade, router, factory, builder, dashboard, oracle, guardianSignals, curve, controller, vault];
+        address[11] memory a = [
+            core,
+            facade,
+            router,
+            factory,
+            irmConfigFactory,
+            dashboard,
+            oracle,
+            guardianSignals,
+            curve,
+            controller,
+            vault
+        ];
         for (uint256 i; i < a.length; ++i) {
             assertGt(a[i].code.length, 0, "component missing code");
         }
+        assertGt(_expectedIrmConfig().code.length, 0, "IRM config missing code");
         if (morphoBook != address(0)) {
             assertGt(morphoBook.code.length, 0, "morpho exit book missing code");
             assertGt(erc4626Book.code.length, 0, "ERC-4626 exit book missing code");
@@ -403,12 +412,11 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(IReadDashboard(dashboard).LIDO_LEND(), core, "dashboard.LIDO_LEND");
         if (morphoBook != address(0)) assertEq(IReadMorphoBook(morphoBook).MORPHO(), core, "morphoBook.MORPHO");
 
-        // builder immutables — the builder has no view over its OWN immutables, so this stays here
-        assertEq(IReadBuilder(builder).FACTORY(), factory, "builder.FACTORY");
-        assertEq(IReadBuilder(builder).LIDO_LEND_OWNER(), facade, "builder.LIDO_LEND_OWNER");
-        assertEq(IReadBuilder(builder).IRM_ROUTER(), router, "builder.IRM_ROUTER");
-        assertEq(IReadBuilder(builder).CORE(), core, "builder.CORE");
-        assertEq(IReadBuilder(builder).RISK_STEWARD_DASHBOARD(), dashboard, "builder.RISK_STEWARD_DASHBOARD");
+        IReadFactory deployedFactory = IReadFactory(factory);
+        assertEq(deployedFactory.LIDO_LEND_OWNER(), facade, "factory.LIDO_LEND_OWNER");
+        assertEq(deployedFactory.IRM_ROUTER(), router, "factory.IRM_ROUTER");
+        assertEq(deployedFactory.CORE(), core, "factory.CORE");
+        assertEq(deployedFactory.RISK_STEWARD_DASHBOARD(), dashboard, "factory.RISK_STEWARD_DASHBOARD");
 
         assertEq(IReadProxy(core).proxy__getAdmin(), agent, "core proxy admin");
         assertEq(IReadProxy(router).proxy__getAdmin(), agent, "router proxy admin");
@@ -431,15 +439,13 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
             );
         }
 
-        // controller/vault <-> core bindings `validateMarketContracts` has no notion of (it knows nothing about "core"
-        // or "loan token"); everything else about the pair — impl codehash, proxy admins, marketId/guardian
-        // bindings, listed-role-holder presence, builder/factory holding nothing — is `_assertBuilderValidation`.
+        // Additional direct core, asset, and operational-state checks.
         assertEq(IReadController(controller).LIDO_LEND(), core, "controller.LIDO_LEND");
         assertEq(IReadVault(vault).LIDO_LEND(), core, "vault.LIDO_LEND");
         assertEq(IReadVault(vault).asset(), loanToken, "vault.asset");
         assertFalse(IReadController(controller).isPaused(), "controller is paused");
         assertFalse(IReadController(controller).isFrozen(), "controller is frozen");
-        // The curve singleton's per-market params are activation calldata, so their assert lives in
+        // The curve singleton's per-market config is applied at activation, so its assert lives in
         // `_assertActivated` / `_assertNotYetActivated`, not here.
     }
 
@@ -505,33 +511,61 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertLe(cb.heartbeatInterval(), cb.MAX_HEARTBEAT_INTERVAL(), "CircuitBreaker.heartbeatInterval above max");
     }
 
-    /// @notice Calls `LidoLendMarketBuilder`'s own view checks instead of re-implementing them: impl
-    ///         codehashes, proxy admins, marketId/guardian bindings, every listed role holder present, and
-    ///         neither the builder nor the factory holding anything. A revert here IS the test failure — no
-    ///         separate assertion wraps it.
-    function _assertBuilderValidation() internal view {
-        LidoLendMarketBuilder b = LidoLendMarketBuilder(builder);
-        b.validateMarketContracts(
-            controller, vault, Id.wrap(marketId), guardianSignals, builder, _expectedMarketRoles()
+    /// @notice Calls `LidoLendMarketFactory`'s own view checks instead of re-implementing them.
+    /// @dev A revert is the test failure; no separate assertion wraps these calls.
+    function _assertFactoryValidation() internal view {
+        LidoLendMarketFactory deployedFactory = LidoLendMarketFactory(factory);
+        deployedFactory.validateMarketController(
+            controller, Id.wrap(marketId), guardianSignals, _expectedFactoryMarketRoles()
         );
-        b.validateGuardianSignals(guardianSignals, builder, agent, gProxyAdmin, gManagers, _expectedGuardianConfig());
+        deployedFactory.validateVault(vault, ILidoLendMarketController(controller), _params(), _expectedVaultSpec());
+        deployedFactory.validateGuardianSignals(guardianSignals, _expectedGuardianSpec(), _expectedGuardianRoles());
     }
 
-    function _expectedMarketRoles() internal view returns (MarketRoles memory r) {
+    function _expectedFactoryMarketRoles() internal view returns (LidoLendMarketFactory.MarketRoles memory r) {
         r.admin = rAdmin;
         r.proxyAdmin = rProxyAdmin;
-        r.managers = rManagers;
+        r.managers = _without(rManagers, facade, dashboard);
         r.pausers = rPausers;
         r.freezers = rFreezers;
-        r.unfreezers = rUnfreezers;
+        r.unfreezers = _without(rUnfreezers, facade, address(0));
         r.resumers = rResumers;
     }
 
-    function _expectedGuardianConfig() internal view returns (GuardianConfig memory c) {
-        c.guardians = expectedGuardians;
-        c.quorum = expectedQuorum;
-        c.suspectWindow = expectedSuspectWindow;
-        c.accessLimiter = expectedAccessLimiter;
+    function _expectedVaultSpec() internal view returns (LidoLendMarketFactory.VaultSpec memory spec) {
+        spec.proxyAdmin = rProxyAdmin;
+        spec.name = vm.parseTomlString(toml, ".market.vault_name");
+        spec.symbol = vm.parseTomlString(toml, ".market.vault_symbol");
+    }
+
+    function _expectedGuardianSpec() internal view returns (LidoLendMarketFactory.GuardianSpec memory spec) {
+        spec.guardians = expectedGuardians;
+        spec.quorum = expectedQuorum;
+        spec.suspectWindow = expectedSuspectWindow;
+    }
+
+    function _expectedGuardianRoles() internal view returns (LidoLendMarketFactory.GuardianRoles memory roles) {
+        roles.admin = agent;
+        roles.proxyAdmin = gProxyAdmin;
+        roles.managers = gManagers;
+        roles.accessLimiter = expectedAccessLimiter;
+    }
+
+    function _without(address[] memory source, address excludedA, address excludedB)
+        private
+        pure
+        returns (address[] memory filtered)
+    {
+        uint256 count;
+        for (uint256 i; i < source.length; ++i) {
+            if (source[i] != excludedA && source[i] != excludedB) ++count;
+        }
+
+        filtered = new address[](count);
+        uint256 cursor;
+        for (uint256 i; i < source.length; ++i) {
+            if (source[i] != excludedA && source[i] != excludedB) filtered[cursor++] = source[i];
+        }
     }
 
     function _assertConfig() internal view {
@@ -563,6 +597,9 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
             "fullCut"
         );
         assertEq(uint256(s.ltvStepBps), vm.parseTomlUint(toml, ".settlement.ltv_step_bps"), "ltvStep");
+
+        address irmConfig = _expectedIrmConfig();
+        _assertCurveParams(ICurveConfig(irmConfig).getCurveParams());
     }
 
     /// @dev The per-market curve params used by the activation simulation.
@@ -589,7 +626,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(cp.maxBorrowRate, e.maxBorrowRate, "maxBorrowRate");
     }
 
-    /// @notice Everything left in the role matrix that is NOT a `LidoLendMarketBuilder`-checked
+    /// @notice Everything left in the role matrix that is NOT a `LidoLendMarketFactory`-checked
     ///         `AccessControl` role: the router/curve `Ownable`-style owner/manager (no `RoleGranted` events,
     ///         so outside `_assertRoleHolderCompleteness` too).
     function _assertRoles() internal view {
@@ -625,18 +662,23 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         _assertCodehash(
             facade, address(new LidoLendOwner(ILidoLend(core), address(this), address(0), address(0))), "facade"
         );
-        _assertCodehash(factory, address(new LidoLendMarketFactory(controllerImpl, vaultImpl, guardianImpl)), "factory");
-        _assertCodehash(dashboard, address(new RiskStewardDashboard(address(this), ILidoLend(core))), "dashboard");
         _assertCodehash(
-            builder,
+            factory,
             address(
-                new LidoLendMarketBuilder(
-                    LidoLendMarketFactory(factory), LidoLendOwner(facade), IIrmRouter(router), dashboard
+                new LidoLendMarketFactory(
+                    LidoLendMarketFactory.Implementations({
+                        controller: controllerImpl, vault: vaultImpl, guardianSignals: guardianImpl
+                    }),
+                    ILidoLendOwner(facade),
+                    IIrmRouterView(router),
+                    dashboard
                 )
             ),
-            "builder"
+            "factory"
         );
+        _assertCodehash(dashboard, address(new RiskStewardDashboard(address(this), ILidoLend(core))), "dashboard");
         _assertCodehash(curve, address(new AdaptiveCurveIrm(router, address(this), address(this))), "adaptive curve");
+        _assertCodehash(irmConfigFactory, address(new IrmConfigFactory()), "IRM config factory");
         _assertCodehash(circuitBreaker, _deployExpectedCircuitBreaker(), "CircuitBreaker");
 
         address proxyShell = address(new OssifiableProxy(address(new GuardianSignals()), address(this), ""));
@@ -725,8 +767,8 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(uint256(lastUpdate), 0, "market already created on core");
         assertEq(IReadCore(core).marketController(marketId), address(0), "controller already bound");
         assertEq(IReadRouter(router).marketIrm(marketId), address(0), "curve already routed");
-        // Per-market curve params are activation calldata on the singleton — none may exist while inert.
-        assertEq(IReadCurve(curve).marketCurveConfig(marketId), address(0), "curve params already set");
+        // No per-market curve config may be applied to the singleton while the market is inert.
+        assertEq(IReadCurve(curve).marketCurveConfig(marketId), address(0), "curve config already applied");
         assertEq(IReadCircuitBreaker(circuitBreaker).getPauser(controller), address(0), "pauser already registered");
     }
 
@@ -743,9 +785,9 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(IReadCore(core).marketController(marketId), controller, "controller not bound");
         assertEq(IReadCore(core).isSettlementEnabled(marketId), enableSettlement, "settlement flag");
         assertEq(IReadRouter(router).marketIrm(marketId), curve, "curve not routed");
-        // The motion set this market's curve params on the singleton.
+        // The motion applied this market's curve config to the singleton.
         address cfg = IReadCurve(curve).marketCurveConfig(marketId);
-        assertGt(cfg.code.length, 0, "curve config missing for market");
+        assertEq(cfg, _expectedIrmConfig(), "unexpected curve config");
         _assertCurveParams(ICurveConfig(cfg).getCurveParams());
         assertNotEq(pauserCommittee, address(0), "CircuitBreaker pauser is not registered");
         assertEq(IReadCircuitBreaker(circuitBreaker).getPauser(controller), pauserCommittee, "pauser not registered");
@@ -767,17 +809,23 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         }
     }
 
-    /// @dev Mirror of the `LidoLendActivateMarket` EasyTrack motion, run by the executor. The curve params
-    ///      MUST be set before `createMarket` — its first `borrowRate` ping reverts on an unset config.
+    /// @dev Mirror of the `LidoLendActivateMarket` EasyTrack motion, run by the executor. The curve config
+    ///      MUST be applied before `createMarket` — its first `borrowRate` ping reverts on an unset config.
     function _activate(address testPauserCommittee) internal {
         assertNotEq(testPauserCommittee, address(0), "test pauser committee is zero");
         MarketParams memory p = _params();
+        address irmConfig = _expectedIrmConfig();
         vm.startPrank(executor);
-        IReadCurve(curve).setMarketCurveParams(p, _expectedCurveParams());
+        IReadCurve(curve).applyIrmConfig(p, irmConfig);
         IReadRouter(router).setMarketIrm(p, curve);
         IReadFacade(facade).createMarket(p, controller, enableSettlement);
         IReadCircuitBreaker(circuitBreaker).registerPauser(controller, testPauserCommittee);
         vm.stopPrank();
+    }
+
+    function _expectedIrmConfig() private view returns (address irmConfig) {
+        irmConfig = IIrmConfigFactory(irmConfigFactory).getAdaptiveCurveConfig(_expectedCurveParams());
+        assertNotEq(irmConfig, address(0), "IRM config factory entry missing");
     }
 
     /// @dev Mirror of the separate exit-book allow-list EasyTrack motion, when exit books are deployed.
@@ -805,9 +853,9 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
 abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
     //
-    // Inside a `buildMarketContracts` / `buildGuardianSignals` call, the full role-holder set is guaranteed BY
+    // Inside a `deployMarketComponents` / `deployGuardianSignals` call, the full role-holder set is guaranteed BY
     // CONSTRUCTION: the controller/vault/registry is created in that same transaction, and the only account
-    // that could have granted anything on it is the builder itself (the `DEFAULT_ADMIN_ROLE` it holds
+    // that could have granted anything on it is the factory itself (the `DEFAULT_ADMIN_ROLE` it holds
     // transiently) — so the set is exactly what that one call granted, nothing more, nothing missing. That
     // guarantee does not survive time: once the build call returns, any `DEFAULT_ADMIN_ROLE` holder can grant
     // or revoke roles, and `AccessControl` carries no member enumeration to catch a stray change from a

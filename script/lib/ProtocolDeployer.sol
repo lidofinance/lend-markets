@@ -4,15 +4,14 @@ pragma solidity 0.8.35;
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {IMorpho} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
-import {IIrmRouter} from "@lido-lend-irm/src/irm-router/interfaces/IIrmRouter.sol";
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
+import {IrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/IrmConfigFactory.sol";
 
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {ILidoLendOwner} from "../../src/interfaces/ILidoLendOwner.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
-import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
-import {LidoLendMarketBuilder, MarketRoles, GuardianConfig} from "../../src/periphery/LidoLendMarketBuilder.sol";
+import {IIrmRouterView, LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
@@ -47,7 +46,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         if (block.chainid != expected) revert UnexpectedChainId(expected, block.chainid);
     }
 
-    /// @dev The dashboard must exist before the builder grants it market roles.
+    /// @dev The dashboard must exist before the factory grants it market roles.
     function _deployBackbone(ProtocolConfig memory cfg, address deployer)
         internal
         returns (ProtocolDeployment memory d)
@@ -70,18 +69,20 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         d.riskStewardDashboard = address(dashboard);
 
         d.adaptiveCurveIrm = address(new AdaptiveCurveIrm(d.irmRouter, cfg.agent, cfg.evmScriptExecutor));
+        d.irmConfigFactory = address(new IrmConfigFactory());
 
         // Injecting implementations keeps the factory below the EIP-3860 initcode limit.
         address controllerImpl = address(new LidoLendMarketController(IMorpho(d.core)));
         address vaultImpl = address(new LidoLendERC4626(d.core));
         d.guardianSignalsImpl = address(new GuardianSignals());
 
-        d.factory = address(new LidoLendMarketFactory(controllerImpl, vaultImpl, d.guardianSignalsImpl));
-        d.builder = address(
-            new LidoLendMarketBuilder(
-                LidoLendMarketFactory(d.factory),
+        d.factory = address(
+            new LidoLendMarketFactory(
+                LidoLendMarketFactory.Implementations({
+                    controller: controllerImpl, vault: vaultImpl, guardianSignals: d.guardianSignalsImpl
+                }),
                 ILidoLendOwner(d.ownerFacade),
-                IIrmRouter(d.irmRouter),
+                IIrmRouterView(d.irmRouter),
                 d.riskStewardDashboard
             )
         );
@@ -101,7 +102,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     }
 
     /// @dev The facade is the only operational manager.
-    function _buildGuardianSignals(string memory name, address builder, address agent)
+    function _deployGuardianSignals(string memory name, address factory, address agent)
         internal
         returns (address guardianSignals)
     {
@@ -110,24 +111,23 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         if (cfg.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, cfg.proxyAdmin);
         address[] memory managers = new address[](0);
 
-        guardianSignals = LidoLendMarketBuilder(builder)
-            .buildGuardianSignals(
-                GuardianConfig({
-                    guardians: cfg.guardians,
-                    quorum: cfg.quorum,
-                    suspectWindow: cfg.suspectWindow,
-                    accessLimiter: cfg.accessLimiter
+        guardianSignals = LidoLendMarketFactory(factory)
+            .deployGuardianSignals(
+                LidoLendMarketFactory.GuardianSpec({
+                    guardians: cfg.guardians, quorum: cfg.quorum, suspectWindow: cfg.suspectWindow
                 }),
-                cfg.admin,
-                managers,
-                cfg.proxyAdmin
+                LidoLendMarketFactory.GuardianRoles({
+                    admin: cfg.admin, proxyAdmin: cfg.proxyAdmin, managers: managers, accessLimiter: cfg.accessLimiter
+                })
             );
     }
 
-    function _requireMarketRolePolicy(MarketRoles memory roles, address agent, address executor, address deployer)
-        internal
-        view
-    {
+    function _requireMarketRolePolicy(
+        LidoLendMarketFactory.MarketRoles memory roles,
+        address agent,
+        address executor,
+        address deployer
+    ) internal view {
         if (roles.admin != agent) revert UnexpectedAdmin(agent, roles.admin);
         if (roles.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, roles.proxyAdmin);
         if (roles.pausers.length == 0) revert MissingCircuitBreaker();
@@ -156,7 +156,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     }
 
     /// @dev The shared IRM router makes these four inputs sufficient to detect duplicate market ids.
-    function _requireUniqueMarketIds(string[] memory names, LidoLendMarketBuilder.MarketSpec[] memory markets)
+    function _requireUniqueMarketIds(string[] memory names, LidoLendMarketFactory.MarketSpec[] memory markets)
         internal
         pure
     {
@@ -168,7 +168,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         }
     }
 
-    function _marketIdInputHash(LidoLendMarketBuilder.MarketSpec memory market) private pure returns (bytes32) {
+    function _marketIdInputHash(LidoLendMarketFactory.MarketSpec memory market) private pure returns (bytes32) {
         return keccak256(abi.encode(market.loanToken, market.collateralToken, market.oracle, market.lltv));
     }
 

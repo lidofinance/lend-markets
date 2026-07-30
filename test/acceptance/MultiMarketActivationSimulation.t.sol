@@ -46,7 +46,7 @@ contract MultiMarketActivationSimulation is AcceptanceBase {
         _assertComponentsDeployed();
         _assertWiring();
         _assertConfig();
-        _assertBuilderValidation();
+        _assertFactoryValidation();
         _assertRoles();
         _assertRoleHolderCompleteness();
         _assertCircuitBreakerReadyAsPauser();

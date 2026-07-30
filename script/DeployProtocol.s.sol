@@ -5,8 +5,9 @@ import {Script, console2} from "forge-std/Script.sol";
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+import {IIrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/interfaces/IIrmConfigFactory.sol";
 
-import {LidoLendMarketBuilder, MarketRoles} from "../src/periphery/LidoLendMarketBuilder.sol";
+import {LidoLendMarketFactory} from "../src/periphery/LidoLendMarketFactory.sol";
 
 import {ProtocolDeployer} from "./lib/ProtocolDeployer.sol";
 import {DeployConfigFile, DeployConfig} from "./lib/DeployConfigFile.sol";
@@ -129,8 +130,8 @@ contract DeployProtocol is Script, ProtocolDeployer {
         console2.log("core            :", protocol.core);
         console2.log("ownerFacade     :", protocol.ownerFacade);
         console2.log("irmRouter       :", protocol.irmRouter);
+        console2.log("irmConfigFactory:", protocol.irmConfigFactory);
         console2.log("factory         :", protocol.factory);
-        console2.log("builder         :", protocol.builder);
         console2.log("riskStewardDash :", protocol.riskStewardDashboard);
         console2.log("protocol        :", protocolPath);
     }
@@ -139,14 +140,15 @@ contract DeployProtocol is Script, ProtocolDeployer {
         ProtocolConfigFile.requireProtocolUndeployed();
         if (cfg.exitBooks) ProtocolConfigFile.requireExitBooksUndeployed();
         string[] memory freshGuardianGroups = new string[](cfg.markets.length);
-        LidoLendMarketBuilder.MarketSpec[] memory markets = new LidoLendMarketBuilder.MarketSpec[](cfg.markets.length);
+        LidoLendMarketFactory.MarketSpec[] memory markets = new LidoLendMarketFactory.MarketSpec[](cfg.markets.length);
         uint256 freshGuardianGroupsCount;
 
         for (uint256 i; i < cfg.markets.length; ++i) {
             string memory name = cfg.markets[i];
             ProtocolConfigFile.requireMarketUndeployed(name);
             string memory guardianGroup = MarketConfigFile.guardianGroup(name);
-            (, LidoLendMarketBuilder.MarketSpec memory market, MarketRoles memory roles,) = MarketConfigFile.read(name);
+            (LidoLendMarketFactory.MarketSpec memory market, LidoLendMarketFactory.MarketRoles memory roles,,) =
+                MarketConfigFile.read(name);
             markets[i] = market;
             _requireMarketRolePolicy(roles, cfg.agent, cfg.evmScriptExecutor, deployer);
             string memory oracleArtifact = MarketConfigFile.oracleArtifact(name);
@@ -180,7 +182,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
 
     function _requireUniqueOracleArtifactAddresses(
         string[] memory names,
-        LidoLendMarketBuilder.MarketSpec[] memory markets
+        LidoLendMarketFactory.MarketSpec[] memory markets
     ) private view {
         for (uint256 i; i < names.length; ++i) {
             bytes32 current = keccak256(bytes(MarketConfigFile.oracleArtifact(names[i])));
@@ -199,27 +201,28 @@ contract DeployProtocol is Script, ProtocolDeployer {
     {
         string memory guardianGroup = MarketConfigFile.guardianGroup(name);
         (
-            ,
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.MarketRoles memory roles,
+            LidoLendMarketFactory.VaultSpec memory vaultSpec,
             AdaptiveCurveParams memory curveParams
         ) = MarketConfigFile.read(name);
         _requireMarketRolePolicy(roles, context.agent, context.executor, context.deployer);
 
+        IIrmConfigFactory(context.protocol.irmConfigFactory).getOrDeployAdaptiveCurveConfig(curveParams);
         if (market.guardianSignals == address(0)) {
             market.guardianSignals = _findGuardianSignals(
                 guardianGroup, context.guardianGroups, context.guardianSignals, context.guardianCount
             );
             if (market.guardianSignals == address(0)) {
-                market.guardianSignals = _buildGuardianSignals(guardianGroup, context.protocol.builder, context.agent);
+                market.guardianSignals = _deployGuardianSignals(guardianGroup, context.protocol.factory, context.agent);
                 context.guardianGroups[context.guardianCount] = guardianGroup;
                 context.guardianSignals[context.guardianCount] = market.guardianSignals;
                 ++context.guardianCount;
             }
         }
 
-        LidoLendMarketBuilder.MarketContracts memory built =
-            LidoLendMarketBuilder(context.protocol.builder).buildMarketContracts(market, roles);
+        LidoLendMarketFactory.MarketComponents memory built =
+            LidoLendMarketFactory(context.protocol.factory).deployMarketComponents(market, roles, vaultSpec);
 
         md = MarketDeployment({
             name: name,
@@ -227,7 +230,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
             guardianGroup: guardianGroup,
             circuitBreakerArtifact: MarketConfigFile.circuitBreakerArtifact(name),
             id: Id.unwrap(built.marketId),
-            builder: context.protocol.builder,
+            factory: context.protocol.factory,
             controller: built.controller,
             vault: built.vault,
             irm: context.protocol.irmRouter,
@@ -235,6 +238,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
             riskStewardDashboard: context.protocol.riskStewardDashboard,
             market: market,
             roles: roles,
+            vaultSpec: vaultSpec,
             curveParams: curveParams,
             deployedBlock: context.deployedBlock
         });

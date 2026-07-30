@@ -13,8 +13,8 @@
   },
   "lib/lido-lend-irm": {
     "branch": {
-      "name": "main",
-      "rev": "ce459215fd045dfd4c6a84f5460904d24650f8bf"
+      "name": "refactor/external-irm-configs",
+      "rev": "690073d18c96d7cafe004b8809a2827df454e2ec"
     }
   },
   "lib/openzeppelin-contracts": {

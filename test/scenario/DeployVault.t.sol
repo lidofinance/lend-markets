@@ -3,11 +3,15 @@ pragma solidity 0.8.35;
 
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
-import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
-import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
+import {ILidoLendOwner} from "../../src/interfaces/ILidoLendOwner.sol";
+import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
+import {IIrmRouterView, LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
+import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {PriorityRamp} from "../../src/types/ExitBookTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -15,11 +19,8 @@ import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20} from "../setup/Mocks.sol";
 
-/// @notice `LidoLendMarketFactory.deployVault` is a standalone, reusable handle, not only the internal step
-///         `deployMarketContracts` takes. This scenario proves it on an already-ACTIVATED market (via the
-///         `LidoLendSetup` harness): a vault it deploys against a live controller works immediately — no
-///         separate registration — shares the market's supply cap and pause with the original vault, and only
-///         its exit-book path needs a further governance step (`Erc4626ExitBook.setVaultAllowed`).
+/// @notice The factory can deploy an additional vault over an already active canonical controller. The vault
+///         works without separate core registration and shares market-level policy with existing vaults.
 contract DeployVaultScenarioTest is LidoLendSetup {
     using MarketActions for Market;
 
@@ -32,11 +33,22 @@ contract DeployVaultScenarioTest is LidoLendSetup {
         MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
         _deployProtocol(_defaultConfig(address(loan), address(collateral), address(collateral)));
 
+        MockERC20 loan2 = new MockERC20("Loan2", "LOAN2", 18);
+        MockERC20 collateral2 = new MockERC20("Collateral2", "COLL2", 18);
+        _deployProtocol(_defaultConfig(address(loan2), address(collateral2), address(collateral2)));
+
         Market storage m = _m();
-        // A standalone factory over the market's own controller impl + a fresh vault impl targeting the same
-        // core — this test only exercises `deployVault`, not the full `LidoLendMarketBuilder` deploy flow.
+        LidoLendOwner owner = new LidoLendOwner(m.core, address(this), address(0), address(0));
+        m.core.setOwner(address(owner));
         factory = new LidoLendMarketFactory(
-            m.controllerImpl, address(new LidoLendERC4626(address(m.core))), address(new GuardianSignals())
+            LidoLendMarketFactory.Implementations({
+                controller: m.controllerImpl,
+                vault: address(new LidoLendERC4626(address(m.core))),
+                guardianSignals: address(new GuardianSignals())
+            }),
+            ILidoLendOwner(address(owner)),
+            IIrmRouterView(m.params.irm),
+            address(0)
         );
     }
 
@@ -46,8 +58,7 @@ contract DeployVaultScenarioTest is LidoLendSetup {
 
     function test_deployVault_worksImmediatelyOnActivatedMarket() external {
         Market storage m = _m();
-        address vault2Addr =
-            factory.deployVault(m.params, address(m.controller), "Second Vault", "lidoLOAN2", address(this));
+        address vault2Addr = _deploySecondVault(m);
         ILidoLendERC4626 vault2 = ILidoLendERC4626(vault2Addr);
 
         assertEq(address(vault2.asset()), address(m.loanToken), "vault2 asset");
@@ -71,8 +82,7 @@ contract DeployVaultScenarioTest is LidoLendSetup {
         // MANAGER_ROLE was granted to `admin` == address(this) in `_addMarket`.
         m.controller.setSupplyCap(150 ether);
 
-        address vault2Addr =
-            factory.deployVault(m.params, address(m.controller), "Second Vault", "lidoLOAN2", address(this));
+        address vault2Addr = _deploySecondVault(m);
         ILidoLendERC4626 vault2 = ILidoLendERC4626(vault2Addr);
 
         address lenderA = _actor("lenderA");
@@ -95,22 +105,23 @@ contract DeployVaultScenarioTest is LidoLendSetup {
         assertEq(m.vault.maxDeposit(lenderB), 0, "cap now fully used, seen from either vault");
     }
 
-    function testRevert_deployVault_controllerFromAnotherMarket() external {
+    function testRevert_deployVault_marketParamsFromAnotherMarket() external {
         Market storage m = _m();
-
-        MockERC20 loan2 = new MockERC20("Loan2", "LOAN2", 18);
-        MockERC20 collateral2 = new MockERC20("Collateral2", "COLL2", 18);
-        _deployProtocol(_defaultConfig(address(loan2), address(collateral2), address(collateral2)));
         Market storage m2 = protocol.markets[1];
 
-        vm.expectRevert(ILidoLendERC4626.ControllerMarketMismatch.selector);
-        factory.deployVault(m.params, address(m2.controller), "Mismatched Vault", "lidoBAD", address(this));
+        vm.expectRevert(
+            abi.encodeWithSelector(LidoLendMarketFactory.MarketIdMismatch.selector, Id.unwrap(m2.id), Id.unwrap(m.id))
+        );
+        factory.deployVault(
+            m.controller,
+            m2.params,
+            LidoLendMarketFactory.VaultSpec({proxyAdmin: address(this), name: "Mismatched Vault", symbol: "lidoBAD"})
+        );
     }
 
     function test_deployVault_exitBookGatingIsASeparateGovernanceStep() external {
         Market storage m = _m();
-        address vault2Addr =
-            factory.deployVault(m.params, address(m.controller), "Second Vault", "lidoLOAN2", address(this));
+        address vault2Addr = _deploySecondVault(m);
 
         address lender = _actor("lender");
         _fund(m.loanToken, lender, 100 ether);
@@ -136,5 +147,13 @@ contract DeployVaultScenarioTest is LidoLendSetup {
 
     function _flat(uint256 rate) internal pure returns (PriorityRamp memory) {
         return PriorityRamp({startRate: rate, endRate: rate, rampStart: 0, rampEnd: 0});
+    }
+
+    function _deploySecondVault(Market storage market) internal returns (address) {
+        return factory.deployVault(
+            market.controller,
+            market.params,
+            LidoLendMarketFactory.VaultSpec({proxyAdmin: address(this), name: "Second Vault", symbol: "lidoLOAN2"})
+        );
     }
 }

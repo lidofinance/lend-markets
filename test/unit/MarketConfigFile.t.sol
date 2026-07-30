@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 
-import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {MarketConfigFile} from "../../script/lib/MarketConfigFile.sol";
 
 contract MarketConfigFileHarness {
@@ -13,8 +13,9 @@ contract MarketConfigFileHarness {
         external
         pure
         returns (
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.MarketRoles memory roles,
+            LidoLendMarketFactory.VaultSpec memory vaultSpec,
             AdaptiveCurveParams memory curve
         )
     {
@@ -32,9 +33,17 @@ contract MarketConfigFileTest is Test {
     }
 
     function test_parse_acceptsQuotedWideValues() external view {
-        (LidoLendMarketBuilder.MarketSpec memory market,, AdaptiveCurveParams memory curve) = harness.parse(toml);
+        (
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.MarketRoles memory roles,
+            LidoLendMarketFactory.VaultSpec memory vaultSpec,
+            AdaptiveCurveParams memory curve
+        ) = harness.parse(toml);
 
         assertEq(market.lltv, 0.8e18, "lltv");
+        assertEq(vaultSpec.proxyAdmin, roles.proxyAdmin, "vault proxy admin");
+        assertEq(vaultSpec.name, "Test Vault", "vault name");
+        assertEq(vaultSpec.symbol, "TEST", "vault symbol");
         assertEq(curve.curveSteepness, 4e18, "curve steepness");
         assertEq(curve.targetUtilization, 0.9e18, "target utilization");
     }

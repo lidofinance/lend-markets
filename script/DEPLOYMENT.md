@@ -29,9 +29,10 @@ exit-books.toml
 transactions/<step>.json
 ```
 
-Each market artifact contains its resolved addresses, market ID, final controller role holders,
-CircuitBreaker reference, activation, settlement, and curve parameters. Separate CircuitBreaker, oracle, and
-GuardianSignals artifacts contain their resolved configuration.
+The protocol artifact records the shared permissionless `IrmConfigFactory`. Each market artifact contains its
+resolved addresses, market ID, final controller role holders, CircuitBreaker reference, activation, settlement,
+and curve parameters. Separate CircuitBreaker, oracle, and GuardianSignals artifacts contain their resolved
+configuration.
 
 Deploy each referenced CircuitBreaker before the protocol. The script fixes `ADMIN = evm_script_executor`;
 the remaining immutable bounds and initial settings come from `circuit-breakers/<name>.toml`. A market names
@@ -83,10 +84,12 @@ protocol artifact.
 
 ## Activate
 
-Activation inputs are runtime EasyTrack motion choices, not deployment artifacts. No separate activation
-artifact is generated or required. EasyTrack acceptance reads reviewed values and resolved addresses from
-`deployed/<RUN>/markets/<market-name>.toml`. The motion sets the curve, routes the IRM, creates the market
-through `LidoLendOwner`, and registers the CircuitBreaker pauser.
+No separate activation artifact is generated or required. EasyTrack acceptance reads reviewed values and
+resolved addresses from `deployed/<RUN>/markets/<market-name>.toml`. Deployment ensures that the shared
+`IrmConfigFactory` contains an immutable config for the recorded curve parameters. After the deployment
+transactions are confirmed, activation resolves that config through the factory's typed getter, applies it,
+routes the IRM, creates the market through `LidoLendOwner`, and registers the CircuitBreaker pauser. Other
+motion choices, such as settlement enablement and the pauser committee, remain runtime inputs.
 
 Exit-book allow-listing is a separate `LidoLendSetMarketExitBookAllowed` motion.
 

@@ -10,6 +10,7 @@ import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
+import {LinearKinkConfig} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkConfig.sol";
 import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.sol";
 import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 import {IIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.sol";
@@ -165,8 +166,8 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         });
         Id id = params.id();
 
-        // `irm` is the shared router. Deploy the chosen frozen IRM, set its per-market params, and route the
-        // market to it through the router (all owner-gated, done as `admin`).
+        // `irm` is the shared router. Deploy the chosen IRM and its immutable config, apply that config, and route
+        // the market through the router (all owner-gated calls run as `admin`).
         _routeMarketIrm(irm, params, admin);
 
         // One GuardianSignals per market, deployed and seeded before the controller (which binds to it).
@@ -235,9 +236,9 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         return _behindProxy(impl, admin, abi.encodeCall(MockPriceOracle.initialize, (oraclePrice)));
     }
 
-    /// @dev Route the market's frozen IRM through the shared `router`: the adaptive kind is the deployer's
+    /// @dev Route the market's selected IRM through the shared `router`: the adaptive kind is the deployer's
     ///      `_configureAdaptiveIrm` step; `Fixed` swaps in a flat LinearKink emulating a constant rate. All
-    ///      setters are owner-gated, so they run pranked as `admin`.
+    ///      configuration and routing calls are owner-gated, so they run pranked as `admin`.
     function _routeMarketIrm(address router, MarketParams memory params, address admin) private {
         if (irmKind == IrmKind.Fixed) {
             IrmMarketParams memory irmParams = IrmMarketParams({
@@ -248,8 +249,9 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 lltv: params.lltv
             });
             LinearKinkIrm kink = new LinearKinkIrm(admin, admin);
+            LinearKinkConfig config = new LinearKinkConfig(_kinkParams());
             vm.startPrank(admin);
-            kink.setMarketKinkParams(irmParams, _kinkParams());
+            kink.applyIrmConfig(irmParams, address(config));
             IrmRouter(router).setMarketIrm(irmParams, IIrm(address(kink)));
             vm.stopPrank();
         } else {

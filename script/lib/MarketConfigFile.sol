@@ -7,7 +7,7 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ConfigToml} from "./ConfigToml.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 
-import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {BPS} from "../../src/libs/Constants.sol";
@@ -38,15 +38,14 @@ library MarketConfigFile {
         internal
         view
         returns (
-            address builder,
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.MarketRoles memory roles,
+            LidoLendMarketFactory.VaultSpec memory vaultSpec,
             AdaptiveCurveParams memory curveParams
         )
     {
         string memory toml = vm.readFile(marketPath(name));
-        builder = vm.parseTomlAddress(toml, ".builder");
-        (market, roles, curveParams) = parse(toml);
+        (market, roles, vaultSpec, curveParams) = parse(toml);
         ArtifactRefs memory refs = _parseArtifactRefs(toml);
 
         if (market.oracle == address(0)) market.oracle = OracleConfigFile.readDeployed(refs.oracle);
@@ -65,13 +64,19 @@ library MarketConfigFile {
         internal
         pure
         returns (
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.MarketRoles memory roles,
+            LidoLendMarketFactory.VaultSpec memory vaultSpec,
             AdaptiveCurveParams memory curveParams
         )
     {
         market = _parseMarket(toml);
         roles = _parseRoles(toml);
+        vaultSpec = LidoLendMarketFactory.VaultSpec({
+            proxyAdmin: roles.proxyAdmin,
+            name: vm.parseTomlString(toml, ".market.vault_name"),
+            symbol: vm.parseTomlString(toml, ".market.vault_symbol")
+        });
         curveParams = _parseCurve(toml);
     }
 
@@ -107,17 +112,15 @@ library MarketConfigFile {
         }
     }
 
-    function _parseMarket(string memory toml) private pure returns (LidoLendMarketBuilder.MarketSpec memory) {
-        return LidoLendMarketBuilder.MarketSpec({
+    function _parseMarket(string memory toml) private pure returns (LidoLendMarketFactory.MarketSpec memory) {
+        return LidoLendMarketFactory.MarketSpec({
             loanToken: ConfigToml.requireAddress(toml, ".market.loan_token"),
             collateralToken: ConfigToml.requireAddress(toml, ".market.collateral_token"),
             oracle: vm.parseTomlAddress(toml, ".market.oracle"),
             lltv: vm.parseTomlUint(toml, ".market.lltv"),
             guardianSignals: vm.parseTomlAddress(toml, ".market.guardian_signals"),
             activationConfig: _parseActivation(toml),
-            settlementConfig: _parseSettlement(toml),
-            vaultName: vm.parseTomlString(toml, ".market.vault_name"),
-            vaultSymbol: vm.parseTomlString(toml, ".market.vault_symbol")
+            settlementConfig: _parseSettlement(toml)
         });
     }
 
@@ -167,8 +170,8 @@ library MarketConfigFile {
         return value.toUint128();
     }
 
-    function _parseRoles(string memory toml) private pure returns (MarketRoles memory) {
-        return MarketRoles({
+    function _parseRoles(string memory toml) private pure returns (LidoLendMarketFactory.MarketRoles memory) {
+        return LidoLendMarketFactory.MarketRoles({
             admin: ConfigToml.requireAddress(toml, ".roles.admin"),
             proxyAdmin: ConfigToml.requireAddress(toml, ".roles.proxy_admin"),
             managers: vm.parseTomlAddressArray(toml, ".roles.managers"),
