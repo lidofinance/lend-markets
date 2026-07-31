@@ -119,6 +119,8 @@ interface IGuardianSignals is IGuardianSignalsView {
 
     /// @notice Add `guardian` to the committee. Must be non-zero, not already a guardian, and within the cap.
     function addGuardian(address guardian) external;
+    /// @notice Atomically replace one guardian with another without changing the guardian count or quorum.
+    function replaceGuardian(address oldGuardian, address newGuardian) external;
     /// @notice Remove `guardian` from the committee (reverts if it would drop the set below the quorum).
     function removeGuardian(address guardian) external;
     /// @notice Set the caller-guardian's delegate — a hot key that may act on its behalf. The zero address clears

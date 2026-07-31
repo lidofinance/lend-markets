@@ -882,6 +882,61 @@ contract GuardianSignalsTest is Test {
         new OssifiableProxy(impl, address(this), initData);
     }
 
+    function test_replaceGuardian_atCapAndFullQuorum_preservesBoth() public {
+        for (uint160 i = 4; i <= 32; i++) {
+            gs.addGuardian(address(0x4000 + i));
+        }
+        gs.setQuorum(32);
+        address replacement = address(0xBEEF);
+
+        vm.expectEmit(true, false, false, false, address(gs));
+        emit GuardianRemoved(GUARDIAN_1);
+        vm.expectEmit(true, false, false, false, address(gs));
+        emit GuardianAdded(replacement);
+        gs.replaceGuardian(GUARDIAN_1, replacement);
+
+        assertEq(gs.getGuardianCount(), 32, "guardian count preserved");
+        assertEq(gs.getQuorum(), 32, "quorum preserved");
+        assertFalse(gs.isGuardian(GUARDIAN_1), "old guardian removed");
+        assertTrue(gs.isGuardian(replacement), "new guardian added");
+    }
+
+    function test_replaceGuardian_clearsOldDelegateAndHeartbeat() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        _heartbeat(GUARDIAN_1, 998);
+
+        vm.expectEmit(true, true, true, false, address(gs));
+        emit DelegateSet(GUARDIAN_1, DELEGATE, address(0));
+        gs.replaceGuardian(GUARDIAN_1, address(0xBEEF));
+
+        assertEq(gs.getDelegate(GUARDIAN_1), address(0), "old delegate cleared");
+        assertEq(gs.getHeartbeat(GUARDIAN_1), 0, "old heartbeat cleared");
+    }
+
+    function testRevert_replaceGuardian_oldNotGuardian() public {
+        vm.expectRevert(IGuardianSignals.NotGuardian.selector);
+        gs.replaceGuardian(BOB, address(0xBEEF));
+    }
+
+    function testRevert_replaceGuardian_newAlreadyGuardian() public {
+        vm.expectRevert(IGuardianSignals.AlreadyGuardian.selector);
+        gs.replaceGuardian(GUARDIAN_1, GUARDIAN_2);
+        assertTrue(gs.isGuardian(GUARDIAN_1), "old guardian preserved after revert");
+    }
+
+    function testRevert_replaceGuardian_zeroNewGuardian() public {
+        vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
+        gs.replaceGuardian(GUARDIAN_1, address(0));
+    }
+
+    function testRevert_replaceGuardian_wrongRole() public {
+        bytes32 role = gs.MANAGER_ROLE();
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
+        vm.prank(BOB);
+        gs.replaceGuardian(GUARDIAN_1, address(0xBEEF));
+    }
+
     // ── fuzz ──
 
     /// @dev Property: across any interleaving of flags and retractions (no unban), once Banned always Banned.

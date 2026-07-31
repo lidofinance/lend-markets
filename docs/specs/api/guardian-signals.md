@@ -358,6 +358,14 @@ function addGuardian(address guardian) external;
 
 Add `guardian` to the committee. Must be non-zero, not already a guardian, and within the cap.
 
+### `replaceGuardian`
+
+```solidity
+function replaceGuardian(address oldGuardian, address newGuardian) external;
+```
+
+Atomically replace one guardian with another without changing the guardian count or quorum.
+
 ### `removeGuardian`
 
 ```solidity

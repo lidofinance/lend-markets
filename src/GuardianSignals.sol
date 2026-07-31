@@ -114,18 +114,19 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
+    function replaceGuardian(address oldGuardian, address newGuardian) external onlyRole(MANAGER_ROLE) {
+        if (newGuardian == address(0)) revert ZeroAddress();
+        if (_guardians.contains(newGuardian)) revert AlreadyGuardian();
+        _removeGuardian(oldGuardian);
+        _addGuardian(newGuardian);
+    }
+
+    /// @inheritdoc IGuardianSignals
     /// @dev Reverts if removal would drop the set below `quorum`. Clears the guardian's delegate and heartbeat, so
     ///      re-adding it starts fresh. Its existing signals linger (still counted) until a permissionless `prune`.
     function removeGuardian(address guardian) external onlyRole(MANAGER_ROLE) {
-        if (!_guardians.remove(guardian)) revert NotGuardian();
+        _removeGuardian(guardian);
         if (_guardians.length() < _quorum) revert WouldBreakQuorum();
-        address oldDelegate = _delegates[guardian];
-        if (oldDelegate != address(0)) {
-            delete _delegates[guardian];
-            emit DelegateSet(guardian, oldDelegate, address(0));
-        }
-        delete _heartbeats[guardian];
-        emit GuardianRemoved(guardian);
     }
 
     /// @inheritdoc IGuardianSignals
@@ -398,6 +399,17 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     function _setQuorum(uint256 newQuorum) internal {
         if (newQuorum == 0 || newQuorum > _guardians.length()) revert BadQuorum();
         _quorum = newQuorum.toUint8();
+    }
+
+    function _removeGuardian(address guardian) internal {
+        if (!_guardians.remove(guardian)) revert NotGuardian();
+        address oldDelegate = _delegates[guardian];
+        if (oldDelegate != address(0)) {
+            delete _delegates[guardian];
+            emit DelegateSet(guardian, oldDelegate, address(0));
+        }
+        delete _heartbeats[guardian];
+        emit GuardianRemoved(guardian);
     }
 
     function _addGuardian(address guardian) internal {

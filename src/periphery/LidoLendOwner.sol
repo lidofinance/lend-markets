@@ -135,21 +135,7 @@ contract LidoLendOwner is AccessControlEnumerable, ILidoLendOwner {
         external
         onlyRole(GUARDIAN_MANAGER_ROLE)
     {
-        IGuardianSignals guardians = _guardians(marketId);
-        uint256 guardianCount = guardians.getGuardianCount();
-
-        if (guardianCount < guardians.MAX_GUARDIANS_COUNT()) {
-            guardians.addGuardian(newGuardian);
-            guardians.removeGuardian(oldGuardian);
-            return;
-        }
-
-        uint256 quorum = guardians.getQuorum();
-        bool restoreQuorum = quorum == guardianCount;
-        if (restoreQuorum) guardians.setQuorum(quorum - 1);
-        guardians.removeGuardian(oldGuardian);
-        guardians.addGuardian(newGuardian);
-        if (restoreQuorum) guardians.setQuorum(quorum);
+        _guardians(marketId).replaceGuardian(oldGuardian, newGuardian);
     }
 
     /// @inheritdoc ILidoLendOwner
