@@ -142,8 +142,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
     ///      self-grants MANAGER_ROLE and sets the delay parameters. Also mirrors it to `protocol` so
     ///      single-market tests can read `protocol.guardianSignals`.
     function _deployMarketGuardian(DeployConfig memory cfg, address admin) private returns (address guardianSignals) {
-        guardianSignals =
-            _deployGuardianSignals(address(new GuardianSignals()), admin, admin, cfg.guardians, cfg.quorum);
+        guardianSignals = _deployGuardianSignals(address(new GuardianSignals()), admin, cfg.guardians, cfg.quorum);
         GuardianSignals gs = GuardianSignals(guardianSignals);
         gs.grantRole(gs.MANAGER_ROLE(), admin);
         gs.setSuspectWindow(cfg.suspectWindow);

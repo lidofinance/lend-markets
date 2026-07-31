@@ -99,10 +99,9 @@ contract Devnet is Script, LidoLendDeployer {
     function _deployGuardian(address admin) private returns (address guardianSignals) {
         address[] memory guardians = new address[](1);
         guardians[0] = admin;
-        guardianSignals = _deployGuardianSignals(address(new GuardianSignals()), admin, admin, guardians, 1);
+        guardianSignals = _deployGuardianSignals(address(new GuardianSignals()), admin, guardians, 1);
         GuardianSignals gs = GuardianSignals(guardianSignals);
         gs.grantRole(gs.MANAGER_ROLE(), admin);
-        gs.grantRole(gs.ACCESS_LIMITER_ROLE(), admin);
         gs.grantRole(gs.ACCESS_RESTORER_ROLE(), admin);
         gs.setSuspectWindow(0);
     }

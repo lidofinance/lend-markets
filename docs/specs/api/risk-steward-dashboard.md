@@ -58,14 +58,6 @@ The market id has no controller on the core (unknown or not yet created).
 
 ## Functions
 
-### `LIDO_LEND`
-
-```solidity
-function LIDO_LEND() external view returns (ILidoLend);
-```
-
-Core whose markets this dashboard controls.
-
 ### `STEWARD_ADMIN_ROLE`
 
 ```solidity

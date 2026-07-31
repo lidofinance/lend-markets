@@ -65,8 +65,7 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         LidoLendOwner(d.ownerFacade).grantRole(LidoLendOwner(d.ownerFacade).MARKET_MANAGER_ROLE(), cfg.admin);
         LidoLendOwner(d.ownerFacade).grantRole(LidoLendOwner(d.ownerFacade).GUARDIAN_MANAGER_ROLE(), cfg.admin);
 
-        d.guardianSignals =
-            _deployGuardianSignals(address(new GuardianSignals()), cfg.admin, cfg.admin, cfg.guardians, cfg.quorum);
+        d.guardianSignals = _deployGuardianSignals(address(new GuardianSignals()), cfg.admin, cfg.guardians, cfg.quorum);
         d.oracle = _deployOracle(cfg.oracleSource, cfg.admin);
         d.irm = _deployIrm(d.core, cfg.admin);
 
