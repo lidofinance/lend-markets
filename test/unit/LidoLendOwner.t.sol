@@ -97,6 +97,7 @@ contract OwnerControllerMock {
     bytes32 public activationConfigHash;
     bytes32 public settlementConfigHash;
     address public instantActivationCaller;
+    bool public instantActivationEnabled;
 
     constructor(Id marketId_, address guardianSignals_) {
         _marketId = marketId_;
@@ -123,8 +124,9 @@ contract OwnerControllerMock {
         settlementConfigHash = keccak256(abi.encode(config));
     }
 
-    function grantInstantActivation(address caller) external {
+    function setInstantActivation(address caller, bool enabled) external {
         instantActivationCaller = caller;
+        instantActivationEnabled = enabled;
     }
 }
 
@@ -337,8 +339,8 @@ contract LidoLendOwnerTest is Test {
         facade.setMarketCollateralActivationConfig(p2.id(), activation2);
         facade.setMarketSettlementConfig(p1.id(), settlement1);
         facade.setMarketSettlementConfig(p2.id(), settlement2);
-        facade.grantMarketInstantActivation(p1.id(), address(0x1111));
-        facade.grantMarketInstantActivation(p2.id(), address(0x2222));
+        facade.setInstantActivation(p1.id(), address(0x1111), true);
+        facade.setInstantActivation(p2.id(), address(0x2222), false);
         vm.stopPrank();
 
         assertEq(c1.supplyCap(), 100, "market 1 supply cap");
@@ -351,6 +353,8 @@ contract LidoLendOwnerTest is Test {
         assertEq(c2.settlementConfigHash(), keccak256(abi.encode(settlement2)), "market 2 settlement config");
         assertEq(c1.instantActivationCaller(), address(0x1111), "market 1 instant activation");
         assertEq(c2.instantActivationCaller(), address(0x2222), "market 2 instant activation");
+        assertTrue(c1.instantActivationEnabled(), "market 1 instant activation enabled");
+        assertFalse(c2.instantActivationEnabled(), "market 2 instant activation disabled");
     }
 
     function testRevert_marketManagement_withoutRole() public {
@@ -370,7 +374,7 @@ contract LidoLendOwnerTest is Test {
         vm.expectRevert(_unauthorized(CREATOR, role));
         facade.setMarketSettlementConfig(id, settlement);
         vm.expectRevert(_unauthorized(CREATOR, role));
-        facade.grantMarketInstantActivation(id, address(1));
+        facade.setInstantActivation(id, address(1), true);
         vm.stopPrank();
     }
 

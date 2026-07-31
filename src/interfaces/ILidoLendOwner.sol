@@ -66,8 +66,8 @@ interface ILidoLendOwner {
     /// @notice Replace a market's settlement configuration.
     function setMarketSettlementConfig(Id marketId, SettlementConfig calldata config) external;
 
-    /// @notice Allow a trusted caller to supply collateral with instant activation on a market.
-    function grantMarketInstantActivation(Id marketId, address caller) external;
+    /// @notice Set whether a caller's supplies activate instantly on a market.
+    function setInstantActivation(Id marketId, address caller, bool enabled) external;
 
     // ---
     // GUARDIAN MANAGEMENT (GUARDIAN_MANAGER_ROLE)

@@ -62,7 +62,7 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
     function testRevert_unexpectedInstantActivationCallerIsRejected() external {
         address caller = makeAddr("unexpectedInstantActivationCaller");
         vm.prank(facade);
-        IReadController(controller).grantInstantActivation(caller);
+        IReadController(controller).setInstantActivation(caller, true);
         address[] memory candidates = new address[](1);
         candidates[0] = caller;
         vm.expectRevert();

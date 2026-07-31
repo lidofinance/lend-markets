@@ -37,7 +37,7 @@ contract VaultConformanceInvariant is LidoLendSetup {
         actors.push(address(0x9002));
         actors.push(address(0x9003));
         for (uint256 i; i < actors.length; i++) {
-            m.controller.grantInstantActivation(actors[i]);
+            m.controller.setInstantActivation(actors[i], true);
         }
 
         handler = new VaultHandler(

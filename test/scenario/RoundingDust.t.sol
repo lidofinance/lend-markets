@@ -21,8 +21,8 @@ contract RoundingDustTest is LidoLendSetup {
         MockERC20 coll = new MockERC20("Coll", "COLL", 18);
         _deployProtocol(_defaultConfig(address(loan), address(coll), address(coll)));
         Market storage m = protocol.markets[0];
-        m.controller.grantInstantActivation(B1);
-        m.controller.grantInstantActivation(B2);
+        m.controller.setInstantActivation(B1, true);
+        m.controller.setInstantActivation(B2, true);
     }
 
     function _gap(string memory label) internal returns (uint256 dust) {

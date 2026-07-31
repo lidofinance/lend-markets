@@ -125,7 +125,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
     ///         borrows with no maturation wait. Revoking restores the timer for fresh deposits.
     function test_instantActivation_skipsMaturationDelay() public {
         TestMarket memory ctx = _deployMarket(false);
-        ctx.controller.grantInstantActivation(BORROWER);
+        ctx.controller.setInstantActivation(BORROWER, true);
         assertTrue(ctx.controller.hasInstantActivation(BORROWER), "borrower whitelisted");
 
         _mintWETH(ctx.market, LENDER, 10 ether);
@@ -143,7 +143,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
         assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrowed with no maturation wait");
 
         // Revoke restores the timer: a fresh deposit enters activation instead of going straight to active.
-        ctx.controller.revokeInstantActivation(BORROWER);
+        ctx.controller.setInstantActivation(BORROWER, false);
         uint256 more = _mintWstETH(ctx.market, BORROWER, 15 ether);
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, more, BORROWER, "");

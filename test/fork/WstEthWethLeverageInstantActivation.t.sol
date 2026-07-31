@@ -269,7 +269,7 @@ contract WstEthWethLeverageInstantActivationTest is Test, LidoLendDeployer, Fork
         (Stack memory s, WstEthWethLeverageHelper helper, uint256 initialCollateral) = _setup();
 
         // Trust the router: its supplies skip the timer and are active immediately.
-        s.controller.grantInstantActivation(address(helper));
+        s.controller.setInstantActivation(address(helper), true);
 
         uint256 target = initialCollateral * 5 / 2; // ~2.5x, within the LTV asymptote (1 / (1 - lltv) = 5x)
         vm.prank(USER);

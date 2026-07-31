@@ -117,8 +117,8 @@ contract LidoLendOwner is AccessControlEnumerable, ILidoLendOwner {
     }
 
     /// @inheritdoc ILidoLendOwner
-    function grantMarketInstantActivation(Id marketId, address caller) external onlyRole(MARKET_MANAGER_ROLE) {
-        _controller(marketId).grantInstantActivation(caller);
+    function setInstantActivation(Id marketId, address caller, bool enabled) external onlyRole(MARKET_MANAGER_ROLE) {
+        _controller(marketId).setInstantActivation(caller, enabled);
     }
 
     // ---

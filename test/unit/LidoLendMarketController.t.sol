@@ -257,7 +257,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _fund(m.loanToken, lender, 1000 ether);
         m.vaultDeposit(lender, 1000 ether);
         address borrower = _actor("borrower");
-        c.grantInstantActivation(borrower);
+        c.setInstantActivation(borrower, true);
         assertTrue(c.hasInstantActivation(borrower), "granted");
         _fund(m.collateralToken, borrower, 100 ether);
         m.supplyCollateral(borrower, 100 ether); // instant -> straight to active, no warp
@@ -285,14 +285,13 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.pauseFor(1 hours);
     }
 
-    /// @dev `grantInstantActivation` without `MANAGER_ROLE` reverts `AccessControlUnauthorizedAccount`.
-    function testRevert_grantInstantActivation_wrongRole() public {
+    function testRevert_setInstantActivation_wrongRole() public {
         address nobody = _actor("nobody");
         address borrower = _actor("borrower");
         bytes32 role = c.MANAGER_ROLE();
         vm.prank(nobody);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
-        c.grantInstantActivation(borrower);
+        c.setInstantActivation(borrower, true);
     }
 
     // ── ban 3-way: receiver and caller (distinct from onBehalf) ──
@@ -358,23 +357,22 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.setCollateralActivationConfig(cfg);
     }
 
-    /// @dev `revokeInstantActivation` (MANAGER_ROLE) clears a previously-granted instant flag.
-    function test_revokeInstantActivation_clearsFlag() public {
+    /// @dev `setInstantActivation` (MANAGER_ROLE) clears a previously-granted instant flag.
+    function test_setInstantActivation_false_clearsFlag() public {
         address borrower = _actor("borrower");
-        c.grantInstantActivation(borrower);
+        c.setInstantActivation(borrower, true);
         assertTrue(c.hasInstantActivation(borrower), "granted");
-        c.revokeInstantActivation(borrower);
+        c.setInstantActivation(borrower, false);
         assertFalse(c.hasInstantActivation(borrower), "revoked");
     }
 
-    /// @dev `revokeInstantActivation` without `MANAGER_ROLE` reverts `AccessControlUnauthorizedAccount`.
-    function testRevert_revokeInstantActivation_wrongRole() public {
+    function testRevert_setInstantActivationFalse_wrongRole() public {
         address nobody = _actor("nobody");
         address borrower = _actor("borrower");
         bytes32 role = c.MANAGER_ROLE();
         vm.prank(nobody);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
-        c.revokeInstantActivation(borrower);
+        c.setInstantActivation(borrower, false);
     }
 
     // ── on() unknown hook event (defensive, see note) and onBehalf-banned borrow ──
