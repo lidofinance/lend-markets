@@ -3,6 +3,7 @@ chain_id = 1
 
 agent = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
 evm_script_executor = "0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"
+circuit_breaker_artifact = "lido-lend"
 
 exit_books = true
 exit_book_max_request_lifetime = 31536000  # 365 days

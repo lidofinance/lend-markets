@@ -2,7 +2,7 @@
 
 # RiskStewardDashboard
 
-Full external surface of `RiskStewardDashboard`: AccessControlEnumerable (inherited), per-market steward management, and the bounded tighten-only risk levers. The dashboard implements this interface, so it is the single source for the events, errors, and the function docs the contract inherits.
+Full external surface of `RiskStewardDashboard`: AccessControlEnumerable (inherited), per-market steward management, and bounded risk-reduction levers. The dashboard implements this interface, so it is the single source for the events, errors, and the function docs the contract inherits.
 
 ## Events
 
@@ -57,6 +57,14 @@ error UnknownMarket(Id marketId);
 The market id has no controller on the core (unknown or not yet created).
 
 ## Functions
+
+### `LIDO_LEND`
+
+```solidity
+function LIDO_LEND() external view returns (ILidoLend);
+```
+
+Core whose markets this dashboard controls.
 
 ### `STEWARD_ADMIN_ROLE`
 
@@ -132,3 +140,11 @@ function revokeInstantActivation(Id marketId, address caller) external;
 ```
 
 Revoke a caller's instant activation on a market. Risk-reducing, so no direction guard; forwards to the controller, which emits the state change.
+
+### `freezeMarket`
+
+```solidity
+function freezeMarket(Id marketId) external;
+```
+
+Freeze a market. Only an appointed steward of that market may call.

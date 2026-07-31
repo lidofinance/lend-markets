@@ -14,7 +14,6 @@ contract MarketConfigFileHarness {
         pure
         returns (
             LidoLendMarketFactory.MarketSpec memory market,
-            LidoLendMarketFactory.MarketRoles memory roles,
             LidoLendMarketFactory.VaultSpec memory vaultSpec,
             AdaptiveCurveParams memory curve
         )
@@ -35,13 +34,11 @@ contract MarketConfigFileTest is Test {
     function test_parse_acceptsQuotedWideValues() external view {
         (
             LidoLendMarketFactory.MarketSpec memory market,
-            LidoLendMarketFactory.MarketRoles memory roles,
             LidoLendMarketFactory.VaultSpec memory vaultSpec,
             AdaptiveCurveParams memory curve
         ) = harness.parse(toml);
 
         assertEq(market.lltv, 0.8e18, "lltv");
-        assertEq(vaultSpec.proxyAdmin, roles.proxyAdmin, "vault proxy admin");
         assertEq(vaultSpec.name, "Test Vault", "vault name");
         assertEq(vaultSpec.symbol, "TEST", "vault symbol");
         assertEq(curve.curveSteepness, 4e18, "curve steepness");
@@ -106,14 +103,6 @@ contract MarketConfigFileTest is Test {
             "guardian_signals = \"0x0000000000000000000000000000000000000004\"\n",
             "vault_name = \"Test Vault\"\n",
             "vault_symbol = \"TEST\"\n",
-            "[roles]\n",
-            "admin = \"0x0000000000000000000000000000000000000005\"\n",
-            "proxy_admin = \"0x0000000000000000000000000000000000000006\"\n",
-            "managers = []\n",
-            "pausers = []\n",
-            "freezers = []\n",
-            "unfreezers = []\n",
-            "resumers = []\n",
             "[activation]\n",
             "min_activation_delay = 600\n",
             "max_activation_delay = 7200\n",

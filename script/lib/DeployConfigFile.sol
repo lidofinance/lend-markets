@@ -11,6 +11,7 @@ struct DeployConfig {
     bytes32 configHash;
     address agent;
     address evmScriptExecutor;
+    string circuitBreakerArtifact; // one fixed CircuitBreaker per deployed core/factory
     bool exitBooks; // deploy the protocol's two exit books
     uint256 exitBookMaxRequestLifetime; // used only when exitBooks is true
     string[] markets; // per-market config names (markets/<name>.toml, oracles/<name>.toml, guardians/<name>.toml)
@@ -34,6 +35,7 @@ library DeployConfigFile {
         cfg.chainId = ConfigToml.requireUint(toml, ".chain_id");
         cfg.agent = ConfigToml.requireAddress(toml, ".agent");
         cfg.evmScriptExecutor = ConfigToml.requireAddress(toml, ".evm_script_executor");
+        cfg.circuitBreakerArtifact = ConfigToml.requireString(toml, ".circuit_breaker_artifact");
         cfg.exitBooks = vm.parseTomlBool(toml, ".exit_books");
         cfg.exitBookMaxRequestLifetime = vm.parseTomlUint(toml, ".exit_book_max_request_lifetime");
         cfg.markets = vm.parseTomlStringArray(toml, ".markets");

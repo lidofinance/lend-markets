@@ -12,6 +12,7 @@ import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 struct ProtocolConfig {
     address agent;
     address evmScriptExecutor;
+    address circuitBreaker;
 }
 
 struct ProtocolDeployment {
@@ -26,6 +27,8 @@ struct ProtocolDeployment {
     address irmConfigFactory;
     address factory;
     address riskStewardDashboard;
+    string circuitBreakerArtifact;
+    address circuitBreaker;
     address guardianSignalsImpl;
     uint256 deployedBlock;
     address deployer;
@@ -45,8 +48,9 @@ struct MarketDeployment {
     address irm;
     address ownerFacade;
     address riskStewardDashboard;
+    address controllerAdmin;
+    address circuitBreaker;
     LidoLendMarketFactory.MarketSpec market;
-    LidoLendMarketFactory.MarketRoles roles;
     LidoLendMarketFactory.VaultSpec vaultSpec;
     AdaptiveCurveParams curveParams;
     uint256 deployedBlock;
@@ -91,6 +95,8 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("irm_config_factory", d.irmConfigFactory));
         s = string.concat(s, _kv("factory", d.factory));
         s = string.concat(s, _kv("risk_steward_dashboard", d.riskStewardDashboard));
+        s = string.concat(s, _kv("circuit_breaker_artifact", d.circuitBreakerArtifact));
+        s = string.concat(s, _kv("circuit_breaker", d.circuitBreaker));
         s = string.concat(s, _kv("guardian_signals_impl", d.guardianSignalsImpl));
         s = string.concat(s, _kv("deployed_block", d.deployedBlock));
         s = string.concat(s, _kv("agent", d.agent));
@@ -137,7 +143,7 @@ library ProtocolConfigFile {
 
         string memory s = ArtifactMetadataFile.header(metadata, "market-deployment");
         s = string.concat(s, _marketSection(d));
-        s = string.concat(s, _rolesSection(d.roles, d.ownerFacade, d.riskStewardDashboard));
+        s = string.concat(s, _rolesSection(d));
         s = string.concat(s, _activationSection(d.market));
         s = string.concat(s, _settlementSection(d.market));
         s = string.concat(s, _curveSection(d.curveParams));
@@ -247,29 +253,22 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("factory", d.factory));
         s = string.concat(s, _kv("controller", d.controller));
         s = string.concat(s, _kv("vault", d.vault));
+        s = string.concat(s, _kv("vault_proxy_admin", d.controllerAdmin));
         s = string.concat(s, _kv("vault_name", d.vaultSpec.name));
         s = string.concat(s, _kv("vault_symbol", d.vaultSpec.symbol));
-        s = string.concat(s, _kv("circuit_breaker", d.roles.pausers[0]));
+        s = string.concat(s, _kv("circuit_breaker", d.circuitBreaker));
         s = string.concat(s, _kv("deployed_block", d.deployedBlock));
     }
 
-    function _rolesSection(
-        LidoLendMarketFactory.MarketRoles memory r,
-        address ownerFacade,
-        address riskStewardDashboard
-    ) private pure returns (string memory s) {
-        address[] memory managers = _appendUnique(r.managers, ownerFacade);
-        managers = _appendUnique(managers, riskStewardDashboard);
-        address[] memory unfreezers = _appendUnique(r.unfreezers, ownerFacade);
-
+    function _rolesSection(MarketDeployment memory d) private pure returns (string memory s) {
         s = "\n[roles]\n";
-        s = string.concat(s, _kv("admin", r.admin));
-        s = string.concat(s, _kv("proxy_admin", r.proxyAdmin));
-        s = string.concat(s, _kvArray("managers", managers));
-        s = string.concat(s, _kvArray("pausers", r.pausers));
-        s = string.concat(s, _kvArray("freezers", r.freezers));
-        s = string.concat(s, _kvArray("unfreezers", unfreezers));
-        s = string.concat(s, _kvArray("resumers", r.resumers));
+        s = string.concat(s, _kv("admin", d.controllerAdmin));
+        s = string.concat(s, _kv("proxy_admin", d.controllerAdmin));
+        s = string.concat(s, _kvArray("managers", _pair(d.ownerFacade, d.riskStewardDashboard)));
+        s = string.concat(s, _kvArray("pausers", _singleton(d.circuitBreaker)));
+        s = string.concat(s, _kvArray("freezers", _singleton(d.riskStewardDashboard)));
+        s = string.concat(s, _kvArray("unfreezers", _singleton(d.ownerFacade)));
+        s = string.concat(s, _kvArray("resumers", new address[](0)));
     }
 
     function _activationSection(LidoLendMarketFactory.MarketSpec memory m) private pure returns (string memory s) {
@@ -327,19 +326,6 @@ library ProtocolConfigFile {
         values = new address[](2);
         values[0] = first;
         values[1] = second;
-    }
-
-    function _appendUnique(address[] memory values, address value) private pure returns (address[] memory result) {
-        if (value == address(0)) return values;
-        for (uint256 i; i < values.length; ++i) {
-            if (values[i] == value) return values;
-        }
-
-        result = new address[](values.length + 1);
-        for (uint256 i; i < values.length; ++i) {
-            result[i] = values[i];
-        }
-        result[values.length] = value;
     }
 
     function _kv(string memory key, string memory value) private pure returns (string memory) {

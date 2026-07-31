@@ -17,6 +17,7 @@ import {MarketConfigFile} from "./lib/MarketConfigFile.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
 import {ProtocolConfigFile, MarketDeployment} from "./lib/ProtocolConfigFile.sol";
 import {GuardianSignalsConfigFile, GuardianSignalsConfig} from "./lib/GuardianSignalsConfigFile.sol";
+import {CircuitBreakerConfigFile} from "./lib/CircuitBreakerConfigFile.sol";
 import {OracleConfigFile} from "./lib/OracleConfigFile.sol";
 import {OraclePreflight} from "./lib/OraclePreflight.sol";
 
@@ -30,11 +31,16 @@ contract AddMarket is Script, ProtocolDeployer {
     error FactoryOwnerMismatch(address artifactOwner, address factoryOwner);
     error FactoryIrmRouterMismatch(address artifactIrmRouter, address factoryIrmRouter);
     error FactoryDashboardMismatch(address artifactDashboard, address factoryDashboard);
+    error FactoryAdminMismatch(address expected, address actual);
+    error FactoryCircuitBreakerMismatch(address expected, address actual);
+    error ProtocolCircuitBreakerArtifactMismatch(string expected, string actual);
+    error ProtocolCircuitBreakerMismatch(address expected, address actual);
 
     struct RunContext {
         ArtifactMetadata artifacts;
         address agent;
-        address executor;
+        string circuitBreakerArtifact;
+        address circuitBreaker;
     }
 
     struct MarketInput {
@@ -47,8 +53,9 @@ contract AddMarket is Script, ProtocolDeployer {
         address irmConfigFactory;
         address ownerFacade;
         address riskStewardDashboard;
+        address controllerAdmin;
+        address circuitBreaker;
         LidoLendMarketFactory.MarketSpec market;
-        LidoLendMarketFactory.MarketRoles roles;
         LidoLendMarketFactory.VaultSpec vaultSpec;
         AdaptiveCurveParams curveParams;
         address recordedOracle;
@@ -64,6 +71,8 @@ contract AddMarket is Script, ProtocolDeployer {
             DeployConfig memory deployConfig = DeployConfigFile.read(config);
             _requireChainId(deployConfig.chainId);
             DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
+            address circuitBreaker = CircuitBreakerConfigFile.readDeployed(deployConfig.circuitBreakerArtifact);
+            _requireCircuitBreakerPolicy(circuitBreaker, deployConfig.evmScriptExecutor);
             context = RunContext({
                 artifacts: ArtifactMetadata({
                     deployment: ArtifactMetadataFile.deployment(),
@@ -71,7 +80,8 @@ contract AddMarket is Script, ProtocolDeployer {
                     configHash: deployConfig.configHash
                 }),
                 agent: deployConfig.agent,
-                executor: deployConfig.evmScriptExecutor
+                circuitBreakerArtifact: deployConfig.circuitBreakerArtifact,
+                circuitBreaker: circuitBreaker
             });
         }
 
@@ -85,11 +95,11 @@ contract AddMarket is Script, ProtocolDeployer {
 
         IIrmConfigFactory(input.irmConfigFactory).getOrDeployAdaptiveCurveConfig(input.curveParams);
         if (input.market.guardianSignals == address(0)) {
-            input.market.guardianSignals = _deployGuardianSignals(input.guardianGroup, input.factory, context.agent);
+            input.market.guardianSignals = _deployGuardianSignals(input.guardianGroup, input.factory);
             guardianCreated = true;
         }
 
-        built = LidoLendMarketFactory(input.factory).deployMarketComponents(input.market, input.roles, input.vaultSpec);
+        built = LidoLendMarketFactory(input.factory).deployMarketComponents(input.market, input.vaultSpec);
         vm.stopBroadcast();
 
         if (guardianCreated) {
@@ -120,10 +130,9 @@ contract AddMarket is Script, ProtocolDeployer {
         input.name = name;
         input.guardianGroup = MarketConfigFile.guardianGroup(name);
         input.oracleArtifact = MarketConfigFile.oracleArtifact(name);
-        input.circuitBreakerArtifact = MarketConfigFile.circuitBreakerArtifact(name);
-        (input.market, input.roles, input.vaultSpec, input.curveParams) = MarketConfigFile.read(name);
+        input.circuitBreakerArtifact = context.circuitBreakerArtifact;
+        (input.market, input.vaultSpec, input.curveParams) = MarketConfigFile.read(name);
 
-        _requireMarketRolePolicy(input.roles, context.agent, context.executor, msg.sender);
         OraclePreflight.validate(
             input.oracleArtifact,
             input.market.oracle,
@@ -135,9 +144,6 @@ contract AddMarket is Script, ProtocolDeployer {
         if (input.recordedOracle != address(0) && input.recordedOracle != input.market.oracle) {
             revert OracleArtifactMismatch(input.recordedOracle, input.market.oracle);
         }
-        if (input.market.guardianSignals != address(0)) {
-            _requireProxyAdmin(input.market.guardianSignals, context.agent);
-        }
         {
             string memory protocolArtifact = vm.readFile(ProtocolConfigFile.protocolPath());
             DeployConfig memory deployConfig = DeployConfigFile.read(config);
@@ -147,7 +153,7 @@ contract AddMarket is Script, ProtocolDeployer {
 
             LidoLendMarketFactory deployedFactory = LidoLendMarketFactory(input.factory);
             address artifactCore = vm.parseTomlAddress(protocolArtifact, ".protocol.core");
-            address factoryCore = address(deployedFactory.CORE());
+            address factoryCore = deployedFactory.LIDO_LEND();
             if (artifactCore != factoryCore) revert FactoryCoreMismatch(artifactCore, factoryCore);
 
             address artifactOwner = vm.parseTomlAddress(protocolArtifact, ".protocol.owner_facade");
@@ -164,15 +170,34 @@ contract AddMarket is Script, ProtocolDeployer {
                 revert FactoryDashboardMismatch(artifactDashboard, input.riskStewardDashboard);
             }
 
+            input.controllerAdmin = deployedFactory.ADMIN();
+            if (input.controllerAdmin != context.agent) {
+                revert FactoryAdminMismatch(context.agent, input.controllerAdmin);
+            }
+
+            string memory artifactCircuitBreakerName =
+                vm.parseTomlString(protocolArtifact, ".protocol.circuit_breaker_artifact");
+            if (keccak256(bytes(artifactCircuitBreakerName)) != keccak256(bytes(context.circuitBreakerArtifact))) {
+                revert ProtocolCircuitBreakerArtifactMismatch(
+                    context.circuitBreakerArtifact, artifactCircuitBreakerName
+                );
+            }
+            address artifactCircuitBreaker = vm.parseTomlAddress(protocolArtifact, ".protocol.circuit_breaker");
+            if (artifactCircuitBreaker != context.circuitBreaker) {
+                revert ProtocolCircuitBreakerMismatch(context.circuitBreaker, artifactCircuitBreaker);
+            }
+            input.circuitBreaker = deployedFactory.CIRCUIT_BREAKER();
+            if (input.circuitBreaker != artifactCircuitBreaker) {
+                revert FactoryCircuitBreakerMismatch(artifactCircuitBreaker, input.circuitBreaker);
+            }
+
             input.irmConfigFactory = vm.parseTomlAddress(protocolArtifact, ".protocol.irm_config_factory");
             if (input.irmConfigFactory == address(0)) {
                 revert ConfigToml.MissingConfigValue(".protocol.irm_config_factory");
             }
         }
         if (input.market.guardianSignals != address(0)) {
-            _validateReusedGuardianSignals(
-                input.guardianGroup, input.factory, input.market.guardianSignals, context.agent
-            );
+            _validateReusedGuardianSignals(input.guardianGroup, input.factory, input.market.guardianSignals);
         }
         input.recordedGuardianSignals = GuardianSignalsConfigFile.readDeployed(input.guardianGroup);
         if (
@@ -211,8 +236,9 @@ contract AddMarket is Script, ProtocolDeployer {
             irm: input.irm,
             ownerFacade: input.ownerFacade,
             riskStewardDashboard: input.riskStewardDashboard,
+            controllerAdmin: input.controllerAdmin,
+            circuitBreaker: input.circuitBreaker,
             market: input.market,
-            roles: input.roles,
             vaultSpec: input.vaultSpec,
             curveParams: input.curveParams,
             deployedBlock: deployedBlock
@@ -221,24 +247,16 @@ contract AddMarket is Script, ProtocolDeployer {
         path = ProtocolConfigFile.writeMarket(md, artifacts);
     }
 
-    function _validateReusedGuardianSignals(
-        string memory guardianGroup,
-        address factory,
-        address guardianSignals,
-        address agent
-    ) private view {
+    function _validateReusedGuardianSignals(string memory guardianGroup, address factory, address guardianSignals)
+        private
+        view
+    {
         GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.read(guardianGroup);
-        if (cfg.admin != agent) revert UnexpectedAdmin(agent, cfg.admin);
-        if (cfg.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, cfg.proxyAdmin);
-        address[] memory managers = new address[](0);
         LidoLendMarketFactory(factory)
             .validateGuardianSignals(
                 guardianSignals,
                 LidoLendMarketFactory.GuardianSpec({
                     guardians: cfg.guardians, quorum: cfg.quorum, suspectWindow: cfg.suspectWindow
-                }),
-                LidoLendMarketFactory.GuardianRoles({
-                    admin: agent, proxyAdmin: agent, managers: managers, accessLimiter: cfg.accessLimiter
                 })
             );
     }

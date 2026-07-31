@@ -17,14 +17,12 @@ import {IIrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/interface
 
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
-import {LidoLendMarketFactory, IIrmRouterView} from "../../src/periphery/LidoLendMarketFactory.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
 import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
-import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {ILidoLendOwner} from "../../src/interfaces/ILidoLendOwner.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
@@ -83,8 +81,10 @@ interface IReadFactory {
     function GUARDIAN_SIGNALS_IMPL() external view returns (address);
     function LIDO_LEND_OWNER() external view returns (address);
     function IRM_ROUTER() external view returns (address);
-    function CORE() external view returns (address);
+    function LIDO_LEND() external view returns (address);
     function RISK_STEWARD_DASHBOARD() external view returns (address);
+    function CIRCUIT_BREAKER() external view returns (address);
+    function ADMIN() external view returns (address);
 }
 
 interface IReadMorphoBook {
@@ -235,7 +235,7 @@ abstract contract AcceptanceContext is Test {
     uint256 internal exitBooksDeployedBlock;
     uint256 internal expectedExitBookMaxRequestLifetime;
 
-    // expected role holders (controller); the operational roles are arrays — any number of holders each
+    // Expected controller holders, materialized in the artifact from the factory's fixed role topology.
     address internal rAdmin;
     address internal rProxyAdmin;
     address[] internal rManagers;
@@ -245,12 +245,8 @@ abstract contract AcceptanceContext is Test {
     address[] internal rResumers;
 
     address[] internal expectedGuardians;
-    // `deployGuardianSignals`'s configured managers, kept distinct from the controller's final manager set.
-    address[] internal gManagers;
-    address internal gProxyAdmin;
     uint256 internal expectedQuorum;
     uint256 internal expectedSuspectWindow;
-    address internal expectedAccessLimiter;
 
     string internal toml;
     string internal guardiansCfg;
@@ -337,6 +333,7 @@ abstract contract AcceptanceContext is Test {
         assertGt(rPausers.length, 0, "market artifact has no CircuitBreaker");
         circuitBreaker = _addr(".market.circuit_breaker");
         assertEq(circuitBreaker, rPausers[0], "CircuitBreaker must be the first pauser");
+        assertEq(circuitBreaker, _reg(".protocol.circuit_breaker"), "market CircuitBreaker != protocol CircuitBreaker");
         assertEq(
             vm.parseTomlAddress(circuitBreakerCfg, ".circuit_breaker.address"),
             circuitBreaker,
@@ -348,11 +345,8 @@ abstract contract AcceptanceContext is Test {
         enableSettlement = true;
 
         expectedGuardians = vm.parseTomlAddressArray(guardiansCfg, ".guardian_signals.guardians");
-        gProxyAdmin = _grd(".guardian_signals.proxy_admin");
         expectedQuorum = vm.parseTomlUint(guardiansCfg, ".guardian_signals.quorum");
         expectedSuspectWindow = vm.parseTomlUint(guardiansCfg, ".guardian_signals.suspect_window");
-        expectedAccessLimiter = _grd(".guardian_signals.access_limiter");
-        gManagers = new address[](0);
     }
 
     function _addr(string memory key) internal view returns (address) {
@@ -415,7 +409,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         IReadFactory deployedFactory = IReadFactory(factory);
         assertEq(deployedFactory.LIDO_LEND_OWNER(), facade, "factory.LIDO_LEND_OWNER");
         assertEq(deployedFactory.IRM_ROUTER(), router, "factory.IRM_ROUTER");
-        assertEq(deployedFactory.CORE(), core, "factory.CORE");
+        assertEq(deployedFactory.LIDO_LEND(), core, "factory.LIDO_LEND");
         assertEq(deployedFactory.RISK_STEWARD_DASHBOARD(), dashboard, "factory.RISK_STEWARD_DASHBOARD");
 
         assertEq(IReadProxy(core).proxy__getAdmin(), agent, "core proxy admin");
@@ -515,57 +509,15 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     /// @dev A revert is the test failure; no separate assertion wraps these calls.
     function _assertFactoryValidation() internal view {
         LidoLendMarketFactory deployedFactory = LidoLendMarketFactory(factory);
-        deployedFactory.validateMarketController(
-            controller, Id.wrap(marketId), guardianSignals, _expectedFactoryMarketRoles()
-        );
-        deployedFactory.validateVault(vault, ILidoLendMarketController(controller), _params(), _expectedVaultSpec());
-        deployedFactory.validateGuardianSignals(guardianSignals, _expectedGuardianSpec(), _expectedGuardianRoles());
-    }
-
-    function _expectedFactoryMarketRoles() internal view returns (LidoLendMarketFactory.MarketRoles memory r) {
-        r.admin = rAdmin;
-        r.proxyAdmin = rProxyAdmin;
-        r.managers = _without(rManagers, facade, dashboard);
-        r.pausers = rPausers;
-        r.freezers = rFreezers;
-        r.unfreezers = _without(rUnfreezers, facade, address(0));
-        r.resumers = rResumers;
-    }
-
-    function _expectedVaultSpec() internal view returns (LidoLendMarketFactory.VaultSpec memory spec) {
-        spec.proxyAdmin = rProxyAdmin;
-        spec.name = vm.parseTomlString(toml, ".market.vault_name");
-        spec.symbol = vm.parseTomlString(toml, ".market.vault_symbol");
+        deployedFactory.validateMarketController(controller, Id.wrap(marketId), guardianSignals);
+        deployedFactory.validateVault(vault, controller, _params());
+        deployedFactory.validateGuardianSignals(guardianSignals, _expectedGuardianSpec());
     }
 
     function _expectedGuardianSpec() internal view returns (LidoLendMarketFactory.GuardianSpec memory spec) {
         spec.guardians = expectedGuardians;
         spec.quorum = expectedQuorum;
         spec.suspectWindow = expectedSuspectWindow;
-    }
-
-    function _expectedGuardianRoles() internal view returns (LidoLendMarketFactory.GuardianRoles memory roles) {
-        roles.admin = agent;
-        roles.proxyAdmin = gProxyAdmin;
-        roles.managers = gManagers;
-        roles.accessLimiter = expectedAccessLimiter;
-    }
-
-    function _without(address[] memory source, address excludedA, address excludedB)
-        private
-        pure
-        returns (address[] memory filtered)
-    {
-        uint256 count;
-        for (uint256 i; i < source.length; ++i) {
-            if (source[i] != excludedA && source[i] != excludedB) ++count;
-        }
-
-        filtered = new address[](count);
-        uint256 cursor;
-        for (uint256 i; i < source.length; ++i) {
-            if (source[i] != excludedA && source[i] != excludedB) filtered[cursor++] = source[i];
-        }
     }
 
     function _assertConfig() internal view {
@@ -658,6 +610,9 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(actualFactory.CONTROLLER_IMPL(), controllerImpl, "factory controller implementation");
         assertEq(actualFactory.VAULT_IMPL(), vaultImpl, "factory vault implementation");
         assertEq(actualFactory.GUARDIAN_SIGNALS_IMPL(), guardianImpl, "factory guardian implementation");
+        assertEq(actualFactory.ADMIN(), rAdmin, "factory controller admin");
+        assertEq(rProxyAdmin, rAdmin, "controller proxy admin differs from factory admin");
+        assertEq(actualFactory.CIRCUIT_BREAKER(), circuitBreaker, "factory CircuitBreaker");
 
         _assertCodehash(
             facade, address(new LidoLendOwner(ILidoLend(core), address(this), address(0), address(0))), "facade"
@@ -669,9 +624,14 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
                     LidoLendMarketFactory.Implementations({
                         controller: controllerImpl, vault: vaultImpl, guardianSignals: guardianImpl
                     }),
-                    ILidoLendOwner(facade),
-                    IIrmRouterView(router),
-                    dashboard
+                    LidoLendMarketFactory.Dependencies({
+                        lidoLend: core,
+                        irmRouter: router,
+                        lidoLendOwner: facade,
+                        circuitBreaker: circuitBreaker,
+                        riskStewardDashboard: dashboard
+                    }),
+                    rAdmin
                 )
             ),
             "factory"
@@ -892,9 +852,9 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
             roles[3] = ACCESS_LIMITER_ROLE;
             address[][] memory holders = new address[][](4);
             holders[0] = _arr1(agent);
-            holders[1] = _append(gManagers, facade);
-            holders[2] = _append(gManagers, facade);
-            holders[3] = _maybeArr1(expectedAccessLimiter);
+            holders[1] = _arr1(facade);
+            holders[2] = _arr1(facade);
+            holders[3] = new address[](0);
             _assertExactEnumerableRoleHolders(guardianSignals, roles, holders);
         }
         {
@@ -1119,21 +1079,6 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
         r = new address[](2);
         r[0] = a;
         r[1] = b;
-    }
-
-    /// @dev Empty when `a` is zero — e.g. `ACCESS_LIMITER_ROLE`, left ungranted when the deploy config names
-    ///      no committee.
-    function _maybeArr1(address a) internal pure returns (address[] memory r) {
-        if (a == address(0)) return r;
-        r = _arr1(a);
-    }
-
-    function _append(address[] memory a, address b) internal pure returns (address[] memory r) {
-        r = new address[](a.length + 1);
-        for (uint256 i; i < a.length; ++i) {
-            r[i] = a[i];
-        }
-        r[a.length] = b;
     }
 }
 

@@ -15,13 +15,8 @@ contract CircuitBreakerConfigStub {
 }
 
 contract ProtocolDeployerHarness is ProtocolDeployer {
-    function requireMarketRolePolicy(
-        LidoLendMarketFactory.MarketRoles memory roles,
-        address agent,
-        address executor,
-        address deploymentCaller
-    ) external view {
-        _requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+    function requireCircuitBreakerPolicy(address circuitBreaker, address executor) external view {
+        _requireCircuitBreakerPolicy(circuitBreaker, executor);
     }
 
     function requireUniqueMarketIds(string[] memory names, LidoLendMarketFactory.MarketSpec[] memory markets)
@@ -34,65 +29,35 @@ contract ProtocolDeployerHarness is ProtocolDeployer {
 
 contract ProtocolDeployerTest is Test {
     ProtocolDeployerHarness internal deployer;
-    address internal agent;
     address internal executor;
-    address internal deploymentCaller;
 
     function setUp() external {
         deployer = new ProtocolDeployerHarness();
-        agent = makeAddr("agent");
         executor = makeAddr("executor");
-        deploymentCaller = makeAddr("deployer");
     }
 
-    function testRevert_requireMarketRolePolicy_missingCircuitBreaker() external {
-        LidoLendMarketFactory.MarketRoles memory roles = _roles();
-
+    function testRevert_requireCircuitBreakerPolicy_missingCircuitBreaker() external {
         vm.expectRevert(ProtocolDeployer.MissingCircuitBreaker.selector);
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+        deployer.requireCircuitBreakerPolicy(address(0), executor);
     }
 
-    function test_requireMarketRolePolicy_acceptsAdditionalPausers() external {
-        LidoLendMarketFactory.MarketRoles memory roles = _roles();
-        roles.pausers = new address[](2);
-        roles.pausers[0] = address(new CircuitBreakerConfigStub(executor));
-        roles.pausers[1] = makeAddr("additional pauser");
-
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+    function testRevert_requireCircuitBreakerPolicy_rejectsNonContract() external {
+        address circuitBreaker = makeAddr("circuitBreaker");
+        vm.expectRevert(abi.encodeWithSelector(ProtocolDeployer.CircuitBreakerNotContract.selector, circuitBreaker));
+        deployer.requireCircuitBreakerPolicy(circuitBreaker, executor);
     }
 
-    function test_requireMarketRolePolicy_acceptsExecutorAdministeredCircuitBreaker() external {
-        LidoLendMarketFactory.MarketRoles memory roles = _roles();
-        roles.pausers = new address[](1);
-        roles.pausers[0] = address(new CircuitBreakerConfigStub(executor));
-
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+    function testRevert_requireCircuitBreakerPolicy_rejectsWrongAdmin() external {
+        address actualAdmin = makeAddr("actualAdmin");
+        address circuitBreaker = address(new CircuitBreakerConfigStub(actualAdmin));
+        vm.expectRevert(
+            abi.encodeWithSelector(ProtocolDeployer.UnexpectedCircuitBreakerAdmin.selector, executor, actualAdmin)
+        );
+        deployer.requireCircuitBreakerPolicy(circuitBreaker, executor);
     }
 
-    function testRevert_requireMarketRolePolicy_executorHasDirectFreezerRole() external {
-        LidoLendMarketFactory.MarketRoles memory roles = _rolesWithCircuitBreaker();
-        roles.freezers = _arr1(executor);
-
-        vm.expectRevert(ProtocolDeployer.ExecutorHasDirectMarketRole.selector);
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
-    }
-
-    function testRevert_requireMarketRolePolicy_executorIsAdditionalPauser() external {
-        LidoLendMarketFactory.MarketRoles memory roles = _rolesWithCircuitBreaker();
-        roles.pausers = new address[](2);
-        roles.pausers[0] = address(new CircuitBreakerConfigStub(executor));
-        roles.pausers[1] = executor;
-
-        vm.expectRevert(ProtocolDeployer.ExecutorHasDirectMarketRole.selector);
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
-    }
-
-    function testRevert_requireMarketRolePolicy_deployerHasDirectResumerRole() external {
-        LidoLendMarketFactory.MarketRoles memory roles = _rolesWithCircuitBreaker();
-        roles.resumers = _arr1(deploymentCaller);
-
-        vm.expectRevert(ProtocolDeployer.DeployerHasDirectMarketRole.selector);
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+    function test_requireCircuitBreakerPolicy_acceptsExecutorAdministeredCircuitBreaker() external {
+        deployer.requireCircuitBreakerPolicy(address(new CircuitBreakerConfigStub(executor)), executor);
     }
 
     function testRevert_requireUniqueMarketIds_duplicateEconomicInputs() external {
@@ -116,26 +81,6 @@ contract ProtocolDeployerTest is Test {
         markets[1] = _marketSpec(0.75 ether);
 
         deployer.requireUniqueMarketIds(names, markets);
-    }
-
-    function _roles() private view returns (LidoLendMarketFactory.MarketRoles memory roles) {
-        roles.admin = agent;
-        roles.proxyAdmin = agent;
-        roles.managers = new address[](0);
-        roles.pausers = new address[](0);
-        roles.freezers = new address[](0);
-        roles.unfreezers = new address[](0);
-        roles.resumers = new address[](0);
-    }
-
-    function _rolesWithCircuitBreaker() private returns (LidoLendMarketFactory.MarketRoles memory roles) {
-        roles = _roles();
-        roles.pausers = _arr1(address(new CircuitBreakerConfigStub(executor)));
-    }
-
-    function _arr1(address holder) private pure returns (address[] memory holders) {
-        holders = new address[](1);
-        holders[0] = holder;
     }
 
     function _marketSpec(uint256 lltv) private pure returns (LidoLendMarketFactory.MarketSpec memory market) {

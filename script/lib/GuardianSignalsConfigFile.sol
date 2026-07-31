@@ -3,16 +3,12 @@ pragma solidity 0.8.35;
 
 import {Vm} from "forge-std/Vm.sol";
 
-import {ConfigToml} from "./ConfigToml.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 
 struct GuardianSignalsConfig {
-    address admin;
-    address proxyAdmin;
     uint256 quorum;
     uint256 suspectWindow;
     address[] guardians;
-    address accessLimiter;
 }
 
 library GuardianSignalsConfigFile {
@@ -25,13 +21,9 @@ library GuardianSignalsConfigFile {
     }
 
     function parse(string memory toml) internal view returns (GuardianSignalsConfig memory cfg) {
-        cfg.admin = ConfigToml.requireAddress(toml, ".admin");
-        cfg.proxyAdmin = ConfigToml.requireAddress(toml, ".proxy_admin");
         cfg.quorum = vm.parseTomlUint(toml, ".quorum");
         cfg.suspectWindow = vm.parseTomlUint(toml, ".suspect_window");
         cfg.guardians = vm.parseTomlAddressArray(toml, ".guardians");
-        cfg.accessLimiter =
-            vm.keyExistsToml(toml, ".access_limiter") ? vm.parseTomlAddress(toml, ".access_limiter") : address(0);
     }
 
     function configPath(string memory name) internal pure returns (string memory) {
@@ -73,15 +65,11 @@ library GuardianSignalsConfigFile {
         artifact = string.concat(artifact, "\n[guardian_signals]\n");
         artifact = string.concat(artifact, "name = \"", name, "\"\n");
         artifact = string.concat(artifact, "address = \"", vm.toString(guardianSignals), "\"\n");
-        artifact = string.concat(
-            artifact, reused ? "reused = true\nrecorded_block = " : "reused = false\ndeployed_block = "
-        );
+        artifact =
+            string.concat(artifact, reused ? "reused = true\nrecorded_block = " : "reused = false\ndeployed_block = ");
         artifact = string.concat(artifact, vm.toString(blockNumber), "\n");
-        artifact = string.concat(artifact, "admin = \"", vm.toString(cfg.admin), "\"\n");
-        artifact = string.concat(artifact, "proxy_admin = \"", vm.toString(cfg.proxyAdmin), "\"\n");
         artifact = string.concat(artifact, "quorum = ", vm.toString(cfg.quorum), "\n");
         artifact = string.concat(artifact, "suspect_window = ", vm.toString(cfg.suspectWindow), "\n");
-        artifact = string.concat(artifact, "access_limiter = \"", vm.toString(cfg.accessLimiter), "\"\n");
         artifact = string.concat(artifact, _addressArray("guardians", cfg.guardians));
         vm.writeFile(path, artifact);
     }

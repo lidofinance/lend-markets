@@ -8,10 +8,9 @@ import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCu
 import {IrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/IrmConfigFactory.sol";
 
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
-import {ILidoLendOwner} from "../../src/interfaces/ILidoLendOwner.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
-import {IIrmRouterView, LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
@@ -33,10 +32,6 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     error AgentCannotBeExecutor();
     error ExecutorCannotBeDeployer();
     error UnexpectedChainId(uint256 expected, uint256 actual);
-    error UnexpectedAdmin(address expected, address actual);
-    error UnexpectedProxyAdmin(address expected, address actual);
-    error ExecutorHasDirectMarketRole();
-    error DeployerHasDirectMarketRole();
     error MissingCircuitBreaker();
     error CircuitBreakerNotContract(address circuitBreaker);
     error UnexpectedCircuitBreakerAdmin(address expected, address actual);
@@ -54,8 +49,10 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         if (cfg.agent == deployer) revert AgentCannotBeDeployer();
         if (cfg.evmScriptExecutor == deployer) revert ExecutorCannotBeDeployer();
         if (cfg.agent == cfg.evmScriptExecutor) revert AgentCannotBeExecutor();
+        _requireCircuitBreakerPolicy(cfg.circuitBreaker, cfg.evmScriptExecutor);
         d.agent = cfg.agent;
         d.evmScriptExecutor = cfg.evmScriptExecutor;
+        d.circuitBreaker = cfg.circuitBreaker;
 
         d.core = _deployCore(deployer);
         d.ownerFacade = _deployOwnerFacade(d.core, deployer, address(0), address(0));
@@ -81,9 +78,14 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
                 LidoLendMarketFactory.Implementations({
                     controller: controllerImpl, vault: vaultImpl, guardianSignals: d.guardianSignalsImpl
                 }),
-                ILidoLendOwner(d.ownerFacade),
-                IIrmRouterView(d.irmRouter),
-                d.riskStewardDashboard
+                LidoLendMarketFactory.Dependencies({
+                    lidoLend: d.core,
+                    irmRouter: d.irmRouter,
+                    lidoLendOwner: d.ownerFacade,
+                    circuitBreaker: cfg.circuitBreaker,
+                    riskStewardDashboard: d.riskStewardDashboard
+                }),
+                cfg.agent
             )
         );
 
@@ -102,57 +104,22 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     }
 
     /// @dev The facade is the only operational manager.
-    function _deployGuardianSignals(string memory name, address factory, address agent)
-        internal
-        returns (address guardianSignals)
-    {
+    function _deployGuardianSignals(string memory name, address factory) internal returns (address guardianSignals) {
         GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.read(name);
-        if (cfg.admin != agent) revert UnexpectedAdmin(agent, cfg.admin);
-        if (cfg.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, cfg.proxyAdmin);
-        address[] memory managers = new address[](0);
 
         guardianSignals = LidoLendMarketFactory(factory)
             .deployGuardianSignals(
                 LidoLendMarketFactory.GuardianSpec({
                     guardians: cfg.guardians, quorum: cfg.quorum, suspectWindow: cfg.suspectWindow
-                }),
-                LidoLendMarketFactory.GuardianRoles({
-                    admin: cfg.admin, proxyAdmin: cfg.proxyAdmin, managers: managers, accessLimiter: cfg.accessLimiter
                 })
             );
     }
 
-    function _requireMarketRolePolicy(
-        LidoLendMarketFactory.MarketRoles memory roles,
-        address agent,
-        address executor,
-        address deployer
-    ) internal view {
-        if (roles.admin != agent) revert UnexpectedAdmin(agent, roles.admin);
-        if (roles.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, roles.proxyAdmin);
-        if (roles.pausers.length == 0) revert MissingCircuitBreaker();
-        address circuitBreaker = roles.pausers[0];
+    function _requireCircuitBreakerPolicy(address circuitBreaker, address executor) internal view {
+        if (circuitBreaker == address(0)) revert MissingCircuitBreaker();
         if (circuitBreaker.code.length == 0) revert CircuitBreakerNotContract(circuitBreaker);
         address actualAdmin = ICircuitBreakerConfig(circuitBreaker).ADMIN();
         if (actualAdmin != executor) revert UnexpectedCircuitBreakerAdmin(executor, actualAdmin);
-
-        _requireNoDirectMarketRole(roles.managers, executor, deployer);
-        _requireNoDirectMarketRole(roles.pausers, executor, deployer);
-        _requireNoDirectMarketRole(roles.freezers, executor, deployer);
-        _requireNoDirectMarketRole(roles.unfreezers, executor, deployer);
-        _requireNoDirectMarketRole(roles.resumers, executor, deployer);
-    }
-
-    function _requireNoDirectMarketRole(address[] memory holders, address executor, address deployer) private pure {
-        for (uint256 i; i < holders.length; ++i) {
-            if (holders[i] == executor) revert ExecutorHasDirectMarketRole();
-            if (holders[i] == deployer) revert DeployerHasDirectMarketRole();
-        }
-    }
-
-    function _requireProxyAdmin(address target, address agent) internal view {
-        address actual = OssifiableProxy(payable(target)).proxy__getAdmin();
-        if (actual != agent) revert UnexpectedProxyAdmin(agent, actual);
     }
 
     /// @dev The shared IRM router makes these four inputs sufficient to detect duplicate market ids.

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 
 /// @title IRiskStewardDashboard
 /// @notice Full external surface of `RiskStewardDashboard`: AccessControlEnumerable (inherited), per-market steward
-///         management, and the bounded tighten-only risk levers. The dashboard implements this interface, so
-///         it is the single source for the events, errors, and the function docs the contract inherits.
+///         management, and bounded risk-reduction levers. The dashboard implements this interface, so it is the
+///         single source for the events, errors, and the function docs the contract inherits.
 interface IRiskStewardDashboard is IAccessControlEnumerable {
     // ---
     // EVENTS
@@ -82,4 +82,7 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     /// @notice Revoke a caller's instant activation on a market. Risk-reducing, so no direction guard; forwards
     ///         to the controller, which emits the state change.
     function revokeInstantActivation(Id marketId, address caller) external;
+
+    /// @notice Freeze a market. Only an appointed steward of that market may call.
+    function freezeMarket(Id marketId) external;
 }

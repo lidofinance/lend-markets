@@ -4,60 +4,62 @@ pragma solidity 0.8.35;
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
+import {IIrmRouter} from "@lido-lend-irm/src/irm-router/interfaces/IIrmRouter.sol";
 
 import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 
 import {LidoLendMarketController} from "../controllers/LidoLendMarketController.sol";
 import {GuardianSignals} from "../GuardianSignals.sol";
-import {ILidoLendERC4626} from "../interfaces/ILidoLendERC4626.sol";
-import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
-import {ILidoLendOwner} from "../interfaces/ILidoLendOwner.sol";
 import {IGuardianSignals} from "../interfaces/IGuardianSignals.sol";
 import {IGuardianSignalsView} from "../interfaces/IGuardianSignalsView.sol";
+import {ILidoLendERC4626} from "../interfaces/ILidoLendERC4626.sol";
+import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 import {WAD} from "../libs/Constants.sol";
 import {LidoLendERC4626} from "../LidoLendERC4626.sol";
 import {OssifiableProxy} from "../proxy/OssifiableProxy.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../types/SettlementTypes.sol";
 
-interface IIrmRouterView {
-    function MORPHO() external view returns (address);
-}
-
-interface ICoreBound {
+interface ILidoLendBound {
     function LIDO_LEND() external view returns (address);
-}
-
-interface IGuardianSignalsAdmin is IGuardianSignals, IAccessControlEnumerable {
-    function MANAGER_ROLE() external view returns (bytes32);
-    function ACCESS_RESTORER_ROLE() external view returns (bytes32);
-    function ACCESS_LIMITER_ROLE() external view returns (bytes32);
 }
 
 /// @notice Deploys inert market components at fixed implementations, assigns their final roles, and validates the
 ///         resulting bindings. Market creation on the core remains a separate governance action.
-/// @dev The contract is permissionless and stateless. It temporarily holds only a newly deployed component's
-///      `DEFAULT_ADMIN_ROLE` during the same transaction, then removes itself before returning.
+/// @dev The contract is permissionless and stateless. Role wiring:
+///      - A new controller or guardian registry grants the factory temporary `DEFAULT_ADMIN_ROLE`.
+///      - `LIDO_LEND_OWNER` receives controller `MANAGER_ROLE` and `UNFREEZER_ROLE`.
+///      - `RISK_STEWARD_DASHBOARD` receives controller `MANAGER_ROLE` and `FREEZER_ROLE`.
+///      - `CIRCUIT_BREAKER` receives controller `PAUSER_ROLE`; no initial holder receives `RESUMER_ROLE`.
+///      - `LIDO_LEND_OWNER` receives guardian `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE`.
+///      - `ADMIN` administers every deployed proxy and receives controller and guardian `DEFAULT_ADMIN_ROLE`.
+///      - `ACCESS_LIMITER_ROLE` has no initial holder.
+///      - The factory revokes every temporary role before returning.
+///      - Vaults have no roles.
 contract LidoLendMarketFactory {
     using MarketParamsLib for MarketParams;
 
-    bytes32 private constant DEFAULT_ADMIN_ROLE = 0x00;
+    // ---
+    // TYPES
+    // ---
 
-    address public immutable CONTROLLER_IMPL;
-    address public immutable VAULT_IMPL;
-    address public immutable GUARDIAN_SIGNALS_IMPL;
-
-    ILidoLendOwner public immutable LIDO_LEND_OWNER;
-    IIrmRouterView public immutable IRM_ROUTER;
-    ILidoLend public immutable CORE;
-    address public immutable RISK_STEWARD_DASHBOARD;
-
+    /// @notice Fixed implementations used for every component deployed by the factory.
     struct Implementations {
         address controller;
         address vault;
         address guardianSignals;
     }
 
+    /// @notice Protocol-wide dependencies shared by every component deployed by the factory.
+    struct Dependencies {
+        address lidoLend;
+        address irmRouter;
+        address lidoLendOwner;
+        address circuitBreaker;
+        address riskStewardDashboard;
+    }
+
+    /// @notice Complete input for one controller and its LidoLend market id.
     struct MarketSpec {
         address loanToken;
         address collateralToken;
@@ -68,53 +70,35 @@ contract LidoLendMarketFactory {
         SettlementConfig settlementConfig;
     }
 
-    struct MarketRoles {
-        address admin;
-        address proxyAdmin;
-        /// @dev Additional holders; mandatory protocol holders are granted separately.
-        address[] managers;
-        address[] pausers;
-        address[] freezers;
-        /// @dev Additional holders; `LIDO_LEND_OWNER` is granted separately.
-        address[] unfreezers;
-        address[] resumers;
-    }
-
+    /// @notice ERC-4626 metadata for a vault deployed over a market controller.
     struct VaultSpec {
-        address proxyAdmin;
         string name;
         string symbol;
     }
 
-    struct MarketComponents {
-        Id marketId;
-        address controller;
-        address vault;
-    }
-
+    /// @notice Initial membership and timing configuration for a guardian registry.
     struct GuardianSpec {
         address[] guardians;
         uint256 quorum;
         uint256 suspectWindow;
     }
 
-    struct GuardianRoles {
-        address admin;
-        address proxyAdmin;
-        /// @dev Additional holders of both `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE`; `LIDO_LEND_OWNER` is granted
-        ///      separately.
-        address[] managers;
-        address accessLimiter;
+    /// @notice Controller and first vault deployed for one inert market.
+    struct MarketComponents {
+        Id marketId;
+        address controller;
+        address vault;
     }
 
-    error ZeroAddress();
+    // ---
+    // ERRORS
+    // ---
+
     error NotContract(address account);
-    error CoreMismatch(address expected, address actual);
-    error ImplementationCoreMismatch(address implementation, address expected, address actual);
+    error LidoLendMismatch(address component, address expected, address actual);
     error InvalidLltv(uint256 lltv);
     error MarketAlreadyExists(Id marketId);
-    error ZeroRoleHolder();
-    error CodehashMismatch(address proxy, bytes32 expected, bytes32 actual);
+    error RegisteredControllerMismatch(Id marketId, address expected, address actual);
     error ProxyAdminMismatch(address proxy, address expected, address actual);
     error MarketIdMismatch(bytes32 expected, bytes32 actual);
     error ControllerGuardianMismatch(address expected, address actual);
@@ -127,153 +111,200 @@ contract LidoLendMarketFactory {
     error UnexpectedRole(address target, bytes32 role, address account);
     error RoleMemberCountMismatch(address target, bytes32 role, uint256 expected, uint256 actual);
 
-    event MarketControllerDeployed(
-        Id indexed marketId, address indexed controller, address indexed guardianSignals, address proxyAdmin
-    );
-    event VaultDeployed(Id indexed marketId, address indexed controller, address indexed vault, address proxyAdmin);
+    // ---
+    // EVENTS
+    // ---
+
+    event MarketControllerDeployed(Id indexed marketId, address indexed controller, address indexed guardianSignals);
+    event VaultDeployed(Id indexed marketId, address indexed controller, address indexed vault);
     event MarketComponentsDeployed(
         Id indexed marketId, address indexed controller, address indexed vault, address guardianSignals
     );
-    event GuardianSignalsDeployed(address indexed guardianSignals, address indexed admin, address indexed proxyAdmin);
+    event GuardianSignalsDeployed(address indexed guardianSignals);
 
-    constructor(
-        Implementations memory implementations,
-        ILidoLendOwner lidoLendOwner,
-        IIrmRouterView irmRouter,
-        address riskStewardDashboard
-    ) {
-        if (
-            implementations.controller == address(0) || implementations.vault == address(0)
-                || implementations.guardianSignals == address(0) || address(lidoLendOwner) == address(0)
-                || address(irmRouter) == address(0)
-        ) revert ZeroAddress();
+    // ---
+    // CONSTANTS
+    // ---
 
-        ILidoLend core = lidoLendOwner.LIDO_LEND();
-        if (address(core) == address(0)) revert ZeroAddress();
+    bytes32 private constant DEFAULT_ADMIN_ROLE = 0x00;
 
-        address routerCore = irmRouter.MORPHO();
-        if (routerCore != address(core)) revert CoreMismatch(address(core), routerCore);
-        _requireImplementationCore(implementations.controller, address(core));
-        _requireImplementationCore(implementations.vault, address(core));
+    // ---
+    // IMMUTABLES
+    // ---
 
-        CONTROLLER_IMPL = implementations.controller;
+    /// @notice Controller implementation used by every controller proxy deployed by the factory.
+    address public immutable CONTROLLER_IMPL;
+    /// @notice ERC-4626 implementation used by every vault proxy deployed by the factory.
+    address public immutable VAULT_IMPL;
+    /// @notice GuardianSignals implementation used by every guardian proxy deployed by the factory.
+    address public immutable GUARDIAN_SIGNALS_IMPL;
+
+    /// @notice Core shared by the factory's implementations and protocol dependencies.
+    address public immutable LIDO_LEND;
+    /// @notice IRM router embedded in every market id produced from a `MarketSpec`.
+    address public immutable IRM_ROUTER;
+    /// @notice Sole initial holder of every deployed controller's `PAUSER_ROLE`.
+    address public immutable CIRCUIT_BREAKER;
+    /// @notice Governance facade wired into every deployed controller and guardian registry.
+    address public immutable LIDO_LEND_OWNER;
+    /// @notice Bounded steward dashboard wired into every deployed controller.
+    address public immutable RISK_STEWARD_DASHBOARD;
+
+    /// @notice Proxy admin and sole initial `DEFAULT_ADMIN_ROLE` holder for deployed components.
+    address public immutable ADMIN;
+
+    // ---
+    // CONSTRUCTOR
+    // ---
+
+    /// @dev Zero-address and code-presence checks are intentionally omitted. Deployment tooling is responsible for
+    ///      validating inputs; the constructor only verifies that core-bound components reference `lidoLend`.
+    constructor(Implementations memory implementations, Dependencies memory dependencies, address admin) {
+        _requireLidoLend(dependencies.lidoLend, implementations.vault);
+        _requireLidoLend(dependencies.lidoLend, implementations.controller);
+
+        _requireLidoLend(dependencies.lidoLend, dependencies.lidoLendOwner);
+        _requireLidoLend(dependencies.lidoLend, dependencies.riskStewardDashboard);
+
+        address routerCore = IIrmRouter(dependencies.irmRouter).MORPHO();
+        if (dependencies.lidoLend != routerCore) {
+            revert LidoLendMismatch(dependencies.irmRouter, dependencies.lidoLend, routerCore);
+        }
+
+
+        LIDO_LEND = dependencies.lidoLend;
+        IRM_ROUTER = dependencies.irmRouter;
+        CIRCUIT_BREAKER = dependencies.circuitBreaker;
+        LIDO_LEND_OWNER = dependencies.lidoLendOwner;
+        RISK_STEWARD_DASHBOARD = dependencies.riskStewardDashboard;
+
         VAULT_IMPL = implementations.vault;
+        CONTROLLER_IMPL = implementations.controller;
         GUARDIAN_SIGNALS_IMPL = implementations.guardianSignals;
 
-        LIDO_LEND_OWNER = lidoLendOwner;
-        IRM_ROUTER = irmRouter;
-        CORE = core;
-        RISK_STEWARD_DASHBOARD = riskStewardDashboard;
+        ADMIN = admin;
     }
 
-    /// @notice Deploys and fully role-wires a controller without deploying an ERC-4626 vault.
-    function deployMarketController(MarketSpec calldata market, MarketRoles calldata roles)
-        external
-        returns (Id marketId, address controller)
-    {
-        MarketParams memory marketParams = _marketParams(market);
-        _validateMarketControllerInput(marketParams, market, roles);
-        (marketId, controller) = _deployMarketController(marketParams, market, roles);
-    }
-
-    /// @notice Deploys an ERC-4626 vault for an existing or not-yet-activated controller.
-    function deployVault(
-        ILidoLendMarketController controller,
-        MarketParams calldata marketParams,
-        VaultSpec calldata spec
-    ) external returns (address vault) {
-        _validateVaultSpec(spec);
-        vault = _deployVault(controller, marketParams, spec);
-    }
+    // ---
+    // DEPLOYMENT
+    // ---
 
     /// @notice Atomically deploys a controller and the first ERC-4626 vault over it.
-    function deployMarketComponents(
-        MarketSpec calldata market,
-        MarketRoles calldata roles,
-        VaultSpec calldata vaultSpec
-    ) external returns (MarketComponents memory components) {
-        MarketParams memory marketParams = _marketParams(market);
-        _validateMarketControllerInput(marketParams, market, roles);
-        _validateVaultSpec(vaultSpec);
+    function deployMarketComponents(MarketSpec calldata market, VaultSpec calldata vaultSpec)
+        external
+        returns (MarketComponents memory components)
+    {
+        MarketParams memory marketParams;
+        (marketParams, components.marketId) = _validateMarketSpec(market);
 
-        (components.marketId, components.controller) = _deployMarketController(marketParams, market, roles);
-        components.vault = _deployVault(ILidoLendMarketController(components.controller), marketParams, vaultSpec);
+        components.controller = _deployMarketController(components.marketId, marketParams, market);
+        components.vault = _deployVault(components.controller, components.marketId, marketParams, vaultSpec);
 
         emit MarketComponentsDeployed(
             components.marketId, components.controller, components.vault, market.guardianSignals
         );
     }
 
-    /// @notice Deploys and fully role-wires a guardian registry that may be shared by multiple markets.
-    function deployGuardianSignals(GuardianSpec calldata spec, GuardianRoles calldata roles)
-        external
-        returns (address guardianSignals)
-    {
-        _validateGuardianInput(spec, roles);
+    /// @notice Deploys and fully role-wires a controller without deploying an ERC-4626 vault.
+    function deployMarketController(MarketSpec calldata market) external returns (Id marketId, address controller) {
+        MarketParams memory marketParams;
+        (marketParams, marketId) = _validateMarketSpec(market);
+        controller = _deployMarketController(marketId, marketParams, market);
+    }
 
-        guardianSignals = _deployProxy(
+    /// @notice Deploys an ERC-4626 vault for an existing or not-yet-activated controller.
+    function deployVault(address controller, MarketParams calldata marketParams, VaultSpec calldata spec)
+        external
+        returns (address vault)
+    {
+        Id marketId = marketParams.id();
+        vault = _deployVault(controller, marketId, marketParams, spec);
+    }
+
+    /// @notice Deploys and fully role-wires a guardian registry that may be shared by multiple markets.
+    function deployGuardianSignals(GuardianSpec calldata spec) external returns (address guardianSignalsAddress) {
+        guardianSignalsAddress = _deployProxy(
             GUARDIAN_SIGNALS_IMPL,
-            roles.proxyAdmin,
             abi.encodeCall(GuardianSignals.initialize, (address(this), spec.guardians, spec.quorum))
         );
 
-        _wireGuardianRoles(IGuardianSignalsAdmin(guardianSignals), spec, roles);
-        _validateGuardianSignals(guardianSignals, spec, roles);
+        IGuardianSignals guardianSignals = IGuardianSignals(guardianSignalsAddress);
 
-        emit GuardianSignalsDeployed(guardianSignals, roles.admin, roles.proxyAdmin);
+        bytes32 managerRole = guardianSignals.MANAGER_ROLE();
+        bytes32 restorerRole = guardianSignals.ACCESS_RESTORER_ROLE();
+
+        guardianSignals.grantRole(managerRole, address(this));
+        guardianSignals.setSuspectWindow(spec.suspectWindow);
+        guardianSignals.revokeRole(managerRole, address(this));
+
+        guardianSignals.grantRole(managerRole, LIDO_LEND_OWNER);
+        guardianSignals.grantRole(restorerRole, LIDO_LEND_OWNER);
+
+        guardianSignals.grantRole(DEFAULT_ADMIN_ROLE, ADMIN);
+        guardianSignals.revokeRole(DEFAULT_ADMIN_ROLE, address(this));
+
+        _validateGuardianSignals(guardianSignalsAddress, spec);
+
+        emit GuardianSignalsDeployed(guardianSignalsAddress);
     }
 
-    /// @notice Reverts unless `controller` has the expected implementation, binding, proxy admin, and roles.
-    function validateMarketController(
-        address controller,
-        Id marketId,
-        address guardianSignals,
-        MarketRoles calldata roles
-    ) external view {
-        _validateMarketRoles(roles);
-        _validateMarketController(controller, marketId, guardianSignals, roles);
+    // ---
+    // VALIDATION
+    // ---
+
+    /// @notice Reverts unless `controller` has the expected binding, proxy admin, and roles.
+    function validateMarketController(address controller, Id marketId, address guardianSignals) external view {
+        _validateMarketController(controller, marketId, guardianSignals);
     }
 
-    /// @notice Reverts unless `vault` has the expected implementation, binding, and proxy admin.
-    function validateVault(
-        address vault,
-        ILidoLendMarketController controller,
-        MarketParams calldata marketParams,
-        VaultSpec calldata spec
-    ) external view {
-        _validateVaultSpec(spec);
-        _validateVaultBinding(controller, marketParams);
-        _validateVault(vault, controller, marketParams, spec);
+    /// @notice Reverts unless `vault` has the expected binding and proxy admin.
+    function validateVault(address vault, address controller, MarketParams calldata marketParams) external view {
+        Id marketId = marketParams.id();
+        _validateVaultBinding(controller, marketId);
+        _validateVault(vault, controller, marketId);
     }
 
-    /// @notice Reverts unless `guardianSignals` has the expected implementation, config, proxy admin, and roles.
-    function validateGuardianSignals(address guardianSignals, GuardianSpec calldata spec, GuardianRoles calldata roles)
-        external
+    /// @notice Reverts unless `guardianSignals` has the expected config, proxy admin, and roles.
+    function validateGuardianSignals(address guardianSignals, GuardianSpec calldata spec) external view {
+        _validateGuardianSignals(guardianSignals, spec);
+    }
+
+    // ---
+    // INPUT VALIDATION
+    // ---
+
+    function _validateMarketSpec(MarketSpec calldata market)
+        private
         view
+        returns (MarketParams memory marketParams, Id marketId)
     {
-        _validateGuardianInput(spec, roles);
-        _validateGuardianSignals(guardianSignals, spec, roles);
-    }
-
-    function _marketParams(MarketSpec calldata market) private view returns (MarketParams memory marketParams) {
         marketParams = MarketParams({
             loanToken: market.loanToken,
             collateralToken: market.collateralToken,
             oracle: market.oracle,
-            irm: address(IRM_ROUTER),
+            irm: IRM_ROUTER,
             lltv: market.lltv
         });
+
+        if (market.lltv >= WAD) revert InvalidLltv(market.lltv);
+
+        marketId = marketParams.id();
+        if (ILidoLend(LIDO_LEND).market(marketId).lastUpdate != 0) revert MarketAlreadyExists(marketId);
+
+        if (market.oracle.code.length == 0) revert NotContract(market.oracle);
+        if (market.guardianSignals.code.length == 0) revert NotContract(market.guardianSignals);
     }
 
-    function _deployMarketController(
-        MarketParams memory marketParams,
-        MarketSpec calldata market,
-        MarketRoles calldata roles
-    ) private returns (Id marketId, address controller) {
-        marketId = marketParams.id();
-        controller = _deployProxy(
+    // ---
+    // DEPLOYMENT INTERNALS
+    // ---
+
+    function _deployMarketController(Id marketId, MarketParams memory marketParams, MarketSpec calldata market)
+        private
+        returns (address controllerAddress)
+    {
+        controllerAddress = _deployProxy(
             CONTROLLER_IMPL,
-            roles.proxyAdmin,
             abi.encodeCall(
                 LidoLendMarketController.initialize,
                 (
@@ -286,126 +317,62 @@ contract LidoLendMarketFactory {
             )
         );
 
-        _wireMarketRoles(ILidoLendMarketController(controller), roles);
-        _validateMarketController(controller, marketId, market.guardianSignals, roles);
+        ILidoLendMarketController controller = ILidoLendMarketController(controllerAddress);
+        controller.grantRole(controller.MANAGER_ROLE(), LIDO_LEND_OWNER);
+        controller.grantRole(controller.MANAGER_ROLE(), RISK_STEWARD_DASHBOARD);
+        controller.grantRole(controller.PAUSER_ROLE(), CIRCUIT_BREAKER);
+        controller.grantRole(controller.FREEZER_ROLE(), RISK_STEWARD_DASHBOARD);
+        controller.grantRole(controller.UNFREEZER_ROLE(), LIDO_LEND_OWNER);
 
-        emit MarketControllerDeployed(marketId, controller, market.guardianSignals, roles.proxyAdmin);
+        controller.grantRole(DEFAULT_ADMIN_ROLE, ADMIN);
+        controller.revokeRole(DEFAULT_ADMIN_ROLE, address(this));
+
+        _validateMarketController(controllerAddress, marketId, market.guardianSignals);
+
+        emit MarketControllerDeployed(marketId, controllerAddress, market.guardianSignals);
     }
 
-    function _deployVault(
-        ILidoLendMarketController controller,
-        MarketParams memory marketParams,
-        VaultSpec calldata spec
-    ) private returns (address vault) {
-        _validateVaultBinding(controller, marketParams);
+    function _deployVault(address controller, Id marketId, MarketParams memory marketParams, VaultSpec calldata spec)
+        private
+        returns (address vault)
+    {
+        _validateVaultBinding(controller, marketId);
 
         vault = _deployProxy(
-            VAULT_IMPL,
-            spec.proxyAdmin,
-            abi.encodeCall(LidoLendERC4626.initialize, (marketParams, address(controller), spec.name, spec.symbol))
+            VAULT_IMPL, abi.encodeCall(LidoLendERC4626.initialize, (marketParams, controller, spec.name, spec.symbol))
         );
 
-        _validateVault(vault, controller, marketParams, spec);
-        emit VaultDeployed(controller.marketId(), address(controller), vault, spec.proxyAdmin);
+        _validateVault(vault, controller, marketId);
+        emit VaultDeployed(marketId, controller, vault);
     }
 
-    function _wireMarketRoles(ILidoLendMarketController controller, MarketRoles calldata roles) private {
-        _grantAll(controller, controller.MANAGER_ROLE(), roles.managers);
-        controller.grantRole(controller.MANAGER_ROLE(), address(LIDO_LEND_OWNER));
-        controller.grantRole(controller.UNFREEZER_ROLE(), address(LIDO_LEND_OWNER));
-        if (RISK_STEWARD_DASHBOARD != address(0)) {
-            controller.grantRole(controller.MANAGER_ROLE(), RISK_STEWARD_DASHBOARD);
-        }
+    // ---
+    // COMPONENT VALIDATION
+    // ---
 
-        _grantAll(controller, controller.PAUSER_ROLE(), roles.pausers);
-        _grantAll(controller, controller.FREEZER_ROLE(), roles.freezers);
-        _grantAll(controller, controller.UNFREEZER_ROLE(), roles.unfreezers);
-        _grantAll(controller, controller.RESUMER_ROLE(), roles.resumers);
+    function _validateVaultBinding(address controllerAddress, Id marketId) private view {
+        _requireLidoLend(LIDO_LEND, controllerAddress);
 
-        controller.grantRole(DEFAULT_ADMIN_ROLE, roles.admin);
-        controller.revokeRole(DEFAULT_ADMIN_ROLE, address(this));
-    }
-
-    function _wireGuardianRoles(
-        IGuardianSignalsAdmin guardianSignals,
-        GuardianSpec calldata spec,
-        GuardianRoles calldata roles
-    ) private {
-        bytes32 managerRole = guardianSignals.MANAGER_ROLE();
-        bytes32 restorerRole = guardianSignals.ACCESS_RESTORER_ROLE();
-
-        guardianSignals.grantRole(managerRole, address(this));
-        guardianSignals.setSuspectWindow(spec.suspectWindow);
-        guardianSignals.revokeRole(managerRole, address(this));
-
-        _grantAll(guardianSignals, managerRole, roles.managers);
-        _grantAll(guardianSignals, restorerRole, roles.managers);
-        guardianSignals.grantRole(managerRole, address(LIDO_LEND_OWNER));
-        guardianSignals.grantRole(restorerRole, address(LIDO_LEND_OWNER));
-        if (roles.accessLimiter != address(0)) {
-            guardianSignals.grantRole(guardianSignals.ACCESS_LIMITER_ROLE(), roles.accessLimiter);
-        }
-
-        guardianSignals.grantRole(DEFAULT_ADMIN_ROLE, roles.admin);
-        guardianSignals.revokeRole(DEFAULT_ADMIN_ROLE, address(this));
-    }
-
-    function _grantAll(IAccessControlEnumerable access, bytes32 role, address[] calldata holders) private {
-        for (uint256 i; i < holders.length; ++i) {
-            if (holders[i] == address(0)) revert ZeroRoleHolder();
-            access.grantRole(role, holders[i]);
-        }
-    }
-
-    function _validateMarketControllerInput(
-        MarketParams memory marketParams,
-        MarketSpec calldata market,
-        MarketRoles calldata roles
-    ) private view {
-        _validateMarketRoles(roles);
-        if (market.lltv >= WAD) revert InvalidLltv(market.lltv);
-
-        Id marketId = marketParams.id();
-        if (CORE.market(marketId).lastUpdate != 0) revert MarketAlreadyExists(marketId);
-
-        if (market.oracle.code.length == 0) revert NotContract(market.oracle);
-        if (market.guardianSignals.code.length == 0) revert NotContract(market.guardianSignals);
-    }
-
-    function _validateMarketRoles(MarketRoles calldata roles) private pure {
-        if (roles.admin == address(0) || roles.proxyAdmin == address(0)) revert ZeroAddress();
-    }
-
-    function _validateVaultSpec(VaultSpec calldata spec) private pure {
-        if (spec.proxyAdmin == address(0)) revert ZeroAddress();
-    }
-
-    function _validateVaultBinding(ILidoLendMarketController controller, MarketParams memory marketParams)
-        private
-        view
-    {
-        _requireImplCodehash(address(controller), CONTROLLER_IMPL);
-
-        Id expected = marketParams.id();
+        ILidoLendMarketController controller = ILidoLendMarketController(controllerAddress);
         Id actual = controller.marketId();
-        if (Id.unwrap(actual) != Id.unwrap(expected)) {
-            revert MarketIdMismatch(Id.unwrap(expected), Id.unwrap(actual));
+        if (Id.unwrap(actual) != Id.unwrap(marketId)) {
+            revert MarketIdMismatch(Id.unwrap(marketId), Id.unwrap(actual));
+        }
+
+        ILidoLend lidoLend = ILidoLend(LIDO_LEND);
+        if (lidoLend.market(marketId).lastUpdate != 0) {
+            address registeredController = lidoLend.marketController(marketId);
+            if (registeredController != controllerAddress) {
+                revert RegisteredControllerMismatch(marketId, registeredController, controllerAddress);
+            }
         }
     }
 
-    function _validateGuardianInput(GuardianSpec calldata, GuardianRoles calldata roles) private pure {
-        if (roles.admin == address(0) || roles.proxyAdmin == address(0)) revert ZeroAddress();
-    }
+    function _validateMarketController(address controllerAddress, Id marketId, address guardianSignals) private view {
+        // Proxy administration.
+        _requireProxyAdmin(controllerAddress);
 
-    function _validateMarketController(
-        address controllerAddress,
-        Id marketId,
-        address guardianSignals,
-        MarketRoles calldata roles
-    ) private view {
-        _requireProxyBinding(controllerAddress, CONTROLLER_IMPL, roles.proxyAdmin);
-        _requireImplCodehash(guardianSignals, GUARDIAN_SIGNALS_IMPL);
-
+        // Controller bindings fixed during initialization.
         ILidoLendMarketController controller = ILidoLendMarketController(controllerAddress);
         Id actualMarketId = controller.marketId();
         if (Id.unwrap(actualMarketId) != Id.unwrap(marketId)) {
@@ -417,63 +384,41 @@ contract LidoLendMarketFactory {
             revert ControllerGuardianMismatch(guardianSignals, actualGuardianSignals);
         }
 
-        IAccessControlEnumerable access = IAccessControlEnumerable(controllerAddress);
-        _requireExactRoleHolder(access, DEFAULT_ADMIN_ROLE, roles.admin);
+        // The factory-wide admin must be the sole default admin.
+        _requireExactRoleHolder(controllerAddress, DEFAULT_ADMIN_ROLE, ADMIN);
 
+        // Governance and bounded steward management are the only manager paths.
         bytes32 managerRole = controller.MANAGER_ROLE();
-        uint256 managerCount = _uniqueHolderCount(roles.managers);
-        if (!_contains(roles.managers, address(LIDO_LEND_OWNER))) ++managerCount;
-        if (
-            RISK_STEWARD_DASHBOARD != address(0) && RISK_STEWARD_DASHBOARD != address(LIDO_LEND_OWNER)
-                && !_contains(roles.managers, RISK_STEWARD_DASHBOARD)
-        ) ++managerCount;
-        _requireRoleMemberCount(access, managerRole, managerCount);
-        _requireAllRoles(access, managerRole, roles.managers);
-        _requireRole(access, managerRole, address(LIDO_LEND_OWNER));
-        if (RISK_STEWARD_DASHBOARD != address(0)) _requireRole(access, managerRole, RISK_STEWARD_DASHBOARD);
+        _requireRoleMemberCount(controllerAddress, managerRole, 2);
+        _requireRole(controllerAddress, managerRole, LIDO_LEND_OWNER);
+        _requireRole(controllerAddress, managerRole, RISK_STEWARD_DASHBOARD);
 
-        _requireExactRoleHolders(access, controller.PAUSER_ROLE(), roles.pausers);
-        _requireExactRoleHolders(access, controller.FREEZER_ROLE(), roles.freezers);
-
-        bytes32 unfreezerRole = controller.UNFREEZER_ROLE();
-        uint256 unfreezerCount = _uniqueHolderCount(roles.unfreezers);
-        if (!_contains(roles.unfreezers, address(LIDO_LEND_OWNER))) ++unfreezerCount;
-        _requireRoleMemberCount(access, unfreezerRole, unfreezerCount);
-        _requireAllRoles(access, unfreezerRole, roles.unfreezers);
-        _requireRole(access, unfreezerRole, address(LIDO_LEND_OWNER));
-
-        _requireExactRoleHolders(access, controller.RESUMER_ROLE(), roles.resumers);
-        _requireNotHolder(access, DEFAULT_ADMIN_ROLE, address(this));
+        // Fast controls have one fixed path each; finite pauses have no early resumer by default.
+        _requireExactRoleHolder(controllerAddress, controller.PAUSER_ROLE(), CIRCUIT_BREAKER);
+        _requireExactRoleHolder(controllerAddress, controller.FREEZER_ROLE(), RISK_STEWARD_DASHBOARD);
+        _requireExactRoleHolder(controllerAddress, controller.UNFREEZER_ROLE(), LIDO_LEND_OWNER);
+        _requireRoleMemberCount(controllerAddress, controller.RESUMER_ROLE(), 0);
+        _requireNotHolder(controllerAddress, DEFAULT_ADMIN_ROLE, address(this));
     }
 
-    function _validateVault(
-        address vaultAddress,
-        ILidoLendMarketController controller,
-        MarketParams memory marketParams,
-        VaultSpec calldata spec
-    ) private view {
-        _requireProxyBinding(vaultAddress, VAULT_IMPL, spec.proxyAdmin);
+    function _validateVault(address vaultAddress, address controllerAddress, Id marketId) private view {
+        _requireProxyAdmin(vaultAddress);
 
         ILidoLendERC4626 vault = ILidoLendERC4626(vaultAddress);
-        Id expectedMarketId = marketParams.id();
         Id actualMarketId = vault.marketId();
-        if (Id.unwrap(actualMarketId) != Id.unwrap(expectedMarketId)) {
-            revert MarketIdMismatch(Id.unwrap(expectedMarketId), Id.unwrap(actualMarketId));
+        if (Id.unwrap(actualMarketId) != Id.unwrap(marketId)) {
+            revert MarketIdMismatch(Id.unwrap(marketId), Id.unwrap(actualMarketId));
         }
 
         address actualController = address(vault.controller());
-        if (actualController != address(controller)) {
-            revert VaultControllerMismatch(address(controller), actualController);
+        if (actualController != controllerAddress) {
+            revert VaultControllerMismatch(controllerAddress, actualController);
         }
     }
 
-    function _validateGuardianSignals(
-        address guardianSignalsAddress,
-        GuardianSpec calldata spec,
-        GuardianRoles calldata roles
-    ) private view {
-        _requireProxyBinding(guardianSignalsAddress, GUARDIAN_SIGNALS_IMPL, roles.proxyAdmin);
-        IGuardianSignalsAdmin guardianSignals = IGuardianSignalsAdmin(guardianSignalsAddress);
+    function _validateGuardianSignals(address guardianSignalsAddress, GuardianSpec calldata spec) private view {
+        _requireProxyAdmin(guardianSignalsAddress);
+        IGuardianSignals guardianSignals = IGuardianSignals(guardianSignalsAddress);
 
         uint256 actualQuorum = guardianSignals.getQuorum();
         if (actualQuorum != spec.quorum) revert GuardianQuorumMismatch(spec.quorum, actualQuorum);
@@ -493,108 +438,54 @@ contract LidoLendMarketFactory {
         bytes32 restorerRole = guardianSignals.ACCESS_RESTORER_ROLE();
         bytes32 limiterRole = guardianSignals.ACCESS_LIMITER_ROLE();
 
-        _requireExactRoleHolder(guardianSignals, DEFAULT_ADMIN_ROLE, roles.admin);
+        _requireExactRoleHolder(guardianSignalsAddress, DEFAULT_ADMIN_ROLE, ADMIN);
 
-        uint256 governanceRoleCount = _uniqueHolderCount(roles.managers);
-        if (!_contains(roles.managers, address(LIDO_LEND_OWNER))) ++governanceRoleCount;
-        _requireRoleMemberCount(guardianSignals, managerRole, governanceRoleCount);
-        _requireAllRoles(guardianSignals, managerRole, roles.managers);
-        _requireRole(guardianSignals, managerRole, address(LIDO_LEND_OWNER));
+        _requireExactRoleHolder(guardianSignalsAddress, managerRole, LIDO_LEND_OWNER);
+        _requireExactRoleHolder(guardianSignalsAddress, restorerRole, LIDO_LEND_OWNER);
+        _requireRoleMemberCount(guardianSignalsAddress, limiterRole, 0);
 
-        _requireRoleMemberCount(guardianSignals, restorerRole, governanceRoleCount);
-        _requireAllRoles(guardianSignals, restorerRole, roles.managers);
-        _requireRole(guardianSignals, restorerRole, address(LIDO_LEND_OWNER));
-
-        if (roles.accessLimiter == address(0)) _requireRoleMemberCount(guardianSignals, limiterRole, 0);
-        else _requireExactRoleHolder(guardianSignals, limiterRole, roles.accessLimiter);
-
-        _requireNotHolder(guardianSignals, DEFAULT_ADMIN_ROLE, address(this));
-        _requireNotHolder(guardianSignals, managerRole, address(this));
+        _requireNotHolder(guardianSignalsAddress, DEFAULT_ADMIN_ROLE, address(this));
+        _requireNotHolder(guardianSignalsAddress, managerRole, address(this));
     }
 
-    function _requireProxyBinding(address proxy, address implementation, address proxyAdmin) private view {
-        _requireImplCodehash(proxy, implementation);
+    // ---
+    // VALIDATION HELPERS
+    // ---
+
+    function _requireLidoLend(address lidoLend, address component) private view {
+        address actual = ILidoLendBound(component).LIDO_LEND();
+        if (actual != lidoLend) revert LidoLendMismatch(component, lidoLend, actual);
+    }
+
+    function _requireProxyAdmin(address proxy) private view {
         address actualAdmin = OssifiableProxy(payable(proxy)).proxy__getAdmin();
-        if (actualAdmin != proxyAdmin) revert ProxyAdminMismatch(proxy, proxyAdmin, actualAdmin);
+        if (actualAdmin != ADMIN) revert ProxyAdminMismatch(proxy, ADMIN, actualAdmin);
     }
 
-    /// @dev Trusts the implementation's runtime code, not its deployment address or the proxy's runtime code.
-    function _requireImplCodehash(address proxy, address implementation) private view {
-        address actualImplementation = OssifiableProxy(payable(proxy)).proxy__getImplementation();
-        bytes32 expectedCodehash = implementation.codehash;
-        bytes32 actualCodehash = actualImplementation.codehash;
-        if (actualCodehash != expectedCodehash) revert CodehashMismatch(proxy, expectedCodehash, actualCodehash);
+    function _requireExactRoleHolder(address target, bytes32 role, address expectedHolder) private view {
+        _requireRoleMemberCount(target, role, 1);
+        _requireRole(target, role, expectedHolder);
     }
 
-    function _requireImplementationCore(address implementation, address expectedCore) private view {
-        address actualCore = ICoreBound(implementation).LIDO_LEND();
-        if (actualCore != expectedCore) revert ImplementationCoreMismatch(implementation, expectedCore, actualCore);
-    }
-
-    function _requireExactRoleHolders(IAccessControlEnumerable access, bytes32 role, address[] calldata expectedHolders)
-        private
-        view
-    {
-        _requireRoleMemberCount(access, role, _uniqueHolderCount(expectedHolders));
-        _requireAllRoles(access, role, expectedHolders);
-    }
-
-    function _requireExactRoleHolder(IAccessControlEnumerable access, bytes32 role, address expectedHolder)
-        private
-        view
-    {
-        _requireRoleMemberCount(access, role, 1);
-        _requireRole(access, role, expectedHolder);
-    }
-
-    function _requireRoleMemberCount(IAccessControlEnumerable access, bytes32 role, uint256 expectedCount)
-        private
-        view
-    {
+    function _requireRoleMemberCount(address target, bytes32 role, uint256 expectedCount) private view {
+        IAccessControlEnumerable access = IAccessControlEnumerable(target);
         uint256 actualCount = access.getRoleMemberCount(role);
-        if (actualCount != expectedCount) {
-            revert RoleMemberCountMismatch(address(access), role, expectedCount, actualCount);
-        }
+        if (actualCount != expectedCount) revert RoleMemberCountMismatch(target, role, expectedCount, actualCount);
     }
 
-    function _requireRole(IAccessControlEnumerable access, bytes32 role, address account) private view {
-        if (!access.hasRole(role, account)) revert MissingRole(address(access), role, account);
+    function _requireRole(address target, bytes32 role, address account) private view {
+        if (!IAccessControlEnumerable(target).hasRole(role, account)) revert MissingRole(target, role, account);
     }
 
-    function _requireNotHolder(IAccessControlEnumerable access, bytes32 role, address account) private view {
-        if (access.hasRole(role, account)) revert UnexpectedRole(address(access), role, account);
+    function _requireNotHolder(address target, bytes32 role, address account) private view {
+        if (IAccessControlEnumerable(target).hasRole(role, account)) revert UnexpectedRole(target, role, account);
     }
 
-    function _requireAllRoles(IAccessControlEnumerable access, bytes32 role, address[] calldata accounts) private view {
-        for (uint256 i; i < accounts.length; ++i) {
-            _requireRole(access, role, accounts[i]);
-        }
-    }
+    // ---
+    // PROXY DEPLOYMENT
+    // ---
 
-    function _uniqueHolderCount(address[] calldata holders) private pure returns (uint256 count) {
-        for (uint256 i; i < holders.length; ++i) {
-            bool seen;
-            for (uint256 j; j < i; ++j) {
-                if (holders[j] == holders[i]) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen) ++count;
-        }
-    }
-
-    function _contains(address[] calldata holders, address account) private pure returns (bool) {
-        for (uint256 i; i < holders.length; ++i) {
-            if (holders[i] == account) return true;
-        }
-        return false;
-    }
-
-    function _deployProxy(address implementation, address proxyAdmin, bytes memory initData)
-        private
-        returns (address proxy)
-    {
-        proxy = address(new OssifiableProxy(implementation, proxyAdmin, initData));
+    function _deployProxy(address implementation, bytes memory initData) private returns (address proxy) {
+        proxy = address(new OssifiableProxy(implementation, ADMIN, initData));
     }
 }

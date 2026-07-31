@@ -22,6 +22,7 @@ import {ExitBookConfig} from "./lib/ExitBookConfigFile.sol";
 import {MarketConfigFile} from "./lib/MarketConfigFile.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
 import {GuardianSignalsConfigFile} from "./lib/GuardianSignalsConfigFile.sol";
+import {CircuitBreakerConfigFile} from "./lib/CircuitBreakerConfigFile.sol";
 import {OracleConfigFile} from "./lib/OracleConfigFile.sol";
 import {OraclePreflight} from "./lib/OraclePreflight.sol";
 
@@ -33,8 +34,6 @@ contract DeployProtocol is Script, ProtocolDeployer {
     struct MarketBuildContext {
         ProtocolDeployment protocol;
         address agent;
-        address executor;
-        address deployer;
         uint256 deployedBlock;
         string[] guardianGroups;
         address[] guardianSignals;
@@ -46,22 +45,29 @@ contract DeployProtocol is Script, ProtocolDeployer {
         _requireChainId(cfg.chainId);
         address deployer = msg.sender;
         DeployConfigFile.requireActorSeparation(cfg, deployer);
+        address circuitBreaker = CircuitBreakerConfigFile.readDeployed(cfg.circuitBreakerArtifact);
+        _requireCircuitBreakerPolicy(circuitBreaker, cfg.evmScriptExecutor);
         ArtifactMetadata memory artifacts = ArtifactMetadata({
             deployment: ArtifactMetadataFile.deployment(), chainId: cfg.chainId, configHash: cfg.configHash
         });
-        _preflight(cfg, deployer);
+        _preflight(cfg);
 
         // Lower bound for reconstructing roles from events.
         uint256 deployedBlock = vm.getBlockNumber();
 
         vm.startBroadcast();
 
-        protocol =
-            _deployBackbone(ProtocolConfig({agent: cfg.agent, evmScriptExecutor: cfg.evmScriptExecutor}), deployer);
+        protocol = _deployBackbone(
+            ProtocolConfig({
+                agent: cfg.agent, evmScriptExecutor: cfg.evmScriptExecutor, circuitBreaker: circuitBreaker
+            }),
+            deployer
+        );
         protocol.deployment = artifacts.deployment;
         protocol.network = cfg.network;
         protocol.chainId = cfg.chainId;
         protocol.configHash = cfg.configHash;
+        protocol.circuitBreakerArtifact = cfg.circuitBreakerArtifact;
         protocol.deployedBlock = deployedBlock;
         protocol.deployer = deployer;
 
@@ -96,8 +102,6 @@ contract DeployProtocol is Script, ProtocolDeployer {
         MarketBuildContext memory marketContext = MarketBuildContext({
             protocol: protocol,
             agent: cfg.agent,
-            executor: cfg.evmScriptExecutor,
-            deployer: deployer,
             deployedBlock: deployedBlock,
             guardianGroups: freshGuardianGroups,
             guardianSignals: freshGuardianSignals,
@@ -133,10 +137,11 @@ contract DeployProtocol is Script, ProtocolDeployer {
         console2.log("irmConfigFactory:", protocol.irmConfigFactory);
         console2.log("factory         :", protocol.factory);
         console2.log("riskStewardDash :", protocol.riskStewardDashboard);
+        console2.log("circuitBreaker  :", protocol.circuitBreaker);
         console2.log("protocol        :", protocolPath);
     }
 
-    function _preflight(DeployConfig memory cfg, address deployer) internal {
+    function _preflight(DeployConfig memory cfg) internal {
         ProtocolConfigFile.requireProtocolUndeployed();
         if (cfg.exitBooks) ProtocolConfigFile.requireExitBooksUndeployed();
         string[] memory freshGuardianGroups = new string[](cfg.markets.length);
@@ -147,10 +152,8 @@ contract DeployProtocol is Script, ProtocolDeployer {
             string memory name = cfg.markets[i];
             ProtocolConfigFile.requireMarketUndeployed(name);
             string memory guardianGroup = MarketConfigFile.guardianGroup(name);
-            (LidoLendMarketFactory.MarketSpec memory market, LidoLendMarketFactory.MarketRoles memory roles,,) =
-                MarketConfigFile.read(name);
+            (LidoLendMarketFactory.MarketSpec memory market,,) = MarketConfigFile.read(name);
             markets[i] = market;
-            _requireMarketRolePolicy(roles, cfg.agent, cfg.evmScriptExecutor, deployer);
             string memory oracleArtifact = MarketConfigFile.oracleArtifact(name);
             OraclePreflight.validate(oracleArtifact, market.oracle, market.loanToken, market.collateralToken, cfg.agent);
             address recordedOracle = OracleConfigFile.readDeployed(oracleArtifact);
@@ -202,11 +205,9 @@ contract DeployProtocol is Script, ProtocolDeployer {
         string memory guardianGroup = MarketConfigFile.guardianGroup(name);
         (
             LidoLendMarketFactory.MarketSpec memory market,
-            LidoLendMarketFactory.MarketRoles memory roles,
             LidoLendMarketFactory.VaultSpec memory vaultSpec,
             AdaptiveCurveParams memory curveParams
         ) = MarketConfigFile.read(name);
-        _requireMarketRolePolicy(roles, context.agent, context.executor, context.deployer);
 
         IIrmConfigFactory(context.protocol.irmConfigFactory).getOrDeployAdaptiveCurveConfig(curveParams);
         if (market.guardianSignals == address(0)) {
@@ -214,7 +215,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
                 guardianGroup, context.guardianGroups, context.guardianSignals, context.guardianCount
             );
             if (market.guardianSignals == address(0)) {
-                market.guardianSignals = _deployGuardianSignals(guardianGroup, context.protocol.factory, context.agent);
+                market.guardianSignals = _deployGuardianSignals(guardianGroup, context.protocol.factory);
                 context.guardianGroups[context.guardianCount] = guardianGroup;
                 context.guardianSignals[context.guardianCount] = market.guardianSignals;
                 ++context.guardianCount;
@@ -222,13 +223,13 @@ contract DeployProtocol is Script, ProtocolDeployer {
         }
 
         LidoLendMarketFactory.MarketComponents memory built =
-            LidoLendMarketFactory(context.protocol.factory).deployMarketComponents(market, roles, vaultSpec);
+            LidoLendMarketFactory(context.protocol.factory).deployMarketComponents(market, vaultSpec);
 
         md = MarketDeployment({
             name: name,
             oracleArtifact: MarketConfigFile.oracleArtifact(name),
             guardianGroup: guardianGroup,
-            circuitBreakerArtifact: MarketConfigFile.circuitBreakerArtifact(name),
+            circuitBreakerArtifact: context.protocol.circuitBreakerArtifact,
             id: Id.unwrap(built.marketId),
             factory: context.protocol.factory,
             controller: built.controller,
@@ -236,8 +237,9 @@ contract DeployProtocol is Script, ProtocolDeployer {
             irm: context.protocol.irmRouter,
             ownerFacade: context.protocol.ownerFacade,
             riskStewardDashboard: context.protocol.riskStewardDashboard,
+            controllerAdmin: context.protocol.agent,
+            circuitBreaker: context.protocol.circuitBreaker,
             market: market,
-            roles: roles,
             vaultSpec: vaultSpec,
             curveParams: curveParams,
             deployedBlock: context.deployedBlock

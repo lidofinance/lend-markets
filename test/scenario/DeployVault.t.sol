@@ -7,17 +7,19 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
-import {ILidoLendOwner} from "../../src/interfaces/ILidoLendOwner.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
-import {IIrmRouterView, LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
+import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
 import {PriorityRamp} from "../../src/types/ExitBookTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20} from "../setup/Mocks.sol";
+
+contract DeployVaultCircuitBreakerStub {}
 
 /// @notice The factory can deploy an additional vault over an already active canonical controller. The vault
 ///         works without separate core registration and shares market-level policy with existing vaults.
@@ -46,9 +48,14 @@ contract DeployVaultScenarioTest is LidoLendSetup {
                 vault: address(new LidoLendERC4626(address(m.core))),
                 guardianSignals: address(new GuardianSignals())
             }),
-            ILidoLendOwner(address(owner)),
-            IIrmRouterView(m.params.irm),
-            address(0)
+            LidoLendMarketFactory.Dependencies({
+                lidoLend: address(m.core),
+                irmRouter: m.params.irm,
+                lidoLendOwner: address(owner),
+                circuitBreaker: address(new DeployVaultCircuitBreakerStub()),
+                riskStewardDashboard: address(new RiskStewardDashboard(address(this), m.core))
+            }),
+            address(this)
         );
     }
 
@@ -113,9 +120,9 @@ contract DeployVaultScenarioTest is LidoLendSetup {
             abi.encodeWithSelector(LidoLendMarketFactory.MarketIdMismatch.selector, Id.unwrap(m2.id), Id.unwrap(m.id))
         );
         factory.deployVault(
-            m.controller,
+            address(m.controller),
             m2.params,
-            LidoLendMarketFactory.VaultSpec({proxyAdmin: address(this), name: "Mismatched Vault", symbol: "lidoBAD"})
+            LidoLendMarketFactory.VaultSpec({name: "Mismatched Vault", symbol: "lidoBAD"})
         );
     }
 
@@ -151,9 +158,9 @@ contract DeployVaultScenarioTest is LidoLendSetup {
 
     function _deploySecondVault(Market storage market) internal returns (address) {
         return factory.deployVault(
-            market.controller,
+            address(market.controller),
             market.params,
-            LidoLendMarketFactory.VaultSpec({proxyAdmin: address(this), name: "Second Vault", symbol: "lidoLOAN2"})
+            LidoLendMarketFactory.VaultSpec({name: "Second Vault", symbol: "lidoLOAN2"})
         );
     }
 }

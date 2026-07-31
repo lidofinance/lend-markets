@@ -73,6 +73,8 @@ contract ProtocolConfigFileTest is Test {
         assertEq(vm.parseTomlAddress(artifact, ".market.factory"), market.factory);
         assertEq(vm.parseTomlAddress(artifact, ".market.circuit_breaker"), address(0xCB));
         assertEq(vm.parseTomlString(artifact, ".market.circuit_breaker_artifact"), "breaker");
+        assertEq(vm.parseTomlAddress(artifact, ".roles.admin"), market.controllerAdmin);
+        assertEq(vm.parseTomlAddress(artifact, ".roles.proxy_admin"), market.controllerAdmin);
         assertEq(vm.parseTomlAddressArray(artifact, ".roles.pausers")[0], address(0xCB));
         address[] memory managers = vm.parseTomlAddressArray(artifact, ".roles.managers");
         assertEq(managers.length, 2);
@@ -119,6 +121,8 @@ contract ProtocolConfigFileTest is Test {
             irmConfigFactory: address(0x14),
             factory: address(0x15),
             riskStewardDashboard: address(0x17),
+            circuitBreakerArtifact: "breaker",
+            circuitBreaker: address(0xCB),
             guardianSignalsImpl: address(0x18),
             deployedBlock: 100,
             deployer: address(0x19),
@@ -133,6 +137,7 @@ contract ProtocolConfigFileTest is Test {
             protocol.irmConfigFactory,
             "IRM config factory"
         );
+        assertEq(vm.parseTomlAddress(artifact, ".protocol.circuit_breaker"), protocol.circuitBreaker);
         vm.removeDir(string.concat("deployed/", run), true);
     }
 
@@ -151,8 +156,6 @@ contract ProtocolConfigFileTest is Test {
         pure
         returns (MarketDeployment memory d)
     {
-        address[] memory pausers = new address[](1);
-        pausers[0] = circuitBreaker;
         d = MarketDeployment({
             name: name,
             oracleArtifact: "wsteth",
@@ -165,6 +168,8 @@ contract ProtocolConfigFileTest is Test {
             irm: address(0x1),
             ownerFacade: address(0xFA),
             riskStewardDashboard: address(0xDA),
+            controllerAdmin: address(0x50),
+            circuitBreaker: circuitBreaker,
             market: LidoLendMarketFactory.MarketSpec({
                 loanToken: address(0x10),
                 collateralToken: address(0x20),
@@ -186,16 +191,7 @@ contract ProtocolConfigFileTest is Test {
                     sliceFloorBps: 10, sliceFloorAssets: 11, fullCutBelowCollateral: 12, ltvStepBps: 13
                 })
             }),
-            roles: LidoLendMarketFactory.MarketRoles({
-                admin: address(0x50),
-                proxyAdmin: address(0x50),
-                managers: new address[](0),
-                pausers: pausers,
-                freezers: new address[](0),
-                unfreezers: new address[](0),
-                resumers: new address[](0)
-            }),
-            vaultSpec: LidoLendMarketFactory.VaultSpec({proxyAdmin: address(0x50), name: "Vault", symbol: "VLT"}),
+            vaultSpec: LidoLendMarketFactory.VaultSpec({name: "Vault", symbol: "VLT"}),
             curveParams: AdaptiveCurveParams({
                 curveSteepness: 4 ether,
                 adjustmentSpeed: 1,
