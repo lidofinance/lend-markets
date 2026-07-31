@@ -115,7 +115,7 @@ Emitted when the suspect window is set.
 ### `Heartbeat`
 
 ```solidity
-event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp);
+event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp);
 ```
 
 **Parameters**
@@ -123,22 +123,22 @@ event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp);
 | Name | Type | Description |
 | --- | --- | --- |
 | `guardian` | `address` | The guardian the scan is recorded for. |
-| `blockNumber` | `uint40` | The block number reported as scanned past (carried for off-chain tooling). |
-| `timestamp` | `uint40` | The reported block's timestamp; the quorum-scan frontier orders guardians by this value. |
+| `blockNumber` | `uint256` | The block number reported as scanned past (carried for off-chain tooling). |
+| `timestamp` | `uint256` | The reported block's timestamp; the quorum-scan frontier orders guardians by this value. |
 
 Emitted when a guardian's liveness is recorded.
 
 ### `QuorumFrontierAdvanced`
 
 ```solidity
-event QuorumFrontierAdvanced(uint40 timestamp);
+event QuorumFrontierAdvanced(uint256 timestamp);
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `timestamp` | `uint40` | The new frontier timestamp. |
+| `timestamp` | `uint256` | The new frontier timestamp. |
 
 Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
 
@@ -179,7 +179,7 @@ Emitted when a suspect report is pruned — its guardian was removed from the co
 ### `Flagged`
 
 ```solidity
-event Flagged(Id indexed marketId, address indexed account, address indexed guardian, address actor, uint16 strikes);
+event Flagged(Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 strikes);
 ```
 
 **Parameters**
@@ -190,14 +190,14 @@ event Flagged(Id indexed marketId, address indexed account, address indexed guar
 | `account` | `address` | The flagged account. |
 | `guardian` | `address` | The flagging guardian. |
 | `actor` | `address` | The caller that made the call (the guardian or its delegate). |
-| `strikes` | `uint16` | The account's flag count after the flag. |
+| `strikes` | `uint256` | The account's flag count after the flag. |
 
 Emitted when a guardian flags an account.
 
 ### `Unflagged`
 
 ```solidity
-event Unflagged(Id indexed marketId, address indexed account, address indexed guardian, address actor, uint16 strikes);
+event Unflagged(Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 strikes);
 ```
 
 Emitted when a guardian's flag is retracted.
@@ -205,7 +205,7 @@ Emitted when a guardian's flag is retracted.
 ### `FlagPruned`
 
 ```solidity
-event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
+event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint256 strikes);
 ```
 
 Emitted when a flag cast by a removed guardian is pruned.

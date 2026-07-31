@@ -42,10 +42,10 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @param guardian    The guardian the scan is recorded for.
     /// @param blockNumber The block number reported as scanned past (carried for off-chain tooling).
     /// @param timestamp   The reported block's timestamp; the quorum-scan frontier orders guardians by this value.
-    event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp);
+    event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp);
     /// @notice Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
     /// @param timestamp The new frontier timestamp.
-    event QuorumFrontierAdvanced(uint40 timestamp);
+    event QuorumFrontierAdvanced(uint256 timestamp);
     /// @notice Emitted when a guardian reports an account as suspect (raises the activation delay, never bans).
     /// @param marketId  The market the report is scoped to.
     /// @param account   The suspected account.
@@ -67,14 +67,14 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @param actor    The caller that made the call (the guardian or its delegate).
     /// @param strikes  The account's flag count after the flag.
     event Flagged(
-        Id indexed marketId, address indexed account, address indexed guardian, address actor, uint16 strikes
+        Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 strikes
     );
     /// @notice Emitted when a guardian's flag is retracted.
     event Unflagged(
-        Id indexed marketId, address indexed account, address indexed guardian, address actor, uint16 strikes
+        Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 strikes
     );
     /// @notice Emitted when a flag cast by a removed guardian is pruned.
-    event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
+    event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint256 strikes);
     /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
     event Banned(Id indexed marketId, address indexed account);
     /// @notice Emitted when an account's ban is lifted.

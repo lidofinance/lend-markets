@@ -37,12 +37,12 @@ contract GuardianSignalsTest is Test {
     event QuorumSet(uint256 quorum);
     event SuspectWindowSet(uint256 suspectWindow);
     event Flagged(
-        Id indexed marketId, address indexed account, address indexed guardian, address actor, uint16 strikes
+        Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 strikes
     );
-    event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
+    event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint256 strikes);
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
     event Banned(Id indexed marketId, address indexed account);
-    event QuorumFrontierAdvanced(uint40 timestamp);
+    event QuorumFrontierAdvanced(uint256 timestamp);
 
     function setUp() public {
         vm.roll(1000);

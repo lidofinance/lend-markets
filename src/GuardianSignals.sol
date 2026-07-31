@@ -286,7 +286,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
             address flagger = flaggers[i];
             if (!_guardians.contains(flagger)) {
                 signal.flaggedBy.remove(flagger);
-                emit FlagPruned(marketId, account, flagger, signal.flaggedBy.length().toUint16());
+                emit FlagPruned(marketId, account, flagger, signal.flaggedBy.length());
             }
         }
         // Re-evaluate against the survivors: latch if they still meet quorum. A never-latched derived ban dropped
@@ -430,7 +430,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
             signal.banned = true;
             emit Banned(marketId, account);
         }
-        emit Flagged(marketId, account, guardian, msg.sender, strikes.toUint16());
+        emit Flagged(marketId, account, guardian, msg.sender, strikes);
     }
 
     /// @dev Never lifts a ban. Before dropping the count, latch any currently-effective ban — including a
@@ -442,7 +442,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
             emit Banned(marketId, account);
         }
         if (!signal.flaggedBy.remove(guardian)) return;
-        emit Unflagged(marketId, account, guardian, msg.sender, signal.flaggedBy.length().toUint16());
+        emit Unflagged(marketId, account, guardian, msg.sender, signal.flaggedBy.length());
     }
 
     /// @dev Single-account suspect report. Records (or refreshes) the guardian's timestamp, then snapshots
