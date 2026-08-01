@@ -198,8 +198,10 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     // ---
 
     /// @inheritdoc ILidoLendERC4626
-    /// @dev A targeted, liquidity-neutral cut of the named borrowers. The owner's pro-rata share of the vault's
-    ///      settleable tail caps the cut budget; an unaffordable full close becomes a supply-anchored partial.
+    /// @dev A targeted, liquidity-neutral cut of the named borrowers. Free market liquidity is reserved against this
+    ///      request first, so only the request value above it can settle; an unaffordable full close becomes a
+    ///      supply-anchored partial. A call that consumes no core supply shares reverts. The reserve is reapplied per
+    ///      call, so splitting one request can settle less than submitting the same shares together.
     ///      Budget exhaustion partial-fills, while controller and core errors still bubble. Collateral goes from the
     ///      core straight to `receiver`. For the automatic risk-queue exit use `fallbackExit`.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
@@ -212,25 +214,16 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         if (shares > balanceOf(owner)) revert ExceededBalance(owner, shares, balanceOf(owner));
 
         uint256 totalSupply_ = totalSupply();
-        uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply_);
-        if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
+        uint256 settlementClaim = Math.mulDiv(_managedSupplyShares, shares, totalSupply_);
+        if (settlementClaim == 0) revert ZeroMorphoSupplyShares();
 
-        uint256 remainingSupplyShares;
-        (remainingSupplyShares, collateralSeized, debtCanceled) = _settleBorrowers(
-            settlingSupplyShares, Math.mulDiv(_settleableSupplyShares(), shares, totalSupply_), borrowers, receiver
-        );
+        uint256 settlementBudget = _requestSettlementBudget(settlementClaim, previewRedeem(shares));
+        uint256 settledSupplyShares;
+        (settledSupplyShares, collateralSeized, debtCanceled) = _settleBorrowers(settlementBudget, borrowers, receiver);
+        if (settledSupplyShares == 0) revert NothingSettled();
 
-        if (remainingSupplyShares < settlingSupplyShares) {
-            _managedSupplyShares -= settlingSupplyShares - remainingSupplyShares;
-        }
-
-        // Burn only the shares actually settled (pro-rata if the cuts fell short). loanAssets stays 0 — settle
-        // pays the receiver collateral, not loan assets.
-        sharesBurned = remainingSupplyShares == 0
-            ? shares
-            : Math.mulDiv(
-                shares, settlingSupplyShares - remainingSupplyShares, settlingSupplyShares, Math.Rounding.Ceil
-            );
+        _managedSupplyShares -= settledSupplyShares;
+        sharesBurned = Math.mulDiv(shares, settledSupplyShares, settlementClaim, Math.Rounding.Ceil);
 
         address caller = _msgSender();
         if (sharesBurned != 0) {
@@ -241,37 +234,32 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         emit Settled(caller, owner, receiver, sharesBurned, collateralSeized, debtCanceled);
     }
 
-    function _settleBorrowers(
-        uint256 settlingSupplyShares,
-        uint256 settleableSupplyShares,
-        address[] calldata borrowers,
-        address receiver
-    ) internal returns (uint256 remainingSupplyShares, uint256 collateralSeized, uint256 debtCanceled) {
-        remainingSupplyShares = settlingSupplyShares;
-        uint256 remainingSettleableSupplyShares = settleableSupplyShares;
-
-        for (uint256 i = 0; i < borrowers.length && remainingSettleableSupplyShares != 0; ++i) {
+    function _settleBorrowers(uint256 settlementBudget, address[] calldata borrowers, address receiver)
+        internal
+        returns (uint256 settledSupplyShares, uint256 collateralSeized, uint256 debtCanceled)
+    {
+        for (uint256 i = 0; i < borrowers.length && settlementBudget != 0; ++i) {
             (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) =
-                _settleBorrower(remainingSettleableSupplyShares, borrowers[i], receiver);
+                _settleBorrower(settlementBudget, borrowers[i], receiver);
 
             debtCanceled += cutDebt;
             collateralSeized += cutCollateral;
-            // `_settle` caps both anchors to the supplied settleable budget; exceeding either remainder signals an
-            // accounting invariant violation and must revert rather than be hidden by saturating arithmetic.
-            remainingSupplyShares -= cutShares;
-            remainingSettleableSupplyShares -= cutShares;
+            // `_settle` caps both anchors to the supplied budget; exceeding it signals an accounting invariant
+            // violation and must revert rather than be hidden by saturating arithmetic.
+            settlementBudget -= cutShares;
+            settledSupplyShares += cutShares;
         }
     }
 
-    /// @dev Core supply shares whose value remains after subtracting all free market liquidity. Converting the
-    ///      asset tail down produces a conservative budget for liquidity-neutral settlement.
-    function _settleableSupplyShares() internal view returns (uint256) {
+    /// @dev Core-share budget for the part of this request's ERC-4626 value above all free market liquidity. The
+    ///      asset-to-core-share conversion rounds down, and the claim cap covers differences between the vault's and
+    ///      core's virtual-share layers.
+    function _requestSettlementBudget(uint256 settlementClaim, uint256 requestAssets) internal view returns (uint256) {
         (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) =
             MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, _marketParams);
-        uint256 supplyAssets = _managedSupplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
         uint256 availableLiquidity = Math.saturatingSub(totalSupplyAssets, totalBorrowAssets);
-        uint256 settleableAssets = Math.saturatingSub(supplyAssets, availableLiquidity);
-        return settleableAssets.toSharesDown(totalSupplyAssets, totalSupplyShares);
+        uint256 requestTailAssets = Math.saturatingSub(requestAssets, availableLiquidity);
+        return Math.min(settlementClaim, requestTailAssets.toSharesDown(totalSupplyAssets, totalSupplyShares));
     }
 
     /// @dev Resolve the policy cut for `borrower` and settle it within `budget` via `_settle`.
@@ -316,34 +304,18 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         uint256 remaining = shares - sharesBurned;
         if (remaining == 0) return (sharesBurned, loanAssets, 0, 0);
 
-        // 2. Settle the remainder against the risk queue, head first (collateral to receiver), up to the owner's
-        //    pro-rata supply-share budget for it.
-        uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, remaining, totalSupply());
-        if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
+        // 2. Settle the remainder against the risk queue, head first (collateral to receiver), up to its pro-rata
+        //    core-share claim.
+        uint256 totalSupply_ = totalSupply();
+        uint256 settlementClaim = Math.mulDiv(_managedSupplyShares, remaining, totalSupply_);
+        if (settlementClaim == 0) revert ZeroMorphoSupplyShares();
 
         if (maxIterations == 0) maxIterations = DEFAULT_MAX_SETTLEMENT_ITERATIONS;
-        uint256 remainingSupplyShares = settlingSupplyShares;
+        uint256 settledSupplyShares;
+        (settledSupplyShares, collateralSeized, debtCanceled) = _settleQueue(settlementClaim, receiver, maxIterations);
 
-        for (uint256 i = 0; i < maxIterations && remainingSupplyShares != 0; ++i) {
-            (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) =
-                _settleNextAllowedBorrower(remainingSupplyShares, receiver);
-            if (cutShares == 0) break;
-
-            debtCanceled += cutDebt;
-            collateralSeized += cutCollateral;
-            remainingSupplyShares -= cutShares;
-        }
-        if (remainingSupplyShares < settlingSupplyShares) {
-            _managedSupplyShares -= settlingSupplyShares - remainingSupplyShares;
-        }
-
-        // Burn the settled remainder (pro-rata, rounded up so remaining holders aren't diluted) and spend
-        // allowance for it; the liquid leg burned its own.
-        uint256 settledShares = remainingSupplyShares == 0
-            ? remaining
-            : Math.mulDiv(
-                remaining, settlingSupplyShares - remainingSupplyShares, settlingSupplyShares, Math.Rounding.Ceil
-            );
+        _managedSupplyShares -= settledSupplyShares;
+        uint256 settledShares = Math.mulDiv(remaining, settledSupplyShares, settlementClaim, Math.Rounding.Ceil);
         address caller = _msgSender();
 
         if (settledShares != 0) {
@@ -353,6 +325,23 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         sharesBurned += settledShares;
 
         emit FallbackExit(caller, owner, receiver, settledShares, collateralSeized, debtCanceled);
+    }
+
+    /// @dev Settles queue roots until the core-share budget or iteration bound is exhausted.
+    function _settleQueue(uint256 settlementBudget, address receiver, uint256 maxIterations)
+        internal
+        returns (uint256 settledSupplyShares, uint256 collateralSeized, uint256 debtCanceled)
+    {
+        for (uint256 i = 0; i < maxIterations && settlementBudget != 0; ++i) {
+            (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) =
+                _settleNextAllowedBorrower(settlementBudget, receiver);
+            if (cutShares == 0) break;
+
+            debtCanceled += cutDebt;
+            collateralSeized += cutCollateral;
+            settlementBudget -= cutShares;
+            settledSupplyShares += cutShares;
+        }
     }
 
     /// @dev Same as `_settleBorrower`, but on the queue root resolved together with its cut.

@@ -255,18 +255,32 @@ contract FullLifecycleTest is LidoLendSetup {
     ///      received.
     function _phaseLenderExits() private {
         Market storage m = _m();
-        uint256 collat0 = m.core.position(m.id, borrowerSettle).collateral;
-        uint256 borrow0 = m.core.market(m.id).totalBorrowAssets;
+        uint256 collat1;
+        uint256 borrow1;
 
-        // A targeted settle: it cancels exactly the core's borrow-asset reduction and pays out exactly the
-        // borrower's collateral debit.
-        address[] memory targets = new address[](1);
-        targets[0] = borrowerSettle;
-        (,, uint256 seizedA, uint256 canceledA) = m.settle(lenderA, 40 ether, targets, lenderA);
-        uint256 collat1 = m.core.position(m.id, borrowerSettle).collateral;
-        uint256 borrow1 = m.core.market(m.id).totalBorrowAssets;
-        assertEq(borrow0 - borrow1, canceledA, "settle cancelled exactly the borrow-asset reduction");
-        assertEq(collat0 - collat1, seizedA, "settle debited the borrower's collateral by exactly the seized amount");
+        {
+            uint256 collat0 = m.core.position(m.id, borrowerSettle).collateral;
+            uint256 borrow0 = m.core.market(m.id).totalBorrowAssets;
+
+            // A targeted settle: it cancels exactly the core's borrow-asset reduction and pays out exactly the
+            // borrower's collateral debit. Request A's whole position so its value extends beyond current liquidity.
+            address[] memory targets = new address[](1);
+            targets[0] = borrowerSettle;
+            uint256 settleShares = m.vault.balanceOf(lenderA);
+            uint256 availableLiquidity = m.core.market(m.id).totalSupplyAssets - m.core.market(m.id).totalBorrowAssets;
+            assertGt(
+                m.vault.previewRedeem(settleShares), availableLiquidity, "targeted request reaches the illiquid tail"
+            );
+            (,, uint256 seizedA, uint256 canceledA) = m.settle(lenderA, settleShares, targets, lenderA);
+            assertGt(seizedA, 0, "targeted settle reaches the request's illiquid tail");
+            assertGt(canceledA, 0, "targeted settle cancels debt");
+            collat1 = m.core.position(m.id, borrowerSettle).collateral;
+            borrow1 = m.core.market(m.id).totalBorrowAssets;
+            assertEq(borrow0 - borrow1, canceledA, "settle cancelled exactly the borrow-asset reduction");
+            assertEq(
+                collat0 - collat1, seizedA, "settle debited the borrower's collateral by exactly the seized amount"
+            );
+        }
 
         // Drain all remaining ordinary liquidity so the market is illiquid: A withdraws its whole liquid budget.
         m.vaultWithdraw(lenderA, m.vault.maxWithdraw(lenderA));

@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MarketParams, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {IrmKind, Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
@@ -122,6 +125,78 @@ contract LidoLendERC4626Test is LidoLendSetup {
         assertEq(liquidAssets, 10_000e6, "exactly 10,000 loan tokens remain liquid");
     }
 
+    function _assertSixDecimalSettleRevertsNothingSettled(
+        Market storage m,
+        address lender,
+        address borrower,
+        uint256 shares
+    ) internal {
+        // lender vault shares, vault core shares, borrower debt shares.
+        uint256[3] memory before = [
+            m.vault.balanceOf(lender),
+            m.core.position(m.id, address(m.vault)).supplyShares,
+            m.core.position(m.id, borrower).borrowShares
+        ];
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = borrower;
+
+        vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
+        vm.prank(lender);
+        m.vault.settle(shares, borrowers, lender, lender);
+
+        assertEq(m.vault.balanceOf(lender), before[0], "lender shares unchanged");
+        assertEq(m.core.position(m.id, address(m.vault)).supplyShares, before[1], "vault core shares unchanged");
+        assertEq(m.core.position(m.id, borrower).borrowShares, before[2], "borrower debt unchanged");
+    }
+
+    function _assertSixDecimalIlliquidSettle(
+        Market storage m,
+        address lender,
+        address borrower,
+        uint256 shares,
+        uint256 availableLiquidity
+    ) internal {
+        // request assets, budget, expected cut, vault core shares before, borrower debt shares before.
+        uint256[5] memory expected;
+        {
+            MorphoMarket memory mk = m.core.market(m.id);
+            expected[0] = m.vault.previewRedeem(shares);
+            uint256 settlementClaim =
+                Math.mulDiv(m.core.position(m.id, address(m.vault)).supplyShares, shares, m.vault.totalSupply());
+            expected[1] = Math.min(
+                settlementClaim,
+                SharesMathLib.toSharesDown(expected[0] - availableLiquidity, mk.totalSupplyAssets, mk.totalSupplyShares)
+            );
+            (uint256 quotedSupplyShares,,) = m.controller.settlementFor(borrower);
+            expected[2] = Math.min(quotedSupplyShares, expected[1]);
+            expected[3] = m.core.position(m.id, address(m.vault)).supplyShares;
+            expected[4] = m.core.position(m.id, borrower).borrowShares;
+        }
+
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = borrower;
+        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+            m.settle(lender, shares, borrowers, lender);
+
+        assertGt(expected[0], availableLiquidity, "full request extends above liquidity");
+        assertGt(expected[1], 0, "full request has a positive settlement budget");
+        assertEq(
+            expected[3] - m.core.position(m.id, address(m.vault)).supplyShares,
+            expected[2],
+            "settlement consumes only the independently modeled request tail"
+        );
+        assertGt(sharesBurned, 0, "illiquid request burns serviced shares");
+        assertGt(collateralSeized, 0, "illiquid request seizes collateral");
+        assertGt(debtCanceled, 0, "illiquid request cancels debt");
+        assertLt(m.core.position(m.id, borrower).borrowShares, expected[4], "borrower debt reduced");
+        MorphoMarket memory marketAfter = m.core.market(m.id);
+        assertEq(
+            marketAfter.totalSupplyAssets - marketAfter.totalBorrowAssets,
+            availableLiquidity,
+            "targeted settle preserves free liquidity"
+        );
+    }
+
     // ── mutations ──
 
     // ── ERC-4626 round-trips ──
@@ -229,6 +304,35 @@ contract LidoLendERC4626Test is LidoLendSetup {
         assertEq(m.vault.allowance(owner, caller), 0, "delegated allowance spent exactly");
         assertEq(collateralSeized, 0, "no settle leg needed");
         assertEq(debtCanceled, 0, "no debt canceled");
+    }
+
+    /// @dev The request-specific liquidity reserve works across the 12-decimal vault offset: requests below and at
+    ///      the 10,000-unit liquidity boundary revert when nothing can be settled, while a larger request can consume
+    ///      only its value above that boundary.
+    function test_settle_reservesRequestLiquidity_withSixDecimalLoanToken() public {
+        Market storage m = _deploySixDecimalMarket();
+        address lender = _actor("six-decimal-settle-lender");
+        address borrower = _actor("six-decimal-settle-borrower");
+        (uint256 ownerShares, uint256 availableLiquidity) = _seedSixDecimalLiquidityBoundary(m, lender, borrower);
+
+        uint256 borrowerDebt = m.core.market(m.id).totalBorrowAssets;
+        uint256 borrowerCollateral = m.core.position(m.id, borrower).collateral;
+        MockPriceOracle(address(m.oracle)).setPrice(borrowerDebt * 1e36 / borrowerCollateral * 110 / 100);
+        m.accrueInterest();
+        SettlementConfig memory fullCut = SettlementConfig({
+            sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 2_000_000 ether, ltvStepBps: 100
+        });
+        m.controller.setSettlementConfig(fullCut);
+
+        uint256 belowBoundaryShares = m.vault.previewWithdraw(availableLiquidity - 1);
+        assertLt(m.vault.previewRedeem(belowBoundaryShares), availableLiquidity, "request is below liquidity");
+        _assertSixDecimalSettleRevertsNothingSettled(m, lender, borrower, belowBoundaryShares);
+
+        uint256 boundaryShares = m.vault.previewWithdraw(availableLiquidity);
+        assertEq(m.vault.previewRedeem(boundaryShares), availableLiquidity, "request is exactly at liquidity");
+        _assertSixDecimalSettleRevertsNothingSettled(m, lender, borrower, boundaryShares);
+
+        _assertSixDecimalIlliquidSettle(m, lender, borrower, ownerShares, availableLiquidity);
     }
 
     /// @dev A sub-asset-unit share fragment has zero current redeem value. It can still be burned exactly without

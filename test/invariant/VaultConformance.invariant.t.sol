@@ -11,12 +11,11 @@ import {MockERC20} from "../setup/Mocks.sol";
 import {VaultHandler} from "./handlers/VaultHandler.sol";
 
 /// @notice L4 stateful invariants for `LidoLendERC4626`, focused on the mechanics it adds over a plain ERC-4626:
-///         the liquidity-capped `max*`, the pro-rata `settle` / `fallbackExit` exits, and the position-only
+///         the liquidity-capped `max*`, the settlement-backed `settle` / `fallbackExit` exits, and the position-only
 ///         `totalAssets` (donation defence). Under any bounded sequence of deposit/mint/withdraw/redeem/settle/
-///         fallbackExit/borrow/repay/crash/warp/liquidate/donate, the vault must never create value, its share
-///         price must move only via interest (up), socialized bad debt (down), or a conservative rounded-up exit
-///         burn (up) — never down via a settle, a fallback exit, or a donation — and every `max*` must stay a real,
-///         honoured bound.
+///         fallbackExit/borrow/repay/crash/warp/liquidate/donate, the vault must never create value, settlement burns
+///         must follow their declared one-sided rounding, donations cannot move the share price, and every `max*`
+///         must stay a real, honoured bound.
 /// @dev `afterInvariant` reports successful-action counters so a vacuous campaign (no settles / exits) is visible.
 /// forge-config: default.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 256
@@ -180,10 +179,35 @@ contract VaultConformanceInvariant is LidoLendSetup {
 
     // ── new-mechanic ghosts ──
 
-    /// @dev A pro-rata `settle` / `fallbackExit` never dilutes remaining holders: the burn is rounded up, so the
-    ///      share price may tick up but must never drop.
-    function invariant_exitsNeverDilute() public view {
-        assertFalse(handler.exitDiluted(), "settle/fallbackExit never dropped the share price");
+    /// @dev Standard exits use the ERC-4626 one-sided conversions: `withdraw(assets)` burns the exact
+    ///      assets-to-shares conversion rounded up, while `redeem(shares)` pays the exact shares-to-assets conversion
+    ///      rounded down.
+    function invariant_standardExitRounding() public view {
+        assertFalse(handler.withdrawRoundingMismatch(), "withdraw burned ceil(assets -> shares)");
+        assertFalse(handler.redeemRoundingMismatch(), "redeem paid floor(shares -> assets)");
+    }
+
+    /// @dev For settlement claim `C` and consumed core shares `q`, the burn is exactly
+    ///      `ceil(requestedVaultShares * q / C)`. A partial fill therefore burns less than one additional raw vault
+    ///      share; when `q == C`, it burns exactly `requestedVaultShares`.
+    function invariant_settlementRounding() public view {
+        assertFalse(handler.settlementBurnMismatch(), "settlement burn matched its declared rounding");
+        assertFalse(handler.fullSettlementBurnMismatch(), "full settlement fill burned the full request");
+        assertFalse(handler.settlementShareRateDecreased(), "remaining holders received settlement rounding");
+    }
+
+    /// @dev A targeted settle can consume only the requested value above current free liquidity. A request that
+    ///      cannot consume any such value reverts without burning lender shares or changing borrower debt or
+    ///      collateral.
+    function invariant_targetedSettlementReservesFreeLiquidity() public view {
+        assertFalse(handler.settlementExceededRequestTail(), "targeted settle stayed within the request tail");
+    }
+
+    /// @dev Settlement collateral ends at the configured receiver and is not retained as vault backing.
+    function invariant_settlementCollateralGoesToReceiver() public view {
+        Market storage m = _m();
+        assertFalse(handler.settlementCollateralPayoutMismatch(), "receiver received all settlement collateral");
+        assertEq(m.collateralToken.balanceOf(address(m.vault)), 0, "vault retained no settlement collateral");
     }
 
     /// @dev A direct donation is uncounted, so it never moves the share price.
@@ -220,8 +244,18 @@ contract VaultConformanceInvariant is LidoLendSetup {
     function afterInvariant() public {
         emit log_named_uint("deposits", handler.deposits());
         emit log_named_uint("withdraws", handler.withdraws());
+        emit log_named_uint("redeems", handler.redeems());
         emit log_named_uint("settles", handler.settles());
         emit log_named_uint("fallbackExits", handler.fallbackExits());
+        emit log_named_uint("withdrawRoundUpCases", handler.withdrawRoundUpCases());
+        emit log_named_uint("redeemRoundDownCases", handler.redeemRoundDownCases());
+        emit log_named_uint("partialSettlementFills", handler.partialSettlementFills());
+        emit log_named_uint("settlementRoundUpCases", handler.settlementRoundUpCases());
+        emit log_named_uint("fullSettlementFills", handler.fullSettlementFills());
+        emit log_named_uint("nothingSettledReverts", handler.nothingSettledReverts());
+        emit log_named_uint("illiquidTailSettlementCalls", handler.illiquidTailSettlementCalls());
+        emit log_named_uint("mixedFallbackSettlementFills", handler.mixedFallbackSettlementFills());
+        emit log_named_uint("collateralPayouts", handler.collateralPayouts());
         emit log_named_uint("settlementDustReverts", handler.settlementDustReverts());
         emit log_named_uint("borrows", handler.borrows());
         emit log_named_uint("crashes", handler.crashes());

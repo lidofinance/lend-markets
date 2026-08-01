@@ -45,6 +45,9 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @param assets The deposited assets that mapped to zero core supply shares.
     error ZeroCoreSupplySharesMinted(uint256 assets);
 
+    /// @notice Thrown when a targeted settlement consumes no core supply shares across all requested borrowers.
+    error NothingSettled();
+
     /// @notice Thrown when the requested exit shares exceed the owner's balance.
     /// @param owner The account whose balance was checked.
     /// @param shares The requested shares.
@@ -78,7 +81,7 @@ interface ILidoLendERC4626 is IERC4626 {
         uint256 debtCanceled
     );
 
-    /// @notice A targeted `settle` call completed, possibly with a zero or partial fill.
+    /// @notice A targeted `settle` call completed with a positive, possibly partial fill.
     /// @param caller The address that called the settle.
     /// @param owner The account whose shares were burned.
     /// @param receiver The recipient of the seized collateral.
@@ -145,10 +148,13 @@ interface ILidoLendERC4626 is IERC4626 {
     // SETTLEMENT
     // ---
 
-    /// @notice Targeted, liquidity-neutral settlement. Cuts `borrowers` in order against the owner's pro-rata
-    ///         share of the vault's illiquid supply tail and pays seized collateral to `receiver`. Exhausting the
-    ///         budget partial-fills; controller and core errors, including a zero-collateral dust slice, still revert.
-    /// @param shares Vault shares whose pro-rata illiquid supply tail bounds the cuts.
+    /// @notice Targeted, liquidity-neutral settlement. Free market liquidity is reserved against the requested
+    ///         shares first; only their remaining value can cut `borrowers` in order and pay seized collateral to
+    ///         `receiver`. A request that settles none of the supplied borrowers reverts. Exhausting a positive budget
+    ///         partial-fills. The liquidity reserve is reapplied per call, so splitting one request can settle less
+    ///         than submitting the same shares together. Controller and core errors, including a zero-collateral dust
+    ///         slice, still revert.
+    /// @param shares Vault shares whose value above current free market liquidity bounds the cuts.
     /// @param borrowers Positions to cut, in order; each sized via `controller.settlementFor`.
     /// @param receiver Recipient of the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.

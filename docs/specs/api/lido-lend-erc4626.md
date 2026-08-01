@@ -44,7 +44,7 @@ event Settled(address indexed caller, address indexed owner, address indexed rec
 | `collateralSeized` | `uint256` | Collateral seized from the cut positions. |
 | `debtCanceled` | `uint256` | Borrower debt cancelled by the cuts. |
 
-A targeted `settle` call completed, possibly with a zero or partial fill.
+A targeted `settle` call completed with a positive, possibly partial fill.
 
 ## Errors
 
@@ -125,6 +125,14 @@ error ZeroCoreSupplySharesMinted(uint256 assets);
 | `assets` | `uint256` | The deposited assets that mapped to zero core supply shares. |
 
 Thrown when a nonzero deposit receives zero core supply shares.
+
+### `NothingSettled`
+
+```solidity
+error NothingSettled();
+```
+
+Thrown when a targeted settlement consumes no core supply shares across all requested borrowers.
 
 ### `ExceededBalance`
 
@@ -246,7 +254,7 @@ function settle(
 ) external returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
-A targeted, liquidity-neutral cut of the named borrowers. The owner's pro-rata share of the vault's settleable tail caps the cut budget; an unaffordable full close becomes a supply-anchored partial. Budget exhaustion partial-fills, while controller and core errors still bubble. Collateral goes from the core straight to `receiver`. For the automatic risk-queue exit use `fallbackExit`.
+A targeted, liquidity-neutral cut of the named borrowers. Free market liquidity is reserved against this request first, so only the request value above it can settle; an unaffordable full close becomes a supply-anchored partial. A call that consumes no core supply shares reverts. The reserve is reapplied per call, so splitting one request can settle less than submitting the same shares together. Budget exhaustion partial-fills, while controller and core errors still bubble. Collateral goes from the core straight to `receiver`. For the automatic risk-queue exit use `fallbackExit`.
 
 ### `fallbackExit`
 

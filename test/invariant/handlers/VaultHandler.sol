@@ -6,6 +6,7 @@ import {StdCheats} from "forge-std/StdCheats.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
@@ -21,10 +22,21 @@ import {MockPriceOracle} from "../../setup/Mocks.sol";
 /// @notice Handler for the vault invariant suite. On top of the market actions (borrow/repay/crash/warp/liquidate)
 ///         it drives the ERC-4626 surface (deposit/mint/withdraw/redeem) and the NEW vault mechanics (targeted
 ///         `settle`, `fallbackExit`, direct donations). Around each new-mechanic call it records ghosts the
-///         invariants read: `settle`/`fallbackExit` must not dilute remaining holders (interest is accrued first to
-///         isolate them); a direct donation is uncounted so it must not move the price; and no exit burns more shares
-///         than requested.
+///         invariants read: standard exits and settlement must follow their declared one-sided rounding, settlement
+///         collateral must reach the receiver without being retained by the vault, a direct donation cannot move the
+///         price, and no exit may over-burn.
 contract VaultHandler is CommonBase, StdCheats, StdUtils {
+    struct SettlementState {
+        uint256 vaultSupply;
+        uint256 vaultAssets;
+        uint256 coreSupplyShares;
+        uint256 coreTotalSupplyAssets;
+        uint256 coreTotalSupplyShares;
+        uint256 withdrawableAssets;
+        uint256 idle;
+        uint256 receiverCollateral;
+    }
+
     ILidoLend internal immutable CORE;
     ILidoLendERC4626 internal immutable VAULT;
     ILidoLendMarketController internal immutable CONTROLLER;
@@ -34,22 +46,25 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     Id internal immutable ID;
     uint256 internal immutable SEED_PRICE;
     address internal immutable ORACLE;
+    uint256 internal immutable VAULT_VIRTUAL_SHARES;
     uint256 internal constant LLTV = 0.8e18;
     uint256 internal constant FLOOR = 10 ether;
-    uint256 internal constant PPS_TOLERANCE = 3; // wei of rounding a pro-rata burn may shift convertToAssets(1e18)
+    uint8 internal constant VAULT_SHARE_DECIMALS = 18;
+    uint256 internal constant CORE_VIRTUAL_SHARES = 1e6;
+    uint256 internal constant CORE_VIRTUAL_ASSETS = 1;
     bytes4 internal constant PANIC_SELECTOR = 0x4e487b71;
     uint256 internal constant ARITHMETIC_PANIC_CODE = 0x11;
     bytes32 internal constant SETTLEMENT_SLICE_TOO_SMALL_HASH = keccak256("settlement slice too small");
-    // Below one full share the price is dominated by the virtual-share offset: an exit that drains the vault to dust
-    // leaves totalSupply/totalAssets at the offset scale, where `convertToAssets(1e18)` snaps back to parity. That is
-    // an empty-vault artifact, not dilution — there are no remaining holders to dilute — so the no-drop check below
-    // only applies while the vault still carries meaningful supply.
-    uint256 internal constant MIN_SUPPLY_FOR_PPS = 1e18;
-
     address[] internal actors;
 
     // Ghosts read by the invariants.
-    bool public exitDiluted; // a settle / fallbackExit dropped the share price (diluted remaining holders)
+    bool public withdrawRoundingMismatch; // withdraw did not burn ceil(assets -> vault shares)
+    bool public redeemRoundingMismatch; // redeem did not pay floor(vault shares -> assets)
+    bool public settlementBurnMismatch; // a settle leg did not match its declared pro-rata rounding
+    bool public fullSettlementBurnMismatch; // a consumed full core claim did not burn the full request
+    bool public settlementShareRateDecreased; // remaining vault shares own fewer core shares pro-rata
+    bool public settlementCollateralPayoutMismatch; // receiver balance delta did not equal returned collateral
+    bool public settlementExceededRequestTail; // targeted settle consumed the request's liquidity-reserved prefix
     bool public priceMovedByDonation; // a direct donation shifted the share price
     bool public exitBurnedTooMuch; // an exit burned more shares than requested
     bool public settleMovedLiquidity; // a targeted settle paid loan assets or changed idle (not liquidity-neutral)
@@ -61,8 +76,18 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     // Coverage counters.
     uint256 public deposits;
     uint256 public withdraws;
+    uint256 public redeems;
     uint256 public settles;
     uint256 public fallbackExits;
+    uint256 public withdrawRoundUpCases;
+    uint256 public redeemRoundDownCases;
+    uint256 public partialSettlementFills;
+    uint256 public settlementRoundUpCases;
+    uint256 public fullSettlementFills;
+    uint256 public nothingSettledReverts;
+    uint256 public illiquidTailSettlementCalls;
+    uint256 public mixedFallbackSettlementFills;
+    uint256 public collateralPayouts;
     uint256 public settlementDustReverts;
     uint256 public borrows;
     uint256 public crashes;
@@ -92,6 +117,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         ID = id;
         SEED_PRICE = oraclePrice;
         ORACLE = oracle;
+        uint8 assetDecimals = IERC20Metadata(vault.asset()).decimals();
+        VAULT_VIRTUAL_SHARES = assetDecimals < VAULT_SHARE_DECIMALS ? 10 ** (VAULT_SHARE_DECIMALS - assetDecimals) : 1;
         actors = actors_;
     }
 
@@ -111,13 +138,198 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         deal(address(token), to, token.balanceOf(to) + add);
     }
 
-    function _absDiff(uint256 a, uint256 b) internal pure returns (uint256) {
-        return a > b ? a - b : b - a;
-    }
-
     function _idle() internal view returns (uint256) {
         MorphoMarket memory mk = CORE.market(ID);
         return mk.totalSupplyAssets - mk.totalBorrowAssets;
+    }
+
+    /// @dev Independently derives `C`, `q`, and `ceil(requestedShares * q / C)` from observable state deltas.
+    function _settlementModel(
+        uint256 requestedShares,
+        uint256 supplyBefore,
+        uint256 coreSharesBefore,
+        uint256 coreSharesAfter
+    ) internal pure returns (uint256 claim, uint256 settled, uint256 expectedBurn, bool invalid) {
+        if (coreSharesAfter > coreSharesBefore) return (0, 0, 0, true);
+
+        claim = Math.mulDiv(coreSharesBefore, requestedShares, supplyBefore);
+        if (claim == 0) return (0, 0, 0, true);
+
+        settled = coreSharesBefore - coreSharesAfter;
+        if (settled > claim) return (0, 0, 0, true);
+
+        // `C = claim`, `q = settled`: burn exactly `ceil(requestedShares * q / C)`.
+        expectedBurn = Math.mulDiv(requestedShares, settled, claim);
+        if (mulmod(requestedShares, settled, claim) != 0) ++expectedBurn;
+    }
+
+    /// @dev Compares two nonnegative fractions without overflowing either cross-product.
+    function _fractionLess(
+        uint256 leftNumerator,
+        uint256 leftDenominator,
+        uint256 rightNumerator,
+        uint256 rightDenominator
+    ) internal pure returns (bool) {
+        (uint256 leftHigh, uint256 leftLow) = Math.mul512(leftNumerator, rightDenominator);
+        (uint256 rightHigh, uint256 rightLow) = Math.mul512(rightNumerator, leftDenominator);
+        return leftHigh < rightHigh || (leftHigh == rightHigh && leftLow < rightLow);
+    }
+
+    /// @dev Snapshots every input needed to model a settle or both legs of a fallback exit.
+    function _settlementState(address receiver) internal view returns (SettlementState memory state) {
+        MorphoMarket memory market_ = CORE.market(ID);
+        state.vaultSupply = VAULT.totalSupply();
+        state.vaultAssets = VAULT.totalAssets();
+        state.coreSupplyShares = CORE.position(ID, address(VAULT)).supplyShares;
+        state.coreTotalSupplyAssets = market_.totalSupplyAssets;
+        state.coreTotalSupplyShares = market_.totalSupplyShares;
+        state.withdrawableAssets = CONTROLLER.maxWithdrawableAssets(address(VAULT));
+        state.idle = market_.totalSupplyAssets - market_.totalBorrowAssets;
+        state.receiverCollateral = COLLATERAL.balanceOf(receiver);
+    }
+
+    /// @dev Checks the exact settlement burn and the core-share entitlement left to each remaining vault share.
+    function _observeSettlementLeg(
+        uint256 requestedShares,
+        uint256 actualBurn,
+        uint256 supplyBefore,
+        uint256 coreSharesBefore,
+        uint256 coreSharesAfter
+    ) internal {
+        (uint256 claim, uint256 settled, uint256 expectedBurn, bool invalid) =
+            _settlementModel(requestedShares, supplyBefore, coreSharesBefore, coreSharesAfter);
+        if (invalid) {
+            settlementBurnMismatch = true;
+            return;
+        }
+
+        if (actualBurn != expectedBurn) settlementBurnMismatch = true;
+        if (settled != 0) {
+            if (settled < claim) ++partialSettlementFills;
+            if (mulmod(requestedShares, settled, claim) != 0) ++settlementRoundUpCases;
+        }
+        if (settled == claim) {
+            ++fullSettlementFills;
+            if (actualBurn != requestedShares) fullSettlementBurnMismatch = true;
+        }
+
+        uint256 supplyAfter = VAULT.totalSupply();
+        if (actualBurn > supplyBefore || supplyAfter != supplyBefore - actualBurn) settlementBurnMismatch = true;
+        if (supplyAfter != 0 && _fractionLess(coreSharesAfter, supplyAfter, coreSharesBefore, supplyBefore)) {
+            settlementShareRateDecreased = true;
+        }
+    }
+
+    /// @dev Checks a targeted settle against `max(previewRedeem(request) - freeLiquidity, 0)`, converted down to
+    ///      core shares and capped at the request's gross core-share claim.
+    function _observeTargetedSettlementBudget(
+        uint256 requestedShares,
+        uint256 actualBurn,
+        uint256 collateralSeized,
+        uint256 debtCanceled,
+        SettlementState memory before
+    ) internal {
+        uint256 claim = Math.mulDiv(before.coreSupplyShares, requestedShares, before.vaultSupply);
+        if (claim == 0) {
+            settlementExceededRequestTail = true;
+            return;
+        }
+
+        uint256 requestAssets =
+            Math.mulDiv(requestedShares, before.vaultAssets + 1, before.vaultSupply + VAULT_VIRTUAL_SHARES);
+        uint256 tailAssets = Math.saturatingSub(requestAssets, before.idle);
+        uint256 budget = Math.min(
+            claim,
+            Math.mulDiv(
+                tailAssets,
+                before.coreTotalSupplyShares + CORE_VIRTUAL_SHARES,
+                before.coreTotalSupplyAssets + CORE_VIRTUAL_ASSETS
+            )
+        );
+
+        uint256 coreSharesAfter = CORE.position(ID, address(VAULT)).supplyShares;
+        if (coreSharesAfter > before.coreSupplyShares || before.coreSupplyShares - coreSharesAfter > budget) {
+            settlementExceededRequestTail = true;
+        }
+
+        if (budget == 0) settlementExceededRequestTail = true;
+        else ++illiquidTailSettlementCalls;
+    }
+
+    /// @dev Checks the configured receiver's token delta; owner and receiver are deliberately distinct in callers.
+    function _observeCollateralPayout(
+        uint256 loanAssets,
+        uint256 collateralSeized,
+        address receiver,
+        SettlementState memory before
+    ) internal {
+        uint256 collateralAfter = COLLATERAL.balanceOf(receiver);
+        uint256 expectedPayout = collateralSeized;
+        if (address(COLLATERAL) == address(LOAN)) expectedPayout += loanAssets;
+        if (
+            collateralAfter < before.receiverCollateral || collateralAfter - before.receiverCollateral != expectedPayout
+        ) settlementCollateralPayoutMismatch = true;
+        if (collateralSeized != 0) ++collateralPayouts;
+    }
+
+    /// @dev Reconstructs fallbackExit's pure-redeem or capped-withdraw leg from the pre-call state.
+    function _fallbackLiquidLeg(uint256 requestedShares, SettlementState memory before)
+        internal
+        view
+        returns (uint256 vaultSharesBurned, uint256 coreSharesBurned, uint256 loanAssets)
+    {
+        if (before.withdrawableAssets == 0) return (0, 0, 0);
+
+        uint256 redeemAssets =
+            Math.mulDiv(requestedShares, before.vaultAssets + 1, before.vaultSupply + VAULT_VIRTUAL_SHARES);
+        if (redeemAssets <= before.withdrawableAssets) {
+            vaultSharesBurned = requestedShares;
+            loanAssets = redeemAssets;
+        } else {
+            loanAssets = before.withdrawableAssets;
+            vaultSharesBurned = Math.mulDiv(
+                loanAssets, before.vaultSupply + VAULT_VIRTUAL_SHARES, before.vaultAssets + 1, Math.Rounding.Ceil
+            );
+        }
+
+        coreSharesBurned = Math.mulDiv(
+            loanAssets,
+            before.coreTotalSupplyShares + CORE_VIRTUAL_SHARES,
+            before.coreTotalSupplyAssets + CORE_VIRTUAL_ASSETS,
+            Math.Rounding.Ceil
+        );
+    }
+
+    /// @dev Removes the modeled liquid leg, then checks the remaining settlement against its intermediate claim.
+    function _observeFallbackExit(
+        uint256 requestedShares,
+        uint256 actualBurn,
+        uint256 actualLoanAssets,
+        SettlementState memory before
+    ) internal {
+        (uint256 liquidBurn, uint256 liquidCoreBurn, uint256 expectedLoanAssets) =
+            _fallbackLiquidLeg(requestedShares, before);
+        if (
+            actualLoanAssets != expectedLoanAssets || liquidBurn > requestedShares || liquidBurn > actualBurn
+                || liquidCoreBurn > before.coreSupplyShares
+        ) {
+            settlementBurnMismatch = true;
+            return;
+        }
+
+        uint256 coreSharesAfter = CORE.position(ID, address(VAULT)).supplyShares;
+        uint256 settlementRequest = requestedShares - liquidBurn;
+        uint256 settlementBurn = actualBurn - liquidBurn;
+        uint256 settlementCoreBefore = before.coreSupplyShares - liquidCoreBurn;
+        if (settlementRequest == 0) {
+            if (settlementBurn != 0 || coreSharesAfter != settlementCoreBefore) settlementBurnMismatch = true;
+            return;
+        }
+
+        _observeSettlementLeg(
+            settlementRequest, settlementBurn, before.vaultSupply - liquidBurn, settlementCoreBefore, coreSharesAfter
+        );
+        if (liquidBurn != 0 && settlementBurn != 0) ++mixedFallbackSettlementFills;
     }
 
     function _ctrl() internal view returns (LidoLendMarketController) {
@@ -186,8 +398,20 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         uint256 max = VAULT.maxWithdraw(a);
         if (max == 0) return;
         amount = bound(amount, 1, max);
+
+        uint256 supplyBefore = VAULT.totalSupply();
+        uint256 assetsBefore = VAULT.totalAssets();
+        uint256 balanceBefore = VAULT.balanceOf(a);
+        uint256 expectedBurn =
+            Math.mulDiv(amount, supplyBefore + VAULT_VIRTUAL_SHARES, assetsBefore + 1, Math.Rounding.Ceil);
+        bool roundedUp = mulmod(amount, supplyBefore + VAULT_VIRTUAL_SHARES, assetsBefore + 1) != 0;
+
         vm.prank(a);
-        VAULT.withdraw(amount, a, a);
+        uint256 actualBurn = VAULT.withdraw(amount, a, a);
+        uint256 balanceAfter = VAULT.balanceOf(a);
+        bool balanceMismatch = balanceAfter > balanceBefore || balanceBefore - balanceAfter != expectedBurn;
+        if (actualBurn != expectedBurn || balanceMismatch) withdrawRoundingMismatch = true;
+        if (roundedUp) ++withdrawRoundUpCases;
         withdraws++;
     }
 
@@ -202,15 +426,31 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         uint256 max = VAULT.maxRedeem(a);
         if (max == 0) return;
         shares = bound(shares, 1, max);
+
+        uint256 supplyBefore = VAULT.totalSupply();
+        uint256 assetsBefore = VAULT.totalAssets();
+        uint256 sharesBefore = VAULT.balanceOf(a);
+        uint256 assetsExpected = Math.mulDiv(shares, assetsBefore + 1, supplyBefore + VAULT_VIRTUAL_SHARES);
+        bool roundedDown = mulmod(shares, assetsBefore + 1, supplyBefore + VAULT_VIRTUAL_SHARES) != 0;
+        uint256 assetsBalanceBefore = LOAN.balanceOf(a);
+
         vm.prank(a);
-        VAULT.redeem(shares, a, a);
-        withdraws++;
+        uint256 assetsActual = VAULT.redeem(shares, a, a);
+        uint256 assetsBalanceAfter = LOAN.balanceOf(a);
+        uint256 sharesAfter = VAULT.balanceOf(a);
+        if (
+            assetsActual != assetsExpected || assetsBalanceAfter < assetsBalanceBefore
+                || assetsBalanceAfter - assetsBalanceBefore != assetsExpected || sharesAfter > sharesBefore
+                || sharesBefore - sharesAfter != shares
+        ) redeemRoundingMismatch = true;
+        if (roundedDown) ++redeemRoundDownCases;
+        redeems++;
     }
 
     // ── new mechanics: settle / fallbackExit / donation ──
 
-    /// @dev Targeted settle by an owner against every actor that carries debt. The rounded-up pro-rata burn must not
-    ///      dilute remaining holders. Interest is accrued first to isolate the exit.
+    /// @dev Targeted settle by an owner against every actor that carries debt. The burn must be the one-sided rounded
+    ///      fraction of the owner's gross core-share claim actually consumed. Interest is accrued first to isolate it.
     function settle(uint256 actorSeed, uint256 shares) external {
         address owner = _actor(actorSeed);
         uint256 bal = VAULT.balanceOf(owner);
@@ -227,15 +467,15 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         }
 
         CORE.accrueInterest(params); // isolate the pro-rata burn from interest
-        uint256 ppsBefore = _pps();
-        uint256 idleBefore = _idle();
+        address receiver = actors[(actorSeed % actors.length + 1) % actors.length];
+        SettlementState memory before = _settlementState(receiver);
         shares = bound(shares, 1, bal);
         vm.prank(owner);
         uint256 sharesBurned;
         uint256 loanAssets;
         uint256 collateralSeized;
         uint256 debtCanceled;
-        try VAULT.settle(shares, borrowers, owner, owner) returns (
+        try VAULT.settle(shares, borrowers, receiver, owner) returns (
             uint256 sharesBurned_, uint256 loanAssets_, uint256 collateralSeized_, uint256 debtCanceled_
         ) {
             sharesBurned = sharesBurned_;
@@ -248,35 +488,45 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         } catch Error(string memory reason) {
             _recordExpectedSettlementErrorOrRevert(reason);
             return;
+        } catch (bytes memory reason) {
+            _recordExpectedSettlementCustomErrorOrRevert(reason);
+            return;
         }
 
         if (sharesBurned > shares) exitBurnedTooMuch = true;
-        // The burn is rounded up so remaining holders aren't diluted -> the price may tick up, but must never drop.
-        // Skip once the vault is drained to dust, where the price is a virtual-share artifact (see MIN_SUPPLY_FOR_PPS).
-        if (VAULT.totalSupply() >= MIN_SUPPLY_FOR_PPS && _pps() + PPS_TOLERANCE < ppsBefore) exitDiluted = true;
+        _observeTargetedSettlementBudget(shares, sharesBurned, collateralSeized, debtCanceled, before);
+        _observeSettlementLeg(
+            shares,
+            sharesBurned,
+            before.vaultSupply,
+            before.coreSupplyShares,
+            CORE.position(ID, address(VAULT)).supplyShares
+        );
+        _observeCollateralPayout(loanAssets, collateralSeized, receiver, before);
         // Liquidity-neutral: settle pays no loan and cancels debt + supply by the same amount, so idle is unchanged.
-        if (loanAssets != 0 || _absDiff(_idle(), idleBefore) > PPS_TOLERANCE) settleMovedLiquidity = true;
+        if (loanAssets != 0 || _idle() != before.idle) settleMovedLiquidity = true;
         if (_seizedValueExceedsDebt(collateralSeized, debtCanceled)) parViolated = true;
         settles++;
     }
 
-    /// @dev Redeem the liquid part then settle the rest. Both legs must preserve or increase the remaining holders'
-    ///      share price. Skips when a bad-debt root would revert the settle leg.
+    /// @dev Redeem the liquid part then settle the rest. The model reconstructs the intermediate state after the
+    ///      liquid leg, then checks the settle leg against that live core-share claim. Skips when a bad-debt root
+    ///      would revert the settle leg.
     function fallbackExit(uint256 actorSeed, uint256 shares, uint256 iterations) external {
         address owner = _actor(actorSeed);
         uint256 bal = VAULT.balanceOf(owner);
         if (bal == 0 || _paused() || CONTROLLER.hasBadDebt()) return;
 
         CORE.accrueInterest(params);
-        uint256 ppsBefore = _pps();
-        uint256 idleBefore = _idle();
+        address receiver = actors[(actorSeed % actors.length + 1) % actors.length];
+        SettlementState memory before = _settlementState(receiver);
         shares = bound(shares, 1, bal);
         vm.prank(owner);
         uint256 sharesBurned;
         uint256 loanAssets;
         uint256 collateralSeized;
         uint256 debtCanceled;
-        try VAULT.fallbackExit(shares, owner, owner, bound(iterations, 0, 50)) returns (
+        try VAULT.fallbackExit(shares, receiver, owner, bound(iterations, 0, 50)) returns (
             uint256 sharesBurned_, uint256 loanAssets_, uint256 collateralSeized_, uint256 debtCanceled_
         ) {
             sharesBurned = sharesBurned_;
@@ -289,16 +539,17 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         } catch Error(string memory reason) {
             _recordExpectedSettlementErrorOrRevert(reason);
             return;
+        } catch (bytes memory reason) {
+            _recordExpectedSettlementCustomErrorOrRevert(reason);
+            return;
         }
 
         if (sharesBurned > shares) exitBurnedTooMuch = true;
-        // Skip once the vault is drained to dust, where the price is a virtual-share artifact (see MIN_SUPPLY_FOR_PPS).
-        if (VAULT.totalSupply() >= MIN_SUPPLY_FOR_PPS && _pps() + PPS_TOLERANCE < ppsBefore) exitDiluted = true;
+        _observeFallbackExit(shares, sharesBurned, loanAssets, before);
+        _observeCollateralPayout(loanAssets, collateralSeized, receiver, before);
         // The redeem leg drops idle by exactly its payout; the settle leg is liquidity-neutral -> idle drop == loan.
         uint256 idleAfter = _idle();
-        if (idleAfter > idleBefore || _absDiff(idleBefore - idleAfter, loanAssets) > PPS_TOLERANCE) {
-            fallbackExitLiquidityMismatch = true;
-        }
+        if (idleAfter > before.idle || before.idle - idleAfter != loanAssets) fallbackExitLiquidityMismatch = true;
         if (_seizedValueExceedsDebt(collateralSeized, debtCanceled)) parViolated = true;
         fallbackExits++;
     }
@@ -459,5 +710,26 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
             return;
         }
         revert(reason);
+    }
+
+    /// @dev A positive vault-share request can have no floor-valued core-share claim at dust scale, or its targeted
+    ///      batch can consume no settlement budget. These are expected no-settlement boundaries; every other custom
+    ///      error is rethrown.
+    function _recordExpectedSettlementCustomErrorOrRevert(bytes memory reason) private {
+        bytes4 selector;
+        if (reason.length >= 4) {
+            assembly ("memory-safe") {
+                selector := mload(add(reason, 0x20))
+            }
+        }
+        if (selector == ILidoLendERC4626.ZeroMorphoSupplyShares.selector) return;
+        if (selector == ILidoLendERC4626.NothingSettled.selector) {
+            ++nothingSettledReverts;
+            return;
+        }
+
+        assembly ("memory-safe") {
+            revert(add(reason, 0x20), mload(reason))
+        }
     }
 }
