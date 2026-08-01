@@ -56,5 +56,5 @@ Settlement slice policy, set together via `setSettlementConfig`. The knobs tune 
 | --- | --- | --- |
 | `sliceFloorBps` | `uint16` | Debt-fraction term of the root cut: one allowance is `debt * sliceFloorBps / BPS`. |
 | `sliceFloorAssets` | `uint96` | Absolute term of the root cut: one allowance is this many loan assets. |
-| `fullCutBelowCollateral` | `uint96` | Sweep floor in collateral units: when a cut would leave the borrower's remaining collateral below this, the slice lifts to the full debt so the position closes in one cut, leaving no dust tail. 0 disables the sweep. |
+| `fullCutBelowCollateral` | `uint96` | Sweep floor in collateral units: when a cut would leave the borrower's remaining collateral below this, the policy requests a full-debt slice. The vault closes the position in one cut only when the exiting lender's settleable budget covers it; otherwise it applies a supply-anchored partial. 0 disables the sweep. |
 | `ltvStepBps` | `uint16` | LTV-step term of the root cut: one allowance is the cut that lowers the root's LTV by `ltvStepBps / BPS`. The root cut is the largest of the three terms (debt-fraction, absolute, LTV-step). |

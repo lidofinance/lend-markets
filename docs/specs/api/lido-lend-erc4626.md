@@ -20,12 +20,12 @@ event FallbackExit(address indexed caller, address indexed owner, address indexe
 | --- | --- | --- |
 | `caller` | `address` | The address that called the exit. |
 | `owner` | `address` | The account whose shares were burned. |
-| `receiver` | `address` | The recipient of the redeemed assets and seized collateral. |
+| `receiver` | `address` | The recipient of the liquid-leg loan assets and seized collateral. |
 | `sharesBurned` | `uint256` | Shares burned by the settle leg. |
 | `collateralSeized` | `uint256` | Collateral seized from the cut positions. |
 | `debtCanceled` | `uint256` | Borrower debt cancelled by the cuts. |
 
-An automatic `fallbackExit` settled its illiquid remainder against the risk queue.
+An automatic `fallbackExit` settlement leg completed, possibly with a zero or partial fill.
 
 ### `Settled`
 
@@ -44,7 +44,7 @@ event Settled(address indexed caller, address indexed owner, address indexed rec
 | `collateralSeized` | `uint256` | Collateral seized from the cut positions. |
 | `debtCanceled` | `uint256` | Borrower debt cancelled by the cuts. |
 
-A targeted `settle` cut the caller-named borrowers.
+A targeted `settle` call completed, possibly with a zero or partial fill.
 
 ## Errors
 
@@ -217,7 +217,7 @@ Capped by the market's free liquidity, not just the owner's position: supplied t
 function maxRedeem(address owner) public view returns (uint256);
 ```
 
-Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in free liquidity it returns the exact share balance, avoiding a `convertToShares` round-trip that could round the last wei down and strand a share. Otherwise it caps to the shares liquidity covers.
+Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in nonzero free liquidity it returns the exact share balance. Otherwise the floor conversion is a conservative ERC-4626 gate; `fallbackExit` also services the remaining shares on the same redeem rounding plateau. Zero when the controller reports no withdrawable assets, including while paused.
 
 ### `maxDeposit`
 
@@ -246,7 +246,7 @@ function settle(
 ) external returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
-A targeted, liquidity-neutral cut of the named borrowers: it redeems no liquidity first (unlike `fallbackExit`), so it stays subject to the core's settleable-supply gate (reverts `SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY` while idle liquidity still covers the amount). Collateral goes from Morpho straight to `receiver`. For the griefing-resistant exit use `fallbackExit`.
+A targeted, liquidity-neutral cut of the named borrowers. The owner's pro-rata share of the vault's settleable tail caps the cut budget; an unaffordable full close becomes a supply-anchored partial. Budget exhaustion partial-fills, while controller and core errors still bubble. Collateral goes from the core straight to `receiver`. For the automatic risk-queue exit use `fallbackExit`.
 
 ### `fallbackExit`
 
@@ -259,7 +259,7 @@ function fallbackExit(
 ) external returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
-Redeems what liquidity covers before settling, closing a griefing vector: the core blocks `settle` while idle liquidity still covers the amount, so without the redeem an attacker could add idle right before the call to force the exit to revert. That liquidity goes to the owner as loan assets; collateral goes from Morpho straight to `receiver`.
+Pays the liquid part to `receiver` before settling the remainder. When the controller reports nonzero withdrawable liquidity and the requested shares' entire floor-rounded value fits, the vault burns exactly those shares. Otherwise it withdraws the exact available asset amount so no liquidity is stranded by share rounding. The settle leg sends seized collateral from the core straight to the same receiver. Queue or iteration exhaustion partial-fills; controller and core errors revert the whole call.
 
 ## State variables
 

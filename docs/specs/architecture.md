@@ -240,7 +240,7 @@ For the queue root, the bound is the largest of three rules:
 
 Taking the **max** lets the riskiest position de-lever in meaningful steps. Rule 3 self-adapts: a fixed LTV step is a large fraction of the debt near the liquidation threshold and a small one lower down, so it carries the cut where the debt concentrates while rules 1 and 2 floor the small and low-LTV tail. A cut sized to the *next-riskiest* borrower instead would collapse to nothing here, because borrowers in a single-pair leverage market cluster near a common LTV — the absolute rules sidestep that.
 
-A borrower may also opt into a **settlement LTV**: a personal target LTV the cut settles down to. The settlement-LTV cut and rule 3 share one closed form, `sliceToLtv`. The slice is the larger of the root cut and the settlement-LTV cut, then lifted to the full debt when the post-cut collateral would fall below `fullCutBelowCollateral` (so no unsettleable dust tail remains).
+A borrower may also opt into a **settlement LTV**: a personal target LTV the cut settles down to. The settlement-LTV cut and rule 3 share one closed form, `sliceToLtv`. The slice is the larger of the root cut and the settlement-LTV cut, then lifted to the full debt when the post-cut collateral would fall below `fullCutBelowCollateral`. The vault uses that borrow-anchored full close only when the exiting lender's remaining settleable budget can afford it; otherwise it falls back to a supply-anchored partial and residual debt may remain.
 
 ```mermaid
 flowchart LR
@@ -264,19 +264,20 @@ flowchart LR
 
 **Known limits.**
 
-- A fully de-levered borrower keeps its equity as free collateral but loses all its leverage (par, no penalty). A small position — debt under the absolute floor, or a remainder that would fall under `fullCutBelowCollateral` — closes entirely in a single cut, which is abrupt for that borrower.
+- A fully de-levered borrower keeps its equity as free collateral but loses all its leverage (par, no penalty). For a small position — debt under the absolute floor, or a remainder that would fall under `fullCutBelowCollateral` — policy requests a full-debt cut. It closes in one transaction only when the exiting lender's settleable budget covers it; otherwise the vault applies a supply-anchored partial.
 - A single transaction settles only a bounded number of borrowers (the fallback loop's iteration cap), so a lender pulling a large fraction of the pool partial-fills and repeats across transactions. A settle hands back collateral, not WETH, so it does not lower utilization — the reach per transaction depends on how the debt is split across positions, not on any one policy value.
+- If a chosen debt slice prices to zero collateral units, the core reverts `settlement slice too small`. Repay or otherwise remove that dust debt, then retry the exit.
 
 ### Tokenized lender layer & fallback exit
 
-Lenders hold freely transferable, ungated ERC-4626 wrapper shares (`LidoLendERC4626`). The standard market deployment records one wrapper, while additional wrappers may be deployed over the same controller. `deposit`/`mint`/`withdraw`/`redeem` are standard, with the max views mirroring the controller's lender limits: `maxDeposit`/`maxMint` report the remaining supply-cap headroom (unlimited when uncapped), `maxWithdraw`/`maxRedeem` the lesser of the owner's position value and the market's free pool liquidity, and all four drop to zero while the market is paused.
+Lenders hold freely transferable, ungated ERC-4626 wrapper shares (`LidoLendERC4626`). The standard market deployment records one wrapper, while additional wrappers may be deployed over the same controller. `deposit`/`mint`/`withdraw`/`redeem` are standard, with the max views mirroring the controller's lender limits: `maxDeposit`/`maxMint` report the remaining supply-cap headroom (unlimited when uncapped), `maxWithdraw` reports the lesser of the owner's position value and free pool liquidity, and `maxRedeem` reports its conservative floor-converted share equivalent. All four drop to zero while the market is paused. `fallbackExit` can also consume shares on the final redeem rounding plateau that lie just above `maxRedeem` while representing no additional asset unit.
 
 When liquidity is short, lenders use the settlement exit:
 
-- `fallbackExit(shares, receiver, owner, maxIterations)` — two legs: first a normal redeem of whatever pool liquidity covers (paid out as loan assets), then a settle of the remainder against the risk heap, riskiest-first (paid out as seized collateral). Best-effort, no revert on a shortfall. `maxIterations` caps the borrowers the settle leg cuts (`0` = `DEFAULT_MAX_SETTLEMENT_ITERATIONS`, 150). Redeeming the liquid part first also closes a griefing vector — idle liquidity flows to the owner instead of blocking the settle.
-- `settle(shares, borrowers[], receiver, owner)` — settles a caller-chosen borrower list in order, collateral only (no redeem leg).
+- `fallbackExit(shares, receiver, owner, maxIterations)` — two legs. When the controller reports nonzero withdrawable liquidity and the full floor-rounded value fits, the liquid leg burns all requested shares; otherwise it withdraws the exact available asset amount, then settles only the genuinely illiquid remainder against the risk heap, riskiest-first. Loan assets and seized collateral both go to `receiver`. Queue or iteration exhaustion partial-fills; controller and core errors still revert. `maxIterations` caps the borrowers the settle leg cuts (`0` = `DEFAULT_MAX_SETTLEMENT_ITERATIONS`, 150).
+- `settle(shares, borrowers[], receiver, owner)` — a liquidity-neutral targeted exit. It caps the owner's cut budget to the owner's pro-rata share of the wrapper's settleable tail (the wrapper's managed core-supply value minus all free market liquidity), processes the caller-chosen list in order, and burns only the serviced fraction.
 
-Both burn lender shares against the cancelled debt, and the vault never custodies collateral — `fallbackExit`'s redeem leg pays loan assets, the settle path pays seized collateral straight to the receiver. When the cuts fall short of the target, the vault burns shares pro-rata to the supply-share budget actually consumed, rounded up so remaining holders are not diluted.
+Both burn lender shares against the value serviced, and the wrapper never custodies collateral — the liquid leg pays loan assets and the settle path pays seized collateral straight to the receiver. When cuts fall short of the target, the wrapper burns shares pro-rata to the supply-share budget actually consumed, rounded up so remaining holders are not diluted.
 
 ### Freeze & pause
 

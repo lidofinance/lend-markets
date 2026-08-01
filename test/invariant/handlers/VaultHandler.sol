@@ -21,9 +21,9 @@ import {MockPriceOracle} from "../../setup/Mocks.sol";
 /// @notice Handler for the vault invariant suite. On top of the market actions (borrow/repay/crash/warp/liquidate)
 ///         it drives the ERC-4626 surface (deposit/mint/withdraw/redeem) and the NEW vault mechanics (targeted
 ///         `settle`, `fallbackExit`, direct donations). Around each new-mechanic call it records ghosts the
-///         invariants read: `settle`/`fallbackExit` are pro-rata so they must NOT move the share price (interest is
-///         accrued first to isolate them); a direct donation is uncounted so it must NOT move the price either; and
-///         no exit burns more shares than requested.
+///         invariants read: `settle`/`fallbackExit` must not dilute remaining holders (interest is accrued first to
+///         isolate them); a direct donation is uncounted so it must not move the price; and no exit burns more shares
+///         than requested.
 contract VaultHandler is CommonBase, StdCheats, StdUtils {
     ILidoLend internal immutable CORE;
     ILidoLendERC4626 internal immutable VAULT;
@@ -37,6 +37,9 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     uint256 internal constant LLTV = 0.8e18;
     uint256 internal constant FLOOR = 10 ether;
     uint256 internal constant PPS_TOLERANCE = 3; // wei of rounding a pro-rata burn may shift convertToAssets(1e18)
+    bytes4 internal constant PANIC_SELECTOR = 0x4e487b71;
+    uint256 internal constant ARITHMETIC_PANIC_CODE = 0x11;
+    bytes32 internal constant SETTLEMENT_SLICE_TOO_SMALL_HASH = keccak256("settlement slice too small");
     // Below one full share the price is dominated by the virtual-share offset: an exit that drains the vault to dust
     // leaves totalSupply/totalAssets at the offset scale, where `convertToAssets(1e18)` snaps back to parity. That is
     // an empty-vault artifact, not dilution — there are no remaining holders to dilute — so the no-drop check below
@@ -52,6 +55,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     bool public settleMovedLiquidity; // a targeted settle paid loan assets or changed idle (not liquidity-neutral)
     bool public fallbackExitLiquidityMismatch; // fallbackExit's idle drop != its redeem-leg payout
     bool public parViolated; // an exit seized collateral worth MORE than the debt it cancelled (a penalty)
+    bool public settlementArithmeticPanicked; // settle / fallbackExit reverted with Panic(0x11)
     uint256 public totalDonated; // loan tokens sent straight to the vault (uncounted)
 
     // Coverage counters.
@@ -59,6 +63,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     uint256 public withdraws;
     uint256 public settles;
     uint256 public fallbackExits;
+    uint256 public settlementDustReverts;
     uint256 public borrows;
     uint256 public crashes;
     uint256 public liquidations;
@@ -140,7 +145,6 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         vm.startPrank(a);
         LOAN.approve(address(VAULT), amount);
         if (_paused()) {
-            // Paused fails closed: with maxDeposit at 0 the ERC-4626 max gate rejects any positive deposit.
             vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, a, amount, 0));
             VAULT.deposit(amount, a);
             vm.stopPrank();
@@ -174,7 +178,6 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     function withdraw(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         if (_paused()) {
-            // paused: maxWithdraw is 0, so any positive withdraw fails closed at the ERC-4626 max gate.
             vm.prank(a);
             vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxWithdraw.selector, a, 1, 0));
             VAULT.withdraw(1, a, a);
@@ -206,8 +209,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
 
     // ── new mechanics: settle / fallbackExit / donation ──
 
-    /// @dev Targeted settle by an owner against every actor that carries debt. Pro-rata, so it must not move the
-    ///      share price (interest accrued first to isolate the burn). Skips when a bad-debt root would revert it.
+    /// @dev Targeted settle by an owner against every actor that carries debt. The rounded-up pro-rata burn must not
+    ///      dilute remaining holders. Interest is accrued first to isolate the exit.
     function settle(uint256 actorSeed, uint256 shares) external {
         address owner = _actor(actorSeed);
         uint256 bal = VAULT.balanceOf(owner);
@@ -228,8 +231,24 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         uint256 idleBefore = _idle();
         shares = bound(shares, 1, bal);
         vm.prank(owner);
-        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
-            VAULT.settle(shares, borrowers, owner, owner);
+        uint256 sharesBurned;
+        uint256 loanAssets;
+        uint256 collateralSeized;
+        uint256 debtCanceled;
+        try VAULT.settle(shares, borrowers, owner, owner) returns (
+            uint256 sharesBurned_, uint256 loanAssets_, uint256 collateralSeized_, uint256 debtCanceled_
+        ) {
+            sharesBurned = sharesBurned_;
+            loanAssets = loanAssets_;
+            collateralSeized = collateralSeized_;
+            debtCanceled = debtCanceled_;
+        } catch Panic(uint256 code) {
+            _recordSettlementPanicOrRevert(code);
+            return;
+        } catch Error(string memory reason) {
+            _recordExpectedSettlementErrorOrRevert(reason);
+            return;
+        }
 
         if (sharesBurned > shares) exitBurnedTooMuch = true;
         // The burn is rounded up so remaining holders aren't diluted -> the price may tick up, but must never drop.
@@ -241,8 +260,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         settles++;
     }
 
-    /// @dev fallbackExit: redeem the liquid part then settle the rest. Both legs are pro-rata, so the price is
-    ///      unchanged. Skips when a bad-debt root would revert the settle leg.
+    /// @dev Redeem the liquid part then settle the rest. Both legs must preserve or increase the remaining holders'
+    ///      share price. Skips when a bad-debt root would revert the settle leg.
     function fallbackExit(uint256 actorSeed, uint256 shares, uint256 iterations) external {
         address owner = _actor(actorSeed);
         uint256 bal = VAULT.balanceOf(owner);
@@ -253,8 +272,24 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         uint256 idleBefore = _idle();
         shares = bound(shares, 1, bal);
         vm.prank(owner);
-        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
-            VAULT.fallbackExit(shares, owner, owner, bound(iterations, 0, 50));
+        uint256 sharesBurned;
+        uint256 loanAssets;
+        uint256 collateralSeized;
+        uint256 debtCanceled;
+        try VAULT.fallbackExit(shares, owner, owner, bound(iterations, 0, 50)) returns (
+            uint256 sharesBurned_, uint256 loanAssets_, uint256 collateralSeized_, uint256 debtCanceled_
+        ) {
+            sharesBurned = sharesBurned_;
+            loanAssets = loanAssets_;
+            collateralSeized = collateralSeized_;
+            debtCanceled = debtCanceled_;
+        } catch Panic(uint256 code) {
+            _recordSettlementPanicOrRevert(code);
+            return;
+        } catch Error(string memory reason) {
+            _recordExpectedSettlementErrorOrRevert(reason);
+            return;
+        }
 
         if (sharesBurned > shares) exitBurnedTooMuch = true;
         // Skip once the vault is drained to dust, where the price is a virtual-share artifact (see MIN_SUPPLY_FOR_PPS).
@@ -272,7 +307,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     ///      uncounted and must not move the share price.
     function donate(uint256 amount) external {
         if (_paused()) {
-            vm.expectRevert(PausableUntil.ResumedExpected.selector); // paused: the accrue hook fails closed
+            vm.expectRevert(PausableUntil.ResumedExpected.selector);
             CORE.accrueInterest(params);
             return;
         }
@@ -303,6 +338,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         address a = _actor(actorSeed);
         Position memory pos = CORE.position(ID, a);
         if (pos.collateral < FLOOR) return;
+        if (!_paused()) CORE.accrueInterest(params);
         MorphoMarket memory mk = CORE.market(ID);
         uint256 maxBorrow = Math.mulDiv(Math.mulDiv(pos.collateral, _price(), 1e36), LLTV, 1e18);
         uint256 debt =
@@ -328,6 +364,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         address a = _actor(actorSeed);
         Position memory pos = CORE.position(ID, a);
         if (pos.borrowShares == 0) return;
+        if (!_paused()) CORE.accrueInterest(params);
         MorphoMarket memory mk = CORE.market(ID);
         uint256 shares = bound(amount, 1, pos.borrowShares);
         uint256 owed = Math.mulDiv(
@@ -373,6 +410,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         address victim = _actor(actorSeed);
         Position memory pos = CORE.position(ID, victim);
         if (pos.borrowShares == 0 || pos.collateral == 0) return;
+        if (!_paused()) CORE.accrueInterest(params);
         MorphoMarket memory mk = CORE.market(ID);
         uint256 debt = Math.mulDiv(pos.borrowShares, mk.totalBorrowAssets, mk.totalBorrowShares);
         uint256 collValue = Math.mulDiv(pos.collateral, _price(), 1e36);
@@ -399,5 +437,27 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         CORE.liquidate(params, victim, amount, 0, "");
         vm.stopPrank();
         liquidations++;
+    }
+
+    function _recordSettlementPanicOrRevert(uint256 code) private {
+        if (code == ARITHMETIC_PANIC_CODE) {
+            settlementArithmeticPanicked = true;
+            return;
+        }
+
+        bytes memory reason = abi.encodeWithSelector(PANIC_SELECTOR, code);
+        assembly ("memory-safe") {
+            revert(add(reason, 0x20), mload(reason))
+        }
+    }
+
+    /// @dev The core emits this exact reason only after independently deriving a zero collateral seizure. Keep the
+    ///      expected dust path visible while rethrowing every other string error and all panics.
+    function _recordExpectedSettlementErrorOrRevert(string memory reason) private {
+        if (keccak256(bytes(reason)) == SETTLEMENT_SLICE_TOO_SMALL_HASH) {
+            settlementDustReverts++;
+            return;
+        }
+        revert(reason);
     }
 }

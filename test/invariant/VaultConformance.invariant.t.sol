@@ -14,9 +14,10 @@ import {VaultHandler} from "./handlers/VaultHandler.sol";
 ///         the liquidity-capped `max*`, the pro-rata `settle` / `fallbackExit` exits, and the position-only
 ///         `totalAssets` (donation defence). Under any bounded sequence of deposit/mint/withdraw/redeem/settle/
 ///         fallbackExit/borrow/repay/crash/warp/liquidate/donate, the vault must never create value, its share
-///         price must move only via interest (up) or socialized bad debt (down) — never via a settle, a
-///         fallbackExit, or a donation — and every `max*` must stay a real, honoured bound.
-/// @dev `afterInvariant` reports the reached depth so a vacuous campaign (no settles / exits) is visible.
+///         price must move only via interest (up), socialized bad debt (down), or a conservative rounded-up exit
+///         burn (up) — never down via a settle, a fallback exit, or a donation — and every `max*` must stay a real,
+///         honoured bound.
+/// @dev `afterInvariant` reports successful-action counters so a vacuous campaign (no settles / exits) is visible.
 /// forge-config: default.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 256
 /// forge-config: default.invariant.depth = 250
@@ -132,17 +133,24 @@ contract VaultConformanceInvariant is LidoLendSetup {
 
     // ── liquidity-capped max* (new mechanic) ──
 
-    /// @dev `maxWithdraw` is a real, liquidity-capped bound: never above the owner's redeemable value, never above
-    ///      the market's free liquidity. `maxRedeem` never exceeds the balance.
+    /// @dev `maxWithdraw` is a real, liquidity-capped bound. Outside a pause, the floor-valued `maxRedeem` also fits
+    ///      in free liquidity; during a pause both exit limits are zero.
     function invariant_maxAreHonouredBounds() public view {
         Market storage m = _m();
         MorphoMarket memory mk = _mk();
         uint256 idle = mk.totalSupplyAssets - mk.totalBorrowAssets;
+        bool paused = LidoLendMarketController(address(m.controller)).isPaused();
         for (uint256 i; i < actors.length; i++) {
             address a = actors[i];
             assertLe(m.vault.maxWithdraw(a), idle, "maxWithdraw <= free liquidity");
             assertLe(m.vault.maxWithdraw(a), m.vault.previewRedeem(m.vault.balanceOf(a)), "maxWithdraw <= redeemable");
             assertLe(m.vault.maxRedeem(a), m.vault.balanceOf(a), "maxRedeem <= balance");
+            if (paused) {
+                assertEq(m.vault.maxWithdraw(a), 0, "paused: maxWithdraw == 0");
+                assertEq(m.vault.maxRedeem(a), 0, "paused: maxRedeem == 0");
+            } else {
+                assertLe(m.vault.previewRedeem(m.vault.maxRedeem(a)), idle, "maxRedeem preview fits liquidity");
+            }
         }
     }
 
@@ -204,11 +212,17 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.parViolated(), "seized collateral value <= cancelled debt (par, no penalty)");
     }
 
+    /// @dev Checked settlement-budget accounting must never underflow in either exit path.
+    function invariant_settlementNeverPanics() public view {
+        assertFalse(handler.settlementArithmeticPanicked(), "settle/fallbackExit never panic");
+    }
+
     function afterInvariant() public {
         emit log_named_uint("deposits", handler.deposits());
         emit log_named_uint("withdraws", handler.withdraws());
         emit log_named_uint("settles", handler.settles());
         emit log_named_uint("fallbackExits", handler.fallbackExits());
+        emit log_named_uint("settlementDustReverts", handler.settlementDustReverts());
         emit log_named_uint("borrows", handler.borrows());
         emit log_named_uint("crashes", handler.crashes());
         emit log_named_uint("liquidations", handler.liquidations());

@@ -11,7 +11,7 @@ import {ILidoLendMarketController} from "./ILidoLendMarketController.sol";
 /// @title ILidoLendERC4626
 /// @notice Single-market ERC-4626 wrapper over a `LidoLend` (Morpho Blue fork) market. Beyond the standard
 ///         vault surface it adds settle-based exits — `settle` (targeted) and `fallbackExit` (automatic) —
-///         that close the illiquid remainder of a withdrawal against the market's risk queue.
+///         that service the illiquid remainder of a withdrawal against the market's risk queue.
 interface ILidoLendERC4626 is IERC4626 {
     // ---
     // ERRORS
@@ -62,10 +62,10 @@ interface ILidoLendERC4626 is IERC4626 {
     // EVENTS
     // ---
 
-    /// @notice An automatic `fallbackExit` settled its illiquid remainder against the risk queue.
+    /// @notice An automatic `fallbackExit` settlement leg completed, possibly with a zero or partial fill.
     /// @param caller The address that called the exit.
     /// @param owner The account whose shares were burned.
-    /// @param receiver The recipient of the redeemed assets and seized collateral.
+    /// @param receiver The recipient of the liquid-leg loan assets and seized collateral.
     /// @param sharesBurned Shares burned by the settle leg.
     /// @param collateralSeized Collateral seized from the cut positions.
     /// @param debtCanceled Borrower debt cancelled by the cuts.
@@ -78,7 +78,7 @@ interface ILidoLendERC4626 is IERC4626 {
         uint256 debtCanceled
     );
 
-    /// @notice A targeted `settle` cut the caller-named borrowers.
+    /// @notice A targeted `settle` call completed, possibly with a zero or partial fill.
     /// @param caller The address that called the settle.
     /// @param owner The account whose shares were burned.
     /// @param receiver The recipient of the seized collateral.
@@ -145,10 +145,10 @@ interface ILidoLendERC4626 is IERC4626 {
     // SETTLEMENT
     // ---
 
-    /// @notice Targeted settlement: cuts the caller-supplied `borrowers` in order (sizing each via
-    ///         `controller.settlementFor`) against the owner's Morpho supply, paying seized collateral to
-    ///         `receiver`. Best-effort, no revert on shortfall.
-    /// @param shares Vault shares to settle against; bounds the Morpho supply consumed by the cuts.
+    /// @notice Targeted, liquidity-neutral settlement. Cuts `borrowers` in order against the owner's pro-rata
+    ///         share of the vault's illiquid supply tail and pays seized collateral to `receiver`. Exhausting the
+    ///         budget partial-fills; controller and core errors, including a zero-collateral dust slice, still revert.
+    /// @param shares Vault shares whose pro-rata illiquid supply tail bounds the cuts.
     /// @param borrowers Positions to cut, in order; each sized via `controller.settlementFor`.
     /// @param receiver Recipient of the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
@@ -160,16 +160,15 @@ interface ILidoLendERC4626 is IERC4626 {
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 
-    /// @notice Automatic fallback exit. First pays out as much as ordinary market liquidity covers via a
-    ///         normal redeem, then settles the remainder against the controller's risk queue (head first),
-    ///         seizing collateral to `receiver`. The caller does not pick the positions. Settling is
-    ///         best-effort: whatever fraction is serviced is burned, no revert on shortfall.
-    /// @param shares Vault shares to exit (redeemed first, then the remainder settled).
+    /// @notice Automatic fallback exit. First burns the shares covered by ordinary market liquidity and pays their
+    ///         loan-asset value, then settles the genuinely illiquid remainder against the risk queue, head first.
+    ///         Queue or iteration exhaustion partial-fills; controller and core errors still revert.
+    /// @param shares Vault shares to exit through the liquid leg first and settlement second.
     /// @param receiver Recipient of both the redeemed loan assets and the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
     /// @param maxIterations Cap on borrowers the settle leg cuts; 0 uses `DEFAULT_MAX_SETTLEMENT_ITERATIONS`.
-    /// @return sharesBurned Total shares burned across the redeem and settle legs.
-    /// @return loanAssets Loan assets paid to `receiver` by the redeem leg (the settle leg pays only collateral).
+    /// @return sharesBurned Total shares burned across the liquid and settle legs.
+    /// @return loanAssets Loan assets paid to `receiver` by the liquid leg (the settle leg pays only collateral).
     /// @return collateralSeized Collateral seized from settled positions and sent to `receiver`.
     /// @return debtCanceled Borrower debt cancelled by the settle leg.
     function fallbackExit(uint256 shares, address receiver, address owner, uint256 maxIterations)

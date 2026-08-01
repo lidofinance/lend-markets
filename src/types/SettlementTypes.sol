@@ -43,8 +43,9 @@ struct PositionView {
 /// @param sliceFloorBps Debt-fraction term of the root cut: one allowance is `debt * sliceFloorBps / BPS`.
 /// @param sliceFloorAssets Absolute term of the root cut: one allowance is this many loan assets.
 /// @param fullCutBelowCollateral Sweep floor in collateral units: when a cut would leave the borrower's
-///        remaining collateral below this, the slice lifts to the full debt so the position closes in one
-///        cut, leaving no dust tail. 0 disables the sweep.
+///        remaining collateral below this, the policy requests a full-debt slice. The vault closes the position
+///        in one cut only when the exiting lender's settleable budget covers it; otherwise it applies a
+///        supply-anchored partial. 0 disables the sweep.
 /// @param ltvStepBps LTV-step term of the root cut: one allowance is the cut that lowers the root's LTV by
 ///        `ltvStepBps / BPS`. The root cut is the largest of the three terms (debt-fraction, absolute, LTV-step).
 struct SettlementConfig {
