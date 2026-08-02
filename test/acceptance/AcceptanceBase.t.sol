@@ -77,7 +77,7 @@ interface IReadDashboard {
 
 interface IReadFactory {
     function CONTROLLER_IMPL() external view returns (address);
-    function VAULT_IMPL() external view returns (address);
+    function ERC4626_WRAPPER_IMPL() external view returns (address);
     function GUARDIAN_SIGNALS_IMPL() external view returns (address);
     function LIDO_LEND_OWNER() external view returns (address);
     function IRM_ROUTER() external view returns (address);
@@ -131,6 +131,7 @@ interface IReadDecimals {
 }
 
 interface IReadCore {
+    function owner() external view returns (address);
     function marketController(bytes32 id) external view returns (address);
     function isSettlementEnabled(bytes32 id) external view returns (bool);
     function market(bytes32 id)
@@ -402,6 +403,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
         // backbone cross-links
         assertEq(IReadFacade(facade).LIDO_LEND(), core, "facade.LIDO_LEND");
+        assertEq(IReadCore(core).owner(), facade, "core.owner");
         assertEq(IReadRouter(router).MORPHO(), core, "router.MORPHO");
         assertEq(IReadDashboard(dashboard).LIDO_LEND(), core, "dashboard.LIDO_LEND");
         if (morphoBook != address(0)) assertEq(IReadMorphoBook(morphoBook).MORPHO(), core, "morphoBook.MORPHO");
@@ -510,7 +512,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     function _assertFactoryValidation() internal view {
         LidoLendMarketFactory deployedFactory = LidoLendMarketFactory(factory);
         deployedFactory.validateMarketController(controller, Id.wrap(marketId), guardianSignals);
-        deployedFactory.validateVault(vault, controller, _params());
+        deployedFactory.validateERC4626Wrapper(vault, controller, _params());
         deployedFactory.validateGuardianSignals(guardianSignals, _expectedGuardianSpec());
     }
 
@@ -608,7 +610,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
         IReadFactory actualFactory = IReadFactory(factory);
         assertEq(actualFactory.CONTROLLER_IMPL(), controllerImpl, "factory controller implementation");
-        assertEq(actualFactory.VAULT_IMPL(), vaultImpl, "factory vault implementation");
+        assertEq(actualFactory.ERC4626_WRAPPER_IMPL(), vaultImpl, "factory ERC-4626 wrapper implementation");
         assertEq(actualFactory.GUARDIAN_SIGNALS_IMPL(), guardianImpl, "factory guardian implementation");
         assertEq(actualFactory.ADMIN(), rAdmin, "factory controller admin");
         assertEq(rProxyAdmin, rAdmin, "controller proxy admin differs from factory admin");
@@ -622,7 +624,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
             address(
                 new LidoLendMarketFactory(
                     LidoLendMarketFactory.Implementations({
-                        controller: controllerImpl, vault: vaultImpl, guardianSignals: guardianImpl
+                        controller: controllerImpl, erc4626Wrapper: vaultImpl, guardianSignals: guardianImpl
                     }),
                     LidoLendMarketFactory.Dependencies({
                         lidoLend: core,

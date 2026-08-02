@@ -203,7 +203,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         m.collateralToken = IERC20(cfg.collateralToken);
     }
 
-    /// @dev Thin frame-splitters over the base `_deployController` / `_deployVault` steps: they exist only to
+    /// @dev Thin frame-splitters over the base `_deployController` / `_deployERC4626Wrapper` steps: they exist only to
     ///      keep `_addMarket`'s frame under the `via_ir = false` stack limit, not to add logic.
     function _deployMarketController(DeployConfig memory cfg, address core, Id id, address guardianSignals)
         private
@@ -217,7 +217,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         private
         returns (address)
     {
-        return _deployVault(core, params, controller, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
+        return _deployERC4626Wrapper(core, params, controller, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
     }
 
     /// @notice Oracle deployment: seeded mock behind a proxy. Override for a fork oracle (real feeds).

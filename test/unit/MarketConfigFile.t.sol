@@ -14,7 +14,7 @@ contract MarketConfigFileHarness {
         pure
         returns (
             LidoLendMarketFactory.MarketSpec memory market,
-            LidoLendMarketFactory.VaultSpec memory vaultSpec,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
             AdaptiveCurveParams memory curve
         )
     {
@@ -34,13 +34,13 @@ contract MarketConfigFileTest is Test {
     function test_parse_acceptsQuotedWideValues() external view {
         (
             LidoLendMarketFactory.MarketSpec memory market,
-            LidoLendMarketFactory.VaultSpec memory vaultSpec,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
             AdaptiveCurveParams memory curve
         ) = harness.parse(toml);
 
         assertEq(market.lltv, 0.8e18, "lltv");
-        assertEq(vaultSpec.name, "Test Vault", "vault name");
-        assertEq(vaultSpec.symbol, "TEST", "vault symbol");
+        assertEq(erc4626WrapperSpec.name, "Test Vault", "ERC-4626 wrapper name");
+        assertEq(erc4626WrapperSpec.symbol, "TEST", "ERC-4626 wrapper symbol");
         assertEq(curve.curveSteepness, 4e18, "curve steepness");
         assertEq(curve.targetUtilization, 0.9e18, "target utilization");
     }

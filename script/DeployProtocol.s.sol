@@ -205,7 +205,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
         string memory guardianGroup = MarketConfigFile.guardianGroup(name);
         (
             LidoLendMarketFactory.MarketSpec memory market,
-            LidoLendMarketFactory.VaultSpec memory vaultSpec,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
             AdaptiveCurveParams memory curveParams
         ) = MarketConfigFile.read(name);
 
@@ -222,25 +222,25 @@ contract DeployProtocol is Script, ProtocolDeployer {
             }
         }
 
-        LidoLendMarketFactory.MarketComponents memory built =
-            LidoLendMarketFactory(context.protocol.factory).deployMarketComponents(market, vaultSpec);
+        (Id marketId, address controller, address erc4626Wrapper) =
+            LidoLendMarketFactory(context.protocol.factory).deployMarketComponents(market, erc4626WrapperSpec);
 
         md = MarketDeployment({
             name: name,
             oracleArtifact: MarketConfigFile.oracleArtifact(name),
             guardianGroup: guardianGroup,
             circuitBreakerArtifact: context.protocol.circuitBreakerArtifact,
-            id: Id.unwrap(built.marketId),
+            id: Id.unwrap(marketId),
             factory: context.protocol.factory,
-            controller: built.controller,
-            vault: built.vault,
+            controller: controller,
+            vault: erc4626Wrapper,
             irm: context.protocol.irmRouter,
             ownerFacade: context.protocol.ownerFacade,
             riskStewardDashboard: context.protocol.riskStewardDashboard,
             controllerAdmin: context.protocol.agent,
             circuitBreaker: context.protocol.circuitBreaker,
             market: market,
-            vaultSpec: vaultSpec,
+            erc4626WrapperSpec: erc4626WrapperSpec,
             curveParams: curveParams,
             deployedBlock: context.deployedBlock
         });
@@ -248,8 +248,8 @@ contract DeployProtocol is Script, ProtocolDeployer {
         console2.log("--- market:", name);
         console2.log("  oracle          :", market.oracle);
         console2.log("  guardianSignals :", market.guardianSignals);
-        console2.log("  controller      :", built.controller);
-        console2.log("  vault           :", built.vault);
+        console2.log("  controller      :", controller);
+        console2.log("  vault           :", erc4626Wrapper);
         updatedGuardianCount = context.guardianCount;
     }
 

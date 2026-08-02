@@ -56,7 +56,7 @@ contract AddMarket is Script, ProtocolDeployer {
         address controllerAdmin;
         address circuitBreaker;
         LidoLendMarketFactory.MarketSpec market;
-        LidoLendMarketFactory.VaultSpec vaultSpec;
+        LidoLendMarketFactory.ERC4626WrapperSpec erc4626WrapperSpec;
         AdaptiveCurveParams curveParams;
         address recordedOracle;
         address recordedGuardianSignals;
@@ -64,7 +64,7 @@ contract AddMarket is Script, ProtocolDeployer {
 
     function run(string memory config, string memory name)
         external
-        returns (LidoLendMarketFactory.MarketComponents memory built)
+        returns (Id marketId, address controller, address erc4626Wrapper)
     {
         RunContext memory context;
         {
@@ -99,7 +99,8 @@ contract AddMarket is Script, ProtocolDeployer {
             guardianCreated = true;
         }
 
-        built = LidoLendMarketFactory(input.factory).deployMarketComponents(input.market, input.vaultSpec);
+        (marketId, controller, erc4626Wrapper) =
+            LidoLendMarketFactory(input.factory).deployMarketComponents(input.market, input.erc4626WrapperSpec);
         vm.stopBroadcast();
 
         if (guardianCreated) {
@@ -118,9 +119,12 @@ contract AddMarket is Script, ProtocolDeployer {
         console2.log("market     :", name);
         console2.log("  oracle          :", input.market.oracle);
         console2.log("  guardianSignals :", input.market.guardianSignals);
-        console2.log("  controller      :", built.controller);
-        console2.log("  vault           :", built.vault);
-        console2.log("  recorded        :", _record(input, built, deployedBlock, context.artifacts));
+        console2.log("  controller      :", controller);
+        console2.log("  vault           :", erc4626Wrapper);
+        console2.log(
+            "  recorded        :",
+            _record(input, marketId, controller, erc4626Wrapper, deployedBlock, context.artifacts)
+        );
     }
 
     function _loadMarketInput(string memory config, string memory name, RunContext memory context)
@@ -131,7 +135,7 @@ contract AddMarket is Script, ProtocolDeployer {
         input.guardianGroup = MarketConfigFile.guardianGroup(name);
         input.oracleArtifact = MarketConfigFile.oracleArtifact(name);
         input.circuitBreakerArtifact = context.circuitBreakerArtifact;
-        (input.market, input.vaultSpec, input.curveParams) = MarketConfigFile.read(name);
+        (input.market, input.erc4626WrapperSpec, input.curveParams) = MarketConfigFile.read(name);
 
         OraclePreflight.validate(
             input.oracleArtifact,
@@ -220,7 +224,9 @@ contract AddMarket is Script, ProtocolDeployer {
 
     function _record(
         MarketInput memory input,
-        LidoLendMarketFactory.MarketComponents memory built,
+        Id marketId,
+        address controller,
+        address erc4626Wrapper,
         uint256 deployedBlock,
         ArtifactMetadata memory artifacts
     ) internal returns (string memory path) {
@@ -229,17 +235,17 @@ contract AddMarket is Script, ProtocolDeployer {
             oracleArtifact: input.oracleArtifact,
             guardianGroup: input.guardianGroup,
             circuitBreakerArtifact: input.circuitBreakerArtifact,
-            id: Id.unwrap(built.marketId),
+            id: Id.unwrap(marketId),
             factory: input.factory,
-            controller: built.controller,
-            vault: built.vault,
+            controller: controller,
+            vault: erc4626Wrapper,
             irm: input.irm,
             ownerFacade: input.ownerFacade,
             riskStewardDashboard: input.riskStewardDashboard,
             controllerAdmin: input.controllerAdmin,
             circuitBreaker: input.circuitBreaker,
             market: input.market,
-            vaultSpec: input.vaultSpec,
+            erc4626WrapperSpec: input.erc4626WrapperSpec,
             curveParams: input.curveParams,
             deployedBlock: deployedBlock
         });

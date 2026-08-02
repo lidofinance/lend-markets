@@ -26,6 +26,20 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     function MAX_SUSPECT_WINDOW() external view returns (uint256);
 
     // ---
+    // ROLES
+    // ---
+
+    /// @notice Role allowed to add and remove guardians and update committee configuration.
+    function MANAGER_ROLE() external view returns (bytes32);
+
+    /// @notice Role allowed to force-ban accounts.
+    function ACCESS_LIMITER_ROLE() external view returns (bytes32);
+
+    /// @notice Role allowed to lift account bans.
+    function ACCESS_RESTORER_ROLE() external view returns (bytes32);
+
+
+    // ---
     // EVENTS
     // ---
 
@@ -145,19 +159,6 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
 
     /// @notice Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
     error SuspectWindowTooHigh();
-
-    // ---
-    // ROLES
-    // ---
-
-    /// @notice Role allowed to add and remove guardians and update committee configuration.
-    function MANAGER_ROLE() external view returns (bytes32);
-
-    /// @notice Role allowed to force-ban accounts.
-    function ACCESS_LIMITER_ROLE() external view returns (bytes32);
-
-    /// @notice Role allowed to lift account bans.
-    function ACCESS_RESTORER_ROLE() external view returns (bytes32);
 
     // ---
     // GUARDIANS & CONFIG (admin)

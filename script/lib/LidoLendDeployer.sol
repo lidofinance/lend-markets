@@ -81,7 +81,7 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
 
         LidoLendOwner(d.ownerFacade).createMarket(d.params, d.controllerProxy, cfg.enableSettlement);
 
-        d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
+        d.vault = _deployERC4626Wrapper(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
         LidoLendMarketController controller = LidoLendMarketController(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
@@ -149,7 +149,7 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         proxy = _behindProxy(impl, admin, initData);
     }
 
-    function _deployVault(
+    function _deployERC4626Wrapper(
         address core,
         MarketParams memory params,
         address controller,

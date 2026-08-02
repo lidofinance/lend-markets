@@ -51,7 +51,7 @@ struct MarketDeployment {
     address controllerAdmin;
     address circuitBreaker;
     LidoLendMarketFactory.MarketSpec market;
-    LidoLendMarketFactory.VaultSpec vaultSpec;
+    LidoLendMarketFactory.ERC4626WrapperSpec erc4626WrapperSpec;
     AdaptiveCurveParams curveParams;
     uint256 deployedBlock;
 }
@@ -254,8 +254,8 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("controller", d.controller));
         s = string.concat(s, _kv("vault", d.vault));
         s = string.concat(s, _kv("vault_proxy_admin", d.controllerAdmin));
-        s = string.concat(s, _kv("vault_name", d.vaultSpec.name));
-        s = string.concat(s, _kv("vault_symbol", d.vaultSpec.symbol));
+        s = string.concat(s, _kv("vault_name", d.erc4626WrapperSpec.name));
+        s = string.concat(s, _kv("vault_symbol", d.erc4626WrapperSpec.symbol));
         s = string.concat(s, _kv("circuit_breaker", d.circuitBreaker));
         s = string.concat(s, _kv("deployed_block", d.deployedBlock));
     }

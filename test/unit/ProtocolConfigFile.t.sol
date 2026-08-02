@@ -191,16 +191,16 @@ contract ProtocolConfigFileTest is Test {
                     sliceFloorBps: 10, sliceFloorAssets: 11, fullCutBelowCollateral: 12, ltvStepBps: 13
                 })
             }),
-            vaultSpec: LidoLendMarketFactory.VaultSpec({name: "Vault", symbol: "VLT"}),
+            erc4626WrapperSpec: LidoLendMarketFactory.ERC4626WrapperSpec({name: "Vault", symbol: "VLT"}),
             curveParams: AdaptiveCurveParams({
-                curveSteepness: 4 ether,
-                adjustmentSpeed: 1,
-                targetUtilization: 0.9 ether,
-                initialRateAtTarget: 2,
-                minRateAtTarget: 1,
-                maxRateAtTarget: 3,
-                maxBorrowRate: 4
-            }),
+                    curveSteepness: 4 ether,
+                    adjustmentSpeed: 1,
+                    targetUtilization: 0.9 ether,
+                    initialRateAtTarget: 2,
+                    minRateAtTarget: 1,
+                    maxRateAtTarget: 3,
+                    maxBorrowRate: 4
+                }),
             deployedBlock: 100
         });
     }

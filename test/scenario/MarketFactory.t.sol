@@ -44,7 +44,7 @@ contract MarketFactoryScenarioTest is Test {
     address internal riskStewardDashboard;
     address internal circuitBreaker;
     address internal controllerImpl;
-    address internal vaultImpl;
+    address internal erc4626WrapperImpl;
     address internal guardianSignalsImpl;
     address internal guardianSignals;
     LidoLendMarketFactory internal factory;
@@ -77,11 +77,11 @@ contract MarketFactoryScenarioTest is Test {
         circuitBreaker = address(new CircuitBreakerStub());
 
         controllerImpl = address(new LidoLendMarketController(IMorpho(address(core))));
-        vaultImpl = address(new LidoLendERC4626(address(core)));
+        erc4626WrapperImpl = address(new LidoLendERC4626(address(core)));
         guardianSignalsImpl = address(new GuardianSignals());
         factory = new LidoLendMarketFactory(
             LidoLendMarketFactory.Implementations({
-                controller: controllerImpl, vault: vaultImpl, guardianSignals: guardianSignalsImpl
+                controller: controllerImpl, erc4626Wrapper: erc4626WrapperImpl, guardianSignals: guardianSignalsImpl
             }),
             _dependencies(router, riskStewardDashboard, circuitBreaker),
             marketAdmin
@@ -94,18 +94,21 @@ contract MarketFactoryScenarioTest is Test {
     function test_deployMarketComponents_producesInertWiredComponents() external {
         (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
         LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
-        LidoLendMarketFactory.VaultSpec memory vaultSpec = _vaultSpec("A");
-        LidoLendMarketFactory.MarketComponents memory components = _deployMarketComponents(market, vaultSpec);
+        LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec = _erc4626WrapperSpec("A");
+        (Id marketId, address controllerAddress, address erc4626Wrapper) =
+            _deployMarketComponents(market, erc4626WrapperSpec);
 
         assertEq(
-            IOssifiableProxy(components.controller).proxy__getImplementation(),
-            factory.CONTROLLER_IMPL(),
-            "controller impl"
+            IOssifiableProxy(controllerAddress).proxy__getImplementation(), factory.CONTROLLER_IMPL(), "controller impl"
         );
-        assertEq(IOssifiableProxy(components.vault).proxy__getImplementation(), factory.VAULT_IMPL(), "vault impl");
+        assertEq(
+            IOssifiableProxy(erc4626Wrapper).proxy__getImplementation(),
+            factory.ERC4626_WRAPPER_IMPL(),
+            "ERC-4626 wrapper impl"
+        );
 
-        LidoLendMarketController controller = LidoLendMarketController(components.controller);
-        assertEq(Id.unwrap(controller.marketId()), Id.unwrap(components.marketId), "controller market id");
+        LidoLendMarketController controller = LidoLendMarketController(controllerAddress);
+        assertEq(Id.unwrap(controller.marketId()), Id.unwrap(marketId), "controller market id");
         assertEq(controller.guardianSignals(), guardianSignals, "controller guardian signals");
         assertTrue(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), marketAdmin), "admin");
         assertFalse(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), address(factory)), "factory keeps no admin");
@@ -116,55 +119,55 @@ contract MarketFactoryScenarioTest is Test {
         assertTrue(controller.hasRole(controller.UNFREEZER_ROLE(), address(facade)), "facade unfreezer");
         assertEq(controller.getRoleMemberCount(controller.RESUMER_ROLE()), 0, "no initial resumer");
 
-        assertEq(IOssifiableProxy(components.controller).proxy__getAdmin(), marketAdmin, "controller proxy admin");
-        assertEq(IOssifiableProxy(components.vault).proxy__getAdmin(), marketAdmin, "vault proxy admin");
+        assertEq(IOssifiableProxy(controllerAddress).proxy__getAdmin(), marketAdmin, "controller proxy admin");
+        assertEq(IOssifiableProxy(erc4626Wrapper).proxy__getAdmin(), marketAdmin, "wrapper proxy admin");
 
-        LidoLendERC4626 vault = LidoLendERC4626(components.vault);
-        assertEq(address(vault.controller()), components.controller, "vault controller");
-        assertEq(vault.name(), vaultSpec.name, "vault name");
-        assertEq(vault.symbol(), vaultSpec.symbol, "vault symbol");
+        LidoLendERC4626 wrapper = LidoLendERC4626(erc4626Wrapper);
+        assertEq(address(wrapper.controller()), controllerAddress, "wrapper controller");
+        assertEq(wrapper.name(), erc4626WrapperSpec.name, "wrapper name");
+        assertEq(wrapper.symbol(), erc4626WrapperSpec.symbol, "wrapper symbol");
 
-        assertEq(core.market(components.marketId).lastUpdate, 0, "market remains uncreated");
-        assertEq(core.marketController(components.marketId), address(0), "core controller remains unset");
-        assertEq(address(router.marketIrm(_toIrmId(components.marketId))), address(0), "IRM route remains unset");
+        assertEq(core.market(marketId).lastUpdate, 0, "market remains uncreated");
+        assertEq(core.marketController(marketId), address(0), "core controller remains unset");
+        assertEq(address(router.marketIrm(_toIrmId(marketId))), address(0), "IRM route remains unset");
     }
 
     function test_deployMarketComponents_emitsAggregateEvent() external {
         (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
         LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
-        LidoLendMarketFactory.VaultSpec memory vaultSpec = _vaultSpec("A");
+        LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec = _erc4626WrapperSpec("A");
         Id expectedId = _marketParams(market).id();
 
         vm.expectEmit(true, false, false, false, address(factory));
         emit LidoLendMarketFactory.MarketComponentsDeployed(expectedId, address(0), address(0), guardianSignals);
 
-        _deployMarketComponents(market, vaultSpec);
+        _deployMarketComponents(market, erc4626WrapperSpec);
     }
 
     function test_deployMarketComponents_secondMarketReusesImplementations() external {
         (MockERC20 loanA, MockERC20 collateralA, address oracleA) = _deployTokensAndOracle("A", 1.05e36);
         (MockERC20 loanB, MockERC20 collateralB, address oracleB) = _deployTokensAndOracle("B", 0.92e36);
 
-        LidoLendMarketFactory.MarketComponents memory first =
-            _deployMarketComponents(_marketSpec(loanA, collateralA, oracleA), _vaultSpec("A"));
-        LidoLendMarketFactory.MarketComponents memory second =
-            _deployMarketComponents(_marketSpec(loanB, collateralB, oracleB), _vaultSpec("B"));
+        (, address firstControllerAddress, address firstWrapper) =
+            _deployMarketComponents(_marketSpec(loanA, collateralA, oracleA), _erc4626WrapperSpec("A"));
+        (, address secondControllerAddress, address secondWrapper) =
+            _deployMarketComponents(_marketSpec(loanB, collateralB, oracleB), _erc4626WrapperSpec("B"));
 
-        assertTrue(first.controller != second.controller, "distinct controllers");
-        assertTrue(first.vault != second.vault, "distinct vaults");
+        assertTrue(firstControllerAddress != secondControllerAddress, "distinct controllers");
+        assertTrue(firstWrapper != secondWrapper, "distinct wrappers");
         assertEq(
-            IOssifiableProxy(first.controller).proxy__getImplementation(),
-            IOssifiableProxy(second.controller).proxy__getImplementation(),
+            IOssifiableProxy(firstControllerAddress).proxy__getImplementation(),
+            IOssifiableProxy(secondControllerAddress).proxy__getImplementation(),
             "shared controller implementation"
         );
         assertEq(
-            IOssifiableProxy(first.vault).proxy__getImplementation(),
-            IOssifiableProxy(second.vault).proxy__getImplementation(),
-            "shared vault implementation"
+            IOssifiableProxy(firstWrapper).proxy__getImplementation(),
+            IOssifiableProxy(secondWrapper).proxy__getImplementation(),
+            "shared ERC-4626 wrapper implementation"
         );
 
-        LidoLendMarketController firstController = LidoLendMarketController(first.controller);
-        LidoLendMarketController secondController = LidoLendMarketController(second.controller);
+        LidoLendMarketController firstController = LidoLendMarketController(firstControllerAddress);
+        LidoLendMarketController secondController = LidoLendMarketController(secondControllerAddress);
         assertEq(firstController.getRoleMemberCount(firstController.PAUSER_ROLE()), 1, "first pauser count");
         assertEq(secondController.getRoleMemberCount(secondController.PAUSER_ROLE()), 1, "second pauser count");
         assertTrue(firstController.hasRole(firstController.PAUSER_ROLE(), circuitBreaker), "first shared pauser");
@@ -185,7 +188,7 @@ contract MarketFactoryScenarioTest is Test {
         );
 
         vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.MarketAlreadyExists.selector, marketId));
-        factory.deployMarketComponents(market, _vaultSpec("A"));
+        factory.deployMarketComponents(market, _erc4626WrapperSpec("A"));
     }
 
     function testRevert_deployMarketComponents_nonContractOracle() external {
@@ -193,11 +196,11 @@ contract MarketFactoryScenarioTest is Test {
         LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, address(0));
 
         vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.NotContract.selector, address(0)));
-        factory.deployMarketComponents(market, _vaultSpec("A"));
+        factory.deployMarketComponents(market, _erc4626WrapperSpec("A"));
 
         market.oracle = makeAddr("not an oracle");
         vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.NotContract.selector, market.oracle));
-        factory.deployMarketComponents(market, _vaultSpec("A"));
+        factory.deployMarketComponents(market, _erc4626WrapperSpec("A"));
     }
 
     function testRevert_deployMarketComponents_invalidGuardianProxy() external {
@@ -206,7 +209,7 @@ contract MarketFactoryScenarioTest is Test {
         market.guardianSignals = makeAddr("not a guardian proxy");
 
         vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.NotContract.selector, market.guardianSignals));
-        factory.deployMarketComponents(market, _vaultSpec("A"));
+        factory.deployMarketComponents(market, _erc4626WrapperSpec("A"));
     }
 
     function testRevert_deployMarketComponents_invalidLltv() external {
@@ -215,7 +218,7 @@ contract MarketFactoryScenarioTest is Test {
         market.lltv = 1e18;
 
         vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.InvalidLltv.selector, 1e18));
-        factory.deployMarketComponents(market, _vaultSpec("A"));
+        factory.deployMarketComponents(market, _erc4626WrapperSpec("A"));
     }
 
     function test_constructor_revertsOnRouterCoreMismatch() external {
@@ -245,7 +248,7 @@ contract MarketFactoryScenarioTest is Test {
             )
         );
         new LidoLendMarketFactory(
-            _implementations(controllerImpl, vaultImpl),
+            _implementations(controllerImpl, erc4626WrapperImpl),
             _dependencies(mismatchedRouter, riskStewardDashboard, circuitBreaker),
             marketAdmin
         );
@@ -261,13 +264,13 @@ contract MarketFactoryScenarioTest is Test {
             )
         );
         new LidoLendMarketFactory(
-            _implementations(otherControllerImpl, vaultImpl),
+            _implementations(otherControllerImpl, erc4626WrapperImpl),
             _dependencies(router, riskStewardDashboard, circuitBreaker),
             marketAdmin
         );
     }
 
-    function testRevert_constructor_vaultImplementationUsesAnotherCore() external {
+    function testRevert_constructor_erc4626WrapperImplementationUsesAnotherCore() external {
         ILidoLend otherCore = _deployCore(GOVERNANCE);
         address otherVaultImpl = address(new LidoLendERC4626(address(otherCore)));
 
@@ -344,10 +347,10 @@ contract MarketFactoryScenarioTest is Test {
 
     function _deployMarketComponents(
         LidoLendMarketFactory.MarketSpec memory market,
-        LidoLendMarketFactory.VaultSpec memory vaultSpec
-    ) internal returns (LidoLendMarketFactory.MarketComponents memory components) {
+        LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec
+    ) internal returns (Id marketId, address controller, address erc4626Wrapper) {
         vm.prank(caller);
-        components = factory.deployMarketComponents(market, vaultSpec);
+        return factory.deployMarketComponents(market, erc4626WrapperSpec);
     }
 
     function _deployCore(address owner) internal returns (ILidoLend deployedCore) {
@@ -365,17 +368,17 @@ contract MarketFactoryScenarioTest is Test {
         returns (LidoLendMarketFactory deployed)
     {
         deployed = new LidoLendMarketFactory(
-            _implementations(controllerImpl, vaultImpl), _dependencies(router, dashboard, breaker), admin
+            _implementations(controllerImpl, erc4626WrapperImpl), _dependencies(router, dashboard, breaker), admin
         );
     }
 
-    function _implementations(address controller, address vault)
+    function _implementations(address controller, address erc4626Wrapper)
         internal
         view
         returns (LidoLendMarketFactory.Implementations memory)
     {
         return LidoLendMarketFactory.Implementations({
-            controller: controller, vault: vault, guardianSignals: guardianSignalsImpl
+            controller: controller, erc4626Wrapper: erc4626Wrapper, guardianSignals: guardianSignalsImpl
         });
     }
 
@@ -449,8 +452,12 @@ contract MarketFactoryScenarioTest is Test {
         });
     }
 
-    function _vaultSpec(string memory salt) internal pure returns (LidoLendMarketFactory.VaultSpec memory) {
-        return LidoLendMarketFactory.VaultSpec({
+    function _erc4626WrapperSpec(string memory salt)
+        internal
+        pure
+        returns (LidoLendMarketFactory.ERC4626WrapperSpec memory)
+    {
+        return LidoLendMarketFactory.ERC4626WrapperSpec({
             name: string.concat("Lido Loan Vault ", salt), symbol: string.concat("lidoLOAN", salt)
         });
     }

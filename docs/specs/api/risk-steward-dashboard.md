@@ -30,6 +30,14 @@ event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 ne
 
 Emitted when the Sybil lock amount and duration are raised on a market.
 
+### `InstantActivationRevoked`
+
+```solidity
+event InstantActivationRevoked(Id indexed marketId, address indexed caller);
+```
+
+Emitted when a steward revokes a caller's instant activation on a market.
+
 ## Errors
 
 ### `NotTightened`
@@ -47,6 +55,22 @@ error NotMarketSteward();
 ```
 
 The caller is not a steward of the target market.
+
+### `ZeroSteward`
+
+```solidity
+error ZeroSteward();
+```
+
+A zero-address steward was supplied.
+
+### `ZeroAddress`
+
+```solidity
+error ZeroAddress();
+```
+
+Thrown when a required address argument is zero.
 
 ### `UnknownMarket`
 

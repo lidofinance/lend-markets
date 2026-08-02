@@ -2,7 +2,7 @@
 pragma solidity 0.8.35;
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
-import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, IMorpho} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {AcceptanceBase, IReadController, IReadDashboard} from "./AcceptanceBase.t.sol";
 
@@ -34,6 +34,13 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
     function testRevert_pausedControllerIsRejected() external {
         vm.prank(circuitBreaker);
         IReadController(controller).pauseFor(1 days);
+        vm.expectRevert();
+        this.assertWiring();
+    }
+
+    function testRevert_wrongCoreOwnerIsRejected() external {
+        vm.prank(facade);
+        IMorpho(core).setOwner(makeAddr("wrongCoreOwner"));
         vm.expectRevert();
         this.assertWiring();
     }

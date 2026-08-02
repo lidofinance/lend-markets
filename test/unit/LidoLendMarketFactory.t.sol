@@ -2,13 +2,17 @@
 pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, IMorpho, Market, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {LidoLend} from "@lido-lend/src/LidoLend.sol";
 import {IIrmRouter} from "@lido-lend-irm/src/irm-router/interfaces/IIrmRouter.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
+import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
@@ -59,6 +63,8 @@ contract MarketFactoryCompatibleProxy is OssifiableProxy {
 }
 
 contract LidoLendMarketFactoryRoleValidationTest is Test {
+    using MarketParamsLib for MarketParams;
+
     address private constant GOVERNANCE = address(0xA11CE);
 
     ILidoLend internal core;
@@ -95,14 +101,14 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
 
         router = IIrmRouter(address(new MarketFactoryRouterStub(address(core))));
         address controllerImplementation = address(new LidoLendMarketController(IMorpho(address(core))));
-        address vaultImplementation = address(new LidoLendERC4626(address(core)));
+        address erc4626WrapperImplementation = address(new LidoLendERC4626(address(core)));
         address guardianSignalsImplementation = address(new GuardianSignals());
         riskStewardDashboard = address(new MarketFactoryCoreBoundStub(address(core)));
         circuitBreaker = address(new MarketFactoryCoreBoundStub(address(core)));
 
         LidoLendMarketFactory.Implementations memory implementations = LidoLendMarketFactory.Implementations({
             controller: controllerImplementation,
-            vault: vaultImplementation,
+            erc4626Wrapper: erc4626WrapperImplementation,
             guardianSignals: guardianSignalsImplementation
         });
         factory = new LidoLendMarketFactory(
@@ -130,11 +136,41 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
             lltv: marketSpec.lltv
         });
         (marketId, controller) = factory.deployMarketController(marketSpec);
-        vault = factory.deployVault(controller, marketParams, _vaultSpec());
+        vault = factory.deployERC4626Wrapper(controller, marketParams, _erc4626WrapperSpec());
     }
 
     function test_validateMarketController_acceptsExactRoleSets() external view {
         factory.validateMarketController(controller, marketId, guardianSignals);
+    }
+
+    function test_validateMarketController_acceptsCanonicalControllerForCreatedMarket() external {
+        _createMarket(controller);
+
+        factory.validateMarketController(controller, marketId, guardianSignals);
+    }
+
+    function testRevert_validateMarketController_rejectsControllerBoundToAnotherCore() external {
+        address otherCore = makeAddr("otherCore");
+        address otherController = address(new MarketFactoryControllerBindingStub(otherCore, marketId));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.LidoLendMismatch.selector, otherController, address(core), otherCore
+            )
+        );
+        factory.validateMarketController(otherController, marketId, guardianSignals);
+    }
+
+    function testRevert_validateMarketController_rejectsNonCanonicalControllerForCreatedMarket() external {
+        (, address otherController) = factory.deployMarketController(marketSpec);
+        _createMarket(controller);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.RegisteredControllerMismatch.selector, marketId, controller, otherController
+            )
+        );
+        factory.validateMarketController(otherController, marketId, guardianSignals);
     }
 
     function testRevert_validateMarketController_rejectsProxyAdminMismatch() external {
@@ -244,6 +280,38 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.validateMarketController(controller, marketId, guardianSignals);
     }
 
+    function testRevert_validateMarketController_unexpectedAdminOfEveryKnownRole() external {
+        LidoLendMarketController c = LidoLendMarketController(controller);
+        bytes32 defaultAdminRole = c.DEFAULT_ADMIN_ROLE();
+        bytes32 unexpectedAdminRole = keccak256("UNEXPECTED_ADMIN_ROLE");
+        bytes32[] memory roles = new bytes32[](6);
+        roles[0] = defaultAdminRole;
+        roles[1] = c.MANAGER_ROLE();
+        roles[2] = c.PAUSER_ROLE();
+        roles[3] = c.FREEZER_ROLE();
+        roles[4] = c.UNFREEZER_ROLE();
+        roles[5] = c.RESUMER_ROLE();
+
+        for (uint256 i; i < roles.length; ++i) {
+            vm.mockCall(
+                controller,
+                abi.encodeWithSelector(IAccessControl.getRoleAdmin.selector, roles[i]),
+                abi.encode(unexpectedAdminRole)
+            );
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    LidoLendMarketFactory.RoleAdminMismatch.selector,
+                    controller,
+                    roles[i],
+                    defaultAdminRole,
+                    unexpectedAdminRole
+                )
+            );
+            factory.validateMarketController(controller, marketId, guardianSignals);
+            vm.clearMockedCalls();
+        }
+    }
+
     function test_validateGuardianSignals_acceptsExactRoleSets() external view {
         factory.validateGuardianSignals(guardianSignals, _guardianSpec());
     }
@@ -317,6 +385,14 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         spec.guardians[1] = missingGuardian;
 
         vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.MissingGuardian.selector, missingGuardian));
+        factory.validateGuardianSignals(guardianSignals, spec);
+    }
+
+    function testRevert_validateGuardianSignals_rejectsDuplicateExpectedGuardian() external {
+        LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
+        spec.guardians[1] = guardianA;
+
+        vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.DuplicateGuardian.selector, guardianA));
         factory.validateGuardianSignals(guardianSignals, spec);
     }
 
@@ -398,11 +474,81 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.validateGuardianSignals(registryAddress, _guardianSpec());
     }
 
-    function test_validateVault_acceptsExpectedBinding() external view {
-        factory.validateVault(vault, controller, marketParams);
+    function testRevert_validateGuardianSignals_unexpectedAdminOfEveryKnownRole() external {
+        GuardianSignals registry = GuardianSignals(guardianSignals);
+        bytes32 defaultAdminRole = registry.DEFAULT_ADMIN_ROLE();
+        bytes32 unexpectedAdminRole = keccak256("UNEXPECTED_ADMIN_ROLE");
+        bytes32[] memory roles = new bytes32[](4);
+        roles[0] = defaultAdminRole;
+        roles[1] = registry.MANAGER_ROLE();
+        roles[2] = registry.ACCESS_RESTORER_ROLE();
+        roles[3] = registry.ACCESS_LIMITER_ROLE();
+
+        for (uint256 i; i < roles.length; ++i) {
+            vm.mockCall(
+                guardianSignals,
+                abi.encodeWithSelector(IAccessControl.getRoleAdmin.selector, roles[i]),
+                abi.encode(unexpectedAdminRole)
+            );
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    LidoLendMarketFactory.RoleAdminMismatch.selector,
+                    guardianSignals,
+                    roles[i],
+                    defaultAdminRole,
+                    unexpectedAdminRole
+                )
+            );
+            factory.validateGuardianSignals(guardianSignals, _guardianSpec());
+            vm.clearMockedCalls();
+        }
     }
 
-    function testRevert_validateVault_rejectsProxyAdminMismatch() external {
+    function test_validateERC4626Wrapper_acceptsExpectedBinding() external view {
+        factory.validateERC4626Wrapper(vault, controller, marketParams);
+    }
+
+    function testRevert_validateERC4626Wrapper_rejectsWrapperBoundToAnotherCore() external {
+        address otherCore = makeAddr("otherCore");
+        vm.mockCall(
+            vault, abi.encodeWithSelector(ILidoLendERC4626.LIDO_LEND.selector), abi.encode(ILidoLend(otherCore))
+        );
+
+        vm.expectRevert(
+            abi.encodeWithSelector(LidoLendMarketFactory.LidoLendMismatch.selector, vault, address(core), otherCore)
+        );
+        factory.validateERC4626Wrapper(vault, controller, marketParams);
+    }
+
+    function testRevert_validateERC4626Wrapper_rejectsCachedMarketParamsMismatch() external {
+        MarketParams memory wrongMarketParams = marketParams;
+        wrongMarketParams.oracle = makeAddr("wrongOracle");
+        vm.mockCall(
+            vault, abi.encodeWithSelector(ILidoLendERC4626.marketParams.selector), abi.encode(wrongMarketParams)
+        );
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.MarketIdMismatch.selector, Id.unwrap(marketId), Id.unwrap(wrongMarketParams.id())
+            )
+        );
+        factory.validateERC4626Wrapper(vault, controller, marketParams);
+    }
+
+    function testRevert_validateERC4626Wrapper_rejectsAssetMismatch() external {
+        vm.mockCall(vault, abi.encodeWithSelector(IERC4626.asset.selector), abi.encode(marketParams.collateralToken));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.ERC4626WrapperAssetMismatch.selector,
+                marketParams.loanToken,
+                marketParams.collateralToken
+            )
+        );
+        factory.validateERC4626Wrapper(vault, controller, marketParams);
+    }
+
+    function testRevert_validateERC4626Wrapper_rejectsProxyAdminMismatch() external {
         address wrongAdmin = makeAddr("wrongVaultProxyAdmin");
         vm.prank(controllerAdmin);
         OssifiableProxy(payable(vault)).proxy__changeAdmin(wrongAdmin);
@@ -412,19 +558,21 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
                 LidoLendMarketFactory.ProxyAdminMismatch.selector, vault, controllerAdmin, wrongAdmin
             )
         );
-        factory.validateVault(vault, controller, marketParams);
+        factory.validateERC4626Wrapper(vault, controller, marketParams);
     }
 
-    function testRevert_validateVault_rejectsControllerMismatch() external {
+    function testRevert_validateERC4626Wrapper_rejectsControllerMismatch() external {
         (, address otherController) = factory.deployMarketController(marketSpec);
 
         vm.expectRevert(
-            abi.encodeWithSelector(LidoLendMarketFactory.VaultControllerMismatch.selector, otherController, controller)
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.ERC4626WrapperControllerMismatch.selector, otherController, controller
+            )
         );
-        factory.validateVault(vault, otherController, marketParams);
+        factory.validateERC4626Wrapper(vault, otherController, marketParams);
     }
 
-    function testRevert_deployVault_rejectsControllerBoundToAnotherCore() external {
+    function testRevert_deployERC4626Wrapper_rejectsControllerBoundToAnotherCore() external {
         address otherCore = makeAddr("otherCore");
         address otherController = address(new MarketFactoryControllerBindingStub(otherCore, marketId));
 
@@ -433,10 +581,10 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
                 LidoLendMarketFactory.LidoLendMismatch.selector, otherController, address(core), otherCore
             )
         );
-        factory.deployVault(otherController, marketParams, _vaultSpec());
+        factory.deployERC4626Wrapper(otherController, marketParams, _erc4626WrapperSpec());
     }
 
-    function testRevert_deployVault_rejectsNonCanonicalControllerForCreatedMarket() external {
+    function testRevert_deployERC4626Wrapper_rejectsNonCanonicalControllerForCreatedMarket() external {
         (, address otherController) = factory.deployMarketController(marketSpec);
         _createMarket(controller);
 
@@ -445,13 +593,13 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
                 LidoLendMarketFactory.RegisteredControllerMismatch.selector, marketId, controller, otherController
             )
         );
-        factory.deployVault(otherController, marketParams, _vaultSpec());
+        factory.deployERC4626Wrapper(otherController, marketParams, _erc4626WrapperSpec());
     }
 
-    function test_deployVault_acceptsCanonicalControllerForCreatedMarket() external {
+    function test_deployERC4626Wrapper_acceptsCanonicalControllerForCreatedMarket() external {
         _createMarket(controller);
 
-        address secondVault = factory.deployVault(controller, marketParams, _vaultSpec());
+        address secondVault = factory.deployERC4626Wrapper(controller, marketParams, _erc4626WrapperSpec());
 
         assertEq(address(LidoLendERC4626(secondVault).controller()), controller, "controller");
         assertEq(Id.unwrap(LidoLendERC4626(secondVault).marketId()), Id.unwrap(marketId), "market id");
@@ -488,8 +636,8 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         spec = LidoLendMarketFactory.GuardianSpec({guardians: guardians, quorum: 1, suspectWindow: 2 hours});
     }
 
-    function _vaultSpec() private pure returns (LidoLendMarketFactory.VaultSpec memory spec) {
-        spec = LidoLendMarketFactory.VaultSpec({name: "Lido Loan Vault", symbol: "lidoLOAN"});
+    function _erc4626WrapperSpec() private pure returns (LidoLendMarketFactory.ERC4626WrapperSpec memory spec) {
+        spec = LidoLendMarketFactory.ERC4626WrapperSpec({name: "Lido Loan Vault", symbol: "lidoLOAN"});
     }
 
     function _activationConfig() private pure returns (CollateralActivationConfig memory) {

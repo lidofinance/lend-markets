@@ -24,16 +24,6 @@ interface ILidoLendOwner is IAccessControlEnumerable {
     function LIDO_LEND() external view returns (ILidoLend);
 
     // ---
-    // ERRORS
-    // ---
-
-    /// @notice Thrown when the core or an ownership target is the zero address.
-    error ZeroAddress();
-
-    /// @notice The market id has no controller on the core (unknown or controller-less).
-    error UnknownMarket(Id marketId);
-
-    // ---
     // ROLES
     // ---
 
@@ -48,6 +38,17 @@ interface ILidoLendOwner is IAccessControlEnumerable {
 
     /// @notice Role allowed to manage guardian registries.
     function GUARDIAN_MANAGER_ROLE() external view returns (bytes32);
+
+
+    // ---
+    // ERRORS
+    // ---
+
+    /// @notice Thrown when the core or an ownership target is the zero address.
+    error ZeroAddress();
+
+    /// @notice The market id has no controller on the core (unknown or controller-less).
+    error UnknownMarket(Id marketId);
 
     // ---
     // MARKET CREATION (MARKET_CREATOR_ROLE)

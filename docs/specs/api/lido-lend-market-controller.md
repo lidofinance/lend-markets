@@ -322,6 +322,14 @@ event SupplyCapSet(uint256 cap, address indexed account);
 
 Emitted when the supply cap is set.
 
+### `GuardianSignalsSet`
+
+```solidity
+event GuardianSignalsSet(address indexed guardianSignals);
+```
+
+Emitted once when the market binds its guardian-signals registry at initialization.
+
 ## Errors
 
 ### `Unauthorized`
@@ -331,6 +339,14 @@ error Unauthorized();
 ```
 
 Thrown when the hook caller is not the core.
+
+### `ZeroAddress`
+
+```solidity
+error ZeroAddress();
+```
+
+Thrown when a required address argument is zero.
 
 ### `InvalidMarketId`
 
@@ -379,6 +395,14 @@ error InsufficientActiveCollateral();
 ```
 
 Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
+
+### `ActivationLockActive`
+
+```solidity
+error ActivationLockActive();
+```
+
+Thrown when a withdrawal would leave raw collateral below the amount still held in the un-matured buckets (a locked activating lot plus dust).
 
 ### `ZeroBorrowAssets`
 

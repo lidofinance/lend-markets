@@ -45,7 +45,7 @@ contract DeployVaultScenarioTest is LidoLendSetup {
         factory = new LidoLendMarketFactory(
             LidoLendMarketFactory.Implementations({
                 controller: m.controllerImpl,
-                vault: address(new LidoLendERC4626(address(m.core))),
+                erc4626Wrapper: address(new LidoLendERC4626(address(m.core))),
                 guardianSignals: address(new GuardianSignals())
             }),
             LidoLendMarketFactory.Dependencies({
@@ -63,7 +63,7 @@ contract DeployVaultScenarioTest is LidoLendSetup {
         return protocol.markets[0];
     }
 
-    function test_deployVault_worksImmediatelyOnActivatedMarket() external {
+    function test_deployERC4626Wrapper_worksImmediatelyOnActivatedMarket() external {
         Market storage m = _m();
         address vault2Addr = _deploySecondVault(m);
         ILidoLendERC4626 vault2 = ILidoLendERC4626(vault2Addr);
@@ -84,7 +84,7 @@ contract DeployVaultScenarioTest is LidoLendSetup {
         assertEq(m.loanToken.balanceOf(lender), 40 ether, "withdraw works with no extra registration");
     }
 
-    function test_deployVault_sharesSupplyCapWithOriginalVault() external {
+    function test_deployERC4626Wrapper_sharesSupplyCapWithOriginalVault() external {
         Market storage m = _m();
         // MANAGER_ROLE was granted to `admin` == address(this) in `_addMarket`.
         m.controller.setSupplyCap(150 ether);
@@ -112,21 +112,21 @@ contract DeployVaultScenarioTest is LidoLendSetup {
         assertEq(m.vault.maxDeposit(lenderB), 0, "cap now fully used, seen from either vault");
     }
 
-    function testRevert_deployVault_marketParamsFromAnotherMarket() external {
+    function testRevert_deployERC4626Wrapper_marketParamsFromAnotherMarket() external {
         Market storage m = _m();
         Market storage m2 = protocol.markets[1];
 
         vm.expectRevert(
             abi.encodeWithSelector(LidoLendMarketFactory.MarketIdMismatch.selector, Id.unwrap(m2.id), Id.unwrap(m.id))
         );
-        factory.deployVault(
+        factory.deployERC4626Wrapper(
             address(m.controller),
             m2.params,
-            LidoLendMarketFactory.VaultSpec({name: "Mismatched Vault", symbol: "lidoBAD"})
+            LidoLendMarketFactory.ERC4626WrapperSpec({name: "Mismatched Vault", symbol: "lidoBAD"})
         );
     }
 
-    function test_deployVault_exitBookGatingIsASeparateGovernanceStep() external {
+    function test_deployERC4626Wrapper_exitBookGatingIsASeparateGovernanceStep() external {
         Market storage m = _m();
         address vault2Addr = _deploySecondVault(m);
 
@@ -157,10 +157,10 @@ contract DeployVaultScenarioTest is LidoLendSetup {
     }
 
     function _deploySecondVault(Market storage market) internal returns (address) {
-        return factory.deployVault(
+        return factory.deployERC4626Wrapper(
             address(market.controller),
             market.params,
-            LidoLendMarketFactory.VaultSpec({name: "Second Vault", symbol: "lidoLOAN2"})
+            LidoLendMarketFactory.ERC4626WrapperSpec({name: "Second Vault", symbol: "lidoLOAN2"})
         );
     }
 }

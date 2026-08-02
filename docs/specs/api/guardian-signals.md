@@ -131,13 +131,14 @@ Emitted when a guardian's liveness is recorded.
 ### `QuorumFrontierAdvanced`
 
 ```solidity
-event QuorumFrontierAdvanced(uint256 timestamp);
+event QuorumFrontierAdvanced(address indexed caller, uint256 timestamp);
 ```
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
+| `caller` | `address` | The account whose call advanced the frontier. |
 | `timestamp` | `uint256` | The new frontier timestamp. |
 
 Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).

@@ -37,12 +37,12 @@ library MarketConfigFile {
         view
         returns (
             LidoLendMarketFactory.MarketSpec memory market,
-            LidoLendMarketFactory.VaultSpec memory vaultSpec,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
             AdaptiveCurveParams memory curveParams
         )
     {
         string memory toml = vm.readFile(marketPath(name));
-        (market, vaultSpec, curveParams) = parse(toml);
+        (market, erc4626WrapperSpec, curveParams) = parse(toml);
         ArtifactRefs memory refs = _parseArtifactRefs(toml);
 
         if (market.oracle == address(0)) market.oracle = OracleConfigFile.readDeployed(refs.oracle);
@@ -58,12 +58,12 @@ library MarketConfigFile {
         pure
         returns (
             LidoLendMarketFactory.MarketSpec memory market,
-            LidoLendMarketFactory.VaultSpec memory vaultSpec,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
             AdaptiveCurveParams memory curveParams
         )
     {
         market = _parseMarket(toml);
-        vaultSpec = LidoLendMarketFactory.VaultSpec({
+        erc4626WrapperSpec = LidoLendMarketFactory.ERC4626WrapperSpec({
             name: vm.parseTomlString(toml, ".market.vault_name"),
             symbol: vm.parseTomlString(toml, ".market.vault_symbol")
         });

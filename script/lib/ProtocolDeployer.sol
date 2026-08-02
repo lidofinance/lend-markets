@@ -70,13 +70,15 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
 
         // Injecting implementations keeps the factory below the EIP-3860 initcode limit.
         address controllerImpl = address(new LidoLendMarketController(IMorpho(d.core)));
-        address vaultImpl = address(new LidoLendERC4626(d.core));
+        address erc4626WrapperImpl = address(new LidoLendERC4626(d.core));
         d.guardianSignalsImpl = address(new GuardianSignals());
 
         d.factory = address(
             new LidoLendMarketFactory(
                 LidoLendMarketFactory.Implementations({
-                    controller: controllerImpl, vault: vaultImpl, guardianSignals: d.guardianSignalsImpl
+                    controller: controllerImpl,
+                    erc4626Wrapper: erc4626WrapperImpl,
+                    guardianSignals: d.guardianSignalsImpl
                 }),
                 LidoLendMarketFactory.Dependencies({
                     lidoLend: d.core,
