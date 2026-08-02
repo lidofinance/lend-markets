@@ -47,7 +47,11 @@ contract SQHarness {
     }
 
     function allowedSlice(MarketView memory mv, address b, PositionView memory p) external view returns (uint256) {
-        return s.allowedSlice(mv, b, p);
+        return s.maxAllowedSliceAssets(mv, b, p);
+    }
+
+    function personalSlice(MarketView memory mv, address b, PositionView memory p) external view returns (uint256) {
+        return s.personalAllowedSliceAssets(mv, b, p);
     }
 
     function sliceToLtv(uint256 d, uint256 c, uint256 t) external returns (uint256) {
@@ -343,6 +347,20 @@ contract SettlementQueueLibTest is Test {
 
         (address[] memory zero,) = q.settlementBorrowers(0, 0);
         assertEq(zero.length, 0, "maxCount 0 -> empty");
+    }
+
+    /// @dev Targeted settlement excludes the queue-root policy. With a 30-asset root floor and a 20-asset personal
+    ///      slice, the automatic path gets 30 while the targeted path gets 20.
+    function test_allowedSlice_canExcludeRootPolicy() public {
+        PositionView memory root = _pos(75, 100);
+        q.sync(_b(1), root);
+        q.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 0, sliceFloorAssets: 30, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        );
+        q.setSettlementLtv(_b(1), 0.6875e18);
+
+        assertEq(q.allowedSlice(_market(1e36), _b(1), root), 30, "automatic path includes root policy");
+        assertEq(q.personalSlice(_market(1e36), _b(1), root), 20, "targeted path uses personal policy only");
     }
 
     // ── allowedSlice: max-of-rules, floor only for the root, debt clamp, dust lift ──

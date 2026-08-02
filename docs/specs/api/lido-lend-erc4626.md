@@ -25,7 +25,7 @@ event FallbackExit(address indexed caller, address indexed owner, address indexe
 | `collateralSeized` | `uint256` | Collateral seized from the cut positions. |
 | `debtCanceled` | `uint256` | Borrower debt cancelled by the cuts. |
 
-An automatic `fallbackExit` settlement leg completed, possibly with a zero or partial fill.
+A `fallbackExit` reached its queue-driven settlement leg, possibly with a zero or partial fill.
 
 ### `Settled`
 
@@ -225,7 +225,7 @@ Capped by the market's free liquidity, not just the owner's position: supplied t
 function maxRedeem(address owner) public view returns (uint256);
 ```
 
-Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in nonzero free liquidity it returns the exact share balance. Otherwise the floor conversion is a conservative ERC-4626 gate; `fallbackExit` also services the remaining shares on the same redeem rounding plateau. Zero when the controller reports no withdrawable assets, including while paused.
+Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in nonzero free liquidity it returns the exact share balance. Otherwise the floor conversion is a conservative ERC-4626 gate; `fallbackExit` can also service the remaining shares on the same redeem rounding plateau. Zero when the controller reports no withdrawable assets, including while paused.
 
 ### `maxDeposit`
 
@@ -254,7 +254,7 @@ function settle(
 ) external returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
-A targeted, liquidity-neutral cut of the named borrowers. Free market liquidity is reserved against this request first, so only the request value above it can settle; an unaffordable full close becomes a supply-anchored partial. A call that consumes no core supply shares reverts. The reserve is reapplied per call, so splitting one request can settle less than submitting the same shares together. Budget exhaustion partial-fills, while controller and core errors still bubble. Collateral goes from the core straight to `receiver`. For the automatic risk-queue exit use `fallbackExit`.
+A targeted, liquidity-neutral cut of borrowers that expose a positive personal settlement-LTV slice. Current free liquidity is not redeemed or reserved against the request. Budget exhaustion partial-fills; a call that consumes no core supply shares reverts. Collateral goes from the core straight to `receiver`. `fallbackExit` instead consumes available liquidity first and selects risk-queue roots for the remainder.
 
 ### `fallbackExit`
 

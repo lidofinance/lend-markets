@@ -59,9 +59,8 @@ interface IVault {
 /// @notice The ERC4626 lender-exit waterfall against the core's borrow-anchored `settle`,
 ///         exercising both settle anchors the vault picks. With a `fullCutBelowCollateral` above the root's
 ///         collateral the queue opens a full cut, so the vault closes the riskiest borrower borrow-anchored
-///         (a filler borrower leaves the settleable-supply slack the close needs); shrinking that lever forces
-///         supply-anchored partial cuts. The vault is the sole supplier, and targeted settlement reserves free
-///         liquidity against the request before deriving its budget.
+///         when its budget covers the quoted cost; smaller budgets force supply-anchored partial cuts. The vault is
+///         the sole supplier. Targeted settlement is personal-LTV-gated and uses the request's gross supply claim.
 contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
     uint256 internal constant LLTV = 0.945e18;
     uint256 internal constant PRICE = 1.2e36;
@@ -186,6 +185,11 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         );
     }
 
+    function _setPersonalSettlementLtv(address borrower, uint256 ltv) internal {
+        vm.prank(borrower);
+        controller.setSettlementLtv(ltv);
+    }
+
     function _repayAll(address borrower) internal {
         uint256 borrowShares = core.position(id, borrower).borrowShares;
         if (borrowShares == 0) return;
@@ -216,9 +220,8 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         assertEq(dustDebtAssets * 1e36 / PRICE, 0, "dust debt seizes zero collateral");
     }
 
-    /// @dev The waterfall closes the riskiest borrower borrow-anchored: with the queue granting a full cut and
-    ///      the filler leaving settleable-supply slack, the vault passes the borrower's whole borrow shares and
-    ///      the position goes to zero.
+    /// @dev After the liquid leg drains market free liquidity, the queue grants the root-policy full cut. The
+    ///      remaining exit budget covers its cost, so the vault closes the riskiest borrower borrow-anchored.
     function test_fallbackExit_closesRootBorrowAnchored() public {
         _setFullCut();
 
@@ -236,11 +239,10 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         assertGt(collateralSeized, 0, "collateral seized");
     }
 
-    /// @dev Targeted `settle` on the last remaining borrower, with free liquidity still in the book. The whole-position
-    ///      request budgets only its value above that liquidity, so the one-wei full-close overshoot is downgraded to a
-    ///      partial supply-anchored cut instead of reverting in the core.
-    function test_settle_soleBorrowerFullCloseOvershootFallsBackToPartial() public {
-        // Leave BORROWER as the only debtor, so a full close consumes the entire settleable supply.
+    /// @dev A targeted personal-LTV full close whose quoted supply cost is one share above the request's gross
+    ///      settlement budget is downgraded to an exact-budget supply-anchored partial cut.
+    function test_settle_budgetBelowFullCloseFallsBackToPartial() public {
+        // Leave BORROWER as the only debtor so the post-cut remainder is unambiguous.
         uint256 fillerShares = core.position(id, FILLER).borrowShares;
         uint256 thirdShares = core.position(id, THIRD).borrowShares;
         loan.mint(FILLER, F_BORROW * 2);
@@ -258,33 +260,26 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         core.accrueInterest(params);
 
         _setFullCut();
+        _setPersonalSettlementLtv(BORROWER, 1);
 
         address[] memory borrowers = new address[](1);
         borrowers[0] = BORROWER;
-        uint256 shares = IVault(vault).balanceOf(LENDER);
 
         uint256 debtSharesBefore = core.position(id, BORROWER).borrowShares;
         uint256 vaultSupplySharesBefore = core.position(id, vault).supplyShares;
+        uint256 vaultSharesBefore = IVault(vault).balanceOf(LENDER);
         // budget, debt canceled, borrow shares canceled, remaining debt assets.
         uint256[4] memory expected;
+        uint256 shares;
         {
             MorphoMarket memory mk = core.market(id);
-            uint256 availableLiquidity = mk.totalSupplyAssets - mk.totalBorrowAssets;
-            uint256 vaultSupplyAssets =
-                SharesMathLib.toAssetsDown(vaultSupplySharesBefore, mk.totalSupplyAssets, mk.totalSupplyShares);
-            uint256 coreSettleable = vaultSupplyAssets - availableLiquidity;
-            uint256 wouldCancel = SharesMathLib.toAssetsUp(debtSharesBefore, mk.totalBorrowAssets, mk.totalBorrowShares);
-            assertEq(wouldCancel - coreSettleable, 1, "the full close overshoots core settleability by one wei");
-
-            uint256 settlementClaim = Math.mulDiv(vaultSupplySharesBefore, shares, IVault(vault).totalSupply());
-            uint256 requestTailAssets = IVault(vault).previewRedeem(shares) - availableLiquidity;
-            expected[0] = Math.min(
-                settlementClaim,
-                SharesMathLib.toSharesDown(requestTailAssets, mk.totalSupplyAssets, mk.totalSupplyShares)
-            );
             (uint256 fullCloseSupplyShares,, uint256 remainingBorrowShares) = controller.settlementFor(BORROWER);
             assertEq(remainingBorrowShares, 0, "controller quotes a full close");
-            assertGt(fullCloseSupplyShares, expected[0], "request-tail budget cannot afford the full close");
+
+            shares = Math.mulDiv(fullCloseSupplyShares - 1, vaultSharesBefore, vaultSupplySharesBefore);
+            expected[0] = Math.mulDiv(vaultSupplySharesBefore, shares, vaultSharesBefore);
+            assertGt(expected[0], 0, "request has a positive gross settlement budget");
+            assertLt(expected[0], fullCloseSupplyShares, "gross request budget cannot afford the full close");
 
             expected[1] = SharesMathLib.toAssetsDown(expected[0], mk.totalSupplyAssets, mk.totalSupplyShares);
             expected[2] = SharesMathLib.toSharesUp(expected[1], mk.totalBorrowAssets, mk.totalBorrowShares);
@@ -304,7 +299,11 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         assertGt(sharesBurned, 0, "some vault shares burned");
         assertGt(collateralSeized, 0, "collateral seized");
         assertGt(debtCanceled, 0, "some debt cancelled");
-        assertEq(vaultSupplySharesBefore - core.position(id, vault).supplyShares, expected[0], "exact budget consumed");
+        assertEq(
+            vaultSupplySharesBefore - core.position(id, vault).supplyShares,
+            expected[0],
+            "exact gross request budget consumed"
+        );
         assertEq(debtCanceled, expected[1], "supply-anchor debt conversion");
         assertEq(debtSharesBefore - debtSharesAfter, expected[2], "supply-anchor borrow-share conversion");
         assertLt(debtSharesAfter, debtSharesBefore, "borrower debt reduced");
@@ -312,23 +311,28 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         assertEq(debtAssetsAfter, expected[3], "borrower keeps only the independently modeled rounded remainder");
     }
 
-    /// @dev A dust borrower whose full-close debt maps to zero collateral is rejected by the core. Repaying that
-    ///      debt makes `settlementFor` return a zero cut, so the same targeted call reverts because nothing is left
-    ///      to settle.
-    function test_settle_dustSliceRevertsUntilDustIsRepaid() public {
+    /// @dev A one-asset-wei debt against a normal collateral balance has an LTV below the minimum positive WAD target.
+    ///      Even after setting the minimum personal LTV, targeted settlement has no positive slice and reverts
+    ///      `NothingSettled`. The queue-driven fallback dust path is covered separately.
+    function test_settle_dustBelowMinimumPersonalLtvRevertsNothingSettled() public {
         _repayAll(FILLER);
         _repayAll(THIRD);
         uint256 dustDebtAssets = _repayAllButOneDebtAsset(BORROWER);
         assertLe(dustDebtAssets, 1, "debt is actual dust");
 
         _setWholeDebtSlice();
+        _setPersonalSettlementLtv(BORROWER, 1);
+
+        (uint256 personalLtv, uint256 personalSlice) = controller.settlementLtv(BORROWER);
+        assertEq(personalLtv, 1, "minimum positive personal LTV stored");
+        assertEq(personalSlice, 0, "dust LTV is below the minimum representable target");
 
         address[] memory borrowers = new address[](1);
         borrowers[0] = BORROWER;
         uint256 shares = IVault(vault).balanceOf(LENDER);
 
         vm.prank(LENDER);
-        vm.expectRevert(bytes("settlement slice too small"));
+        vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
         IVault(vault).settle(shares, borrowers, RECEIVER, LENDER);
 
         _repayAll(BORROWER);
@@ -339,13 +343,15 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         IVault(vault).settle(shares, borrowers, RECEIVER, LENDER);
     }
 
-    /// @dev Targeted `settle` can close several borrowers to zero when every requested full close fits the
-    ///      remaining settleable supply budget. This is the normal borrow-anchored path; no supply-anchored
+    /// @dev Targeted `settle` can close several opted-in borrowers to zero when every requested full close fits
+    ///      the remaining gross request budget. This is the normal borrow-anchored path; no supply-anchored
     ///      downgrade is expected for either borrower.
     function test_settle_multipleBorrowersFullCloseToZero() public {
         controller.setSettlementConfig(
             SettlementConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 300e18, ltvStepBps: 100})
         );
+        _setPersonalSettlementLtv(BORROWER, 1);
+        _setPersonalSettlementLtv(FILLER, 1);
 
         address[] memory borrowers = new address[](2);
         borrowers[0] = BORROWER;
@@ -378,6 +384,9 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         controller.setSettlementConfig(
             SettlementConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 300e18, ltvStepBps: 100})
         );
+        _setPersonalSettlementLtv(BORROWER, 1);
+        _setPersonalSettlementLtv(FILLER, 1);
+        _setPersonalSettlementLtv(THIRD, 1);
 
         address[] memory borrowers = new address[](3);
         borrowers[0] = BORROWER;
@@ -588,11 +597,13 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
     }
 
     function _quoteSupplyThenBorrowAnchoredBudget() internal returns (TwoStepQuote memory quote) {
-        (address root,,,) = controller.nextSettlementBorrower();
-        assertEq(root, FILLER, "filler is the first queue root");
-
-        (uint256 fillerSupplyShares, uint256 fillerBorrowShares, uint256 fillerRemainingBorrowShares) =
-            controller.settlementFor(FILLER);
+        address root;
+        uint256 fillerSupplyShares;
+        uint256 fillerBorrowShares;
+        uint256 fillerRemainingBorrowShares;
+        (root, fillerSupplyShares, fillerBorrowShares, fillerRemainingBorrowShares) =
+            controller.nextSettlementBorrower();
+        assertEq(root, FILLER, "automatic quote is for the first queue root");
         assertGt(fillerSupplyShares, 0, "first cut has supply burn");
         assertGt(fillerBorrowShares, 0, "first cut has borrow burn");
         assertGt(fillerRemainingBorrowShares, 0, "first cut is partial");
@@ -608,7 +619,9 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         assertEq(root, THIRD, "third is the second queue root");
 
         uint256 thirdRemainingBorrowShares;
-        (quote.secondSupplyBurn, quote.thirdBorrowShares, thirdRemainingBorrowShares) = controller.settlementFor(THIRD);
+        (root, quote.secondSupplyBurn, quote.thirdBorrowShares, thirdRemainingBorrowShares) =
+            controller.nextSettlementBorrower();
+        assertEq(root, THIRD, "automatic quote is for the second queue root");
         assertGt(quote.secondSupplyBurn, 0, "second cut has supply burn");
         assertGt(quote.thirdBorrowShares, 0, "second cut has borrow burn");
         assertEq(thirdRemainingBorrowShares, 0, "second cut is a full close");
@@ -689,6 +702,7 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
     ///      cuts up to the slice without tripping the policy cap. The +1h accrual makes the slice's handle value
     ///      back one wei above the slice — the case the old asset-denominated cap rejected, the share cap admits.
     function test_partialBorrowAnchored_cutsUpToSlice() public {
+        _setPersonalSettlementLtv(BORROWER, 0.7e18);
         vm.warp(block.timestamp + 1 hours);
         core.accrueInterest(params);
         uint256 ba = core.market(id).totalBorrowAssets;
@@ -709,6 +723,7 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
 
     /// @dev The share cap still rejects a genuine over-cut: one borrow share past the slice's share worth reverts.
     function testRevert_partialBorrowAnchored_aboveSliceShares() public {
+        _setPersonalSettlementLtv(BORROWER, 0.7e18);
         vm.warp(block.timestamp + 1 hours);
         core.accrueInterest(params);
         uint256 ba = core.market(id).totalBorrowAssets;

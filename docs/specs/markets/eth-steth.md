@@ -29,11 +29,11 @@ The rate rises monotonically as staking rewards accrue. It does **not** reflect 
 ## Liquidation
 
 - **Morpho liquidation** — the inherited path for ordinary unhealthy positions.
-- **Lender self-liquidation** — a lender settles an unhealthy borrower through its own lending position (the settlement queue), only when pool liquidity is exhausted and the position is **not** bad debt (ADR 013).
+- **Lender settlement** — the shared [settlement paths](../architecture.md#settlement-queue) pay the chosen receiver in wstETH collateral (ADR 013).
 
 No dedicated stETH-liquidity facility (no AMM, no backstop) is included (ADR 011).
 
 ## Fast collateral depreciation
 
-A sudden wstETH value drop (slashing, oracle compromise, bridge hack) is not a normal liquidation case. The response is a **freeze**, followed by an operational incident response.
+A sudden wstETH value drop (slashing, oracle compromise, bridge hack) is not a normal liquidation case. The immediate response is a **pause**, because freeze deliberately leaves liquidation and settlement available. Incident detection and follow-up are operational.
 

@@ -51,6 +51,9 @@ contract SettlementSafetyTest is LidoLendSetup {
         Market storage m = _m();
         (address lender, address borrower, uint256 shares) = _seed(100 ether, 9900); // ~99% of LLTV-max
 
+        vm.prank(borrower);
+        m.controller.setSettlementLtv(0.5e18); // targeted settlement must have a positive personal slice
+
         MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 2); // collateral value now below the debt
         m.accrueInterest();
 
@@ -58,7 +61,7 @@ contract SettlementSafetyTest is LidoLendSetup {
         bs[0] = borrower;
         vm.prank(lender);
         vm.expectRevert(ILidoLendMarketController.SettlementBadDebt.selector);
-        m.vault.settle(shares, bs, lender, lender);
+        m.vault.settle(shares / 100, bs, lender, lender);
     }
 
     /// @dev Withdrawing collateral under open debt may not leave active collateral below the activation
@@ -240,9 +243,8 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.controller.setSettlementLtv(1e18); // >= WAD
     }
 
-    /// @dev Eligibility is queue-root OR a personal settlement LTV (no global watermark): a NON-root borrower
-    ///      is ineligible. A batch containing only that borrower reverts because it settles nothing; after the target
-    ///      opts into a personal LTV it becomes eligible and the same call cancels exactly the predicted slice.
+    /// @dev Targeted settlement requires a personal settlement LTV; queue-root status alone does not qualify. A
+    ///      NON-root borrower is initially ineligible, then opts in and the same call cancels the predicted slice.
     function test_settle_nonRootReverts_thenEligibleViaPersonalLtv() public {
         Market storage m = _m();
         address lender = _actor("lender");

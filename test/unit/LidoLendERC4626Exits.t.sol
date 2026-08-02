@@ -191,6 +191,9 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
         Market storage m = _m();
         uint256 shares = m.vault.balanceOf(owner);
 
+        vm.prank(borrower);
+        m.controller.setSettlementLtv(1); // targeted settlement requires a positive personal slice
+
         address caller = _actor("caller");
         vm.prank(owner);
         m.vault.approve(caller, shares);

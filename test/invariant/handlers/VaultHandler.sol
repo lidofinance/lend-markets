@@ -21,7 +21,8 @@ import {MockPriceOracle} from "../../setup/Mocks.sol";
 
 /// @notice Handler for the vault invariant suite. On top of the market actions (borrow/repay/crash/warp/liquidate)
 ///         it drives the ERC-4626 surface (deposit/mint/withdraw/redeem) and the NEW vault mechanics (targeted
-///         `settle`, `fallbackExit`, direct donations). Around each new-mechanic call it records ghosts the
+///         `settle`, `fallbackExit`, personal settlement-LTV updates, direct donations). Around each new-mechanic
+///         call it records ghosts the
 ///         invariants read: standard exits and settlement must follow their declared one-sided rounding, settlement
 ///         collateral must reach the receiver without being retained by the vault, a direct donation cannot move the
 ///         price, and no exit may over-burn.
@@ -64,7 +65,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     bool public fullSettlementBurnMismatch; // a consumed full core claim did not burn the full request
     bool public settlementShareRateDecreased; // remaining vault shares own fewer core shares pro-rata
     bool public settlementCollateralPayoutMismatch; // receiver balance delta did not equal returned collateral
-    bool public settlementExceededRequestTail; // targeted settle consumed the request's liquidity-reserved prefix
+    bool public targetedSettlementWithoutPersonalEligibility; // a targeted settle filled without a personal slice
+    bool public targetedSettlementExceededGrossClaim; // targeted settle consumed more than the request's core claim
     bool public priceMovedByDonation; // a direct donation shifted the share price
     bool public exitBurnedTooMuch; // an exit burned more shares than requested
     bool public settleMovedLiquidity; // a targeted settle paid loan assets or changed idle (not liquidity-neutral)
@@ -85,7 +87,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     uint256 public settlementRoundUpCases;
     uint256 public fullSettlementFills;
     uint256 public nothingSettledReverts;
-    uint256 public illiquidTailSettlementCalls;
+    uint256 public positiveSettlementLtvUpdates;
+    uint256 public eligibleTargetedSettlementCalls;
     uint256 public mixedFallbackSettlementFills;
     uint256 public collateralPayouts;
     uint256 public settlementDustReverts;
@@ -220,40 +223,18 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         }
     }
 
-    /// @dev Checks a targeted settle against `max(previewRedeem(request) - freeLiquidity, 0)`, converted down to
-    ///      core shares and capped at the request's gross core-share claim.
-    function _observeTargetedSettlementBudget(
-        uint256 requestedShares,
-        uint256 actualBurn,
-        uint256 collateralSeized,
-        uint256 debtCanceled,
-        SettlementState memory before
-    ) internal {
+    /// @dev A targeted settle may consume at most the request's gross pro-rata core-share claim.
+    function _observeTargetedSettlementClaim(uint256 requestedShares, SettlementState memory before) internal {
         uint256 claim = Math.mulDiv(before.coreSupplyShares, requestedShares, before.vaultSupply);
         if (claim == 0) {
-            settlementExceededRequestTail = true;
+            targetedSettlementExceededGrossClaim = true;
             return;
         }
 
-        uint256 requestAssets =
-            Math.mulDiv(requestedShares, before.vaultAssets + 1, before.vaultSupply + VAULT_VIRTUAL_SHARES);
-        uint256 tailAssets = Math.saturatingSub(requestAssets, before.idle);
-        uint256 budget = Math.min(
-            claim,
-            Math.mulDiv(
-                tailAssets,
-                before.coreTotalSupplyShares + CORE_VIRTUAL_SHARES,
-                before.coreTotalSupplyAssets + CORE_VIRTUAL_ASSETS
-            )
-        );
-
         uint256 coreSharesAfter = CORE.position(ID, address(VAULT)).supplyShares;
-        if (coreSharesAfter > before.coreSupplyShares || before.coreSupplyShares - coreSharesAfter > budget) {
-            settlementExceededRequestTail = true;
+        if (coreSharesAfter > before.coreSupplyShares || before.coreSupplyShares - coreSharesAfter > claim) {
+            targetedSettlementExceededGrossClaim = true;
         }
-
-        if (budget == 0) settlementExceededRequestTail = true;
-        else ++illiquidTailSettlementCalls;
     }
 
     /// @dev Checks the configured receiver's token delta; owner and receiver are deliberately distinct in callers.
@@ -449,25 +430,23 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
 
     // ── new mechanics: settle / fallbackExit / donation ──
 
-    /// @dev Targeted settle by an owner against every actor that carries debt. The burn must be the one-sided rounded
-    ///      fraction of the owner's gross core-share claim actually consumed. Interest is accrued first to isolate it.
-    function settle(uint256 actorSeed, uint256 shares) external {
-        address owner = _actor(actorSeed);
+    /// @dev Target one borrower. A successful call must have a positive personal settlement-LTV slice at quote time,
+    ///      and its burn must be the one-sided rounded fraction of the owner's gross core-share claim consumed.
+    function settle(uint256 ownerSeed, uint256 borrowerSeed, uint256 shares) external {
+        address owner = _actor(ownerSeed);
         uint256 bal = VAULT.balanceOf(owner);
         if (bal == 0 || _paused() || CONTROLLER.hasBadDebt() || CONTROLLER.settlementBorrowersCount() == 0) return;
 
-        address[] memory borrowers = new address[](actors.length);
-        uint256 n;
-        for (uint256 i; i < actors.length; i++) {
-            if (CORE.position(ID, actors[i]).borrowShares != 0) borrowers[n++] = actors[i];
-        }
-        if (n == 0) return;
-        assembly {
-            mstore(borrowers, n)
-        }
+        address borrower = _actor(borrowerSeed);
+        if (CORE.position(ID, borrower).borrowShares == 0) return;
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = borrower;
 
         CORE.accrueInterest(params); // isolate the pro-rata burn from interest
-        address receiver = actors[(actorSeed % actors.length + 1) % actors.length];
+        (, uint256 personalSlice) = CONTROLLER.settlementLtv(borrower);
+        if (personalSlice != 0) ++eligibleTargetedSettlementCalls;
+
+        address receiver = actors[(ownerSeed % actors.length + 1) % actors.length];
         SettlementState memory before = _settlementState(receiver);
         shares = bound(shares, 1, bal);
         vm.prank(owner);
@@ -494,7 +473,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         }
 
         if (sharesBurned > shares) exitBurnedTooMuch = true;
-        _observeTargetedSettlementBudget(shares, sharesBurned, collateralSeized, debtCanceled, before);
+        if (personalSlice == 0) targetedSettlementWithoutPersonalEligibility = true;
+        _observeTargetedSettlementClaim(shares, before);
         _observeSettlementLeg(
             shares,
             sharesBurned,
@@ -609,6 +589,28 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         vm.prank(a);
         CORE.borrow(params, amount, 0, a, a);
         if (!paused) borrows++;
+    }
+
+    /// @dev Opt a live borrower into a target far enough below its current LTV to produce a positive personal slice.
+    function setSettlementLtv(uint256 actorSeed, uint256 targetSeed) external {
+        address borrower = _actor(actorSeed);
+        Position memory position = CORE.position(ID, borrower);
+        if (position.borrowShares == 0 || position.collateral == 0 || CONTROLLER.hasBadDebt()) return;
+
+        ILidoLendMarketController.BorrowerPosition memory dashboard = CONTROLLER.positionOf(borrower);
+        uint256 collateralValue = Math.mulDiv(position.collateral, _price(), 1e36);
+        if (dashboard.debtAssets == 0 || collateralValue == 0) return;
+
+        uint256 currentLtv = Math.mulDiv(dashboard.debtAssets, 1e18, collateralValue);
+        uint256 maxTarget = Math.min(currentLtv / 2, 1e18 - 1);
+        if (maxTarget == 0) return;
+
+        uint256 target = bound(targetSeed, 1, maxTarget);
+        vm.prank(borrower);
+        CONTROLLER.setSettlementLtv(target);
+
+        (, uint256 personalSlice) = CONTROLLER.settlementLtv(borrower);
+        if (personalSlice != 0) ++positiveSettlementLtvUpdates;
     }
 
     function repay(uint256 actorSeed, uint256 amount) external {

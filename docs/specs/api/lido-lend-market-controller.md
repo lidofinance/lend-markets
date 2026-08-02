@@ -43,7 +43,7 @@ struct BorrowerPosition {
 }
 ```
 
-One-read borrower snapshot for off-chain dashboards: collateral split, activation timer, guardian signal, debt, personal settle-down LTV, and live settle exposure.
+One-read borrower snapshot for off-chain dashboards: collateral split, activation timer, guardian signal, debt, personal settlement target, and live settle exposure.
 
 **Fields**
 
@@ -56,7 +56,7 @@ One-read borrower snapshot for off-chain dashboards: collateral split, activatio
 | `flagCount` | `uint256` | Raw guardian flags on the account, regardless of status. |
 | `banned` | `bool` | Hard-blocked by a latched guardian ban. |
 | `debtAssets` | `uint256` | Current borrow debt, in loan assets. |
-| `settlementLtv` | `uint256` | Borrower's personal settle-down target LTV (WAD), 0 when unset. |
+| `settlementLtv` | `uint256` | Borrower's personal post-cut target LTV (WAD), 0 when unset. |
 | `isNextToSettle` | `bool` | The borrower is next in line to be settled. |
 | `slice` | `uint256` | Loan assets that may be cut from this position in one settle now. |
 
@@ -444,6 +444,14 @@ error SettlementExceedsAllowed();
 
 Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
 
+### `SettlementExceedsSettleableSupply`
+
+```solidity
+error SettlementExceedsSettleableSupply();
+```
+
+Thrown when a root-policy cut exceeds the lender's illiquid supply tail.
+
 ## Functions
 
 ### `MANAGER_ROLE`
@@ -568,7 +576,7 @@ The current settlement config.
 function setSettlementLtv(uint256 ltv) external;
 ```
 
-Borrower opts into auto-settle down to a target post-cut LTV (WAD). 0 clears it.
+Sets the caller's personal post-cut target LTV (WAD). When current LTV exceeds it, the position may be settled without being the queue root; dust policy may promote the cut to a full close. 0 clears it.
 
 ### `settlementLtv`
 
@@ -578,7 +586,7 @@ function settlementLtv(
 ) external view returns (uint256 ltv, uint256 sliceAssets);
 ```
 
-Borrower's personal settle-down target LTV (WAD) and the slice it currently implies.
+Borrower's personal post-cut target LTV (WAD) and its raw target-LTV slice, excluding root policy and any `fullCutBelowCollateral` promotion applied by the executable `settlementFor` quote.
 
 ### `settlementBorrowersCount`
 
@@ -604,7 +612,7 @@ O(1): it checks the riskiest tracked position (the highest debt/collateral), who
 function nextSettlementBorrower() external view returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
 ```
 
-The settle cut the policy allows against the queue root (the borrower a head-first settle cuts first): `settlementFor` applied to it, with the root address. `borrower` is address(0) when empty.
+The queue root's absolute borrower-policy cut, combined with any positive personal settlement-LTV slice. A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
 
 ### `settlementFor`
 
@@ -614,7 +622,7 @@ function settlementFor(
 ) external view returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
 ```
 
-The settle cut the policy allows against `borrower`, as the two anchors a core `settle` accepts: the caller passes one and 0 for the other — `supplyShares` to settle supply-anchored, `borrowShares` borrow-anchored. `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All zero when ineligible.
+The borrower's personal settlement-LTV cut, as the two anchors accepted by core settlement. `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All zero when the personal target is unset or does not imply a positive cut.
 
 ### `settlementBorrowers`
 
@@ -633,7 +641,7 @@ A window of queued borrowers (approximate top-down order) and their risk keys: u
 function freeze() external;
 ```
 
-Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation maturation is deferred. Debt-free positions can still withdraw their collateral.
+Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation maturation is deferred. Freeze adds no debt gate to debt-free withdrawals, but existing activation locks still apply.
 
 ### `unfreeze`
 
@@ -675,7 +683,7 @@ function positionOf(
 ) external view returns (BorrowerPosition memory);
 ```
 
-One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt, personal settle-down LTV, and live settle exposure (next-to-settle flag + slice).
+One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt, personal settlement target, and live settle exposure (next-to-settle flag + slice).
 
 ### `collateralActivationConfig`
 

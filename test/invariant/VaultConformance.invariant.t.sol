@@ -13,9 +13,9 @@ import {VaultHandler} from "./handlers/VaultHandler.sol";
 /// @notice L4 stateful invariants for `LidoLendERC4626`, focused on the mechanics it adds over a plain ERC-4626:
 ///         the liquidity-capped `max*`, the settlement-backed `settle` / `fallbackExit` exits, and the position-only
 ///         `totalAssets` (donation defence). Under any bounded sequence of deposit/mint/withdraw/redeem/settle/
-///         fallbackExit/borrow/repay/crash/warp/liquidate/donate, the vault must never create value, settlement burns
-///         must follow their declared one-sided rounding, donations cannot move the share price, and every `max*`
-///         must stay a real, honoured bound.
+///         fallbackExit/borrow/personal-LTV update/repay/crash/warp/liquidate/donate, the vault must never create
+///         value, settlement burns must follow their declared one-sided rounding, donations cannot move the share
+///         price, and every `max*` must stay a real, honoured bound.
 /// @dev `afterInvariant` reports successful-action counters so a vacuous campaign (no settles / exits) is visible.
 /// forge-config: default.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 256
@@ -57,7 +57,14 @@ contract VaultConformanceInvariant is LidoLendSetup {
         c.grantRole(c.RESUMER_ROLE(), address(handler));
         c.grantRole(c.MANAGER_ROLE(), address(handler));
 
-        bytes4[] memory all = new bytes4[](15);
+        // Seed one live personal settlement path so the targeted-settlement invariants do not depend on a random
+        // deposit -> collateral -> borrow -> opt-in prefix before they can observe a successful fill.
+        handler.deposit(0, 1_000 ether);
+        handler.supplyCollateral(1, 1_000 ether);
+        handler.borrow(1, 25 ether);
+        handler.setSettlementLtv(1, 1);
+
+        bytes4[] memory all = new bytes4[](16);
         all[0] = VaultHandler.deposit.selector;
         all[1] = VaultHandler.mint.selector;
         all[2] = VaultHandler.withdraw.selector;
@@ -66,13 +73,14 @@ contract VaultConformanceInvariant is LidoLendSetup {
         all[5] = VaultHandler.fallbackExit.selector;
         all[6] = VaultHandler.supplyCollateral.selector;
         all[7] = VaultHandler.borrow.selector;
-        all[8] = VaultHandler.repay.selector;
-        all[9] = VaultHandler.warp.selector;
-        all[10] = VaultHandler.crashPrice.selector;
-        all[11] = VaultHandler.liquidate.selector;
-        all[12] = VaultHandler.donate.selector;
-        all[13] = VaultHandler.pauseResume.selector;
-        all[14] = VaultHandler.setSupplyCap.selector;
+        all[8] = VaultHandler.setSettlementLtv.selector;
+        all[9] = VaultHandler.repay.selector;
+        all[10] = VaultHandler.warp.selector;
+        all[11] = VaultHandler.crashPrice.selector;
+        all[12] = VaultHandler.liquidate.selector;
+        all[13] = VaultHandler.donate.selector;
+        all[14] = VaultHandler.pauseResume.selector;
+        all[15] = VaultHandler.setSupplyCap.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: all}));
         targetContract(address(handler));
     }
@@ -196,11 +204,17 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.settlementShareRateDecreased(), "remaining holders received settlement rounding");
     }
 
-    /// @dev A targeted settle can consume only the requested value above current free liquidity. A request that
-    ///      cannot consume any such value reverts without burning lender shares or changing borrower debt or
-    ///      collateral.
-    function invariant_targetedSettlementReservesFreeLiquidity() public view {
-        assertFalse(handler.settlementExceededRequestTail(), "targeted settle stayed within the request tail");
+    /// @dev A successful targeted settle requires a positive personal settlement-LTV slice at quote time.
+    function invariant_targetedSettlementRequiresPersonalEligibility() public view {
+        assertFalse(
+            handler.targetedSettlementWithoutPersonalEligibility(),
+            "targeted settlement required a positive personal slice"
+        );
+    }
+
+    /// @dev A targeted settle cannot consume more core shares than the request's gross pro-rata claim.
+    function invariant_targetedSettlementStaysWithinGrossClaim() public view {
+        assertFalse(handler.targetedSettlementExceededGrossClaim(), "targeted settlement stayed within gross claim");
     }
 
     /// @dev Settlement collateral ends at the configured receiver and is not retained as vault backing.
@@ -253,7 +267,8 @@ contract VaultConformanceInvariant is LidoLendSetup {
         emit log_named_uint("settlementRoundUpCases", handler.settlementRoundUpCases());
         emit log_named_uint("fullSettlementFills", handler.fullSettlementFills());
         emit log_named_uint("nothingSettledReverts", handler.nothingSettledReverts());
-        emit log_named_uint("illiquidTailSettlementCalls", handler.illiquidTailSettlementCalls());
+        emit log_named_uint("positiveSettlementLtvUpdates", handler.positiveSettlementLtvUpdates());
+        emit log_named_uint("eligibleTargetedSettlementCalls", handler.eligibleTargetedSettlementCalls());
         emit log_named_uint("mixedFallbackSettlementFills", handler.mixedFallbackSettlementFills());
         emit log_named_uint("collateralPayouts", handler.collateralPayouts());
         emit log_named_uint("settlementDustReverts", handler.settlementDustReverts());

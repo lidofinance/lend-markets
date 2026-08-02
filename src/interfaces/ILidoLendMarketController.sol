@@ -84,12 +84,15 @@ interface ILidoLendMarketController is
     /// @notice Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
     error SettlementExceedsAllowed();
 
+    /// @notice Thrown when a root-policy cut exceeds the lender's illiquid supply tail.
+    error SettlementExceedsSettleableSupply();
+
     // ---
     // TYPES
     // ---
 
     /// @notice One-read borrower snapshot for off-chain dashboards: collateral split, activation timer,
-    ///         guardian signal, debt, personal settle-down LTV, and live settle exposure.
+    ///         guardian signal, debt, personal settlement target, and live settle exposure.
     /// @param active Matured collateral, borrowable.
     /// @param activating Collateral inside the activation timer, not yet borrowable.
     /// @param dust Collateral below the activation threshold, withdrawable.
@@ -97,7 +100,7 @@ interface ILidoLendMarketController is
     /// @param flagCount Raw guardian flags on the account, regardless of status.
     /// @param banned Hard-blocked by a latched guardian ban.
     /// @param debtAssets Current borrow debt, in loan assets.
-    /// @param settlementLtv Borrower's personal settle-down target LTV (WAD), 0 when unset.
+    /// @param settlementLtv Borrower's personal post-cut target LTV (WAD), 0 when unset.
     /// @param isNextToSettle The borrower is next in line to be settled.
     /// @param slice Loan assets that may be cut from this position in one settle now.
     struct BorrowerPosition {
@@ -183,10 +186,12 @@ interface ILidoLendMarketController is
     /// @notice The current settlement config.
     function settlementConfig() external view returns (SettlementConfig memory);
 
-    /// @notice Borrower opts into auto-settle down to a target post-cut LTV (WAD). 0 clears it.
+    /// @notice Sets the caller's personal post-cut target LTV (WAD). When current LTV exceeds it, the position may
+    ///         be settled without being the queue root; dust policy may promote the cut to a full close. 0 clears it.
     function setSettlementLtv(uint256 ltv) external;
 
-    /// @notice Borrower's personal settle-down target LTV (WAD) and the slice it currently implies.
+    /// @notice Borrower's personal post-cut target LTV (WAD) and its raw target-LTV slice, excluding root policy and
+    ///         any `fullCutBelowCollateral` promotion applied by the executable `settlementFor` quote.
     function settlementLtv(address borrower) external view returns (uint256 ltv, uint256 sliceAssets);
 
     /// @notice Number of borrowers tracked in the settlement queue.
@@ -197,17 +202,17 @@ interface ILidoLendMarketController is
     ///      implies every tracked position is solvent, so the settle gate need only check that one.
     function hasBadDebt() external view returns (bool);
 
-    /// @notice The settle cut the policy allows against the queue root (the borrower a head-first settle cuts
-    ///         first): `settlementFor` applied to it, with the root address. `borrower` is address(0) when empty.
+    /// @notice The queue root's absolute borrower-policy cut, combined with any positive personal settlement-LTV
+    ///         slice. A concrete lender may execute the root-policy part only against its illiquid supply tail.
+    ///         `borrower` is address(0) when the queue is empty.
     function nextSettlementBorrower()
         external
         view
         returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
 
-    /// @notice The settle cut the policy allows against `borrower`, as the two anchors a core `settle` accepts:
-    ///         the caller passes one and 0 for the other — `supplyShares` to settle supply-anchored, `borrowShares`
-    ///         borrow-anchored. `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All
-    ///         zero when ineligible.
+    /// @notice The borrower's personal settlement-LTV cut, as the two anchors accepted by core settlement.
+    ///         `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All zero when the personal
+    ///         target is unset or does not imply a positive cut.
     function settlementFor(address borrower)
         external
         view
@@ -225,7 +230,8 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation
-    ///         maturation is deferred. Debt-free positions can still withdraw their collateral.
+    ///         maturation is deferred. Freeze adds no debt gate to debt-free withdrawals, but existing activation
+    ///         locks still apply.
     function freeze() external;
 
     /// @notice Lift the freeze.
@@ -245,6 +251,6 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt,
-    ///         personal settle-down LTV, and live settle exposure (next-to-settle flag + slice).
+    ///         personal settlement target, and live settle exposure (next-to-settle flag + slice).
     function positionOf(address borrower) external view returns (BorrowerPosition memory);
 }

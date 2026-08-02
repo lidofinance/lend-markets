@@ -2,7 +2,6 @@
 pragma solidity 0.8.35;
 
 import {MarketParams, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
@@ -19,11 +18,14 @@ import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 /// @notice L1 unit suite for `LidoLendERC4626`: the
 ///         vault is a single-market ERC-4626 over the market supply, plus two exits — `fallbackExit`
 ///         (redeem ordinary liquidity first, then settle the remainder against the risk queue) and `settle`
-///         (targeted, liquidity-neutral, subject to the core's settle gate). Deploys a fresh stack via
-///         `setup/` and drives the `MarketActions` helpers (which assert deltas/events) plus branch-specific
+///         (targeted, liquidity-neutral, and gated by the borrower's personal settlement LTV). Deploys a fresh stack
+/// via `setup/` and drives the `MarketActions` helpers (which assert deltas/events) plus branch-specific
 ///         checks. Oracle price is seeded (non-parity); distress is induced via a deliberate price crash.
 contract LidoLendERC4626Test is LidoLendSetup {
     using MarketActions for Market;
+
+    uint256 internal constant CORE_VIRTUAL_ASSETS = 1;
+    uint256 internal constant CORE_VIRTUAL_SHARES = 1e6;
 
     MockERC20 internal loan;
     MockERC20 internal collateral;
@@ -38,6 +40,17 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
     function _market() internal view returns (Market storage) {
         return protocol.markets[0];
+    }
+
+    function _settlementForDebtAssets(Market storage m, address borrower) internal view returns (uint256) {
+        (uint256 quotedSupplyShares,, uint256 remainingBorrowShares) = m.controller.settlementFor(borrower);
+        assertGt(remainingBorrowShares, 0, "precondition: helper models a partial supply-anchored cut");
+        MorphoMarket memory market_ = m.core.market(m.id);
+        return Math.mulDiv(
+            quotedSupplyShares,
+            uint256(market_.totalSupplyAssets) + CORE_VIRTUAL_ASSETS,
+            uint256(market_.totalSupplyShares) + CORE_VIRTUAL_SHARES
+        );
     }
 
     /// @dev Lender liquidity + a borrower at a safe LTV, then a price crash to an unhealthy-but-solvent
@@ -125,48 +138,19 @@ contract LidoLendERC4626Test is LidoLendSetup {
         assertEq(liquidAssets, 10_000e6, "exactly 10,000 loan tokens remain liquid");
     }
 
-    function _assertSixDecimalSettleRevertsNothingSettled(
-        Market storage m,
-        address lender,
-        address borrower,
-        uint256 shares
-    ) internal {
-        // lender vault shares, vault core shares, borrower debt shares.
-        uint256[3] memory before = [
-            m.vault.balanceOf(lender),
-            m.core.position(m.id, address(m.vault)).supplyShares,
-            m.core.position(m.id, borrower).borrowShares
-        ];
-        address[] memory borrowers = new address[](1);
-        borrowers[0] = borrower;
-
-        vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
-        vm.prank(lender);
-        m.vault.settle(shares, borrowers, lender, lender);
-
-        assertEq(m.vault.balanceOf(lender), before[0], "lender shares unchanged");
-        assertEq(m.core.position(m.id, address(m.vault)).supplyShares, before[1], "vault core shares unchanged");
-        assertEq(m.core.position(m.id, borrower).borrowShares, before[2], "borrower debt unchanged");
-    }
-
-    function _assertSixDecimalIlliquidSettle(
+    function _assertSixDecimalTargetedSettle(
         Market storage m,
         address lender,
         address borrower,
         uint256 shares,
         uint256 availableLiquidity
     ) internal {
-        // request assets, budget, expected cut, vault core shares before, borrower debt shares before.
+        // request assets, gross claim, expected cut, vault core shares before, borrower debt shares before.
         uint256[5] memory expected;
         {
-            MorphoMarket memory mk = m.core.market(m.id);
             expected[0] = m.vault.previewRedeem(shares);
-            uint256 settlementClaim =
+            expected[1] =
                 Math.mulDiv(m.core.position(m.id, address(m.vault)).supplyShares, shares, m.vault.totalSupply());
-            expected[1] = Math.min(
-                settlementClaim,
-                SharesMathLib.toSharesDown(expected[0] - availableLiquidity, mk.totalSupplyAssets, mk.totalSupplyShares)
-            );
             (uint256 quotedSupplyShares,,) = m.controller.settlementFor(borrower);
             expected[2] = Math.min(quotedSupplyShares, expected[1]);
             expected[3] = m.core.position(m.id, address(m.vault)).supplyShares;
@@ -178,16 +162,16 @@ contract LidoLendERC4626Test is LidoLendSetup {
         (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
             m.settle(lender, shares, borrowers, lender);
 
-        assertGt(expected[0], availableLiquidity, "full request extends above liquidity");
-        assertGt(expected[1], 0, "full request has a positive settlement budget");
+        assertLt(expected[0], availableLiquidity, "request is fully covered by current free liquidity");
+        assertGt(expected[1], 0, "request has a positive gross settlement claim");
         assertEq(
             expected[3] - m.core.position(m.id, address(m.vault)).supplyShares,
             expected[2],
-            "settlement consumes only the independently modeled request tail"
+            "settlement consumes the independently modeled gross request budget"
         );
-        assertGt(sharesBurned, 0, "illiquid request burns serviced shares");
-        assertGt(collateralSeized, 0, "illiquid request seizes collateral");
-        assertGt(debtCanceled, 0, "illiquid request cancels debt");
+        assertEq(sharesBurned, shares, "exact-budget supply anchor services the whole request");
+        assertGt(collateralSeized, 0, "targeted request seizes collateral");
+        assertGt(debtCanceled, 0, "targeted request cancels debt");
         assertLt(m.core.position(m.id, borrower).borrowShares, expected[4], "borrower debt reduced");
         MorphoMarket memory marketAfter = m.core.market(m.id);
         assertEq(
@@ -306,14 +290,13 @@ contract LidoLendERC4626Test is LidoLendSetup {
         assertEq(debtCanceled, 0, "no debt canceled");
     }
 
-    /// @dev The request-specific liquidity reserve works across the 12-decimal vault offset: requests below and at
-    ///      the 10,000-unit liquidity boundary revert when nothing can be settled, while a larger request can consume
-    ///      only its value above that boundary.
-    function test_settle_reservesRequestLiquidity_withSixDecimalLoanToken() public {
+    /// @dev Targeted settlement uses the request's gross core-supply claim even when the request is fully covered by
+    ///      free liquidity. The 6-decimal loan token exercises the vault's 12-decimal offset and nontrivial share math.
+    function test_settle_usesGrossRequest_withSixDecimalLoanToken() public {
         Market storage m = _deploySixDecimalMarket();
         address lender = _actor("six-decimal-settle-lender");
         address borrower = _actor("six-decimal-settle-borrower");
-        (uint256 ownerShares, uint256 availableLiquidity) = _seedSixDecimalLiquidityBoundary(m, lender, borrower);
+        (, uint256 availableLiquidity) = _seedSixDecimalLiquidityBoundary(m, lender, borrower);
 
         uint256 borrowerDebt = m.core.market(m.id).totalBorrowAssets;
         uint256 borrowerCollateral = m.core.position(m.id, borrower).collateral;
@@ -323,16 +306,12 @@ contract LidoLendERC4626Test is LidoLendSetup {
             sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 2_000_000 ether, ltvStepBps: 100
         });
         m.controller.setSettlementConfig(fullCut);
+        vm.prank(borrower);
+        m.controller.setSettlementLtv(0.8e18);
 
         uint256 belowBoundaryShares = m.vault.previewWithdraw(availableLiquidity - 1);
         assertLt(m.vault.previewRedeem(belowBoundaryShares), availableLiquidity, "request is below liquidity");
-        _assertSixDecimalSettleRevertsNothingSettled(m, lender, borrower, belowBoundaryShares);
-
-        uint256 boundaryShares = m.vault.previewWithdraw(availableLiquidity);
-        assertEq(m.vault.previewRedeem(boundaryShares), availableLiquidity, "request is exactly at liquidity");
-        _assertSixDecimalSettleRevertsNothingSettled(m, lender, borrower, boundaryShares);
-
-        _assertSixDecimalIlliquidSettle(m, lender, borrower, ownerShares, availableLiquidity);
+        _assertSixDecimalTargetedSettle(m, lender, borrower, belowBoundaryShares, availableLiquidity);
     }
 
     /// @dev A sub-asset-unit share fragment has zero current redeem value. It can still be burned exactly without
@@ -468,18 +447,20 @@ contract LidoLendERC4626Test is LidoLendSetup {
         _market().vault.settle(0, bs, address(this), address(this));
     }
 
-    // ── settle: liquidity-neutral & subject to the core gate ──
+    // ── settle: liquidity-neutral and personal-LTV-gated ──
 
     function test_settle_liquidityNeutral() public {
         Market storage m = _market();
         (address lender, address borrower) = _distress(m, 100 ether, 20 ether, 0.22e36);
+        vm.prank(borrower);
+        m.controller.setSettlementLtv(0.5e18);
         address[] memory bs = new address[](1);
         bs[0] = borrower;
-        uint256 sliceAssets = m.controller.positionOf(borrower).slice;
+        uint256 expectedDebtCanceled = _settlementForDebtAssets(m, borrower);
         uint128 colBefore = m.core.position(m.id, borrower).collateral;
         // The helper asserts loanAssets == 0 (no liquid leg) and the receiver/share deltas.
         (,, uint256 collateralSeized, uint256 debtCanceled) = m.settle(lender, m.vault.balanceOf(lender), bs, lender);
-        assertEq(debtCanceled, sliceAssets, "settle cut == settlementFor prediction (exact)");
+        assertEq(debtCanceled, expectedDebtCanceled, "settle cut == settlementFor prediction (exact)");
         assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");
     }
 
@@ -508,6 +489,12 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.supplyCollateral(borrower, 100 ether);
         m.activateCollateral();
         m.borrow(borrower, 20 ether); // 80 idle; remainder 20
+
+        uint256 debtAssets = m.controller.positionOf(borrower).debtAssets;
+        uint256 collateralValue = 100 ether * MockPriceOracle(address(m.oracle)).price() / 1e36;
+        uint256 currentLtv = Math.mulDiv(debtAssets, 1e18, collateralValue);
+        vm.prank(borrower);
+        m.controller.setSettlementLtv(currentLtv / 2);
 
         // One settle cut == the controller's predicted slice; total shares burned == the shares for the
         // 80 idle redeemed PLUS the shares for that one cut — both recomputed before the exit.
@@ -597,15 +584,17 @@ contract LidoLendERC4626Test is LidoLendSetup {
     function test_settle_receiverNotOwner() public {
         Market storage m = _market();
         (address lender, address borrower) = _distress(m, 100 ether, 20 ether, 0.22e36);
+        vm.prank(borrower);
+        m.controller.setSettlementLtv(0.5e18);
         address receiver = _actor("receiver");
-        uint256 sliceAssets = m.controller.positionOf(borrower).slice;
+        uint256 expectedDebtCanceled = _settlementForDebtAssets(m, borrower);
         uint128 colBefore = m.core.position(m.id, borrower).collateral;
         address[] memory bs = new address[](1);
         bs[0] = borrower;
         // Helper asserts owner share burn, receiver collateral, and owner!=receiver routing.
         (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
             m.settle(lender, m.vault.balanceOf(lender), bs, receiver);
-        assertEq(debtCanceled, sliceAssets, "cancelled == settlementFor prediction");
+        assertEq(debtCanceled, expectedDebtCanceled, "cancelled == settlementFor prediction");
         assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");
         assertGt(sharesBurned, 0, "settle burned shares");
     }

@@ -56,7 +56,7 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
     uint256 internal constant COLLATERAL = 200e18; // value 240 WETH @ 1.2; ample headroom over the debt
     uint256 internal constant BORROW = 113e18;
     // A second borrower carrying part of the book, so closing BORROWER cancels less than the whole pool debt
-    // and stays within the lender's settleable supply (the borrow-anchored close rounds the debt up by 1).
+    // and the lender has enough supply shares for the borrow-anchored close's one-unit round-up.
     uint256 internal constant FILLER_COLLATERAL = 100e18;
     uint256 internal constant FILLER_BORROW = 20e18;
 

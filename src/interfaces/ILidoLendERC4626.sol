@@ -10,8 +10,8 @@ import {ILidoLendMarketController} from "./ILidoLendMarketController.sol";
 
 /// @title ILidoLendERC4626
 /// @notice Single-market ERC-4626 wrapper over a `LidoLend` (Morpho Blue fork) market. Beyond the standard
-///         vault surface it adds settle-based exits — `settle` (targeted) and `fallbackExit` (automatic) —
-///         that service the illiquid remainder of a withdrawal against the market's risk queue.
+///         vault surface, `settle` applies caller-ordered personal-policy cuts without withdrawing liquidity,
+///         while `fallbackExit` pays available loan assets before settling remaining shares against risk-queue roots.
 interface ILidoLendERC4626 is IERC4626 {
     // ---
     // ERRORS
@@ -65,7 +65,7 @@ interface ILidoLendERC4626 is IERC4626 {
     // EVENTS
     // ---
 
-    /// @notice An automatic `fallbackExit` settlement leg completed, possibly with a zero or partial fill.
+    /// @notice A `fallbackExit` reached its queue-driven settlement leg, possibly with a zero or partial fill.
     /// @param caller The address that called the exit.
     /// @param owner The account whose shares were burned.
     /// @param receiver The recipient of the liquid-leg loan assets and seized collateral.
@@ -148,14 +148,11 @@ interface ILidoLendERC4626 is IERC4626 {
     // SETTLEMENT
     // ---
 
-    /// @notice Targeted, liquidity-neutral settlement. Free market liquidity is reserved against the requested
-    ///         shares first; only their remaining value can cut `borrowers` in order and pay seized collateral to
-    ///         `receiver`. A request that settles none of the supplied borrowers reverts. Exhausting a positive budget
-    ///         partial-fills. The liquidity reserve is reapplied per call, so splitting one request can settle less
-    ///         than submitting the same shares together. Controller and core errors, including a zero-collateral dust
-    ///         slice, still revert.
-    /// @param shares Vault shares whose value above current free market liquidity bounds the cuts.
-    /// @param borrowers Positions to cut, in order; each sized via `controller.settlementFor`.
+    /// @notice Targeted, liquidity-neutral settlement against caller-ordered borrowers. Each cut requires a positive
+    ///         personal settlement-LTV slice but not queue-root status; free liquidity remains untouched. A request
+    ///         that settles no borrower reverts; budget exhaustion partial-fills.
+    /// @param shares Vault shares whose gross pro-rata core-supply claim bounds the cuts.
+    /// @param borrowers Positions to cut in order, each sized by its personal settlement-LTV target.
     /// @param receiver Recipient of the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
     /// @return sharesBurned Shares burned for the settled slice.
@@ -166,9 +163,9 @@ interface ILidoLendERC4626 is IERC4626 {
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 
-    /// @notice Automatic fallback exit. First burns the shares covered by ordinary market liquidity and pays their
-    ///         loan-asset value, then settles the genuinely illiquid remainder against the risk queue, head first.
-    ///         Queue or iteration exhaustion partial-fills; controller and core errors still revert.
+    /// @notice Queue-driven fallback exit. The liquid leg burns as many requested shares as current market liquidity
+    ///         can service and pays loan assets; the settlement leg applies the remaining share claim to risk-queue
+    ///         roots, head first. Queue or iteration exhaustion partial-fills; controller and core errors still revert.
     /// @param shares Vault shares to exit through the liquid leg first and settlement second.
     /// @param receiver Recipient of both the redeemed loan assets and the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
