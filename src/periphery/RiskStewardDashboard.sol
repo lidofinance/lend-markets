@@ -51,6 +51,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     // ---
 
     constructor(address admin, ILidoLend lidoLend) {
+        if (admin == address(0) || address(lidoLend) == address(0)) revert ZeroAddress();
         LIDO_LEND = lidoLend;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
@@ -61,14 +62,13 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
 
     /// @inheritdoc IRiskStewardDashboard
     function addMarketSteward(Id marketId, address steward) external onlyRole(STEWARD_ADMIN_ROLE) {
-        _stewards[marketId].add(steward);
-        emit MarketStewardSet(marketId, steward, true);
+        if (steward == address(0)) revert ZeroSteward();
+        if (_stewards[marketId].add(steward)) emit MarketStewardSet(marketId, steward, true);
     }
 
     /// @inheritdoc IRiskStewardDashboard
     function removeMarketSteward(Id marketId, address steward) external onlyRole(STEWARD_ADMIN_ROLE) {
-        _stewards[marketId].remove(steward);
-        emit MarketStewardSet(marketId, steward, false);
+        if (_stewards[marketId].remove(steward)) emit MarketStewardSet(marketId, steward, false);
     }
 
     /// @inheritdoc IRiskStewardDashboard
@@ -117,6 +117,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     /// @inheritdoc IRiskStewardDashboard
     function revokeInstantActivation(Id marketId, address caller) external onlyMarketSteward(marketId) {
         _configurator(marketId).setInstantActivation(caller, false);
+        emit InstantActivationRevoked(marketId, caller);
     }
 
     // ---

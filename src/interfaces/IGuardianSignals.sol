@@ -44,8 +44,9 @@ interface IGuardianSignals is IGuardianSignalsView {
     /// @param timestamp   The reported block's timestamp; the quorum-scan frontier orders guardians by this value.
     event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp);
     /// @notice Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
+    /// @param caller    The account whose call advanced the frontier.
     /// @param timestamp The new frontier timestamp.
-    event QuorumFrontierAdvanced(uint256 timestamp);
+    event QuorumFrontierAdvanced(address indexed caller, uint256 timestamp);
     /// @notice Emitted when a guardian reports an account as suspect (raises the activation delay, never bans).
     /// @param marketId  The market the report is scoped to.
     /// @param account   The suspected account.

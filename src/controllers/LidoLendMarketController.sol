@@ -103,6 +103,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
     constructor(IMorpho lidoLend) {
+        if (address(lidoLend) == address(0)) revert ZeroAddress();
         LIDO_LEND = lidoLend;
         _disableInitializers();
     }
@@ -116,10 +117,14 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         CollateralActivationConfig calldata activationConfig,
         SettlementConfig calldata settlementConfig
     ) external initializer {
+        if (admin == address(0) || address(guardianSignals) == address(0)) {
+            revert ZeroAddress();
+        }
         __AccessControlEnumerable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         marketId = marketId_;
         _guardianSignals = guardianSignals;
+        emit GuardianSignalsSet(address(guardianSignals));
         _settlementQueue.init();
         _settlementQueue.setSettlementConfig(settlementConfig);
         _activation.setConfig(activationConfig);
@@ -211,9 +216,10 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     /// @inheritdoc ILidoLendMarketController
     function maxDeposit() external view returns (uint256) {
         if (isPaused()) return 0;
-        if (supplyCap == 0) return type(uint256).max;
+        uint256 cap = supplyCap;
+        if (cap == 0) return type(uint256).max;
         (uint256 totalSupplyAssets,,,) = _marketTotals(LIDO_LEND.idToMarketParams(marketId));
-        return Math.saturatingSub(supplyCap, totalSupplyAssets);
+        return Math.saturatingSub(cap, totalSupplyAssets);
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -394,23 +400,26 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // Freeze blocks withdraw only while there is open debt. A zero-debt withdraw is always allowed
         // as a non-custody exit, and a banned address may still pull its own collateral.
-        if (isFrozen && position.borrowShares != 0) revert MarketIsFrozen();
+        bool frozen = isFrozen;
+        if (frozen && position.borrowShares != 0) revert MarketIsFrozen();
 
         // settle activation, then drain the un-matured buckets (dust, then activating above the lock) and reverse
         // any same-tx flash addition to the inflow (the lib owns the undo); a revert below rolls this back. The
         // lib returns the post-debit inactive, so active is the post-withdraw raw minus it.
-        _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
+        _activation.sync(frozen, borrower, _guardianSignals.getOpinion(id, borrower));
         uint256 inactive = _activation.debit(borrower, hookData.assets);
 
         if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
         position.collateral -= hookData.assets;
-        uint256 activeCollateral = position.collateral - inactive;
+
+        if (inactive > position.collateral) revert ActivationLockActive();
 
         // With open debt, the remaining active collateral must still cover the debt at LLTV. `_getMaxBorrow`
         // returns 0 for sub-threshold dust, so a debt-bearing position cannot be drained below
         // `minActivationAmount` — to exit below it, repay the debt to zero first (a zero-debt withdraw is
         // unconstrained here).
         if (position.borrowShares != 0) {
+            uint256 activeCollateral = position.collateral - inactive;
             MarketView memory marketView = _marketView(id);
             if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, activeCollateral)) {
                 revert InsufficientActiveCollateral();
@@ -423,7 +432,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     /// @dev Borrow hook: blocked by a freeze or a ban on caller/receiver/borrower. Capacity uses active
     ///      (matured) collateral only.
     function _handleBorrow(Id id, BorrowHookData memory hookData) internal {
-        if (isFrozen) revert MarketIsFrozen();
+        bool frozen = isFrozen;
+        if (frozen) revert MarketIsFrozen();
 
         // A share-anchored borrow can round its assets to zero, minting borrow shares for nothing.
         if (hookData.assets == 0) revert ZeroBorrowAssets();
@@ -446,7 +456,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         // Borrow capacity uses active (matured) collateral only. `sync` matures any ready lot, subject to the
         // quorum-scan gate, and returns the post-mature inactive total. Active is the raw collateral minus that.
-        uint256 inactive = _activation.sync(isFrozen, hookData.onBehalf, opinion);
+        uint256 inactive = _activation.sync(frozen, hookData.onBehalf, opinion);
 
         PositionView memory position = _positionView(id, hookData.onBehalf);
         uint256 activeCollateral = position.collateral - inactive;

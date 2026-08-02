@@ -392,7 +392,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         uint40 frontierTimestamp = Arrays.sort(timestamps)[n - quorum].toUint40();
         if (frontierTimestamp > _quorumFrontierTimestamp) {
             _quorumFrontierTimestamp = frontierTimestamp;
-            emit QuorumFrontierAdvanced(frontierTimestamp);
+            emit QuorumFrontierAdvanced(msg.sender, frontierTimestamp);
         }
     }
 

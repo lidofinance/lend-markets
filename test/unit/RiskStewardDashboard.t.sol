@@ -292,4 +292,47 @@ contract RiskStewardDashboardTest is Test {
         vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
         dashboard.revokeInstantActivation(marketId, address(0xBEEF));
     }
+
+    function test_addMarketSteward_zeroReverts() public {
+        vm.expectRevert(IRiskStewardDashboard.ZeroSteward.selector);
+        dashboard.addMarketSteward(marketId, address(0));
+    }
+
+    function test_addMarketSteward_reAddEmitsNothing() public {
+        vm.recordLogs();
+        dashboard.addMarketSteward(marketId, steward);
+        assertEq(vm.getRecordedLogs().length, 0, "no event on a no-op re-add");
+    }
+
+    function test_removeMarketSteward_nonStewardEmitsNothing() public {
+        vm.recordLogs();
+        dashboard.removeMarketSteward(marketId, address(0xBEEF));
+        assertEq(vm.getRecordedLogs().length, 0, "no event when removing a non-steward");
+    }
+
+    function test_removeMarketSteward_actualRemoveEmits() public {
+        vm.expectEmit(true, true, false, true);
+        emit IRiskStewardDashboard.MarketStewardSet(marketId, steward, false);
+        dashboard.removeMarketSteward(marketId, steward);
+        assertFalse(dashboard.isMarketSteward(marketId, steward), "steward removed");
+    }
+
+    function test_revokeInstantActivation_emitsEvent() public {
+        address caller = address(0xCA11E7);
+        vm.expectEmit(true, true, false, true);
+        emit IRiskStewardDashboard.InstantActivationRevoked(marketId, caller);
+        vm.prank(steward);
+        dashboard.revokeInstantActivation(marketId, caller);
+        assertFalse(controller.instantActivation(caller), "controller revoke called");
+    }
+
+    function test_constructor_zeroAdminReverts() public {
+        vm.expectRevert(IRiskStewardDashboard.ZeroAddress.selector);
+        new RiskStewardDashboard(address(0), ILidoLend(address(core)));
+    }
+
+    function test_constructor_zeroCoreReverts() public {
+        vm.expectRevert(IRiskStewardDashboard.ZeroAddress.selector);
+        new RiskStewardDashboard(address(this), ILidoLend(address(0)));
+    }
 }

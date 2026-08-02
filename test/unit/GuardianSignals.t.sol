@@ -42,7 +42,7 @@ contract GuardianSignalsTest is Test {
     event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint256 strikes);
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
     event Banned(Id indexed marketId, address indexed account);
-    event QuorumFrontierAdvanced(uint256 timestamp);
+    event QuorumFrontierAdvanced(address indexed caller, uint256 timestamp);
 
     function setUp() public {
         vm.roll(1000);
@@ -448,13 +448,13 @@ contract GuardianSignalsTest is Test {
         vm.recordLogs();
         _heartbeat(GUARDIAN_1, 999); // below quorum: frontier holds at 0
         Vm.Log[] memory subQuorum = vm.getRecordedLogs();
-        bytes32 advancedSig = keccak256("QuorumFrontierAdvanced(uint40)");
+        bytes32 advancedSig = keccak256("QuorumFrontierAdvanced(address,uint256)");
         for (uint256 i; i < subQuorum.length; ++i) {
             assertTrue(subQuorum[i].topics[0] != advancedSig, "a sub-quorum heartbeat emits no advance");
         }
 
-        vm.expectEmit(false, false, false, true, address(gs));
-        emit QuorumFrontierAdvanced(998);
+        vm.expectEmit(true, false, false, true, address(gs));
+        emit QuorumFrontierAdvanced(GUARDIAN_2, 998);
         _heartbeat(GUARDIAN_2, 998);
     }
 

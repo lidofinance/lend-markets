@@ -16,10 +16,8 @@ import {VaultHandler} from "./handlers/VaultHandler.sol";
 ///         fallbackExit/borrow/repay/crash/warp/liquidate/donate, the vault must never create value, its share
 ///         price must move only via interest (up) or socialized bad debt (down) — never via a settle, a
 ///         fallbackExit, or a donation — and every `max*` must stay a real, honoured bound.
-/// @dev Runs `fail-on-revert = false`: the settle / fallbackExit gate on live queue + liquidity state is hard to
-///      bound perfectly, so actions are best-effort and the invariants carry the weight. `afterInvariant` reports
-///      the reached depth so a vacuous campaign (no settles / exits) is visible.
-/// forge-config: default.invariant.fail-on-revert = false
+/// @dev `afterInvariant` reports the reached depth so a vacuous campaign (no settles / exits) is visible.
+/// forge-config: default.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 256
 /// forge-config: default.invariant.depth = 250
 contract VaultConformanceInvariant is LidoLendSetup {
