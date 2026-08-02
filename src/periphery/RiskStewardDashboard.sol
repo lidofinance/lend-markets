@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
@@ -13,7 +13,7 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 ///         a market's current activation config, enforces a tighten-only change, and writes the full config
 ///         back. Stewards are appointed per market id, so one dashboard serves every market. The controller
 ///         still validates bounds and ordering on write, so this only adds the direction (tighten-only) guard.
-contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
+contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard {
     using EnumerableSet for EnumerableSet.AddressSet;
 
     // ---
@@ -51,6 +51,7 @@ contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
     // ---
 
     constructor(address admin, ILidoLend lidoLend) {
+        if (admin == address(0) || address(lidoLend) == address(0)) revert ZeroAddress();
         LIDO_LEND = lidoLend;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
@@ -61,14 +62,13 @@ contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
 
     /// @inheritdoc IRiskStewardDashboard
     function addMarketSteward(Id marketId, address steward) external onlyRole(STEWARD_ADMIN_ROLE) {
-        _stewards[marketId].add(steward);
-        emit MarketStewardSet(marketId, steward, true);
+        if (steward == address(0)) revert ZeroSteward();
+        if (_stewards[marketId].add(steward)) emit MarketStewardSet(marketId, steward, true);
     }
 
     /// @inheritdoc IRiskStewardDashboard
     function removeMarketSteward(Id marketId, address steward) external onlyRole(STEWARD_ADMIN_ROLE) {
-        _stewards[marketId].remove(steward);
-        emit MarketStewardSet(marketId, steward, false);
+        if (_stewards[marketId].remove(steward)) emit MarketStewardSet(marketId, steward, false);
     }
 
     /// @inheritdoc IRiskStewardDashboard
@@ -117,6 +117,7 @@ contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
     /// @inheritdoc IRiskStewardDashboard
     function revokeInstantActivation(Id marketId, address caller) external onlyMarketSteward(marketId) {
         _configurator(marketId).revokeInstantActivation(caller);
+        emit InstantActivationRevoked(marketId, caller);
     }
 
     // ---

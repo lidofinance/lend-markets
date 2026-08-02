@@ -23,8 +23,7 @@ import {MockPriceOracle} from "../../setup/Mocks.sol";
 ///         `settle`, `fallbackExit`, direct donations). Around each new-mechanic call it records ghosts the
 ///         invariants read: `settle`/`fallbackExit` are pro-rata so they must NOT move the share price (interest is
 ///         accrued first to isolate them); a direct donation is uncounted so it must NOT move the price either; and
-///         no exit burns more shares than requested. Runs with `fail-on-revert = false`, so actions best-effort and
-///         the guards only keep the fuzzer productive, not correct.
+///         no exit burns more shares than requested.
 contract VaultHandler is CommonBase, StdCheats, StdUtils {
     ILidoLend internal immutable CORE;
     ILidoLendERC4626 internal immutable VAULT;
@@ -134,7 +133,9 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
 
     function deposit(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
-        amount = bound(amount, 1e18, 1_000_000e18);
+        uint256 room = VAULT.maxDeposit(a);
+        if (!_paused() && room < 1e18) return;
+        amount = bound(amount, 1e18, _paused() ? 1_000_000e18 : Math.min(room, 1_000_000e18));
         _mintTo(LOAN, a, amount);
         vm.startPrank(a);
         LOAN.approve(address(VAULT), amount);
@@ -152,7 +153,9 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
 
     function mint(uint256 actorSeed, uint256 shares) external {
         address a = _actor(actorSeed);
-        shares = bound(shares, 1e18, 1_000_000e18);
+        uint256 shareRoom = VAULT.maxMint(a);
+        if (!_paused() && shareRoom < 1e18) return;
+        shares = bound(shares, 1e18, _paused() ? 1_000_000e18 : Math.min(shareRoom, 1_000_000e18));
         uint256 cost = VAULT.previewMint(shares);
         _mintTo(LOAN, a, cost);
         vm.startPrank(a);
@@ -291,6 +294,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         _mintTo(COLLATERAL, a, amount);
         vm.startPrank(a);
         COLLATERAL.approve(address(CORE), amount);
+        if (_paused()) vm.expectRevert(PausableUntil.ResumedExpected.selector);
         CORE.supplyCollateral(params, amount, a, "");
         vm.stopPrank();
     }
@@ -313,9 +317,11 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
             amount, uint256(mk.totalBorrowShares) + 1e6, uint256(mk.totalBorrowAssets) + 1, Math.Rounding.Ceil
         );
         if (mintShares > type(uint128).max) return;
+        bool paused = _paused();
+        if (paused) vm.expectRevert(PausableUntil.ResumedExpected.selector);
         vm.prank(a);
         CORE.borrow(params, amount, 0, a, a);
-        borrows++;
+        if (!paused) borrows++;
     }
 
     function repay(uint256 actorSeed, uint256 amount) external {
@@ -330,6 +336,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         _mintTo(LOAN, a, owed);
         vm.startPrank(a);
         LOAN.approve(address(CORE), owed);
+        if (_paused()) vm.expectRevert(PausableUntil.ResumedExpected.selector);
         CORE.repay(params, 0, shares, a, "");
         vm.stopPrank();
     }
@@ -383,6 +390,12 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         _mintTo(LOAN, keeper, type(uint128).max);
         vm.startPrank(keeper);
         LOAN.approve(address(CORE), type(uint256).max);
+        if (_paused()) {
+            vm.expectRevert(PausableUntil.ResumedExpected.selector);
+            CORE.liquidate(params, victim, amount, 0, "");
+            vm.stopPrank();
+            return;
+        }
         CORE.liquidate(params, victim, amount, 0, "");
         vm.stopPrank();
         liquidations++;

@@ -68,9 +68,10 @@ contract RoundingDustTest is LidoLendSetup {
         vm.stopPrank();
         _gap("after supply  ");
 
-        _supplyCollateralAndBorrow(B1, 100 ether, 40 ether);
+        uint256 maxBorrow = 100 ether * oraclePrice / 1e36 * 80 / 100;
+        _supplyCollateralAndBorrow(B1, 100 ether, maxBorrow / 2);
         _gap("after borrow1 ");
-        _supplyCollateralAndBorrow(B2, 100 ether, 30 ether);
+        _supplyCollateralAndBorrow(B2, 100 ether, maxBorrow * 3 / 8);
         _gap("after borrow2 ");
 
         vm.warp(block.timestamp + 365 days);

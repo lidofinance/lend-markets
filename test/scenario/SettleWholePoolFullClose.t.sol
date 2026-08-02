@@ -9,6 +9,7 @@ import {Test} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 
 interface IOracle {
     function price() external view returns (uint256);
@@ -89,7 +90,7 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
                 oracleSource: address(collateral),
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     activatingLockAmount: 0,
@@ -102,7 +103,7 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
                 }),
                 // fullCutBelowCollateral above both collaterals, so any partial slice strands dust and the queue
                 // lifts every cut to a whole close.
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 200e18, ltvStepBps: 100
                 }),
                 guardians: guardians,

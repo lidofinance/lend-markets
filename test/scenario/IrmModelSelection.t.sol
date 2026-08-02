@@ -13,7 +13,6 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {LidoLend} from "@lido-lend/src/LidoLend.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 
@@ -36,6 +35,8 @@ import {MathLib as MorphoMathLib} from "@lido-lend/src/libraries/MathLib.sol";
 import {MathLib as IrmMathLib, WAD_INT} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/MathLib.sol";
 import {ExpLib} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/ExpLib.sol";
 import {UtilsLib} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/UtilsLib.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
 /// @dev Minimal view onto the adaptive IRM's `rateAtTarget`, declared locally so it can be read with the core's
 ///      `Id` type (the submodule's `AdaptiveCurveIrm` carries its own `Id` that does not unify with the core's).
@@ -535,14 +536,11 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
     ///      yield) and need no retune; adaptive and kinked are re-tuned yearly in place through their setters.
     ///      Initial params are scenario inputs; yearly `_retune` derives params from the trailing-year average
     ///      APR. Runs before `createMarket`, so `setMarketIrm` probes the model on a fresh (zero) market.
-    /// @dev Deploy the core with `new` rather than the deployer's `vm.getCode` path: this file imports the IRM
-    ///      submodule's own nested copy of the core types, which fragments getCode's version resolution for the core.
-    function _deployCore(address admin) internal override returns (address) {
-        address impl = address(new LidoLend());
-        return _behindProxy(impl, admin, abi.encodeWithSignature("initialize(address)", admin));
-    }
-
-    function _configureAdaptiveIrm(address router, MarketParams memory params, address owner) internal override {
+    function _configureAdaptiveIrm(address router, MarketParams memory params, address owner)
+        internal
+        override
+        returns (address)
+    {
         _router = router;
         IrmMarketParams memory irmParams = _toIrmParams(params);
         IrmIIrm candidate;
@@ -603,6 +601,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
 
         _candidate = address(candidate);
         IrmRouter(router).setMarketIrm(irmParams, candidate);
+        return _candidate;
     }
 
     /// @dev Yearly retune: rebuild the params from the trailing-year average APR and re-set them on the routed
@@ -680,7 +679,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
                 oracleSource: collateralToken,
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     maxDelayInflow: 10_000 ether,
@@ -691,7 +690,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
                     delayPerStrike: 2 hours,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,

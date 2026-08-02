@@ -15,3 +15,9 @@
 	path = lib/lido-lend-irm
 	url = git@github.com:lidofinance/lido-lend-irm.git
 	branch = main
+[submodule "lib/bundler3"]
+	path = lib/bundler3
+	url = https://github.com/morpho-org/bundler3
+[submodule "lib/circuit-breaker"]
+	path = lib/circuit-breaker
+	url = https://github.com/lidofinance/circuit-breaker.git

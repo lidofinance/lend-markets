@@ -2,7 +2,7 @@
 pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, MarketParams, Position, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Test} from "forge-std/Test.sol";
@@ -10,6 +10,7 @@ import {Test} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 
 interface IOracle {
     function price() external view returns (uint256);
@@ -40,6 +41,9 @@ interface IVault {
     function balanceOf(address account) external view returns (uint256);
     function maxRedeem(address owner) external view returns (uint256);
     function fallbackExit(uint256 shares, address receiver, address owner, uint256 maxIterations)
+        external
+        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
+    function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 }
@@ -88,7 +92,7 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
                 oracleSource: address(collateral),
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     activatingLockAmount: 0,
@@ -99,7 +103,7 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
                     delayPerStrike: 0,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100
                 }),
                 guardians: guardians,
@@ -169,6 +173,44 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         assertGe(debtCanceled, B_BORROW, "at least the root's debt cancelled");
         assertEq(collateral.balanceOf(RECEIVER), collateralSeized, "receiver got the seized collateral");
         assertGt(collateralSeized, 0, "collateral seized");
+    }
+
+    /// @dev Targeted `settle` on the last remaining borrower, with free liquidity still in the book. The core caps
+    ///      a settle at `settleableSupply = vaultSupplyAssets - freeLiquidity`, and `vaultSupplyAssets` is the
+    ///      vault's whole supply rounded DOWN, so the cap lands one wei below the outstanding debt — while the
+    ///      borrow-anchored full close cancels that debt rounded UP. The close therefore misses by exactly 1 wei.
+    function testRevert_settle_soleBorrowerFullClose_exceedsSettleableSupply() public {
+        // Leave BORROWER as the only debtor, so a full close consumes the entire settleable supply.
+        uint256 fillerShares = core.position(id, FILLER).borrowShares;
+        loan.mint(FILLER, F_BORROW * 2);
+        vm.startPrank(FILLER);
+        loan.approve(address(core), type(uint256).max);
+        core.repay(params, 0, fillerShares, FILLER, "");
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 30 days); // accrue interest so the totals are not round
+        core.accrueInterest(params);
+
+        _setFullCut();
+
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = BORROWER;
+        uint256 shares = IVault(vault).balanceOf(LENDER);
+
+        // The gap is exactly one wei: the cap floors the vault's supply, the close ceils the borrower's debt.
+        MorphoMarket memory mk = core.market(id);
+        uint256 vaultSupplyAssets = SharesMathLib.toAssetsDown(
+            core.position(id, vault).supplyShares, mk.totalSupplyAssets, mk.totalSupplyShares
+        );
+        uint256 settleable = vaultSupplyAssets - (mk.totalSupplyAssets - mk.totalBorrowAssets);
+        uint256 wouldCancel = SharesMathLib.toAssetsUp(
+            core.position(id, BORROWER).borrowShares, mk.totalBorrowAssets, mk.totalBorrowShares
+        );
+        assertEq(wouldCancel - settleable, 1, "the full close overshoots the cap by exactly one wei");
+
+        vm.prank(LENDER);
+        vm.expectRevert(bytes("settlement exceeds settleable supply"));
+        IVault(vault).settle(shares, borrowers, RECEIVER, LENDER);
     }
 
     /// @dev With no full-cut lever the queue only grants the gradual policy slice, so a single waterfall

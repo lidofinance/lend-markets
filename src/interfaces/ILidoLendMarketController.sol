@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
@@ -10,13 +10,13 @@ import {IPausableUntil} from "./IPausableUntil.sol";
 import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 /// @title ILidoLendMarketController
-/// @notice Full external surface of `LidoLendMarketController`: the core hook interface and AccessControl
+/// @notice Full external surface of `LidoLendMarketController`: the core hook interface and AccessControlEnumerable
 ///         (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the
 ///         borrower dashboard. The controller implements this interface, so it is the single source for
 ///         the dashboard struct, events, errors, and the function docs the contract inherits.
 interface ILidoLendMarketController is
     ILidoLendBaseMarketController,
-    IAccessControl,
+    IAccessControlEnumerable,
     ILidoLendMarketConfigurator,
     IPausableUntil
 {
@@ -33,12 +33,18 @@ interface ILidoLendMarketController is
     /// @notice Emitted when the supply cap is set.
     event SupplyCapSet(uint256 cap, address indexed account);
 
+    /// @notice Emitted once when the market binds its guardian-signals registry at initialization.
+    event GuardianSignalsSet(address indexed guardianSignals);
+
     // ---
     // ERRORS
     // ---
 
     /// @notice Thrown when the hook caller is not the core.
     error Unauthorized();
+
+    /// @notice Thrown when a required address argument is zero.
+    error ZeroAddress();
 
     /// @notice Thrown when the hook id is not this controller's market.
     error InvalidMarketId();
@@ -57,6 +63,10 @@ interface ILidoLendMarketController is
 
     /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
+
+    /// @notice Thrown when a withdrawal would leave raw collateral below the amount still held in the
+    ///         un-matured buckets (a locked activating lot plus dust).
+    error ActivationLockActive();
 
     /// @notice Thrown when a borrow would mint borrow shares while transferring zero loan assets.
     error ZeroBorrowAssets();

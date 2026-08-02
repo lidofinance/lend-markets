@@ -2,7 +2,7 @@
 
 # LidoLendMarketController
 
-Full external surface of `LidoLendMarketController`: the core hook interface and AccessControl (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the borrower dashboard. The controller implements this interface, so it is the single source for the dashboard struct, events, errors, and the function docs the contract inherits.
+Full external surface of `LidoLendMarketController`: the core hook interface and AccessControlEnumerable (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the borrower dashboard. The controller implements this interface, so it is the single source for the dashboard struct, events, errors, and the function docs the contract inherits.
 
 ## Enums
 

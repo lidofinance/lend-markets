@@ -2,9 +2,10 @@
 pragma solidity 0.8.35;
 
 import {Test, stdError} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
-import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, IMorpho} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
@@ -52,6 +53,34 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     function _m() internal view returns (Market storage) {
         return protocol.markets[0];
+    }
+
+    function test_initialize_emitsGuardianSignalsSet() public {
+        MockERC20 loanToken = new MockERC20("Loan2", "LN2", 18);
+        MockERC20 collateralToken = new MockERC20("Coll2", "CL2", 18);
+
+        vm.recordLogs();
+        _deployProtocol(_defaultConfig(address(loanToken), address(collateralToken), address(collateralToken)));
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 found;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == ILidoLendMarketController.GuardianSignalsSet.selector) {
+                address boundRegistry = address(uint160(uint256(logs[i].topics[1])));
+                assertEq(
+                    ILidoLendMarketController(logs[i].emitter).guardianSignals(),
+                    boundRegistry,
+                    "event carries the emitting controller's bound registry"
+                );
+                found++;
+            }
+        }
+        assertGe(found, 1, "GuardianSignalsSet emitted at initialization");
+    }
+
+    function test_constructor_zeroCoreReverts() public {
+        vm.expectRevert(ILidoLendMarketController.ZeroAddress.selector);
+        new LidoLendMarketController(IMorpho(address(0)));
     }
 
     /// @dev Lender liquidity + a borrower with matured collateral and an open borrow.

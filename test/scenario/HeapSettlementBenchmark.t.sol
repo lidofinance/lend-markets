@@ -10,6 +10,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 
 /// @notice Gas benchmark of the settlement heap walk: seed a queue of borrower positions in a chosen
@@ -543,7 +544,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                 oracleSource: address(0), // unused — `_deployOracle` is overridden below
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     activatingLockAmount: 0,
@@ -557,7 +558,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     delayPerStrike: 0,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100
                 }),
                 guardians: guardians,

@@ -41,11 +41,11 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @notice Maximum number of guardians. Kept low because `syncQuorumFrontier` re-sorts every guardian's
     ///         last-scanned timestamp to recompute the frontier, and that cost grows with the set. 32 keeps it
     ///         bounded and still fits the quorum in a `uint8`.
-    uint256 public constant MAX_GUARDIANS_COUNT = 32;
+    uint256 public constant override MAX_GUARDIANS_COUNT = 32;
 
     /// @notice Ceiling on the suspect window: the horizon within which a suspect report still counts toward the
     ///         activation delay. Reports older than the window are ignored.
-    uint256 public constant MAX_SUSPECT_WINDOW = 30 days;
+    uint256 public constant override MAX_SUSPECT_WINDOW = 30 days;
 
     // ---
     // ROLES
@@ -391,7 +391,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         uint40 frontierTimestamp = Arrays.sort(timestamps)[n - quorum].toUint40();
         if (frontierTimestamp > _quorumFrontierTimestamp) {
             _quorumFrontierTimestamp = frontierTimestamp;
-            emit QuorumFrontierAdvanced(frontierTimestamp);
+            emit QuorumFrontierAdvanced(msg.sender, frontierTimestamp);
         }
     }
 

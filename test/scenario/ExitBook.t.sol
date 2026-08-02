@@ -15,6 +15,8 @@ import {ExitBookLib} from "../../src/libs/ExitBookLib.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {Request, ExitStatus, PriorityRamp, RequestPreview} from "../../src/types/ExitBookTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
 /// @dev Plain ERC-20 with an open mint, so the suite runs on a bare local chain (no mainnet fork).
 contract MockERC20 is ERC20 {
@@ -106,7 +108,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
                 oracleSource: address(collateral), // ignored — _deployOracle is overridden
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     activatingLockAmount: 0,
@@ -117,7 +119,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
                     delayPerStrike: 0,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
                 }),
                 guardians: guardians,

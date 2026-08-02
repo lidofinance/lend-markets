@@ -1,4 +1,10 @@
 {
+  "lib/bundler3": {
+    "rev": "9afc2f4ea32c9dbeba2205a485731b8a98f7ae4c"
+  },
+  "lib/circuit-breaker": {
+    "rev": "6829a5a962ece56564bd9d72d01c29cabf157579"
+  },
   "lib/lido-lend": {
     "branch": {
       "name": "main",

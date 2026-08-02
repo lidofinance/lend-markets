@@ -13,6 +13,12 @@ import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 ///         the controller depends on (`getOpinion`, `isBanned`) lives in {IGuardianSignalsView}; this interface adds
 ///         the rest.
 interface IGuardianSignals is IGuardianSignalsView {
+    /// @notice Maximum number of guardians in the registry.
+    function MAX_GUARDIANS_COUNT() external view returns (uint256);
+
+    /// @notice Maximum duration of the suspect window.
+    function MAX_SUSPECT_WINDOW() external view returns (uint256);
+
     // ---
     // EVENTS
     // ---
@@ -39,7 +45,7 @@ interface IGuardianSignals is IGuardianSignalsView {
     event Heartbeat(address indexed guardian, uint40 blockNumber, uint40 timestamp);
     /// @notice Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
     /// @param timestamp The new frontier timestamp.
-    event QuorumFrontierAdvanced(uint40 timestamp);
+    event QuorumFrontierAdvanced(address indexed caller, uint40 timestamp);
     /// @notice Emitted when a guardian reports an account as suspect (raises the activation delay, never bans).
     /// @param marketId  The market the report is scoped to.
     /// @param account   The suspected account.
