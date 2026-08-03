@@ -280,6 +280,40 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.validateMarketController(controller, marketId, guardianSignals);
     }
 
+    function testRevert_validateMarketController_rejectsAdminFreezerAndUnfreezerSubstitution() external {
+        LidoLendMarketController c = LidoLendMarketController(controller);
+        bytes32[] memory roles = new bytes32[](3);
+        address[] memory expectedHolders = new address[](3);
+        roles[0] = c.DEFAULT_ADMIN_ROLE();
+        expectedHolders[0] = controllerAdmin;
+        roles[1] = c.FREEZER_ROLE();
+        expectedHolders[1] = riskStewardDashboard;
+        roles[2] = c.UNFREEZER_ROLE();
+        expectedHolders[2] = address(lidoLendOwner);
+
+        for (uint256 i; i < roles.length; ++i) {
+            address unexpectedHolder = address(uint160(0xBAD8 + i));
+            vm.startPrank(controllerAdmin);
+            c.grantRole(roles[i], unexpectedHolder);
+            c.revokeRole(roles[i], expectedHolders[i]);
+            vm.stopPrank();
+
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    LidoLendMarketFactory.MissingRole.selector, controller, roles[i], expectedHolders[i]
+                )
+            );
+            factory.validateMarketController(controller, marketId, guardianSignals);
+
+            address restoringAdmin = roles[i] == c.DEFAULT_ADMIN_ROLE() ? unexpectedHolder : controllerAdmin;
+            vm.startPrank(restoringAdmin);
+            c.grantRole(roles[i], expectedHolders[i]);
+            vm.stopPrank();
+            vm.prank(controllerAdmin);
+            c.revokeRole(roles[i], unexpectedHolder);
+        }
+    }
+
     function testRevert_validateMarketController_unexpectedAdminOfEveryKnownRole() external {
         LidoLendMarketController c = LidoLendMarketController(controller);
         bytes32 defaultAdminRole = c.DEFAULT_ADMIN_ROLE();
@@ -457,6 +491,24 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         }
     }
 
+    function testRevert_validateGuardianSignals_rejectsDefaultAdminSubstitution() external {
+        GuardianSignals registry = GuardianSignals(guardianSignals);
+        bytes32 defaultAdminRole = registry.DEFAULT_ADMIN_ROLE();
+        address unexpectedAdmin = makeAddr("unexpectedGuardianAdmin");
+
+        vm.startPrank(controllerAdmin);
+        registry.grantRole(defaultAdminRole, unexpectedAdmin);
+        registry.revokeRole(defaultAdminRole, controllerAdmin);
+        vm.stopPrank();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.MissingRole.selector, guardianSignals, defaultAdminRole, controllerAdmin
+            )
+        );
+        factory.validateGuardianSignals(guardianSignals, _guardianSpec());
+    }
+
     function testRevert_validateGuardianSignals_unexpectedAccessLimiter() external {
         address registryAddress = factory.deployGuardianSignals(_guardianSpec());
         GuardianSignals registry = GuardianSignals(registryAddress);
@@ -530,6 +582,18 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(
                 LidoLendMarketFactory.MarketIdMismatch.selector, Id.unwrap(marketId), Id.unwrap(wrongMarketParams.id())
+            )
+        );
+        factory.validateERC4626Wrapper(vault, controller, marketParams);
+    }
+
+    function testRevert_validateERC4626Wrapper_rejectsCachedMarketIdMismatch() external {
+        Id wrongMarketId = Id.wrap(bytes32(uint256(1)));
+        vm.mockCall(vault, abi.encodeWithSelector(ILidoLendERC4626.marketId.selector), abi.encode(wrongMarketId));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.MarketIdMismatch.selector, Id.unwrap(marketId), Id.unwrap(wrongMarketId)
             )
         );
         factory.validateERC4626Wrapper(vault, controller, marketParams);

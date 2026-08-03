@@ -38,7 +38,6 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @notice Role allowed to lift account bans.
     function ACCESS_RESTORER_ROLE() external view returns (bytes32);
 
-
     // ---
     // EVENTS
     // ---
@@ -67,20 +66,19 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @param guardian    The guardian the scan is recorded for.
     /// @param blockNumber The block number reported as scanned past (carried for off-chain tooling).
     /// @param timestamp   The reported block's timestamp; the quorum-scan frontier orders guardians by this value.
-
     event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp);
+
     /// @notice Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
     /// @param caller    The account whose call advanced the frontier.
     /// @param timestamp The new frontier timestamp.
-
     event QuorumFrontierAdvanced(address indexed caller, uint256 timestamp);
+
     /// @notice Emitted when a guardian reports an account as suspect (raises the activation delay, never bans).
     /// @param marketId  The market the report is scoped to.
     /// @param account   The suspected account.
     /// @param guardian  The reporting guardian.
     /// @param actor     The caller that made the call (the guardian or its delegate).
     /// @param timestamp The report time, recorded so the report can be aged out of the suspect window.
-
     event Suspected(
         Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 timestamp
     );
@@ -170,7 +168,7 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @notice Atomically replace one guardian with another without changing the guardian count or quorum.
     function replaceGuardian(address oldGuardian, address newGuardian) external;
 
-   /// @notice Remove `guardian` from the committee (reverts if it would drop the set below the quorum).
+    /// @notice Remove `guardian` from the committee (reverts if it would drop the set below the quorum).
     function removeGuardian(address guardian) external;
 
     /// @notice Set the caller-guardian's delegate — a hot key that may act on its behalf. The zero address clears

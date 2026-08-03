@@ -2,7 +2,7 @@
 
 # LidoLendMarketFactory
 
-Deploys inert market components at fixed implementations, assigns their final roles, and validates the resulting bindings. Market creation on the core remains a separate governance action.
+Deploys controllers, ERC-4626 wrappers, and guardian registries at fixed implementations, assigns their final roles, and validates the resulting bindings. Market creation on the core remains a separate governance action.
 
 The contract is permissionless and has no mutable storage. Role wiring:
 
@@ -485,7 +485,7 @@ constructor(
 
 Fixes the implementations, protocol dependencies, and final administrator used by every deployment.
 
-Zero-address and code-presence checks are intentionally omitted. The constructor only verifies the core bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router. Deployment tooling validates the remaining addresses.
+The factory deployer must validate all constructor addresses before deployment. The constructor verifies only the core bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router.
 
 ### `deployMarketComponents`
 

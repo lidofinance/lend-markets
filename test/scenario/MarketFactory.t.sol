@@ -13,6 +13,8 @@ import {Id as IrmId} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.s
 import {IIrmRouter} from "@lido-lend-irm/src/irm-router/interfaces/IIrmRouter.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
 
+import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
+
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
@@ -110,6 +112,8 @@ contract MarketFactoryScenarioTest is Test {
         LidoLendMarketController controller = LidoLendMarketController(controllerAddress);
         assertEq(Id.unwrap(controller.marketId()), Id.unwrap(marketId), "controller market id");
         assertEq(controller.guardianSignals(), guardianSignals, "controller guardian signals");
+        _assertActivationConfigEq(controller.collateralActivationConfig(), market.activationConfig);
+        _assertSettlementConfigEq(controller.settlementConfig(), market.settlementConfig);
         assertTrue(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), marketAdmin), "admin");
         assertFalse(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), address(factory)), "factory keeps no admin");
         assertTrue(controller.hasRole(controller.MANAGER_ROLE(), address(facade)), "facade manager");
@@ -132,14 +136,23 @@ contract MarketFactoryScenarioTest is Test {
         assertEq(address(router.marketIrm(_toIrmId(marketId))), address(0), "IRM route remains unset");
     }
 
-    function test_deployMarketComponents_emitsAggregateEvent() external {
+    function test_deployMarketComponents_emitsDeploymentEvents() external {
         (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
         LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
         LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec = _erc4626WrapperSpec("A");
         Id expectedId = _marketParams(market).id();
+        uint256 factoryNonce = vm.getNonce(address(factory));
+        address expectedController = vm.computeCreateAddress(address(factory), factoryNonce);
+        address expectedWrapper = vm.computeCreateAddress(address(factory), factoryNonce + 1);
 
-        vm.expectEmit(true, false, false, false, address(factory));
-        emit LidoLendMarketFactory.MarketComponentsDeployed(expectedId, address(0), address(0), guardianSignals);
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit LidoLendMarketFactory.MarketControllerDeployed(expectedId, expectedController, guardianSignals);
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit LidoLendMarketFactory.ERC4626WrapperDeployed(expectedId, expectedController, expectedWrapper);
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit LidoLendMarketFactory.MarketComponentsDeployed(
+            expectedId, expectedController, expectedWrapper, guardianSignals
+        );
 
         _deployMarketComponents(market, erc4626WrapperSpec);
     }
@@ -221,7 +234,7 @@ contract MarketFactoryScenarioTest is Test {
         factory.deployMarketComponents(market, _erc4626WrapperSpec("A"));
     }
 
-    function test_constructor_revertsOnRouterCoreMismatch() external {
+    function testRevert_constructor_routerUsesAnotherCore() external {
         ILidoLend otherCore = ILidoLend(
             address(
                 new OssifiableProxy(
@@ -298,9 +311,28 @@ contract MarketFactoryScenarioTest is Test {
         _newFactory(otherDashboard, circuitBreaker, marketAdmin);
     }
 
-    function test_constructor_doesNotValidateAdmin() external {
+    function testRevert_constructor_lidoLendOwnerUsesAnotherCore() external {
+        ILidoLend otherCore = _deployCore(GOVERNANCE);
+        LidoLendOwner otherFacade = new LidoLendOwner(otherCore, GOVERNANCE, address(0), address(0));
+        LidoLendMarketFactory.Dependencies memory dependencies =
+            _dependencies(router, riskStewardDashboard, circuitBreaker);
+        dependencies.lidoLendOwner = address(otherFacade);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.LidoLendMismatch.selector, address(otherFacade), address(core), address(otherCore)
+            )
+        );
+        new LidoLendMarketFactory(_implementations(controllerImpl, erc4626WrapperImpl), dependencies, marketAdmin);
+    }
+
+    function testRevert_deployMarketComponents_zeroAdmin() external {
         LidoLendMarketFactory deployed = _newFactory(riskStewardDashboard, circuitBreaker, address(0));
         assertEq(deployed.ADMIN(), address(0), "admin");
+
+        (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
+        vm.expectRevert(abi.encodeWithSelector(ERC1967Utils.ERC1967InvalidAdmin.selector, address(0)));
+        deployed.deployMarketComponents(_marketSpec(loan, collateral, oracle), _erc4626WrapperSpec("zero-admin"));
     }
 
     function test_constructor_doesNotValidateCircuitBreakerCode() external {
@@ -309,14 +341,17 @@ contract MarketFactoryScenarioTest is Test {
         assertEq(deployed.CIRCUIT_BREAKER(), invalidCircuitBreaker, "circuit breaker");
     }
 
-    function test_deployAfterCoreOwnershipMoves_succeeds() external {
+    function test_deployMarketComponents_afterCoreOwnershipMoves_succeeds() external {
         address newOwner = makeAddr("newCoreOwner");
         vm.prank(GOVERNANCE);
         facade.transferLidoLendOwnership(newOwner);
 
-        address deployed = factory.deployGuardianSignals(_guardianSpec());
+        (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
+        (Id marketId, address controllerAddress, address erc4626Wrapper) =
+            _deployMarketComponents(_marketSpec(loan, collateral, oracle), _erc4626WrapperSpec("A"));
 
-        assertEq(IOssifiableProxy(deployed).proxy__getImplementation(), guardianSignalsImpl, "implementation");
+        assertEq(Id.unwrap(LidoLendMarketController(controllerAddress).marketId()), Id.unwrap(marketId), "market id");
+        assertEq(address(LidoLendERC4626(erc4626Wrapper).controller()), controllerAddress, "controller");
     }
 
     function test_deployGuardianSignals_producesWiredRegistry() external {
@@ -325,7 +360,10 @@ contract MarketFactoryScenarioTest is Test {
         guardianSet[1] = makeAddr("guardian2");
         LidoLendMarketFactory.GuardianSpec memory spec =
             LidoLendMarketFactory.GuardianSpec({guardians: guardianSet, quorum: 2, suspectWindow: 3600});
+        address expectedRegistry = vm.computeCreateAddress(address(factory), vm.getNonce(address(factory)));
 
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit LidoLendMarketFactory.GuardianSignalsDeployed(expectedRegistry);
         vm.prank(caller);
         address deployed = factory.deployGuardianSignals(spec);
 
@@ -340,7 +378,7 @@ contract MarketFactoryScenarioTest is Test {
         assertTrue(signals.hasRole(signals.DEFAULT_ADMIN_ROLE(), marketAdmin), "admin");
         assertTrue(signals.hasRole(signals.MANAGER_ROLE(), address(facade)), "facade manager");
         assertTrue(signals.hasRole(signals.ACCESS_RESTORER_ROLE(), address(facade)), "facade restorer");
-        assertEq(signals.getRoleMemberCount(signals.ACCESS_LIMITER_ROLE()), 0, "access limiter role not empty");
+        assertEq(signals.getRoleMemberCount(signals.ACCESS_LIMITER_ROLE()), 0, "access limiter count");
         assertFalse(signals.hasRole(signals.DEFAULT_ADMIN_ROLE(), address(factory)), "factory keeps no admin");
         assertFalse(signals.hasRole(signals.MANAGER_ROLE(), address(factory)), "factory keeps no manager");
     }
@@ -436,18 +474,18 @@ contract MarketFactoryScenarioTest is Test {
             lltv: 0.8e18,
             guardianSignals: guardianSignals,
             activationConfig: CollateralActivationConfig({
-                minActivationDelay: 10 minutes,
-                maxActivationDelay: 2 hours,
-                maxDelayInflow: 10_000 ether,
-                activatingLockAmount: 0,
-                activatingLockDuration: 0,
-                minActivationAmount: 10 ether,
-                maxGuardiansQuorumDelay: 0,
-                delayPerStrike: 2 hours,
-                delayPerSuspect: 0
+                minActivationDelay: 11 minutes,
+                maxActivationDelay: 123 minutes,
+                maxDelayInflow: 10_003 ether,
+                activatingLockAmount: 17 ether,
+                activatingLockDuration: 19 minutes,
+                minActivationAmount: 23 ether,
+                maxGuardiansQuorumDelay: 3 hours,
+                delayPerStrike: 29 minutes,
+                delayPerSuspect: 31 minutes
             }),
             settlementConfig: SettlementConfig({
-                sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
+                sliceFloorBps: 137, sliceFloorAssets: 41 ether, fullCutBelowCollateral: 43 ether, ltvStepBps: 149
             })
         });
     }
@@ -467,5 +505,27 @@ contract MarketFactoryScenarioTest is Test {
         spec.guardians[0] = GOVERNANCE;
         spec.quorum = 1;
         spec.suspectWindow = 0;
+    }
+
+    function _assertActivationConfigEq(
+        CollateralActivationConfig memory actual,
+        CollateralActivationConfig memory expected
+    ) internal pure {
+        assertEq(actual.minActivationDelay, expected.minActivationDelay, "min activation delay");
+        assertEq(actual.maxActivationDelay, expected.maxActivationDelay, "max activation delay");
+        assertEq(actual.maxDelayInflow, expected.maxDelayInflow, "max delay inflow");
+        assertEq(actual.activatingLockAmount, expected.activatingLockAmount, "activating lock amount");
+        assertEq(actual.activatingLockDuration, expected.activatingLockDuration, "activating lock duration");
+        assertEq(actual.minActivationAmount, expected.minActivationAmount, "min activation amount");
+        assertEq(actual.maxGuardiansQuorumDelay, expected.maxGuardiansQuorumDelay, "max guardians quorum delay");
+        assertEq(actual.delayPerStrike, expected.delayPerStrike, "delay per strike");
+        assertEq(actual.delayPerSuspect, expected.delayPerSuspect, "delay per suspect");
+    }
+
+    function _assertSettlementConfigEq(SettlementConfig memory actual, SettlementConfig memory expected) internal pure {
+        assertEq(actual.sliceFloorBps, expected.sliceFloorBps, "slice floor bps");
+        assertEq(actual.sliceFloorAssets, expected.sliceFloorAssets, "slice floor assets");
+        assertEq(actual.fullCutBelowCollateral, expected.fullCutBelowCollateral, "full cut below collateral");
+        assertEq(actual.ltvStepBps, expected.ltvStepBps, "LTV step bps");
     }
 }

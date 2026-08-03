@@ -18,7 +18,6 @@ contract MockMarketController is ILidoLendMarketConfigurator {
     CollateralActivationConfig internal _cfg;
     uint256 internal _cap;
     mapping(address => bool) public instantActivation;
-    mapping(address => bool) public revoked;
     bool public frozen;
 
     function setForTest(CollateralActivationConfig memory cfg) external {

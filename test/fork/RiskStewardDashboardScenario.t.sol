@@ -200,8 +200,8 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
         c.id = d.marketId;
         c.marketParams = d.params;
 
-        // `address(this)` holds DEFAULT_ADMIN / MANAGER_ADMIN / MANAGER from the deployer bootstrap, so it can
-        // grant the dashboard MANAGER_ROLE (the role the levers call through) and appoint the steward.
+        // The test admin can grant the dashboard the controller roles its levers use and administers the dashboard
+        // long enough to grant `STEWARD_ADMIN_ROLE` and appoint the steward.
         c.dashboard = new RiskStewardDashboard(address(this), c.core);
         c.controller.grantRole(c.controller.MANAGER_ROLE(), address(c.dashboard));
         c.controller.grantRole(c.controller.FREEZER_ROLE(), address(c.dashboard));

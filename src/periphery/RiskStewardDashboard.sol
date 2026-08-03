@@ -11,8 +11,9 @@ import {IRiskStewardDashboard} from "../interfaces/IRiskStewardDashboard.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 
 /// @notice Bounded risk-reduction levers over the markets of one core, from a single instance. Activation-config
-///         changes are tighten-only; instant activation can only be revoked, and a market can only be frozen.
-///         Stewards are appointed per market id, so one dashboard serves every market.
+///         changes are tighten-only; the dashboard may revoke instant activation and freeze markets, but exposes no
+///         instant-activation grant or market-unfreeze path. Stewards are appointed per market id, so one dashboard
+///         serves every market.
 contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard {
     using EnumerableSet for EnumerableSet.AddressSet;
 

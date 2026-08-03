@@ -44,21 +44,13 @@ An upgrade can change core mechanics and is therefore the only path that could i
 
 ## IRM
 
-Each market's immutable `irm` points to the proxied `IrmRouter`. The DAO Agent owns the router and its
-proxy; EVMScriptExecutor manages per-market routes. `AdaptiveCurveIrm` is a bare protocol singleton whose
-owner is the Agent and manager is EVMScriptExecutor. A shared permissionless `IrmConfigFactory` deploys or
-reuses immutable configs by parameter hash during market preparation; activation resolves the config from the
-factory after deployment and applies its address to the singleton.
+Each market's immutable `irm` points to the proxied `IrmRouter`. The DAO Agent owns the router and its proxy; EVMScriptExecutor manages per-market routes. `AdaptiveCurveIrm` is a bare protocol singleton whose owner is the Agent and manager is EVMScriptExecutor. A shared permissionless `IrmConfigFactory` deploys or reuses immutable configs by parameter hash during market preparation; activation resolves the config from the factory after deployment and applies its address to the singleton.
 
 ## On-chain roles
 
 ### `LidoLend` core
 
-The core authorizes its admin surface against a single in-contract `owner`. The deployed owner is the
-`LidoLendOwner` facade, wired in through the core's `setOwner`. The same fixed facade is the governance
-entrypoint for per-market controller and guardian-registry calls: it resolves each target from the core by
-market id. This lets delayed governance authorize one stable target and selector per action even as markets
-are added. The core's `onlyOwner` is held by the facade, not the DAO directly.
+The core authorizes its admin surface against a single in-contract `owner`. The deployed owner is the `LidoLendOwner` facade, wired in through the core's `setOwner`. The same fixed facade is the governance entrypoint for per-market controller and guardian-registry calls: it resolves each target from the core by market id. This lets delayed governance authorize one stable target and selector per action even as markets are added. The core's `onlyOwner` is held by the facade, not the DAO directly.
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
@@ -68,11 +60,7 @@ are added. The core's `onlyOwner` is held by the facade, not the DAO directly.
 | `GUARDIAN_MANAGER_ROLE` | guardian roster (`addGuardian`, `removeGuardian`, `replaceGuardian`), quorum, suspect window, and per-market `unban` through the resolved registry | C1 / C3 / C4 | EVMScriptExecutor |
 | `DEFAULT_ADMIN_ROLE` | `transferLidoLendOwnership` (the only path to the core's `setOwner`), plus administers the capability roles above | C1 | Lido DAO |
 
-The facade holds `MANAGER_ROLE` and `UNFREEZER_ROLE` on every controller, and `MANAGER_ROLE` and
-`ACCESS_RESTORER_ROLE` on every guardian registry. Those downstream grants only let the facade dispatch:
-callers must still hold the matching capability role on the facade. EVMScriptExecutor holds no direct
-controller manager/unfreezer or guardian manager/restorer role, making the facade the sole stable EasyTrack
-target for those actions.
+The facade holds `MANAGER_ROLE` and `UNFREEZER_ROLE` on every controller, and `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` on every guardian registry. Those downstream grants only let the facade dispatch: callers must still hold the matching capability role on the facade. EVMScriptExecutor holds no direct controller manager/unfreezer or guardian manager/restorer role, making the facade the sole stable EasyTrack target for those actions.
 
 ### Market controller
 
@@ -85,28 +73,15 @@ target for those actions.
 | `PAUSER_ROLE` | `pauseFor` (stops every controller hook) | C2 | CircuitBreaker |
 | `RESUMER_ROLE` | `resume` | C2 | no holder |
 
-The controller's `MANAGER_ROLE` is broader than either holder's public entrypoints. Governance reaches it only
-through `LidoLendOwner`, while a market steward reaches only the one-directional methods exposed by the
-non-upgradeable `RiskStewardDashboard`. The dashboard also holds `FREEZER_ROLE`, so the steward can call
-`freezeMarket` without holding a direct controller role. `unfreeze` restores service and is therefore
-risk-increasing: only `LidoLendOwner.unfreezeMarket` exposes it, behind the EasyTrack objection window.
+The controller's `MANAGER_ROLE` is broader than either holder's public entrypoints. Governance reaches it only through `LidoLendOwner`, while a market steward reaches only the one-directional methods exposed by the non-upgradeable `RiskStewardDashboard`. The dashboard also holds `FREEZER_ROLE`, so the steward can call `freezeMarket` without holding a direct controller role. `unfreeze` restores service and is therefore risk-increasing: only `LidoLendOwner.unfreezeMarket` exposes it, behind the EasyTrack objection window.
 
-The initial controller topology is fixed to the holders in the table above, with no additional role holders.
-The Lido DAO Agent is also the controller proxy admin. The CircuitBreaker bounds the fast pause path to a
-finite duration; with no `RESUMER_ROLE` holder, normal recovery is automatic expiry. The Lido DAO Agent can
-later change the role topology through `DEFAULT_ADMIN_ROLE`.
+The initial controller topology is fixed to the holders in the table above, with no additional role holders. The Lido DAO Agent is also the controller proxy admin. The CircuitBreaker bounds the fast pause path to a finite duration; with no `RESUMER_ROLE` holder, normal recovery is automatic expiry. The Lido DAO Agent can later change the role topology through `DEFAULT_ADMIN_ROLE`, including granting `RESUMER_ROLE` when governance requires an explicit early resume.
 
-`AdaptiveCurveIrm` is a protocol-wide singleton (see IRM, above), so there is no per-market curve
-owner/manager to wire at deploy — its owner/manager are set once with the backbone. The permissionless config
-factory holds no role; the deployment flow ensures each market's immutable config exists, and the authorized
-activation motion resolves that address through the factory and passes it to `applyIrmConfig`.
+`AdaptiveCurveIrm` is a protocol-wide singleton (see IRM, above), so there is no per-market curve owner/manager to wire at deploy — its owner/manager are set once with the backbone. The permissionless config factory holds no role; the deployment flow ensures each market's immutable config exists, and the authorized activation motion resolves that address through the factory and passes it to `applyIrmConfig`.
 
 ### `RiskStewardDashboard`
 
-One dashboard serves every market of a core, with the risk-reducing levers gathered behind per-market stewards.
-The activation levers read a market's current config, enforce a one-directional change toward tighter policy,
-and write the full config back through the controller's `MANAGER_ROLE` surface. `freezeMarket` calls the
-controller's `freeze` surface through the dashboard's `FREEZER_ROLE`.
+One dashboard serves every market of a core, with the risk-reducing levers gathered behind per-market stewards. The activation levers read a market's current config, enforce a one-directional change toward tighter policy, and write the full config back through the controller's `MANAGER_ROLE` surface. `freezeMarket` calls the controller's `freeze` surface through the dashboard's `FREEZER_ROLE`.
 
 | Role | Powers | Class | Holder |
 |---|---|---|---|
@@ -118,10 +93,7 @@ controller's `freeze` surface through the dashboard's `FREEZER_ROLE`.
 
 A steward is appointed per market id, not as an AccessControl role, so the set scopes to one market. Every steward lever is one-directional toward tighter policy, so the committee can act fast.
 
-The dashboard is a protocol-wide singleton with `STEWARD_ADMIN_ROLE` held by the EasyTrack executor and
-`DEFAULT_ADMIN_ROLE` held by the Lido DAO Agent. For its levers it additionally holds every market controller's
-`MANAGER_ROLE` and `FREEZER_ROLE`. `MANAGER_ROLE` is broader than the tighten-only levers, so this trusts the
-dashboard's non-upgradeable code to expose only bounded risk reductions.
+The dashboard is a protocol-wide singleton with `STEWARD_ADMIN_ROLE` held by the EasyTrack executor and `DEFAULT_ADMIN_ROLE` held by the Lido DAO Agent. For its levers it additionally holds every market controller's `MANAGER_ROLE` and `FREEZER_ROLE`. `MANAGER_ROLE` is broader than the tighten-only levers, so this trusts the dashboard's non-upgradeable code to expose only bounded risk reductions.
 
 ### `GuardianSignals`
 
@@ -132,17 +104,9 @@ dashboard's non-upgradeable code to expose only bounded risk reductions.
 | `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum) | C3 | no initial holder; the Lido DAO Agent may grant it later |
 | `ACCESS_RESTORER_ROLE` | `unban` | C4 | `LidoLendOwner` (EasyTrack motion, objection window) |
 
-The fast unilateral `ban` capability is disabled in the initial topology. If the Lido DAO Agent grants
-`ACCESS_LIMITER_ROLE` later, that holder can bypass guardian quorum. `unban` is risk-increasing, so it takes
-the routine delay mechanism — an EasyTrack motion with an objection window (ADR 006) — rather than an
-immediate call. Guardian-set management (`addGuardian`/`removeGuardian`/`replaceGuardian`/`setQuorum`) runs
-through the same EasyTrack objection window, not a fast committee: a removal or quorum change is visible and
-vetoable before it takes effect, so it cannot quietly disable detection. `DEFAULT_ADMIN_ROLE` stays with the
-Lido DAO Agent, which can re-grant `MANAGER_ROLE` for a direct action (for example, `setSuspectWindow`).
+The fast unilateral `ban` capability is disabled in the initial topology. If the Lido DAO Agent grants `ACCESS_LIMITER_ROLE` later, that holder can bypass guardian quorum. `unban` is risk-increasing, so it takes the routine delay mechanism — an EasyTrack motion with an objection window (ADR 006) — rather than an immediate call. Guardian-set management (`addGuardian`/`removeGuardian`/`replaceGuardian`/`setQuorum`) runs through the same EasyTrack objection window, not a fast committee: a removal or quorum change is visible and vetoable before it takes effect, so it cannot quietly disable detection. `DEFAULT_ADMIN_ROLE` stays with the Lido DAO Agent, which can re-grant `MANAGER_ROLE` for a direct action (for example, `setSuspectWindow`).
 
-The Lido DAO Agent is both the registry proxy admin and its sole `DEFAULT_ADMIN_ROLE` holder.
-`LidoLendOwner` is the sole `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` holder, while `ACCESS_LIMITER_ROLE` has
-no initial holder. The Lido DAO Agent can later change this topology through `DEFAULT_ADMIN_ROLE`.
+The Lido DAO Agent is both the registry proxy admin and its sole `DEFAULT_ADMIN_ROLE` holder. `LidoLendOwner` is the sole `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` holder, while `ACCESS_LIMITER_ROLE` has no initial holder. The Lido DAO Agent can later change this topology through `DEFAULT_ADMIN_ROLE`.
 
 ### `ExitBookBase`
 
@@ -173,10 +137,7 @@ Factory-gated actions and their parameters:
 - **setSettlementConfig** — `sliceFloorBps`, `sliceFloorAssets`, `fullCutBelowCollateral`, `ltvStepBps`.
 - **setSupplyCap** — `cap`.
 
-The fast risk-reducing levers run with no objection window: the dashboard's `increaseActivationDelays`,
-`increaseActivatingLock`, `revokeInstantActivation`, and `freezeMarket`, plus the registry's `ban`.
-Unfreezing is deliberately absent from this path and runs through `LidoLendOwner` after the EasyTrack objection
-window.
+The fast risk-reducing levers enabled initially run with no objection window: the dashboard's `increaseActivationDelays`, `increaseActivatingLock`, `revokeInstantActivation`, and `freezeMarket`. The registry's unilateral `ban` joins this path only if governance later grants `ACCESS_LIMITER_ROLE`. Unfreezing is deliberately absent from the fast path and runs through `LidoLendOwner` after the EasyTrack objection window.
 
 ## Role manifest
 

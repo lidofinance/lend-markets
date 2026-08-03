@@ -62,12 +62,7 @@ Full surface: [API reference](api/lido-lend-erc4626.md).
 
 ### RiskStewardDashboard
 
-The per-core risk-reduction console. One instance serves every market of a core, resolving each market's controller
-by id. `STEWARD_ADMIN_ROLE` appoints and removes per-market stewards, who can call `freezeMarket` and three
-tighten-only activation levers — `increaseActivationDelays`, `increaseActivatingLock`,
-`revokeInstantActivation`. The activation levers read the market's current config, reject any change that
-loosens it, and write the full config back; freezing also only reduces available service. A steward cannot
-unfreeze a market.
+The per-core risk-reduction console. One instance serves every market of a core, resolving each market's controller by id. `STEWARD_ADMIN_ROLE` appoints and removes per-market stewards, who can call `freezeMarket` and three tighten-only activation levers — `increaseActivationDelays`, `increaseActivatingLock`, `revokeInstantActivation`. The activation levers read the market's current config, reject any change that loosens it, and write the full config back; freezing also only reduces available service. A steward cannot unfreeze a market.
 
 Full surface: [API reference](api/risk-steward-dashboard.md).
 
@@ -198,9 +193,7 @@ stateDiagram-v2
 
 Alongside strikes, a guardian can raise a softer **suspect** report. It never bans — it only lengthens the activation delay (`delayPerSuspect` per report). The delay reads a single per-account snapshot: a count of reports plus an expiry of `now + suspectWindow`. The snapshot is re-taken on every report or retraction, and counts only the reports still fresh at that moment. So a still-fresh earlier report is folded into the new snapshot and rides its longer expiry, while an already-expired one is dropped. A `prune` that removes a departed guardian's report re-takes the snapshot too, so that report stops counting right away.
 
-Two override roles sit above the guardians, one per risk direction. `ACCESS_LIMITER_ROLE` can force a `ban`
-without waiting for a quorum, but has no holder at deployment. To restore access (a slower, more careful step),
-`ACCESS_RESTORER_ROLE` can `unban`; that also clears the flag set, so the guardians start their judgement over.
+Two override roles sit above the guardians, one per risk direction. `ACCESS_LIMITER_ROLE` can force a `ban` without waiting for a quorum, but has no holder at deployment. To restore access (a slower, more careful step), `ACCESS_RESTORER_ROLE` can `unban`; that also clears the flag set, so the guardians start their judgement over.
 
 The controller reads everything about an account in one call: `getOpinion(market, account) → GuardiansOpinion{banned, strikeCount, suspectCount, suspectExpiryTimestamp, quorumFrontierTimestamp}`. It hands that to the activation lib, which does the delay math: `strikeCount × delayPerStrike`, plus `suspectCount × delayPerSuspect` for a lot whose activation started before `suspectExpiryTimestamp`. `banned` blocks borrowing and pins the unlock at infinity. `quorumFrontierTimestamp` is the liveness frontier that gates maturation, described next.
 
@@ -276,7 +269,7 @@ flowchart LR
 
 ### Tokenized lender layer & fallback exit
 
-Lenders hold an ERC-4626 vault share (`LidoLendERC4626`), one vault per market, freely transferable and ungated. `deposit`/`mint`/`withdraw`/`redeem` are standard, with the max views mirroring the controller's lender limits: `maxDeposit`/`maxMint` report the remaining supply-cap headroom (unlimited when uncapped), `maxWithdraw`/`maxRedeem` the lesser of the owner's position value and the market's free pool liquidity, and all four drop to zero while the market is paused.
+Lenders hold freely transferable, ungated ERC-4626 wrapper shares (`LidoLendERC4626`). The standard market deployment records one wrapper, while additional wrappers may be deployed over the same controller. `deposit`/`mint`/`withdraw`/`redeem` are standard, with the max views mirroring the controller's lender limits: `maxDeposit`/`maxMint` report the remaining supply-cap headroom (unlimited when uncapped), `maxWithdraw`/`maxRedeem` the lesser of the owner's position value and the market's free pool liquidity, and all four drop to zero while the market is paused.
 
 When liquidity is short, lenders use the settlement exit:
 
@@ -301,19 +294,11 @@ Mapped onto Lido governance (ADR 004, 006, 007, 016):
 - **Upgrades and root role administration** — Lido Dual Governance (for stETH-exposed actions) or Voting.
 - **Routine risk-increasing** (raise caps, loosen config) — EasyTrack motion factories with an objection window.
 - **Risk-reducing and incident response** (freeze through the dashboard, tighten config, guardian flagging) — fast multisig / security committee.
-- **Emergency pause** — one CircuitBreaker per core/factory, wired as the only controller pauser and bounded to a finite pause (GateSeal-style). No account receives `RESUMER_ROLE`, so the pause expires automatically.
+- **Emergency pause** — one CircuitBreaker per core/factory, wired as the only controller pauser and bounded to a finite pause (GateSeal-style). No account receives `RESUMER_ROLE` initially; governance may grant it for an explicit early resume, otherwise recovery occurs when the pause expires.
 
-Controller authority is not configurable per market. A factory is bound to one core and fixes one `ADMIN`
-(the proxy admin for every controller, vault, and GuardianSignals registry it deploys) and one
-`CIRCUIT_BREAKER`, then gives every controller it deploys the same exact topology: `MANAGER_ROLE` →
-`LidoLendOwner` + `RiskStewardDashboard`; `PAUSER_ROLE` → CircuitBreaker; `FREEZER_ROLE` →
-RiskStewardDashboard; `UNFREEZER_ROLE` → LidoLendOwner; `RESUMER_ROLE` → nobody.
-Every GuardianSignals registry deployed by the factory receives `DEFAULT_ADMIN_ROLE` → the same `ADMIN`,
-`MANAGER_ROLE` + `ACCESS_RESTORER_ROLE` → LidoLendOwner, and `ACCESS_LIMITER_ROLE` → nobody. Its proxy admin
-is also the same factory `ADMIN`.
+The factory accepts no per-market role inputs: every controller starts with the same operational topology. The Lido DAO administers every controller and its proxy. The initial topology is `MANAGER_ROLE` → `LidoLendOwner` + `RiskStewardDashboard`; `PAUSER_ROLE` → CircuitBreaker; `FREEZER_ROLE` → RiskStewardDashboard; `UNFREEZER_ROLE` → LidoLendOwner; `RESUMER_ROLE` → nobody. Every GuardianSignals registry has the Lido DAO as its administrator and proxy admin, `MANAGER_ROLE` + `ACCESS_RESTORER_ROLE` → LidoLendOwner, and `ACCESS_LIMITER_ROLE` → nobody.
 
-Standalone vault deployment accepts an inert controller bound to the factory's core and the requested market id.
-Once the market exists in the core, that controller must also be the market's registered controller.
+Additional ERC-4626 wrapper deployment accepts a controller bound to the same core and requested market id. Once the market exists in the core, that controller must also be the market's registered controller.
 
 No role can seize, burn, redirect, or trap user funds. The core is upgradeable until ossified. The full per-role catalogue (every privileged function → role → class → holder) is in [roles.md](roles.md).
 

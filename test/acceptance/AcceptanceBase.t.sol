@@ -810,23 +810,21 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 }
 
 // ============================================================================
-// ROLES — exact holder reconstruction from AccessControl events
+// ROLES — exact holder validation
 // ============================================================================
 
 abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
     //
-    // Inside a `deployMarketComponents` / `deployGuardianSignals` call, the full role-holder set is guaranteed BY
-    // CONSTRUCTION: the controller/vault/registry is created in that same transaction, and the only account
-    // that could have granted anything on it is the factory itself (the `DEFAULT_ADMIN_ROLE` it holds
-    // transiently) — so the set is exactly what that one call granted, nothing more, nothing missing. That
-    // guarantee does not survive time: once the build call returns, any `DEFAULT_ADMIN_ROLE` holder can grant
-    // or revoke roles, and `AccessControl` carries no member enumeration to catch a stray change from a
-    // `hasRole` read alone. This scan closes exactly that window — deploy time to now, before the market is
-    // even activated — by replaying every `RoleGranted` / `RoleRevoked` log since the recorded deploy block
-    // and asserting the reconstructed holder set matches the expected one exactly.
+    // Inside a `deployMarketComponents` / `deployGuardianSignals` call, the full role-holder set is guaranteed by
+    // construction: the controller or registry is created in that same transaction, and the only account that could
+    // have granted anything on it is the factory itself (through the `DEFAULT_ADMIN_ROLE` it holds
+    // transiently) — so the set is exactly what that deployment call granted, nothing more, nothing missing. That
+    // guarantee does not survive time: once the deployment call returns, any `DEFAULT_ADMIN_ROLE` holder can grant
+    // or revoke roles. For the surfaces checked through role events below, the scan collects every account touched
+    // since the recorded deployment block and checks its current `hasRole` state against the exact expected set.
+    // GuardianSignals is checked directly through its enumerable role-member surface.
 
-    /// @notice Applies `_assertExactRoleHolders` to every `AccessControl` contract from its own recorded
-    ///         deployment block.
+    /// @notice Validates every AccessControl contract against its exact expected role holders.
     function _assertRoleHolderCompleteness() internal {
         _assertNoInstantActivationCallers();
         {

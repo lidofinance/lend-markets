@@ -26,8 +26,9 @@ interface ILidoLendBound {
 
 /// @title LidoLendMarketFactory
 /// @author Lido Lending contributors.
-/// @notice Deploys inert market components at fixed implementations, assigns their final roles, and validates the
-///         resulting bindings. Market creation on the core remains a separate governance action.
+/// @notice Deploys controllers, ERC-4626 wrappers, and guardian registries at fixed implementations, assigns their
+///         final roles, and validates the resulting bindings. Market creation on the core remains a separate
+///         governance action.
 /// @dev The contract is permissionless and has no mutable storage. Role wiring:
 ///      - A new `LidoLendMarketController` or `GuardianSignals` instance grants the factory temporary
 ///        `DEFAULT_ADMIN_ROLE`.
@@ -276,9 +277,9 @@ contract LidoLendMarketFactory {
     // ---
 
     /// @notice Fixes the implementations, protocol dependencies, and final administrator used by every deployment.
-    /// @dev Zero-address and code-presence checks are intentionally omitted. The constructor only verifies the core
-    ///      bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM
-    ///      router. Deployment tooling validates the remaining addresses.
+    /// @dev The factory deployer must validate all constructor addresses before deployment. The constructor verifies
+    ///      only the core bindings exposed by the controller and wrapper implementations, owner facade, risk
+    ///      dashboard, and IRM router.
     /// @param implementations Implementations used behind newly deployed proxies.
     /// @param dependencies Core and protocol-wide role recipients embedded in newly deployed components.
     /// @param admin Proxy admin for every deployment and sole initial `DEFAULT_ADMIN_ROLE` holder on controllers and

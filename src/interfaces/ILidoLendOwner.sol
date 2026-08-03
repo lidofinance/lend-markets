@@ -39,7 +39,6 @@ interface ILidoLendOwner is IAccessControlEnumerable {
     /// @notice Role allowed to manage guardian registries.
     function GUARDIAN_MANAGER_ROLE() external view returns (bytes32);
 
-
     // ---
     // ERRORS
     // ---
