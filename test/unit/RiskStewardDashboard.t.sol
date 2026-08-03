@@ -17,7 +17,7 @@ import {CollateralActivationConfig} from "../../src/types/CollateralActivationTy
 contract MockMarketController is ILidoLendMarketConfigurator {
     CollateralActivationConfig internal _cfg;
     uint256 internal _cap;
-    mapping(address => bool) public revoked;
+    mapping(address => bool) public instantActivation;
 
     function setForTest(CollateralActivationConfig memory cfg) external {
         _cfg = cfg;
@@ -31,8 +31,8 @@ contract MockMarketController is ILidoLendMarketConfigurator {
         _cfg = cfg;
     }
 
-    function revokeInstantActivation(address caller) external {
-        revoked[caller] = true;
+    function setInstantActivation(address caller, bool enabled) external {
+        instantActivation[caller] = enabled;
     }
 
     function supplyCap() external view returns (uint256) {
@@ -281,9 +281,10 @@ contract RiskStewardDashboardTest is Test {
     /// @dev Revocation is risk-reducing, so it has no direction guard: the dashboard just forwards the target
     ///      to the market's controller.
     function test_revokeInstantActivation_forwards() public {
+        controller.setInstantActivation(address(0xBEEF), true);
         vm.prank(steward);
         dashboard.revokeInstantActivation(marketId, address(0xBEEF));
-        assertTrue(controller.revoked(address(0xBEEF)), "revoke forwarded to controller");
+        assertFalse(controller.instantActivation(address(0xBEEF)), "revoke forwarded to controller");
     }
 
     /// @dev Still steward-gated: revocation is a lever like the others.
@@ -322,7 +323,7 @@ contract RiskStewardDashboardTest is Test {
         emit IRiskStewardDashboard.InstantActivationRevoked(marketId, caller);
         vm.prank(steward);
         dashboard.revokeInstantActivation(marketId, caller);
-        assertTrue(controller.revoked(caller), "controller revoke called");
+        assertFalse(controller.instantActivation(caller), "controller revoke called");
     }
 
     function test_constructor_zeroAdminReverts() public {

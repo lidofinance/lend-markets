@@ -55,7 +55,7 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         actors.push(A3);
         // Instant activation for the actors → supplied collateral is immediately borrowable.
         for (uint256 i; i < actors.length; i++) {
-            m.controller.grantInstantActivation(actors[i]);
+            m.controller.setInstantActivation(actors[i], true);
         }
 
         handler = new MarketHandler(
@@ -178,7 +178,7 @@ contract MarketSolvencyInvariant is LidoLendSetup {
     ///      debt rather than a market wiped to zero.
     function test_badDebtSocialization_preservesSolvency() public {
         Market storage m = protocol.markets[0];
-        m.controller.grantInstantActivation(A4);
+        m.controller.setInstantActivation(A4, true);
 
         _fund(m.loanToken, A1, 2000 ether);
         vm.startPrank(A1);

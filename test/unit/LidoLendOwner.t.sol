@@ -18,63 +18,37 @@ import {CollateralActivationConfig} from "../../src/types/CollateralActivationTy
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
 contract OwnerGuardianSignalsMock {
-    uint256 public constant MAX_GUARDIANS_COUNT = 32;
-
     address public lastAdded;
     address public lastRemoved;
+    address public lastReplacedOld;
+    address public lastReplacedNew;
     Id public lastUnbanMarket;
     address public lastUnbanAccount;
     uint256 public addCalls;
     uint256 public removeCalls;
-    uint256 public callSequence;
-    uint256 public lastAddedCall;
-    uint256 public lastRemovedCall;
-    uint256 public guardianCount = 3;
+    uint256 public replaceCalls;
     uint256 public quorum = 2;
-    uint256 public quorumCalls;
-    uint256 public firstQuorumCall;
-    uint256 public lastQuorumCall;
-    uint256 public firstQuorumValue;
-    uint256 public lastQuorumValue;
     uint256 public suspectWindow;
     uint256 public unbanCalls;
 
     function addGuardian(address guardian) external {
         lastAdded = guardian;
         ++addCalls;
-        lastAddedCall = ++callSequence;
-        ++guardianCount;
     }
 
     function removeGuardian(address guardian) external {
         lastRemoved = guardian;
         ++removeCalls;
-        lastRemovedCall = ++callSequence;
-        --guardianCount;
+    }
+
+    function replaceGuardian(address oldGuardian, address newGuardian) external {
+        lastReplacedOld = oldGuardian;
+        lastReplacedNew = newGuardian;
+        ++replaceCalls;
     }
 
     function setQuorum(uint256 newQuorum) external {
         quorum = newQuorum;
-        ++quorumCalls;
-        lastQuorumCall = ++callSequence;
-        lastQuorumValue = newQuorum;
-        if (quorumCalls == 1) {
-            firstQuorumCall = lastQuorumCall;
-            firstQuorumValue = newQuorum;
-        }
-    }
-
-    function setGuardianState(uint256 newGuardianCount, uint256 newQuorum) external {
-        guardianCount = newGuardianCount;
-        quorum = newQuorum;
-    }
-
-    function getGuardianCount() external view returns (uint256) {
-        return guardianCount;
-    }
-
-    function getQuorum() external view returns (uint256) {
-        return quorum;
     }
 
     function setSuspectWindow(uint256 newSuspectWindow) external {
@@ -97,6 +71,7 @@ contract OwnerControllerMock {
     bytes32 public activationConfigHash;
     bytes32 public settlementConfigHash;
     address public instantActivationCaller;
+    bool public instantActivationEnabled;
 
     constructor(Id marketId_, address guardianSignals_) {
         _marketId = marketId_;
@@ -123,8 +98,9 @@ contract OwnerControllerMock {
         settlementConfigHash = keccak256(abi.encode(config));
     }
 
-    function grantInstantActivation(address caller) external {
+    function setInstantActivation(address caller, bool enabled) external {
         instantActivationCaller = caller;
+        instantActivationEnabled = enabled;
     }
 }
 
@@ -337,8 +313,8 @@ contract LidoLendOwnerTest is Test {
         facade.setMarketCollateralActivationConfig(p2.id(), activation2);
         facade.setMarketSettlementConfig(p1.id(), settlement1);
         facade.setMarketSettlementConfig(p2.id(), settlement2);
-        facade.grantMarketInstantActivation(p1.id(), address(0x1111));
-        facade.grantMarketInstantActivation(p2.id(), address(0x2222));
+        facade.setInstantActivation(p1.id(), address(0x1111), true);
+        facade.setInstantActivation(p2.id(), address(0x2222), false);
         vm.stopPrank();
 
         assertEq(c1.supplyCap(), 100, "market 1 supply cap");
@@ -351,6 +327,8 @@ contract LidoLendOwnerTest is Test {
         assertEq(c2.settlementConfigHash(), keccak256(abi.encode(settlement2)), "market 2 settlement config");
         assertEq(c1.instantActivationCaller(), address(0x1111), "market 1 instant activation");
         assertEq(c2.instantActivationCaller(), address(0x2222), "market 2 instant activation");
+        assertTrue(c1.instantActivationEnabled(), "market 1 instant activation enabled");
+        assertFalse(c2.instantActivationEnabled(), "market 2 instant activation disabled");
     }
 
     function testRevert_marketManagement_withoutRole() public {
@@ -370,7 +348,7 @@ contract LidoLendOwnerTest is Test {
         vm.expectRevert(_unauthorized(CREATOR, role));
         facade.setMarketSettlementConfig(id, settlement);
         vm.expectRevert(_unauthorized(CREATOR, role));
-        facade.grantMarketInstantActivation(id, address(1));
+        facade.setInstantActivation(id, address(1), true);
         vm.stopPrank();
     }
 
@@ -416,7 +394,7 @@ contract LidoLendOwnerTest is Test {
         assertEq(g2.lastUnbanAccount(), address(0xBADD), "market 2 unban account");
     }
 
-    function test_replaceGuardian_dispatchesByMarketIdAndAddsBeforeRemoving() public {
+    function test_replaceGuardian_dispatchesByMarketId() public {
         (MarketParams memory p1, MarketParams memory p2,,, OwnerGuardianSignalsMock g1, OwnerGuardianSignalsMock g2) =
             _createManagedMarkets();
         _grant(facade.GUARDIAN_MANAGER_ROLE(), CREATOR);
@@ -426,39 +404,12 @@ contract LidoLendOwnerTest is Test {
         facade.replaceGuardian(p2.id(), address(0xA2), address(0xB2));
         vm.stopPrank();
 
-        assertEq(g1.lastAdded(), address(0xB1), "market 1 replacement added");
-        assertEq(g2.lastAdded(), address(0xB2), "market 2 replacement added");
-        assertEq(g1.lastRemoved(), address(0xA1), "market 1 old guardian removed");
-        assertEq(g2.lastRemoved(), address(0xA2), "market 2 old guardian removed");
-        assertLt(g1.lastAddedCall(), g1.lastRemovedCall(), "market 1 adds before removing");
-        assertLt(g2.lastAddedCall(), g2.lastRemovedCall(), "market 2 adds before removing");
-    }
-
-    function test_replaceGuardian_atCapSelectsSafeOrderAndPreservesQuorum() public {
-        (MarketParams memory p1, MarketParams memory p2,,, OwnerGuardianSignalsMock g1, OwnerGuardianSignalsMock g2) =
-            _createManagedMarkets();
-        _grant(facade.GUARDIAN_MANAGER_ROLE(), CREATOR);
-        g1.setGuardianState(g1.MAX_GUARDIANS_COUNT(), 31);
-        g2.setGuardianState(g2.MAX_GUARDIANS_COUNT(), 32);
-
-        vm.startPrank(CREATOR);
-        facade.replaceGuardian(p1.id(), address(0xA1), address(0xB1));
-        facade.replaceGuardian(p2.id(), address(0xA2), address(0xB2));
-        vm.stopPrank();
-
-        assertLt(g1.lastRemovedCall(), g1.lastAddedCall(), "spare quorum removes before adding");
-        assertEq(g1.quorumCalls(), 0, "spare quorum stays unchanged");
-        assertEq(g1.guardianCount(), 32, "market 1 count preserved");
-        assertEq(g1.quorum(), 31, "market 1 quorum preserved");
-
-        assertEq(g2.firstQuorumValue(), 31, "full quorum lowered by one");
-        assertLt(g2.firstQuorumCall(), g2.lastRemovedCall(), "quorum lowered before removing");
-        assertLt(g2.lastRemovedCall(), g2.lastAddedCall(), "old guardian removed before replacement is added");
-        assertLt(g2.lastAddedCall(), g2.lastQuorumCall(), "quorum restored after adding");
-        assertEq(g2.lastQuorumValue(), 32, "full quorum restored");
-        assertEq(g2.quorumCalls(), 2, "quorum changed only for replacement");
-        assertEq(g2.guardianCount(), 32, "market 2 count preserved");
-        assertEq(g2.quorum(), 32, "market 2 quorum preserved");
+        assertEq(g1.lastReplacedOld(), address(0xA1), "market 1 old guardian");
+        assertEq(g2.lastReplacedOld(), address(0xA2), "market 2 old guardian");
+        assertEq(g1.lastReplacedNew(), address(0xB1), "market 1 replacement");
+        assertEq(g2.lastReplacedNew(), address(0xB2), "market 2 replacement");
+        assertEq(g1.replaceCalls(), 1, "market 1 replace count");
+        assertEq(g2.replaceCalls(), 1, "market 2 replace count");
     }
 
     function testRevert_guardianManagement_withoutRole() public {

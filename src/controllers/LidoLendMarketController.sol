@@ -188,16 +188,10 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         return _activation.getCurrentActivationDelay(inflowIncrement);
     }
 
-    /// @inheritdoc ILidoLendMarketController
-    function grantInstantActivation(address caller) external onlyRole(MANAGER_ROLE) {
-        _instantActivationCallers[caller] = true;
-        emit InstantActivationSet(caller, true);
-    }
-
     /// @inheritdoc ILidoLendMarketConfigurator
-    function revokeInstantActivation(address caller) external onlyRole(MANAGER_ROLE) {
-        _instantActivationCallers[caller] = false;
-        emit InstantActivationSet(caller, false);
+    function setInstantActivation(address caller, bool enabled) external onlyRole(MANAGER_ROLE) {
+        _instantActivationCallers[caller] = enabled;
+        emit InstantActivationSet(caller, enabled);
     }
 
     /// @inheritdoc ILidoLendMarketController

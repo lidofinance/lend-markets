@@ -92,7 +92,7 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
         assertEq(cfg2.minActivationDelay, 20 minutes, "delays from step 1 preserved");
 
         // 3) Revoke instant activation through the dashboard; the live controller's behavior flips.
-        c.controller.grantInstantActivation(BORROWER);
+        c.controller.setInstantActivation(BORROWER, true);
         uint256 col = _mintWstETH(c.core, BORROWER, 18 ether);
         vm.prank(BORROWER);
         c.core.supplyCollateral(c.marketParams, col, BORROWER, "");

@@ -131,7 +131,7 @@ contract FullLifecycleTest is LidoLendSetup {
         Market storage m = _m();
 
         // Instant-activated borrower: grant, supply, borrow with no warp.
-        m.controller.grantInstantActivation(borrowerHealthy);
+        m.controller.setInstantActivation(borrowerHealthy, true);
         _fund(m.collateralToken, borrowerHealthy, _collatFor(P_SMALL, 200, 100));
         m.supplyCollateral(borrowerHealthy, _collatFor(P_SMALL, 200, 100));
         m.borrow(borrowerHealthy, P_SMALL);

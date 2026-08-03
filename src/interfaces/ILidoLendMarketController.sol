@@ -169,13 +169,6 @@ interface ILidoLendMarketController is
     ///         borrowers gauging the wait.
     function currentActivationDelay(uint256 inflowIncrement) external view returns (uint256);
 
-    /// @notice Whitelist a trusted caller contract (e.g. a router supplying on behalf of users) so its supplies
-    ///         cross straight into `active`, skipping the activation timer and inflow throttle. Risk-increasing
-    ///         path (waives the anti-flash/Sybil delay): reserved for trusted, access-gated callers — never a
-    ///         permissionless helper, which would waive the throttle for everyone routing through it. Keyed on
-    ///         the supply caller, not the position owner. Ban and freeze still gate as usual.
-    function grantInstantActivation(address caller) external;
-
     /// @notice Whether `caller`'s supplies skip the activation timer.
     function hasInstantActivation(address caller) external view returns (bool);
 

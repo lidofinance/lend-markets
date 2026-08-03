@@ -40,7 +40,7 @@ interface IReadController {
     function isFrozen() external view returns (bool);
     function isPaused() external view returns (bool);
     function hasInstantActivation(address caller) external view returns (bool);
-    function grantInstantActivation(address caller) external;
+    function setInstantActivation(address caller, bool enabled) external;
     function freeze() external;
     function pauseFor(uint256 duration) external;
 }

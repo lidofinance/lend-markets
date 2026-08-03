@@ -17,10 +17,10 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     event MarketStewardSet(Id indexed marketId, address indexed steward, bool enabled);
 
     /// @notice Emitted when the activation delay floor and cap are raised on a market.
-    event ActivationDelaysIncreased(Id indexed marketId, uint40 newMin, uint40 newMax);
+    event ActivationDelaysIncreased(Id indexed marketId, uint256 newMin, uint256 newMax);
 
     /// @notice Emitted when the Sybil lock amount and duration are raised on a market.
-    event ActivatingLockIncreased(Id indexed marketId, uint128 newAmount, uint40 newDuration);
+    event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 newDuration);
 
     /// @notice Emitted when a steward revokes a caller's instant activation on a market.
     event InstantActivationRevoked(Id indexed marketId, address indexed caller);

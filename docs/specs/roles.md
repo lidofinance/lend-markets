@@ -62,7 +62,7 @@ are added. The core's `onlyOwner` is held by the facade, not the DAO directly.
 |---|---|---|---|
 | `MARKET_CREATOR_ROLE` | `createMarket` (controller-less and controlled) | C4 / C1 | EVMScriptExecutor |
 | `FEE_MANAGER_ROLE` | `setFee` (≤ `MAX_FEE` = 25%), `setFeeRecipient` | C4 | Lido DAO Agent |
-| `MARKET_MANAGER_ROLE` | per-market `setSupplyCap`, `unfreeze`, `setCollateralActivationConfig`, `setSettlementConfig`, and `grantInstantActivation` through the resolved controller | C3 / C4 | EVMScriptExecutor |
+| `MARKET_MANAGER_ROLE` | per-market `setSupplyCap`, `unfreeze`, `setCollateralActivationConfig`, `setSettlementConfig`, and `setInstantActivation` through the resolved controller | C3 / C4 | EVMScriptExecutor |
 | `GUARDIAN_MANAGER_ROLE` | guardian roster (`addGuardian`, `removeGuardian`, `replaceGuardian`), quorum, suspect window, and per-market `unban` through the resolved registry | C1 / C3 / C4 | EVMScriptExecutor |
 | `DEFAULT_ADMIN_ROLE` | `transferLidoLendOwnership` (the only path to the core's `setOwner`), plus administers the capability roles above | C1 | Lido DAO |
 
@@ -77,7 +77,7 @@ target for those actions.
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | `setCollateralActivationConfig`, `setSettlementConfig`, `setSupplyCap`, `grantInstantActivation`, `revokeInstantActivation` | C4 | `LidoLendOwner` for EasyTrack governance actions; `RiskStewardDashboard` for bounded tighten-only actions |
+| `MANAGER_ROLE` | `setCollateralActivationConfig`, `setSettlementConfig`, `setSupplyCap`, `setInstantActivation` | C4 | `LidoLendOwner` for EasyTrack governance actions; `RiskStewardDashboard` for bounded tighten-only actions |
 | `FREEZER_ROLE` | `freeze` | C3 | risk steward committee |
 | `UNFREEZER_ROLE` | `unfreeze` | C4 | `LidoLendOwner` (EasyTrack motion, objection window) |
 | `PAUSER_ROLE` | `pauseFor` (stops every controller hook) | C2 | emergency-seal committee, bounded |
@@ -119,7 +119,7 @@ The dashboard is a protocol-wide singleton, deployed once by `DeployProtocol` (v
 | Role | Powers | Class | Holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO |
-| `MANAGER_ROLE` | guardian set, quorum, and suspect window (`addGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C4 | `LidoLendOwner` (EasyTrack motion, objection window) |
+| `MANAGER_ROLE` | guardian set, quorum, and suspect window (`addGuardian`, `replaceGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C4 | `LidoLendOwner` (EasyTrack motion, objection window) |
 | `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum) | C3 | risk steward committee |
 | `ACCESS_RESTORER_ROLE` | `unban` | C4 | `LidoLendOwner` (EasyTrack motion, objection window) |
 

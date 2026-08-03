@@ -17,7 +17,7 @@ Emitted when a steward is appointed to or removed from a market.
 ### `ActivationDelaysIncreased`
 
 ```solidity
-event ActivationDelaysIncreased(Id indexed marketId, uint40 newMin, uint40 newMax);
+event ActivationDelaysIncreased(Id indexed marketId, uint256 newMin, uint256 newMax);
 ```
 
 Emitted when the activation delay floor and cap are raised on a market.
@@ -25,7 +25,7 @@ Emitted when the activation delay floor and cap are raised on a market.
 ### `ActivatingLockIncreased`
 
 ```solidity
-event ActivatingLockIncreased(Id indexed marketId, uint128 newAmount, uint40 newDuration);
+event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 newDuration);
 ```
 
 Emitted when the Sybil lock amount and duration are raised on a market.

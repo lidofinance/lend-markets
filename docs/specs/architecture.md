@@ -50,7 +50,7 @@ Full surface: [API reference](api/lido-lend-market-controller.md).
 
 ### GuardianSignals
 
-The shared registry of guardian opinions per `(market, account)` — how the controller learns which borrowers the guardians have flagged as malicious. It holds the guardian committee (a flat set, capped at `MAX_GUARDIANS_COUNT = 32`) and quorum, each account's strike count and flagged/banned status, and per-guardian liveness heartbeats. `MANAGER_ROLE` manages the set and quorum — `addGuardian`, `removeGuardian`, `setQuorum`. One registry can serve many markets, and a deployment runs several only when markets need different guardian sets or quorums.
+The shared registry of guardian opinions per `(market, account)` — how the controller learns which borrowers the guardians have flagged as malicious. It holds the guardian committee (a flat set, capped at `MAX_GUARDIANS_COUNT = 32`) and quorum, each account's strike count and flagged/banned status, and per-guardian liveness heartbeats. `MANAGER_ROLE` manages the set and quorum — `addGuardian`, `replaceGuardian`, `removeGuardian`, `setQuorum`. Replacement is atomic and preserves both guardian count and quorum, including at the 32-guardian cap. One registry can serve many markets, and a deployment runs several only when markets need different guardian sets or quorums.
 
 Full surface: [API reference](api/guardian-signals.md).
 

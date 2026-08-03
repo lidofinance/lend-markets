@@ -116,7 +116,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
 
     /// @inheritdoc IRiskStewardDashboard
     function revokeInstantActivation(Id marketId, address caller) external onlyMarketSteward(marketId) {
-        _configurator(marketId).revokeInstantActivation(caller);
+        _configurator(marketId).setInstantActivation(caller, false);
         emit InstantActivationRevoked(marketId, caller);
     }
 

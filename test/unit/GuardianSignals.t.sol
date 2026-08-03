@@ -37,12 +37,12 @@ contract GuardianSignalsTest is Test {
     event QuorumSet(uint256 quorum);
     event SuspectWindowSet(uint256 suspectWindow);
     event Flagged(
-        Id indexed marketId, address indexed account, address indexed guardian, address actor, uint16 strikes
+        Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 strikes
     );
-    event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint16 strikes);
+    event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint256 strikes);
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
     event Banned(Id indexed marketId, address indexed account);
-    event QuorumFrontierAdvanced(address indexed caller, uint40 timestamp);
+    event QuorumFrontierAdvanced(address indexed caller, uint256 timestamp);
 
     function setUp() public {
         vm.roll(1000);
@@ -448,7 +448,7 @@ contract GuardianSignalsTest is Test {
         vm.recordLogs();
         _heartbeat(GUARDIAN_1, 999); // below quorum: frontier holds at 0
         Vm.Log[] memory subQuorum = vm.getRecordedLogs();
-        bytes32 advancedSig = keccak256("QuorumFrontierAdvanced(address,uint40)");
+        bytes32 advancedSig = keccak256("QuorumFrontierAdvanced(address,uint256)");
         for (uint256 i; i < subQuorum.length; ++i) {
             assertTrue(subQuorum[i].topics[0] != advancedSig, "a sub-quorum heartbeat emits no advance");
         }
@@ -880,6 +880,61 @@ contract GuardianSignalsTest is Test {
             abi.encodeWithSignature("initialize(address,address[],uint256)", address(this), guardians, uint256(2));
         vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
         new OssifiableProxy(impl, address(this), initData);
+    }
+
+    function test_replaceGuardian_atCapAndFullQuorum_preservesBoth() public {
+        for (uint160 i = 4; i <= 32; i++) {
+            gs.addGuardian(address(0x4000 + i));
+        }
+        gs.setQuorum(32);
+        address replacement = address(0xBEEF);
+
+        vm.expectEmit(true, false, false, false, address(gs));
+        emit GuardianRemoved(GUARDIAN_1);
+        vm.expectEmit(true, false, false, false, address(gs));
+        emit GuardianAdded(replacement);
+        gs.replaceGuardian(GUARDIAN_1, replacement);
+
+        assertEq(gs.getGuardianCount(), 32, "guardian count preserved");
+        assertEq(gs.getQuorum(), 32, "quorum preserved");
+        assertFalse(gs.isGuardian(GUARDIAN_1), "old guardian removed");
+        assertTrue(gs.isGuardian(replacement), "new guardian added");
+    }
+
+    function test_replaceGuardian_clearsOldDelegateAndHeartbeat() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        _heartbeat(GUARDIAN_1, 998);
+
+        vm.expectEmit(true, true, true, false, address(gs));
+        emit DelegateSet(GUARDIAN_1, DELEGATE, address(0));
+        gs.replaceGuardian(GUARDIAN_1, address(0xBEEF));
+
+        assertEq(gs.getDelegate(GUARDIAN_1), address(0), "old delegate cleared");
+        assertEq(gs.getHeartbeat(GUARDIAN_1), 0, "old heartbeat cleared");
+    }
+
+    function testRevert_replaceGuardian_oldNotGuardian() public {
+        vm.expectRevert(IGuardianSignals.NotGuardian.selector);
+        gs.replaceGuardian(BOB, address(0xBEEF));
+    }
+
+    function testRevert_replaceGuardian_newAlreadyGuardian() public {
+        vm.expectRevert(IGuardianSignals.AlreadyGuardian.selector);
+        gs.replaceGuardian(GUARDIAN_1, GUARDIAN_2);
+        assertTrue(gs.isGuardian(GUARDIAN_1), "old guardian preserved after revert");
+    }
+
+    function testRevert_replaceGuardian_zeroNewGuardian() public {
+        vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
+        gs.replaceGuardian(GUARDIAN_1, address(0));
+    }
+
+    function testRevert_replaceGuardian_wrongRole() public {
+        bytes32 role = gs.MANAGER_ROLE();
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
+        vm.prank(BOB);
+        gs.replaceGuardian(GUARDIAN_1, address(0xBEEF));
     }
 
     // ── fuzz ──
