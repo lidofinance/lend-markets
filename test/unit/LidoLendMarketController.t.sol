@@ -17,6 +17,7 @@ import {CollateralActivationConfig} from "../../src/types/CollateralActivationTy
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
 import {WAD, BPS} from "../../src/libs/Constants.sol";
+import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
@@ -1394,6 +1395,56 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         vm.prank(address(m.core));
         vm.expectRevert(ILidoLendMarketController.SettlementBadDebt.selector);
         c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
+    }
+
+    /// @dev With an 18-decimal loan and 6-decimal collateral, ordinary LTVs produce keys above uint96. The
+    ///      riskier borrower must still be the root, so its bad debt blocks settlement against a solvent peer.
+    function test_saturatedRiskKeys_nonRootBadDebtIsDetected() public {
+        MockERC20 collateral6 = new MockERC20("Collateral 6", "COLL6", 6);
+        LidoLendDeployer.DeployConfig memory config =
+            _defaultConfig(address(loan), address(collateral6), address(collateral6));
+        config.activation.minActivationAmount = 1;
+        Market storage m = _addMarket(config);
+        LidoLendMarketController controller = LidoLendMarketController(address(m.controller));
+        MockPriceOracle(address(m.oracle)).setPrice(1e48);
+
+        address lender = _actor("six-decimal lender");
+        _fund(m.loanToken, lender, 1_000 ether);
+        m.vaultDeposit(lender, 1_000 ether);
+
+        address risky = _actor("six-decimal risky");
+        address safe = _actor("six-decimal safe");
+        _fund(m.collateralToken, risky, 10e6);
+        _fund(m.collateralToken, safe, 10e6);
+        m.supplyCollateral(risky, 10e6);
+        m.supplyCollateral(safe, 10e6);
+        m.activateCollateral();
+        m.borrow(safe, 3 ether);
+        m.borrow(risky, 7.5 ether);
+
+        (address root,,,) = controller.nextSettlementBorrower();
+        (, uint256[] memory keys) = controller.settlementBorrowers(0, 2);
+        assertEq(root, risky, "higher true key is root");
+        assertGt(keys[0], type(uint96).max, "ordinary 6-decimal position exceeds uint96");
+
+        MockPriceOracle(address(m.oracle)).setPrice(0.5e48);
+        assertTrue(controller.hasBadDebt(), "bad debt at the saturated root is detected");
+
+        bytes memory data = abi.encode(
+            ILidoLendBaseMarketController.SettleHookData({
+                caller: address(this),
+                onBehalf: address(this),
+                borrower: safe,
+                receiver: address(this),
+                supplySharesBurned: 0,
+                borrowAssetsCanceled: 0,
+                borrowSharesCanceled: 1,
+                seizedAssets: 1
+            })
+        );
+        vm.prank(address(m.core));
+        vm.expectRevert(ILidoLendMarketController.SettlementBadDebt.selector);
+        controller.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
     }
 
     /// @dev The bad-debt gate is not a false positive on a solvent root: a healthy sole root admits a

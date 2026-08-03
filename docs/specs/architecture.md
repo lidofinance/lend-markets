@@ -56,7 +56,7 @@ Full surface: [API reference](api/guardian-signals.md).
 
 ### LidoLendERC4626
 
-The tokenized lender position for one market — a standard ERC-4626 vault over the market's supply, freely transferable and ungated, plus the griefing-resistant fallback exit for when pool liquidity is short. `totalAssets` counts only the Morpho supply position, so idle or donated loan tokens stay inert, and a virtual-share decimals offset hardens the share price against inflation.
+The tokenized lender position for one market — a standard ERC-4626 vault over the market's supply, freely transferable and ungated, plus the griefing-resistant fallback exit for when pool liquidity is short. `totalAssets` counts only the vault's own supply shares (`_managedSupplyShares`), so idle or donated loan tokens — and permissionless core `supply` credited to the vault address — stay inert, and a virtual-share decimals offset hardens the share price against inflation.
 
 Full surface: [API reference](api/lido-lend-erc4626.md).
 
@@ -68,7 +68,7 @@ Full surface: [API reference](api/risk-steward-dashboard.md).
 
 ### Exit books
 
-The filler-served exit registry. A lender posts a request to exit a fixed slice of their supply, then any filler drains whatever liquidity the market has into it, earning a `PriorityRamp` priority fee that holds at `startRate` through `rampStart`, climbs linearly to the request's `endRate` by `rampEnd`, then holds at `endRate` to the deadline (a Dutch auction). Each rate is capped at the global `MAX_PRIORITY_FEE = 10%`. A large exit completes over time without the lender chasing liquidity transaction by transaction. An abstract `ExitBookBase` (with `ExitBookLib`) holds the shared `fillExitRequest` / `cancelExitRequest` surface, and a concrete book binds it to a source with its own `placeExitRequest` — `Erc4626ExitBook` over a vault, `MorphoExitBook` over a market.
+The filler-served exit registry. A lender posts a request to exit a fixed slice of their supply, then any filler drains whatever liquidity the market has into it, earning a `PriorityRamp` priority fee that holds at `startRate` through `rampStart`, climbs linearly to the request's `endRate` by `rampEnd`, then holds at `endRate` to the deadline (a Dutch auction). Each rate is capped at the global `MAX_PRIORITY_FEE = 10%`. A large exit completes over time without the lender chasing liquidity transaction by transaction. At placement the book snapshots the full request's asset quote; partial fills receive cumulative portions of that quote, assigning any division remainder to the final fill. An abstract `ExitBookBase` (with `ExitBookLib`) holds the shared `fillExitRequest` / `cancelExitRequest` surface, and a concrete book binds it to a source with its own `placeExitRequest` — `Erc4626ExitBook` over a vault, `MorphoExitBook` over a market.
 
 Full surface: [API reference](api/exit-book.md).
 
@@ -276,7 +276,7 @@ When liquidity is short, lenders use the settlement exit:
 - `fallbackExit(shares, receiver, owner, maxIterations)` — two legs: first a normal redeem of whatever pool liquidity covers (paid out as loan assets), then a settle of the remainder against the risk heap, riskiest-first (paid out as seized collateral). Best-effort, no revert on a shortfall. `maxIterations` caps the borrowers the settle leg cuts (`0` = `DEFAULT_MAX_SETTLEMENT_ITERATIONS`, 150). Redeeming the liquid part first also closes a griefing vector — idle liquidity flows to the owner instead of blocking the settle.
 - `settle(shares, borrowers[], receiver, owner)` — settles a caller-chosen borrower list in order, collateral only (no redeem leg).
 
-Both burn lender shares against the cancelled debt, and the vault never custodies collateral — `fallbackExit`'s redeem leg pays loan assets, the settle path pays seized collateral straight to the receiver. When the cuts fall short of the target, the vault burns shares pro-rata to the supply-share budget actually consumed, rounded up so remaining holders are not diluted. `previewFallbackExit` reports the loan assets and core supply shares a given exit would consume.
+Both burn lender shares against the cancelled debt, and the vault never custodies collateral — `fallbackExit`'s redeem leg pays loan assets, the settle path pays seized collateral straight to the receiver. When the cuts fall short of the target, the vault burns shares pro-rata to the supply-share budget actually consumed, rounded up so remaining holders are not diluted.
 
 ### Freeze & pause
 
@@ -312,7 +312,9 @@ Trust within the policy layer. Core-level actors — proxy admin, owner, oracle,
 | Emergency-seal committee | pause every hook for a finite time | resume, change parameters, move funds |
 | Governance | set parameters and roles within bounds | bypass timelocks for risk-increasing changes, take custody |
 
-**Borrow-share-price invariant.** On a market whose total borrow assets are dust, a 1-wei borrow mints a slice of the whole outstanding share pool (`toSharesUp(1, TBA, TBS) ≈ TBS/TBA`). Repaying borrow assets to zero one share at a time and re-minting doubles the borrow-share supply each cheap cycle until it overflows `uint128` and every borrow reverts. The borrow hook fences this: while total borrow assets sit below `DUST_MARKET_MIN_BORROW`, a borrow must draw at least that much, so the market never enters the degenerate low-assets regime where a tiny borrow mints disproportionately. The floor sets the attack's cost — reaching the overflow takes on the order of `floor · log_floor(2^128)` transactions — for a payoff of only a temporary, recoverable borrow-DoS on an unused market, and leaves honest borrows on a market above the floor untouched.
+**Borrow-share-price invariant.** Rounding can strand borrow shares while total borrow assets approach zero, making the next borrow mint a disproportionate number of shares. Repeating that cycle can inflate the share counter toward its `uint128` bound and block later borrows. The controller caps the borrow-share rate at `MAX_BORROW_SHARE_RATE`: borrow, repay, and voluntary settlement may not move a healthy market above the cap, while operations that start above it may reduce the rate so a stranded state remains recoverable. Liquidation is exempt so forced risk reduction stays live.
+
+**Supply-share-accounting invariant.** The core `supply` is permissionless and accepts any `onBehalf`, so a third party can credit supply shares to the vault address without receiving vault shares. Backing shares with the vault's full core position would let that credit inflate the share price and the settlement budgets — a `deposit` could mint zero shares, or a single share could command settle budget it never paid for. The vault instead backs shares with `_managedSupplyShares` (supply shares from its own operations only: `supply` in, `withdraw`/settlement burn out), used in `totalAssets` and both settlement budgets; the invariant `_managedSupplyShares <= coreSupplyShares` holds by construction, and a nonzero deposit that would mint zero shares reverts as defense in depth.
 
 Each invariant here maps to a scenario or integration test in `test/`.
 

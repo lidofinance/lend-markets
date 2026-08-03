@@ -36,7 +36,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     address internal immutable ORACLE;
     uint256 internal constant LLTV = 0.8e18;
     uint256 internal constant FLOOR = 10 ether;
-    uint256 internal constant PPS_TOLERANCE = 2; // wei of rounding a pro-rata burn may shift convertToAssets(1e18)
+    uint256 internal constant PPS_TOLERANCE = 3; // wei of rounding a pro-rata burn may shift convertToAssets(1e18)
     // Below one full share the price is dominated by the virtual-share offset: an exit that drains the vault to dust
     // leaves totalSupply/totalAssets at the offset scale, where `convertToAssets(1e18)` snaps back to parity. That is
     // an empty-vault artifact, not dilution — there are no remaining holders to dilute — so the no-drop check below

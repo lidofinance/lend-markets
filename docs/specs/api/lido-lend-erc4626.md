@@ -110,7 +110,21 @@ Thrown when the market's collateral token is the zero address at initialization.
 error ZeroMorphoSupplyShares();
 ```
 
-Thrown when an exit reaches its settle leg but the vault holds no Morpho supply shares to cut against, so the requested slice maps to a zero supply-share budget.
+Thrown when an exit maps to a zero core supply-share budget.
+
+### `ZeroCoreSupplySharesMinted`
+
+```solidity
+error ZeroCoreSupplySharesMinted(uint256 assets);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `assets` | `uint256` | The deposited assets that mapped to zero core supply shares. |
+
+Thrown when a nonzero deposit receives zero core supply shares.
 
 ### `ExceededBalance`
 
@@ -135,6 +149,20 @@ error EmptyBorrowers();
 ```
 
 Thrown when `settle` is called with an empty borrowers list.
+
+### `ZeroSharesMinted`
+
+```solidity
+error ZeroSharesMinted(uint256 assets);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `assets` | `uint256` | The deposited assets that mapped to zero shares. |
+
+Thrown when a nonzero-asset deposit would mint zero vault shares.
 
 ## Functions
 
@@ -161,13 +189,19 @@ function initialize(
 function marketParams() external view returns (MarketParams memory);
 ```
 
+### `managedSupplyShares`
+
+```solidity
+function managedSupplyShares() external view returns (uint256);
+```
+
 ### `totalAssets`
 
 ```solidity
 function totalAssets() public view returns (uint256);
 ```
 
-Only the Morpho supply position backs shares — direct loan-token donations are uncounted and cannot move the share price.
+Only vault-originated supply shares back shares — direct loan-token donations and permissionless core `supply` credits to the vault address are uncounted and cannot move the share price.
 
 ### `maxWithdraw`
 
@@ -226,16 +260,6 @@ function fallbackExit(
 ```
 
 Redeems what liquidity covers before settling, closing a griefing vector: the core blocks `settle` while idle liquidity still covers the amount, so without the redeem an attacker could add idle right before the call to force the exit to revert. That liquidity goes to the owner as loan assets; collateral goes from Morpho straight to `receiver`.
-
-### `previewFallbackExit`
-
-```solidity
-function previewFallbackExit(
-    uint256 shares
-) external view returns (uint256 loanAssets, uint256 morphoSupplyShares);
-```
-
-A `view` preview on this block's accrued totals. The figures may shift if blocks pass before the `fallbackExit`, which recomputes the pro-rata on-chain at execution so the burn matches live state.
 
 ## State variables
 

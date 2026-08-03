@@ -164,6 +164,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         uint256 filledShares = _fillableShares(id, request);
         if (filledShares == 0) revert NoFillableShares();
 
+        uint256 quotedOwed = _quotedOwed(request, filledShares);
         _book.recordFill(id, filledShares);
 
         // Redeem against the source and measure what actually arrived — never trust a return value.
@@ -180,7 +181,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         // priority fee, the filler gets the accrued yield plus that fee, the service takes a cut of the
         // filler's gross. `owed` is capped at `assetsOut` so a loss just trims it (no yield);
         // `feeRate <= MAX_PRIORITY_FEE < WAD`, so the fee never exceeds `owed`.
-        uint256 owed = Math.min(Math.mulDiv(filledShares, request.pricePerShare, WAD), assetsOut);
+        uint256 owed = Math.min(quotedOwed, assetsOut);
         uint256 fee = Math.mulDiv(owed, _priorityFeeRate(request), WAD);
         uint256 fillerGross = (assetsOut - owed) + fee; // accrued yield + priority fee
         uint256 serviceCut = Math.mulDiv(fillerGross, serviceFee, WAD);
@@ -194,6 +195,16 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         if (serviceCut != 0) asset.safeTransfer(feeRecipient, serviceCut);
 
         emit ExitProcessed(id, msg.sender, address(asset), filledShares, lenderAssets, fillerFee, serviceCut);
+    }
+
+    /// @dev Apportion the placement quote cumulatively for this fill. Called before the external redeem so
+    ///      re-entrancy cannot move the request's cumulative boundaries.
+    function _quotedOwed(Request storage request, uint256 filledShares) internal view returns (uint256) {
+        uint256 filledBefore = uint256(request.sizeTotal) - request.sizeRemaining;
+        uint256 filledAfter = filledBefore + filledShares;
+        uint256 owedAfter = Math.mulDiv(request.quotedAssets, filledAfter, request.sizeTotal);
+        uint256 owedBefore = Math.mulDiv(request.quotedAssets, filledBefore, request.sizeTotal);
+        return owedAfter - owedBefore;
     }
 
     // ---
@@ -293,12 +304,13 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         address account,
         IERC20 asset,
         uint256 shares,
-        uint256 pricePerShare,
+        uint256 quotedAssets,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
     ) internal returns (uint256 id) {
         if (shares == 0) revert ZeroShares();
+        if (quotedAssets == 0) revert ZeroAssetQuote();
         if (ramp.endRate > MAX_PRIORITY_FEE) revert PriorityFeeTooHigh();
         if (ramp.startRate > ramp.endRate) revert StartFeeAboveEnd();
         if (ramp.rampStart > ramp.rampEnd) revert RampStartAfterEnd();
@@ -306,7 +318,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         if (deadline > block.timestamp + MAX_REQUEST_LIFETIME) revert DeadlineTooFar();
         if (block.timestamp + ramp.rampEnd > deadline) revert RampPastDeadline();
 
-        id = _book.add(account, asset, shares, pricePerShare, ramp, deadline, fullFillOnly);
+        id = _book.add(account, asset, shares, quotedAssets, ramp, deadline, fullFillOnly);
         emit ExitRequested(id, account, address(asset), shares, ramp, deadline, fullFillOnly);
     }
 

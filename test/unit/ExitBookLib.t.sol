@@ -18,12 +18,12 @@ contract EBHarness {
         address owner,
         IERC20 asset,
         uint256 shares,
-        uint256 price,
+        uint256 quotedAssets,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
     ) external returns (uint256) {
-        return s.add(owner, asset, shares, price, ramp, deadline, fullFillOnly);
+        return s.add(owner, asset, shares, quotedAssets, ramp, deadline, fullFillOnly);
     }
 
     function recordFill(uint256 id, uint256 filled) external {
@@ -50,6 +50,10 @@ contract EBHarness {
         return s.requests[id].owner;
     }
 
+    function storedQuotedAssets(uint256 id) external view returns (uint256) {
+        return s.requests[id].quotedAssets;
+    }
+
     function nextId() external view returns (uint256) {
         return s.nextId;
     }
@@ -65,6 +69,7 @@ contract ExitBookLibTest is Test {
     IERC20 internal constant ASSET = IERC20(address(0xA55E7));
     address internal constant ALICE = address(0xA11CE);
     address internal constant BOB = address(0xB0B);
+    uint256 internal constant QUOTED_ASSETS = 90 ether;
 
     function setUp() public {
         h = new EBHarness();
@@ -76,7 +81,7 @@ contract ExitBookLibTest is Test {
     }
 
     function _add(address owner, uint256 shares) internal returns (uint256) {
-        return h.add(owner, ASSET, shares, 1e18, _ramp(), block.timestamp + 1 days, false);
+        return h.add(owner, ASSET, shares, QUOTED_ASSETS, _ramp(), block.timestamp + 1 days, false);
     }
 
     // ── mutations ──
@@ -91,6 +96,7 @@ contract ExitBookLibTest is Test {
         assertEq(uint8(h.status(id)), uint8(ExitStatus.Open), "starts Open");
         assertEq(h.sizeRemaining(id), 100 ether, "sizeRemaining == shares");
         assertEq(h.ownerOf(id), ALICE, "owner stored");
+        assertEq(h.storedQuotedAssets(id), QUOTED_ASSETS, "quoted assets stored");
     }
 
     /// @dev Ids increment strictly across adds and are never recycled, even after an earlier request is closed by
@@ -184,7 +190,7 @@ contract ExitBookLibTest is Test {
                 SafeCast.SafeCastOverflowedUintDowncast.selector, 128, uint256(type(uint128).max) + 1
             )
         );
-        h.add(ALICE, ASSET, uint256(type(uint128).max) + 1, 1e18, _ramp(), block.timestamp + 1, false);
+        h.add(ALICE, ASSET, uint256(type(uint128).max) + 1, QUOTED_ASSETS, _ramp(), block.timestamp + 1, false);
     }
 
     /// @dev A deadline above uint40 max reverts on the SafeCast downcast when packing the request.
@@ -192,7 +198,7 @@ contract ExitBookLibTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 40, uint256(type(uint40).max) + 1)
         );
-        h.add(ALICE, ASSET, 1 ether, 1e18, _ramp(), uint256(type(uint40).max) + 1, false);
+        h.add(ALICE, ASSET, 1 ether, QUOTED_ASSETS, _ramp(), uint256(type(uint40).max) + 1, false);
     }
 
     /// @dev A ramp rate above uint96 max reverts on the SafeCast downcast when packing the request.
@@ -202,7 +208,7 @@ contract ExitBookLibTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 96, uint256(type(uint96).max) + 1)
         );
-        h.add(ALICE, ASSET, 1 ether, 1e18, r, block.timestamp + 1, false);
+        h.add(ALICE, ASSET, 1 ether, QUOTED_ASSETS, r, block.timestamp + 1, false);
     }
 
     // ── fuzz: id monotonicity & remaining bound ──

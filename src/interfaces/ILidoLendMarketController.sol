@@ -71,9 +71,8 @@ interface ILidoLendMarketController is
     /// @notice Thrown when a borrow would mint borrow shares while transferring zero loan assets.
     error ZeroBorrowAssets();
 
-    /// @notice Thrown when a borrow draws fewer than `minimum` loan assets while the market's total borrow assets
-    ///         are still below that floor — the dust regime where borrow-share inflation would be cheap.
-    error BorrowBelowDustMarketMinimum(uint256 minimum, uint256 attempted);
+    /// @notice Thrown when a borrow, repay, or settle would push the market's borrow-share rate over the ceiling.
+    error BorrowShareRateExceeded();
 
     /// @notice Thrown when a core-applied position delta exceeds the controller's read of that position.
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
@@ -138,10 +137,9 @@ interface ILidoLendMarketController is
     // CONFIG
     // ---
 
-    /// @notice While the market's total borrow assets sit below this amount, every borrow must draw at least
-    ///         this much loan assets. It fences borrow-share inflation by keeping the market out of the dust
-    ///         regime where a 1-wei borrow mints a disproportionate slice of the outstanding shares.
-    function DUST_MARKET_MIN_BORROW() external view returns (uint256);
+    /// @notice Ceiling on the market's borrow-share rate; borrow/repay/settle may not push past it (liquidation
+    ///         exempt). Bounds rounding-driven borrow-share inflation.
+    function MAX_BORROW_SHARE_RATE() external view returns (uint256);
 
     // ---
     // LENDER LIMITS

@@ -156,9 +156,6 @@ contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
         vm.stopPrank();
 
         if (minted == 0) return;
-        // Place snapshots `pricePerShare = convertToAssets(WAD)` into a uint128. After heavy yield donations the
-        // price can exceed that — a pathological state, not a path under test — so skip rather than revert.
-        if (VAULT.convertToAssets(WAD) > type(uint128).max) return;
         uint256 shares = bound(sharesSeed, 1, minted);
 
         // Valid ramp: endRate in [0, MAX_PRIORITY_FEE]; startRate <= endRate; rampStart <= rampEnd; and

@@ -2,6 +2,7 @@
 pragma solidity 0.8.35;
 
 import {ILidoLendMarketController as IBase} from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
@@ -139,5 +140,88 @@ contract LidoLendMarketControllerHooksTest is LidoLendSetup {
         vm.prank(borrower);
         m.core.withdrawCollateral(m.params, before, borrower, borrower); // whole position out, no health check
         assertEq(m.core.position(m.id, borrower).collateral, 0, "zero-debt withdraw needs no active-collateral check");
+    }
+
+    // ── borrow-share-rate ceiling — recovery/exemption branches ──
+
+    /// @dev Force the core market into an over-cap state (`totalBorrowShares` huge vs `totalBorrowAssets`), which
+    ///      the guarded paths cannot create post-fix but a pre-existing/forced state can be. `market` is the 4th
+    ///      `LidoLend` state variable (slot 3); its second sub-slot packs `totalBorrowAssets` (low 128) |
+    ///      `totalBorrowShares` (high 128). `lastUpdate` is set to now so the accrued `_marketView` equals raw.
+    function _forceOverCapMarket(uint256 tba, uint256 tbs) internal {
+        Market storage m = _m();
+        bytes32 base = keccak256(abi.encode(Id.unwrap(m.id), uint256(3)));
+        vm.store(address(m.core), bytes32(uint256(base) + 1), bytes32((tbs << 128) | tba));
+        uint256 fee = m.core.market(m.id).fee;
+        vm.store(address(m.core), bytes32(uint256(base) + 2), bytes32((fee << 128) | block.timestamp));
+
+        // Self-validate the slot: the raw getter must read back exactly what we injected.
+        assertEq(m.core.market(m.id).totalBorrowAssets, tba, "slot check: TBA");
+        assertEq(m.core.market(m.id).totalBorrowShares, tbs, "slot check: TBS");
+    }
+
+    /// @dev A borrow is rejected when the market is already over the cap: the direct (non-transition) check
+    ///      blocks growing debt on a broken market — only repay/settle cleanup can bring it back under.
+    function test_borrowHook_overCapMarket_reverts() public {
+        Market storage m = _m();
+        _forceOverCapMarket(1, 1e9);
+
+        bytes memory data = abi.encode(
+            IBase.BorrowHookData({
+                caller: address(this), onBehalf: address(0xB0B), receiver: address(0xB0B), assets: 1e5, shares: 1e15
+            })
+        );
+        vm.prank(address(m.core));
+        vm.expectRevert(ILidoLendMarketController.BorrowShareRateExceeded.selector);
+        m.controller.on(m.id, IBase.HookEvent.Borrow, data);
+    }
+
+    /// @dev req9 — permissionless cleanup: when the market is ALREADY over the cap, a repay is NOT blocked by the
+    ///      ceiling (the transition check short-circuits on `exceeded(pre)`), so a stranded state can be unwound.
+    function test_repayHook_overCapMarket_cleanupAllowed() public {
+        Market storage m = _m();
+        _forceOverCapMarket(1, 1e9); // rate ~5e8 >> MAX_BORROW_SHARE_RATE (1e7)
+
+        // A repay in this state must not revert with the rate error (it is allowed, to enable cleanup). Zero
+        // shares keeps it consistent with the (empty) position; the point is the rate branch, not the accounting.
+        bytes memory data =
+            abi.encode(IBase.RepayHookData({caller: address(this), onBehalf: address(0xB0B), assets: 1, shares: 0}));
+        _onAsCore(IBase.HookEvent.Repay, data); // no BorrowShareRateExceeded revert
+    }
+
+    /// @dev Settlement uses the same transition guard as repayment. An already over-cap market must reach the
+    ///      policy checks instead of being blocked by the rate ceiling, so a legacy stranded state remains
+    ///      recoverable through settlement too.
+    function test_settleHook_overCapMarket_cleanupAllowed() public {
+        Market storage m = _m();
+        _forceOverCapMarket(1, 1e9);
+
+        bytes memory data = abi.encode(
+            IBase.SettleHookData({
+                caller: address(this),
+                onBehalf: address(this),
+                borrower: address(0xB0B),
+                receiver: address(this),
+                supplySharesBurned: 0,
+                borrowAssetsCanceled: 0,
+                borrowSharesCanceled: 0,
+                seizedAssets: 0
+            })
+        );
+        _onAsCore(IBase.HookEvent.Settle, data); // no BorrowShareRateExceeded revert
+    }
+
+    /// @dev req8 — liquidation is exempt: even with the market over the cap, the liquidate hook carries no
+    ///      rate check, so it never reverts with the rate error (stays live for recovery).
+    function test_liquidateHook_overCapMarket_notBlocked() public {
+        Market storage m = _m();
+        _forceOverCapMarket(1, 1e9);
+
+        bytes memory data = abi.encode(
+            IBase.LiquidateHookData({
+                caller: address(this), borrower: address(0xB0B), repaidShares: 0, repaidAssets: 0, seizedAssets: 0
+            })
+        );
+        _onAsCore(IBase.HookEvent.Liquidate, data); // exempt: no BorrowShareRateExceeded revert
     }
 }

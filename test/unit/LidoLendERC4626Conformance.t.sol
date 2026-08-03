@@ -4,6 +4,7 @@ pragma solidity 0.8.35;
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
+import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {IrmKind, Market} from "../setup/Types.sol";
@@ -81,6 +82,9 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
         assets = bound(assets, 1, 1_000_000 ether);
         _fundApprove(alice, assets);
         uint256 preview = _v().previewDeposit(assets);
+        // A nonzero deposit that would mint zero shares is rejected (see `testRevert_subPriceDeposit_...`), so the
+        // preview-equals-actual property is asserted only where the deposit is executable.
+        vm.assume(preview != 0);
         vm.prank(alice);
         uint256 shares = _v().deposit(assets, alice);
         assertEq(shares, preview, "deposit shares == previewDeposit (no fee)");
@@ -140,6 +144,9 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
     function testFuzz_roundTrip_depositRedeem_noFreeProfit(uint256 assets) public {
         assets = bound(assets, 1, 1_000_000 ether);
         _fundApprove(alice, assets);
+        // Skip the amounts that would mint zero shares — the vault rejects those deposits, so there is no
+        // round-trip to bound (see `testRevert_subPriceDeposit_...`).
+        vm.assume(_v().previewDeposit(assets) != 0);
 
         vm.startPrank(alice);
         uint256 out = _v().redeem(_v().deposit(assets, alice), alice, alice);
@@ -268,7 +275,8 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
         assertEq(_v().balanceOf(alice), shares - capShares, "exactly the cap redeemed");
     }
 
-    // ── G7: boundary amounts — zero deposit, and a sub-price deposit that rounds to zero shares ──
+    // ── G7: boundary amounts — zero deposit is a no-op, and a sub-price deposit that would mint zero shares is
+    //    rejected (VLT-01 defense in depth), not silently accepted for dust ──
 
     function test_zeroDeposit_mintsZero() public {
         _fundApprove(alice, 0);
@@ -278,20 +286,20 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
         assertEq(_v().balanceOf(alice), 0, "no shares credited");
     }
 
-    /// @dev At a >1 share price a 1-wei deposit rounds down to zero shares — standard ERC-4626 flooring (the wei is
-    ///      pulled as dust). `previewDeposit` reflects it exactly, so there is no silent surprise; the depositor can
-    ///      read the 0 before committing.
-    function test_subPriceDeposit_roundsToZeroShares() public {
+    /// @dev At a >1 share price a 1-wei deposit floors to zero shares. `previewDeposit` still reports that 0
+    ///      (the views never revert), but the deposit itself is rejected with `ZeroSharesMinted` rather than
+    ///      pulling the wei as dust — a nonzero deposit must never mint zero shares. The wei stays with the caller.
+    function testRevert_subPriceDeposit_zeroSharesRejected() public {
         assertEq(_v().previewDeposit(1), 0, "1 wei previews to zero shares at a >1 price");
 
         _fundApprove(alice, 1);
         uint256 assetsBefore = _m().loanToken.balanceOf(alice);
         vm.prank(alice);
-        uint256 shares = _v().deposit(1, alice);
+        vm.expectRevert(abi.encodeWithSelector(ILidoLendERC4626.ZeroSharesMinted.selector, uint256(1)));
+        _v().deposit(1, alice);
 
-        assertEq(shares, 0, "1-wei deposit mints zero shares (rounds down)");
         assertEq(_v().balanceOf(alice), 0, "no shares credited");
-        assertEq(_m().loanToken.balanceOf(alice), assetsBefore - 1, "the 1 wei is still pulled (dust to the vault)");
+        assertEq(_m().loanToken.balanceOf(alice), assetsBefore, "the wei is not pulled: deposit reverted");
     }
 
     // =========================================================================================================

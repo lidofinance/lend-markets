@@ -62,8 +62,12 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     MarketParams internal _marketParams;
 
     /// @dev Virtual-share decimals offset, `SHARE_DECIMALS - loanTokenDecimals`, frozen at init (see
-    /// `_decimalsOffset`).
+    ///     `_decimalsOffset`).
     uint8 internal _loanDecimalsOffset;
+
+    /// @dev Core supply shares from vault operations only — backs shares in place of the full core position,
+    ///      which `supply(onBehalf)` lets anyone inflate.
+    uint256 internal _managedSupplyShares;
 
     // ---
     // INITIALIZATION
@@ -114,14 +118,19 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         return _marketParams;
     }
 
+    /// @inheritdoc ILidoLendERC4626
+    function managedSupplyShares() external view returns (uint256) {
+        return _managedSupplyShares;
+    }
+
     // ---
     // OVERRIDES
     // ---
 
-    /// @dev Only the Morpho supply position backs shares — direct loan-token donations are uncounted and cannot
-    ///      move the share price.
+    /// @dev Only vault-originated supply shares back shares — direct loan-token donations and permissionless
+    ///      core `supply` credits to the vault address are uncounted and cannot move the share price.
     function totalAssets() public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        uint256 supplyShares = _lidoLendSupplyShares();
+        uint256 supplyShares = _managedSupplyShares;
         if (supplyShares == 0) return 0;
         (uint256 totalSupplyAssets, uint256 totalSupplyShares) = _marketSupplyTotals();
         return supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
@@ -156,20 +165,28 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     }
 
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override {
+        if (assets != 0 && shares == 0) revert ZeroSharesMinted(assets);
         super._deposit(caller, receiver, assets, shares);
-        if (assets != 0) LIDO_LEND.supply(_marketParams, assets, 0, address(this), "");
+        if (assets != 0) {
+            (, uint256 suppliedShares) = LIDO_LEND.supply(_marketParams, assets, 0, address(this), "");
+            if (suppliedShares == 0) revert ZeroCoreSupplySharesMinted(assets);
+            _managedSupplyShares += suppliedShares;
+        }
     }
 
     function _withdraw(address caller, address receiver, address owner, uint256 assets, uint256 shares)
         internal
         override
     {
-        if (assets != 0) LIDO_LEND.withdraw(_marketParams, assets, 0, address(this), address(this));
+        if (assets != 0) {
+            (, uint256 withdrawnShares) = LIDO_LEND.withdraw(_marketParams, assets, 0, address(this), address(this));
+            _managedSupplyShares -= withdrawnShares;
+        }
         super._withdraw(caller, receiver, owner, assets, shares);
     }
 
     /// @dev The frozen virtual-share offset (`SHARE_DECIMALS - loanTokenDecimals`). Defense-in-depth on top of the
-    ///      position-only `totalAssets`, which is the actual donation/inflation defense.
+    ///      managed-share `totalAssets`, which is the actual donation/inflation defense.
     function _decimalsOffset() internal view override returns (uint8) {
         return _loanDecimalsOffset;
     }
@@ -193,7 +210,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         if (shares > balanceOf(owner)) revert ExceededBalance(owner, shares, balanceOf(owner));
 
         // The owner's pro-rata supply shares — the budget the cuts consume.
-        uint256 settlingSupplyShares = Math.mulDiv(_lidoLendSupplyShares(), shares, totalSupply());
+        uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply());
         if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
 
         uint256 remainingSupplyShares = settlingSupplyShares;
@@ -205,6 +222,9 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
             debtCanceled += cutDebt;
             collateralSeized += cutCollateral;
             remainingSupplyShares = Math.saturatingSub(remainingSupplyShares, cutShares);
+        }
+        if (remainingSupplyShares < settlingSupplyShares) {
+            _managedSupplyShares -= settlingSupplyShares - remainingSupplyShares;
         }
 
         // Burn only the shares actually settled (pro-rata if the cuts fell short). loanAssets stays 0 — settle
@@ -264,7 +284,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
         // 2. Settle the remainder against the risk queue, head first (collateral to receiver), up to the owner's
         //    pro-rata supply-share budget for it.
-        uint256 settlingSupplyShares = Math.mulDiv(_lidoLendSupplyShares(), remaining, totalSupply());
+        uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, remaining, totalSupply());
         if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
 
         if (maxIterations == 0) maxIterations = DEFAULT_MAX_SETTLEMENT_ITERATIONS;
@@ -278,6 +298,9 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
             debtCanceled += cutDebt;
             collateralSeized += cutCollateral;
             remainingSupplyShares = Math.saturatingSub(remainingSupplyShares, cutShares);
+        }
+        if (remainingSupplyShares < settlingSupplyShares) {
+            _managedSupplyShares -= settlingSupplyShares - remainingSupplyShares;
         }
 
         // Burn the settled remainder (pro-rata, rounded up so remaining holders aren't diluted) and spend
@@ -332,23 +355,6 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
             LIDO_LEND.settle(_marketParams, supplyShares, borrowShares, address(this), borrower, receiver);
     }
 
-    /// @inheritdoc ILidoLendERC4626
-    /// @dev A `view` preview on this block's accrued totals. The figures may shift if blocks pass before the
-    ///      `fallbackExit`, which recomputes the pro-rata on-chain at execution so the burn matches live state.
-    function previewFallbackExit(uint256 shares)
-        external
-        view
-        returns (uint256 loanAssets, uint256 morphoSupplyShares)
-    {
-        uint256 totalSupply_ = totalSupply();
-        if (shares == 0 || totalSupply_ == 0) return (0, 0);
-
-        // Redeem leg pays loan assets up to what the Morpho position can withdraw; the rest settles for
-        // collateral. Stray idle is uncounted, so it never appears as loan assets.
-        loanAssets = Math.min(convertToAssets(shares), _morphoWithdrawableAssets());
-        morphoSupplyShares = Math.mulDiv(_lidoLendSupplyShares(), shares, totalSupply_);
-    }
-
     function _marketSupplyTotals() internal view returns (uint256 totalSupplyAssets, uint256 totalSupplyShares) {
         (totalSupplyAssets, totalSupplyShares,,) =
             MorphoBalancesLib.expectedMarketBalances(IMorpho(address(LIDO_LEND)), _marketParams);
@@ -356,9 +362,5 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
     function _morphoWithdrawableAssets() internal view returns (uint256) {
         return controller.maxWithdrawableAssets(address(this));
-    }
-
-    function _lidoLendSupplyShares() internal view returns (uint256 supplyShares) {
-        supplyShares = LIDO_LEND.position(marketId, address(this)).supplyShares;
     }
 }

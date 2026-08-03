@@ -53,7 +53,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     // ---
 
     /// @inheritdoc ILidoLendMarketController
-    uint256 public constant DUST_MARKET_MIN_BORROW = 1e5;
+    /// @dev 10x the natural rate (`VIRTUAL_SHARES / VIRTUAL_ASSETS = 1e6`).
+    uint256 public constant MAX_BORROW_SHARE_RATE = 1e7;
 
     // ---
     // IMMUTABLES
@@ -438,12 +439,10 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         // A share-anchored borrow can round its assets to zero, minting borrow shares for nothing.
         if (hookData.assets == 0) revert ZeroBorrowAssets();
 
-        // Borrow-share inflation guard: while borrow assets are dust, a wei-sized borrow mints a disproportionate
-        // slice of the outstanding shares, compounding to overflow the uint128 share counter and brick borrows.
         MarketView memory marketView = _marketView(id);
-        if (marketView.totalBorrowAssets < DUST_MARKET_MIN_BORROW && hookData.assets < DUST_MARKET_MIN_BORROW) {
-            revert BorrowBelowDustMarketMinimum(DUST_MARKET_MIN_BORROW, hookData.assets);
-        }
+        uint256 postBorrowAssets = marketView.totalBorrowAssets + hookData.assets;
+        uint256 postBorrowShares = marketView.totalBorrowShares + hookData.shares;
+        if (_isBorrowShareRateExceeded(postBorrowAssets, postBorrowShares)) revert BorrowShareRateExceeded();
 
         // A banned actor cannot take on debt (onBehalf), receive the loan (receiver), or initiate the
         // borrow (caller). Soft strikes only delay activation; a ban hard-blocks the borrow.
@@ -472,8 +471,12 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         _settlementQueue.sync(hookData.onBehalf, position);
     }
 
-    /// @dev Repay hook: re-key the settlement queue on the post-repay shares (the borrower drops out at zero debt).
+    /// @dev Repay hook: gate the borrow-share-rate transition, then re-key the settlement queue on the post-repay
+    ///      shares (the borrower drops out at zero debt).
     function _handleRepay(Id id, RepayHookData memory hookData) internal {
+        (,, uint256 preAssets, uint256 preShares) = _marketTotals(LIDO_LEND.idToMarketParams(id));
+        _requireBorrowRateTransition(preAssets, preShares, hookData.assets, hookData.shares);
+
         PositionView memory position = _positionView(id, hookData.onBehalf);
         if (hookData.shares > position.borrowShares) revert PositionAccountingMismatch();
         position.borrowShares -= hookData.shares;
@@ -509,6 +512,10 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         PositionView memory position = _positionView(id, borrower);
         MarketView memory marketView = _marketView(id);
 
+        uint256 preAssets = marketView.totalBorrowAssets;
+        uint256 preShares = marketView.totalBorrowShares;
+        _requireBorrowRateTransition(preAssets, preShares, hookData.borrowAssetsCanceled, hookData.borrowSharesCanceled);
+
         // bad-debt gate: revert if the queue root (riskiest position) is bad debt. An empty queue has no root
         // (peekRoot returns address(0)), so this falls through to the eligibility gate below.
         address riskiestBorrower = _settlementQueue.peekRoot();
@@ -538,6 +545,26 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     /// @dev Borrower debt in loan assets, rounded up. 0 when the position carries no debt.
     function _debtAssets(MarketView memory marketView, PositionView memory position) internal pure returns (uint256) {
         return position.borrowShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+    }
+
+    /// @dev Whether the market's borrow-share rate exceeds `MAX_BORROW_SHARE_RATE` (cross-multiplied, no division).
+    function _isBorrowShareRateExceeded(uint256 borrowAssets, uint256 borrowShares) internal pure returns (bool) {
+        return borrowShares + SharesMathLib.VIRTUAL_SHARES
+            > MAX_BORROW_SHARE_RATE * (borrowAssets + SharesMathLib.VIRTUAL_ASSETS);
+    }
+
+    /// @dev Revert only if reducing borrow totals by (`reduceAssets`, `reduceShares`) crosses the rate ceiling
+    ///      from under to over; a market already over the cap is left alone so it can be cleaned up.
+    function _requireBorrowRateTransition(
+        uint256 preAssets,
+        uint256 preShares,
+        uint256 reduceAssets,
+        uint256 reduceShares
+    ) internal pure {
+        if (_isBorrowShareRateExceeded(preAssets, preShares)) return;
+        uint256 postAssets = Math.saturatingSub(preAssets, reduceAssets);
+        uint256 postShares = Math.saturatingSub(preShares, reduceShares);
+        if (_isBorrowShareRateExceeded(postAssets, postShares)) revert BorrowShareRateExceeded();
     }
 
     /// @dev Value of `collateral` units in loan assets at the market's oracle price, rounded down.

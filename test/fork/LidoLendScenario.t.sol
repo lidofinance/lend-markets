@@ -209,8 +209,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
         ctx.market.withdrawCollateral(ctx.marketParams, col - 5 ether, BORROWER, BORROWER);
         _assertCollateralState(ctx.controller, BORROWER, 5 ether, 0, 0); // active collateral = 5 < 10
 
-        // Sub-threshold active collateral has zero borrow capacity, so the borrow reverts. (Draw above the
-        // dust-market floor: a 1-wei borrow would trip that floor first, before reaching the capacity gate.)
+        // Sub-threshold active collateral has zero borrow capacity, so the borrow reverts.
         vm.prank(BORROWER);
         vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
         ctx.market.borrow(ctx.marketParams, 1 ether, 0, BORROWER, BORROWER);
