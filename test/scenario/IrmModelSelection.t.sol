@@ -20,8 +20,10 @@ import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 // submodule, reached through the `IrmRouter` a market's immutable `irm` points at. They carry their own
 // `IIrm` / `MarketParams` / `Id` types (its own nested copy of the core) that do not unify with the core's, so
 // those are imported under `Irm*` aliases and the ABI-identical structs are converted at the call boundary.
+import {AdaptiveCurveConfig} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveConfig.sol";
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+import {LinearKinkConfig} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkConfig.sol";
 import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.sol";
 import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
@@ -427,9 +429,9 @@ interface IERC20Like {
 ///         the borrow rate come from the live market. Staking is driven through the collateral's
 ///         `stEthPerToken` index over a multi-year decline. The path includes two lender-driven utilization
 ///         spikes and one sudden staking step-down (the issuance-change stress). Once a year the scenario retunes
-///         the IRM params from the trailing-year average APR (adaptive and kinked by proxy upgrade, the peg
-///         needs none). Concrete subclasses wire the token/staking source (mock or mainnet fork); the IRM is
-///         selected per test through `_irmKind`.
+///         the IRM params from the trailing-year average APR (adaptive and kinked by applying a new config; the peg
+///         needs none). Concrete subclasses wire the token/staking source (mock or mainnet fork); the IRM is selected
+///         per test through `_irmKind`.
 abstract contract IrmScenarioBase is Test, LidoLendDeployer {
     using SharesMathLib for uint256;
 
@@ -533,7 +535,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
 
     /// @dev Attach the IRM under test behind the market's `router` (`_deployIrm` deployed the router; the market's
     ///      immutable `irm` points at it). The peg and capD read staking directly (their dynamic ceiling tracks the
-    ///      yield) and need no retune; adaptive and kinked are re-tuned yearly in place through their setters.
+    ///      yield) and need no retune; adaptive and kinked are re-tuned yearly with newly deployed immutable configs.
     ///      Initial params are scenario inputs; yearly `_retune` derives params from the trailing-year average
     ///      APR. Runs before `createMarket`, so `setMarketIrm` probes the model on a fresh (zero) market.
     function _configureAdaptiveIrm(address router, MarketParams memory params, address owner)
@@ -577,8 +579,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
             // initial set for ~2.6% staking
             _adaptiveCapApr = INITIAL_CAP_APR;
             AdaptiveCurveIrm adaptive = new AdaptiveCurveIrm(router, owner, owner);
-            adaptive.setMarketCurveParams(
-                irmParams,
+            AdaptiveCurveConfig config = new AdaptiveCurveConfig(
                 AdaptiveCurveParams({
                     curveSteepness: int256(1.5 ether),
                     adjustmentSpeed: ADAPT_SPEED,
@@ -589,13 +590,14 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
                     maxBorrowRate: _adaptiveCapApr / YEAR
                 })
             );
+            adaptive.applyIrmConfig(irmParams, address(config));
             candidate = IrmIIrm(address(adaptive));
         } else {
             LinearKinkIrm kink = new LinearKinkIrm(owner, owner);
-            kink.setMarketKinkParams(
-                irmParams,
+            LinearKinkConfig config = new LinearKinkConfig(
                 _kinkParams(uint256(0.005 ether) / YEAR, uint256(0.02 ether) / YEAR, uint256(0.014 ether) / YEAR)
             );
+            kink.applyIrmConfig(irmParams, address(config));
             candidate = IrmIIrm(address(kink));
         }
 
@@ -604,22 +606,22 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
         return _candidate;
     }
 
-    /// @dev Yearly retune: rebuild the params from the trailing-year average APR and re-set them on the routed
-    ///      IRM in place (adaptive/kinked). The routed instance keeps its `rateAtTarget`, so the rate resumes from
-    ///      the frozen state rather than the initial rate. Pegged and capD auto-track, so this is a no-op for them.
+    /// @dev Yearly retune: rebuild the params from the trailing-year average APR, deploy a config, and apply it
+    ///      to the routed IRM (adaptive/kinked). The routed instance keeps its `rateAtTarget`, so the rate resumes
+    ///      from the frozen state rather than the initial rate. Pegged and capD auto-track, so this is a no-op.
     function _retune(uint256 avgApr) internal {
         IrmMarketParams memory irmParams = _toIrmParams(params);
         if (_irmKind == IrmKind.Adaptive) {
             // light touch: the bounds move with the APR (initial is re-derived too, but it is inert once the
             // market's rateAtTarget is set); the rate self-adapts via utilization between retunes
             _adaptiveCapApr = avgApr * CAP_MULT_BPS / 10_000;
-            AdaptiveCurveIrm(_candidate).setMarketCurveParams(irmParams, _adaptiveCfgFor(avgApr));
+            AdaptiveCurveConfig config = new AdaptiveCurveConfig(_adaptiveCfgFor(avgApr));
+            AdaptiveCurveIrm(_candidate).applyIrmConfig(irmParams, address(config));
         } else if (_irmKind == IrmKind.Kinked) {
             // re-center the whole curve: at target ~0.9*avgApr, at 100% ~1.5*avgApr
-            LinearKinkIrm(_candidate)
-                .setMarketKinkParams(
-                    irmParams, _kinkParams(avgApr / 5 / YEAR, avgApr * 7 / 10 / YEAR, avgApr * 6 / 10 / YEAR)
-                );
+            LinearKinkConfig config =
+                new LinearKinkConfig(_kinkParams(avgApr / 5 / YEAR, avgApr * 7 / 10 / YEAR, avgApr * 6 / 10 / YEAR));
+            LinearKinkIrm(_candidate).applyIrmConfig(irmParams, address(config));
         }
     }
 
@@ -638,7 +640,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
     }
 
     /// @dev Kinked initial/retune params: flat intercept `base`, `slope1` up to the target-utilization kink, `slope2`
-    ///      above it. Rates are per-second WAD, narrowed to the setter's `uint64`.
+    ///      above it. Rates are per-second WAD, narrowed to the config struct's `uint64`.
     function _kinkParams(uint256 base, uint256 slope1, uint256 slope2) internal pure returns (LinearKinkParams memory) {
         return LinearKinkParams({
             optimalUtilization: uint64(TARGET_UTIL),
@@ -1128,16 +1130,14 @@ contract IrmModelSelectionMockTest is IrmScenarioBase {
 }
 
 // ==========================================================================================================
-// Adaptive parameter-upgrade tests: parameters are immutable per implementation, so retuning is an upgrade
-// behind a proxy. Verifies the adapted `rateAtTarget` survives the upgrade, the spike/no-spike behavior, and
-// that bad parameters are rejected at construction.
+// Adaptive parameter-retune tests: parameters live in external immutable configs. Verifies the adapted
+// `rateAtTarget` survives applying a new config and the spike/no-spike behavior.
 // ==========================================================================================================
 
-/// @notice The adaptive IRM's yearly retune re-tunes the routed instance in place through `setMarketCurveParams`
-///         rather than swapping code behind a proxy. The instance keeps its `rateAtTarget`, so a retune whose new
-///         bounds contain the stored rate causes no spike, and one whose bounds exclude it clamps the stored rate
-///         into the new band at the swap itself.
-contract AdaptiveIrmUpgradeTest is Test {
+/// @notice The adaptive IRM's yearly retune applies a new immutable config to the routed instance. The instance
+///         keeps its `rateAtTarget`, so a retune whose new bounds contain the stored rate causes no spike, and one
+///         whose bounds exclude it clamps the stored rate into the new band when the config is applied.
+contract AdaptiveIrmRetuneTest is Test {
     using MarketParamsLib for MarketParams;
 
     int256 internal constant Y = 365 days;
@@ -1163,7 +1163,7 @@ contract AdaptiveIrmUpgradeTest is Test {
 
     /// @dev A retune whose new bounds still contain the adapted `rateAtTarget` keeps the stored rate and the borrow
     ///      rate continues unchanged — no spike.
-    function test_upgrade_statePersists_noSpike_whenBoundsContainRate() public {
+    function test_retune_statePersists_noSpike_whenBoundsContainRate() public {
         _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
         _adaptDown();
 
@@ -1176,9 +1176,9 @@ contract AdaptiveIrmUpgradeTest is Test {
         assertEq(_borrowAtTarget(), borrowBefore, "no spike: borrow continues from the persisted rate");
     }
 
-    /// @dev A retune whose new minimum exceeds the stored `rateAtTarget` clamps it up into the new band at the swap,
+    /// @dev A retune whose new minimum exceeds the stored `rateAtTarget` clamps it up when the config is applied,
     ///      producing an upward rate jump (spike).
-    function test_upgrade_rateJumps_whenNewBoundsExcludeStoredRate() public {
+    function test_retune_rateJumps_whenNewBoundsExcludeStoredRate() public {
         _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
         _adaptDown();
 
@@ -1186,7 +1186,7 @@ contract AdaptiveIrmUpgradeTest is Test {
         int256 newMin = ratBefore * 3 / 2;
         _setBounds(newMin, newMin, newMin * 4);
 
-        assertEq(_rat(), newMin, "stored rate clamped up into the new band at the swap");
+        assertEq(_rat(), newMin, "stored rate clamped up when the config is applied");
 
         _poke(0.95 ether);
         int256 ratAfter = _rat();
@@ -1194,9 +1194,9 @@ contract AdaptiveIrmUpgradeTest is Test {
         assertGt(ratAfter, ratBefore, "rate jumped up after the retune (the spike)");
     }
 
-    /// @dev A retune whose new maximum sits below the stored `rateAtTarget` clamps it down into the new band at the
-    ///      swap, dropping the rate.
-    function test_upgrade_rateDrops_whenNewMaxBelowStoredRate() public {
+    /// @dev A retune whose new maximum sits below the stored `rateAtTarget` clamps it down when the config is applied,
+    ///      dropping the rate.
+    function test_retune_rateDrops_whenNewMaxBelowStoredRate() public {
         _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
         _adaptDown();
 
@@ -1204,7 +1204,7 @@ contract AdaptiveIrmUpgradeTest is Test {
         int256 newMax = ratBefore * 2 / 3;
         _setBounds(newMax, ratBefore / 4, newMax);
 
-        assertEq(_rat(), newMax, "stored rate clamped down into the new band at the swap");
+        assertEq(_rat(), newMax, "stored rate clamped down when the config is applied");
 
         _poke(0.95 ether);
         int256 ratAfter = _rat();
@@ -1212,9 +1212,10 @@ contract AdaptiveIrmUpgradeTest is Test {
         assertLt(ratAfter, ratBefore, "rate dropped after the retune");
     }
 
-    /// @dev Re-tune the routed instance in place (a parameter retune).
+    /// @dev Re-tune the routed instance in place with a new immutable config.
     function _setBounds(int256 initial, int256 min, int256 max) internal {
-        irm.setMarketCurveParams(_toIrmParams(params), _cfg(initial, min, max));
+        AdaptiveCurveConfig config = new AdaptiveCurveConfig(_cfg(initial, min, max));
+        irm.applyIrmConfig(_toIrmParams(params), address(config));
     }
 
     function _cfg(int256 initial, int256 min, int256 max) internal pure returns (AdaptiveCurveParams memory) {
@@ -1291,8 +1292,10 @@ contract AdaptiveHardCapTest is Test {
         idu = pu.id();
         pc = _params(capped);
         idc = pc.id();
-        u.setMarketCurveParams(_toIrmParams(pu), _cfg(0));
-        c.setMarketCurveParams(_toIrmParams(pc), _cfg(CAP));
+        AdaptiveCurveConfig uncappedConfig = new AdaptiveCurveConfig(_cfg(0));
+        AdaptiveCurveConfig cappedConfig = new AdaptiveCurveConfig(_cfg(CAP));
+        u.applyIrmConfig(_toIrmParams(pu), address(uncappedConfig));
+        c.applyIrmConfig(_toIrmParams(pc), address(cappedConfig));
     }
 
     /// @dev The hard cap clamps the high-utilization tip to `MAX_BORROW_RATE`, below the uncapped MAX*steepness peak.
@@ -1329,7 +1332,8 @@ contract AdaptiveHardCapTest is Test {
         // An absolute ceiling below MAX clips even the at-target rate (here rateAtTarget = MAX = 2.75%).
         address low = address(new AdaptiveCurveIrm(address(this), address(this), address(this)));
         MarketParams memory p = _params(low);
-        AdaptiveCurveIrm(low).setMarketCurveParams(_toIrmParams(p), _cfg(uint256(0.025 ether) / uint256(Y)));
+        AdaptiveCurveConfig config = new AdaptiveCurveConfig(_cfg(uint256(0.025 ether) / uint256(Y)));
+        AdaptiveCurveIrm(low).applyIrmConfig(_toIrmParams(p), address(config));
         uint256 atTarget = IIrm(low).borrowRateView(p, _market(0.9 ether)) * uint256(Y);
         assertApproxEqAbs(atTarget, 0.025 ether, 0.001 ether, "at-target rate clipped to the absolute 2.5% ceiling");
     }

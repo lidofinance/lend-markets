@@ -10,7 +10,7 @@ A single `LidoLend` core hosts many markets, as in Morpho. To each market the Li
 - **[LidoLendMarketController](#lidolendmarketcontroller)** holds Lido policy: borrower gating, collateral activation, settlement queue, freeze/pause.
 - **[GuardianSignals](#guardiansignals)** is the registry the controller reads for gating.
 - **[LidoLendERC4626](#lidolenderc4626)** is the tokenized lender position and the fallback-exit entrypoint.
-- **[RiskStewardDashboard](#riskstewarddashboard)** is the per-core tighten-only risk console: appointed stewards ratchet a market's activation levers in the safe direction.
+- **[RiskStewardDashboard](#riskstewarddashboard)** is the per-core risk-reduction console: appointed stewards ratchet a market's activation levers in the safe direction and can freeze that market.
 - **[Exit books](#exit-books)** are the filler-served exit registry: lenders post exit requests, fillers close them from market liquidity for a Dutch-auction priority fee.
 
 > [!NOTE]
@@ -62,7 +62,7 @@ Full surface: [API reference](api/lido-lend-erc4626.md).
 
 ### RiskStewardDashboard
 
-The per-core risk console. One instance configures every market of a core, resolving each market's controller by id. `STEWARD_ADMIN_ROLE` appoints and removes per-market stewards, who hold three tighten-only levers — `increaseActivationDelays`, `increaseActivatingLock`, `revokeInstantActivation`. Each lever reads the market's current activation config, rejects any change that loosens it, and writes the full config back, so a steward can only ratchet risk down.
+The per-core risk-reduction console. One instance serves every market of a core, resolving each market's controller by id. `STEWARD_ADMIN_ROLE` appoints and removes per-market stewards, who can call `freezeMarket` and three tighten-only activation levers — `increaseActivationDelays`, `increaseActivatingLock`, `revokeInstantActivation`. The activation levers read the market's current config, reject any change that loosens it, and write the full config back; freezing also only reduces available service. A steward cannot unfreeze a market.
 
 Full surface: [API reference](api/risk-steward-dashboard.md).
 
@@ -193,7 +193,7 @@ stateDiagram-v2
 
 Alongside strikes, a guardian can raise a softer **suspect** report. It never bans — it only lengthens the activation delay (`delayPerSuspect` per report). The delay reads a single per-account snapshot: a count of reports plus an expiry of `now + suspectWindow`. The snapshot is re-taken on every report or retraction, and counts only the reports still fresh at that moment. So a still-fresh earlier report is folded into the new snapshot and rides its longer expiry, while an already-expired one is dropped. A `prune` that removes a departed guardian's report re-takes the snapshot too, so that report stops counting right away.
 
-Two override roles sit above the guardians, one per risk direction. To reduce risk fast, `ACCESS_LIMITER_ROLE` can force a `ban` without waiting for a quorum. To restore access (a slower, more careful step), `ACCESS_RESTORER_ROLE` can `unban`; that also clears the flag set, so the guardians start their judgement over.
+Two override roles sit above the guardians, one per risk direction. `ACCESS_LIMITER_ROLE` can force a `ban` without waiting for a quorum, but has no holder at deployment. To restore access (a slower, more careful step), `ACCESS_RESTORER_ROLE` can `unban`; that also clears the flag set, so the guardians start their judgement over.
 
 The controller reads everything about an account in one call: `getOpinion(market, account) → GuardiansOpinion{banned, strikeCount, suspectCount, suspectExpiryTimestamp, quorumFrontierTimestamp}`. It hands that to the activation lib, which does the delay math: `strikeCount × delayPerStrike`, plus `suspectCount × delayPerSuspect` for a lot whose activation started before `suspectExpiryTimestamp`. `banned` blocks borrowing and pins the unlock at infinity. `quorumFrontierTimestamp` is the liveness frontier that gates maturation, described next.
 
@@ -269,7 +269,7 @@ flowchart LR
 
 ### Tokenized lender layer & fallback exit
 
-Lenders hold an ERC-4626 vault share (`LidoLendERC4626`), one vault per market, freely transferable and ungated. `deposit`/`mint`/`withdraw`/`redeem` are standard, with the max views mirroring the controller's lender limits: `maxDeposit`/`maxMint` report the remaining supply-cap headroom (unlimited when uncapped), `maxWithdraw`/`maxRedeem` the lesser of the owner's position value and the market's free pool liquidity, and all four drop to zero while the market is paused.
+Lenders hold freely transferable, ungated ERC-4626 wrapper shares (`LidoLendERC4626`). The standard market deployment records one wrapper, while additional wrappers may be deployed over the same controller. `deposit`/`mint`/`withdraw`/`redeem` are standard, with the max views mirroring the controller's lender limits: `maxDeposit`/`maxMint` report the remaining supply-cap headroom (unlimited when uncapped), `maxWithdraw`/`maxRedeem` the lesser of the owner's position value and the market's free pool liquidity, and all four drop to zero while the market is paused.
 
 When liquidity is short, lenders use the settlement exit:
 
@@ -282,8 +282,8 @@ Both burn lender shares against the cancelled debt, and the vault never custodie
 
 | State | Blocks | Allows | Trigger |
 |---|---|---|---|
-| Freeze | new borrows, collateral withdraw with open debt, maturation | repay, supply, debt-free withdraw, liquidate, settle/fallback | FREEZER |
-| Pause | every hook (all mutating actions) | nothing | PAUSER, for a duration or indefinitely (`PAUSE_INFINITELY`) |
+| Freeze | new borrows, collateral withdraw with open debt, maturation | repay, supply, debt-free withdraw, liquidate, settle/fallback | per-market steward through `RiskStewardDashboard.freezeMarket`; delayed governance through `LidoLendOwner.unfreezeMarket` lifts it |
+| Pause | every hook (all mutating actions) | nothing | the per-core `CircuitBreaker`, for a bounded finite duration; expiry is automatic |
 
 Freeze stops new risk while preserving exits. Pause is the stronger, temporary stop. For a fast-depreciation event (slashing, oracle compromise), the response is a freeze, followed by an operational incident response.
 
@@ -291,10 +291,14 @@ Freeze stops new risk while preserving exits. Pause is the stronger, temporary s
 
 Mapped onto Lido governance (ADR 004, 006, 007, 016):
 
-- **Upgrades and resume** — Lido Dual Governance (for stETH-exposed actions) or Voting.
+- **Upgrades and root role administration** — Lido Dual Governance (for stETH-exposed actions) or Voting.
 - **Routine risk-increasing** (raise caps, loosen config) — EasyTrack motion factories with an objection window.
-- **Risk-reducing and incident response** (freeze, tighten config, guardian flagging) — fast multisig / security committee.
-- **Emergency pause** — a CircuitBreaker bounded to a finite pause (GateSeal-style); the DAO extends if needed.
+- **Risk-reducing and incident response** (freeze through the dashboard, tighten config, guardian flagging) — fast multisig / security committee.
+- **Emergency pause** — one CircuitBreaker per core/factory, wired as the only controller pauser and bounded to a finite pause (GateSeal-style). No account receives `RESUMER_ROLE` initially; governance may grant it for an explicit early resume, otherwise recovery occurs when the pause expires.
+
+The factory accepts no per-market role inputs: every controller starts with the same operational topology. The Lido DAO administers every controller and its proxy. The initial topology is `MANAGER_ROLE` → `LidoLendOwner` + `RiskStewardDashboard`; `PAUSER_ROLE` → CircuitBreaker; `FREEZER_ROLE` → RiskStewardDashboard; `UNFREEZER_ROLE` → LidoLendOwner; `RESUMER_ROLE` → nobody. Every GuardianSignals registry has the Lido DAO as its administrator and proxy admin, `MANAGER_ROLE` + `ACCESS_RESTORER_ROLE` → LidoLendOwner, and `ACCESS_LIMITER_ROLE` → nobody.
+
+Additional ERC-4626 wrapper deployment accepts a controller bound to the same core and requested market id. Once the market exists in the core, that controller must also be the market's registered controller.
 
 No role can seize, burn, redirect, or trap user funds. The core is upgradeable until ossified. The full per-role catalogue (every privileged function → role → class → holder) is in [roles.md](roles.md).
 
@@ -308,7 +312,7 @@ Trust within the policy layer. Core-level actors — proxy admin, owner, oracle,
 | Borrower | — | bypass activation, borrow against immature collateral, inflate the borrow-share price to brick borrowing |
 | Guardian | flag malicious accounts, report honest last-scanned blocks | single-handedly force a borrow block or move the liveness frontier (quorum required) |
 | Committee / governance | force or lift a borrow block, or exempt accounts | move funds |
-| Risk steward / committee | freeze, tighten config | loosen risk, move funds |
+| Risk steward / committee | freeze through the dashboard, tighten config | unfreeze, loosen risk, move funds |
 | Emergency-seal committee | pause every hook for a finite time | resume, change parameters, move funds |
 | Governance | set parameters and roles within bounds | bypass timelocks for risk-increasing changes, take custody |
 

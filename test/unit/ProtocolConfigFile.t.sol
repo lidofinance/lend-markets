@@ -5,12 +5,12 @@ import {Test} from "forge-std/Test.sol";
 
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 
-import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
 import {ArtifactMetadata} from "../../script/lib/ArtifactMetadata.sol";
-import {ProtocolConfigFile, MarketDeployment} from "../../script/lib/ProtocolConfigFile.sol";
+import {ProtocolConfigFile, ProtocolDeployment, MarketDeployment} from "../../script/lib/ProtocolConfigFile.sol";
 
 contract ProtocolConfigFileHarness {
     function containsMarketId(string memory artifact, bytes32 id) external pure returns (bool) {
@@ -22,6 +22,13 @@ contract ProtocolConfigFileHarness {
         returns (string memory)
     {
         return ProtocolConfigFile.writeMarket(market, metadata, deployment);
+    }
+
+    function writeProtocol(ProtocolDeployment memory protocol, ArtifactMetadata memory metadata)
+        external
+        returns (string memory)
+    {
+        return ProtocolConfigFile.writeProtocol(protocol, metadata);
     }
 
     function requireMarketIdUndeployed(bytes32 id, string memory deployment) external view {
@@ -63,8 +70,11 @@ contract ProtocolConfigFileTest is Test {
         assertEq(vm.parseTomlString(artifact, ".artifact.kind"), "market-deployment");
         assertEq(vm.parseTomlAddress(artifact, ".market.oracle"), market.market.oracle);
         assertEq(vm.parseTomlAddress(artifact, ".market.controller"), market.controller);
+        assertEq(vm.parseTomlAddress(artifact, ".market.factory"), market.factory);
         assertEq(vm.parseTomlAddress(artifact, ".market.circuit_breaker"), address(0xCB));
         assertEq(vm.parseTomlString(artifact, ".market.circuit_breaker_artifact"), "breaker");
+        assertEq(vm.parseTomlAddress(artifact, ".roles.admin"), market.controllerAdmin);
+        assertEq(vm.parseTomlAddress(artifact, ".roles.proxy_admin"), market.controllerAdmin);
         assertEq(vm.parseTomlAddressArray(artifact, ".roles.pausers")[0], address(0xCB));
         address[] memory managers = vm.parseTomlAddressArray(artifact, ".roles.managers");
         assertEq(managers.length, 2);
@@ -96,6 +106,41 @@ contract ProtocolConfigFileTest is Test {
         vm.removeDir(string.concat("deployed/", run), true);
     }
 
+    function test_writeProtocol_recordsIrmConfigFactory() external {
+        string memory run = _prepareRun("protocol-config-factory-unit");
+        vm.setEnv("ARTIFACTS_DIR", run);
+        ProtocolDeployment memory protocol = ProtocolDeployment({
+            deployment: run,
+            network: "unit",
+            chainId: 1,
+            configHash: bytes32(uint256(0xCAFE)),
+            core: address(0x10),
+            ownerFacade: address(0x11),
+            irmRouter: address(0x12),
+            adaptiveCurveIrm: address(0x13),
+            irmConfigFactory: address(0x14),
+            factory: address(0x15),
+            riskStewardDashboard: address(0x17),
+            circuitBreakerArtifact: "breaker",
+            circuitBreaker: address(0xCB),
+            guardianSignalsImpl: address(0x18),
+            deployedBlock: 100,
+            deployer: address(0x19),
+            agent: address(0x1A),
+            evmScriptExecutor: address(0x1B)
+        });
+
+        string memory artifact = vm.readFile(harness.writeProtocol(protocol, _metadata(run)));
+
+        assertEq(
+            vm.parseTomlAddress(artifact, ".protocol.irm_config_factory"),
+            protocol.irmConfigFactory,
+            "IRM config factory"
+        );
+        assertEq(vm.parseTomlAddress(artifact, ".protocol.circuit_breaker"), protocol.circuitBreaker);
+        vm.removeDir(string.concat("deployed/", run), true);
+    }
+
     function _prepareRun(string memory run) private returns (string memory) {
         string memory dir = string.concat("deployed/", run);
         if (vm.exists(dir)) vm.removeDir(dir, true);
@@ -111,21 +156,21 @@ contract ProtocolConfigFileTest is Test {
         pure
         returns (MarketDeployment memory d)
     {
-        address[] memory pausers = new address[](1);
-        pausers[0] = circuitBreaker;
         d = MarketDeployment({
             name: name,
             oracleArtifact: "wsteth",
             guardianGroup: "main",
             circuitBreakerArtifact: "breaker",
             id: id,
-            builder: address(0xB0),
+            factory: address(0xB0),
             controller: address(0xC0),
             vault: address(0xA0),
             irm: address(0x1),
             ownerFacade: address(0xFA),
             riskStewardDashboard: address(0xDA),
-            market: LidoLendMarketBuilder.MarketSpec({
+            controllerAdmin: address(0x50),
+            circuitBreaker: circuitBreaker,
+            market: LidoLendMarketFactory.MarketSpec({
                 loanToken: address(0x10),
                 collateralToken: address(0x20),
                 oracle: address(0x30),
@@ -144,28 +189,18 @@ contract ProtocolConfigFileTest is Test {
                 }),
                 settlementConfig: SettlementConfig({
                     sliceFloorBps: 10, sliceFloorAssets: 11, fullCutBelowCollateral: 12, ltvStepBps: 13
-                }),
-                vaultName: "Vault",
-                vaultSymbol: "VLT"
+                })
             }),
-            roles: MarketRoles({
-                admin: address(0x50),
-                proxyAdmin: address(0x50),
-                managers: new address[](0),
-                pausers: pausers,
-                freezers: new address[](0),
-                unfreezers: new address[](0),
-                resumers: new address[](0)
-            }),
+            erc4626WrapperSpec: LidoLendMarketFactory.ERC4626WrapperSpec({name: "Vault", symbol: "VLT"}),
             curveParams: AdaptiveCurveParams({
-                curveSteepness: 4 ether,
-                adjustmentSpeed: 1,
-                targetUtilization: 0.9 ether,
-                initialRateAtTarget: 2,
-                minRateAtTarget: 1,
-                maxRateAtTarget: 3,
-                maxBorrowRate: 4
-            }),
+                    curveSteepness: 4 ether,
+                    adjustmentSpeed: 1,
+                    targetUtilization: 0.9 ether,
+                    initialRateAtTarget: 2,
+                    minRateAtTarget: 1,
+                    maxRateAtTarget: 3,
+                    maxBorrowRate: 4
+                }),
             deployedBlock: 100
         });
     }

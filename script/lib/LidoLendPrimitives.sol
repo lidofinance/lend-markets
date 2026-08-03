@@ -23,17 +23,12 @@ abstract contract LidoLendPrimitives {
         return address(new LidoLendOwner(ILidoLend(core), admin, marketCreator, feeManager));
     }
 
-    /// @dev Initialization and proxy administration may have different holders.
-    function _deployGuardianSignals(
-        address impl,
-        address initAdmin,
-        address proxyAdmin,
-        address[] memory guardians,
-        uint256 quorum
-    ) internal virtual returns (address) {
-        return _behindProxy(
-            impl, proxyAdmin, abi.encodeCall(GuardianSignals.initialize, (initAdmin, guardians, quorum))
-        );
+    function _deployGuardianSignals(address impl, address admin, address[] memory guardians, uint256 quorum)
+        internal
+        virtual
+        returns (address)
+    {
+        return _behindProxy(impl, admin, abi.encodeCall(GuardianSignals.initialize, (admin, guardians, quorum)));
     }
 
     function _behindProxy(address impl, address admin, bytes memory initData) internal returns (address) {

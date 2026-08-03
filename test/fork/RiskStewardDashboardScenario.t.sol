@@ -148,6 +148,15 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
         c.dashboard.increaseActivationDelays(bogus, 20 minutes, 3 hours);
     }
 
+    function test_dashboard_freezesRealController() public {
+        Ctx memory c = _deployWithDashboard();
+
+        vm.prank(STEWARD);
+        c.dashboard.freezeMarket(c.id);
+
+        assertTrue(c.controller.isFrozen(), "dashboard froze the live controller");
+    }
+
     // ---
     // HARNESS
     // ---
@@ -191,10 +200,11 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
         c.id = d.marketId;
         c.marketParams = d.params;
 
-        // `address(this)` holds DEFAULT_ADMIN / MANAGER_ADMIN / MANAGER from the deployer bootstrap, so it can
-        // grant the dashboard MANAGER_ROLE (the role the levers call through) and appoint the steward.
+        // The test admin can grant the dashboard the controller roles its levers use and administers the dashboard
+        // long enough to grant `STEWARD_ADMIN_ROLE` and appoint the steward.
         c.dashboard = new RiskStewardDashboard(address(this), c.core);
         c.controller.grantRole(c.controller.MANAGER_ROLE(), address(c.dashboard));
+        c.controller.grantRole(c.controller.FREEZER_ROLE(), address(c.dashboard));
         c.dashboard.grantRole(c.dashboard.STEWARD_ADMIN_ROLE(), address(this));
         c.dashboard.addMarketSteward(c.id, STEWARD);
     }

@@ -404,6 +404,7 @@ EXIT_BOOK_BASE = "IExitBook.sol/IExitBook.json"
 EXIT_BOOK_4626 = "IErc4626ExitBook.sol/IErc4626ExitBook.json"
 EXIT_BOOK_MORPHO = "IMorphoExitBook.sol/IMorphoExitBook.json"
 DASHBOARD = "IRiskStewardDashboard.sol/IRiskStewardDashboard.json"
+MARKET_FACTORY = "LidoLendMarketFactory.sol/LidoLendMarketFactory.json"
 EXIT_BOOK_BASE_C = "ExitBookBase.sol/ExitBookBase.json"
 EXIT_BOOK_4626_C = "Erc4626ExitBook.sol/Erc4626ExitBook.json"
 EXIT_BOOK_MORPHO_C = "MorphoExitBook.sol/MorphoExitBook.json"
@@ -476,6 +477,9 @@ def main() -> int:
 
     written.append(write_page("risk-steward-dashboard.md", "RiskStewardDashboard",
                               render_contract(DASHBOARD, "IRiskStewardDashboard", reg, BASE)))
+
+    written.append(write_page("lido-lend-market-factory.md", "LidoLendMarketFactory",
+                              render_contract(MARKET_FACTORY, "LidoLendMarketFactory", reg, BASE)))
 
     written.append(write_page("wst-eth-rate-oracle.md", "WstEthRateOracle",
                               render_contract(WSTETH_ORACLE, "WstEthRateOracle", reg, BASE)))

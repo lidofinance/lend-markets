@@ -2,18 +2,17 @@
 pragma solidity 0.8.35;
 
 import {Vm} from "forge-std/Vm.sol";
+
+import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
-import {ConfigToml} from "./ConfigToml.sol";
-import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
-
-import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
+import {BPS} from "../../src/libs/Constants.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
-import {BPS} from "../../src/libs/Constants.sol";
-import {OracleConfigFile} from "./OracleConfigFile.sol";
+import {ConfigToml} from "./ConfigToml.sol";
 import {GuardianSignalsConfigFile} from "./GuardianSignalsConfigFile.sol";
-import {CircuitBreakerConfigFile} from "./CircuitBreakerConfigFile.sol";
+import {OracleConfigFile} from "./OracleConfigFile.sol";
 
 library MarketConfigFile {
     using SafeCast for uint256;
@@ -30,7 +29,6 @@ library MarketConfigFile {
     struct ArtifactRefs {
         string oracle;
         string guardianGroup;
-        string circuitBreaker;
     }
 
     /// @dev Resolves zero oracle and guardian addresses from run artifacts.
@@ -38,15 +36,13 @@ library MarketConfigFile {
         internal
         view
         returns (
-            address builder,
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
             AdaptiveCurveParams memory curveParams
         )
     {
         string memory toml = vm.readFile(marketPath(name));
-        builder = vm.parseTomlAddress(toml, ".builder");
-        (market, roles, curveParams) = parse(toml);
+        (market, erc4626WrapperSpec, curveParams) = parse(toml);
         ArtifactRefs memory refs = _parseArtifactRefs(toml);
 
         if (market.oracle == address(0)) market.oracle = OracleConfigFile.readDeployed(refs.oracle);
@@ -55,23 +51,22 @@ library MarketConfigFile {
         if (market.guardianSignals == address(0)) {
             market.guardianSignals = GuardianSignalsConfigFile.readDeployed(refs.guardianGroup);
         }
-
-        address circuitBreaker = CircuitBreakerConfigFile.readDeployed(refs.circuitBreaker);
-        if (circuitBreaker == address(0)) revert ConfigToml.MissingConfigValue(".market.circuit_breaker_artifact");
-        roles.pausers = _prepend(circuitBreaker, roles.pausers);
     }
 
     function parse(string memory toml)
         internal
         pure
         returns (
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
             AdaptiveCurveParams memory curveParams
         )
     {
         market = _parseMarket(toml);
-        roles = _parseRoles(toml);
+        erc4626WrapperSpec = LidoLendMarketFactory.ERC4626WrapperSpec({
+            name: vm.parseTomlString(toml, ".market.vault_name"),
+            symbol: vm.parseTomlString(toml, ".market.vault_symbol")
+        });
         curveParams = _parseCurve(toml);
     }
 
@@ -87,37 +82,22 @@ library MarketConfigFile {
         return _parseArtifactRefs(vm.readFile(marketPath(name))).oracle;
     }
 
-    function circuitBreakerArtifact(string memory name) internal view returns (string memory) {
-        return _parseArtifactRefs(vm.readFile(marketPath(name))).circuitBreaker;
-    }
-
     function _parseArtifactRefs(string memory toml) private view returns (ArtifactRefs memory) {
         return ArtifactRefs({
             oracle: ConfigToml.requireString(toml, ".market.oracle_artifact"),
-            guardianGroup: ConfigToml.requireString(toml, ".market.guardian_group"),
-            circuitBreaker: ConfigToml.requireString(toml, ".market.circuit_breaker_artifact")
+            guardianGroup: ConfigToml.requireString(toml, ".market.guardian_group")
         });
     }
 
-    function _prepend(address first, address[] memory values) private pure returns (address[] memory result) {
-        result = new address[](values.length + 1);
-        result[0] = first;
-        for (uint256 i; i < values.length; ++i) {
-            result[i + 1] = values[i];
-        }
-    }
-
-    function _parseMarket(string memory toml) private pure returns (LidoLendMarketBuilder.MarketSpec memory) {
-        return LidoLendMarketBuilder.MarketSpec({
+    function _parseMarket(string memory toml) private pure returns (LidoLendMarketFactory.MarketSpec memory) {
+        return LidoLendMarketFactory.MarketSpec({
             loanToken: ConfigToml.requireAddress(toml, ".market.loan_token"),
             collateralToken: ConfigToml.requireAddress(toml, ".market.collateral_token"),
             oracle: vm.parseTomlAddress(toml, ".market.oracle"),
             lltv: vm.parseTomlUint(toml, ".market.lltv"),
             guardianSignals: vm.parseTomlAddress(toml, ".market.guardian_signals"),
             activationConfig: _parseActivation(toml),
-            settlementConfig: _parseSettlement(toml),
-            vaultName: vm.parseTomlString(toml, ".market.vault_name"),
-            vaultSymbol: vm.parseTomlString(toml, ".market.vault_symbol")
+            settlementConfig: _parseSettlement(toml)
         });
     }
 
@@ -165,18 +145,6 @@ library MarketConfigFile {
         uint256 value = vm.parseTomlUint(toml, key);
         if (value > type(uint128).max) revert InvalidConfigValue(key);
         return value.toUint128();
-    }
-
-    function _parseRoles(string memory toml) private pure returns (MarketRoles memory) {
-        return MarketRoles({
-            admin: ConfigToml.requireAddress(toml, ".roles.admin"),
-            proxyAdmin: ConfigToml.requireAddress(toml, ".roles.proxy_admin"),
-            managers: vm.parseTomlAddressArray(toml, ".roles.managers"),
-            pausers: vm.parseTomlAddressArray(toml, ".roles.pausers"),
-            freezers: vm.parseTomlAddressArray(toml, ".roles.freezers"),
-            unfreezers: vm.parseTomlAddressArray(toml, ".roles.unfreezers"),
-            resumers: vm.parseTomlAddressArray(toml, ".roles.resumers")
-        });
     }
 
     function _parseCurve(string memory toml) private pure returns (AdaptiveCurveParams memory params) {

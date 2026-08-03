@@ -4,15 +4,13 @@ pragma solidity 0.8.35;
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {IMorpho} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
-import {IIrmRouter} from "@lido-lend-irm/src/irm-router/interfaces/IIrmRouter.sol";
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
+import {IrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/IrmConfigFactory.sol";
 
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
-import {ILidoLendOwner} from "../../src/interfaces/ILidoLendOwner.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
-import {LidoLendMarketBuilder, MarketRoles, GuardianConfig} from "../../src/periphery/LidoLendMarketBuilder.sol";
 import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
@@ -34,10 +32,6 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     error AgentCannotBeExecutor();
     error ExecutorCannotBeDeployer();
     error UnexpectedChainId(uint256 expected, uint256 actual);
-    error UnexpectedAdmin(address expected, address actual);
-    error UnexpectedProxyAdmin(address expected, address actual);
-    error ExecutorHasDirectMarketRole();
-    error DeployerHasDirectMarketRole();
     error MissingCircuitBreaker();
     error CircuitBreakerNotContract(address circuitBreaker);
     error UnexpectedCircuitBreakerAdmin(address expected, address actual);
@@ -47,7 +41,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         if (block.chainid != expected) revert UnexpectedChainId(expected, block.chainid);
     }
 
-    /// @dev The dashboard must exist before the builder grants it market roles.
+    /// @dev The dashboard must exist before the factory grants it market roles.
     function _deployBackbone(ProtocolConfig memory cfg, address deployer)
         internal
         returns (ProtocolDeployment memory d)
@@ -55,8 +49,10 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         if (cfg.agent == deployer) revert AgentCannotBeDeployer();
         if (cfg.evmScriptExecutor == deployer) revert ExecutorCannotBeDeployer();
         if (cfg.agent == cfg.evmScriptExecutor) revert AgentCannotBeExecutor();
+        _requireCircuitBreakerPolicy(cfg.circuitBreaker, cfg.evmScriptExecutor);
         d.agent = cfg.agent;
         d.evmScriptExecutor = cfg.evmScriptExecutor;
+        d.circuitBreaker = cfg.circuitBreaker;
 
         d.core = _deployCore(deployer);
         d.ownerFacade = _deployOwnerFacade(d.core, deployer, address(0), address(0));
@@ -70,19 +66,28 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         d.riskStewardDashboard = address(dashboard);
 
         d.adaptiveCurveIrm = address(new AdaptiveCurveIrm(d.irmRouter, cfg.agent, cfg.evmScriptExecutor));
+        d.irmConfigFactory = address(new IrmConfigFactory());
 
         // Injecting implementations keeps the factory below the EIP-3860 initcode limit.
         address controllerImpl = address(new LidoLendMarketController(IMorpho(d.core)));
-        address vaultImpl = address(new LidoLendERC4626(d.core));
+        address erc4626WrapperImpl = address(new LidoLendERC4626(d.core));
         d.guardianSignalsImpl = address(new GuardianSignals());
 
-        d.factory = address(new LidoLendMarketFactory(controllerImpl, vaultImpl, d.guardianSignalsImpl));
-        d.builder = address(
-            new LidoLendMarketBuilder(
-                LidoLendMarketFactory(d.factory),
-                ILidoLendOwner(d.ownerFacade),
-                IIrmRouter(d.irmRouter),
-                d.riskStewardDashboard
+        d.factory = address(
+            new LidoLendMarketFactory(
+                LidoLendMarketFactory.Implementations({
+                    controller: controllerImpl,
+                    erc4626Wrapper: erc4626WrapperImpl,
+                    guardianSignals: d.guardianSignalsImpl
+                }),
+                LidoLendMarketFactory.Dependencies({
+                    lidoLend: d.core,
+                    irmRouter: d.irmRouter,
+                    lidoLendOwner: d.ownerFacade,
+                    circuitBreaker: cfg.circuitBreaker,
+                    riskStewardDashboard: d.riskStewardDashboard
+                }),
+                cfg.agent
             )
         );
 
@@ -101,62 +106,26 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     }
 
     /// @dev The facade is the only operational manager.
-    function _buildGuardianSignals(string memory name, address builder, address agent)
-        internal
-        returns (address guardianSignals)
-    {
+    function _deployGuardianSignals(string memory name, address factory) internal returns (address guardianSignals) {
         GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.read(name);
-        if (cfg.admin != agent) revert UnexpectedAdmin(agent, cfg.admin);
-        if (cfg.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, cfg.proxyAdmin);
-        address[] memory managers = new address[](0);
 
-        guardianSignals = LidoLendMarketBuilder(builder)
-            .buildGuardianSignals(
-                GuardianConfig({
-                    guardians: cfg.guardians,
-                    quorum: cfg.quorum,
-                    suspectWindow: cfg.suspectWindow,
-                    accessLimiter: cfg.accessLimiter
-                }),
-                cfg.admin,
-                managers,
-                cfg.proxyAdmin
+        guardianSignals = LidoLendMarketFactory(factory)
+            .deployGuardianSignals(
+                LidoLendMarketFactory.GuardianSpec({
+                    guardians: cfg.guardians, quorum: cfg.quorum, suspectWindow: cfg.suspectWindow
+                })
             );
     }
 
-    function _requireMarketRolePolicy(MarketRoles memory roles, address agent, address executor, address deployer)
-        internal
-        view
-    {
-        if (roles.admin != agent) revert UnexpectedAdmin(agent, roles.admin);
-        if (roles.proxyAdmin != agent) revert UnexpectedProxyAdmin(agent, roles.proxyAdmin);
-        if (roles.pausers.length == 0) revert MissingCircuitBreaker();
-        address circuitBreaker = roles.pausers[0];
+    function _requireCircuitBreakerPolicy(address circuitBreaker, address executor) internal view {
+        if (circuitBreaker == address(0)) revert MissingCircuitBreaker();
         if (circuitBreaker.code.length == 0) revert CircuitBreakerNotContract(circuitBreaker);
         address actualAdmin = ICircuitBreakerConfig(circuitBreaker).ADMIN();
         if (actualAdmin != executor) revert UnexpectedCircuitBreakerAdmin(executor, actualAdmin);
-
-        _requireNoDirectMarketRole(roles.managers, executor, deployer);
-        _requireNoDirectMarketRole(roles.pausers, executor, deployer);
-        _requireNoDirectMarketRole(roles.freezers, executor, deployer);
-        _requireNoDirectMarketRole(roles.unfreezers, executor, deployer);
-        _requireNoDirectMarketRole(roles.resumers, executor, deployer);
-    }
-
-    function _requireNoDirectMarketRole(address[] memory holders, address executor, address deployer) private pure {
-        for (uint256 i; i < holders.length; ++i) {
-            if (holders[i] == executor) revert ExecutorHasDirectMarketRole();
-            if (holders[i] == deployer) revert DeployerHasDirectMarketRole();
-        }
-    }
-
-    function _requireProxyAdmin(address target, address agent) internal view {
-        address actual = OssifiableProxy(payable(target)).proxy__getAdmin();
-        if (actual != agent) revert UnexpectedProxyAdmin(agent, actual);
     }
 
     /// @dev The shared IRM router makes these four inputs sufficient to detect duplicate market ids.
-    function _requireUniqueMarketIds(string[] memory names, LidoLendMarketBuilder.MarketSpec[] memory markets)
+    function _requireUniqueMarketIds(string[] memory names, LidoLendMarketFactory.MarketSpec[] memory markets)
         internal
         pure
     {
@@ -168,7 +137,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         }
     }
 
-    function _marketIdInputHash(LidoLendMarketBuilder.MarketSpec memory market) private pure returns (bytes32) {
+    function _marketIdInputHash(LidoLendMarketFactory.MarketSpec memory market) private pure returns (bytes32) {
         return keccak256(abi.encode(market.loanToken, market.collateralToken, market.oracle, market.lltv));
     }
 

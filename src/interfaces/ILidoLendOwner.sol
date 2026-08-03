@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../types/SettlementTypes.sol";
@@ -14,7 +15,30 @@ import {SettlementConfig} from "../types/SettlementTypes.sol";
 ///         registry from the core, giving governance one stable facade address for every market.
 /// @dev Role-management events and the unauthorized-caller error come from OpenZeppelin's
 ///      `IAccessControlEnumerable`.
-interface ILidoLendOwner {
+interface ILidoLendOwner is IAccessControlEnumerable {
+    // ---
+    // IMMUTABLES
+    // ---
+
+    /// @notice The `LidoLend` core this facade owns.
+    function LIDO_LEND() external view returns (ILidoLend);
+
+    // ---
+    // ROLES
+    // ---
+
+    /// @notice Role allowed to create markets on the core.
+    function MARKET_CREATOR_ROLE() external view returns (bytes32);
+
+    /// @notice Role allowed to update core fees.
+    function FEE_MANAGER_ROLE() external view returns (bytes32);
+
+    /// @notice Role allowed to update per-market controller policy.
+    function MARKET_MANAGER_ROLE() external view returns (bytes32);
+
+    /// @notice Role allowed to manage guardian registries.
+    function GUARDIAN_MANAGER_ROLE() external view returns (bytes32);
+
     // ---
     // ERRORS
     // ---
@@ -24,13 +48,6 @@ interface ILidoLendOwner {
 
     /// @notice The market id has no controller on the core (unknown or controller-less).
     error UnknownMarket(Id marketId);
-
-    // ---
-    // VIEWS
-    // ---
-
-    /// @notice The `LidoLend` core this facade owns.
-    function LIDO_LEND() external view returns (ILidoLend);
 
     // ---
     // MARKET CREATION (MARKET_CREATOR_ROLE)

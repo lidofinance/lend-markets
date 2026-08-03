@@ -93,16 +93,15 @@ contract Devnet is Script, LidoLendDeployer {
         m.guardianSignals = guardianSignals;
         m.controller = _deployDevnetController(core, params.id(), guardianSignals, admin, minActivation);
         ILidoLend(core).createMarket(params, m.controller, true);
-        m.vault = _deployVault(core, params, m.controller, admin, "Lido Devnet Vault", "devVAULT");
+        m.vault = _deployERC4626Wrapper(core, params, m.controller, admin, "Lido Devnet Vault", "devVAULT");
     }
 
     function _deployGuardian(address admin) private returns (address guardianSignals) {
         address[] memory guardians = new address[](1);
         guardians[0] = admin;
-        guardianSignals = _deployGuardianSignals(address(new GuardianSignals()), admin, admin, guardians, 1);
+        guardianSignals = _deployGuardianSignals(address(new GuardianSignals()), admin, guardians, 1);
         GuardianSignals gs = GuardianSignals(guardianSignals);
         gs.grantRole(gs.MANAGER_ROLE(), admin);
-        gs.grantRole(gs.ACCESS_LIMITER_ROLE(), admin);
         gs.grantRole(gs.ACCESS_RESTORER_ROLE(), admin);
         gs.setSuspectWindow(0);
     }

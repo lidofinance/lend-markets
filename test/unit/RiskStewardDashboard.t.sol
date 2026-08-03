@@ -18,6 +18,7 @@ contract MockMarketController is ILidoLendMarketConfigurator {
     CollateralActivationConfig internal _cfg;
     uint256 internal _cap;
     mapping(address => bool) public instantActivation;
+    bool public frozen;
 
     function setForTest(CollateralActivationConfig memory cfg) external {
         _cfg = cfg;
@@ -41,6 +42,10 @@ contract MockMarketController is ILidoLendMarketConfigurator {
 
     function setSupplyCap(uint256 cap) external {
         _cap = cap;
+    }
+
+    function freeze() external {
+        frozen = true;
     }
 }
 
@@ -334,5 +339,27 @@ contract RiskStewardDashboardTest is Test {
     function test_constructor_zeroCoreReverts() public {
         vm.expectRevert(IRiskStewardDashboard.ZeroAddress.selector);
         new RiskStewardDashboard(address(this), ILidoLend(address(0)));
+    }
+
+    // ---
+    // freezeMarket
+    // ---
+
+    function test_freezeMarket_forwards() public {
+        vm.prank(steward);
+        dashboard.freezeMarket(marketId);
+        assertTrue(controller.frozen(), "freeze forwarded to controller");
+    }
+
+    function testRevert_freezeMarket_notSteward() public {
+        vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
+        dashboard.freezeMarket(marketId);
+    }
+
+    function testRevert_freezeMarket_unknownMarket() public {
+        dashboard.addMarketSteward(unknownMarketId, steward);
+        vm.prank(steward);
+        vm.expectRevert(abi.encodeWithSelector(IRiskStewardDashboard.UnknownMarket.selector, unknownMarketId));
+        dashboard.freezeMarket(unknownMarketId);
     }
 }

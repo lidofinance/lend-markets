@@ -34,7 +34,6 @@ library OraclePreflight {
     error OracleImplementationNotContract(address implementation);
     error OracleProxyCodehashMismatch(bytes32 expected, bytes32 actual);
     error OracleProxyAdminMismatch(address expected, address actual);
-    error OracleConfigProxyAdminMismatch(address expected, address actual);
     error OracleImplementationMismatch(bytes32 expected, bytes32 actual);
     error OracleAddressMismatch(string field, address expected, address actual);
     error OracleScaleMismatch(uint256 expected, uint256 actual);
@@ -45,7 +44,7 @@ library OraclePreflight {
         address oracle,
         address loanToken,
         address collateralToken,
-        address expectedProxyAdmin
+        address expectedAdmin
     ) internal {
         string memory toml = OracleConfigFile.readRaw(name);
         bool isWstEth = OracleConfigFile.hasKey(toml, ".wsteth");
@@ -55,39 +54,29 @@ library OraclePreflight {
 
         if (isWstEth) {
             WstEthOracleConfig memory cfg = OracleConfigFile.readWstEth(name);
-            validateConfigProxyAdmin(cfg.proxyAdmin, expectedProxyAdmin);
-            address implementation = validateProxy(oracle, expectedProxyAdmin);
+            address implementation = validateProxy(oracle, expectedAdmin);
             validateWstEth(cfg, oracle, implementation, collateralToken);
         } else {
             UsdyOracleConfig memory cfg = OracleConfigFile.readUsdy(name);
-            validateConfigProxyAdmin(cfg.proxyAdmin, expectedProxyAdmin);
-            address implementation = validateProxy(oracle, expectedProxyAdmin);
+            address implementation = validateProxy(oracle, expectedAdmin);
             validateUsdy(cfg, oracle, implementation, loanToken, collateralToken);
         }
 
         if (IOraclePreflight(oracle).price() == 0) revert OraclePriceIsZero();
     }
 
-    function validateProxy(address oracle, address expectedProxyAdmin) internal returns (address implementation) {
+    function validateProxy(address oracle, address expectedAdmin) internal returns (address implementation) {
         if (oracle.code.length == 0) revert OracleNotContract(oracle);
 
         OssifiableProxy proxy = OssifiableProxy(payable(oracle));
-        address actualProxyAdmin = proxy.proxy__getAdmin();
-        if (actualProxyAdmin != expectedProxyAdmin) {
-            revert OracleProxyAdminMismatch(expectedProxyAdmin, actualProxyAdmin);
-        }
+        address actualAdmin = proxy.proxy__getAdmin();
+        if (actualAdmin != expectedAdmin) revert OracleProxyAdminMismatch(expectedAdmin, actualAdmin);
         implementation = proxy.proxy__getImplementation();
         if (implementation.code.length == 0) revert OracleImplementationNotContract(implementation);
 
-        address expectedProxy = address(new OssifiableProxy(implementation, expectedProxyAdmin, ""));
+        address expectedProxy = address(new OssifiableProxy(implementation, expectedAdmin, ""));
         if (oracle.codehash != expectedProxy.codehash) {
             revert OracleProxyCodehashMismatch(expectedProxy.codehash, oracle.codehash);
-        }
-    }
-
-    function validateConfigProxyAdmin(address configProxyAdmin, address expectedProxyAdmin) internal pure {
-        if (configProxyAdmin != expectedProxyAdmin) {
-            revert OracleConfigProxyAdminMismatch(expectedProxyAdmin, configProxyAdmin);
         }
     }
 

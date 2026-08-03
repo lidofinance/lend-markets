@@ -2,7 +2,7 @@
 
 # RiskStewardDashboard
 
-Full external surface of `RiskStewardDashboard`: AccessControlEnumerable (inherited), per-market steward management, and the bounded tighten-only risk levers. The dashboard implements this interface, so it is the single source for the events, errors, and the function docs the contract inherits.
+Dashboard-specific external surface: per-market steward management and bounded risk-reduction levers. Access-control membership and administration use the inherited `IAccessControlEnumerable` surface.
 
 ## Events
 
@@ -30,6 +30,14 @@ event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 ne
 
 Emitted when the Sybil lock amount and duration are raised on a market.
 
+### `InstantActivationRevoked`
+
+```solidity
+event InstantActivationRevoked(Id indexed marketId, address indexed caller);
+```
+
+Emitted when a steward revokes a caller's instant activation on a market.
+
 ## Errors
 
 ### `NotTightened`
@@ -47,6 +55,22 @@ error NotMarketSteward();
 ```
 
 The caller is not a steward of the target market.
+
+### `ZeroSteward`
+
+```solidity
+error ZeroSteward();
+```
+
+A zero-address steward was supplied.
+
+### `ZeroAddress`
+
+```solidity
+error ZeroAddress();
+```
+
+Thrown when a required address argument is zero.
 
 ### `UnknownMarket`
 
@@ -132,3 +156,11 @@ function revokeInstantActivation(Id marketId, address caller) external;
 ```
 
 Revoke a caller's instant activation on a market. Risk-reducing, so no direction guard; forwards to the controller, which emits the state change.
+
+### `freezeMarket`
+
+```solidity
+function freezeMarket(Id marketId) external;
+```
+
+Freeze a market. Only an appointed steward of that market may call.

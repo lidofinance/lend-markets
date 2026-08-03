@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 
-import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {MarketConfigFile} from "../../script/lib/MarketConfigFile.sol";
 
 contract MarketConfigFileHarness {
@@ -13,8 +13,8 @@ contract MarketConfigFileHarness {
         external
         pure
         returns (
-            LidoLendMarketBuilder.MarketSpec memory market,
-            MarketRoles memory roles,
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
             AdaptiveCurveParams memory curve
         )
     {
@@ -32,9 +32,15 @@ contract MarketConfigFileTest is Test {
     }
 
     function test_parse_acceptsQuotedWideValues() external view {
-        (LidoLendMarketBuilder.MarketSpec memory market,, AdaptiveCurveParams memory curve) = harness.parse(toml);
+        (
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
+            AdaptiveCurveParams memory curve
+        ) = harness.parse(toml);
 
         assertEq(market.lltv, 0.8e18, "lltv");
+        assertEq(erc4626WrapperSpec.name, "Test Vault", "ERC-4626 wrapper name");
+        assertEq(erc4626WrapperSpec.symbol, "TEST", "ERC-4626 wrapper symbol");
         assertEq(curve.curveSteepness, 4e18, "curve steepness");
         assertEq(curve.targetUtilization, 0.9e18, "target utilization");
     }
@@ -97,14 +103,6 @@ contract MarketConfigFileTest is Test {
             "guardian_signals = \"0x0000000000000000000000000000000000000004\"\n",
             "vault_name = \"Test Vault\"\n",
             "vault_symbol = \"TEST\"\n",
-            "[roles]\n",
-            "admin = \"0x0000000000000000000000000000000000000005\"\n",
-            "proxy_admin = \"0x0000000000000000000000000000000000000006\"\n",
-            "managers = []\n",
-            "pausers = []\n",
-            "freezers = []\n",
-            "unfreezers = []\n",
-            "resumers = []\n",
             "[activation]\n",
             "min_activation_delay = 600\n",
             "max_activation_delay = 7200\n",

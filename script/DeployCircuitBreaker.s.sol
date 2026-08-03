@@ -11,10 +11,11 @@ import {DeployConfig, DeployConfigFile} from "./lib/DeployConfigFile.sol";
 
 /// @notice Deploys and records a CircuitBreaker reusable across markets in one protocol run.
 contract DeployCircuitBreaker is Script {
-    function run(string memory config, string memory name) external returns (address circuitBreaker) {
+    function run(string memory config) external returns (address circuitBreaker) {
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
         DeployConfigFile.requireChainId(deployConfig);
         DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
+        string memory name = deployConfig.circuitBreakerArtifact;
         CircuitBreakerConfig memory cfg = CircuitBreakerConfigFile.read(name);
         CircuitBreakerConfigFile.requireUndeployed(name);
         ArtifactMetadata memory metadata = ArtifactMetadata({
