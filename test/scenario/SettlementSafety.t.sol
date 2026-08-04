@@ -263,7 +263,7 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.borrow(a, 80 ether);
         m.borrow(b, 80 ether);
 
-        (address root,,,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower();
         address nonRoot = root == a ? b : a;
         address[] memory bs = new address[](1);
         bs[0] = nonRoot;
@@ -277,7 +277,7 @@ contract SettlementSafetyTest is LidoLendSetup {
         vm.prank(nonRoot);
         // Any nonzero-debt position is above this target, regardless of the seeded oracle price.
         m.controller.setSettlementLtv(1);
-        uint256 sliceAssets = m.controller.positionOf(nonRoot).slice;
+        uint256 sliceAssets = m.controller.positionOf(nonRoot).personalSliceAssets;
         address[] memory mixed = new address[](2);
         mixed[0] = _actor("empty-settlement-target");
         mixed[1] = nonRoot;

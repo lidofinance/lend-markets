@@ -36,6 +36,29 @@ struct PositionView {
     uint256 collateral;
 }
 
+/// @notice One policy-sized settlement cut expressed in the two core anchors. A caller passes exactly one anchor
+///         to the core. For a nonzero cut, `remainingBorrowShares == 0` identifies a full close; an unavailable cut
+///         is represented by an all-zero struct.
+/// @param supplyShares Supply-share cost of the cut.
+/// @param borrowShares Borrow shares canceled by the cut.
+/// @param remainingBorrowShares Borrow shares left after a nonzero cut, 0 for a full close.
+struct SettlementSlice {
+    uint256 supplyShares;
+    uint256 borrowShares;
+    uint256 remainingBorrowShares;
+}
+
+/// @notice The two independently sized policy candidates for a borrower at the current position state. Both remain
+///         subject to the global pause and bad-debt gates and to the caller's execution budget.
+/// @param personal Cut allowed by the borrower's personal settlement-LTV target, independent of queue membership,
+///        market liquidity, and the settling lender's illiquid supply tail.
+/// @param queueRoot Prospective queue-policy allowance. Execution requires the borrower to be the live queue root;
+///        any executed amount above `personal` must fit the settling lender's live illiquid supply tail.
+struct SettlementQuote {
+    SettlementSlice personal;
+    SettlementSlice queueRoot;
+}
+
 /// @notice Settlement slice policy, set together via `setSettlementConfig`. The knobs tune the settlement slice
 ///         cut. The uint96 amounts are policy bounds, not accounting: for a loan or collateral token whose
 ///         plausible amounts exceed uint96 (~7.9e28 base units) the configurable floors cannot be set high

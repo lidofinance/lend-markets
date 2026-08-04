@@ -6,7 +6,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MaxHeapLib} from "./MaxHeapLib.sol";
 import {WAD, BPS} from "./Constants.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
-import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTypes.sol";
+import {MarketView, PositionView, SettlementConfig, SettlementSlice} from "../types/SettlementTypes.sol";
 
 /// @title SettlementQueueLib
 /// @author Lido Lending contributors.
@@ -142,43 +142,26 @@ library SettlementQueueLib {
     // SLICE SIZING
     // ---
 
-    /// @notice Maximum loan-asset slice allowed by the borrower's personal policy and, for the queue root, root policy.
-    function maxAllowedSliceAssets(
+    /// @notice Effective personal and queue-root slices for `borrower`, independently debt-capped and dust-promoted.
+    ///         The queue-root slice is prospective: the caller decides whether `borrower` is currently the root.
+    function allowedSliceAssets(
         State storage $,
         MarketView memory marketView,
         address borrower,
         PositionView memory position
-    ) internal view returns (uint256) {
-        return _allowedSlice($, marketView, borrower, position, true);
-    }
-
-    /// @notice Maximum loan-asset slice allowed only by the borrower's personal settlement-LTV policy.
-    function personalAllowedSliceAssets(
-        State storage $,
-        MarketView memory marketView,
-        address borrower,
-        PositionView memory position
-    ) internal view returns (uint256) {
-        return _allowedSlice($, marketView, borrower, position, false);
-    }
-
-    function _allowedSlice(
-        State storage $,
-        MarketView memory marketView,
-        address borrower,
-        PositionView memory position,
-        bool includeRootPolicy
-    ) private view returns (uint256) {
+    ) internal view returns (uint256 personalSliceAssets, uint256 queueRootSliceAssets) {
         (uint256 debtAssets, uint256 collateralValue) = _positionValues(marketView, position);
-        if (debtAssets == 0 || collateralValue == 0) return 0;
+        if (debtAssets == 0 || collateralValue == 0) return (0, 0);
 
-        uint256 personalSliceAssets = _settlementLtvSlice($, borrower, debtAssets, collateralValue);
-        uint256 rootSliceAssets =
-            includeRootPolicy && peekRoot($) == borrower ? _policySlice($.config, debtAssets, collateralValue) : 0;
-        uint256 sliceAssets = Math.min(Math.max(personalSliceAssets, rootSliceAssets), debtAssets);
-        if (sliceAssets == 0) return 0;
+        personalSliceAssets = Math.min(_settlementLtvSlice($, borrower, debtAssets, collateralValue), debtAssets);
+        queueRootSliceAssets = Math.min(_policySlice($.config, debtAssets, collateralValue), debtAssets);
 
-        return _strandsDust($, marketView, position, sliceAssets) ? debtAssets : sliceAssets;
+        if (personalSliceAssets != 0 && _strandsDust($, marketView, position, personalSliceAssets)) {
+            personalSliceAssets = debtAssets;
+        }
+        if (queueRootSliceAssets != 0 && _strandsDust($, marketView, position, queueRootSliceAssets)) {
+            queueRootSliceAssets = debtAssets;
+        }
     }
 
     /// @notice Converts a loan-asset slice into the two anchors a core `settle` accepts: the caller passes one and
@@ -192,9 +175,9 @@ library SettlementQueueLib {
     function settlementSlice(MarketView memory marketView, PositionView memory position, uint256 sliceAssets)
         internal
         pure
-        returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares)
+        returns (SettlementSlice memory slice)
     {
-        if (sliceAssets == 0 || position.borrowShares == 0) return (0, 0, 0);
+        if (sliceAssets == 0 || position.borrowShares == 0) return slice;
 
         (uint256 debtAssets,) = _positionValues(marketView, position);
         uint256 canceledShares = sliceAssets.toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
@@ -202,17 +185,18 @@ library SettlementQueueLib {
         // Slice spans (or rounds up to) the whole debt: a full close. supplyShares is the supply cost of closing
         // it (what a borrow-anchored close burns), computed the core's way. The settle itself uses borrowShares.
         if (sliceAssets == debtAssets || canceledShares >= position.borrowShares) {
-            supplyShares = uint256(position.borrowShares)
+            slice.supplyShares = uint256(position.borrowShares)
                 .toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares)
                 .toSharesUp(marketView.totalSupplyAssets, marketView.totalSupplyShares);
-            return (supplyShares, position.borrowShares, 0);
+            slice.borrowShares = position.borrowShares;
+            return slice;
         }
 
         // Partial cut: both anchors for the slice. supplyShares burns supply worth the slice (down-rounded),
         // borrowShares cancels the slice's debt (up-rounded), remaining is the debt left behind.
-        borrowShares = canceledShares;
-        supplyShares = sliceAssets.toSharesDown(marketView.totalSupplyAssets, marketView.totalSupplyShares);
-        remainingBorrowShares = uint256(position.borrowShares) - canceledShares;
+        slice.borrowShares = canceledShares;
+        slice.supplyShares = sliceAssets.toSharesDown(marketView.totalSupplyAssets, marketView.totalSupplyShares);
+        slice.remainingBorrowShares = uint256(position.borrowShares) - canceledShares;
     }
 
     /// @notice Settlement-LTV slice: brings `borrower`'s LTV down to its personal target. Zero

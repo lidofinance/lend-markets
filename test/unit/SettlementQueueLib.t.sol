@@ -46,12 +46,20 @@ contract SQHarness {
         return s.settlementBorrowers(o, m);
     }
 
-    function allowedSlice(MarketView memory mv, address b, PositionView memory p) external view returns (uint256) {
-        return s.maxAllowedSliceAssets(mv, b, p);
+    function queueRootSlice(MarketView memory mv, address b, PositionView memory p)
+        external
+        view
+        returns (uint256 sliceAssets)
+    {
+        (, sliceAssets) = s.allowedSliceAssets(mv, b, p);
     }
 
-    function personalSlice(MarketView memory mv, address b, PositionView memory p) external view returns (uint256) {
-        return s.personalAllowedSliceAssets(mv, b, p);
+    function personalSlice(MarketView memory mv, address b, PositionView memory p)
+        external
+        view
+        returns (uint256 sliceAssets)
+    {
+        (sliceAssets,) = s.allowedSliceAssets(mv, b, p);
     }
 
     function sliceToLtv(uint256 d, uint256 c, uint256 t) external returns (uint256) {
@@ -359,11 +367,11 @@ contract SettlementQueueLibTest is Test {
         );
         q.setSettlementLtv(_b(1), 0.6875e18);
 
-        assertEq(q.allowedSlice(_market(1e36), _b(1), root), 30, "automatic path includes root policy");
+        assertEq(q.queueRootSlice(_market(1e36), _b(1), root), 30, "queue-root policy slice");
         assertEq(q.personalSlice(_market(1e36), _b(1), root), 20, "targeted path uses personal policy only");
     }
 
-    // ── allowedSlice: max-of-rules, floor only for the root, debt clamp, dust lift ──
+    // ── allowedSlice: independent personal and prospective queue-root quotes ──
     // Non-parity price (1.5e36) and non-1:1 shares isolate the slice logic while keeping values non-round.
 
     /// @dev An oversized floor for the root borrower is clamped down to the borrower's debt.
@@ -379,7 +387,7 @@ contract SettlementQueueLibTest is Test {
         );
         q.sync(_b(1), _pos(100, 1_000)); // root
         // debtAssets == 100 (1:1 shares). collateralValue = 1000·1.5e36/1e36 = 1500.
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 1_000));
+        uint256 slice = q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 1_000));
         assertEq(slice, 100, "clamped to debt");
     }
 
@@ -392,21 +400,20 @@ contract SettlementQueueLibTest is Test {
         );
         q.sync(_b(1), _pos(1_000, 1_000)); // root; debtAssets == 1000, collateralValue = 1500 at price 1.5e36
         // bps term = 1% of debt = 10; abs floor 900 is the largest term and < debt (1000) -> returned as-is.
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(1_000, 1_000));
+        uint256 slice = q.queueRootSlice(_market(1.5e36), _b(1), _pos(1_000, 1_000));
         assertEq(slice, 900, "absolute floor wins, returned unclamped (below debt)");
     }
 
-    /// @dev A non-root borrower without a settlement-LTV opt-in gets neither floor nor cut (slice 0).
-    function test_allowedSlice_nonRoot_getsNoFloor() public {
-        // Two borrowers; _b(1) is riskier (root). A non-root borrower with NO settlement-LTV opt-in gets
-        // neither the root cut nor a settlement cut -> allowedSlice is 0 (floor terms apply to root only).
+    /// @dev The queue-root quote is prospective: a non-root exposes the cut it would receive if it became root,
+    ///      while its personal quote remains zero without an opt-in.
+    function test_allowedSlices_nonRoot_exposesProspectiveQueueRootCut() public {
         q.setSettlementConfig(
             SettlementConfig({sliceFloorBps: 5_000, sliceFloorAssets: 50, fullCutBelowCollateral: 0, ltvStepBps: 1_000})
         );
         q.sync(_b(1), _pos(90, 100)); // root (riskier)
         q.sync(_b(2), _pos(40, 100)); // non-root
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(2), _pos(40, 100));
-        assertEq(slice, 0, "non-root without opt-in gets no floor and no cut");
+        assertEq(q.personalSlice(_market(1.5e36), _b(2), _pos(40, 100)), 0, "no personal opt-in");
+        assertEq(q.queueRootSlice(_market(1.5e36), _b(2), _pos(40, 100)), 40, "prospective cut capped at debt");
     }
 
     /// @dev The root borrower receives the bps debt-fraction floor when no larger term applies.
@@ -420,7 +427,7 @@ contract SettlementQueueLibTest is Test {
             })
         );
         q.sync(_b(1), _pos(100, 10_000)); // root, very low LTV so only the floor applies
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 10_000));
+        uint256 slice = q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 10_000));
         assertEq(slice, 20, "root gets the 20% debt-fraction floor");
     }
 
@@ -433,7 +440,7 @@ contract SettlementQueueLibTest is Test {
         q.sync(_b(2), _pos(50, 100)); // non-root
         q.setSettlementLtv(_b(2), 0.3e18);
         // _b(2): debtAssets=50, collateralValue=150 (price 1.5e36). cut = sliceToLtv(50, 150, 0.3) = 7.
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(2), _pos(50, 100));
+        uint256 slice = q.personalSlice(_market(1.5e36), _b(2), _pos(50, 100));
         assertEq(slice, _expectedSlice(50, 150, 0.3e18), "settlement-LTV cut applied to a non-root borrower");
         assertEq(slice, 7, "exact");
     }
@@ -448,7 +455,7 @@ contract SettlementQueueLibTest is Test {
         // debtAssets=80, collateralValue=150; target = currentLtv − ltvStepBps·WAD/BPS.
         uint256 currentLtv = 80 * WAD / 150;
         uint256 target = currentLtv - (1_000 * WAD / 10_000);
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(80, 100));
+        uint256 slice = q.queueRootSlice(_market(1.5e36), _b(1), _pos(80, 100));
         assertEq(slice, _expectedSlice(80, 150, target), "root cut is exactly the LTV-step term (beats the floor)");
     }
 
@@ -460,17 +467,31 @@ contract SettlementQueueLibTest is Test {
         q.sync(_b(1), _pos(100, 100));
 
         _setFloor(2_000, 87); // remaining == threshold → no lift
-        assertEq(q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 100)), 20, "remaining==threshold: no lift");
+        assertEq(q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 100)), 20, "remaining==threshold: no lift");
 
         _setFloor(2_000, 88); // remaining < threshold → lift to the full debt
-        assertEq(q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 100)), 100, "remaining<threshold: lift to debt");
+        assertEq(q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 100)), 100, "remaining<threshold: lift to debt");
+    }
+
+    /// @dev Dust promotion is applied to each permission independently. Here the 20-asset queue-root cut would
+    ///      strand collateral below the floor and becomes a full close, while the smaller personal cut remains
+    ///      partial instead of inheriting the queue-root promotion.
+    function test_allowedSlices_dustLift_isIndependent() public {
+        PositionView memory position = _pos(100, 100);
+        q.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 2_000, sliceFloorAssets: 0, fullCutBelowCollateral: 88, ltvStepBps: 0})
+        );
+        q.setSettlementLtv(_b(1), 0.65e18);
+
+        assertEq(q.personalSlice(_market(1.5e36), _b(1), position), 7, "personal cut remains partial");
+        assertEq(q.queueRootSlice(_market(1.5e36), _b(1), position), 100, "queue-root cut is promoted");
     }
 
     /// @dev A zero fullCutBelowCollateral disables the dust lift entirely.
     function test_allowedSlice_fullCutZero_neverLifts() public {
         _setFloor(2_000, 0);
         q.sync(_b(1), _pos(100, 100));
-        assertEq(q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 100)), 20, "fullCutBelowCollateral==0 never lifts");
+        assertEq(q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 100)), 20, "fullCutBelowCollateral==0 never lifts");
     }
 
     // ── queue: truncation & re-key ordering ──

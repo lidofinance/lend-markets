@@ -39,11 +39,12 @@ struct BorrowerPosition {
     uint256 debtAssets;
     uint256 settlementLtv;
     bool isNextToSettle;
-    uint256 slice;
+    uint256 personalSliceAssets;
+    uint256 queueRootSliceAssets;
 }
 ```
 
-One-read borrower snapshot for off-chain dashboards: collateral split, activation timer, guardian signal, debt, personal settlement target, and live settle exposure.
+One-read borrower snapshot for off-chain dashboards: collateral split, activation timer, guardian signal, debt, personal settlement target, current queue status, and policy quotes.
 
 **Fields**
 
@@ -58,7 +59,8 @@ One-read borrower snapshot for off-chain dashboards: collateral split, activatio
 | `debtAssets` | `uint256` | Current borrow debt, in loan assets. |
 | `settlementLtv` | `uint256` | Borrower's personal post-cut target LTV (WAD), 0 when unset. |
 | `isNextToSettle` | `bool` | The borrower is next in line to be settled. |
-| `slice` | `uint256` | Loan assets that may be cut from this position in one settle now. |
+| `personalSliceAssets` | `uint256` | Personal settlement-LTV allowance in loan assets. |
+| `queueRootSliceAssets` | `uint256` | Prospective queue-root policy allowance in loan assets. |
 
 ### `SupplyHookData`
 
@@ -586,7 +588,7 @@ function settlementLtv(
 ) external view returns (uint256 ltv, uint256 sliceAssets);
 ```
 
-Borrower's personal post-cut target LTV (WAD) and its raw target-LTV slice, excluding root policy and any `fullCutBelowCollateral` promotion applied by the executable `settlementFor` quote.
+Borrower's personal post-cut target LTV (WAD) and its raw target-LTV slice, excluding root policy and any `fullCutBelowCollateral` promotion applied when constructing `SettlementQuote.personal`.
 
 ### `settlementBorrowersCount`
 
@@ -609,20 +611,20 @@ O(1): it checks the riskiest tracked position (the highest debt/collateral), who
 ### `nextSettlementBorrower`
 
 ```solidity
-function nextSettlementBorrower() external view returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
+function nextSettlementBorrower() external view returns (address borrower, SettlementSlice memory slice);
 ```
 
-The queue root's absolute borrower-policy cut, combined with any positive personal settlement-LTV slice. A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
+The queue root and the larger of its absolute root-policy and positive personal settlement-LTV cuts. A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
 
 ### `settlementFor`
 
 ```solidity
 function settlementFor(
     address borrower
-) external view returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
+) external view returns (SettlementQuote memory quote);
 ```
 
-The borrower's personal settlement-LTV cut, as the two anchors accepted by core settlement. `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All zero when the personal target is unset or does not imply a positive cut.
+The borrower's personal cut and its prospective queue-root cut, each as the two anchors accepted by core settlement. The queue-root quote does not assert that the borrower is currently the root. A policy that grants no positive cut is represented by an all-zero slice.
 
 ### `settlementBorrowers`
 
@@ -683,7 +685,7 @@ function positionOf(
 ) external view returns (BorrowerPosition memory);
 ```
 
-One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt, personal settlement target, and live settle exposure (next-to-settle flag + slice).
+One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt, personal settlement target, current queue status, and policy quotes.
 
 ### `collateralActivationConfig`
 

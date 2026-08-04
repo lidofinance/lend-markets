@@ -267,7 +267,7 @@ function fallbackExit(
 ) external returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
-Pays the liquid part to `receiver` before settling the remainder. When the controller reports nonzero withdrawable liquidity and the requested shares' entire floor-rounded value fits, the vault burns exactly those shares. Otherwise it withdraws the exact available asset amount so no liquidity is stranded by share rounding. The settle leg sends seized collateral from the core straight to the same receiver. Queue or iteration exhaustion partial-fills; controller and core errors revert the whole call.
+Pays the liquid part to `receiver` before settling the remainder. When the controller reports nonzero withdrawable liquidity and the requested shares' entire floor-rounded value fits, the vault burns exactly those shares. Otherwise it withdraws the exact available asset amount so no liquidity is stranded by share rounding. The settle leg sends seized collateral from the core straight to the same receiver. Queue or iteration exhaustion partial-fills; controller and core errors revert the whole call. If neither leg burns any shares, the call reverts instead of silently returning a no-op.
 
 ## State variables
 

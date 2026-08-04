@@ -37,6 +37,44 @@ struct Position {
 > [!WARNING]
 > For `feeRecipient`, `supplyShares` does not contain the accrued shares since the last interest accrual.
 
+## `SettlementSlice`
+
+```solidity
+struct SettlementSlice {
+    uint256 supplyShares;
+    uint256 borrowShares;
+    uint256 remainingBorrowShares;
+}
+```
+
+One policy-sized settlement cut expressed in the two core anchors. A caller passes exactly one anchor to the core. For a nonzero cut, `remainingBorrowShares == 0` identifies a full close; an unavailable cut is represented by an all-zero struct.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `supplyShares` | `uint256` | Supply-share cost of the cut. |
+| `borrowShares` | `uint256` | Borrow shares canceled by the cut. |
+| `remainingBorrowShares` | `uint256` | Borrow shares left after a nonzero cut, 0 for a full close. |
+
+## `SettlementQuote`
+
+```solidity
+struct SettlementQuote {
+    SettlementSlice personal;
+    SettlementSlice queueRoot;
+}
+```
+
+The two independently sized policy candidates for a borrower at the current position state. Both remain subject to the global pause and bad-debt gates and to the caller's execution budget.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `personal` | `SettlementSlice` | Cut allowed by the borrower's personal settlement-LTV target, independent of queue membership, market liquidity, and the settling lender's illiquid supply tail. |
+| `queueRoot` | `SettlementSlice` | Prospective queue-policy allowance. Execution requires the borrower to be the live queue root; any executed amount above `personal` must fit the settling lender's live illiquid supply tail. |
+
 ## `SettlementConfig`
 
 ```solidity

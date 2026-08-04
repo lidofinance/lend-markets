@@ -154,7 +154,7 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
     ///      uses that exact budget supply-anchored. TAIL keeps at most one wei of debt and the lender fully exits.
     function test_fallbackExit_fullPool_closesAllButTheBufferDustOnTheTail() public {
         assertEq(core.market(id).totalSupplyAssets, core.market(id).totalBorrowAssets, "100% utilisation (no free)");
-        (address root,,,) = controller.nextSettlementBorrower();
+        (address root,) = controller.nextSettlementBorrower();
         assertEq(root, RISKY, "highest-LTV borrower is the queue root");
 
         // Pin accrual so the book delta below is exact within this block (fallbackExit's own accrual is then a

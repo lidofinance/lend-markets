@@ -260,8 +260,9 @@ contract BorrowShareInflationTest is LidoLendSetup {
         m.supplyCollateral(borrower, 100 ether);
         m.activateCollateral();
         m.borrow(borrower, 20 ether);
-        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 22 / 100); // solvent-but-unhealthy
+        MockPriceOracle(address(m.oracle)).setPrice(0.22e36); // solvent-but-unhealthy
         m.accrueInterest();
+        m.setSettlementLtv(borrower, 0.8e18);
 
         // Targeted settle of the distressed borrower — the ceiling's settle transition-check must not block it.
         address[] memory bs = new address[](1);

@@ -7,9 +7,10 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementQuote} from "../../src/types/SettlementTypes.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {IrmKind, Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
@@ -43,11 +44,11 @@ contract LidoLendERC4626Test is LidoLendSetup {
     }
 
     function _settlementForDebtAssets(Market storage m, address borrower) internal view returns (uint256) {
-        (uint256 quotedSupplyShares,, uint256 remainingBorrowShares) = m.controller.settlementFor(borrower);
-        assertGt(remainingBorrowShares, 0, "precondition: helper models a partial supply-anchored cut");
+        SettlementQuote memory quote = m.controller.settlementFor(borrower);
+        assertGt(quote.personal.remainingBorrowShares, 0, "precondition: helper models a partial supply-anchored cut");
         MorphoMarket memory market_ = m.core.market(m.id);
         return Math.mulDiv(
-            quotedSupplyShares,
+            quote.personal.supplyShares,
             uint256(market_.totalSupplyAssets) + CORE_VIRTUAL_ASSETS,
             uint256(market_.totalSupplyShares) + CORE_VIRTUAL_SHARES
         );
@@ -151,8 +152,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
             expected[0] = m.vault.previewRedeem(shares);
             expected[1] =
                 Math.mulDiv(m.core.position(m.id, address(m.vault)).supplyShares, shares, m.vault.totalSupply());
-            (uint256 quotedSupplyShares,,) = m.controller.settlementFor(borrower);
-            expected[2] = Math.min(quotedSupplyShares, expected[1]);
+            SettlementQuote memory quote = m.controller.settlementFor(borrower);
+            expected[2] = Math.min(quote.personal.supplyShares, expected[1]);
             expected[3] = m.core.position(m.id, address(m.vault)).supplyShares;
             expected[4] = m.core.position(m.id, borrower).borrowShares;
         }
@@ -344,8 +345,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
     }
 
     /// @dev Pausing collapses withdrawable liquidity to zero. A positive-value fallback exit therefore cannot use
-    ///      the internal liquid leg; with no settleable borrower it returns without burning or paying anything.
-    function test_fallbackExit_doesNotBurnPositiveValueShares_whenPaused() public {
+    ///      the internal liquid leg; with no settleable borrower it reverts instead of silently returning a no-op.
+    function testRevert_fallbackExit_doesNotNoopPositiveValueShares_whenPaused() public {
         Market storage m = _market();
         address lender = _actor("paused-lender");
         _fund(m.loanToken, lender, 100 ether);
@@ -355,13 +356,9 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.controller.pauseFor(1 hours);
 
         vm.prank(lender);
-        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
-            m.vault.fallbackExit(shares, lender, lender, 0);
+        vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
+        m.vault.fallbackExit(shares, lender, lender, 0);
 
-        assertEq(sharesBurned, 0, "paused exit burns no shares");
-        assertEq(loanAssets, 0, "paused exit pays no loan assets");
-        assertEq(collateralSeized, 0, "paused exit seizes no collateral");
-        assertEq(debtCanceled, 0, "paused exit cancels no debt");
         assertEq(m.vault.balanceOf(lender), shares, "lender balance unchanged");
     }
 
@@ -498,7 +495,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
         // One settle cut == the controller's predicted slice; total shares burned == the shares for the
         // 80 idle redeemed PLUS the shares for that one cut — both recomputed before the exit.
-        uint256 sliceAssets = m.controller.positionOf(borrower).slice;
+        ILidoLendMarketController.BorrowerPosition memory dashboard = m.controller.positionOf(borrower);
+        uint256 sliceAssets = Math.max(dashboard.personalSliceAssets, dashboard.queueRootSliceAssets);
         uint256 shares = m.vault.balanceOf(lender);
         uint256 expectedBurned = m.vault.previewWithdraw(80 ether) + m.vault.previewWithdraw(sliceAssets);
         vm.prank(lender);

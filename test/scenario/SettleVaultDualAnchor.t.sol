@@ -11,7 +11,7 @@ import {Vm} from "forge-std/Vm.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementQuote, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 
@@ -226,7 +226,7 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         _setFullCut();
 
         assertGt(core.position(id, BORROWER).borrowShares, 0, "borrower starts with debt");
-        (address root,,,) = controller.nextSettlementBorrower();
+        (address root,) = controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "highest-LTV borrower is the queue root");
 
         uint256 shares = IVault(vault).balanceOf(LENDER);
@@ -273,7 +273,9 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         uint256 shares;
         {
             MorphoMarket memory mk = core.market(id);
-            (uint256 fullCloseSupplyShares,, uint256 remainingBorrowShares) = controller.settlementFor(BORROWER);
+            SettlementQuote memory settlementQuote = controller.settlementFor(BORROWER);
+            uint256 fullCloseSupplyShares = settlementQuote.personal.supplyShares;
+            uint256 remainingBorrowShares = settlementQuote.personal.remainingBorrowShares;
             assertEq(remainingBorrowShares, 0, "controller quotes a full close");
 
             shares = Math.mulDiv(fullCloseSupplyShares - 1, vaultSharesBefore, vaultSupplySharesBefore);
@@ -435,7 +437,7 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
     function test_fallbackExit_unaffordableFullCloseFallsBackToPartial() public {
         _setFullCut(); // root is in full-close mode
 
-        (address root,,,) = controller.nextSettlementBorrower();
+        (address root,) = controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "highest-LTV borrower is the queue root");
         uint256 rootDebtBefore = core.position(id, BORROWER).borrowShares;
 
@@ -569,7 +571,7 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
 
         _setWholeDebtSlice();
 
-        (address root,,,) = controller.nextSettlementBorrower();
+        (address root,) = controller.nextSettlementBorrower();
         assertEq(root, BORROWER, "dust borrower is the queue root");
 
         uint256 shares = IVault(vault).balanceOf(LENDER);
@@ -598,33 +600,30 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
 
     function _quoteSupplyThenBorrowAnchoredBudget() internal returns (TwoStepQuote memory quote) {
         address root;
-        uint256 fillerSupplyShares;
-        uint256 fillerBorrowShares;
-        uint256 fillerRemainingBorrowShares;
-        (root, fillerSupplyShares, fillerBorrowShares, fillerRemainingBorrowShares) =
-            controller.nextSettlementBorrower();
+        SettlementSlice memory slice;
+        (root, slice) = controller.nextSettlementBorrower();
         assertEq(root, FILLER, "automatic quote is for the first queue root");
-        assertGt(fillerSupplyShares, 0, "first cut has supply burn");
-        assertGt(fillerBorrowShares, 0, "first cut has borrow burn");
-        assertGt(fillerRemainingBorrowShares, 0, "first cut is partial");
+        assertGt(slice.supplyShares, 0, "first cut has supply burn");
+        assertGt(slice.borrowShares, 0, "first cut has borrow burn");
+        assertGt(slice.remainingBorrowShares, 0, "first cut is partial");
 
-        quote.firstSupplyBurn = fillerSupplyShares;
+        quote.firstSupplyBurn = slice.supplyShares;
         uint256 snapshot = vm.snapshotState();
 
         vm.prank(vault);
-        (,,, uint256 coreFirstSupplyBurn) = core.settle(params, fillerSupplyShares, 0, vault, FILLER, RECEIVER);
+        (,,, uint256 coreFirstSupplyBurn) = core.settle(params, slice.supplyShares, 0, vault, FILLER, RECEIVER);
         assertEq(coreFirstSupplyBurn, quote.firstSupplyBurn, "supply-anchored core burn is exact");
 
-        (root,,,) = controller.nextSettlementBorrower();
+        (root,) = controller.nextSettlementBorrower();
         assertEq(root, THIRD, "third is the second queue root");
 
-        uint256 thirdRemainingBorrowShares;
-        (root, quote.secondSupplyBurn, quote.thirdBorrowShares, thirdRemainingBorrowShares) =
-            controller.nextSettlementBorrower();
+        (root, slice) = controller.nextSettlementBorrower();
+        quote.secondSupplyBurn = slice.supplyShares;
+        quote.thirdBorrowShares = slice.borrowShares;
         assertEq(root, THIRD, "automatic quote is for the second queue root");
         assertGt(quote.secondSupplyBurn, 0, "second cut has supply burn");
         assertGt(quote.thirdBorrowShares, 0, "second cut has borrow burn");
-        assertEq(thirdRemainingBorrowShares, 0, "second cut is a full close");
+        assertEq(slice.remainingBorrowShares, 0, "second cut is a full close");
         assertEq(
             quote.thirdBorrowShares, core.position(id, THIRD).borrowShares, "second cut uses all third debt shares"
         );
@@ -707,7 +706,8 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         core.accrueInterest(params);
         uint256 ba = core.market(id).totalBorrowAssets;
         uint256 bs = core.market(id).totalBorrowShares;
-        uint256 slice = controller.positionOf(BORROWER).slice;
+        ILidoLendMarketController.BorrowerPosition memory dashboard = controller.positionOf(BORROWER);
+        uint256 slice = Math.max(dashboard.personalSliceAssets, dashboard.queueRootSliceAssets);
         uint256 handle = SharesMathLib.toSharesUp(slice, ba, bs);
         assertGt(SharesMathLib.toAssetsUp(handle, ba, bs), slice, "handle values back above the slice (rejected case)");
 
@@ -728,7 +728,9 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         core.accrueInterest(params);
         uint256 ba = core.market(id).totalBorrowAssets;
         uint256 bs = core.market(id).totalBorrowShares;
-        uint256 handle = SharesMathLib.toSharesUp(controller.positionOf(BORROWER).slice, ba, bs);
+        ILidoLendMarketController.BorrowerPosition memory dashboard = controller.positionOf(BORROWER);
+        uint256 slice = Math.max(dashboard.personalSliceAssets, dashboard.queueRootSliceAssets);
+        uint256 handle = SharesMathLib.toSharesUp(slice, ba, bs);
 
         vm.prank(vault);
         vm.expectRevert(ILidoLendMarketController.SettlementExceedsAllowed.selector);

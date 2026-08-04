@@ -8,7 +8,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementQuote, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
@@ -204,11 +204,11 @@ contract SettlementTest is LidoLendSetup {
         assertGt(m.core.position(m.id, otherSupplier).supplyShares, 0, "precondition: multiple suppliers");
 
         _setFullCloseRootPolicy();
-        (address root,,,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower();
         assertEq(root, state.borrower, "precondition: borrower is the queue root");
-        (uint256 personalSupplyQuote, uint256 personalBorrowQuote,) = m.controller.settlementFor(state.borrower);
-        assertEq(personalSupplyQuote, 0, "precondition: no personal supply quote");
-        assertEq(personalBorrowQuote, 0, "precondition: root cut uses automatic policy only");
+        SettlementQuote memory quote = m.controller.settlementFor(state.borrower);
+        assertEq(quote.personal.supplyShares, 0, "precondition: no personal supply quote");
+        assertEq(quote.personal.borrowShares, 0, "precondition: root cut uses automatic policy only");
     }
 
     /// @dev The automatic quote exposes the root's absolute policy while liquidity exists. The fallback liquid leg
@@ -220,10 +220,10 @@ contract SettlementTest is LidoLendSetup {
         _setFullCloseRootPolicy();
         uint256 shares = _seedShortLiquidity(lender, borrower);
 
-        (address root, uint256 supplyQuote, uint256 borrowQuote,) = m.controller.nextSettlementBorrower();
+        (address root, SettlementSlice memory slice) = m.controller.nextSettlementBorrower();
         assertEq(root, borrower, "sole borrower is root");
-        assertGt(supplyQuote, 0, "absolute root policy exposes its supply cost");
-        assertGt(borrowQuote, 0, "absolute root policy exposes its borrow anchor");
+        assertGt(slice.supplyShares, 0, "absolute root policy exposes its supply cost");
+        assertGt(slice.borrowShares, 0, "absolute root policy exposes its borrow anchor");
         assertEq(_freeLiquidity(m), 20 ether, "precondition: 20 free assets");
 
         (, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
@@ -246,7 +246,8 @@ contract SettlementTest is LidoLendSetup {
         state.shares = _seedShortLiquidity(state.lender, state.borrower);
         state.personalSlice = _setPositivePersonalLtv(state.borrower);
 
-        (uint256 supplyQuote,,) = m.controller.settlementFor(state.borrower);
+        SettlementQuote memory quote = m.controller.settlementFor(state.borrower);
+        uint256 supplyQuote = quote.personal.supplyShares;
         MorphoMarket memory marketBefore = m.core.market(m.id);
         state.expectedDebt = supplyQuote.toAssetsDown(marketBefore.totalSupplyAssets, marketBefore.totalSupplyShares);
         state.freeBefore = _freeLiquidity(m);
@@ -262,6 +263,44 @@ contract SettlementTest is LidoLendSetup {
         assertEq(_freeLiquidity(m), state.freeBefore, "targeted settlement preserves free liquidity");
     }
 
+    /// @dev Even for the live queue root, targeted settlement uses only the personal candidate. A larger automatic
+    ///      root-policy candidate is observable but cannot leak into the targeted vault path.
+    function test_settle_actualRootWithLargerQueueQuote_usesOnlyPersonal() public {
+        Market storage m = _m();
+        TargetedState memory state;
+        state.lender = _actor("lender");
+        state.borrower = _actor("borrower");
+
+        SettlementConfig memory config = m.controller.settlementConfig();
+        config.sliceFloorBps = 5_000;
+        config.sliceFloorAssets = 0;
+        config.fullCutBelowCollateral = 0;
+        config.ltvStepBps = 0;
+        m.controller.setSettlementConfig(config);
+
+        state.shares = _seedShortLiquidity(state.lender, state.borrower);
+        _setPositivePersonalLtv(state.borrower);
+
+        SettlementQuote memory quote = m.controller.settlementFor(state.borrower);
+        (address root, SettlementSlice memory automatic) = m.controller.nextSettlementBorrower();
+        assertEq(root, state.borrower, "borrower is the live queue root");
+        assertGt(quote.personal.supplyShares, 0, "personal candidate is positive");
+        assertGt(quote.queueRoot.supplyShares, quote.personal.supplyShares, "root candidate is larger");
+        assertEq(automatic.supplyShares, quote.queueRoot.supplyShares, "automatic path selects root candidate");
+
+        MorphoMarket memory marketBefore = m.core.market(m.id);
+        uint256 expectedPersonalDebt = _supplyAssetsDown(quote.personal.supplyShares, marketBefore);
+        uint256 rootDebt = _supplyAssetsDown(quote.queueRoot.supplyShares, marketBefore);
+        assertGt(rootDebt, expectedPersonalDebt, "root candidate cancels more debt");
+
+        (, uint256 loanAssets,, uint256 debtCanceled) =
+            m.settle(state.lender, state.shares, _singleton(state.borrower), state.lender);
+
+        assertEq(loanAssets, 0, "targeted settlement does not withdraw liquidity");
+        assertEq(debtCanceled, expectedPersonalDebt, "targeted settlement uses only personal candidate");
+        assertLt(debtCanceled, rootDebt, "targeted settlement excludes larger root candidate");
+    }
+
     /// @dev Root status alone never authorizes targeted settlement. With free liquidity and no positive personal
     ///      slice the controller returns a zero targeted quote and the vault reverts atomically.
     function testRevert_settle_rootWithoutPersonalLtv_settlesNothing() public {
@@ -270,10 +309,10 @@ contract SettlementTest is LidoLendSetup {
         address borrower = _actor("borrower");
         uint256 shares = _seedShortLiquidity(lender, borrower);
 
-        (uint256 supplyQuote, uint256 borrowQuote, uint256 remaining) = m.controller.settlementFor(borrower);
-        assertEq(supplyQuote, 0, "no personal supply quote");
-        assertEq(borrowQuote, 0, "no personal borrow quote");
-        assertEq(remaining, 0, "zero quote has zero remainder field");
+        SettlementQuote memory quote = m.controller.settlementFor(borrower);
+        assertEq(quote.personal.supplyShares, 0, "no personal supply quote");
+        assertEq(quote.personal.borrowShares, 0, "no personal borrow quote");
+        assertEq(quote.personal.remainingBorrowShares, 0, "zero quote has zero remainder field");
 
         vm.prank(lender);
         vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
@@ -302,7 +341,8 @@ contract SettlementTest is LidoLendSetup {
         config.fullCutBelowCollateral = 200 ether;
         m.controller.setSettlementConfig(config);
         m.setSettlementLtv(borrower, 1);
-        (, uint256 borrowShares,) = m.controller.settlementFor(borrower);
+        SettlementQuote memory quote = m.controller.settlementFor(borrower);
+        uint256 borrowShares = quote.personal.borrowShares;
 
         vm.prank(supplier);
         m.core.setAuthorization(address(this), true);
@@ -428,7 +468,7 @@ contract SettlementTest is LidoLendSetup {
         }
         assertEq(riskyKey, 2 * safeKey, "equal debt and half collateral doubles risk key");
 
-        (address root,,,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower();
         assertEq(root, risky, "riskiest borrower remains root");
     }
 
