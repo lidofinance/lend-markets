@@ -217,6 +217,20 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.currentInflow(), 0, "instant deposit does not touch the inflow throttle");
     }
 
+    function test_instantDeposit_belowThresholdActivatesOnlyDeposit() public {
+        address borrower = address(0xC2);
+        h.setMinActivationAmount(10 ether);
+        h.deposit(borrower, 4 ether);
+
+        h.depositInstant(borrower, 1 ether);
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active, 1 ether, "instant deposit is active regardless of the threshold");
+        assertEq(activating, 0, "instant deposit skips the timer");
+        assertEq(dust, 4 ether, "instant deposit does not activate existing dust");
+        assertEq(h.currentInflow(), 0, "instant deposit does not touch the inflow throttle");
+    }
+
     /// @notice Quorum-scan gate: past the base timer, a lot stays activating until the guardian frontier has
     ///         scanned past its unlock; once it does, the lot matures.
     function test_sync_gateHoldsUntilQuorumScansPastUnlock() public {

@@ -163,13 +163,18 @@ library CollateralActivationLib {
 
     /// @notice Book a new collateral deposit. It joins dust, and once dust plus this deposit crosses the
     ///         threshold the whole dormant amount enters the activation timer and is added to the market inflow.
-    ///         When `instant` (a trusted caller) the collateral is not held inactive: it joins neither bucket, so it
-    ///         counts as active immediately, releasing any dust with it. A sub-threshold deposit stays dust.
+    ///         When `instant` (a trusted caller) the deposited collateral is not held inactive: it joins neither
+    ///         bucket and counts as active immediately, while any existing dust remains dormant.
     /// @dev All activating collateral shares one timer: a top-up that extends the deadline restarts
     ///      `activatingStart` for the whole lot, clearing the suspect surcharge if it restarts past `suspectExpiry`.
     /// @param instant Whether the supplying caller is trusted to skip the activation timer and inflow throttle.
     function credit(State storage $, address borrower, uint256 assets, bool instant) internal {
         Position storage position = $.positions[borrower];
+
+        if (instant) {
+            emit CollateralActivated(borrower, assets, position);
+            return;
+        }
 
         uint256 dust = position.dust;
         uint256 assetsWithDust = assets + dust;
@@ -181,11 +186,6 @@ library CollateralActivationLib {
         }
 
         if (dust > 0) position.dust = 0;
-
-        if (instant) {
-            emit CollateralActivated(borrower, assetsWithDust, position);
-            return;
-        }
 
         position.activating = (position.activating + assetsWithDust).toUint128();
 
