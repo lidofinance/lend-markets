@@ -239,11 +239,11 @@ The queue root's absolute policy bound is the largest of three rules:
 
 Taking the **max** lets the riskiest position de-lever in meaningful steps. Rule 3 self-adapts: a fixed LTV step is a large fraction of the debt near the liquidation threshold and a small one lower down, so it carries the cut where the debt concentrates while rules 1 and 2 floor the small and low-LTV tail. A cut sized to the *next-riskiest* borrower instead would collapse to nothing here, because borrowers in a single-pair leverage market cluster near a common LTV — the absolute rules sidestep that.
 
-A borrower may also set a **settlement LTV**: a personal target LTV used to size its cut. A positive personal slice is required by the wrapper's targeted `settle` and remains available at any liquidity level. If either the personal or queue-root slice would strand collateral below `fullCutBelowCollateral`, that slice is promoted to a full close. `settlementFor` exposes both the personal quote and the prospective queue-root quote for the named borrower; the latter does not imply that the borrower is currently the root. `nextSettlementBorrower` atomically returns the current root and the larger personal or root-policy slice. The controller gates root-policy execution by the settling lender's illiquid tail, `max(lenderSupplyAssets - marketFreeLiquidity, 0)`.
+A borrower may also set a **settlement LTV**: a personal target LTV used to size its cut. A positive personal slice is required by the wrapper's targeted `settle` and remains available at any liquidity level. The personal asset allowance is sized only by that target and does not inherit the market's collateral-dust sweep. Ordinary up-rounding into borrow shares still applies, so a near-full personal allowance can reach the last borrow share. Only a queue-root asset slice that would strand collateral below `fullCutBelowCollateral` is promoted to the full debt by dust policy. `settlementFor` exposes both the personal quote and the prospective queue-root quote for the named borrower; the latter does not imply that the borrower is currently the root. `nextSettlementBorrower` atomically returns the current root and the larger personal or root-policy slice. The controller gates root-policy execution by the settling lender's illiquid tail, `max(lenderSupplyAssets - marketFreeLiquidity, 0)`.
 
 **Controller execution rules.** Let:
 
-- `P` be the effective personal-policy allowance in borrow shares, including any dust promotion to a full close;
+- `P` be the personal target-LTV allowance in borrow shares, with no dust promotion;
 - `R` be the effective root-policy allowance in borrow shares (`0` for a non-root);
 - `C` be the actual borrow shares canceled by the core;
 - `A` be the corresponding actual debt canceled in loan assets; and
@@ -279,15 +279,11 @@ flowchart LR
     NR --> RD
     RD -->|yes| RF[root = full debt]
     RD -->|no| RS[root slice]
-    WM["settlement-LTV cut: to target LTV"] --> PD{personal cut leaves dust?}
-    PD -->|yes| PF[personal = full debt]
-    PD -->|no| PS[personal slice]
+    WM["settlement-LTV cut: to target LTV"] --> PS[personal slice]
     RF --> AUTO[automatic = max]
     RS --> AUTO
-    PF --> AUTO
     PS --> AUTO
-    PF --> TARGET[targeted settle]
-    PS --> TARGET
+    PS --> TARGET[targeted settle]
 ```
 
 > **Root cut.** Root at LTV 92%, debt `1000`, policy `sliceFloorBps 5% · sliceFloorAssets 100 · ltvStepBps 1%`. Rule 1 = `50`, rule 2 = `100`, rule 3 ≈ `120` (a 1% LTV step is ~12% of the debt at this LTV). The cut is the nominal max, `120`. A root-policy execution must fit the lender's live illiquid tail after the quote is converted into borrow shares; a lender with an `80`-asset tail cannot execute the whole nominal cut.
@@ -297,10 +293,10 @@ flowchart LR
 
 **Known limits.**
 
-- A fully de-levered borrower keeps its equity as free collateral but loses all its leverage (par, no penalty). For a small position — debt under the absolute floor, or a remainder that would fall under `fullCutBelowCollateral` — policy requests a full-debt cut. It closes in one transaction only when the request's remaining core-share budget covers it; otherwise the vault applies a supply-anchored partial.
+- A fully de-levered borrower keeps its equity as free collateral but loses all its leverage (par, no penalty). For a queue root with debt under the absolute floor, or whose root-policy cut would leave collateral under `fullCutBelowCollateral`, policy requests a full-debt cut. It closes in one transaction only when the request's remaining core-share budget covers it; otherwise the vault applies a supply-anchored partial. A personal settlement-LTV quote is not promoted by this collateral-dust rule.
 - A single transaction settles only a bounded number of borrowers (the fallback loop's iteration cap), so a lender pulling a large fraction of the pool partial-fills and repeats across transactions. Settlement preserves free loan-asset liquidity: supply assets and borrow assets fall by the same amount, which lowers utilization without releasing WETH. Reach per transaction depends on how debt is split across positions, not on any one policy value.
 - If a chosen debt slice prices to zero collateral units, the core reverts `settlement slice too small`. Repay or otherwise remove that dust debt, then retry the exit.
-- Policy is quoted in loan assets and rounded up into borrow shares. Actual canceled debt may exceed the nominal quote by one borrow-share conversion step, which can be worth more than one asset raw unit at an elevated borrow-share price. If root and personal quotes round to the same share count, the controller treats the cut as personal and does not enter the lender-tail branch.
+- Policy is quoted in loan assets and rounded up into borrow shares. Actual canceled debt may exceed the nominal quote by one borrow-share conversion step, which can be worth more than one asset raw unit at an elevated borrow-share price; if that step reaches the last borrow share, even a personal quote is represented as a rounding full close. If root and personal quotes round to the same share count, the controller treats the cut as personal and does not enter the lender-tail branch.
 - The lender-tail bound uses live transaction state. Withdrawing or borrowing market liquidity increases `lenderSupplyAssets - marketFreeLiquidity` in the same transaction and therefore increases the root allowance; restoring liquidity later does not retroactively undo the cut. Flash loans alone do not change accounting totals, but bundled liquidity-changing actions do. The design has no prior-block snapshot or cooldown.
 
 ### Tokenized lender layer & fallback exit

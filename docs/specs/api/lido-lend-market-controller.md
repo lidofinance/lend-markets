@@ -562,7 +562,7 @@ Whether `caller`'s supplies skip the activation timer.
 function setSettlementConfig(SettlementConfig calldata config) external;
 ```
 
-Set the settlement config in one shot — the knobs size the same cut and move together. A cut is the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the cut that lowers the borrower's LTV by `ltvStepBps`. `fullCutBelowCollateral` lifts the cut to the full debt when the post-cut collateral would be dust.
+Sets all queue-root settlement sizing parameters atomically. The nominal queue-root cut is the maximum of `sliceFloorBps` of its debt, `sliceFloorAssets`, and the cut required to lower its LTV by `ltvStepBps`. If that cut would leave collateral below `fullCutBelowCollateral`, the queue-root allowance is promoted to the full debt. Personal settlement-LTV quotes are unaffected.
 
 ### `settlementConfig`
 
@@ -578,7 +578,7 @@ The current settlement config.
 function setSettlementLtv(uint256 ltv) external;
 ```
 
-Sets the caller's personal post-cut target LTV (WAD). When current LTV exceeds it, the position may be settled without being the queue root; dust policy may promote the cut to a full close. 0 clears it.
+Sets the caller's personal post-cut target LTV (WAD). When current LTV exceeds it, the position may be settled without being the queue root. 0 clears it.
 
 ### `settlementLtv`
 
@@ -588,7 +588,7 @@ function settlementLtv(
 ) external view returns (uint256 ltv, uint256 sliceAssets);
 ```
 
-Borrower's personal post-cut target LTV (WAD) and its raw target-LTV slice, excluding root policy and any `fullCutBelowCollateral` promotion applied when constructing `SettlementQuote.personal`.
+Borrower's personal post-cut target LTV (WAD) and its target-LTV slice, excluding root policy.
 
 ### `settlementBorrowersCount`
 

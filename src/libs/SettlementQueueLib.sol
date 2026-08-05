@@ -142,8 +142,10 @@ library SettlementQueueLib {
     // SLICE SIZING
     // ---
 
-    /// @notice Effective personal and queue-root slices for `borrower`, independently debt-capped and dust-promoted.
-    ///         The queue-root slice is prospective: the caller decides whether `borrower` is currently the root.
+    /// @notice Returns the debt-capped personal and prospective queue-root asset quotes for `borrower`. Only the
+    ///         queue-root quote is subject to collateral-dust promotion.
+    /// @dev Computes the queue-root policy quote without checking whether `borrower` is the current heap root. The
+    ///      controller enforces `borrower == peekRoot()` before authorizing root-policy execution.
     function allowedSliceAssets(
         State storage $,
         MarketView memory marketView,
@@ -156,9 +158,6 @@ library SettlementQueueLib {
         personalSliceAssets = Math.min(_settlementLtvSlice($, borrower, debtAssets, collateralValue), debtAssets);
         queueRootSliceAssets = Math.min(_policySlice($.config, debtAssets, collateralValue), debtAssets);
 
-        if (personalSliceAssets != 0 && _strandsDust($, marketView, position, personalSliceAssets)) {
-            personalSliceAssets = debtAssets;
-        }
         if (queueRootSliceAssets != 0 && _strandsDust($, marketView, position, queueRootSliceAssets)) {
             queueRootSliceAssets = debtAssets;
         }

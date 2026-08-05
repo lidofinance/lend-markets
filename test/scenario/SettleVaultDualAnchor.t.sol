@@ -239,9 +239,10 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         assertGt(collateralSeized, 0, "collateral seized");
     }
 
-    /// @dev A targeted personal-LTV full close whose quoted supply cost is one share above the request's gross
-    ///      settlement budget is downgraded to an exact-budget supply-anchored partial cut.
-    function test_settle_budgetBelowFullCloseFallsBackToPartial() public {
+    /// @dev A personal target remains partial even though the same borrower's queue-root cut is dust-promoted to a
+    ///      full close. If the request budget is one supply share below that personal quote, the vault uses an
+    ///      exact-budget supply-anchored partial cut.
+    function test_settle_budgetBelowPersonalQuoteFallsBackToPartial() public {
         // Leave BORROWER as the only debtor so the post-cut remainder is unambiguous.
         uint256 fillerShares = core.position(id, FILLER).borrowShares;
         uint256 thirdShares = core.position(id, THIRD).borrowShares;
@@ -274,14 +275,14 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         {
             MorphoMarket memory mk = core.market(id);
             SettlementQuote memory settlementQuote = controller.settlementFor(BORROWER);
-            uint256 fullCloseSupplyShares = settlementQuote.personal.supplyShares;
-            uint256 remainingBorrowShares = settlementQuote.personal.remainingBorrowShares;
-            assertEq(remainingBorrowShares, 0, "controller quotes a full close");
+            uint256 personalSupplyShares = settlementQuote.personal.supplyShares;
+            assertGt(settlementQuote.personal.remainingBorrowShares, 0, "personal quote ignores the dust sweep");
+            assertEq(settlementQuote.queueRoot.remainingBorrowShares, 0, "queue-root quote is dust-promoted");
 
-            shares = Math.mulDiv(fullCloseSupplyShares - 1, vaultSharesBefore, vaultSupplySharesBefore);
+            shares = Math.mulDiv(personalSupplyShares - 1, vaultSharesBefore, vaultSupplySharesBefore);
             expected[0] = Math.mulDiv(vaultSupplySharesBefore, shares, vaultSharesBefore);
             assertGt(expected[0], 0, "request has a positive gross settlement budget");
-            assertLt(expected[0], fullCloseSupplyShares, "gross request budget cannot afford the full close");
+            assertLt(expected[0], personalSupplyShares, "gross request budget is below the personal quote");
 
             expected[1] = SharesMathLib.toAssetsDown(expected[0], mk.totalSupplyAssets, mk.totalSupplyShares);
             expected[2] = SharesMathLib.toSharesUp(expected[1], mk.totalBorrowAssets, mk.totalBorrowShares);
@@ -345,10 +346,9 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         IVault(vault).settle(shares, borrowers, RECEIVER, LENDER);
     }
 
-    /// @dev Targeted `settle` can close several opted-in borrowers to zero when every requested full close fits
-    ///      the remaining gross request budget. This is the normal borrow-anchored path; no supply-anchored
-    ///      downgrade is expected for either borrower.
-    function test_settle_multipleBorrowersFullCloseToZero() public {
+    /// @dev A large collateral-dust threshold does not promote personal cuts in a multi-borrower targeted settle.
+    ///      Both opted-in positions are reduced toward their targets and remain open.
+    function test_settle_multipleBorrowersStopAtPersonalTargets() public {
         controller.setSettlementConfig(
             SettlementConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 300e18, ltvStepBps: 100})
         );
@@ -359,8 +359,14 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         borrowers[0] = BORROWER;
         borrowers[1] = FILLER;
 
-        assertGt(core.position(id, BORROWER).borrowShares, 0, "borrower starts with debt");
-        assertGt(core.position(id, FILLER).borrowShares, 0, "filler starts with debt");
+        uint256 borrowerDebtBefore = core.position(id, BORROWER).borrowShares;
+        uint256 fillerDebtBefore = core.position(id, FILLER).borrowShares;
+        SettlementQuote memory borrowerQuote = controller.settlementFor(BORROWER);
+        SettlementQuote memory fillerQuote = controller.settlementFor(FILLER);
+        assertGt(borrowerQuote.personal.remainingBorrowShares, 0, "borrower personal quote remains partial");
+        assertGt(fillerQuote.personal.remainingBorrowShares, 0, "filler personal quote remains partial");
+        assertEq(borrowerQuote.queueRoot.remainingBorrowShares, 0, "borrower root quote is dust-promoted");
+        assertEq(fillerQuote.queueRoot.remainingBorrowShares, 0, "filler prospective root quote is dust-promoted");
 
         uint256 shares = IVault(vault).balanceOf(LENDER);
         vm.prank(LENDER);
@@ -372,17 +378,20 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
 
         assertGt(sharesBurned, 0, "vault shares burned");
         assertGt(collateralSeized, 0, "collateral seized");
-        assertEq(debtCanceled, B_BORROW + F_BORROW, "both debts cancelled");
-        assertEq(core.position(id, BORROWER).borrowShares, 0, "borrower closed to zero");
-        assertEq(core.position(id, FILLER).borrowShares, 0, "filler closed to zero");
+        assertGt(debtCanceled, 0, "both personal cuts cancel debt");
+        assertLt(debtCanceled, B_BORROW + F_BORROW, "personal cuts do not close both debts");
+        assertLt(core.position(id, BORROWER).borrowShares, borrowerDebtBefore, "borrower debt reduced");
+        assertGt(core.position(id, BORROWER).borrowShares, 0, "borrower remains open");
+        assertLt(core.position(id, FILLER).borrowShares, fillerDebtBefore, "filler debt reduced");
+        assertGt(core.position(id, FILLER).borrowShares, 0, "filler remains open");
         assertGt(remainingVaultSupplyShares, 0, "idle supply remains in the vault");
         assertGt(remainingVaultShares, 0, "lender keeps shares for idle supply");
         assertEq(collateral.balanceOf(RECEIVER), collateralSeized, "receiver got the seized collateral");
     }
 
-    /// @dev Same as the two-borrower case, but with an additional listed borrower. This makes sure the normal
-    ///      full-close path is not accidentally special-cased to one or two borrowers.
-    function test_settle_threeBorrowersFullCloseToZero() public {
+    /// @dev The same personal-only dust behavior holds across three requested borrowers: every target cut executes,
+    ///      but none inherits its prospective queue-root full close.
+    function test_settle_threeBorrowersStopAtPersonalTargets() public {
         controller.setSettlementConfig(
             SettlementConfig({sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 300e18, ltvStepBps: 100})
         );
@@ -395,6 +404,13 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
         borrowers[1] = FILLER;
         borrowers[2] = THIRD;
 
+        uint256 borrowerDebtBefore = core.position(id, BORROWER).borrowShares;
+        uint256 fillerDebtBefore = core.position(id, FILLER).borrowShares;
+        uint256 thirdDebtBefore = core.position(id, THIRD).borrowShares;
+        assertGt(controller.settlementFor(BORROWER).personal.remainingBorrowShares, 0, "borrower quote is partial");
+        assertGt(controller.settlementFor(FILLER).personal.remainingBorrowShares, 0, "filler quote is partial");
+        assertGt(controller.settlementFor(THIRD).personal.remainingBorrowShares, 0, "third quote is partial");
+
         uint256 shares = IVault(vault).balanceOf(LENDER);
 
         vm.prank(LENDER);
@@ -403,11 +419,15 @@ contract SettleVaultDualAnchorTest is Test, LidoLendDeployer {
 
         assertGt(sharesBurned, 0, "vault shares burned");
         assertGt(collateralSeized, 0, "collateral seized");
-        assertEq(debtCanceled, B_BORROW + F_BORROW + T_BORROW, "whole book debt cancelled");
-        assertEq(core.market(id).totalBorrowAssets, 0, "market debt closed to zero");
-        assertEq(core.position(id, BORROWER).borrowShares, 0, "borrower closed to zero");
-        assertEq(core.position(id, FILLER).borrowShares, 0, "filler closed to zero");
-        assertEq(core.position(id, THIRD).borrowShares, 0, "third borrower closed to zero");
+        assertGt(debtCanceled, 0, "personal cuts cancel debt");
+        assertLt(debtCanceled, B_BORROW + F_BORROW + T_BORROW, "personal cuts do not close the whole book");
+        assertGt(core.market(id).totalBorrowAssets, 0, "market keeps the target remainders");
+        assertLt(core.position(id, BORROWER).borrowShares, borrowerDebtBefore, "borrower debt reduced");
+        assertGt(core.position(id, BORROWER).borrowShares, 0, "borrower remains open");
+        assertLt(core.position(id, FILLER).borrowShares, fillerDebtBefore, "filler debt reduced");
+        assertGt(core.position(id, FILLER).borrowShares, 0, "filler remains open");
+        assertLt(core.position(id, THIRD).borrowShares, thirdDebtBefore, "third debt reduced");
+        assertGt(core.position(id, THIRD).borrowShares, 0, "third borrower remains open");
         assertGt(core.position(id, vault).supplyShares, 0, "idle supply remains in the vault");
         assertGt(IVault(vault).balanceOf(LENDER), 0, "lender keeps shares for idle supply");
         assertEq(collateral.balanceOf(RECEIVER), collateralSeized, "receiver got the seized collateral");

@@ -4,7 +4,7 @@ pragma solidity 0.8.35;
 import {Test} from "forge-std/Test.sol";
 
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
-import {MarketView, PositionView, SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {MarketView, PositionView, SettlementConfig, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 
 uint256 constant WAD = 1e18;
 
@@ -60,6 +60,15 @@ contract SQHarness {
         returns (uint256 sliceAssets)
     {
         (sliceAssets,) = s.allowedSliceAssets(mv, b, p);
+    }
+
+    function personalQuote(MarketView memory mv, address b, PositionView memory p)
+        external
+        view
+        returns (SettlementSlice memory)
+    {
+        (uint256 sliceAssets,) = s.allowedSliceAssets(mv, b, p);
+        return SettlementQueueLib.settlementSlice(mv, p, sliceAssets);
     }
 
     function sliceToLtv(uint256 d, uint256 c, uint256 t) external returns (uint256) {
@@ -473,18 +482,44 @@ contract SettlementQueueLibTest is Test {
         assertEq(q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 100)), 100, "remaining<threshold: lift to debt");
     }
 
-    /// @dev Dust promotion is applied to each permission independently. Here the 20-asset queue-root cut would
-    ///      strand collateral below the floor and becomes a full close, while the smaller personal cut remains
-    ///      partial instead of inheriting the queue-root promotion.
-    function test_allowedSlices_dustLift_isIndependent() public {
+    /// @dev The collateral dust sweep applies only to queue-root policy. Both nominal cuts would leave collateral
+    ///      below the floor, but the personal target remains partial while the queue-root quote becomes a full close.
+    function test_allowedSlices_dustLift_appliesOnlyToQueueRoot() public {
         PositionView memory position = _pos(100, 100);
         q.setSettlementConfig(
-            SettlementConfig({sliceFloorBps: 2_000, sliceFloorAssets: 0, fullCutBelowCollateral: 88, ltvStepBps: 0})
+            SettlementConfig({sliceFloorBps: 2_000, sliceFloorAssets: 0, fullCutBelowCollateral: 98, ltvStepBps: 0})
         );
         q.setSettlementLtv(_b(1), 0.65e18);
 
-        assertEq(q.personalSlice(_market(1.5e36), _b(1), position), 7, "personal cut remains partial");
+        assertEq(q.personalSlice(_market(1.5e36), _b(1), position), 7, "personal cut ignores dust sweep");
         assertEq(q.queueRootSlice(_market(1.5e36), _b(1), position), 100, "queue-root cut is promoted");
+    }
+
+    /// @dev Removing personal dust promotion does not change share conversion: a target-LTV asset cut one unit below
+    ///      the debt may still round up to every borrow share. This is a rounding full close, not a dust-policy lift.
+    function test_personalQuote_nearFullAssetCutMayRoundToFullBorrowShares() public {
+        MarketView memory marketView = MarketView({
+            totalSupplyAssets: 1e18,
+            totalSupplyShares: 1e6,
+            totalBorrowAssets: 1e18,
+            totalBorrowShares: 1e6,
+            price: 1e36,
+            lltv: 0.86e18
+        });
+        PositionView memory position = _pos(2, 1_000_000_000_002);
+        q.setSettlementConfig(
+            SettlementConfig({
+                sliceFloorBps: 0, sliceFloorAssets: 0, fullCutBelowCollateral: type(uint96).max, ltvStepBps: 0
+            })
+        );
+        q.setSettlementLtv(_b(1), 0.5e18);
+
+        uint256 personalSliceAssets = q.personalSlice(marketView, _b(1), position);
+        SettlementSlice memory quote = q.personalQuote(marketView, _b(1), position);
+
+        assertEq(personalSliceAssets, 1_000_000_000_000, "target cut stays one asset below the debt");
+        assertEq(quote.borrowShares, position.borrowShares, "up-rounding reaches every borrow share");
+        assertEq(quote.remainingBorrowShares, 0, "share rounding identifies a full close");
     }
 
     /// @dev A zero fullCutBelowCollateral disables the dust lift entirely.

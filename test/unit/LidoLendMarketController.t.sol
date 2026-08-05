@@ -1644,11 +1644,13 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(quote.queueRoot.supplyShares, nextSlice.supplyShares, "queue-root quote is exposed separately");
     }
 
-    /// @dev Targeted settlement uses only the personal slice even when the borrower is also the queue root and the
-    ///      automatic root policy permits a larger cut.
+    /// @dev Targeted settlement uses only the nominal personal slice even when the borrower is also the queue root
+    ///      and both cuts would strand collateral below the root policy's dust floor. Only the queue-root quote is
+    ///      promoted to a full close.
     function test_settlementQuotes_zeroLiquidityOptedRootUsesPersonalPolicy() public {
-        SettlementConfig memory cfg =
-            SettlementConfig({sliceFloorBps: 5000, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 0});
+        SettlementConfig memory cfg = SettlementConfig({
+            sliceFloorBps: 5000, sliceFloorAssets: 0, fullCutBelowCollateral: 1001 ether, ltvStepBps: 0
+        });
         c.setSettlementConfig(cfg);
         MockPriceOracle(address(_m().oracle)).setPrice(1.3e36);
         (, address borrower) = _seedBorrower(100 ether, 1000 ether, 100 ether);
@@ -1663,6 +1665,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertLt(personalSliceAssets, 50 ether, "personal slice is below the 50% root floor");
 
         SettlementQuote memory quote = c.settlementFor(borrower);
+        assertEq(rootSlice.remainingBorrowShares, 0, "queue-root dust sweep quotes a full close");
         assertLt(quote.personal.supplyShares, rootSlice.supplyShares, "personal supply anchor is below root policy");
         assertLt(quote.personal.borrowShares, rootSlice.borrowShares, "personal borrow anchor is below root policy");
         assertGt(

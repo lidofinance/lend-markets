@@ -179,21 +179,20 @@ interface ILidoLendMarketController is
     // SETTLEMENT QUEUE
     // ---
 
-    /// @notice Set the settlement config in one shot — the knobs size the same cut and move together. A cut
-    ///         is the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the cut that lowers the
-    ///         borrower's LTV by `ltvStepBps`. `fullCutBelowCollateral` lifts the cut to the full debt when
-    ///         the post-cut collateral would be dust.
+    /// @notice Sets all queue-root settlement sizing parameters atomically. The nominal queue-root cut is the
+    ///         maximum of `sliceFloorBps` of its debt, `sliceFloorAssets`, and the cut required to lower its LTV by
+    ///         `ltvStepBps`. If that cut would leave collateral below `fullCutBelowCollateral`, the queue-root
+    ///         allowance is promoted to the full debt. Personal settlement-LTV quotes are unaffected.
     function setSettlementConfig(SettlementConfig calldata config) external;
 
     /// @notice The current settlement config.
     function settlementConfig() external view returns (SettlementConfig memory);
 
     /// @notice Sets the caller's personal post-cut target LTV (WAD). When current LTV exceeds it, the position may
-    ///         be settled without being the queue root; dust policy may promote the cut to a full close. 0 clears it.
+    ///         be settled without being the queue root. 0 clears it.
     function setSettlementLtv(uint256 ltv) external;
 
-    /// @notice Borrower's personal post-cut target LTV (WAD) and its raw target-LTV slice, excluding root policy and
-    ///         any `fullCutBelowCollateral` promotion applied when constructing `SettlementQuote.personal`.
+    /// @notice Borrower's personal post-cut target LTV (WAD) and its target-LTV slice, excluding root policy.
     function settlementLtv(address borrower) external view returns (uint256 ltv, uint256 sliceAssets);
 
     /// @notice Number of borrowers tracked in the settlement queue.

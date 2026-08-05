@@ -263,8 +263,8 @@ contract SettlementTest is LidoLendSetup {
         assertEq(_freeLiquidity(m), state.freeBefore, "targeted settlement preserves free liquidity");
     }
 
-    /// @dev Even for the live queue root, targeted settlement uses only the personal candidate. A larger automatic
-    ///      root-policy candidate is observable but cannot leak into the targeted vault path.
+    /// @dev Even for the live queue root, targeted settlement uses only the personal candidate. The collateral-dust
+    ///      sweep promotes the automatic root candidate to a full close but cannot leak into the targeted vault path.
     function test_settle_actualRootWithLargerQueueQuote_usesOnlyPersonal() public {
         Market storage m = _m();
         TargetedState memory state;
@@ -274,7 +274,7 @@ contract SettlementTest is LidoLendSetup {
         SettlementConfig memory config = m.controller.settlementConfig();
         config.sliceFloorBps = 5_000;
         config.sliceFloorAssets = 0;
-        config.fullCutBelowCollateral = 0;
+        config.fullCutBelowCollateral = uint96(COLLAT + 1);
         config.ltvStepBps = 0;
         m.controller.setSettlementConfig(config);
 
@@ -285,6 +285,8 @@ contract SettlementTest is LidoLendSetup {
         (address root, SettlementSlice memory automatic) = m.controller.nextSettlementBorrower();
         assertEq(root, state.borrower, "borrower is the live queue root");
         assertGt(quote.personal.supplyShares, 0, "personal candidate is positive");
+        assertGt(quote.personal.remainingBorrowShares, 0, "personal target remains partial despite dust floor");
+        assertEq(quote.queueRoot.remainingBorrowShares, 0, "queue-root dust sweep quotes a full close");
         assertGt(quote.queueRoot.supplyShares, quote.personal.supplyShares, "root candidate is larger");
         assertEq(automatic.supplyShares, quote.queueRoot.supplyShares, "automatic path selects root candidate");
 
@@ -319,9 +321,9 @@ contract SettlementTest is LidoLendSetup {
         m.vault.settle(shares, _singleton(borrower), lender, lender);
     }
 
-    /// @dev Removing the old liquidity-tail gate from core must not let a personal full close burn more supply
-    ///      shares than `onBehalf` owns.
-    function testRevert_coreSettle_personalFullCloseExceedsSupplierPosition() public {
+    /// @dev Removing the old liquidity-tail gate from core must not let a personal cut burn more supply shares than
+    ///      `onBehalf` owns.
+    function testRevert_coreSettle_personalCutExceedsSupplierPosition() public {
         Market storage m = _m();
         MockPriceOracle(address(m.oracle)).setPrice(1e36);
 
@@ -337,9 +339,6 @@ contract SettlementTest is LidoLendSetup {
         m.activateCollateral();
         m.borrow(borrower, BORROW);
 
-        SettlementConfig memory config = m.controller.settlementConfig();
-        config.fullCutBelowCollateral = 200 ether;
-        m.controller.setSettlementConfig(config);
         m.setSettlementLtv(borrower, 1);
         SettlementQuote memory quote = m.controller.settlementFor(borrower);
         uint256 borrowShares = quote.personal.borrowShares;

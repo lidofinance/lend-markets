@@ -451,8 +451,8 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, 40 ether, 0, LENDER, "");
 
-        // Collateral sized so the post-cut remainder stays above the activation minimum, keeping the
-        // settlement-LTV slice off the dust-extension clamp (which would promote it to the full debt).
+        // Collateral sized so the root-policy cut leaves more than the activation minimum and is not
+        // dust-promoted to full debt; the personal settlement-LTV slice can therefore dominate it.
         uint256 hotCol = _mintWstETH(ctx.market, BORROWER, 30 ether);
         uint256 coldCol = _mintWstETH(ctx.market, SECOND_BORROWER, 30 ether);
         vm.prank(BORROWER);
