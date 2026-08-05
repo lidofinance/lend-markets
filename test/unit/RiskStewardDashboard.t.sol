@@ -119,7 +119,7 @@ contract RiskStewardDashboardTest is Test {
         // Not a steward yet: the lever is gated.
         vm.prank(second);
         vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
-        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours);
+        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours, 1 days);
 
         vm.expectEmit(true, true, false, true);
         emit IRiskStewardDashboard.MarketStewardSet(marketId, second, true);
@@ -135,7 +135,7 @@ contract RiskStewardDashboardTest is Test {
 
         // Appointed: the same lever call now works.
         vm.prank(second);
-        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours);
+        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours, 1 days);
         assertEq(controller.collateralActivationConfig().minActivationDelay, 5 minutes, "new steward's tighten landed");
     }
 
@@ -144,7 +144,7 @@ contract RiskStewardDashboardTest is Test {
     function test_removeMarketSteward_dropsFromSet() public {
         // Sanity: the steward can pull a lever while appointed.
         vm.prank(steward);
-        dashboard.increaseActivationDelays(marketId, 2 minutes, 1 hours);
+        dashboard.increaseActivationDelays(marketId, 2 minutes, 1 hours, 1 days);
 
         vm.expectEmit(true, true, false, true);
         emit IRiskStewardDashboard.MarketStewardSet(marketId, steward, false);
@@ -156,7 +156,7 @@ contract RiskStewardDashboardTest is Test {
         // Removed: the same lever call is gated again.
         vm.prank(steward);
         vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
-        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours);
+        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours, 1 days);
         assertEq(controller.collateralActivationConfig().minActivationDelay, 2 minutes, "config untouched after revoke");
     }
 
@@ -186,24 +186,25 @@ contract RiskStewardDashboardTest is Test {
     // increaseActivationDelays
     // ---
 
-    /// @dev The happy tighten: both delays rise, the event fires, and the read-modify-write preserves every
+    /// @dev The happy tighten: all three delays rise, the event fires, and the read-modify-write preserves every
     ///      unrelated config field.
-    function test_increaseActivationDelays_raisesBoth() public {
+    function test_increaseActivationDelays_raisesAll() public {
         vm.expectEmit(true, false, false, true);
-        emit IRiskStewardDashboard.ActivationDelaysIncreased(marketId, 5 minutes, 2 hours);
+        emit IRiskStewardDashboard.ActivationDelaysIncreased(marketId, 5 minutes, 2 hours, 2 days);
         vm.prank(steward);
-        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours);
+        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours, 2 days);
 
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
         assertEq(cfg.minActivationDelay, 5 minutes, "floor raised");
         assertEq(cfg.maxActivationDelay, 2 hours, "cap raised");
+        assertEq(cfg.maxGuardiansQuorumDelay, 2 days, "quorum fallback raised");
         assertEq(cfg.activatingLockAmount, 5 ether, "unrelated fields preserved by the read-modify-write");
     }
 
     /// @dev Boundary: equal values hold rather than loosen, so the `<` guard admits them.
     function test_increaseActivationDelays_holdIsAllowed() public {
         vm.prank(steward);
-        dashboard.increaseActivationDelays(marketId, 1 minutes, 1 hours);
+        dashboard.increaseActivationDelays(marketId, 1 minutes, 1 hours, 1 days);
 
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
         assertEq(cfg.minActivationDelay, 1 minutes, "floor held");
@@ -214,20 +215,39 @@ contract RiskStewardDashboardTest is Test {
     function testRevert_increaseActivationDelays_loweringFloor() public {
         vm.prank(steward);
         vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
-        dashboard.increaseActivationDelays(marketId, 30 seconds, 2 hours);
+        dashboard.increaseActivationDelays(marketId, 30 seconds, 2 hours, 1 days);
     }
 
     /// @dev The other side of the `newMin < min || newMax < max` guard: a raised floor cannot smuggle a lowered cap.
     function testRevert_increaseActivationDelays_loweringCap() public {
         vm.prank(steward);
         vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
-        dashboard.increaseActivationDelays(marketId, 5 minutes, 30 minutes);
+        dashboard.increaseActivationDelays(marketId, 5 minutes, 30 minutes, 1 days);
+    }
+
+    /// @dev A steward cannot shorten the liveness fallback while raising the base delays.
+    function testRevert_increaseActivationDelays_loweringQuorumFallback() public {
+        vm.prank(steward);
+        vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
+        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours, 12 hours);
+    }
+
+    /// @dev Enabling the quorum fallback from zero is a tightening move when it exceeds the activation-delay cap.
+    function test_increaseActivationDelays_enablesQuorumFallback() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.maxGuardiansQuorumDelay = 0;
+        controller.setForTest(cfg);
+
+        vm.prank(steward);
+        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours, 1 days);
+
+        assertEq(controller.collateralActivationConfig().maxGuardiansQuorumDelay, 1 days, "quorum fallback enabled");
     }
 
     /// @dev The lever is steward-gated: an unappointed caller is rejected before any controller call.
     function testRevert_increaseActivationDelays_notSteward() public {
         vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
-        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours);
+        dashboard.increaseActivationDelays(marketId, 5 minutes, 2 hours, 1 days);
     }
 
     /// @dev Stewardship does not travel across markets: an appointment on `marketId` grants no lever on
@@ -236,7 +256,7 @@ contract RiskStewardDashboardTest is Test {
         // steward is appointed for `marketId`, not `otherMarketId`
         vm.prank(steward);
         vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
-        dashboard.increaseActivationDelays(otherMarketId, 5 minutes, 2 hours);
+        dashboard.increaseActivationDelays(otherMarketId, 5 minutes, 2 hours, 1 days);
     }
 
     /// @dev A market the core has no controller for resolves to zero and reverts `UnknownMarket`, even for an
@@ -245,7 +265,7 @@ contract RiskStewardDashboardTest is Test {
         dashboard.addMarketSteward(unknownMarketId, steward); // appointed, but the core has no controller
         vm.prank(steward);
         vm.expectRevert(abi.encodeWithSelector(IRiskStewardDashboard.UnknownMarket.selector, unknownMarketId));
-        dashboard.increaseActivationDelays(unknownMarketId, 5 minutes, 2 hours);
+        dashboard.increaseActivationDelays(unknownMarketId, 5 minutes, 2 hours, 1 days);
     }
 
     // ---
