@@ -786,6 +786,23 @@ contract GuardianSignalsTest is Test {
         assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 1, "retraction re-snapshots to 1");
     }
 
+    function test_unsuspect_doesNotExtendSnapshotExpiry() public {
+        gs.setSuspectWindow(10 days);
+        _suspect(GUARDIAN_2, BOB);
+        _suspect(GUARDIAN_3, BOB);
+        uint256 remainingExpiry = gs.getOpinion(MARKET, BOB).suspectExpiryTimestamp;
+
+        vm.warp(block.timestamp + 1 days);
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(block.timestamp + 8 days);
+        vm.prank(GUARDIAN_1);
+        gs.unsuspect(MARKET, GUARDIAN_1, _one(BOB));
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 2, "retraction removes one suspect");
+        assertEq(opinion.suspectExpiryTimestamp, remainingExpiry, "retraction restores the remaining reports' expiry");
+    }
+
     /// @dev `getSuspectedBy` pairs the reporter set with each reporter's timestamp.
     function test_getSuspectedBy_pairsSetWithTimestamps() public {
         gs.setSuspectWindow(1 days);
@@ -831,6 +848,23 @@ contract GuardianSignalsTest is Test {
         assertEq(suspecters.length, 1, "stale suspect report pruned from the set");
         assertEq(suspecters[0], GUARDIAN_2, "the current guardian's report remains");
         assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 1, "re-snapshot: pruned report no longer counts");
+    }
+
+    function test_prune_doesNotExtendSnapshotExpiry() public {
+        gs.setSuspectWindow(10 days);
+        _suspect(GUARDIAN_2, BOB);
+        uint256 remainingExpiry = gs.getOpinion(MARKET, BOB).suspectExpiryTimestamp;
+
+        vm.warp(block.timestamp + 1 days);
+        _suspect(GUARDIAN_1, BOB);
+        gs.removeGuardian(GUARDIAN_1);
+        vm.warp(block.timestamp + 8 days);
+        vm.prank(CLEANER);
+        gs.prune(MARKET, BOB);
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 1, "prune removes the departed guardian's report");
+        assertEq(opinion.suspectExpiryTimestamp, remainingExpiry, "prune restores the remaining report's expiry");
     }
 
     // ── suspect window bounds ──
