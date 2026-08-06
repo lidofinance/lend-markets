@@ -43,13 +43,11 @@ interface IVault {
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 }
 
-/// @notice The fully-utilised pool edge: the vault is the sole lender with no free-liquidity surplus (100%
-///         utilisation), and its whole supply backs the whole book debt. The settle waterfall closes borrowers
-///         borrow-anchored to zero as long as the lender's residual settleable supply covers them — until the
-///         LAST one, where the residual debt valued up exceeds the residual settleable supply valued down by the
-///         one-wei virtual-share buffer. A borrow-anchored close there reverts on the core's settleable cap, so
-///         the vault's budget gate must divert to a supply-anchored close: that borrower keeps the unbacked dust,
-///         everyone before it is closed to zero, and the lender's exit never gets stuck.
+/// @notice The fully-utilised pool edge: the vault is the sole lender with no free liquidity, so `fallbackExit`
+///         uses the queue's root policy. It closes borrowers borrow-anchored while each full-close cost fits the
+///         remaining vault budget. For the last borrower, virtual-share rounding makes that cost one core supply
+///         share too large; the vault therefore spends its exact remaining budget supply-anchored and leaves only
+///         the corresponding debt dust.
 contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
     uint256 internal constant LLTV = 0.945e18;
     uint256 internal constant PRICE = 1.2e36;
@@ -138,8 +136,8 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
         vm.prank(TAIL);
         core.borrow(params, TAIL_BORROW, 0, TAIL, TAIL);
 
-        // Accrue: totalSupplyAssets and totalBorrowAssets lift equally (fee 0), so the last close's debt valued up
-        // exceeds the residual settleable supply valued down by the one-wei buffer.
+        // Accrue: totalSupplyAssets and totalBorrowAssets lift equally (fee 0), while virtual-share rounding makes
+        // the last borrow-anchored full-close cost exceed the vault's residual core-share budget by one share.
         vm.warp(block.timestamp + 1 days);
     }
 
@@ -151,13 +149,12 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
         vm.stopPrank();
     }
 
-    /// @dev The lender exits the whole position. RISKY (higher LTV, root first) is fully closed borrow-anchored;
-    ///      TAIL (settled last, residual supply == residual debt minus the buffer) cannot be closed borrow-
-    ///      anchored without tripping the core's settleable cap, so the vault diverts to supply-anchored and TAIL
-    ///      keeps the unbacked one-wei dust. The exit completes and the lender fully exits.
+    /// @dev The lender exits the whole position. RISKY (higher LTV, root first) is fully closed borrow-anchored.
+    ///      TAIL's full-close quote costs one more core supply share than the remaining vault budget, so the vault
+    ///      uses that exact budget supply-anchored. TAIL keeps at most one wei of debt and the lender fully exits.
     function test_fallbackExit_fullPool_closesAllButTheBufferDustOnTheTail() public {
         assertEq(core.market(id).totalSupplyAssets, core.market(id).totalBorrowAssets, "100% utilisation (no free)");
-        (address root,,,) = controller.nextSettlementBorrower();
+        (address root,) = controller.nextSettlementBorrower();
         assertEq(root, RISKY, "highest-LTV borrower is the queue root");
 
         // Pin accrual so the book delta below is exact within this block (fallbackExit's own accrual is then a
@@ -167,7 +164,7 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
 
         uint256 shares = IVault(vault).balanceOf(LENDER);
         vm.prank(LENDER);
-        // Must NOT revert: a borrow-anchored close of the tail would trip SETTLEMENT_LIQUIDITY_AVAILABLE.
+        // Must not revert: the vault downgrades TAIL's unaffordable borrow-anchor to its exact remaining budget.
         (,,, uint256 debtCanceled) = IVault(vault).fallbackExit(shares, RECEIVER, LENDER, 0);
 
         uint256 bookDebtAfter = core.market(id).totalBorrowAssets;

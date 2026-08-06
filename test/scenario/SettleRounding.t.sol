@@ -9,7 +9,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Test} from "forge-std/Test.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementQuote} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 
@@ -56,7 +56,7 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
     uint256 internal constant COLLATERAL = 200e18; // value 240 WETH @ 1.2; ample headroom over the debt
     uint256 internal constant BORROW = 113e18;
     // A second borrower carrying part of the book, so closing BORROWER cancels less than the whole pool debt
-    // and stays within the lender's settleable supply (the borrow-anchored close rounds the debt up by 1).
+    // and the lender has enough supply shares for the borrow-anchored close's one-unit round-up.
     uint256 internal constant FILLER_COLLATERAL = 100e18;
     uint256 internal constant FILLER_BORROW = 20e18;
 
@@ -96,8 +96,7 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
                 settlementConfig: SettlementConfig({
                     sliceFloorBps: 100,
                     sliceFloorAssets: 0,
-                    // Above the borrower's post-close collateral remainder, so a full-debt slice strands "dust"
-                    // and the queue lifts it to a whole close — letting the borrow-anchored close cancel all debt.
+                    // The personal cut leaves less than 150e18 collateral. Personal cuts ignore this dust limit.
                     fullCutBelowCollateral: 150e18,
                     ltvStepBps: 100
                 }),
@@ -141,8 +140,8 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         vm.prank(FILLER);
         core.borrow(params, FILLER_BORROW, 0, FILLER, FILLER);
 
-        // Borrower opts into settlement with a near-zero target LTV, so the allowed slice is the whole
-        // debt and a full close is permitted by the queue.
+        // Borrower opts into settlement with a near-zero target LTV. The personal quote is intentionally
+        // still partial: the collateral-dust sweep belongs only to queue-root policy.
         vm.prank(BORROWER);
         controller.setSettlementLtv(1);
 
@@ -155,11 +154,21 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         assertGt(sliceAssets, 0, "borrower is settle-eligible");
     }
 
-    /// @dev Borrow-anchored: passing the borrower's whole `borrowShares` zeroes the position; the lender's
-    ///      supply burn is derived and rounded up, so the lender absorbs the rounding.
-    function test_borrowAnchored_closesBorrowerToZero_lenderBearsRounding() public {
-        Market memory m = core.market(id);
+    /// @dev Root policy allows a full close by borrow shares. The derived lender share burn rounds up.
+    function test_borrowAnchored_rootFullClose_roundsUpLenderBurn() public {
+        controller.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 10_000, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        );
+
         uint256 borrowShares = core.position(id, BORROWER).borrowShares;
+        (address root,) = controller.nextSettlementBorrower();
+        SettlementQuote memory quote = controller.settlementFor(BORROWER);
+        assertEq(root, BORROWER, "borrower is the queue root");
+        assertGt(quote.personal.remainingBorrowShares, 0, "personal cut is partial");
+        assertEq(quote.queueRoot.remainingBorrowShares, 0, "root cut is a full close");
+        assertEq(quote.queueRoot.borrowShares, borrowShares, "root cut uses all borrow shares");
+
+        Market memory m = core.market(id);
         uint256 lenderBefore = core.position(id, LENDER).supplyShares;
 
         uint256 expDebt = SharesMathLib.toAssetsUp(borrowShares, m.totalBorrowAssets, m.totalBorrowShares);

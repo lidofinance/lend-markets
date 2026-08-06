@@ -151,7 +151,8 @@ contract FullLifecycleTest is LidoLendSetup {
         m.borrow(borrowerLiq, P_SMALL);
         m.borrow(borrowerBad, P_SMALL);
         m.borrow(borrowerSettle, P_SETTLE);
-        m.setSettlementLtv(borrowerSettle, 0.9e18); // borrower opts into a personal settlement LTV
+        // The position starts below this target, then crosses it after the later price shock.
+        m.setSettlementLtv(borrowerSettle, 0.85e18);
 
         // Guardian control plane: a single flag reaches quorum (1) and bans the address; a banned lot never matures.
         _flag(borrowerBanned);
@@ -255,28 +256,38 @@ contract FullLifecycleTest is LidoLendSetup {
     ///      received.
     function _phaseLenderExits() private {
         Market storage m = _m();
-        uint256 collat0 = m.core.position(m.id, borrowerSettle).collateral;
-        uint256 borrow0 = m.core.market(m.id).totalBorrowAssets;
+        uint256 collat1;
+        uint256 borrow1;
 
-        // A targeted settle: it cancels exactly the core's borrow-asset reduction and pays out exactly the
-        // borrower's collateral debit.
-        address[] memory targets = new address[](1);
-        targets[0] = borrowerSettle;
-        (,, uint256 seizedA, uint256 canceledA) = m.settle(lenderA, 40 ether, targets, lenderA);
-        uint256 collat1 = m.core.position(m.id, borrowerSettle).collateral;
-        uint256 borrow1 = m.core.market(m.id).totalBorrowAssets;
-        assertEq(borrow0 - borrow1, canceledA, "settle cancelled exactly the borrow-asset reduction");
-        assertEq(collat0 - collat1, seizedA, "settle debited the borrower's collateral by exactly the seized amount");
+        {
+            uint256 collat0 = m.core.position(m.id, borrowerSettle).collateral;
+            uint256 borrow0 = m.core.market(m.id).totalBorrowAssets;
 
-        // Drain all remaining ordinary liquidity so the market is illiquid: A withdraws its whole liquid budget.
+            // A targeted settle: the borrower's personal LTV is now breached, so the cut cancels exactly the core's
+            // borrow-asset reduction and pays out exactly the borrower's collateral debit.
+            address[] memory targets = new address[](1);
+            targets[0] = borrowerSettle;
+            uint256 settleShares = m.vault.balanceOf(lenderA);
+            (, uint256 personalSlice) = m.controller.settlementLtv(borrowerSettle);
+            assertGt(personalSlice, 0, "personal settlement LTV is active after the price shock");
+            (,, uint256 seizedA, uint256 canceledA) = m.settle(lenderA, settleShares, targets, lenderA);
+            assertGt(seizedA, 0, "targeted settle pays collateral");
+            assertGt(canceledA, 0, "targeted settle cancels debt");
+            collat1 = m.core.position(m.id, borrowerSettle).collateral;
+            borrow1 = m.core.market(m.id).totalBorrowAssets;
+            assertEq(borrow0 - borrow1, canceledA, "settle cancelled exactly the borrow-asset reduction");
+            assertEq(
+                collat0 - collat1, seizedA, "settle debited the borrower's collateral by exactly the seized amount"
+            );
+        }
+
+        // Drain the remaining free liquidity so B's fallback exit exercises the pure root-policy leg.
         m.vaultWithdraw(lenderA, m.vault.maxWithdraw(lenderA));
         assertEq(m.loanToken.balanceOf(address(m.core)), 0, "ordinary liquidity fully drained before fallbackExit");
 
-        // B exits its whole stake against a now-illiquid market: the redeem leg finds no idle, so the exit is pure
-        // settle leg — again cancelling exactly the borrow-asset reduction and paying exactly the collateral debit.
         (, uint256 loanAssetsB, uint256 seizedB, uint256 canceledB) =
             m.fallbackExit(lenderB, m.vault.balanceOf(lenderB), lenderB, 0);
-        assertEq(loanAssetsB, 0, "no idle left: the whole exit went through the settle leg");
+        assertEq(loanAssetsB, 0, "no loan-token liquidity remains for the liquid leg");
         assertEq(
             borrow1 - m.core.market(m.id).totalBorrowAssets, canceledB, "fallbackExit cancelled exactly the reduction"
         );

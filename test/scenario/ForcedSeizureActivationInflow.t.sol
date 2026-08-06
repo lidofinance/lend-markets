@@ -94,9 +94,11 @@ contract SettlementActivationInflowTest is LidoLendSetup {
         m.activateCollateral(); // decays this supply's inflow back out
         m.borrow(borrower, 20 ether);
 
-        // Solvent-but-unhealthy: settle-eligible, not bad debt (mirrors the vault suite's `_distress`).
+        // Solvent-but-unhealthy and not bad debt (mirrors the vault suite's `_distress`). The personal target
+        // makes the borrower eligible for the targeted settlement exercised below.
         MockPriceOracle(address(m.oracle)).setPrice(0.22e36);
         m.accrueInterest();
+        m.setSettlementLtv(borrower, 0.8e18);
     }
 
     function _m() internal view returns (Market storage) {
@@ -109,7 +111,7 @@ contract SettlementActivationInflowTest is LidoLendSetup {
         uint256 delayPre = m.controller.currentActivationDelay(0);
 
         // Fresh, non-instant collateral (the minimum that enters `activating`) bumps the throttle. Small enough
-        // that the borrower stays unhealthy (settle-eligible) after the top-up.
+        // that the borrower's LTV remains above its personal settlement target after the top-up.
         uint256 fresh = 10 ether;
         _fund(m.collateralToken, borrower, fresh);
         m.supplyCollateral(borrower, fresh);

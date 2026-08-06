@@ -19,7 +19,13 @@ import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
 import {SettlementQueueLib} from "../libs/SettlementQueueLib.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
-import {MarketView, PositionView, SettlementConfig} from "../types/SettlementTypes.sol";
+import {
+    MarketView,
+    PositionView,
+    SettlementConfig,
+    SettlementQuote,
+    SettlementSlice
+} from "../types/SettlementTypes.sol";
 
 /// @notice Lido-policy controller for a Lido Lend market: collateral activation, freeze and pause,
 ///         address gating, and the settlement queue. All hook policy enters through `on`.
@@ -73,7 +79,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     ///      hook against the market total. 0 means no cap.
     uint256 public supplyCap;
     /// @dev When set, new borrows and debt-bearing collateral withdrawals revert and activation maturation
-    ///      defers. Debt-free positions can still withdraw.
+    ///      defers. Freeze adds no gate to debt-free withdrawals, but activation locks still apply.
     bool public isFrozen;
     /// @dev Guardian-signal registry read on every hook to gate borrowing (ban) and scale activation (strikes).
     IGuardianSignalsView private _guardianSignals;
@@ -248,8 +254,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     /// @inheritdoc ILidoLendMarketController
-    /// @dev `msg.sender` is the borrower. Setting it makes the caller settle-eligible even when the
-    ///      settlement would not otherwise pick it next, capped at the slice that brings its LTV to `ltv`.
+    /// @dev `msg.sender` is the borrower. A positive target enables its personal-policy cut independently of
+    ///      queue-root status; queue-driven root cuts remain subject to lender-tail gating.
     function setSettlementLtv(uint256 ltv) external {
         _settlementQueue.setSettlementLtv(msg.sender, ltv);
     }
@@ -277,26 +283,27 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function nextSettlementBorrower()
-        external
-        view
-        returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares)
-    {
+    function nextSettlementBorrower() external view returns (address borrower, SettlementSlice memory slice) {
         borrower = _settlementQueue.peekRoot();
         Id id = marketId;
-        (supplyShares, borrowShares, remainingBorrowShares) =
-            _settlementQueue.settlementSlice(_marketView(id), borrower, _positionView(id, borrower));
+        MarketView memory marketView = _marketView(id);
+        PositionView memory position = _positionView(id, borrower);
+        (uint256 personalSliceAssets, uint256 queueRootSliceAssets) =
+            _settlementQueue.allowedSliceAssets(marketView, borrower, position);
+        slice = SettlementQueueLib.settlementSlice(
+            marketView, position, Math.max(personalSliceAssets, queueRootSliceAssets)
+        );
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function settlementFor(address borrower)
-        external
-        view
-        returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares)
-    {
+    function settlementFor(address borrower) external view returns (SettlementQuote memory quote) {
         Id id = marketId;
-        (supplyShares, borrowShares, remainingBorrowShares) =
-            _settlementQueue.settlementSlice(_marketView(id), borrower, _positionView(id, borrower));
+        MarketView memory marketView = _marketView(id);
+        PositionView memory position = _positionView(id, borrower);
+        (uint256 personalSliceAssets, uint256 queueRootSliceAssets) =
+            _settlementQueue.allowedSliceAssets(marketView, borrower, position);
+        quote.personal = SettlementQueueLib.settlementSlice(marketView, position, personalSliceAssets);
+        quote.queueRoot = SettlementQueueLib.settlementSlice(marketView, position, queueRootSliceAssets);
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -356,7 +363,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         dashboard.debtAssets = _debtAssets(marketView, position);
         dashboard.settlementLtv = _settlementQueue.settlementLtvOf(borrower);
         dashboard.isNextToSettle = _settlementQueue.peekRoot() == borrower;
-        dashboard.slice = _settlementQueue.allowedSlice(marketView, borrower, position);
+        (dashboard.personalSliceAssets, dashboard.queueRootSliceAssets) =
+            _settlementQueue.allowedSliceAssets(marketView, borrower, position);
     }
 
     // ---
@@ -392,15 +400,15 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     /// @dev Withdraw hook: with open debt a freeze blocks it, and the remaining active must still cover the debt
-    ///      at LLTV. Debt-free exits are free.
+    ///      at LLTV. Debt-free exits bypass those two gates but remain subject to activation accounting and locks.
     function _handleWithdrawCollateral(Id id, WithdrawCollateralHookData memory hookData) internal {
         address borrower = hookData.onBehalf;
 
         // raw and borrowShares are pre-withdraw: this hook runs before core's `collateral -= assets`
         PositionView memory position = _positionView(id, borrower);
 
-        // Freeze blocks withdraw only while there is open debt. A zero-debt withdraw is always allowed
-        // as a non-custody exit, and a banned address may still pull its own collateral.
+        // Freeze blocks withdraw only while there is open debt. It adds no gate to a zero-debt non-custody exit,
+        // although the existing activation lock below still applies; a banned address may pull its own collateral.
         bool frozen = isFrozen;
         if (frozen && position.borrowShares != 0) revert MarketIsFrozen();
 
@@ -418,7 +426,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         // With open debt, the remaining active collateral must still cover the debt at LLTV. `_getMaxBorrow`
         // returns 0 for sub-threshold dust, so a debt-bearing position cannot be drained below
         // `minActivationAmount` — to exit below it, repay the debt to zero first (a zero-debt withdraw is
-        // unconstrained here).
+        // unconstrained by this health check).
         if (position.borrowShares != 0) {
             uint256 activeCollateral = position.collateral - inactive;
             MarketView memory marketView = _marketView(id);
@@ -519,21 +527,31 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         // bad-debt gate: revert if the queue root (riskiest position) is bad debt. An empty queue has no root
         // (peekRoot returns address(0)), so this falls through to the eligibility gate below.
         address riskiestBorrower = _settlementQueue.peekRoot();
-        if (_isBadDebt(marketView, riskiestBorrower == borrower ? position : _positionView(id, riskiestBorrower))) {
+        bool isRiskiestBorrower = riskiestBorrower == borrower;
+        if (_isBadDebt(marketView, isRiskiestBorrower ? position : _positionView(id, riskiestBorrower))) {
             revert SettlementBadDebt();
         }
 
-        // Cap the cut at the policy slice, in borrow shares (a zero slice means ineligible).
-        uint256 allowedShares = _settlementQueue.allowedSlice(marketView, borrower, position)
-            .toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
-        if (hookData.borrowSharesCanceled > allowedShares) revert SettlementExceedsAllowed();
+        // Personal policy applies to any borrower. Only a larger root-policy cut is lender-tail-gated.
+        (uint256 personalSliceAssets, uint256 queueRootSliceAssets) =
+            _settlementQueue.allowedSliceAssets(marketView, borrower, position);
+        uint256 cutShares = hookData.borrowSharesCanceled;
+        uint256 personalAllowedShares =
+            personalSliceAssets.toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+        if (cutShares > personalAllowedShares) {
+            if (!isRiskiestBorrower) revert SettlementExceedsAllowed();
 
-        // The core enforces payload consistency before this hook — shares <= debt and 0 < seize <= collateral.
-        uint256 sharesToBurn = hookData.borrowSharesCanceled;
+            uint256 maxAllowedShares = Math.max(personalSliceAssets, queueRootSliceAssets)
+                .toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
+            if (cutShares > maxAllowedShares) revert SettlementExceedsAllowed();
+            if (hookData.borrowAssetsCanceled > _settleableSupplyAssets(id, marketView, hookData.onBehalf)) {
+                revert SettlementExceedsSettleableSupply();
+            }
+        }
 
         _activation.seize(borrower, hookData.seizedAssets);
 
-        position.borrowShares -= sharesToBurn;
+        position.borrowShares -= cutShares;
         position.collateral -= hookData.seizedAssets;
         _settlementQueue.sync(borrower, position);
     }
@@ -615,6 +633,18 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     {
         (totalSupplyAssets, totalSupplyShares, totalBorrowAssets, totalBorrowShares) =
             MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
+    }
+
+    /// @dev Part of `supplier`'s supply value left after withdrawing all current market liquidity.
+    function _settleableSupplyAssets(Id id, MarketView memory marketView, address supplier)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 supplyAssets = LIDO_LEND.position(id, supplier).supplyShares
+            .toAssetsDown(marketView.totalSupplyAssets, marketView.totalSupplyShares);
+        uint256 marketFreeLiquidity = Math.saturatingSub(marketView.totalSupplyAssets, marketView.totalBorrowAssets);
+        return Math.saturatingSub(supplyAssets, marketFreeLiquidity);
     }
 
     /// @dev Borrower's settle-relevant position, widened from the core `Position` (uint128 fields).

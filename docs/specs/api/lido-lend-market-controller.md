@@ -39,11 +39,12 @@ struct BorrowerPosition {
     uint256 debtAssets;
     uint256 settlementLtv;
     bool isNextToSettle;
-    uint256 slice;
+    uint256 personalSliceAssets;
+    uint256 queueRootSliceAssets;
 }
 ```
 
-One-read borrower snapshot for off-chain dashboards: collateral split, activation timer, guardian signal, debt, personal settle-down LTV, and live settle exposure.
+One-read borrower snapshot for off-chain dashboards: collateral split, activation timer, guardian signal, debt, personal settlement target, current queue status, and policy quotes.
 
 **Fields**
 
@@ -56,9 +57,10 @@ One-read borrower snapshot for off-chain dashboards: collateral split, activatio
 | `flagCount` | `uint256` | Raw guardian flags on the account, regardless of status. |
 | `banned` | `bool` | Hard-blocked by a latched guardian ban. |
 | `debtAssets` | `uint256` | Current borrow debt, in loan assets. |
-| `settlementLtv` | `uint256` | Borrower's personal settle-down target LTV (WAD), 0 when unset. |
+| `settlementLtv` | `uint256` | Borrower's personal post-cut target LTV (WAD), 0 when unset. |
 | `isNextToSettle` | `bool` | The borrower is next in line to be settled. |
-| `slice` | `uint256` | Loan assets that may be cut from this position in one settle now. |
+| `personalSliceAssets` | `uint256` | Personal settlement-LTV allowance in loan assets. |
+| `queueRootSliceAssets` | `uint256` | Prospective queue-root policy allowance in loan assets. |
 
 ### `SupplyHookData`
 
@@ -444,6 +446,14 @@ error SettlementExceedsAllowed();
 
 Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
 
+### `SettlementExceedsSettleableSupply`
+
+```solidity
+error SettlementExceedsSettleableSupply();
+```
+
+Thrown when a root-policy cut exceeds the lender's illiquid supply tail.
+
 ## Functions
 
 ### `MANAGER_ROLE`
@@ -552,7 +562,7 @@ Whether `caller`'s supplies skip the activation timer.
 function setSettlementConfig(SettlementConfig calldata config) external;
 ```
 
-Set the settlement config in one shot — the knobs size the same cut and move together. A cut is the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the cut that lowers the borrower's LTV by `ltvStepBps`. `fullCutBelowCollateral` lifts the cut to the full debt when the post-cut collateral would be dust.
+Sets all queue-root settlement sizing parameters atomically. The nominal queue-root cut is the maximum of `sliceFloorBps` of its debt, `sliceFloorAssets`, and the cut required to lower its LTV by `ltvStepBps`. If that cut would leave collateral below `fullCutBelowCollateral`, the queue-root allowance is promoted to the full debt. Personal settlement-LTV quotes are unaffected.
 
 ### `settlementConfig`
 
@@ -568,7 +578,7 @@ The current settlement config.
 function setSettlementLtv(uint256 ltv) external;
 ```
 
-Borrower opts into auto-settle down to a target post-cut LTV (WAD). 0 clears it.
+Sets the caller's personal post-cut target LTV (WAD). When current LTV exceeds it, the position may be settled without being the queue root. 0 clears it.
 
 ### `settlementLtv`
 
@@ -578,7 +588,7 @@ function settlementLtv(
 ) external view returns (uint256 ltv, uint256 sliceAssets);
 ```
 
-Borrower's personal settle-down target LTV (WAD) and the slice it currently implies.
+Borrower's personal post-cut target LTV (WAD) and its target-LTV slice, excluding root policy.
 
 ### `settlementBorrowersCount`
 
@@ -601,20 +611,20 @@ O(1): it checks the riskiest tracked position (the highest debt/collateral), who
 ### `nextSettlementBorrower`
 
 ```solidity
-function nextSettlementBorrower() external view returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
+function nextSettlementBorrower() external view returns (address borrower, SettlementSlice memory slice);
 ```
 
-The settle cut the policy allows against the queue root (the borrower a head-first settle cuts first): `settlementFor` applied to it, with the root address. `borrower` is address(0) when empty.
+The queue root and the larger of its absolute root-policy and positive personal settlement-LTV cuts. A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
 
 ### `settlementFor`
 
 ```solidity
 function settlementFor(
     address borrower
-) external view returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
+) external view returns (SettlementQuote memory quote);
 ```
 
-The settle cut the policy allows against `borrower`, as the two anchors a core `settle` accepts: the caller passes one and 0 for the other — `supplyShares` to settle supply-anchored, `borrowShares` borrow-anchored. `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All zero when ineligible.
+The borrower's personal cut and its prospective queue-root cut, each as the two anchors accepted by core settlement. The queue-root quote does not assert that the borrower is currently the root. A policy that grants no positive cut is represented by an all-zero slice.
 
 ### `settlementBorrowers`
 
@@ -633,7 +643,7 @@ A window of queued borrowers (approximate top-down order) and their risk keys: u
 function freeze() external;
 ```
 
-Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation maturation is deferred. Debt-free positions can still withdraw their collateral.
+Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation maturation is deferred. Freeze adds no debt gate to debt-free withdrawals, but existing activation locks still apply.
 
 ### `unfreeze`
 
@@ -675,7 +685,7 @@ function positionOf(
 ) external view returns (BorrowerPosition memory);
 ```
 
-One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt, personal settle-down LTV, and live settle exposure (next-to-settle flag + slice).
+One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt, personal settlement target, current queue status, and policy quotes.
 
 ### `collateralActivationConfig`
 

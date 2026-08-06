@@ -71,8 +71,8 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         shares = m.vault.deposit(assets, who);
     }
 
-    /// @dev Lender liquidity + a borrower at a safe LTV, then a solvent-but-unhealthy crash so the borrower is
-    ///      settle-eligible (partial cut -> supply-anchored settle). Mirrors the base suite's `_distress`.
+    /// @dev Lender liquidity + a borrower at a safe LTV, then a solvent-but-unhealthy crash. Callers that exercise
+    ///      targeted settlement must separately configure the borrower's personal settlement LTV.
     function _distress(Market storage m, uint256 lenderLiquidity, uint256 borrow, uint256 crashPrice)
         internal
         returns (address lender, address borrower)
@@ -341,6 +341,7 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
     function test_settle_supplyAnchored_tracksManaged() public {
         Market storage m = _market();
         (address lender, address borrower) = _distress(m, 100 ether, 20 ether, 0.22e36);
+        m.setSettlementLtv(borrower, 0.8e18);
         _donateToVault(m, _actor("attacker"), 60 ether);
 
         uint256 managedBefore = m.vault.managedSupplyShares();

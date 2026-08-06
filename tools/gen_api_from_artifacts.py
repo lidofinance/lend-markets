@@ -486,8 +486,8 @@ def main() -> int:
     written.append(write_page("usdy-stable-oracle.md", "UsdyStableOracle",
                               render_contract(USDY_ORACLE, "UsdyStableOracle", reg, BASE)))
 
-    # Shared types: Id/MarketParams/Position are forked Morpho core (defer detail to the fork);
-    # SettlementConfig is ours, parsed from source since its file emits no artifact.
+    # Shared types: Id/MarketParams/Position are forked Morpho core (defer detail to the fork). The settlement types
+    # are ours and are parsed from source because their file emits no standalone artifact.
     tbody = ["The core market types (`Id`, `MarketParams`, `Position`) belong to the forked Morpho core — their "
              "full semantics live in [`lib/lido-lend/FORK_NOTES.md`](../../../lib/lido-lend/FORK_NOTES.md).", ""]
     id_node = find(ast_of(IMORPHO), "UserDefinedValueTypeDefinition", "Id")
@@ -496,7 +496,8 @@ def main() -> int:
               ID_FALLBACK, ""]
     for s in ("MarketParams", "Position"):
         tbody += render_struct(find(ast_of(IMORPHO), "StructDefinition", s), BASE)
-    tbody += render_struct(struct_from_source("src/types/SettlementTypes.sol", "SettlementConfig"), BASE)
+    for s in ("SettlementSlice", "SettlementQuote", "SettlementConfig"):
+        tbody += render_struct(struct_from_source("src/types/SettlementTypes.sol", s), BASE)
     written.append(write_page("shared-types.md", "Shared Types", tbody))
 
     for stale in sorted(API_DIR.glob("*.md")):  # drop pages left by earlier names

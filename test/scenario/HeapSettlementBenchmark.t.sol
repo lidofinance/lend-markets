@@ -447,9 +447,9 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         for (uint256 i; i < MAX_ITERATIONS; ++i) {
             if (remaining == 0 || ctx.controller.settlementBorrowersCount() == 0) break;
 
-            (address top,,,) = ctx.controller.nextSettlementBorrower();
+            (address top,) = ctx.controller.nextSettlementBorrower();
             if (top == address(0)) break;
-            uint256 sliceAssets = ctx.controller.positionOf(top).slice;
+            uint256 sliceAssets = _dashboardSliceAssets(ctx.controller, top);
             uint128 topBorrowShares = ctx.market.position(ctx.id, top).borrowShares;
             uint128 topCol = ctx.market.position(ctx.id, top).collateral;
             uint128 totalBorrowAssets = ctx.market.market(ctx.id).totalBorrowAssets;
@@ -486,6 +486,17 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         assertLe(res.iterations, MAX_ITERATIONS, "settle walk stays within the iteration cap");
         assertLe(ctx.controller.settlementBorrowersCount(), heapBefore, "heap never grows during settlement");
         assertEq(res.totalCollateralSeized == 0, res.totalDebtCanceled == 0, "collateral seized iff debt canceled");
+    }
+
+    function _dashboardSliceAssets(ILidoLendMarketController controller, address borrower)
+        internal
+        view
+        returns (uint256)
+    {
+        ILidoLendMarketController.BorrowerPosition memory dashboard = controller.positionOf(borrower);
+        return dashboard.personalSliceAssets > dashboard.queueRootSliceAssets
+            ? dashboard.personalSliceAssets
+            : dashboard.queueRootSliceAssets;
     }
 
     /// @dev One settle attempt as LENDER, accumulated into `res`; swallows the revert so the caller can

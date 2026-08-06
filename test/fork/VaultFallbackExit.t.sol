@@ -9,6 +9,7 @@ import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {ForkTest} from "./helpers/ForkTest.sol";
 
 interface IWETH {
@@ -31,10 +32,9 @@ interface IWstETH {
 }
 
 /// @notice Mainnet-fork scenarios for the vault's two settle-backed exits, `fallbackExit` and `settle`.
-///         Each shows the redeem-first design: the exit first pays out whatever ordinary liquidity
-///         (idle + Morpho-withdrawable) covers, then settles the remainder against an unhealthy-but-
-///         solvent borrower for collateral. This also removes the front-run griefing vector — a
-///         top-up of idle before the call just flows to the owner instead of reverting the settle.
+///         `fallbackExit` pays ordinary liquidity first and settles the remainder; targeted `settle` leaves that
+///         liquidity untouched and requires the borrower's personal settlement-LTV opt-in. Both use an
+///         unhealthy-but-solvent borrower for the collateral leg.
 contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
     // Populated in setUp from script/config/<NETWORK>.toml.
     address internal WETH_ADDRESS;
@@ -52,6 +52,7 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
 
     ILidoLend internal core;
     LidoLendERC4626 internal vault;
+    ILidoLendMarketController internal controller;
     MarketParams internal params;
     Id internal marketId;
 
@@ -99,6 +100,7 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
 
         core = ILidoLend(d.core);
         vault = LidoLendERC4626(d.vault);
+        controller = ILidoLendMarketController(d.controllerProxy);
         params = d.params;
         marketId = d.marketId;
     }
@@ -123,6 +125,9 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
         vm.mockCall(
             WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.95e18))
         );
+
+        vm.prank(BORROWER);
+        controller.setSettlementLtv(1);
 
         idle = 20 ether - 18 ether;
     }
@@ -173,27 +178,28 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
     }
 
-    /* settle covers a cut below the market's ordinary liquidity. The new core gate allows settling up
-       to onBehalf's supply minus free liquidity (here equal to the borrower's debt), so a sub-liquidity
-       cut that the old `debtCanceled > availableLiquidity` gate rejected now goes through. */
+    /* A personal targeted cut remains available even when the request is fully covered by ordinary liquidity. */
 
-    function test_settle_smallCutBelowLiquiditySucceeds() public {
+    function test_settle_smallCutBelowLiquidityUsesPersonalPolicy() public {
         _setupExitWithIdle(); // ~2 WETH of ordinary liquidity sits in the market
 
         address[] memory borrowers = new address[](1);
         borrowers[0] = BORROWER;
 
         uint256 wethBefore = WETH.balanceOf(LENDER);
+        uint256 borrowerDebtSharesBefore = core.position(marketId, BORROWER).borrowShares;
         uint256 shares = vault.balanceOf(LENDER) / 40; // ~0.5 WETH worth, well below the ~2 WETH liquidity
         vm.prank(LENDER);
-        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized,) =
+        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
             vault.settle(shares, borrowers, LENDER, LENDER);
 
-        assertGt(collateralSeized, 0, "sub-liquidity settle seized collateral under the new gate");
-        assertGt(sharesBurned, 0, "shares burned for the slice");
-        assertEq(loanAssets, 0, "settle withdrew no ordinary liquidity");
+        assertGt(sharesBurned, 0, "personal settlement burns lender shares");
+        assertEq(loanAssets, 0, "targeted settlement leaves ordinary liquidity untouched");
+        assertGt(collateralSeized, 0, "receiver gets collateral despite available liquidity");
+        assertGt(debtCanceled, 0, "personal settlement cancels debt");
         assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
-        assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
+        assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got seized collateral");
+        assertLt(core.position(marketId, BORROWER).borrowShares, borrowerDebtSharesBefore, "borrower debt was cut");
     }
 
     function _mintWETH(address user, uint256 amount) internal {

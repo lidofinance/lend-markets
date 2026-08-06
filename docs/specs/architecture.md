@@ -2,20 +2,19 @@
 
 [Lido Lend](https://github.com/lidofinance/lido-lend/) is a Morpho Blue fork with an additional policy layer on top. Each market is isolated: its own loan asset, collateral, oracle, IRM, and LLTV. A market may bind a **controller** that gates user actions through hooks. A market with no controller behaves as vanilla Morpho.
 
-A single `LidoLend` core hosts many markets, as in Morpho. To each market the Lido layer adds two pieces Morpho lacks — a **controller** (the policy layer) and an ERC-4626 **vault** (the tokenized lender position). Markets stay risk-isolated: the core keys positions and accounting by market id, so one market cannot reach another's funds. 
+A single `LidoLend` core hosts many markets, as in Morpho. To each market the Lido layer adds a **controller** (the policy layer) and may add one or more ERC-4626 **vaults** (tokenized lender positions). Markets stay risk-isolated: the core keys positions and accounting by market id, so one market cannot reach another's funds.
 
 `GuardianSignals` is shared the same way — its signals are market-keyed, so one registry can back many markets, though a deployment may run several when markets want different guardian sets or quorums (the set and quorum are per registry). Neither is pinned to a single instance: a market that needs full isolation can get its own core and registry. 
 
 - **[LidoLend](#lidolend-forked-core)** holds the canonical accounting (supply/borrow shares, collateral, interest).
 - **[LidoLendMarketController](#lidolendmarketcontroller)** holds Lido policy: borrower gating, collateral activation, settlement queue, freeze/pause.
 - **[GuardianSignals](#guardiansignals)** is the registry the controller reads for gating.
-- **[LidoLendERC4626](#lidolenderc4626)** is the tokenized lender position and the fallback-exit entrypoint.
+- **[LidoLendERC4626](#lidolenderc4626)** is a tokenized lender position and the entrypoint for lender settlement exits.
 - **[RiskStewardDashboard](#riskstewarddashboard)** is the per-core risk-reduction console: appointed stewards ratchet a market's activation levers in the safe direction and can freeze that market.
 - **[Exit books](#exit-books)** are the filler-served exit registry: lenders post exit requests, fillers close them from market liquidity for a Dutch-auction priority fee.
 
 > [!NOTE]
 > Each market's assets, oracle, and risk parameters live in [markets/](markets/), the privileged-role catalogue in [roles.md](roles.md), and the design rationale behind it all in the ADRs.
-
 
 ## Contracts
 
@@ -27,7 +26,7 @@ The Morpho Blue fork that holds the canonical accounting for every market — su
 
 - **Controller binding.** `createMarket(params, controller, enableSettlement)` binds one controller per market at creation, immutable afterwards. A market with no controller is vanilla Morpho.
 - **Hooks.** With the action's amounts resolved but before the state change is applied, the core calls `controller.on(id, event, payload)` under a reentrancy lock. The hook may revert (aborting the action) but cannot rewrite the resolved amounts.
-- **`settle`.** Cancels borrower debt against lender supply at the oracle price, with no liquidation incentive and **no borrower health check** — excluding bad-debt borrowers is the controller's duty. The cut is anchored on one of two share amounts — burned supply shares or canceled borrow shares, one set and the other zero — and a borrow-anchored cut closes a position to exactly zero debt with no dust. Settlement is a per-market opt-in: `settle` needs both a controller and `enableSettlement` set at creation, otherwise it reverts `SETTLEMENT_DISABLED`. This is the primitive behind the fallback exit and the settlement queue.
+- **`settle`.** Cancels borrower debt against lender supply at the oracle price, with no liquidation incentive and **no borrower health check** — excluding bad-debt borrowers is the controller's duty. The caller anchors a partial or full cut on burned supply shares or canceled borrow shares. The wrapper chooses the borrow anchor only for an affordable full close; direct core callers may use either anchor for a partial cut. The core leaves borrower eligibility to the controller and bounds the actual spend by the lender's supply shares. Settlement remains a per-market opt-in.
 - **Proxy.** `OssifiableProxy`, upgradeable until ossified.
 
 `flashLoan` sits outside controller policy: it is token-global with no market id, no hook or reentrancy lock, not owner-gated, and uncollateralized — the core transfers the tokens out and pulls them back in the same call, reverting only on zero assets.
@@ -44,7 +43,7 @@ The market's policy layer — the safeguards Lido adds on top of Morpho, which o
 - **Freeze** — halts new borrows and debt-bearing collateral withdrawals.
 - **Pause** — a last-resort circuit breaker that halts every hook in an emergency.
 
-It also governs **settlement**, how lenders exit an illiquid market: the controller orders the queue so the riskiest borrowers unwind first, bounds each cut, and blocks settlement when a tracked position is bad debt.
+It also governs **settlement**: personal settlement-LTV cuts are available at any liquidity level, while root policy applies only to the queue root and is capped by the settling lender's illiquid supply tail. The wrapper orders automatic fallback riskiest-first; an authorized supplier may also target the current root through core `settle`, subject to the same controller policy. Limits are enforced after asset quotes are rounded into borrow shares, and all settlement is blocked when the queue root is bad debt.
 
 Full surface: [API reference](api/lido-lend-market-controller.md).
 
@@ -208,7 +207,7 @@ The frontier is the quorum-th highest reported timestamp: the point at least a q
 
 ### Settlement queue
 
-Lenders exit illiquid markets by settling borrowers — canceling their debt against the lender's shares and taking collateral. Borrowers are settled **riskiest first**.
+Settlement cancels borrower debt against lender shares and pays collateral at par. `fallbackExit` uses the queue **riskiest first** after draining free liquidity; the wrapper's targeted `settle` uses a caller-chosen borrower list and skips entries without a positive personal settlement-LTV slice. Core `settle` is public: an authorized supplier may directly target the current root under root policy or another borrower under positive personal policy.
 
 A max-heap keys each borrower by risk:
 
@@ -230,7 +229,7 @@ flowchart LR
 
 **Slice sizing.** A single cut is bounded by the slice — the largest limit any applicable rule grants — and runs at **par**: the seized collateral is the canceled debt converted at the oracle price, rounded down, so its value is at most the canceled debt and can be one unit less, slightly favoring the borrower. The borrower keeps its equity and loses only leverage. There is no liquidation penalty.
 
-For the queue root, the bound is the largest of three rules:
+The queue root's absolute policy bound is the largest of three rules:
 
 | Rule | Limit | Dominates when |
 |---|---|---|
@@ -240,52 +239,85 @@ For the queue root, the bound is the largest of three rules:
 
 Taking the **max** lets the riskiest position de-lever in meaningful steps. Rule 3 self-adapts: a fixed LTV step is a large fraction of the debt near the liquidation threshold and a small one lower down, so it carries the cut where the debt concentrates while rules 1 and 2 floor the small and low-LTV tail. A cut sized to the *next-riskiest* borrower instead would collapse to nothing here, because borrowers in a single-pair leverage market cluster near a common LTV — the absolute rules sidestep that.
 
-A borrower may also opt into a **settlement LTV**: a personal target LTV the cut settles down to. The settlement-LTV cut and rule 3 share one closed form, `sliceToLtv`. The slice is the larger of the root cut and the settlement-LTV cut, then lifted to the full debt when the post-cut collateral would fall below `fullCutBelowCollateral` (so no unsettleable dust tail remains).
+A borrower may also set a **settlement LTV**: a personal target LTV used to size its cut. A positive personal slice is required by the wrapper's targeted `settle` and remains available at any liquidity level. The personal asset allowance is sized only by that target and does not inherit the market's collateral-dust sweep. Ordinary up-rounding into borrow shares still applies, so a near-full personal allowance can reach the last borrow share. Only a queue-root asset slice that would strand collateral below `fullCutBelowCollateral` is promoted to the full debt by dust policy. `settlementFor` exposes both the personal quote and the prospective queue-root quote for the named borrower; the latter does not imply that the borrower is currently the root. `nextSettlementBorrower` atomically returns the current root and the larger personal or root-policy slice. The controller gates root-policy execution by the settling lender's illiquid tail, `max(lenderSupplyAssets - marketFreeLiquidity, 0)`.
+
+**Controller execution rules.** Let:
+
+- `P` be the personal target-LTV allowance in borrow shares, with no dust promotion;
+- `R` be the effective root-policy allowance in borrow shares (`0` for a non-root);
+- `C` be the actual borrow shares canceled by the core;
+- `A` be the corresponding actual debt canceled in loan assets; and
+- `T = max(supplierSupplyAssets - marketFreeLiquidity, 0)` be the settling supplier's lender tail.
+
+The settle hook applies the following matrix in order; the bad-debt gate is market-wide and runs first:
+
+| Borrower | Personal allowance | Requested cut | Additional condition | Result |
+|---|---:|---:|---|---|
+| Any | Any | Any | The queue root is bad debt | Revert `SettlementBadDebt` for every settlement path |
+| Any | `P > 0` | `C <= P` | Any liquidity state | Allow as a personal-policy cut; do not apply the lender-tail gate |
+| Non-root | `P = 0` | `C > 0` | — | Revert `SettlementExceedsAllowed` |
+| Non-root | `P > 0` | `C > P` | — | Revert `SettlementExceedsAllowed` |
+| Root | `P = 0` | `C <= R` | `A <= T` | Allow as a root-policy cut |
+| Root | `P = 0` | `C <= R` | `A > T` | Revert `SettlementExceedsSettleableSupply` |
+| Root | `P > 0` | `C <= P` | Any liquidity state | Allow as a personal-policy cut; do not apply the lender-tail gate |
+| Root | `P > 0` | `P < C <= max(P, R)` | `A <= T` | Allow the excess as a root-policy cut |
+| Root | `P > 0` | `P < C <= max(P, R)` | `A > T` | Revert `SettlementExceedsSettleableSupply` |
+| Root | Any | `C > max(P, R)` | — | Revert `SettlementExceedsAllowed` |
+
+`P`, `R`, and `C` are compared after the policy's asset quote is rounded up into borrow shares. The lender-tail branch instead compares the core's actual asset result `A` against `T`.
+
+A full close uses the borrow anchor only when both policy and the remaining request budget can afford it; otherwise the vault uses a supply-anchored partial.
 
 ```mermaid
 flowchart LR
     A["rule 1: sliceFloorBps × debt"] --> MR[max = root cut]
     B["rule 2: sliceFloorAssets"] --> MR
     C["rule 3: lower LTV by ltvStepBps"] --> MR
-    MR --> MA[final max]
-    WM["settlement-LTV cut: to target LTV"] --> MA
-    MA --> SW{leaves collateral below<br/>fullCutBelowCollateral?}
-    SW -->|yes| FD[lift to full debt]
-    SW -->|no| OUT[slice]
-    FD --> OUT
+    Z{"borrower is root?"} -->|yes| MR
+    Z -->|no| NR[root cut = 0]
+    MR --> RD{root cut leaves dust?}
+    NR --> RD
+    RD -->|yes| RF[root = full debt]
+    RD -->|no| RS[root slice]
+    WM["settlement-LTV cut: to target LTV"] --> PS[personal slice]
+    RF --> AUTO[automatic = max]
+    RS --> AUTO
+    PS --> AUTO
+    PS --> TARGET[targeted settle]
 ```
 
-> **Root cut.** Root at LTV 92%, debt `1000`, policy `sliceFloorBps 5% · sliceFloorAssets 100 · ltvStepBps 1%`.
-> Rule 1 = `50`, rule 2 = `100`, rule 3 ≈ `120` (a 1% LTV step is ~12% of the debt at this LTV). The cut is the
-> max, `120` — about one LTV point off the root.
+> **Root cut.** Root at LTV 92%, debt `1000`, policy `sliceFloorBps 5% · sliceFloorAssets 100 · ltvStepBps 1%`. Rule 1 = `50`, rule 2 = `100`, rule 3 ≈ `120` (a 1% LTV step is ~12% of the debt at this LTV). The cut is the nominal max, `120`. A root-policy execution must fit the lender's live illiquid tail after the quote is converted into borrow shares; a lender with an `80`-asset tail cannot execute the whole nominal cut.
 >
 > **Settlement LTV.** Debt `80`, collateral value `100` (LTV 80%), target `50%`.
 > `slice = (80 − 0.5 × 100) / (1 − 0.5) = 60`. After the cut: debt `20`, collateral value `40`, LTV 50%.
 
 **Known limits.**
 
-- A fully de-levered borrower keeps its equity as free collateral but loses all its leverage (par, no penalty). A small position — debt under the absolute floor, or a remainder that would fall under `fullCutBelowCollateral` — closes entirely in a single cut, which is abrupt for that borrower.
-- A single transaction settles only a bounded number of borrowers (the fallback loop's iteration cap), so a lender pulling a large fraction of the pool partial-fills and repeats across transactions. A settle hands back collateral, not WETH, so it does not lower utilization — the reach per transaction depends on how the debt is split across positions, not on any one policy value.
+- A fully de-levered borrower keeps its equity as free collateral but loses all its leverage (par, no penalty). For a queue root with debt under the absolute floor, or whose root-policy cut would leave collateral under `fullCutBelowCollateral`, policy requests a full-debt cut. It closes in one transaction only when the request's remaining core-share budget covers it; otherwise the vault applies a supply-anchored partial. A personal settlement-LTV quote is not promoted by this collateral-dust rule.
+- A single transaction settles only a bounded number of borrowers (the fallback loop's iteration cap), so a lender pulling a large fraction of the pool partial-fills and repeats across transactions. Settlement preserves free loan-asset liquidity: supply assets and borrow assets fall by the same amount, which lowers utilization without releasing WETH. Reach per transaction depends on how debt is split across positions, not on any one policy value.
+- If a chosen debt slice prices to zero collateral units, the core reverts `settlement slice too small`. Repay or otherwise remove that dust debt, then retry the exit.
+- Policy is quoted in loan assets and rounded up into borrow shares. Actual canceled debt may exceed the nominal quote by one borrow-share conversion step, which can be worth more than one asset raw unit at an elevated borrow-share price; if that step reaches the last borrow share, even a personal quote is represented as a rounding full close. If root and personal quotes round to the same share count, the controller treats the cut as personal and does not enter the lender-tail branch.
+- The lender-tail bound uses live transaction state. Withdrawing or borrowing market liquidity increases `lenderSupplyAssets - marketFreeLiquidity` in the same transaction and therefore increases the root allowance; restoring liquidity later does not retroactively undo the cut. Flash loans alone do not change accounting totals, but bundled liquidity-changing actions do. The design has no prior-block snapshot or cooldown.
 
 ### Tokenized lender layer & fallback exit
 
-Lenders hold freely transferable, ungated ERC-4626 wrapper shares (`LidoLendERC4626`). The standard market deployment records one wrapper, while additional wrappers may be deployed over the same controller. `deposit`/`mint`/`withdraw`/`redeem` are standard, with the max views mirroring the controller's lender limits: `maxDeposit`/`maxMint` report the remaining supply-cap headroom (unlimited when uncapped), `maxWithdraw`/`maxRedeem` the lesser of the owner's position value and the market's free pool liquidity, and all four drop to zero while the market is paused.
+Lenders may hold freely transferable, ungated shares in one or more `LidoLendERC4626` wrappers bound to the same market. Each wrapper has a separate core supply position. The standard market deployment records one wrapper, while additional wrappers may be deployed over the same controller. `deposit`/`mint`/`withdraw`/`redeem` are standard, with the max views mirroring the controller's lender limits: `maxDeposit`/`maxMint` report the remaining supply-cap headroom (unlimited when uncapped), `maxWithdraw` reports the lesser of the owner's position value and free pool liquidity, and `maxRedeem` reports its conservative floor-converted share equivalent. All four drop to zero while the market is paused. `fallbackExit` can also consume shares on the final redeem rounding plateau that lie just above `maxRedeem` while representing no additional asset unit.
 
-When liquidity is short, lenders use the settlement exit:
+The wrapper exposes two settlement exits:
 
-- `fallbackExit(shares, receiver, owner, maxIterations)` — two legs: first a normal redeem of whatever pool liquidity covers (paid out as loan assets), then a settle of the remainder against the risk heap, riskiest-first (paid out as seized collateral). Best-effort, no revert on a shortfall. `maxIterations` caps the borrowers the settle leg cuts (`0` = `DEFAULT_MAX_SETTLEMENT_ITERATIONS`, 150). Redeeming the liquid part first also closes a griefing vector — idle liquidity flows to the owner instead of blocking the settle.
-- `settle(shares, borrowers[], receiver, owner)` — settles a caller-chosen borrower list in order, collateral only (no redeem leg).
+- `fallbackExit(shares, receiver, owner, maxIterations)` — two legs. The liquid leg services the request from free liquidity; if the request exceeds it, the leg drains the exact available amount. If shares remain, market free liquidity is zero and the settle leg applies the automatic `max(root, personal)` quote against the risk heap, riskiest-first, bounded by the remaining shares' pro-rata managed core-supply claim. When the cut exceeds the personal allowance, the controller requires the whole cut to fit the wrapper's live illiquid supply tail. Loan assets and seized collateral both go to `receiver`; queue or iteration exhaustion partial-fills, while controller and core errors revert the whole call. `maxIterations` caps the borrowers cut by the settle leg (`0` uses `DEFAULT_MAX_SETTLEMENT_ITERATIONS`, 150).
+- `settle(shares, borrowers[], receiver, owner)` — a liquidity-neutral targeted exit. It does not redeem or reserve free liquidity and uses the requested shares' gross pro-rata managed core-supply claim as its budget. Entries without a positive personal settlement-LTV slice are skipped. The call reverts `NothingSettled` when the entire batch consumes no budget; budget exhaustion partial-fills.
 
-Both burn lender shares against the cancelled debt, and the vault never custodies collateral — `fallbackExit`'s redeem leg pays loan assets, the settle path pays seized collateral straight to the receiver. When the cuts fall short of the target, the vault burns shares pro-rata to the supply-share budget actually consumed, rounded up so remaining holders are not diluted.
+Both burn lender shares against the value serviced, and the wrapper never custodies collateral — the liquid leg pays loan assets and the settle path pays seized collateral straight to the receiver. When cuts fall short of the target, the wrapper burns shares pro-rata to the managed core-supply shares actually consumed, rounded up against the exiting lender by less than one raw wrapper share.
 
 ### Freeze & pause
 
 | State | Blocks | Allows | Trigger |
 |---|---|---|---|
-| Freeze | new borrows, collateral withdraw with open debt, maturation | repay, supply, debt-free withdraw, liquidate, settle/fallback | per-market steward through `RiskStewardDashboard.freezeMarket`; delayed governance through `LidoLendOwner.unfreezeMarket` lifts it |
-| Pause | every hook (all mutating actions) | nothing | the per-core `CircuitBreaker`, for a bounded finite duration; expiry is automatic |
+| Freeze | new borrows, collateral withdraw with open debt, maturation | repay, supply, debt-free withdraw subject to activation locks, liquidate, settle/fallback | per-market steward through `RiskStewardDashboard.freezeMarket`; delayed governance through `LidoLendOwner.unfreezeMarket` lifts it |
+| Pause | every core action that invokes the market controller hook | non-hook surfaces such as flash loans, authorization changes, wrapper-share transfers, and controller administration | the per-core `CircuitBreaker`, for a bounded finite duration; expiry is automatic |
 
-Freeze stops new risk while preserving exits. Pause is the stronger, temporary stop. For a fast-depreciation event (slashing, oracle compromise), the response is a freeze, followed by an operational incident response.
+Freeze stops new risk while preserving exits. Pause is the stronger, temporary stop for hook-mediated market actions. A fast-depreciation or stale-oracle event requires pause because freeze leaves liquidation and both settlement paths available. Incident detection and follow-up are operational.
 
 ## Roles & governance
 
@@ -300,7 +332,7 @@ The factory accepts no per-market role inputs: every controller starts with the 
 
 Additional ERC-4626 wrapper deployment accepts a controller bound to the same core and requested market id. Once the market exists in the core, that controller must also be the market's registered controller.
 
-No role can seize, burn, redirect, or trap user funds. The core is upgradeable until ossified. The full per-role catalogue (every privileged function → role → class → holder) is in [roles.md](roles.md).
+The current implementations expose no operational role that can seize, burn, or redirect user funds. Proxy admins remain broader upgrade trust assumptions until ossification. The full per-role catalogue (every privileged function → role → class → holder) is in [roles.md](roles.md).
 
 ## Threat model
 
@@ -321,6 +353,8 @@ Trust within the policy layer. Core-level actors — proxy admin, owner, oracle,
 **Supply-share-accounting invariant.** The core `supply` is permissionless and accepts any `onBehalf`, so a third party can credit supply shares to the vault address without receiving vault shares. Backing shares with the vault's full core position would let that credit inflate the share price and the settlement budgets — a `deposit` could mint zero shares, or a single share could command settle budget it never paid for. The vault instead backs shares with `_managedSupplyShares` (supply shares from its own operations only: `supply` in, `withdraw`/settlement burn out), used in `totalAssets` and both settlement budgets; the invariant `_managedSupplyShares <= coreSupplyShares` holds by construction, and a nonzero deposit that would mint zero shares reverts as defense in depth.
 
 Each invariant here maps to a scenario or integration test in `test/`.
+
+**Lender-tail boundary.** With positive free liquidity and multiple suppliers, a direct root-policy cut whose actual canceled assets equal the supplier's live illiquid tail succeeds, while a cut one asset raw unit larger reverts. The scenario also accrues interest first so both supply and borrow conversions are non-round (`SettlementTest.test_coreSettle_rootPolicy_enforcesExactLenderTailBoundary`).
 
 ## Markets
 
