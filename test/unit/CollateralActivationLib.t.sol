@@ -388,6 +388,36 @@ contract CollateralActivationLibTest is Test {
         assertEq(dust, 0, "locked remainder not folded into freely-withdrawable dust");
     }
 
+    /// @notice Once a lock expires, a sub-threshold activating remainder is not added to existing dust when their
+    ///         sum reaches the threshold. The buckets stay separate instead of forming above-threshold dust.
+    function test_withdraw_expiredLock_doesNotCreateAboveThresholdDust() public {
+        h.setConfig(
+            CollateralActivationConfig({
+                minActivationDelay: 1 minutes,
+                maxActivationDelay: 1 hours,
+                activatingLockAmount: 9 ether,
+                activatingLockDuration: 30 minutes,
+                maxDelayInflow: 10_000 ether,
+                minActivationAmount: 10 ether,
+                maxGuardiansQuorumDelay: 0,
+                delayPerStrike: 1 hours,
+                delayPerSuspect: 30 minutes
+            })
+        );
+        address borrower = address(0x10CD);
+
+        h.deposit(borrower, 20 ether);
+        h.withdraw(borrower, 11 ether); // leaves the 9 ether lock floor activating
+        h.deposit(borrower, 9 ether); // remains separate dust while the lock is active
+
+        vm.warp(block.timestamp + 30 minutes);
+        h.withdraw(borrower, 1 ether);
+
+        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(activating, 9 ether, "sub-threshold activating remainder stays timed");
+        assertEq(dust, 8 ether, "existing dust remains below the threshold");
+    }
+
     // ── ACT-04: withdrawal demotion reverses the same-tx inflow of the demoted remainder ──
 
     /// @notice The finding's canonical sequence: deposit exactly the threshold, withdraw one raw unit so the drain
@@ -548,6 +578,53 @@ contract CollateralActivationLibTest is Test {
         (, uint256 activating,) = h.bucketsOf(borrower);
         assertEq(activating, 6 ether, "partial seizure leaves the remainder activating");
         assertEq(h.currentInflow(), 6 ether, "inflow reversed by exactly the seized activating (10 - 4)");
+    }
+
+    /// @notice A forced seizure that leaves less than the activation minimum demotes the remainder to untimed
+    ///         dust, just like an unlocked withdrawal. The demoted amount no longer carries activation inflow and
+    ///         cannot mature on the old timer.
+    function test_seize_demotesSubThresholdActivatingToDust() public {
+        uint256 threshold = 10 ether;
+        uint256 remainder = threshold - 1;
+        address borrower = address(0xAC5E);
+        h.setMinActivationAmount(uint128(threshold));
+
+        h.deposit(borrower, 2 * threshold);
+        h.seize(borrower, threshold + 1);
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active, 0, "sub-threshold remainder is not active");
+        assertEq(activating, 0, "sub-threshold remainder leaves the timer");
+        assertEq(dust, remainder, "sub-threshold remainder becomes dust");
+        assertEq(h.currentInflow(), 0, "demoted remainder carries no activation inflow");
+
+        vm.warp(block.timestamp + 2 hours);
+        h.sync(borrower, 0);
+        (active, activating, dust) = h.bucketsOf(borrower);
+        assertEq(active, 0, "demoted remainder does not mature");
+        assertEq(activating, 0, "timer stays empty");
+        assertEq(dust, remainder, "remainder stays dust");
+    }
+
+    /// @notice Regression for the audit sequence: a seizure leaves a sub-threshold remainder, another deposit
+    ///         supplies just below the threshold, then a withdrawal drains one unit. The two remainders must not
+    ///         be combined into an above-threshold dust bucket.
+    function test_seizeRemainder_thenDustTopUpAndDebit_dustStaysBelowThreshold() public {
+        uint256 threshold = 10 ether;
+        uint256 remainder = threshold - 1;
+        address borrower = address(0xAC5F);
+        h.setMinActivationAmount(uint128(threshold));
+
+        h.deposit(borrower, 2 * threshold);
+        h.seize(borrower, threshold + 1);
+        h.deposit(borrower, remainder);
+        h.withdraw(borrower, 1);
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active, 0, "collateral remains inactive");
+        assertEq(activating, 2 * remainder - 1, "threshold-crossing top-up stays in activation");
+        assertEq(dust, 0, "no above-threshold dust is formed");
+        assertLt(dust, threshold, "dust remains below the activation threshold");
     }
 
     /// @notice A seizure waterfalls dust first, then activating. Only the activating it drains carries throttle
