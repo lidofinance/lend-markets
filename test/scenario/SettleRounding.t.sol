@@ -9,7 +9,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Test} from "forge-std/Test.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {SettlementConfig, SettlementQuote} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementSlice, SettlementQuote} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 
@@ -38,11 +38,7 @@ contract MockToken is ERC20 {
     }
 }
 
-/// @notice Rounding behaviour of the two `settle` anchors on a freshly deployed core driven through the real
-///         controller hook. The core's `settle` is dual-anchored: pass `supplyShares` to burn an exact lender
-///         cut, or pass `borrowShares` to cancel an exact borrower cut. The derived side always rounds up, so
-///         the test asserts which party absorbs that up-rounding in each mode, that collateral is seized at the
-///         oracle par, and that a supply-anchored full close trips the debt bound.
+/// @notice Rounding behavior of borrow-anchored `settle` through the real controller hook.
 contract SettleRoundingTest is Test, LidoLendDeployer {
     uint256 internal constant LLTV = 0.945e18;
     uint256 internal constant PRICE = 1.2e36; // 1.2 WETH per wstETH (ORACLE_PRICE_SCALE = 1e36)
@@ -161,8 +157,8 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         );
 
         uint256 borrowShares = core.position(id, BORROWER).borrowShares;
-        (address root,) = controller.nextSettlementBorrower();
-        SettlementQuote memory quote = controller.settlementFor(BORROWER);
+        (address root,) = controller.nextSettlementBorrower(0);
+        SettlementQuote memory quote = controller.settlementFor(BORROWER, 0);
         assertEq(root, BORROWER, "borrower is the queue root");
         assertGt(quote.personal.remainingBorrowShares, 0, "personal cut is partial");
         assertEq(quote.queueRoot.remainingBorrowShares, 0, "root cut is a full close");
@@ -173,10 +169,11 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
 
         uint256 expDebt = SharesMathLib.toAssetsUp(borrowShares, m.totalBorrowAssets, m.totalBorrowShares);
         uint256 expSupplyBurn = SharesMathLib.toSharesUp(expDebt, m.totalSupplyAssets, m.totalSupplyShares);
-        uint256 expSeized = expDebt * ORACLE_PRICE_SCALE / PRICE;
+        uint256 expSeized = SharesMathLib.toAssetsDown(borrowShares, m.totalBorrowAssets, m.totalBorrowShares)
+            * ORACLE_PRICE_SCALE / PRICE;
 
         vm.prank(LENDER);
-        (uint256 seized, uint256 debtCanceled,,) = core.settle(params, 0, borrowShares, LENDER, BORROWER, RECEIVER);
+        (uint256 seized, uint256 debtCanceled,,) = core.settle(params, borrowShares, LENDER, BORROWER, RECEIVER);
 
         assertEq(debtCanceled, expDebt, "debt canceled = borrowShares valued up");
         assertEq(seized, expSeized, "collateral seized at oracle par");
@@ -191,41 +188,42 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         );
     }
 
-    /// @dev Supply-anchored: burning an exact lender cut leaves the borrower's debt burn to be derived and
-    ///      rounded up, so the borrower absorbs the rounding.
-    function test_supplyAnchored_partialCut_borrowerBearsRounding() public {
+    /// @dev A partial cut cancels exact borrow shares. The lender pays for the up-rounded debt amount.
+    function test_borrowAnchored_partialCut_lenderBearsRounding() public {
         Market memory m = core.market(id);
         uint256 borrowBefore = core.position(id, BORROWER).borrowShares;
         uint256 lenderBefore = core.position(id, LENDER).supplyShares;
 
-        uint256 supplyCut = lenderBefore / 3; // partial: cancels ~1/3 of the debt value, well below a full close
+        uint256 borrowCut = borrowBefore / 3;
 
-        uint256 expDebt = SharesMathLib.toAssetsDown(supplyCut, m.totalSupplyAssets, m.totalSupplyShares);
-        uint256 expBorrowBurn = SharesMathLib.toSharesUp(expDebt, m.totalBorrowAssets, m.totalBorrowShares);
-        uint256 expSeized = expDebt * ORACLE_PRICE_SCALE / PRICE;
+        uint256 expDebt = SharesMathLib.toAssetsUp(borrowCut, m.totalBorrowAssets, m.totalBorrowShares);
+        uint256 expSupplyBurn = SharesMathLib.toSharesUp(expDebt, m.totalSupplyAssets, m.totalSupplyShares);
+        uint256 expSeized = SharesMathLib.toAssetsDown(borrowCut, m.totalBorrowAssets, m.totalBorrowShares)
+            * ORACLE_PRICE_SCALE / PRICE;
 
         vm.prank(LENDER);
-        (uint256 seized, uint256 debtCanceled,,) = core.settle(params, supplyCut, 0, LENDER, BORROWER, RECEIVER);
+        (uint256 seized, uint256 debtCanceled,,) = core.settle(params, borrowCut, LENDER, BORROWER, RECEIVER);
 
-        assertEq(debtCanceled, expDebt, "debt canceled = supplyCut valued down");
+        assertEq(debtCanceled, expDebt, "debt uses the up-rounded share value");
         assertEq(seized, expSeized, "collateral seized at oracle par");
-        assertEq(lenderBefore - core.position(id, LENDER).supplyShares, supplyCut, "exact lender shares burned");
-        assertEq(
-            borrowBefore - core.position(id, BORROWER).borrowShares, expBorrowBurn, "borrower debt burn rounded up"
-        );
+        assertEq(lenderBefore - core.position(id, LENDER).supplyShares, expSupplyBurn, "lender burn is rounded up");
+        assertEq(borrowBefore - core.position(id, BORROWER).borrowShares, borrowCut, "exact borrow shares canceled");
     }
 
-    /// @dev The mirror of the borrow-anchored close: trying the same full close supply-anchored makes the
-    ///      derived borrow burn round up past the borrower's last share, which the core rejects.
-    function testRevert_supplyAnchored_fullCloseOvershootsDebt() public {
+    function testRevert_zeroBorrowShares() public {
+        vm.prank(LENDER);
+        vm.expectRevert(bytes("settlement slice too small"));
+        core.settle(params, 0, LENDER, BORROWER, RECEIVER);
+    }
+
+    function testRevert_positiveBorrowSharesWorthZeroAssets() public {
         Market memory m = core.market(id);
-        uint256 borrowShares = core.position(id, BORROWER).borrowShares;
-        uint256 debtAssets = SharesMathLib.toAssetsUp(borrowShares, m.totalBorrowAssets, m.totalBorrowShares);
-        uint256 supplyCut = SharesMathLib.toSharesUp(debtAssets, m.totalSupplyAssets, m.totalSupplyShares);
+        uint256 minimum = SharesMathLib.toSharesUp(1, m.totalBorrowAssets, m.totalBorrowShares);
+        assertGt(minimum, 1, "positive zero-value borrow shares exist");
 
         vm.prank(LENDER);
-        vm.expectRevert(bytes("settlement exceeds debt"));
-        core.settle(params, supplyCut, 0, LENDER, BORROWER, RECEIVER);
+        vm.expectRevert(bytes("settlement slice too small"));
+        core.settle(params, minimum - 1, LENDER, BORROWER, RECEIVER);
     }
 
     // ── Deploy (no fork): everything mocked, core deployed from out/

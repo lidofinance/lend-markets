@@ -26,7 +26,7 @@ The Morpho Blue fork that holds the canonical accounting for every market — su
 
 - **Controller binding.** `createMarket(params, controller, enableSettlement)` binds one controller per market at creation, immutable afterwards. A market with no controller is vanilla Morpho.
 - **Hooks.** With the action's amounts resolved but before the state change is applied, the core calls `controller.on(id, event, payload)` under a reentrancy lock. The hook may revert (aborting the action) but cannot rewrite the resolved amounts.
-- **`settle`.** Cancels borrower debt against lender supply at the oracle price, with no liquidation incentive and **no borrower health check** — excluding bad-debt borrowers is the controller's duty. The caller anchors a partial or full cut on burned supply shares or canceled borrow shares. The wrapper chooses the borrow anchor only for an affordable full close; direct core callers may use either anchor for a partial cut. The core leaves borrower eligibility to the controller and bounds the actual spend by the lender's supply shares. Settlement remains a per-market opt-in.
+- **`settle`.** Cancels exact borrower shares against lender supply at the oracle price, with no liquidation incentive and **no borrower health check** — excluding bad-debt borrowers is the controller's duty. The core derives the debt assets and lender share burn from the requested borrow shares. The controller quotes that request already capped to what the caller's supply-share budget can pay. The core leaves borrower eligibility to the controller and rejects a cut that exceeds the lender's supply position. Settlement remains a per-market opt-in.
 - **Proxy.** `OssifiableProxy`, upgradeable until ossified.
 
 `flashLoan` sits outside controller policy: it is token-global with no market id, no hook or reentrancy lock, not owner-gated, and uncollateralized — the core transfers the tokens out and pulls them back in the same call, reverting only on zero assets.
@@ -241,6 +241,8 @@ Taking the **max** lets the riskiest position de-lever in meaningful steps. Rule
 
 A borrower may also set a **settlement LTV**: a personal target LTV used to size its cut. A positive personal slice is required by the wrapper's targeted `settle` and remains available at any liquidity level. The personal asset allowance is sized only by that target and does not inherit the market's collateral-dust sweep. Ordinary up-rounding into borrow shares still applies, so a near-full personal allowance can reach the last borrow share. Only a queue-root asset slice that would strand collateral below `fullCutBelowCollateral` is promoted to the full debt by dust policy. `settlementFor` exposes both the personal quote and the prospective queue-root quote for the named borrower; the latter does not imply that the borrower is currently the root. `nextSettlementBorrower` atomically returns the current root and the larger personal or root-policy slice. The controller gates root-policy execution by the settling lender's illiquid tail, `max(lenderSupplyAssets - marketFreeLiquidity, 0)`.
 
+Both quotes take the caller's core supply budget and answer with the cut that budget actually funds, so the returned borrow-share handle is executable as-is and the supply cost alongside it is what the core will burn. A caller wanting the policy cut regardless of budget passes `type(uint256).max`. Shrinking inside the controller keeps the three slice fields describing one cut: a budget that cannot cover a promoted full close comes back as a partial with the remainder restated, rather than as a full-close quote the caller would silently under-execute.
+
 **Controller execution rules.** Let:
 
 - `P` be the personal target-LTV allowance in borrow shares, with no dust promotion;
@@ -266,7 +268,7 @@ The settle hook applies the following matrix in order; the bad-debt gate is mark
 
 `P`, `R`, and `C` are compared after the policy's asset quote is rounded up into borrow shares. The lender-tail branch instead compares the core's actual asset result `A` against `T`.
 
-A full close uses the borrow anchor only when both policy and the remaining request budget can afford it; otherwise the vault uses a supply-anchored partial.
+Every cut uses borrow shares as the core accounting input. The controller converts the caller's remaining supply-share budget down into an affordable borrow-share cut, so the vault forwards the quoted handle unchanged. A full-close quote closes the borrower only when that budget covers its derived supply burn; otherwise the borrower receives a smaller partial cut.
 
 ```mermaid
 flowchart LR
@@ -293,9 +295,10 @@ flowchart LR
 
 **Known limits.**
 
-- A fully de-levered borrower keeps its equity as free collateral but loses all its leverage (par, no penalty). For a queue root with debt under the absolute floor, or whose root-policy cut would leave collateral under `fullCutBelowCollateral`, policy requests a full-debt cut. It closes in one transaction only when the request's remaining core-share budget covers it; otherwise the vault applies a supply-anchored partial. A personal settlement-LTV quote is not promoted by this collateral-dust rule.
+- A fully de-levered borrower keeps its equity as free collateral but loses all its leverage (par, no penalty). For a queue root with debt under the absolute floor, or whose root-policy cut would leave collateral under `fullCutBelowCollateral`, policy requests a full-debt cut. It closes in one transaction only when the request's remaining core-share budget covers it; otherwise the quote comes back as a partial cut sized to that budget. A personal settlement-LTV quote is not promoted by this collateral-dust rule.
 - A single transaction settles only a bounded number of borrowers (the fallback loop's iteration cap), so a lender pulling a large fraction of the pool partial-fills and repeats across transactions. Settlement preserves free loan-asset liquidity: supply assets and borrow assets fall by the same amount, which lowers utilization without releasing WETH. Reach per transaction depends on how debt is split across positions, not on any one policy value.
 - If a chosen debt slice prices to zero collateral units, the core reverts `settlement slice too small`. Repay or otherwise remove that dust debt, then retry the exit.
+- Supply-budget conversion rounds down before the core derives its rounded-up supply burn. The actual burn therefore never exceeds the request budget, but it may be slightly smaller. At the fully utilized empty-book boundary, a complete vault exit can leave zero-value core supply shares alongside one debt-asset wei from the virtual-share buffer.
 - Policy is quoted in loan assets and rounded up into borrow shares. Actual canceled debt may exceed the nominal quote by one borrow-share conversion step, which can be worth more than one asset raw unit at an elevated borrow-share price; if that step reaches the last borrow share, even a personal quote is represented as a rounding full close. If root and personal quotes round to the same share count, the controller treats the cut as personal and does not enter the lender-tail branch.
 - The lender-tail bound uses live transaction state. Withdrawing or borrowing market liquidity increases `lenderSupplyAssets - marketFreeLiquidity` in the same transaction and therefore increases the root allowance; restoring liquidity later does not retroactively undo the cut. Flash loans alone do not change accounting totals, but bundled liquidity-changing actions do. The design has no prior-block snapshot or cooldown.
 

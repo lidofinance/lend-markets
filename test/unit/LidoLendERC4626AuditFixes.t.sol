@@ -336,9 +336,8 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         _assertManagedLeCore(m);
     }
 
-    /// @dev Supply-anchored settle (partial cut via targeted `settle`): managed drops by the same amount as the
-    ///      vault's core position, and the invariant holds.
-    function test_settle_supplyAnchored_tracksManaged() public {
+    /// @dev A targeted partial cut updates managed and core supply shares by the same amount.
+    function test_settle_borrowAnchored_tracksManaged() public {
         Market storage m = _market();
         (address lender, address borrower) = _distress(m, 100 ether, 20 ether, 0.22e36);
         m.setSettlementLtv(borrower, 0.8e18);

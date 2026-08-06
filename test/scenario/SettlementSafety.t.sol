@@ -263,7 +263,7 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.borrow(a, 80 ether);
         m.borrow(b, 80 ether);
 
-        (address root,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower(0);
         address nonRoot = root == a ? b : a;
         address[] memory bs = new address[](1);
         bs[0] = nonRoot;

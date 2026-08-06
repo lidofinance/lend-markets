@@ -447,7 +447,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         for (uint256 i; i < MAX_ITERATIONS; ++i) {
             if (remaining == 0 || ctx.controller.settlementBorrowersCount() == 0) break;
 
-            (address top,) = ctx.controller.nextSettlementBorrower();
+            (address top,) = ctx.controller.nextSettlementBorrower(0);
             if (top == address(0)) break;
             uint256 sliceAssets = _dashboardSliceAssets(ctx.controller, top);
             uint128 topBorrowShares = ctx.market.position(ctx.id, top).borrowShares;
@@ -506,7 +506,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         returns (bool)
     {
         vm.prank(LENDER);
-        try ctx.market.settle(ctx.marketParams, 0, cutShares, LENDER, top, LENDER) returns (
+        try ctx.market.settle(ctx.marketParams, cutShares, LENDER, top, LENDER) returns (
             uint256 colSeized, uint256 debtCanceled, uint256, uint256
         ) {
             res.totalCollateralSeized += colSeized;

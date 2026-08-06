@@ -2,7 +2,8 @@
 pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, MarketParams, Market} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Test} from "forge-std/Test.sol";
 
@@ -43,11 +44,7 @@ interface IVault {
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 }
 
-/// @notice The fully-utilised pool edge: the vault is the sole lender with no free liquidity, so `fallbackExit`
-///         uses the queue's root policy. It closes borrowers borrow-anchored while each full-close cost fits the
-///         remaining vault budget. For the last borrower, virtual-share rounding makes that cost one core supply
-///         share too large; the vault therefore spends its exact remaining budget supply-anchored and leaves only
-///         the corresponding debt dust.
+/// @notice Full-pool fallback exit with only virtual-share dust left at the end.
 contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
     uint256 internal constant LLTV = 0.945e18;
     uint256 internal constant PRICE = 1.2e36;
@@ -149,12 +146,10 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
         vm.stopPrank();
     }
 
-    /// @dev The lender exits the whole position. RISKY (higher LTV, root first) is fully closed borrow-anchored.
-    ///      TAIL's full-close quote costs one more core supply share than the remaining vault budget, so the vault
-    ///      uses that exact budget supply-anchored. TAIL keeps at most one wei of debt and the lender fully exits.
-    function test_fallbackExit_fullPool_closesAllButTheBufferDustOnTheTail() public {
+    /// @dev The lender exits fully. The core keeps only zero-value supply dust and one debt-asset wei.
+    function test_fallbackExit_fullPool_leavesOnlyVirtualShareDust() public {
         assertEq(core.market(id).totalSupplyAssets, core.market(id).totalBorrowAssets, "100% utilisation (no free)");
-        (address root,) = controller.nextSettlementBorrower();
+        (address root,) = controller.nextSettlementBorrower(0);
         assertEq(root, RISKY, "highest-LTV borrower is the queue root");
 
         // Pin accrual so the book delta below is exact within this block (fallbackExit's own accrual is then a
@@ -164,17 +159,22 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
 
         uint256 shares = IVault(vault).balanceOf(LENDER);
         vm.prank(LENDER);
-        // Must not revert: the vault downgrades TAIL's unaffordable borrow-anchor to its exact remaining budget.
         (,,, uint256 debtCanceled) = IVault(vault).fallbackExit(shares, RECEIVER, LENDER, 0);
 
-        uint256 bookDebtAfter = core.market(id).totalBorrowAssets;
-        assertEq(core.position(id, RISKY).borrowShares, 0, "RISKY closed to exactly zero (borrow-anchored)");
-        assertGt(core.position(id, TAIL).borrowShares, 0, "TAIL kept the unbacked dust (supply-anchored)");
-        // The whole book debt is cancelled down to the unbacked one-wei virtual-share buffer — share-for-share,
-        // not a partial sweep. The residue is TAIL's dust, worth at most one wei of debt assets.
+        Market memory marketAfter = core.market(id);
+        uint256 bookDebtAfter = marketAfter.totalBorrowAssets;
+        uint256 supplyDust = _lidoLendSupplyShares();
+        assertEq(core.position(id, RISKY).borrowShares, 0, "RISKY closed to zero");
+        assertGt(core.position(id, TAIL).borrowShares, 0, "TAIL keeps debt dust");
         assertLe(bookDebtAfter, 1, "only the unbacked one-wei buffer of debt remains in the whole book");
         assertEq(debtCanceled, bookDebtBefore - bookDebtAfter, "debtCanceled == the exact book debt removed");
-        assertEq(_lidoLendSupplyShares(), 0, "lender fully exited (vault supply position drained)");
+        assertEq(IVault(vault).balanceOf(LENDER), 0, "lender has no vault shares");
+        assertLe(supplyDust, 1e6, "only one virtual-share unit remains");
+        assertEq(
+            SharesMathLib.toAssetsDown(supplyDust, marketAfter.totalSupplyAssets, marketAfter.totalSupplyShares),
+            0,
+            "remaining supply shares have no asset value"
+        );
     }
 
     function _lidoLendSupplyShares() internal view returns (uint256) {

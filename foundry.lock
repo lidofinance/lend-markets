@@ -7,8 +7,8 @@
   },
   "lib/lido-lend": {
     "branch": {
-      "name": "main",
-      "rev": "f640bf332660bd58f39586ecd671b911069b4ee9"
+      "name": "feat/settle-borrow-anchor",
+      "rev": "5ff49deb02cbd67dea543c72f30701ac5bb47734"
     }
   },
   "lib/lido-lend-irm": {

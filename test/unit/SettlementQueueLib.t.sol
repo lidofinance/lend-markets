@@ -3,10 +3,19 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
 import {MarketView, PositionView, SettlementConfig, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 
 uint256 constant WAD = 1e18;
+
+/// @dev Morpho's virtual amounts, restated here so the share recomputes stay independent of the library.
+uint256 constant VIRTUAL_ASSETS = 1;
+uint256 constant VIRTUAL_SHARES = 1e6;
+
+/// @dev Share-rate ceiling a live market stays under: the controller caps the borrow-share rate at this, and
+///      supply shares are minted at 1e6 per asset and only fall relative to assets as interest accrues.
+uint256 constant MAX_SHARE_RATE = 1e7;
 
 /// @dev Harness exposing the internal settlement-queue library over a storage State (L0 via harness).
 contract SQHarness {
@@ -68,11 +77,19 @@ contract SQHarness {
         returns (SettlementSlice memory)
     {
         (uint256 sliceAssets,) = s.allowedSliceAssets(mv, b, p);
-        return SettlementQueueLib.settlementSlice(mv, p, sliceAssets);
+        return SettlementQueueLib.settlementSlice(mv, p, sliceAssets, 0);
     }
 
     function sliceToLtv(uint256 d, uint256 c, uint256 t) external returns (uint256) {
         return SettlementQueueLib.sliceToLtv(d, c, t);
+    }
+
+    function settlementSlice(MarketView memory mv, PositionView memory p, uint256 sliceAssets, uint256 budget)
+        external
+        pure
+        returns (SettlementSlice memory)
+    {
+        return SettlementQueueLib.settlementSlice(mv, p, sliceAssets, budget);
     }
 }
 
@@ -538,5 +555,131 @@ contract SettlementQueueLibTest is Test {
         q.sync(_b(3), _pos(30, 100));
         (address[] memory page,) = q.settlementBorrowers(1, 10); // offset 1, want 10, size 3 → 2
         assertEq(page.length, 2, "offset+maxCount > size truncates to size-offset");
+    }
+
+    // ── budget capping ──
+
+    /// @dev Independent recompute of the supply a borrow-share cut burns, from the Morpho share formulas:
+    ///      debt is `toAssetsUp` of the cut, then the burn is `toSharesUp` of that debt.
+    function _coreBurn(MarketView memory mv, uint256 borrowShares) internal pure returns (uint256) {
+        uint256 debtAssets = Math.mulDiv(
+            borrowShares,
+            mv.totalBorrowAssets + VIRTUAL_ASSETS,
+            mv.totalBorrowShares + VIRTUAL_SHARES,
+            Math.Rounding.Ceil
+        );
+        return Math.mulDiv(
+            debtAssets, mv.totalSupplyShares + VIRTUAL_SHARES, mv.totalSupplyAssets + VIRTUAL_ASSETS, Math.Rounding.Ceil
+        );
+    }
+
+    /// @dev A budget beyond the cut's cost leaves every field alone, matching the unshrunk policy quote.
+    function test_settlementSlice_ampleBudget_matchesTheUnshrunkQuote() public view {
+        MarketView memory mv = _market(1.5e36);
+        PositionView memory p = _pos(100e18, 500e18);
+        SettlementSlice memory policy = q.settlementSlice(mv, p, 40e18, 0);
+        SettlementSlice memory funded = q.settlementSlice(mv, p, 40e18, type(uint128).max);
+
+        assertEq(funded.borrowShares, policy.borrowShares, "borrowShares untouched");
+        assertEq(funded.supplyShares, policy.supplyShares, "supplyShares untouched");
+        assertEq(funded.remainingBorrowShares, policy.remainingBorrowShares, "remaining untouched");
+    }
+
+    /// @dev A short budget shrinks the cut and the shaved shares land in the remainder, so the three fields keep
+    ///      describing one and the same position.
+    function test_settlementSlice_shortBudget_keepsFieldsConsistent() public view {
+        MarketView memory mv = _market(1.5e36);
+        PositionView memory p = _pos(100e18, 500e18);
+        SettlementSlice memory policy = q.settlementSlice(mv, p, 40e18, 0);
+        SettlementSlice memory funded = q.settlementSlice(mv, p, 40e18, policy.supplyShares / 4);
+
+        assertLt(funded.borrowShares, policy.borrowShares, "cut shrank");
+        assertEq(
+            funded.borrowShares + funded.remainingBorrowShares, p.borrowShares, "fields still span the whole position"
+        );
+        assertEq(funded.supplyShares, _coreBurn(mv, funded.borrowShares), "supply cost recomputed for the shrunk cut");
+    }
+
+    /// @dev A positive budget that funds no borrow share at all is reported as an unavailable cut, not a
+    ///      partial one. (0 is the sentinel for "no budget cap" and is covered above.)
+    function test_settlementSlice_unaffordable_isAllZero() public view {
+        MarketView memory mv = _market(1.5e36);
+        SettlementSlice memory funded = q.settlementSlice(mv, _pos(100e18, 500e18), 40e18, 1);
+
+        assertEq(funded.borrowShares, 0, "no cut");
+        assertEq(funded.supplyShares, 0, "no cost");
+        assertEq(funded.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+    }
+
+    /// @dev The contract the vault relies on: whatever budget a caller brings, the supply the core burns for the
+    ///      returned handle fits inside it, so the caller's budget accounting can never underflow.
+    /// forge-config: default.fuzz.runs = 20000
+    function testFuzz_settlementSlice_burnFitsInBudget(
+        uint256 borrowShares,
+        uint256 collateral,
+        uint256 sliceAssets,
+        uint256 budgetSupplyShares,
+        uint256 totalBorrowAssets,
+        uint256 totalBorrowShares,
+        uint256 totalSupplyAssets,
+        uint256 totalSupplyShares
+    ) public view {
+        MarketView memory mv = _fuzzMarket(totalBorrowAssets, totalBorrowShares, totalSupplyAssets, totalSupplyShares);
+        PositionView memory p = _fuzzPosition(mv, borrowShares, collateral);
+        sliceAssets = bound(sliceAssets, 1, 1e30);
+        budgetSupplyShares = bound(budgetSupplyShares, 1, mv.totalSupplyShares + VIRTUAL_SHARES);
+
+        SettlementSlice memory funded = q.settlementSlice(mv, p, sliceAssets, budgetSupplyShares);
+        if (funded.borrowShares == 0) return;
+
+        assertLe(_coreBurn(mv, funded.borrowShares), budgetSupplyShares, "burn fits the budget");
+    }
+
+    /// @dev `supplyShares` is the cut's cost, not a low estimate: budgeting exactly it funds the whole policy cut.
+    /// forge-config: default.fuzz.runs = 20000
+    function testFuzz_quotedSupplyCost_fundsTheQuotedCut(
+        uint256 borrowShares,
+        uint256 collateral,
+        uint256 sliceAssets,
+        uint256 totalBorrowAssets,
+        uint256 totalBorrowShares,
+        uint256 totalSupplyAssets,
+        uint256 totalSupplyShares
+    ) public view {
+        MarketView memory mv = _fuzzMarket(totalBorrowAssets, totalBorrowShares, totalSupplyAssets, totalSupplyShares);
+        PositionView memory p = _fuzzPosition(mv, borrowShares, collateral);
+        sliceAssets = bound(sliceAssets, 1, 1e30);
+
+        SettlementSlice memory policy = q.settlementSlice(mv, p, sliceAssets, 0);
+        if (policy.borrowShares == 0) return;
+
+        SettlementSlice memory funded = q.settlementSlice(mv, p, sliceAssets, policy.supplyShares);
+        assertEq(funded.borrowShares, policy.borrowShares, "the quoted cost funds the quoted cut");
+    }
+
+    /// @dev A market snapshot with share rates a live market can actually hold. Leaving assets and shares
+    ///      independent lets the fuzzer build books that no market reaches (all debt, no debt shares), where the
+    ///      core's own share math overflows long before any settlement policy runs.
+    function _fuzzMarket(uint256 tba, uint256 tbs, uint256 tsa, uint256 tss) internal pure returns (MarketView memory) {
+        uint256 borrowAssets = bound(tba, 0, 1e30);
+        uint256 supplyAssets = bound(tsa, 0, 1e30);
+        return MarketView({
+            totalSupplyAssets: supplyAssets,
+            totalSupplyShares: bound(tss, 0, MAX_SHARE_RATE * (supplyAssets + VIRTUAL_ASSETS)),
+            totalBorrowAssets: borrowAssets,
+            totalBorrowShares: bound(tbs, 0, MAX_SHARE_RATE * (borrowAssets + VIRTUAL_ASSETS)),
+            price: 1.5e36,
+            lltv: 0.86e18
+        });
+    }
+
+    /// @dev A position never holds more borrow shares than the book, and a lender never more supply shares.
+    function _fuzzPosition(MarketView memory mv, uint256 borrowShares, uint256 collateral)
+        internal
+        pure
+        returns (PositionView memory)
+    {
+        uint256 shares = mv.totalBorrowShares == 0 ? 0 : bound(borrowShares, 1, mv.totalBorrowShares);
+        return _pos(shares, bound(collateral, 1, 1e30));
     }
 }

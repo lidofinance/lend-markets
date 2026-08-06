@@ -8,7 +8,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {SettlementConfig, SettlementQuote, SettlementSlice} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementSlice, SettlementQuote} from "../../src/types/SettlementTypes.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
@@ -41,7 +41,8 @@ contract SettlementTest is LidoLendSetup {
         address borrower;
         uint256 exactAssets;
         uint256 exactSupplyShares;
-        uint256 plusOneSupplyShares;
+        uint256 exactBorrowShares;
+        uint256 plusOneBorrowShares;
     }
 
     struct TailExecutionState {
@@ -163,16 +164,10 @@ contract SettlementTest is LidoLendSetup {
         uint256 supplierAssets = _supplyAssetsDown(supplierShares, accrued);
         state.exactAssets = supplierAssets / 2;
         state.exactSupplyShares = _supplySharesUp(state.exactAssets, accrued);
-        state.plusOneSupplyShares = _supplySharesUp(state.exactAssets + 1, accrued);
         assertEq(
             _supplyAssetsDown(state.exactSupplyShares, accrued),
             state.exactAssets,
             "exact boundary is representable through core share conversion"
-        );
-        assertEq(
-            _supplyAssetsDown(state.plusOneSupplyShares, accrued),
-            state.exactAssets + 1,
-            "one-wei overshoot is representable through core share conversion"
         );
         assertNotEq(
             state.exactSupplyShares,
@@ -190,10 +185,19 @@ contract SettlementTest is LidoLendSetup {
         uint256 tunedSupplierAssets = _supplyAssetsDown(supplierShares, tuned);
         uint256 tunedFree = uint256(tuned.totalSupplyAssets) - uint256(tuned.totalBorrowAssets);
         assertEq(tunedSupplierAssets - tunedFree, state.exactAssets, "precondition: exact lender tail");
+        state.exactBorrowShares =
+            SharesMathLib.toSharesDown(state.exactAssets, tuned.totalBorrowAssets, tuned.totalBorrowShares);
+        state.plusOneBorrowShares =
+            SharesMathLib.toSharesDown(state.exactAssets + 1, tuned.totalBorrowAssets, tuned.totalBorrowShares);
         assertEq(
-            _supplyAssetsDown(state.plusOneSupplyShares, tuned),
+            SharesMathLib.toAssetsUp(state.exactBorrowShares, tuned.totalBorrowAssets, tuned.totalBorrowShares),
+            state.exactAssets,
+            "precondition: exact tail is representable by borrow shares"
+        );
+        assertEq(
+            SharesMathLib.toAssetsUp(state.plusOneBorrowShares, tuned.totalBorrowAssets, tuned.totalBorrowShares),
             state.exactAssets + 1,
-            "precondition: tail + 1 remains exact after liquidity tuning"
+            "precondition: tail + 1 is representable by borrow shares"
         );
         assertGt(tunedFree, 0, "precondition: market retains free liquidity");
         assertNotEq(
@@ -204,9 +208,9 @@ contract SettlementTest is LidoLendSetup {
         assertGt(m.core.position(m.id, otherSupplier).supplyShares, 0, "precondition: multiple suppliers");
 
         _setFullCloseRootPolicy();
-        (address root,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower(0);
         assertEq(root, state.borrower, "precondition: borrower is the queue root");
-        SettlementQuote memory quote = m.controller.settlementFor(state.borrower);
+        SettlementQuote memory quote = m.controller.settlementFor(state.borrower, 0);
         assertEq(quote.personal.supplyShares, 0, "precondition: no personal supply quote");
         assertEq(quote.personal.borrowShares, 0, "precondition: root cut uses automatic policy only");
     }
@@ -220,7 +224,7 @@ contract SettlementTest is LidoLendSetup {
         _setFullCloseRootPolicy();
         uint256 shares = _seedShortLiquidity(lender, borrower);
 
-        (address root, SettlementSlice memory slice) = m.controller.nextSettlementBorrower();
+        (address root, SettlementSlice memory slice) = m.controller.nextSettlementBorrower(0);
         assertEq(root, borrower, "sole borrower is root");
         assertGt(slice.supplyShares, 0, "absolute root policy exposes its supply cost");
         assertGt(slice.borrowShares, 0, "absolute root policy exposes its borrow anchor");
@@ -246,10 +250,10 @@ contract SettlementTest is LidoLendSetup {
         state.shares = _seedShortLiquidity(state.lender, state.borrower);
         state.personalSlice = _setPositivePersonalLtv(state.borrower);
 
-        SettlementQuote memory quote = m.controller.settlementFor(state.borrower);
-        uint256 supplyQuote = quote.personal.supplyShares;
+        SettlementQuote memory quote = m.controller.settlementFor(state.borrower, 0);
         MorphoMarket memory marketBefore = m.core.market(m.id);
-        state.expectedDebt = supplyQuote.toAssetsDown(marketBefore.totalSupplyAssets, marketBefore.totalSupplyShares);
+        state.expectedDebt =
+            quote.personal.borrowShares.toAssetsUp(marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
         state.freeBefore = _freeLiquidity(m);
 
         (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
@@ -258,7 +262,7 @@ contract SettlementTest is LidoLendSetup {
         assertGt(sharesBurned, 0, "positive settlement burns vault shares");
         assertEq(loanAssets, 0, "targeted settlement does not withdraw liquidity");
         assertEq(debtCanceled, state.expectedDebt, "core consumes the controller's personal quote");
-        assertLe(debtCanceled, state.personalSlice, "supply-anchor does not exceed the personal asset slice");
+        assertLe(debtCanceled, state.personalSlice + 1, "borrow-share rounding adds at most one asset wei");
         assertGt(collateralSeized, 0, "personal settlement seizes collateral");
         assertEq(_freeLiquidity(m), state.freeBefore, "targeted settlement preserves free liquidity");
     }
@@ -281,8 +285,8 @@ contract SettlementTest is LidoLendSetup {
         state.shares = _seedShortLiquidity(state.lender, state.borrower);
         _setPositivePersonalLtv(state.borrower);
 
-        SettlementQuote memory quote = m.controller.settlementFor(state.borrower);
-        (address root, SettlementSlice memory automatic) = m.controller.nextSettlementBorrower();
+        SettlementQuote memory quote = m.controller.settlementFor(state.borrower, 0);
+        (address root, SettlementSlice memory automatic) = m.controller.nextSettlementBorrower(0);
         assertEq(root, state.borrower, "borrower is the live queue root");
         assertGt(quote.personal.supplyShares, 0, "personal candidate is positive");
         assertGt(quote.personal.remainingBorrowShares, 0, "personal target remains partial despite dust floor");
@@ -291,8 +295,10 @@ contract SettlementTest is LidoLendSetup {
         assertEq(automatic.supplyShares, quote.queueRoot.supplyShares, "automatic path selects root candidate");
 
         MorphoMarket memory marketBefore = m.core.market(m.id);
-        uint256 expectedPersonalDebt = _supplyAssetsDown(quote.personal.supplyShares, marketBefore);
-        uint256 rootDebt = _supplyAssetsDown(quote.queueRoot.supplyShares, marketBefore);
+        uint256 expectedPersonalDebt =
+            quote.personal.borrowShares.toAssetsUp(marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
+        uint256 rootDebt =
+            quote.queueRoot.borrowShares.toAssetsUp(marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
         assertGt(rootDebt, expectedPersonalDebt, "root candidate cancels more debt");
 
         (, uint256 loanAssets,, uint256 debtCanceled) =
@@ -311,7 +317,7 @@ contract SettlementTest is LidoLendSetup {
         address borrower = _actor("borrower");
         uint256 shares = _seedShortLiquidity(lender, borrower);
 
-        SettlementQuote memory quote = m.controller.settlementFor(borrower);
+        SettlementQuote memory quote = m.controller.settlementFor(borrower, 0);
         assertEq(quote.personal.supplyShares, 0, "no personal supply quote");
         assertEq(quote.personal.borrowShares, 0, "no personal borrow quote");
         assertEq(quote.personal.remainingBorrowShares, 0, "zero quote has zero remainder field");
@@ -340,13 +346,13 @@ contract SettlementTest is LidoLendSetup {
         m.borrow(borrower, BORROW);
 
         m.setSettlementLtv(borrower, 1);
-        SettlementQuote memory quote = m.controller.settlementFor(borrower);
+        SettlementQuote memory quote = m.controller.settlementFor(borrower, 0);
         uint256 borrowShares = quote.personal.borrowShares;
 
         vm.prank(supplier);
         m.core.setAuthorization(address(this), true);
         vm.expectRevert(bytes("settlement exceeds supply"));
-        m.core.settle(m.params, 0, borrowShares, supplier, borrower, supplier);
+        m.core.settle(m.params, borrowShares, supplier, borrower, supplier);
     }
 
     /// @dev The controller, not core, caps automatic root settlement by the concrete supplier's live illiquid tail.
@@ -361,7 +367,7 @@ contract SettlementTest is LidoLendSetup {
 
         vm.prank(state.supplier);
         vm.expectRevert(ILidoLendMarketController.SettlementExceedsSettleableSupply.selector);
-        m.core.settle(m.params, state.plusOneSupplyShares, 0, state.supplier, state.borrower, state.supplier);
+        m.core.settle(m.params, state.plusOneBorrowShares, state.supplier, state.borrower, state.supplier);
 
         assertEq(
             m.core.position(m.id, state.supplier).supplyShares,
@@ -372,13 +378,16 @@ contract SettlementTest is LidoLendSetup {
         execution.marketBefore = m.core.market(m.id);
         execution.borrowerBefore = m.core.position(m.id, state.borrower);
         execution.collateralBalanceBefore = m.collateralToken.balanceOf(state.supplier);
-        execution.expectedBorrowSharesCanceled = Math.mulDiv(
-            state.exactAssets,
-            uint256(execution.marketBefore.totalBorrowShares) + CORE_VIRTUAL_SHARES,
-            uint256(execution.marketBefore.totalBorrowAssets) + CORE_VIRTUAL_ASSETS,
-            Math.Rounding.Ceil
+        execution.expectedBorrowSharesCanceled = state.exactBorrowShares;
+        execution.expectedCollateralSeized = Math.mulDiv(
+            SharesMathLib.toAssetsDown(
+                state.exactBorrowShares,
+                execution.marketBefore.totalBorrowAssets,
+                execution.marketBefore.totalBorrowShares
+            ),
+            ORACLE_PRICE_SCALE,
+            m.oracle.price()
         );
-        execution.expectedCollateralSeized = Math.mulDiv(state.exactAssets, ORACLE_PRICE_SCALE, m.oracle.price());
 
         vm.prank(state.supplier);
         (
@@ -386,13 +395,13 @@ contract SettlementTest is LidoLendSetup {
             execution.debtCanceled,
             execution.borrowSharesCanceled,
             execution.supplySharesBurned
-        ) = m.core.settle(m.params, state.exactSupplyShares, 0, state.supplier, state.borrower, state.supplier);
+        ) = m.core.settle(m.params, state.exactBorrowShares, state.supplier, state.borrower, state.supplier);
 
         MorphoMarket memory marketAfter = m.core.market(m.id);
         MorphoPosition memory borrowerAfter = m.core.position(m.id, state.borrower);
 
         assertEq(execution.debtCanceled, state.exactAssets, "exact lender tail settles");
-        assertEq(execution.supplySharesBurned, state.exactSupplyShares, "core burns the exact supply anchor");
+        assertEq(execution.supplySharesBurned, state.exactSupplyShares, "core burns the exact supply cost");
         assertEq(
             execution.borrowSharesCanceled, execution.expectedBorrowSharesCanceled, "borrow-share conversion is exact"
         );
@@ -467,7 +476,7 @@ contract SettlementTest is LidoLendSetup {
         }
         assertEq(riskyKey, 2 * safeKey, "equal debt and half collateral doubles risk key");
 
-        (address root,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower(0);
         assertEq(root, risky, "riskiest borrower remains root");
     }
 

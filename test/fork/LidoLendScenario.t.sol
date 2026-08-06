@@ -11,7 +11,7 @@ import {Test} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 import {ForkTest} from "./helpers/ForkTest.sol";
 
@@ -286,29 +286,29 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
 
         // (1) Initial queue order: highest-LTV borrower is at the root.
         assertEq(ctx.controller.settlementBorrowersCount(), 3, "all three active borrowers tracked");
-        (address root,) = ctx.controller.nextSettlementBorrower();
+        (address root,) = ctx.controller.nextSettlementBorrower(0);
         assertEq(root, BORROWER, "highest-LTV borrower at root");
 
         // (2) A partial cut on the root, half the allowed slice. The full slice is sized to push the
         //     root's key just below the runner-up, so cutting half reduces the key without flipping.
-        uint256 firstCutShares = _sliceShares(ctx) / 2;
+        uint256 firstCutShares = _rootCutShares(ctx) / 2;
         vm.prank(LENDER);
-        ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, BORROWER, LENDER);
-        (root,) = ctx.controller.nextSettlementBorrower();
+        ctx.market.settle(ctx.marketParams, firstCutShares, LENDER, BORROWER, LENDER);
+        (root,) = ctx.controller.nextSettlementBorrower(0);
         assertEq(root, BORROWER, "BORROWER still highest after first partial cut");
 
         // (3) Targeting the second borrower while it isn't the queue root is rejected by the controller hook:
         //     a non-root borrower without a personal settlement LTV has a zero slice, so any cut exceeds it.
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementExceedsAllowed()"));
-        ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (4) SECOND_BORROWER opts in to a 5% post-cut LTV — they are now eligible regardless of
         //     queue position. The same cut now succeeds against them.
         vm.prank(SECOND_BORROWER);
         ctx.controller.setSettlementLtv(0.05e18);
         vm.prank(LENDER);
-        ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (5) THIRD_BORROWER (lowest LTV, no settlement LTV) is never touched throughout the scenario.
         Position memory _pLow = ctx.market.position(ctx.id, THIRD_BORROWER);
@@ -343,11 +343,11 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 2 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address root,) = ctx.controller.nextSettlementBorrower();
+        (address root,) = ctx.controller.nextSettlementBorrower(0);
         assertEq(root, BORROWER, "high-LTV borrower is the queue head");
 
         // Cut sized to the allowed slice at the real rate (reused after the rebase is cleared).
-        uint256 cut = _sliceShares(ctx) / 2;
+        uint256 cut = _rootCutShares(ctx) / 2;
 
         // Negative rebase: drop the wstETH rate so the head's collateral is worth less than its
         // debt (bad debt), while the tail stays healthy.
@@ -362,13 +362,13 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
         // guard fires on every settle path.
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementBadDebt()"));
-        ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, cut, LENDER, BORROWER, LENDER);
 
         // Restore the rate; the head is solvent again; the same cut against the head now succeeds.
         vm.clearMockedCalls();
         assertFalse(ctx.controller.hasBadDebt(), "head solvent after restore");
         vm.prank(LENDER);
-        ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, cut, LENDER, BORROWER, LENDER);
     }
 
     /// @notice Settle works on an unhealthy-but-solvent position (LLTV < LTV < 100%).
@@ -407,12 +407,18 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
         // The cut succeeds even though the borrower is unhealthy.
         uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
         uint256 cut = lenderShares / 10;
+        Market memory marketBefore = ctx.market.market(ctx.id);
+        uint256 expectedDebt =
+            SharesMathLib.toAssetsUp(cut, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
+        uint256 expectedCollateral = SharesMathLib.toAssetsDown(
+                cut, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares
+            ) * 1e36 / droppedPrice;
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
-            ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
+            ctx.market.settle(ctx.marketParams, cut, LENDER, BORROWER, LENDER);
 
-        assertGt(debtCanceled, 0, "debt cancelled");
-        assertEq(collateralSeized, debtCanceled * 1e36 / droppedPrice, "collateral seized at oracle rate");
+        assertEq(debtCanceled, expectedDebt, "debt uses the up-rounded borrow-share value");
+        assertEq(collateralSeized, expectedCollateral, "collateral uses the down-rounded borrow-share value");
         uint128 rcAfter = ctx.market.position(ctx.id, BORROWER).collateral;
         assertEq(uint256(rcAfter), uint256(rc) - collateralSeized, "borrower collateral debited");
     }
@@ -467,14 +473,14 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 17 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address rootBefore,) = ctx.controller.nextSettlementBorrower();
+        (address rootBefore,) = ctx.controller.nextSettlementBorrower(0);
         uint256 sliceBefore = _dashboardSliceAssets(ctx.controller, rootBefore);
 
         // BORROWER opts in to a 30% post-cut LTV — a deep target.
         vm.prank(BORROWER);
         ctx.controller.setSettlementLtv(0.3e18);
 
-        (address rootAfter,) = ctx.controller.nextSettlementBorrower();
+        (address rootAfter,) = ctx.controller.nextSettlementBorrower(0);
         uint256 sliceAfter = _dashboardSliceAssets(ctx.controller, rootAfter);
         assertEq(rootAfter, BORROWER, "root unchanged");
         assertGt(sliceAfter, sliceBefore, "settlement LTV raised the slice");
@@ -510,7 +516,7 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 3 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address root,) = ctx.controller.nextSettlementBorrower();
+        (address root,) = ctx.controller.nextSettlementBorrower(0);
         assertEq(root, BORROWER, "BORROWER is queue root");
 
         uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
@@ -519,21 +525,27 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
         // Targeting tail SECOND_BORROWER without a settlement LTV → zero slice → hook revert.
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementExceedsAllowed()"));
-        ctx.market.settle(ctx.marketParams, 0, cut, LENDER, SECOND_BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, cut, LENDER, SECOND_BORROWER, LENDER);
 
         // SECOND_BORROWER opts in to 5% post-cut LTV — slice is large enough for the cut.
         vm.prank(SECOND_BORROWER);
         ctx.controller.setSettlementLtv(0.05e18);
 
         uint128 colBefore = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
+        Market memory marketBefore = ctx.market.market(ctx.id);
+        uint256 expectedDebt =
+            SharesMathLib.toAssetsUp(cut, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
+        uint256 expectedCollateral = SharesMathLib.toAssetsDown(
+                cut, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares
+            ) * 1e36 / ctx.price;
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
-            ctx.market.settle(ctx.marketParams, 0, cut, LENDER, SECOND_BORROWER, LENDER);
+            ctx.market.settle(ctx.marketParams, cut, LENDER, SECOND_BORROWER, LENDER);
 
         uint128 colAfter = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
         assertEq(uint256(colAfter), uint256(colBefore) - collateralSeized, "tail collateral debited");
-        assertGt(debtCanceled, 0, "tail debt canceled");
-        assertEq(collateralSeized, debtCanceled * 1e36 / ctx.price, "oracle-rate cut");
+        assertEq(debtCanceled, expectedDebt, "debt uses the up-rounded borrow-share value");
+        assertEq(collateralSeized, expectedCollateral, "collateral uses the down-rounded borrow-share value");
     }
 
     /// @notice A banned borrower's collateral never settles into `active`, and its borrow is hard-blocked.
@@ -615,29 +627,29 @@ contract LidoLendScenarioTest is Test, LidoLendDeployer, ForkTest {
     }
 
     function _settleAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
-        uint256 sharesToExit = _sliceShares(ctx);
+        uint256 borrowShares = _rootCutShares(ctx);
+        Market memory marketBefore = ctx.market.market(ctx.id);
+        uint256 expectedDebt =
+            SharesMathLib.toAssetsUp(borrowShares, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
+        uint256 expectedCollateral = SharesMathLib.toAssetsDown(
+                borrowShares, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares
+            ) * 1e36 / ctx.price;
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
-            ctx.market.settle(ctx.marketParams, 0, sharesToExit, LENDER, BORROWER, LENDER);
+            ctx.market.settle(ctx.marketParams, borrowShares, LENDER, BORROWER, LENDER);
 
-        uint256 expectedCollateralSeized = debtCanceled * 1e36 / ctx.price;
-        assertEq(collateralSeized, expectedCollateralSeized, "oracle-rate collateral");
-        assertGt(debtCanceled, 0, "settled the allowed slice");
+        assertEq(debtCanceled, expectedDebt, "debt uses the up-rounded borrow-share value");
+        assertEq(collateralSeized, expectedCollateral, "collateral uses the down-rounded borrow-share value");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "lender received real wstETH");
 
         _assertBorrowerCollateralDebited(ctx, borrowerCollateral, collateralSeized);
     }
 
-    /// @dev Loan-asset slice the controller will allow against the current queue root, converted to
-    ///      lender supply shares with Morpho's virtual-offset rounding.
-    function _sliceShares(TestMarket memory ctx) internal view returns (uint256) {
-        (address root,) = ctx.controller.nextSettlementBorrower();
-        uint256 sliceAssets = _dashboardSliceAssets(ctx.controller, root);
-        if (sliceAssets == type(uint256).max) return type(uint256).max;
-        Market memory _m = ctx.market.market(ctx.id);
-        (uint128 totalSupplyAssets, uint128 totalSupplyShares) = (_m.totalSupplyAssets, _m.totalSupplyShares);
-        return SharesMathLib.toSharesDown(sliceAssets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
+    /// @dev Borrow-share cut allowed for the current queue root.
+    function _rootCutShares(TestMarket memory ctx) internal view returns (uint256) {
+        (, SettlementSlice memory slice) = ctx.controller.nextSettlementBorrower(0);
+        return slice.borrowShares;
     }
 
     function _maxBorrow(uint256 collateral, uint256 price) internal pure returns (uint256) {

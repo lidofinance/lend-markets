@@ -262,9 +262,9 @@ Payload for the `Settle` hook.
 | `borrower` | `address` | The address whose debt is canceled and collateral seized. |
 | `receiver` | `address` | The address receiving the seized collateral. |
 | `supplySharesBurned` | `uint256` | The supply shares burned from onBehalf, after resolution. |
-| `borrowAssetsCanceled` | `uint256` | The loan-token debt canceled, computed in core. |
+| `borrowAssetsCanceled` | `uint256` | The loan-token debt canceled, computed in core. Warning: this is the canceled shares priced up, so it can exceed the market's `totalBorrowAssets` by one unit, and the core floors that total at zero when it applies the cut. A controller deriving post-cut state from this value must apply the same floor instead of subtracting directly. |
 | `borrowSharesCanceled` | `uint256` | The borrow shares burned from borrower, computed in core. |
-| `seizedAssets` | `uint256` | The collateral-token amount seized, computed in core. |
+| `seizedAssets` | `uint256` | The collateral-token amount seized, computed in core. This is the canceled shares priced down, so it can be worth up to one loan-asset unit less than `borrowAssetsCanceled`. |
 
 ### `CollateralActivationConfig`
 
@@ -611,20 +611,23 @@ O(1): it checks the riskiest tracked position (the highest debt/collateral), who
 ### `nextSettlementBorrower`
 
 ```solidity
-function nextSettlementBorrower() external view returns (address borrower, SettlementSlice memory slice);
+function nextSettlementBorrower(
+    uint256 budgetSupplyShares
+) external view returns (address borrower, SettlementSlice memory slice);
 ```
 
-The queue root and the larger of its absolute root-policy and positive personal settlement-LTV cuts. A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
+The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance or the borrower's own settlement-LTV allowance — shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 for the policy cut itself, unshrunk. A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
 
 ### `settlementFor`
 
 ```solidity
 function settlementFor(
-    address borrower
+    address borrower,
+    uint256 budgetSupplyShares
 ) external view returns (SettlementQuote memory quote);
 ```
 
-The borrower's personal cut and its prospective queue-root cut, each as the two anchors accepted by core settlement. The queue-root quote does not assert that the borrower is currently the root. A policy that grants no positive cut is represented by an all-zero slice.
+The borrower's personal cut and its prospective queue-root cut, each shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 for the policy cuts themselves, unshrunk. The queue-root quote does not assert that the borrower is currently the root. A candidate that grants no cut is represented by an all-zero slice.
 
 ### `settlementBorrowers`
 

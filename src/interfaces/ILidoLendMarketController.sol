@@ -203,15 +203,23 @@ interface ILidoLendMarketController is
     ///      implies every tracked position is solvent, so the settle gate need only check that one.
     function hasBadDebt() external view returns (bool);
 
-    /// @notice The queue root and the larger of its absolute root-policy and positive personal settlement-LTV cuts.
-    ///         A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower`
-    ///         is address(0) when the queue is empty.
-    function nextSettlementBorrower() external view returns (address borrower, SettlementSlice memory slice);
+    /// @notice The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance
+    ///         or the borrower's own settlement-LTV allowance — shrunk to what `budgetSupplyShares` of core supply
+    ///         funds. Pass 0 for the policy cut itself, unshrunk. A concrete lender may execute the root-policy
+    ///         part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
+    function nextSettlementBorrower(uint256 budgetSupplyShares)
+        external
+        view
+        returns (address borrower, SettlementSlice memory slice);
 
-    /// @notice The borrower's personal cut and its prospective queue-root cut, each as the two anchors accepted by
-    ///         core settlement. The queue-root quote does not assert that the borrower is currently the root. A
-    ///         policy that grants no positive cut is represented by an all-zero slice.
-    function settlementFor(address borrower) external view returns (SettlementQuote memory quote);
+    /// @notice The borrower's personal cut and its prospective queue-root cut, each shrunk to what
+    ///         `budgetSupplyShares` of core supply funds. Pass 0 for the policy cuts themselves, unshrunk. The
+    ///         queue-root quote does not assert that the borrower is currently the root. A candidate that grants
+    ///         no cut is represented by an all-zero slice.
+    function settlementFor(address borrower, uint256 budgetSupplyShares)
+        external
+        view
+        returns (SettlementQuote memory quote);
 
     /// @notice A window of queued borrowers (approximate top-down order) and their risk keys: up to
     ///         `maxCount` starting at `offset`. Past the end the arrays are empty, so callers can page.
