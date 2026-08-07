@@ -2,6 +2,7 @@
 pragma solidity 0.8.35;
 
 import {MarketParams, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
@@ -10,7 +11,7 @@ import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
-import {SettlementConfig, SettlementQuote} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementSlice, SettlementQuote} from "../../src/types/SettlementTypes.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {IrmKind, Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
@@ -24,9 +25,7 @@ import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 ///         checks. Oracle price is seeded (non-parity); distress is induced via a deliberate price crash.
 contract LidoLendERC4626Test is LidoLendSetup {
     using MarketActions for Market;
-
-    uint256 internal constant CORE_VIRTUAL_ASSETS = 1;
-    uint256 internal constant CORE_VIRTUAL_SHARES = 1e6;
+    using SharesMathLib for uint256;
 
     MockERC20 internal loan;
     MockERC20 internal collateral;
@@ -44,14 +43,10 @@ contract LidoLendERC4626Test is LidoLendSetup {
     }
 
     function _settlementForDebtAssets(Market storage m, address borrower) internal view returns (uint256) {
-        SettlementQuote memory quote = m.controller.settlementFor(borrower);
-        assertGt(quote.personal.remainingBorrowShares, 0, "precondition: helper models a partial supply-anchored cut");
+        SettlementQuote memory quote = m.controller.settlementFor(borrower, 0);
+        assertGt(quote.personal.remainingBorrowShares, 0, "precondition: personal cut is partial");
         MorphoMarket memory market_ = m.core.market(m.id);
-        return Math.mulDiv(
-            quote.personal.supplyShares,
-            uint256(market_.totalSupplyAssets) + CORE_VIRTUAL_ASSETS,
-            uint256(market_.totalSupplyShares) + CORE_VIRTUAL_SHARES
-        );
+        return quote.personal.borrowShares.toAssetsUp(market_.totalBorrowAssets, market_.totalBorrowShares);
     }
 
     /// @dev Lender liquidity + a borrower at a safe LTV, then a price crash to an unhealthy-but-solvent
@@ -152,8 +147,15 @@ contract LidoLendERC4626Test is LidoLendSetup {
             expected[0] = m.vault.previewRedeem(shares);
             expected[1] =
                 Math.mulDiv(m.core.position(m.id, address(m.vault)).supplyShares, shares, m.vault.totalSupply());
-            SettlementQuote memory quote = m.controller.settlementFor(borrower);
-            expected[2] = Math.min(quote.personal.supplyShares, expected[1]);
+            SettlementQuote memory quote = m.controller.settlementFor(borrower, 0);
+            MorphoMarket memory market_ = m.core.market(m.id);
+            uint256 budgetAssets = expected[1].toAssetsDown(market_.totalSupplyAssets, market_.totalSupplyShares);
+            uint256 borrowShares = Math.min(
+                quote.personal.borrowShares,
+                budgetAssets.toSharesDown(market_.totalBorrowAssets, market_.totalBorrowShares)
+            );
+            uint256 debtAssets = borrowShares.toAssetsUp(market_.totalBorrowAssets, market_.totalBorrowShares);
+            expected[2] = debtAssets.toSharesUp(market_.totalSupplyAssets, market_.totalSupplyShares);
             expected[3] = m.core.position(m.id, address(m.vault)).supplyShares;
             expected[4] = m.core.position(m.id, borrower).borrowShares;
         }
@@ -170,7 +172,7 @@ contract LidoLendERC4626Test is LidoLendSetup {
             expected[2],
             "settlement consumes the independently modeled gross request budget"
         );
-        assertEq(sharesBurned, shares, "exact-budget supply anchor services the whole request");
+        assertEq(sharesBurned, shares, "the whole request is serviced");
         assertGt(collateralSeized, 0, "targeted request seizes collateral");
         assertGt(debtCanceled, 0, "targeted request cancels debt");
         assertLt(m.core.position(m.id, borrower).borrowShares, expected[4], "borrower debt reduced");

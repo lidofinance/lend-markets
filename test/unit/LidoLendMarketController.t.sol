@@ -14,7 +14,7 @@ import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketCon
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
-import {SettlementConfig, SettlementQuote, SettlementSlice} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementSlice, SettlementQuote} from "../../src/types/SettlementTypes.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
 import {WAD, BPS} from "../../src/libs/Constants.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
@@ -435,7 +435,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
         vm.prank(borrower);
         c.setSettlementLtv(1); // free liquidity remains, so this positive cap is personal-policy only
-        (, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower();
+        (, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower(0);
         uint256 allowedShares = allowedSlice.borrowShares;
         assertGt(allowedShares, 0, "personal policy opens a positive hook cap");
 
@@ -504,7 +504,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         m.borrow(a, 80 ether);
         m.borrow(b, 80 ether);
 
-        (address root,) = c.nextSettlementBorrower();
+        (address root,) = c.nextSettlementBorrower(0);
         address nonRoot = root == a ? b : a; // non-root, no personal LTV -> allowedSlice == 0
 
         bytes memory data = abi.encode(
@@ -566,7 +566,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function test_settle_admittedAtExactCap_partialSlice() public {
         Market storage m = _m();
         (, address borrower) = _seedBorrower(10 ether, 100 ether, 10 ether); // zero liquidity enables root policy
-        (address root, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower();
+        (address root, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower(0);
         uint256 allowedShares = allowedSlice.borrowShares;
         uint256 remaining = allowedSlice.remainingBorrowShares;
         assertEq(root, borrower, "sole borrower is the queue root");
@@ -611,13 +611,13 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         m.borrow(a, 100 ether); // LTV 0.5
         m.borrow(b, 100 ether); // LTV 0.25 -> less risky -> non-root
 
-        (address root,) = c.nextSettlementBorrower();
+        (address root,) = c.nextSettlementBorrower(0);
         address nonRoot = root == a ? b : a;
 
         vm.prank(nonRoot);
         c.setSettlementLtv(0.1e18); // below the non-root's current LTV -> opens a positive slice
 
-        uint256 borrowShares = c.settlementFor(nonRoot).personal.borrowShares;
+        uint256 borrowShares = c.settlementFor(nonRoot, 0).personal.borrowShares;
         assertGt(borrowShares, 0, "settlement-LTV opt-in makes the non-root eligible");
 
         bytes memory data = abi.encode(
@@ -1290,7 +1290,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         // genuine partial cut (does not strand sub-floor collateral, so it is not lifted to a full close).
         (, address borrower) = _seedBorrower(100 ether, 1000 ether, 100 ether);
 
-        (, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower();
+        (, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower(0);
         uint256 allowedShares = allowedSlice.borrowShares;
         assertGt(allowedShares, 0, "borrower is the eligible queue root");
 
@@ -1409,7 +1409,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         m.borrow(risky, 100 ether * 1300 / 1000 * 78 / 100); // ~78% LTV -> bad debt once halved
         m.borrow(safe, 100 ether * 1300 / 1000 * 30 / 100); // ~30% LTV -> stays solvent when halved
 
-        (address root,) = c.nextSettlementBorrower();
+        (address root,) = c.nextSettlementBorrower(0);
         assertEq(root, risky, "the riskier borrower is the queue root");
 
         uint256 live = MockPriceOracle(address(m.oracle)).price();
@@ -1458,7 +1458,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         m.borrow(safe, 3 ether);
         m.borrow(risky, 7.5 ether);
 
-        (address root,) = controller.nextSettlementBorrower();
+        (address root,) = controller.nextSettlementBorrower(0);
         (, uint256[] memory keys) = controller.settlementBorrowers(0, 2);
         assertEq(root, risky, "higher true key is root");
         assertGt(keys[0], type(uint96).max, "ordinary 6-decimal position exceeds uint96");
@@ -1492,7 +1492,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         // Healthy: large collateral above the floor, a small borrow -> far from bad debt, partial slice.
         (, address borrower) = _seedBorrower(50 ether, 1000 ether, 50 ether);
 
-        (, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower();
+        (, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower(0);
         uint256 allowedShares = allowedSlice.borrowShares;
         assertGt(allowedShares, 0, "healthy borrower is the eligible queue root");
 
@@ -1527,7 +1527,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     /// @dev `nextSettlementBorrower` on an empty queue returns the zero tuple (no root, all-zero slice).
     function test_nextSettlementBorrower_emptyQueue() public view {
-        (address borrower, SettlementSlice memory slice) = c.nextSettlementBorrower();
+        (address borrower, SettlementSlice memory slice) = c.nextSettlementBorrower(0);
         assertEq(borrower, address(0), "no root in an empty queue");
         assertEq(slice.supplyShares, 0, "supplyShares zero");
         assertEq(slice.borrowShares, 0, "borrowShares zero");
@@ -1567,19 +1567,19 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
 
         address untracked = _actor("untracked"); // never borrowed, no personal LTV -> ineligible
-        SettlementQuote memory quote = c.settlementFor(untracked);
+        SettlementQuote memory quote = c.settlementFor(untracked, 0);
         assertEq(quote.personal.supplyShares, 0, "untracked personal supplyShares zero");
         assertEq(quote.personal.borrowShares, 0, "untracked personal borrowShares zero");
         assertEq(quote.queueRoot.supplyShares, 0, "untracked queue-root supplyShares zero");
         assertEq(quote.queueRoot.borrowShares, 0, "untracked queue-root borrowShares zero");
 
-        (address root, SettlementSlice memory nextSlice) = c.nextSettlementBorrower();
+        (address root, SettlementSlice memory nextSlice) = c.nextSettlementBorrower(0);
         assertEq(root, borrower, "sole borrower is the queue root");
-        quote = c.settlementFor(borrower);
-        assertGt(nextSlice.supplyShares, 0, "absolute root policy quotes a supply anchor");
+        quote = c.settlementFor(borrower, 0);
+        assertGt(nextSlice.supplyShares, 0, "absolute root policy quotes a supply cost");
         assertGt(nextSlice.borrowShares, 0, "absolute root policy quotes a debt cut");
         assertGt(nextSlice.remainingBorrowShares, 0, "configured root cut is partial");
-        assertEq(quote.personal.supplyShares, 0, "personal supply anchor is zero before opt-in");
+        assertEq(quote.personal.supplyShares, 0, "personal supply cost is zero before opt-in");
         assertEq(quote.personal.borrowShares, 0, "personal borrow anchor is zero before opt-in");
         assertEq(quote.queueRoot.supplyShares, nextSlice.supplyShares, "prospective queue-root supply quote");
         assertEq(quote.queueRoot.borrowShares, nextSlice.borrowShares, "prospective queue-root borrow quote");
@@ -1587,12 +1587,65 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         vm.prank(borrower);
         c.setSettlementLtv(1); // every positive-debt position is above this target
 
-        (, nextSlice) = c.nextSettlementBorrower();
-        quote = c.settlementFor(borrower);
+        (, nextSlice) = c.nextSettlementBorrower(0);
+        quote = c.settlementFor(borrower, 0);
         assertGt(quote.personal.supplyShares, 0, "personal policy opens a positive quote");
         assertEq(quote.personal.supplyShares, nextSlice.supplyShares, "personal supply quote wins");
         assertEq(quote.personal.borrowShares, nextSlice.borrowShares, "personal borrow quote wins");
         assertEq(quote.personal.remainingBorrowShares, nextSlice.remainingBorrowShares, "personal remainder wins");
+    }
+
+    /// @dev A budget beyond the policy cost leaves the quote alone, so an ample real budget answers exactly what
+    ///      the 0 request for the unshrunk policy cut does.
+    function test_settlementQuotes_ampleBudget_matchesTheUncappedQuote() public {
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
+        vm.prank(borrower);
+        c.setSettlementLtv(1);
+
+        (address root, SettlementSlice memory plainSlice) = c.nextSettlementBorrower(0);
+        (address budgetedRoot, SettlementSlice memory budgetedSlice) = c.nextSettlementBorrower(type(uint128).max);
+        assertEq(budgetedRoot, root, "same root");
+        assertEq(budgetedSlice.borrowShares, plainSlice.borrowShares, "same cut");
+        assertEq(budgetedSlice.supplyShares, plainSlice.supplyShares, "same cost");
+        assertEq(budgetedSlice.remainingBorrowShares, plainSlice.remainingBorrowShares, "same remainder");
+
+        SettlementQuote memory plainQuote = c.settlementFor(borrower, 0);
+        SettlementQuote memory budgetedQuote = c.settlementFor(borrower, type(uint128).max);
+        assertEq(budgetedQuote.personal.borrowShares, plainQuote.personal.borrowShares, "same personal cut");
+        assertEq(budgetedQuote.queueRoot.borrowShares, plainQuote.queueRoot.borrowShares, "same queue-root cut");
+    }
+
+    /// @dev A budget below the policy cost shrinks the cut, and the slice keeps describing one position: the
+    ///      shaved shares reappear in the remainder and the cost is restated for what actually settles.
+    function test_settlementQuotes_shortBudget_shrinksCutAndRestatesCost() public {
+        _seedBorrower(1000 ether, 100 ether, 10 ether);
+
+        (, SettlementSlice memory plain) = c.nextSettlementBorrower(0);
+        uint256 wholePosition = plain.borrowShares + plain.remainingBorrowShares;
+
+        (, SettlementSlice memory capped) = c.nextSettlementBorrower(plain.supplyShares / 2);
+        assertGt(capped.borrowShares, 0, "half the cost still funds part of the cut");
+        assertLt(capped.borrowShares, plain.borrowShares, "budget shrinks the cut");
+        assertLt(capped.supplyShares, plain.supplyShares, "cost restated for the shrunk cut");
+        assertEq(capped.borrowShares + capped.remainingBorrowShares, wholePosition, "slice still spans the position");
+    }
+
+    /// @dev A positive budget that funds no borrow share reports an unavailable cut, not a zero-sized one, so a
+    ///      caller cannot mistake it for a settleable slice. A budget of 0 asks for the unshrunk policy cut.
+    function test_settlementQuotes_unaffordableBudget_reportNoCut() public {
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
+        vm.prank(borrower);
+        c.setSettlementLtv(1);
+
+        (address root, SettlementSlice memory slice) = c.nextSettlementBorrower(1);
+        assertEq(root, borrower, "the root is still reported");
+        assertEq(slice.borrowShares, 0, "no cut");
+        assertEq(slice.supplyShares, 0, "no cost");
+        assertEq(slice.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+
+        SettlementQuote memory quote = c.settlementFor(borrower, 1);
+        assertEq(quote.personal.borrowShares, 0, "personal candidate unavailable");
+        assertEq(quote.queueRoot.borrowShares, 0, "queue-root candidate unavailable");
     }
 
     /// @dev `settlementFor` exposes the queue-policy cut for a non-root borrower without claiming that it is
@@ -1619,12 +1672,12 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         m.borrow(risky, 70 ether);
         m.borrow(safer, 50 ether);
 
-        (address root,) = c.nextSettlementBorrower();
-        SettlementQuote memory quote = c.settlementFor(safer);
+        (address root,) = c.nextSettlementBorrower(0);
+        SettlementQuote memory quote = c.settlementFor(safer, 0);
 
         assertEq(root, risky, "riskier borrower remains the actual root");
         assertEq(quote.personal.supplyShares, 0, "non-root has no personal permission");
-        assertGt(quote.queueRoot.supplyShares, 0, "prospective queue-root supply anchor is visible");
+        assertGt(quote.queueRoot.supplyShares, 0, "prospective queue-root supply cost is visible");
         assertGt(quote.queueRoot.borrowShares, 0, "prospective queue-root borrow anchor is visible");
     }
 
@@ -1633,8 +1686,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function test_settlementQuotes_zeroLiquidityRootRequiresPersonalForTargeted() public {
         (, address borrower) = _seedBorrower(10 ether, 100 ether, 10 ether);
 
-        (address root, SettlementSlice memory nextSlice) = c.nextSettlementBorrower();
-        SettlementQuote memory quote = c.settlementFor(borrower);
+        (address root, SettlementSlice memory nextSlice) = c.nextSettlementBorrower(0);
+        SettlementQuote memory quote = c.settlementFor(borrower, 0);
 
         assertEq(root, borrower, "sole borrower is the queue root");
         assertGt(nextSlice.supplyShares, 0, "automatic root policy is visible");
@@ -1655,7 +1708,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         MockPriceOracle(address(_m().oracle)).setPrice(1.3e36);
         (, address borrower) = _seedBorrower(100 ether, 1000 ether, 100 ether);
 
-        (address root, SettlementSlice memory rootSlice) = c.nextSettlementBorrower();
+        (address root, SettlementSlice memory rootSlice) = c.nextSettlementBorrower(0);
         assertEq(root, borrower, "sole borrower is the queue root");
 
         vm.prank(borrower);
@@ -1664,9 +1717,9 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertGt(personalSliceAssets, 0, "personal slice is positive");
         assertLt(personalSliceAssets, 50 ether, "personal slice is below the 50% root floor");
 
-        SettlementQuote memory quote = c.settlementFor(borrower);
+        SettlementQuote memory quote = c.settlementFor(borrower, 0);
         assertEq(rootSlice.remainingBorrowShares, 0, "queue-root dust sweep quotes a full close");
-        assertLt(quote.personal.supplyShares, rootSlice.supplyShares, "personal supply anchor is below root policy");
+        assertLt(quote.personal.supplyShares, rootSlice.supplyShares, "personal supply cost is below root policy");
         assertLt(quote.personal.borrowShares, rootSlice.borrowShares, "personal borrow anchor is below root policy");
         assertGt(
             quote.personal.remainingBorrowShares,
@@ -1705,7 +1758,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
             _fund(m.loanToken, lender, borrowA);
             m.vaultDeposit(lender, borrowA);
             m.borrow(a, borrowA); // equal totals keep the fixture simple; the policy quote is liquidity-independent
-            (, SettlementSlice memory sliceA) = c.nextSettlementBorrower();
+            (, SettlementSlice memory sliceA) = c.nextSettlementBorrower(0);
             assertEq(sliceA.remainingBorrowShares, 0, "A near the floor is lifted to a full close");
         }
 
@@ -1725,7 +1778,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
             _fund(m2.loanToken, lender2, borrowB);
             m2.vaultDeposit(lender2, borrowB);
             m2.borrow(b, borrowB); // equal totals keep the fixture simple; the policy quote is liquidity-independent
-            (, SettlementSlice memory sliceB) = c2.nextSettlementBorrower();
+            (, SettlementSlice memory sliceB) = c2.nextSettlementBorrower(0);
             assertGt(sliceB.remainingBorrowShares, 0, "B above the floor keeps a partial remainder");
         }
     }

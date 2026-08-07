@@ -33,6 +33,10 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         uint256 coreSupplyShares;
         uint256 coreTotalSupplyAssets;
         uint256 coreTotalSupplyShares;
+        uint256 coreTotalBorrowAssets;
+        uint256 coreTotalBorrowShares;
+        uint256 coreLoanBalance;
+        uint256 borrowerShares; // the targeted borrower's debt shares; filled by the settle path only
         uint256 withdrawableAssets;
         uint256 idle;
         uint256 receiverCollateral;
@@ -72,6 +76,11 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     bool public settleMovedLiquidity; // a targeted settle paid loan assets or changed idle (not liquidity-neutral)
     bool public fallbackExitLiquidityMismatch; // fallbackExit's idle drop != its redeem-leg payout
     bool public parViolated; // an exit seized collateral worth MORE than the debt it cancelled (a penalty)
+    bool public settlePayoutExceededCut; // a settle's seized value (rounded up) exceeded its down-rounded debt cut
+    bool public settleBurnBelowDebt; // a settle burned core supply shares worth less than the debt it cancelled
+    bool public settleSupplyAssetsMismatch; // supply assets removed != redeem payout + cancelled debt
+    bool public settleDebtReportMismatch; // debtCanceled != the observed cut's value, or borrow totals off it
+    bool public settleMovedLoanToken; // the core's loan-token balance moved by other than what the exit paid out
     bool public settlementArithmeticPanicked; // settle / fallbackExit reverted with Panic(0x11)
     uint256 public totalDonated; // loan tokens sent straight to the vault (uncounted)
 
@@ -111,6 +120,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         address oracle,
         address[] memory actors_
     ) {
+        // The observers count each token's flows separately; one token on both roles would fold them together.
+        require(address(loan) != address(collateral), "same-token market unsupported");
         CORE = core;
         VAULT = vault;
         CONTROLLER = controller;
@@ -186,6 +197,9 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         state.coreSupplyShares = CORE.position(ID, address(VAULT)).supplyShares;
         state.coreTotalSupplyAssets = market_.totalSupplyAssets;
         state.coreTotalSupplyShares = market_.totalSupplyShares;
+        state.coreTotalBorrowAssets = market_.totalBorrowAssets;
+        state.coreTotalBorrowShares = market_.totalBorrowShares;
+        state.coreLoanBalance = LOAN.balanceOf(address(CORE));
         state.withdrawableAssets = CONTROLLER.maxWithdrawableAssets(address(VAULT));
         state.idle = market_.totalSupplyAssets - market_.totalBorrowAssets;
         state.receiverCollateral = COLLATERAL.balanceOf(receiver);
@@ -238,17 +252,13 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     }
 
     /// @dev Checks the configured receiver's token delta; owner and receiver are deliberately distinct in callers.
-    function _observeCollateralPayout(
-        uint256 loanAssets,
-        uint256 collateralSeized,
-        address receiver,
-        SettlementState memory before
-    ) internal {
+    function _observeCollateralPayout(uint256 collateralSeized, address receiver, SettlementState memory before)
+        internal
+    {
         uint256 collateralAfter = COLLATERAL.balanceOf(receiver);
-        uint256 expectedPayout = collateralSeized;
-        if (address(COLLATERAL) == address(LOAN)) expectedPayout += loanAssets;
         if (
-            collateralAfter < before.receiverCollateral || collateralAfter - before.receiverCollateral != expectedPayout
+            collateralAfter < before.receiverCollateral
+                || collateralAfter - before.receiverCollateral != collateralSeized
         ) settlementCollateralPayoutMismatch = true;
         if (collateralSeized != 0) ++collateralPayouts;
     }
@@ -321,10 +331,83 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         return _ctrl().isPaused();
     }
 
-    /// @dev At par, seized collateral is the cancelled debt priced at the oracle, rounded down — so its value is at
-    ///      most the cancelled debt. A value ABOVE the cancelled debt would be a penalty extracted from the borrower.
+    /// @dev At par, seized collateral is the cancelled debt priced at the oracle, rounded down — so its value stays
+    ///      at most the cancelled debt even when the conversion back is rounded UP against the market. A value above
+    ///      the cancelled debt would be a penalty extracted from the borrower.
     function _seizedValueExceedsDebt(uint256 collateralSeized, uint256 debtCanceled) internal view returns (bool) {
-        return Math.mulDiv(collateralSeized, _price(), 1e36) > debtCanceled;
+        return Math.mulDiv(collateralSeized, _price(), 1e36, Math.Rounding.Ceil) > debtCanceled;
+    }
+
+    /// @dev Core shares to assets at the given totals, rounded down (the core's `toAssetsDown`).
+    function _coreAssetsDown(uint256 shares, uint256 totalAssets, uint256 totalShares) internal pure returns (uint256) {
+        return Math.mulDiv(shares, totalAssets + CORE_VIRTUAL_ASSETS, totalShares + CORE_VIRTUAL_SHARES);
+    }
+
+    /// @dev Core shares to assets at the given totals, rounded up (the core's `toAssetsUp`).
+    function _coreAssetsUp(uint256 shares, uint256 totalAssets, uint256 totalShares) internal pure returns (uint256) {
+        return
+            Math.mulDiv(
+                shares, totalAssets + CORE_VIRTUAL_ASSETS, totalShares + CORE_VIRTUAL_SHARES, Math.Rounding.Ceil
+            );
+    }
+
+    /// @dev Value checks of a targeted settle, at the post-accrual pre-call totals and derived from state deltas
+    ///      rather than return values. Rounding is measured against the settler — what they receive is valued up,
+    ///      what they give is valued down — so a leak breaks an inequality instead of hiding in rounding slack.
+    function _observeSettleValueBounds(
+        SettlementState memory before,
+        address borrower,
+        uint256 collateralSeized,
+        uint256 debtCanceled
+    ) internal {
+        uint256 borrowerSharesAfter = CORE.position(ID, borrower).borrowShares;
+        if (borrowerSharesAfter > before.borrowerShares) {
+            settlePayoutExceededCut = true;
+            return;
+        }
+        uint256 sharesCanceled = before.borrowerShares - borrowerSharesAfter;
+
+        uint256 cutDown = _coreAssetsDown(sharesCanceled, before.coreTotalBorrowAssets, before.coreTotalBorrowShares);
+        if (Math.mulDiv(collateralSeized, _price(), 1e36, Math.Rounding.Ceil) > cutDown) {
+            settlePayoutExceededCut = true;
+        }
+
+        // Recompute the reported cancel from the observed share delta instead of trusting the return value.
+        if (debtCanceled != _coreAssetsUp(sharesCanceled, before.coreTotalBorrowAssets, before.coreTotalBorrowShares)) {
+            settleDebtReportMismatch = true;
+        }
+        uint256 expectedBorrowAssets =
+            before.coreTotalBorrowAssets > debtCanceled ? before.coreTotalBorrowAssets - debtCanceled : 0;
+        if (CORE.market(ID).totalBorrowAssets != expectedBorrowAssets) settleDebtReportMismatch = true;
+
+        uint256 coreSharesAfter = CORE.position(ID, address(VAULT)).supplyShares;
+        if (coreSharesAfter > before.coreSupplyShares) {
+            settleBurnBelowDebt = true;
+            return;
+        }
+        uint256 burnedValue = _coreAssetsDown(
+            before.coreSupplyShares - coreSharesAfter, before.coreTotalSupplyAssets, before.coreTotalSupplyShares
+        );
+        if (burnedValue < debtCanceled) settleBurnBelowDebt = true;
+    }
+
+    /// @dev Exact conservation of an exit, from the same pre-call snapshot: total supply assets fall by exactly
+    ///      the redeem payout plus the cancelled debt (both exit paths decrement them by those two amounts and
+    ///      nothing else), and the core's loan-token balance falls by exactly what the exit paid out of it.
+    function _observeCoreConservation(SettlementState memory before, uint256 loanAssets, uint256 debtCanceled)
+        internal
+    {
+        uint256 supplyAfter = CORE.market(ID).totalSupplyAssets;
+        if (
+            supplyAfter > before.coreTotalSupplyAssets
+                || before.coreTotalSupplyAssets - supplyAfter != loanAssets + debtCanceled
+        ) settleSupplyAssetsMismatch = true;
+
+        // The redeem leg is the only loan-token outflow (the constructor bars same-token markets).
+        uint256 loanAfter = LOAN.balanceOf(address(CORE));
+        if (loanAfter > before.coreLoanBalance || before.coreLoanBalance - loanAfter != loanAssets) {
+            settleMovedLoanToken = true;
+        }
     }
 
     // ── ERC-4626 entry ──
@@ -448,6 +531,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
 
         address receiver = actors[(ownerSeed % actors.length + 1) % actors.length];
         SettlementState memory before = _settlementState(receiver);
+        before.borrowerShares = CORE.position(ID, borrower).borrowShares;
         shares = bound(shares, 1, bal);
         vm.prank(owner);
         uint256 sharesBurned;
@@ -482,10 +566,12 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
             before.coreSupplyShares,
             CORE.position(ID, address(VAULT)).supplyShares
         );
-        _observeCollateralPayout(loanAssets, collateralSeized, receiver, before);
+        _observeCollateralPayout(collateralSeized, receiver, before);
         // Liquidity-neutral: settle pays no loan and cancels debt + supply by the same amount, so idle is unchanged.
         if (loanAssets != 0 || _idle() != before.idle) settleMovedLiquidity = true;
         if (_seizedValueExceedsDebt(collateralSeized, debtCanceled)) parViolated = true;
+        _observeSettleValueBounds(before, borrower, collateralSeized, debtCanceled);
+        _observeCoreConservation(before, loanAssets, debtCanceled);
         settles++;
     }
 
@@ -526,11 +612,12 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
 
         if (sharesBurned > shares) exitBurnedTooMuch = true;
         _observeFallbackExit(shares, sharesBurned, loanAssets, before);
-        _observeCollateralPayout(loanAssets, collateralSeized, receiver, before);
+        _observeCollateralPayout(collateralSeized, receiver, before);
         // The redeem leg drops idle by exactly its payout; the settle leg is liquidity-neutral -> idle drop == loan.
         uint256 idleAfter = _idle();
         if (idleAfter > before.idle || before.idle - idleAfter != loanAssets) fallbackExitLiquidityMismatch = true;
         if (_seizedValueExceedsDebt(collateralSeized, debtCanceled)) parViolated = true;
+        _observeCoreConservation(before, loanAssets, debtCanceled);
         fallbackExits++;
     }
 

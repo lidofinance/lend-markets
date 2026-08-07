@@ -8,7 +8,7 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {SettlementConfig, SettlementQuote, SettlementSlice} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementSlice, SettlementQuote} from "../../src/types/SettlementTypes.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
@@ -62,13 +62,13 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         Actors memory actors = _seed();
         Market storage m = _m();
 
-        SettlementQuote memory quote = m.controller.settlementFor(actors.nonRoot);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.nonRoot, 0);
         assertEq(quote.personal.borrowShares, 0, "personal cut is zero");
-        _expectSettlementExceedsAllowed(m, actors.liquidSupplier, actors.nonRoot, 1);
+        _expectSettlementExceedsAllowed(m, actors.liquidSupplier, actors.nonRoot, _minimumExecutableBorrowShares(m));
 
         m.setSettlementLtv(actors.nonRoot, NON_ROOT_PERSONAL_LTV);
         uint256 personalShares = _expectedPersonalShares(m, actors.nonRoot, NON_ROOT_PERSONAL_LTV);
-        quote = m.controller.settlementFor(actors.nonRoot);
+        quote = m.controller.settlementFor(actors.nonRoot, 0);
         assertEq(quote.personal.borrowShares, personalShares, "personal cut matches the model");
         assertGt(personalShares, 0, "personal cut is not zero");
 
@@ -84,7 +84,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         m.setSettlementLtv(actors.root, ROOT_PERSONAL_LTV);
         uint256 personalShares = _expectedPersonalShares(m, actors.root, ROOT_PERSONAL_LTV);
         uint256 rootShares = _expectedRootShares(m, actors.root);
-        SettlementQuote memory quote = m.controller.settlementFor(actors.root);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.root, 0);
         assertEq(quote.personal.borrowShares, personalShares, "personal cut matches the model");
         assertEq(quote.queueRoot.borrowShares, rootShares, "root cut matches the model");
         assertGt(personalShares, 0, "personal cut is not zero");
@@ -116,7 +116,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
 
         uint256 personalShares = _expectedPersonalShares(m, actors.nonRoot, NON_ROOT_PERSONAL_LTV);
         MorphoPosition memory position = m.core.position(m.id, actors.nonRoot);
-        SettlementQuote memory quote = m.controller.settlementFor(actors.nonRoot);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.nonRoot, 0);
 
         assertEq(quote.personal.borrowShares, personalShares, "personal cut matches the model");
         assertGt(quote.personal.borrowShares, 0, "personal cut is not zero");
@@ -133,11 +133,11 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         Actors memory actors = _seedAfterInterest(elapsedSeed);
         Market storage m = _m();
 
-        SettlementQuote memory quote = m.controller.settlementFor(actors.nonRoot);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.nonRoot, 0);
         assertEq(quote.personal.borrowShares, 0, "personal cut is zero");
 
         uint256 debtShares = m.core.position(m.id, actors.nonRoot).borrowShares;
-        uint256 cutShares = bound(cutSeed, 1, debtShares);
+        uint256 cutShares = bound(cutSeed, _minimumExecutableBorrowShares(m), debtShares);
         _expectSettlementExceedsAllowed(m, actors.liquidSupplier, actors.nonRoot, cutShares);
     }
 
@@ -149,12 +149,12 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         m.setSettlementLtv(actors.nonRoot, NON_ROOT_PERSONAL_LTV);
         uint256 personalShares = _expectedPersonalShares(m, actors.nonRoot, NON_ROOT_PERSONAL_LTV);
         assertEq(
-            m.controller.settlementFor(actors.nonRoot).personal.borrowShares,
+            m.controller.settlementFor(actors.nonRoot, 0).personal.borrowShares,
             personalShares,
             "personal cut matches the model"
         );
 
-        uint256 cutShares = bound(cutSeed, 1, personalShares);
+        uint256 cutShares = bound(cutSeed, _minimumExecutableBorrowShares(m), personalShares);
         _settleAndAssert(m, actors.liquidSupplier, actors.nonRoot, cutShares);
     }
 
@@ -167,7 +167,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         uint256 personalShares = _expectedPersonalShares(m, actors.nonRoot, NON_ROOT_PERSONAL_LTV);
         uint256 debtShares = m.core.position(m.id, actors.nonRoot).borrowShares;
         assertEq(
-            m.controller.settlementFor(actors.nonRoot).personal.borrowShares,
+            m.controller.settlementFor(actors.nonRoot, 0).personal.borrowShares,
             personalShares,
             "personal cut matches the model"
         );
@@ -183,11 +183,11 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         Market storage m = _m();
 
         uint256 rootShares = _expectedRootShares(m, actors.root);
-        SettlementQuote memory quote = m.controller.settlementFor(actors.root);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.root, 0);
         assertEq(quote.personal.borrowShares, 0, "personal cut is zero");
         assertEq(quote.queueRoot.borrowShares, rootShares, "root cut matches the model");
 
-        uint256 cutShares = bound(cutSeed, 1, rootShares);
+        uint256 cutShares = bound(cutSeed, _minimumExecutableBorrowShares(m), rootShares);
         _settleAndAssert(m, actors.tailSupplier, actors.root, cutShares);
     }
 
@@ -197,11 +197,11 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         Market storage m = _m();
 
         uint256 rootShares = _expectedRootShares(m, actors.root);
-        SettlementQuote memory quote = m.controller.settlementFor(actors.root);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.root, 0);
         assertEq(quote.personal.borrowShares, 0, "personal cut is zero");
         assertEq(quote.queueRoot.borrowShares, rootShares, "root cut matches the model");
 
-        uint256 cutShares = bound(cutSeed, 1, rootShares);
+        uint256 cutShares = bound(cutSeed, _minimumExecutableBorrowShares(m), rootShares);
         _expectSettlementExceedsTail(m, actors.liquidSupplier, actors.root, cutShares);
     }
 
@@ -212,7 +212,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
 
         uint256 rootShares = _expectedRootShares(m, actors.root);
         uint256 debtShares = m.core.position(m.id, actors.root).borrowShares;
-        SettlementQuote memory quote = m.controller.settlementFor(actors.root);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.root, 0);
         assertEq(quote.personal.borrowShares, 0, "personal cut is zero");
         assertEq(quote.queueRoot.borrowShares, rootShares, "root cut matches the model");
         assertLt(rootShares, debtShares, "root cut is partial");
@@ -229,12 +229,12 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         m.setSettlementLtv(actors.root, ROOT_PERSONAL_LTV);
         uint256 personalShares = _expectedPersonalShares(m, actors.root, ROOT_PERSONAL_LTV);
         uint256 rootShares = _expectedRootShares(m, actors.root);
-        SettlementQuote memory quote = m.controller.settlementFor(actors.root);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.root, 0);
         assertEq(quote.personal.borrowShares, personalShares, "personal cut matches the model");
         assertEq(quote.queueRoot.borrowShares, rootShares, "root cut matches the model");
         assertLt(personalShares, rootShares, "personal cut is smaller");
 
-        uint256 cutShares = bound(cutSeed, 1, personalShares);
+        uint256 cutShares = bound(cutSeed, _minimumExecutableBorrowShares(m), personalShares);
         _settleAndAssert(m, actors.liquidSupplier, actors.root, cutShares);
     }
 
@@ -246,7 +246,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         m.setSettlementLtv(actors.root, ROOT_PERSONAL_LTV);
         uint256 personalShares = _expectedPersonalShares(m, actors.root, ROOT_PERSONAL_LTV);
         uint256 rootShares = _expectedRootShares(m, actors.root);
-        SettlementQuote memory quote = m.controller.settlementFor(actors.root);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.root, 0);
         assertEq(quote.personal.borrowShares, personalShares, "personal cut matches the model");
         assertEq(quote.queueRoot.borrowShares, rootShares, "root cut matches the model");
         assertLt(personalShares, rootShares, "personal cut is smaller");
@@ -263,7 +263,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         m.setSettlementLtv(actors.root, ROOT_PERSONAL_LTV);
         uint256 personalShares = _expectedPersonalShares(m, actors.root, ROOT_PERSONAL_LTV);
         uint256 rootShares = _expectedRootShares(m, actors.root);
-        SettlementQuote memory quote = m.controller.settlementFor(actors.root);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.root, 0);
         assertEq(quote.personal.borrowShares, personalShares, "personal cut matches the model");
         assertEq(quote.queueRoot.borrowShares, rootShares, "root cut matches the model");
         assertLt(personalShares, rootShares, "personal cut is smaller");
@@ -281,7 +281,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         uint256 personalShares = _expectedPersonalShares(m, actors.root, ROOT_PERSONAL_LTV);
         uint256 rootShares = _expectedRootShares(m, actors.root);
         uint256 debtShares = m.core.position(m.id, actors.root).borrowShares;
-        SettlementQuote memory quote = m.controller.settlementFor(actors.root);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.root, 0);
         assertEq(quote.personal.borrowShares, personalShares, "personal cut matches the model");
         assertEq(quote.queueRoot.borrowShares, rootShares, "root cut matches the model");
         assertLt(personalShares, rootShares, "personal cut is smaller");
@@ -302,10 +302,10 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         (,, uint256 borrowAssetsWithInterest,) = MorphoBalancesLib.expectedMarketBalances(m.core, m.params);
         assertGt(borrowAssetsWithInterest, storedBorrowAssets, "pending interest is not zero");
 
-        (address root,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower(0);
         assertNotEq(root, actors.nonRoot, "borrower is not the root");
 
-        SettlementQuote memory quote = m.controller.settlementFor(actors.nonRoot);
+        SettlementQuote memory quote = m.controller.settlementFor(actors.nonRoot, 0);
         uint256 personalShares = _expectedPersonalShares(m, actors.nonRoot, NON_ROOT_PERSONAL_LTV);
         assertEq(quote.personal.borrowShares, personalShares, "personal cut matches the model");
         assertGt(quote.personal.borrowShares, 0, "personal cut is not zero");
@@ -325,7 +325,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         (,, uint256 borrowAssetsWithInterest,) = MorphoBalancesLib.expectedMarketBalances(m.core, m.params);
         assertGt(borrowAssetsWithInterest, storedBorrowAssets, "pending interest is not zero");
 
-        (address root, SettlementSlice memory slice) = m.controller.nextSettlementBorrower();
+        (address root, SettlementSlice memory slice) = m.controller.nextSettlementBorrower(0);
         uint256 rootShares = _expectedRootShares(m, actors.root);
         assertEq(root, actors.root, "borrower is the root");
         assertEq(slice.borrowShares, rootShares, "root cut matches the model");
@@ -417,7 +417,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
 
     function _assertSeed(Actors memory actors) private {
         Market storage m = _m();
-        (address root,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower(0);
         assertEq(root, actors.root, "higher-LTV borrower is the queue root");
         assertEq(_tailAssets(m, actors.liquidSupplier), 0, "liquid supplier has no lender tail");
         assertGe(
@@ -452,7 +452,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
 
         vm.prank(supplier);
         (execution.seizedAssets, execution.canceledAssets, execution.canceledShares, execution.burnedSupplyShares) =
-            m.core.settle(m.params, 0, cutShares, supplier, borrower, supplier);
+            m.core.settle(m.params, cutShares, supplier, borrower, supplier);
 
         assertEq(execution.canceledAssets, execution.expectedAssets, "core derives the expected canceled assets");
         assertEq(execution.canceledShares, cutShares, "borrow anchor cancels the requested shares");
@@ -474,7 +474,7 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
     {
         vm.prank(supplier);
         vm.expectRevert(ILidoLendMarketController.SettlementExceedsAllowed.selector);
-        m.core.settle(m.params, 0, cutShares, supplier, borrower, supplier);
+        m.core.settle(m.params, cutShares, supplier, borrower, supplier);
     }
 
     function _expectSettlementExceedsTail(Market storage m, address supplier, address borrower, uint256 cutShares)
@@ -482,13 +482,13 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
     {
         vm.prank(supplier);
         vm.expectRevert(ILidoLendMarketController.SettlementExceedsSettleableSupply.selector);
-        m.core.settle(m.params, 0, cutShares, supplier, borrower, supplier);
+        m.core.settle(m.params, cutShares, supplier, borrower, supplier);
     }
 
     function _expectSettlementBadDebt(Market storage m, address supplier, address borrower, uint256 cutShares) private {
         vm.prank(supplier);
         vm.expectRevert(ILidoLendMarketController.SettlementBadDebt.selector);
-        m.core.settle(m.params, 0, cutShares, supplier, borrower, supplier);
+        m.core.settle(m.params, cutShares, supplier, borrower, supplier);
     }
 
     function _expectedPersonalShares(Market storage m, address borrower, uint256 targetLtv)
@@ -531,5 +531,11 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
             uint256(m.core.position(m.id, supplier).supplyShares).toAssetsDown(totalSupplyAssets, totalSupplyShares);
         uint256 freeLiquidity = Math.saturatingSub(totalSupplyAssets, totalBorrowAssets);
         return Math.saturatingSub(supplierAssets, freeLiquidity);
+    }
+
+    function _minimumExecutableBorrowShares(Market storage m) private view returns (uint256) {
+        (,, uint256 totalBorrowAssets, uint256 totalBorrowShares) =
+            MorphoBalancesLib.expectedMarketBalances(m.core, m.params);
+        return uint256(1).toSharesUp(totalBorrowAssets, totalBorrowShares);
     }
 }

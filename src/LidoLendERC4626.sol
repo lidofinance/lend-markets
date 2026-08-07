@@ -224,8 +224,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
             debtCanceled += cutDebt;
             collateralSeized += cutCollateral;
-            // `_settle` caps both anchors to the supplied budget. Exceeding it is an accounting invariant
-            // violation and must revert rather than be hidden by saturating arithmetic.
+            // The quote was sized against this budget, so the burn the core derives from it fits.
             remainingSupplyShares -= cutShares;
         }
 
@@ -249,13 +248,13 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         emit Settled(caller, owner, receiver, sharesBurned, collateralSeized, debtCanceled);
     }
 
-    /// @dev Resolve `borrower`'s personal-policy cut and settle it within `budgetSupplyShares` via `_settle`.
+    /// @dev Resolve `borrower`'s personal-policy cut already shrunk to `budgetSupplyShares`, and settle it.
     function _settleBorrower(uint256 budgetSupplyShares, address borrower, address receiver)
         internal
         returns (uint256 cutShares, uint256 collateralSeized, uint256 debtCanceled)
     {
-        SettlementQuote memory quote = controller.settlementFor(borrower);
-        return _settle(budgetSupplyShares, borrower, quote.personal, receiver);
+        SettlementQuote memory quote = controller.settlementFor(borrower, budgetSupplyShares);
+        return _settle(borrower, quote.personal.borrowShares, receiver);
     }
 
     /// @inheritdoc ILidoLendERC4626
@@ -330,34 +329,27 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         emit FallbackExit(caller, owner, receiver, settledShares, collateralSeized, debtCanceled);
     }
 
-    /// @dev Resolve the current queue root together with its selected max(personal, queue-root) cut and settle it.
+    /// @dev Resolve the current queue root together with its selected max(personal, queue-root) cut, already shrunk
+    ///      to `budgetSupplyShares`, and settle it.
     function _settleNextAllowedBorrower(uint256 budgetSupplyShares, address receiver)
         internal
         returns (uint256 cutShares, uint256 collateralSeized, uint256 debtCanceled)
     {
-        (address borrower, SettlementSlice memory slice) = controller.nextSettlementBorrower();
-        return _settle(budgetSupplyShares, borrower, slice, receiver);
+        (address borrower, SettlementSlice memory slice) = controller.nextSettlementBorrower(budgetSupplyShares);
+        return _settle(borrower, slice.borrowShares, receiver);
     }
 
-    /// @dev Settle `borrower`'s cut capped at `budgetSupplyShares`: borrow-anchor an affordable full close, else
-    ///      supply-anchor. `cutSupplyShares` is the supply burn the core reports back; a borrow-anchored close
-    ///      derives it, matching the controller's `supplyShares` estimate, so the cut stays within budget.
-    function _settle(uint256 budgetSupplyShares, address borrower, SettlementSlice memory slice, address receiver)
+    /// @dev Settle `borrowShares` of `borrower`'s debt against this vault's core supply. The controller sized the
+    ///      handle against the settling budget on the same market snapshot the core then accrues to, so the supply
+    ///      burn it derives stays within that budget.
+    function _settle(address borrower, uint256 borrowShares, address receiver)
         internal
         returns (uint256 cutSupplyShares, uint256 collateralSeized, uint256 debtCanceled)
     {
-        cutSupplyShares = Math.min(slice.supplyShares, budgetSupplyShares);
-        if (cutSupplyShares == 0) return (0, 0, 0);
-
-        // Affordable full close: borrow-anchor (supply 0, the core derives the burn). Partial or
-        // unaffordable full close: supply-anchor at the capped burn.
-        (uint256 supplyShares, uint256 borrowShares) = slice.remainingBorrowShares == 0
-            && slice.supplyShares <= budgetSupplyShares
-            ? (uint256(0), slice.borrowShares)
-            : (cutSupplyShares, 0);
+        if (borrowShares == 0) return (0, 0, 0);
 
         (collateralSeized, debtCanceled,/* borrowSharesCanceled */, cutSupplyShares) =
-            LIDO_LEND.settle(_marketParams, supplyShares, borrowShares, address(this), borrower, receiver);
+            LIDO_LEND.settle(_marketParams, borrowShares, address(this), borrower, receiver);
     }
 
     function _marketSupplyTotals() internal view returns (uint256 totalSupplyAssets, uint256 totalSupplyShares) {

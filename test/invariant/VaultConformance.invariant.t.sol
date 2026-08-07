@@ -245,9 +245,35 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.fallbackExitLiquidityMismatch(), "fallbackExit idle drop == its loan payout");
     }
 
-    /// @dev Settlement runs at par with no penalty: the seized collateral is worth at most the debt it cancels.
+    /// @dev Settlement runs at par with no penalty: the seized collateral is worth at most the debt it cancels,
+    ///      even when its value is rounded up against the market.
     function invariant_settlementRunsAtPar() public view {
         assertFalse(handler.parViolated(), "seized collateral value <= cancelled debt (par, no penalty)");
+    }
+
+    /// @dev A settle's collateral payout, valued at the oracle price rounded up, never exceeds the down-rounded
+    ///      value of the borrow shares it cancelled.
+    function invariant_settlePayoutWithinCut() public view {
+        assertFalse(handler.settlePayoutExceededCut(), "seized value (up) <= down-rounded cancelled cut");
+    }
+
+    /// @dev The supply shares a settle burns are worth at least the debt it cancels, so a settler — including
+    ///      one settling their own debt — cannot receive more value than they burned.
+    function invariant_settleBurnCoversDebt() public view {
+        assertFalse(handler.settleBurnBelowDebt(), "burned supply shares are worth >= the cancelled debt");
+    }
+
+    /// @dev The `debtCanceled` a settle reports equals the up-rounded value of the borrow shares it actually
+    ///      removed, and the market's borrow assets fall by exactly that amount.
+    function invariant_settleDebtReportMatchesDeltas() public view {
+        assertFalse(handler.settleDebtReportMismatch(), "reported debtCanceled == up-rounded observed share delta");
+    }
+
+    /// @dev Exact conservation across both exit paths: total supply assets fall by exactly the redeem payout plus
+    ///      the cancelled debt, and the core's loan-token balance falls by exactly what the exit paid out of it.
+    function invariant_settleConservesAccounting() public view {
+        assertFalse(handler.settleSupplyAssetsMismatch(), "supply assets removed == redeem payout + cancelled debt");
+        assertFalse(handler.settleMovedLoanToken(), "core loan-token balance moved only by the exit's payout");
     }
 
     /// @dev Checked settlement-budget accounting must never underflow in either exit path.

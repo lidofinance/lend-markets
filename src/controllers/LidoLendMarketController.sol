@@ -283,7 +283,11 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function nextSettlementBorrower() external view returns (address borrower, SettlementSlice memory slice) {
+    function nextSettlementBorrower(uint256 budgetSupplyShares)
+        external
+        view
+        returns (address borrower, SettlementSlice memory slice)
+    {
         borrower = _settlementQueue.peekRoot();
         Id id = marketId;
         MarketView memory marketView = _marketView(id);
@@ -291,19 +295,25 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         (uint256 personalSliceAssets, uint256 queueRootSliceAssets) =
             _settlementQueue.allowedSliceAssets(marketView, borrower, position);
         slice = SettlementQueueLib.settlementSlice(
-            marketView, position, Math.max(personalSliceAssets, queueRootSliceAssets)
+            marketView, position, Math.max(personalSliceAssets, queueRootSliceAssets), budgetSupplyShares
         );
     }
 
     /// @inheritdoc ILidoLendMarketController
-    function settlementFor(address borrower) external view returns (SettlementQuote memory quote) {
+    function settlementFor(address borrower, uint256 budgetSupplyShares)
+        external
+        view
+        returns (SettlementQuote memory quote)
+    {
         Id id = marketId;
         MarketView memory marketView = _marketView(id);
         PositionView memory position = _positionView(id, borrower);
         (uint256 personalSliceAssets, uint256 queueRootSliceAssets) =
             _settlementQueue.allowedSliceAssets(marketView, borrower, position);
-        quote.personal = SettlementQueueLib.settlementSlice(marketView, position, personalSliceAssets);
-        quote.queueRoot = SettlementQueueLib.settlementSlice(marketView, position, queueRootSliceAssets);
+        quote.personal =
+            SettlementQueueLib.settlementSlice(marketView, position, personalSliceAssets, budgetSupplyShares);
+        quote.queueRoot =
+            SettlementQueueLib.settlementSlice(marketView, position, queueRootSliceAssets, budgetSupplyShares);
     }
 
     /// @inheritdoc ILidoLendMarketController

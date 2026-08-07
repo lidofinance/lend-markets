@@ -66,8 +66,7 @@ interface ILidoLendLike {
     ) external returns (uint256, uint256);
     function settle(
         LidoMarketParams memory marketParams,
-        uint256 supplyAssets,
-        uint256 supplyShares,
+        uint256 borrowShares,
         address onBehalf,
         address borrower,
         address receiver
@@ -275,7 +274,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer, ForkTest {
 
         vm.prank(DIRECT_LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
-            ctx.market.settle(ctx.lidoParams, 0, supplyShares, DIRECT_LENDER, BORROWER, DIRECT_LENDER);
+            ctx.market.settle(ctx.lidoParams, supplyShares, DIRECT_LENDER, BORROWER, DIRECT_LENDER);
 
         (uint256 directSupplySharesAfterFallback,,) = ctx.market.position(ctx.marketId, DIRECT_LENDER);
         (,, uint128 borrowerRawCollateralAfter) = ctx.market.position(ctx.marketId, BORROWER);
