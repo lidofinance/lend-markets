@@ -55,10 +55,10 @@ struct Request {
     uint40 deadline;
     bool fullFillOnly;
     ExitStatus status;
-    IERC20 asset;
     uint128 sizeRemaining;
     uint128 sizeTotal;
     uint256 quotedAssets;
+    uint256 minShareRate;
     uint96 startRate;
     uint96 endRate;
     uint32 rampStart;
@@ -72,15 +72,15 @@ One exit request's source-agnostic lifecycle state. The backing source (which va
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `owner` | `address` | The exiting lender, credited the proceeds and the only address that may cancel. |
+| `owner` | `address` | The exiting lender whose position the fill redeems, and the only address that may cancel. |
 | `createdAt` | `uint40` | Creation timestamp: the fee schedule's start. |
 | `deadline` | `uint40` | Last timestamp the request may be filled. Chosen by the lender, capped at `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`. |
 | `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot or be rejected. |
 | `status` | `ExitStatus` | Open / Filled / Cancelled (Expired is derived). |
-| `asset` | `IERC20` | The underlying loan token paid out — proceeds and fees are denominated in it. |
 | `sizeRemaining` | `uint128` | Outstanding shares to fill. The concrete book defines the fixed placement entitlement. |
 | `sizeTotal` | `uint128` | Original shares used to apportion the full placement quote across fills. |
-| `quotedAssets` | `uint256` | Asset value quoted for all `sizeTotal` shares at placement. |
+| `quotedAssets` | `uint256` | Asset value quoted for all `sizeTotal` shares at sizing. |
+| `minShareRate` | `uint256` | Loan assets per `SHARE_RATE_UNIT` source shares at sizing. A fill is rejected while the source quotes less. |
 | `startRate` | `uint96` | Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold. |
 | `endRate` | `uint96` | Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline. |
 | `rampStart` | `uint32` | Seconds from `createdAt` the rate holds at `startRate` before the climb begins. |
@@ -92,12 +92,13 @@ One exit request's source-agnostic lifecycle state. The backing source (which va
 struct RequestPreview {
     uint256 id;
     Request request;
+    IERC20 asset;
     uint256 filledShares;
     uint256 assetsOut;
 }
 ```
 
-A request paired with its live fill preview, for one-call scans. `id` is the registry key (a `Request` does not carry its own id); `filledShares`/`assetsOut` mirror `previewFill` and are 0 when the request is closed, expired, or has no backing right now.
+A request paired with its live fill preview, for one-call scans. `id` is the registry key (a `Request` does not carry its own id, and does not copy the source's loan token); `filledShares` and `assetsOut` mirror `previewFill` and are 0 when the request is closed, expired, unbacked, or under its rate floor.
 
 **Fields**
 
@@ -105,6 +106,7 @@ A request paired with its live fill preview, for one-call scans. `id` is the reg
 | --- | --- | --- |
 | `id` | `uint256` | The request's registry id. |
 | `request` | `Request` | The stored request. |
+| `asset` | `IERC20` | The loan token this request pays out in, resolved from its source at read time. |
 | `filledShares` | `uint256` | Shares fillable right now (see `previewFill`). |
 | `assetsOut` | `uint256` | Assets those shares would yield right now (see `previewFill`). |
 
@@ -113,7 +115,7 @@ A request paired with its live fill preview, for one-call scans. `id` is the reg
 #### `ExitRequested`
 
 ```solidity
-event ExitRequested(uint256 indexed id, address indexed owner, address asset, uint256 shares, PriorityRamp ramp, uint256 deadline, bool fullFillOnly);
+event ExitRequested(uint256 indexed id, address indexed owner, address asset, uint256 shares, uint256 minShareRate, PriorityRamp ramp, uint256 deadline, bool fullFillOnly);
 ```
 
 #### `ExitProcessed`
@@ -198,6 +200,12 @@ error RampStartAfterEnd();
 error RampPastDeadline();
 ```
 
+#### `ShareRateBelowMinimum`
+
+```solidity
+error ShareRateBelowMinimum();
+```
+
 #### `NoFillableShares`
 
 ```solidity
@@ -229,6 +237,14 @@ error DeadlineTooFar();
 ```
 
 ### Functions
+
+#### `SHARE_RATE_UNIT`
+
+```solidity
+function SHARE_RATE_UNIT() external view returns (uint256);
+```
+
+Share amount a source share rate is quoted per — the unit of a request's `minShareRate`.
 
 #### `setServiceFee`
 
@@ -407,7 +423,7 @@ function previewFill(uint256 id) external view returns (RequestPreview memory);
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `<none>` | `RequestPreview` | The request with the shares fillable now and the assets they would yield (all 0 if the request is closed, expired, or has no backing). |
+| `<none>` | `RequestPreview` | The request with the shares fillable now and the assets they would yield (all 0 when the request is closed, expired, unbacked, or quoting under its `minShareRate` floor). |
 
 The request at `id` paired with its live fill preview — the single-id `getRequestPreviews`.
 
@@ -429,12 +445,6 @@ event VaultAllowedSet(address indexed vault, bool allowed);
 
 ```solidity
 error VaultNotAllowed();
-```
-
-#### `InsufficientBacking`
-
-```solidity
-error InsufficientBacking();
 ```
 
 #### `ZeroVault`
@@ -493,7 +503,7 @@ Allow or disallow `vault` for new requests. `ALLOWLIST_MANAGER_ROLE` only.
 ```solidity
 function placeExitRequest(
     IERC4626 vault,
-    uint256 shares,
+    uint256 assets,
     PriorityRamp calldata ramp,
     uint256 deadline,
     bool fullFillOnly
@@ -505,7 +515,7 @@ function placeExitRequest(
 | Name | Type | Description |
 | --- | --- | --- |
 | `vault` | `IERC4626` | The allowed ERC-4626 vault. |
-| `shares` | `uint256` | Vault shares to exit. |
+| `assets` | `uint256` | Loan-asset amount to exit. Converted to source shares at the vault's current share rate and stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them live. |
 | `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
 | `deadline` | `uint256` | Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
 | `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot. |
@@ -516,7 +526,7 @@ function placeExitRequest(
 | --- | --- | --- |
 | `id` | `uint256` | The new request id. |
 
-Open an exit backed by `shares` of an allowed `vault`. Permission-only: the caller must have approved this book for `shares` and hold them; the fill redeems them via the allowance.
+Open an exit against the caller's shares in an allowed `vault`, sized by the asset amount they want out. Permission-only: nothing is escrowed, and the fill redeems the caller's shares through the allowance they granted this book.
 
 ## MorphoExitBook
 
@@ -548,12 +558,6 @@ error MarketNotCreated();
 
 ```solidity
 error NotAuthorizedOnMorpho();
-```
-
-#### `InsufficientBacking`
-
-```solidity
-error InsufficientBacking();
 ```
 
 #### `ZeroMorpho`
@@ -625,7 +629,7 @@ Register `marketParams` (which must name a live Morpho market, checked on both a
 ```solidity
 function placeExitRequest(
     Id marketId,
-    uint256 shares,
+    uint256 assets,
     PriorityRamp calldata ramp,
     uint256 deadline,
     bool fullFillOnly
@@ -637,7 +641,7 @@ function placeExitRequest(
 | Name | Type | Description |
 | --- | --- | --- |
 | `marketId` | `Id` | The allowed market's id (its `MarketParams` hash, registered via `setMarketAllowed`). |
-| `shares` | `uint256` | Supply shares to exit. |
+| `assets` | `uint256` | Loan-asset amount to exit. Converted to supply shares at the market's current share rate and stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them live. |
 | `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
 | `deadline` | `uint256` | Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
 | `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot. |
@@ -648,4 +652,4 @@ function placeExitRequest(
 | --- | --- | --- |
 | `id` | `uint256` | The new request id. |
 
-Open an exit backed by `shares` of the caller's supply in an allowed Morpho market, named by its `marketId`. Permission-only: the caller must have authorized this book on Morpho and hold the `shares`.
+Open an exit against the caller's supply position in an allowed Morpho market, named by its `marketId` and sized by the asset amount they want out. Permission-only: nothing is escrowed, and the fill withdraws on the caller's behalf, so they must have authorized this book on Morpho.

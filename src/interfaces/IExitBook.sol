@@ -12,6 +12,13 @@ interface IExitBook {
     error ZeroAssetQuote();
 
     // ---
+    // CONSTANTS
+    // ---
+
+    /// @notice Share amount a source share rate is quoted per — the unit of a request's `minShareRate`.
+    function SHARE_RATE_UNIT() external view returns (uint256);
+
+    // ---
     // CONFIG
     // ---
 
@@ -77,7 +84,7 @@ interface IExitBook {
 
     /// @notice The request at `id` paired with its live fill preview — the single-id `getRequestPreviews`.
     /// @param id The request to preview.
-    /// @return The request with the shares fillable now and the assets they would yield (all 0 if the request
-    ///         is closed, expired, or has no backing).
+    /// @return The request with the shares fillable now and the assets they would yield (all 0 when the request
+    ///         is closed, expired, unbacked, or quoting under its `minShareRate` floor).
     function previewFill(uint256 id) external view returns (RequestPreview memory);
 }

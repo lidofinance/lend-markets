@@ -28,18 +28,20 @@ interface IMorphoExitBook is IExitBook {
     /// @param allowed True to allow new requests against it; false to block them (already-placed ones still fill).
     function setMarketAllowed(MarketParams calldata marketParams, bool allowed) external;
 
-    /// @notice Open an exit backed by `shares` of the caller's supply in an allowed Morpho market, named by
-    ///         its `marketId`. Permission-only: the caller must have authorized this book on Morpho and hold
-    ///         the `shares`.
+    /// @notice Open an exit against the caller's supply position in an allowed Morpho market, named by its
+    ///         `marketId` and sized by the asset amount they want out. Permission-only: nothing is escrowed, and
+    ///         the fill withdraws on the caller's behalf, so they must have authorized this book on Morpho.
     /// @param marketId The allowed market's id (its `MarketParams` hash, registered via `setMarketAllowed`).
-    /// @param shares Supply shares to exit.
+    /// @param assets Loan-asset amount to exit. Converted to supply shares at the market's current share rate and
+    ///        stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them
+    ///        live.
     /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end.
     /// @param deadline Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
     /// @param fullFillOnly When true a fill must cover the whole remaining size in one shot.
     /// @return id The new request id.
     function placeExitRequest(
         Id marketId,
-        uint256 shares,
+        uint256 assets,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly

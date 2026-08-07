@@ -20,10 +20,11 @@ interface IMintable {
 ///         requests against a single OZ ERC-4626 mock vault; one filler fills them; the book owner cancels;
 ///         yield is donated to move the share price. Every action self-bounds and early-returns when there is no
 ///         room, so the fuzzer drives long valid sequences. Tracks ghosts the invariant suite reads:
-///         - `openIds` / `seenIds`: the live and the full id sets, for the status partition.
+///         - `allIds` / `seen`: every id ever placed and the set membership behind it.
 ///         - per-fill three-way accumulators (`sumLenderPaid` + `sumFillerPaid` + `sumServicePaid`) vs
 ///           `sumAssetsOut`: the running conservation identity.
-///         - `lastSizeRemaining[id]`: monotonic non-increasing `sizeRemaining` check.
+///         - `sizeCeiling[id]` / `wasClosed[id]`: `sizeRemaining` never grows, and a closed status never
+///           reverts to Open.
 ///         Mirrors `MarketHandler`: `is CommonBase, StdCheats, StdUtils` (not Test) so the target set stays clean.
 contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
     uint256 internal constant WAD = 1e18;
@@ -102,7 +103,7 @@ contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
         IMintable(address(ASSET)).mint(to, amount);
     }
 
-    /// @dev A random live (Open, not past deadline, with fillable backing) request id, or 0 if none.
+    /// @dev A random live (Open, not past deadline) request id, or 0 if none.
     function _liveId(uint256 seed) internal view returns (uint256) {
         uint256 n = allIds.length;
         if (n == 0) return 0;
@@ -132,12 +133,12 @@ contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
     // ---
 
     /// @dev A lender deposits fresh assets, approves the book for the whole resulting balance, and places an
-    ///      exit for a bounded slice with a valid ramp + deadline. Approving the full balance keeps the
-    ///      placement's live-backing sanity-check satisfied across overlapping requests from the same owner.
+    ///      exit for a bounded asset amount with a valid ramp + deadline. Approving the full balance is what lets
+    ///      overlapping requests from the same owner all still redeem at fill time.
     function place(
         uint256 lenderSeed,
         uint256 depositAmt,
-        uint256 sharesSeed,
+        uint256 exitSeed,
         uint256 startRate,
         uint256 endRate,
         uint256 rampStart,
@@ -150,13 +151,14 @@ contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
 
         vm.startPrank(a);
         ASSET.approve(address(VAULT), depositAmt);
-        uint256 minted = VAULT.deposit(depositAmt, a);
-        // Approve the entire balance so concurrent requests from this lender all keep their backing check.
+        VAULT.deposit(depositAmt, a);
         VAULT.approve(address(BOOK), VAULT.balanceOf(a));
         vm.stopPrank();
 
-        if (minted == 0) return;
-        uint256 shares = bound(sharesSeed, 1, minted);
+        // Requests are denominated in assets; an amount too small to buy a whole share is skipped rather than
+        // placed.
+        uint256 exitAssets = bound(exitSeed, 1, depositAmt);
+        if (VAULT.convertToShares(exitAssets) == 0) return;
 
         // Valid ramp: endRate in [0, MAX_PRIORITY_FEE]; startRate <= endRate; rampStart <= rampEnd; and
         // rampEnd must leave room before the deadline.
@@ -174,7 +176,7 @@ contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
             PriorityRamp({startRate: startRate, endRate: endRate, rampStart: rampStart, rampEnd: rampEnd});
 
         vm.prank(a);
-        uint256 id = BOOK.placeExitRequest(VAULT, shares, ramp, deadline, false);
+        uint256 id = BOOK.placeExitRequest(VAULT, exitAssets, ramp, deadline, false);
         _sync(id);
     }
 

@@ -6,7 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {ExitBookLib} from "../../src/libs/ExitBookLib.sol";
-import {ExitStatus, PriorityRamp} from "../../src/types/ExitBookTypes.sol";
+import {ExitStatus, PriorityRamp, Sizing} from "../../src/types/ExitBookTypes.sol";
 
 /// @dev Harness over the `State`, exposing the internal request-bookkeeping library plus field getters.
 contract EBHarness {
@@ -23,7 +23,13 @@ contract EBHarness {
         uint256 deadline,
         bool fullFillOnly
     ) external returns (uint256) {
-        return s.add(owner, asset, shares, quotedAssets, ramp, deadline, fullFillOnly);
+        return s.add(
+            owner,
+            Sizing({asset: asset, shares: shares, quotedAssets: quotedAssets, minShareRate: 0}),
+            ramp,
+            deadline,
+            fullFillOnly
+        );
     }
 
     function recordFill(uint256 id, uint256 filled) external {

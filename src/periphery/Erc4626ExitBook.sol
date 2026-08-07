@@ -8,7 +8,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ExitBookBase} from "./ExitBookBase.sol";
 import {IErc4626ExitBook} from "../interfaces/IErc4626ExitBook.sol";
-import {Request, PriorityRamp} from "../types/ExitBookTypes.sol";
+import {Request, PriorityRamp, Sizing} from "../types/ExitBookTypes.sol";
 
 /// @title Erc4626ExitBook
 /// @author Lido
@@ -22,7 +22,6 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
     // ---
 
     error VaultNotAllowed();
-    error InsufficientBacking();
     error ZeroVault();
 
     // ---
@@ -65,33 +64,48 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
     /// @inheritdoc IErc4626ExitBook
     function placeExitRequest(
         IERC4626 vault,
-        uint256 shares,
+        uint256 assets,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
     ) external returns (uint256 id) {
         if (!isVaultAllowed[vault]) revert VaultNotAllowed();
 
-        // Permission-only: shares stay with the lender; sanity-check now, the fill re-checks live.
-        if (vault.allowance(msg.sender, address(this)) < shares || vault.balanceOf(msg.sender) < shares) {
-            revert InsufficientBacking();
-        }
-
-        uint256 quotedAssets = vault.convertToAssets(shares);
-        id = _createRequest(msg.sender, IERC20(vault.asset()), shares, quotedAssets, ramp, deadline, fullFillOnly);
+        id = _createRequest(msg.sender, _size(vault, assets), ramp, deadline, fullFillOnly);
 
         vaultOf[id] = vault;
+    }
+
+    /// @dev Size a placement: the lender names an asset amount, the request is stored in the shares it buys at
+    ///      the vault's current share rate. What they actually hold is not checked — the fill reads it live.
+    function _size(IERC4626 vault, uint256 assets) private view returns (Sizing memory sizing) {
+        sizing.asset = IERC20(vault.asset());
+        sizing.shares = vault.convertToShares(assets);
+        sizing.quotedAssets = vault.convertToAssets(sizing.shares);
+        sizing.minShareRate = _vaultShareRate(vault);
     }
 
     // ---
     // SOURCE OPERATIONS
     // ---
 
-    function _availableShares(uint256 id, Request storage request) internal view override returns (uint256) {
+    /// @dev What the fill can take right now: the remaining size, capped by the owner's `maxRedeem` and by the
+    ///      allowance they granted this book — together with the vault's current share rate.
+    function _availableShares(uint256 id, Request storage request)
+        internal
+        view
+        override
+        returns (uint256 availableShares, uint256 shareRate)
+    {
         IERC4626 vault = vaultOf[id];
         uint256 redeemable = vault.maxRedeem(request.owner);
         uint256 allowed = vault.allowance(request.owner, address(this));
-        return Math.min(Math.min(request.sizeRemaining, redeemable), allowed);
+        availableShares = Math.min(Math.min(request.sizeRemaining, redeemable), allowed);
+        shareRate = _vaultShareRate(vault);
+    }
+
+    function _asset(uint256 id) internal view override returns (IERC20) {
+        return IERC20(vaultOf[id].asset());
     }
 
     function _redeem(uint256 id, address account, uint256 shares) internal override {
@@ -102,6 +116,11 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
         IERC4626 vault = vaultOf[id];
         asset.forceApprove(address(vault), depositAssets);
         vault.deposit(depositAssets, filler);
+    }
+
+    /// @dev Loan assets per `SHARE_RATE_UNIT` vault shares.
+    function _vaultShareRate(IERC4626 vault) private view returns (uint256) {
+        return vault.convertToAssets(SHARE_RATE_UNIT);
     }
 
     function _previewAssets(uint256 id, uint256 shares) internal view override returns (uint256) {

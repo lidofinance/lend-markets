@@ -8,7 +8,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IExitBook} from "../interfaces/IExitBook.sol";
 import {AssetRecoverer} from "../utils/AssetRecoverer.sol";
-import {ExitStatus, Request, PriorityRamp, RequestPreview} from "../types/ExitBookTypes.sol";
+import {ExitStatus, Request, PriorityRamp, RequestPreview, Sizing} from "../types/ExitBookTypes.sol";
 import {ExitBookLib} from "../libs/ExitBookLib.sol";
 import {WAD} from "../libs/Constants.sol";
 
@@ -34,6 +34,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     error StartFeeAboveEnd();
     error RampStartAfterEnd();
     error RampPastDeadline();
+    error ShareRateBelowMinimum();
     error NoFillableShares();
     error NoAssetsRedeemed();
     error AssetsOutBelowMin();
@@ -49,6 +50,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         address indexed owner,
         address asset,
         uint256 shares,
+        uint256 minShareRate,
         PriorityRamp ramp,
         uint256 deadline,
         bool fullFillOnly
@@ -84,6 +86,9 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
 
     /// @notice Hard cap on the service fee — a cut of the filler's gross reward (WAD) — 25%.
     uint256 public constant MAX_SERVICE_FEE = 0.25e18;
+
+    /// @notice Share amount a source share rate is quoted per.
+    uint256 public constant SHARE_RATE_UNIT = 1e36;
 
     // ---
     // IMMUTABLES
@@ -154,39 +159,24 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     ///      the reduced size and cannot double-fill. The book holds nothing between fills.
     function fillExitRequest(uint256 id, uint256 depositAssets, uint256 minAssetsOut) external {
         Request storage request = _book.requireFillable(id);
-        IERC20 asset = request.asset;
+        IERC20 asset = _asset(id);
 
         if (depositAssets != 0) {
             asset.safeTransferFrom(msg.sender, address(this), depositAssets);
             _depositLiquidity(id, asset, depositAssets, msg.sender);
         }
 
-        uint256 filledShares = _fillableShares(id, request);
+        (uint256 filledShares, uint256 shareRate) = _fillableShares(id, request);
+        // Order matters: a request with nothing to fill reports that, not the rate floor's error.
         if (filledShares == 0) revert NoFillableShares();
+        if (shareRate < request.minShareRate) revert ShareRateBelowMinimum();
 
         uint256 quotedOwed = _quotedOwed(request, filledShares);
         _book.recordFill(id, filledShares);
 
-        // Redeem against the source and measure what actually arrived — never trust a return value.
-        uint256 balanceBefore = asset.balanceOf(address(this));
-        _redeem(id, request.owner, filledShares);
-        uint256 assetsOut = asset.balanceOf(address(this)) - balanceBefore;
-        if (assetsOut == 0) revert NoAssetsRedeemed();
-        // Filler's slippage floor (0 to skip): if the fill under-produced, revert and roll back the deposit.
-        // Late by necessity — `assetsOut` exists only post-redeem — so a griefed fill still burns the redeem
-        // gas, but the filler's deposited capital is never committed below their floor.
-        if (assetsOut < minAssetsOut) revert AssetsOutBelowMin();
-
-        // Split what arrived three ways with no remainder: the lender gets their fixed-price `owed` minus the
-        // priority fee, the filler gets the accrued yield plus that fee, the service takes a cut of the
-        // filler's gross. `owed` is capped at `assetsOut` so a loss just trims it (no yield);
-        // `feeRate <= MAX_PRIORITY_FEE < WAD`, so the fee never exceeds `owed`.
-        uint256 owed = Math.min(quotedOwed, assetsOut);
-        uint256 fee = Math.mulDiv(owed, _priorityFeeRate(request), WAD);
-        uint256 fillerGross = (assetsOut - owed) + fee; // accrued yield + priority fee
-        uint256 serviceCut = Math.mulDiv(fillerGross, serviceFee, WAD);
-        uint256 fillerFee = fillerGross - serviceCut;
-        uint256 lenderAssets = owed - fee;
+        uint256 assetsOut = _redeemMeasured(id, request.owner, asset, filledShares, minAssetsOut);
+        (uint256 lenderAssets, uint256 fillerFee, uint256 serviceCut) =
+            _splitProceeds(assetsOut, quotedOwed, _priorityFeeRate(request));
 
         if (lenderAssets != 0) asset.safeTransfer(request.owner, lenderAssets);
 
@@ -195,6 +185,38 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         if (serviceCut != 0) asset.safeTransfer(feeRecipient, serviceCut);
 
         emit ExitProcessed(id, msg.sender, address(asset), filledShares, lenderAssets, fillerFee, serviceCut);
+    }
+
+    /// @dev Redeem `shares` of `owner`'s position and report what actually arrived, measured as a balance delta
+    ///      rather than taken from the source's return value, then hold it to the filler's `minAssetsOut` floor
+    ///      (0 to skip). That floor is late by necessity — the figure exists only post-redeem — so a griefed fill
+    ///      still burns the redeem gas, but the filler's deposited capital is never committed below it.
+    function _redeemMeasured(uint256 id, address owner, IERC20 asset, uint256 shares, uint256 minAssetsOut)
+        private
+        returns (uint256 assetsOut)
+    {
+        uint256 balanceBefore = asset.balanceOf(address(this));
+        _redeem(id, owner, shares);
+        assetsOut = asset.balanceOf(address(this)) - balanceBefore;
+        if (assetsOut == 0) revert NoAssetsRedeemed();
+        if (assetsOut < minAssetsOut) revert AssetsOutBelowMin();
+    }
+
+    /// @dev Split what the redeem produced three ways with no remainder: the lender gets their fixed-price
+    ///      `quotedOwed` minus the priority fee, the filler gets the accrued yield plus that fee, and the
+    ///      service takes a cut of the filler's gross. The owed amount is capped at `assetsOut`, so a loss just
+    ///      trims it; `feeRate <= MAX_PRIORITY_FEE < WAD`, so the fee never exceeds it.
+    function _splitProceeds(uint256 assetsOut, uint256 quotedOwed, uint256 feeRate)
+        private
+        view
+        returns (uint256 lenderAssets, uint256 fillerFee, uint256 serviceCut)
+    {
+        uint256 owed = Math.min(quotedOwed, assetsOut);
+        uint256 fee = Math.mulDiv(owed, feeRate, WAD);
+        uint256 fillerGross = (assetsOut - owed) + fee; // accrued yield + priority fee
+        serviceCut = Math.mulDiv(fillerGross, serviceFee, WAD);
+        fillerFee = fillerGross - serviceCut;
+        lenderAssets = owed - fee;
     }
 
     /// @dev Apportion the placement quote cumulatively for this fill. Called before the external redeem so
@@ -283,34 +305,38 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     // ---
 
     /// @dev The request at `id` with its live fill preview — shared body of `previewFill` and the
-    ///      `getRequestPreviews` batch.
+    ///      `getRequestPreviews` batch. The fill figures are `(0, 0)` when the request is closed, expired,
+    ///      unbacked, or quoting under its `minShareRate` floor.
     function _requestPreview(uint256 id) internal view returns (RequestPreview memory) {
-        (uint256 filledShares, uint256 assetsOut) = _previewFill(id);
-        return RequestPreview({id: id, request: _book.requests[id], filledShares: filledShares, assetsOut: assetsOut});
-    }
-
-    /// @dev Shares fillable now and the assets they would yield, or `(0, 0)` if the request is closed,
-    ///      expired, or has no backing.
-    function _previewFill(uint256 id) internal view returns (uint256 filledShares, uint256 assetsOut) {
         Request storage request = _book.requests[id];
-        if (request.status != ExitStatus.Open || block.timestamp > request.deadline) return (0, 0);
-        filledShares = _fillableShares(id, request);
-        if (filledShares == 0) return (0, 0);
-        assetsOut = _previewAssets(id, filledShares);
+        uint256 filledShares;
+        uint256 assetsOut;
+
+        if (request.status == ExitStatus.Open && block.timestamp <= request.deadline) {
+            uint256 shareRate;
+            (filledShares, shareRate) = _fillableShares(id, request);
+            if (shareRate < request.minShareRate) filledShares = 0;
+            if (filledShares != 0) assetsOut = _previewAssets(id, filledShares);
+        }
+
+        // An id that was never issued has no source to ask, so it reports a zeroed record rather than reverting
+        // — one unknown id must not take a whole batch read down with it.
+        IERC20 asset = request.owner == address(0) ? IERC20(address(0)) : _asset(id);
+
+        return
+            RequestPreview({id: id, request: request, asset: asset, filledShares: filledShares, assetsOut: assetsOut});
     }
 
     /// @dev Validate and append a request (called by a concrete book's `placeExitRequest`).
     function _createRequest(
         address account,
-        IERC20 asset,
-        uint256 shares,
-        uint256 quotedAssets,
+        Sizing memory sizing,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
     ) internal returns (uint256 id) {
-        if (shares == 0) revert ZeroShares();
-        if (quotedAssets == 0) revert ZeroAssetQuote();
+        if (sizing.shares == 0) revert ZeroShares();
+        if (sizing.quotedAssets == 0) revert ZeroAssetQuote();
         if (ramp.endRate > MAX_PRIORITY_FEE) revert PriorityFeeTooHigh();
         if (ramp.startRate > ramp.endRate) revert StartFeeAboveEnd();
         if (ramp.rampStart > ramp.rampEnd) revert RampStartAfterEnd();
@@ -318,13 +344,20 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         if (deadline > block.timestamp + MAX_REQUEST_LIFETIME) revert DeadlineTooFar();
         if (block.timestamp + ramp.rampEnd > deadline) revert RampPastDeadline();
 
-        id = _book.add(account, asset, shares, quotedAssets, ramp, deadline, fullFillOnly);
-        emit ExitRequested(id, account, address(asset), shares, ramp, deadline, fullFillOnly);
+        id = _book.add(account, sizing, ramp, deadline, fullFillOnly);
+        emit ExitRequested(
+            id, account, address(sizing.asset), sizing.shares, sizing.minShareRate, ramp, deadline, fullFillOnly
+        );
     }
 
-    /// @dev Source fillable shares with the `fullFillOnly` policy applied.
-    function _fillableShares(uint256 id, Request storage request) internal view returns (uint256 fillableShares) {
-        fillableShares = _availableShares(id, request);
+    /// @dev Source fillable shares with the `fullFillOnly` policy applied. The source's share rate is returned
+    ///      alongside.
+    function _fillableShares(uint256 id, Request storage request)
+        internal
+        view
+        returns (uint256 fillableShares, uint256 shareRate)
+    {
+        (fillableShares, shareRate) = _availableShares(id, request);
         if (request.fullFillOnly && fillableShares < request.sizeRemaining) fillableShares = 0;
     }
 
@@ -349,9 +382,18 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     // SOURCE OPERATIONS — abstract, implemented by a concrete book
     // ---
 
-    /// @dev Shares fillable right now from the source (remaining size capped by live backing), before the
-    ///      `fullFillOnly` policy is applied. No state change.
-    function _availableShares(uint256 id, Request storage request) internal view virtual returns (uint256);
+    /// @dev Shares fillable right now from the source (remaining size capped by live backing) before the
+    ///      `fullFillOnly` policy is applied, together with the source's share rate: loan assets per
+    ///      `SHARE_RATE_UNIT` shares, rounded down. The rate is meaningful only when the share count is
+    ///      non-zero — a source that reports nothing fillable may report no rate either. No state change.
+    function _availableShares(uint256 id, Request storage request)
+        internal
+        view
+        virtual
+        returns (uint256 availableShares, uint256 shareRate);
+
+    /// @dev The loan token the request's source pays out in. Held by the source, not copied onto the record.
+    function _asset(uint256 id) internal view virtual returns (IERC20);
 
     /// @dev Pull `shares` of `account`'s position out to this contract (assets land here). The base wraps
     ///      this with a balance-delta measurement, so the return value is ignored.

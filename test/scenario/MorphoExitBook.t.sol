@@ -74,10 +74,20 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertEq(m.core.position(m.id, lender).supplyShares, shares, "supply: shares credited to position");
     }
 
-    /// @dev Place an exit for `shares` against the market (full-fill optional). Authorization/backing assumed.
+    /// @dev Loan assets `shares` of supply are worth right now — the request is sized in assets.
+    function _quote(uint256 shares) internal view returns (uint256) {
+        Market storage m = _m();
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
+            MorphoBalancesLib.expectedMarketBalances(m.core, m.params);
+        return shares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
+    }
+
+    /// @dev Place for the position `shares` are worth. The book takes assets, so the helper quotes them back;
+    ///      the round trip may shave a share, which is fine for size-agnostic assertions.
     function _place(address lender, uint256 shares, bool fullFillOnly) internal returns (uint256 id) {
+        uint256 assets = _quote(shares); // reads the market, so it must not sit inside the prank
         vm.prank(lender);
-        id = book.placeExitRequest(_m().id, shares, _ramp(), block.timestamp + MAX_LIFETIME, fullFillOnly);
+        id = book.placeExitRequest(_m().id, assets, _ramp(), block.timestamp + MAX_LIFETIME, fullFillOnly);
     }
 
     /// @dev Forge a malformed but representable market price where the lender's full share amount quotes to zero.
@@ -228,8 +238,9 @@ contract MorphoExitBookTest is LidoLendSetup {
         (, uint256 shares) = m.core.supply(m.params, 10 ether, 0, lender, "");
         m.core.setAuthorization(address(fresh), true);
 
+        uint256 exitAssets = _quote(shares);
         vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
-        fresh.placeExitRequest(m.id, shares, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        fresh.placeExitRequest(m.id, exitAssets, _ramp(), block.timestamp + MAX_LIFETIME, false);
         vm.stopPrank();
     }
 
@@ -248,8 +259,9 @@ contract MorphoExitBookTest is LidoLendSetup {
         (, uint256 shares) = m.core.supply(m.params, 10 ether, 0, lender, "");
         // NOTE: no setAuthorization.
 
+        uint256 exitAssets = _quote(shares);
         vm.expectRevert(MorphoExitBook.NotAuthorizedOnMorpho.selector);
-        book.placeExitRequest(m.id, shares, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        book.placeExitRequest(m.id, exitAssets, _ramp(), block.timestamp + MAX_LIFETIME, false);
         vm.stopPrank();
     }
 
@@ -257,26 +269,30 @@ contract MorphoExitBookTest is LidoLendSetup {
     // G10 — authorized, but placing more than the backing
     // ---
 
-    /// @dev Placing for more supply shares than the lender's position backs reverts at placement.
-    function testRevert_place_insufficientBacking() public {
+    /// @dev Placement takes the lender at their word: an amount past what their position backs is accepted, and
+    ///      the fill closes only what it does back.
+    function test_place_acceptsMoreThanThePositionBacks() public {
         address lender = _actor("lender");
         uint256 shares = _lenderSupply(lender, 10 ether);
 
         vm.prank(lender);
-        vm.expectRevert(MorphoExitBook.InsufficientBacking.selector);
-        book.placeExitRequest(_m().id, shares + 1, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        uint256 id = book.placeExitRequest(_m().id, 100 ether, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        assertGt(book.getExitRequest(id).sizeTotal, shares, "request is larger than the position");
+
+        assertEq(book.previewFill(id).filledShares, shares, "only the backed part is fillable");
     }
 
     /// @dev A zero full-request quote would pay the lender nothing on every fill, so placement rejects it even
     ///      when the request is otherwise authorized and fully backed.
-    function testRevert_place_zeroAssetQuote() public {
+    function testRevert_place_amountBuysNoShares() public {
         address lender = _actor("lender");
         uint256 shares = _lenderSupply(lender, 10 ether);
         _forceSupplyQuoteZero();
 
+        uint256 exitAssets = _quote(shares);
         vm.prank(lender);
-        vm.expectRevert(IExitBook.ZeroAssetQuote.selector);
-        book.placeExitRequest(_m().id, shares, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        vm.expectRevert(ExitBookBase.ZeroShares.selector);
+        book.placeExitRequest(_m().id, exitAssets, _ramp(), block.timestamp + MAX_LIFETIME, false);
     }
 
     /// @dev The Morpho request stores the exact full-share quote derived from the live market totals.
@@ -338,9 +354,10 @@ contract MorphoExitBookTest is LidoLendSetup {
         // A NEW place now reverts.
         address lender2 = _actor("lender2");
         uint256 shares2 = _lenderSupply(lender2, 5 ether);
+        uint256 exitAssets = _quote(shares2);
         vm.prank(lender2);
         vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
-        book.placeExitRequest(m.id, shares2, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        book.placeExitRequest(m.id, exitAssets, _ramp(), block.timestamp + MAX_LIFETIME, false);
 
         // BUT the in-flight request still fills (fill uses stored params, never re-checks isMarketAllowed).
         _fillAndAssert(id, 12 hours);
@@ -493,37 +510,38 @@ contract MorphoExitBookTest is LidoLendSetup {
     ///      admits `shares` when `toAssetsDown(shares) <= idle`, so the whole position would come out. Capping
     ///      availability at `toSharesDown(idle)` rounds strictly below that boundary and wrongly reported nothing
     ///      fillable (reverting the fill). The full request must be fillable in one shot.
+    /// @dev The core's exact-share withdraw quotes shares down to assets, so it releases every share up to
+    ///      `sMax` — the largest share count whose down-quote still fits idle liquidity — which sits about
+    ///      `VIRTUAL_SHARES` above `toSharesDown(idle)`. A request landing in that band must be reported fully
+    ///      fillable, not capped a share short. Once interest has accrued the assets/shares round trip loses a
+    ///      unit, which is what lets an asset-denominated size land there at all.
     function test_fullFill_atLiquidityBoundary_notRejectedByRounding() public {
         Market storage m = _m();
         address lender = _actor("lender");
-        address borrower = _actor("borrower");
 
-        uint256 ownerShares = _lenderSupply(lender, 100 ether);
-        _borrowOut(borrower, 90 ether); // drain idle well below the position
+        _lenderSupply(lender, 100 ether);
+        _borrowOut(_actor("borrower"), 90 ether); // drain idle well below the position
+        vm.warp(block.timestamp + 30 days); // accrue, so shares are no longer a clean multiple of assets
 
-        // Live (accrued) balances -> the two rounding directions at the boundary.
         (uint256 tsa, uint256 tss, uint256 tba,) =
             MorphoBalancesLib.expectedMarketBalances(IMorpho(address(m.core)), m.params);
         uint256 idle = tsa - tba;
-        uint256 available = idle.toSharesDown(tsa, tss); // the old, understated cap
-        uint256 sMax = ((idle + 1) * (tss + 1e6) - 1) / (tsa + 1); // max shares the core's exact-share path releases
+        uint256 cap = idle.toSharesDown(tsa, tss);
 
-        // Preconditions: the rounding gap exists, the owner backs the size, and the full withdraw fits idle.
-        assertGt(sMax, available, "rounding gap exists at the boundary");
-        assertLe(sMax, ownerShares, "owner backs the full request");
-        assertLe(sMax.toAssetsDown(tsa, tss), idle, "full request fits idle liquidity (core would accept)");
+        vm.prank(lender);
+        uint256 id = book.placeExitRequest(m.id, idle + 1, _ramp(), block.timestamp + MAX_LIFETIME, true);
 
-        uint256 id = _place(lender, sMax, true); // fullFillOnly
+        uint256 size = book.getExitRequest(id).sizeTotal;
+        assertGt(size, cap, "the request sits above the naive liquidity cap");
+        assertLe(size.toAssetsDown(tsa, tss), idle, "yet its down-quote still fits idle, so the core releases it");
 
-        // The whole request fits the core's liquidity, so it is fully fillable (was 0 -> the fill reverted).
-        assertEq(book.previewFill(id).filledShares, sMax, "full request fillable, not understated");
+        assertEq(book.previewFill(id).filledShares, size, "full request fillable, not understated");
 
-        uint256 posBefore = m.core.position(m.id, lender).supplyShares;
+        uint256 positionBefore = m.core.position(m.id, lender).supplyShares;
         vm.prank(address(0x2000));
         book.fillExitRequest(id, 0, 0);
-
-        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "request filled in one shot");
-        assertEq(posBefore - m.core.position(m.id, lender).supplyShares, sMax, "exactly sMax shares withdrawn");
+        assertEq(positionBefore - m.core.position(m.id, lender).supplyShares, size, "the whole request came out");
+        assertEq(book.getExitRequest(id).sizeRemaining, 0, "closed in one fill");
     }
 
     /// @dev The same boundary with a partial-fill request. The old `toSharesDown(idle)` cap would fill only

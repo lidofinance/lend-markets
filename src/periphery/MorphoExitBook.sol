@@ -12,7 +12,7 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {ExitBookBase} from "./ExitBookBase.sol";
 import {IMorphoExitBook} from "../interfaces/IMorphoExitBook.sol";
-import {Request, PriorityRamp} from "../types/ExitBookTypes.sol";
+import {Request, PriorityRamp, Sizing} from "../types/ExitBookTypes.sol";
 
 /// @title MorphoExitBook
 /// @author Lido
@@ -30,7 +30,6 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     error MarketNotAllowed();
     error MarketNotCreated();
     error NotAuthorizedOnMorpho();
-    error InsufficientBacking();
     error ZeroMorpho();
 
     // ---
@@ -105,7 +104,7 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     /// @inheritdoc IMorphoExitBook
     function placeExitRequest(
         Id marketId,
-        uint256 shares,
+        uint256 assets,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
@@ -114,16 +113,22 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
 
         if (!MORPHO.isAuthorized(msg.sender, address(this))) revert NotAuthorizedOnMorpho();
 
-        // Permission-only: shares stay in the lender's position; sanity-check now, the fill re-checks live.
-        if (MORPHO.position(marketId, msg.sender).supplyShares < shares) revert InsufficientBacking();
-
-        MarketParams memory marketParams = _marketParams[marketId];
-        uint256 quotedAssets = _supplySharesToAssets(marketParams, shares);
-        id = _createRequest(
-            msg.sender, IERC20(marketParams.loanToken), shares, quotedAssets, ramp, deadline, fullFillOnly
-        );
+        id = _createRequest(msg.sender, _size(_marketParams[marketId], assets), ramp, deadline, fullFillOnly);
 
         _marketIdOf[id] = marketId;
+    }
+
+    /// @dev Size a placement: the lender names an asset amount, the request is stored in the supply shares it
+    ///      buys at the market's current share rate. What they actually hold is not checked — the fill reads it
+    ///      live.
+    function _size(MarketParams memory marketParams, uint256 assets) private view returns (Sizing memory sizing) {
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
+            MorphoBalancesLib.expectedMarketBalances(MORPHO, marketParams);
+
+        sizing.asset = IERC20(marketParams.loanToken);
+        sizing.shares = assets.toSharesDown(totalSupplyAssets, totalSupplyShares);
+        sizing.quotedAssets = sizing.shares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
+        sizing.minShareRate = SHARE_RATE_UNIT.toAssetsDown(totalSupplyAssets, totalSupplyShares);
     }
 
     // ---
@@ -135,15 +140,23 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
         return _marketParams[_marketIdOf[requestId]];
     }
 
-    function _availableShares(uint256 id, Request storage request) internal view override returns (uint256) {
+    function _availableShares(uint256 id, Request storage request)
+        internal
+        view
+        override
+        returns (uint256 availableShares, uint256 shareRate)
+    {
         // The withdraw pulls from the owner's position on their behalf — if they revoked authorization the
         // fill would revert, so report nothing fillable (keeps `previewFill` honest for fillers).
-        if (!MORPHO.isAuthorized(request.owner, address(this))) return 0;
+        if (!MORPHO.isAuthorized(request.owner, address(this))) return (0, 0);
 
         MarketParams memory marketParams = _requestMarket(id);
 
         (uint256 totalSupplyAssets, uint256 totalSupplyShares, uint256 totalBorrowAssets,) =
             MorphoBalancesLib.expectedMarketBalances(MORPHO, marketParams);
+
+        // The rate the request's floor is measured against, off the same balances the share math below uses.
+        shareRate = SHARE_RATE_UNIT.toAssetsDown(totalSupplyAssets, totalSupplyShares);
 
         uint256 idleAssets = totalSupplyAssets > totalBorrowAssets ? totalSupplyAssets - totalBorrowAssets : 0;
         uint256 ownerShares = MORPHO.position(marketParams.id(), request.owner).supplyShares;
@@ -151,8 +164,13 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
 
         // A plain `toSharesDown(idleAssets)` cap rounds below what the core's exact-share withdraw actually
         // releases, so a fully redeemable request would be wrongly rejected (or left with dust) at the boundary.
-        if (backedShares.toAssetsDown(totalSupplyAssets, totalSupplyShares) <= idleAssets) return backedShares;
-        return idleAssets.toSharesDown(totalSupplyAssets, totalSupplyShares);
+        availableShares = backedShares.toAssetsDown(totalSupplyAssets, totalSupplyShares) <= idleAssets
+            ? backedShares
+            : idleAssets.toSharesDown(totalSupplyAssets, totalSupplyShares);
+    }
+
+    function _asset(uint256 id) internal view override returns (IERC20) {
+        return IERC20(_requestMarket(id).loanToken);
     }
 
     function _redeem(uint256 id, address account, uint256 shares) internal override {

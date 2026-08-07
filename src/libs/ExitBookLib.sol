@@ -3,7 +3,7 @@ pragma solidity 0.8.35;
 
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {ExitStatus, Request, PriorityRamp} from "../types/ExitBookTypes.sol";
+import {ExitStatus, Request, PriorityRamp, Sizing} from "../types/ExitBookTypes.sol";
 
 /// @title ExitBookLib
 /// @author Lido
@@ -44,9 +44,7 @@ library ExitBookLib {
     function add(
         State storage self,
         address owner,
-        IERC20 asset,
-        uint256 shares,
-        uint256 quotedAssets,
+        Sizing memory sizing,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
@@ -58,10 +56,10 @@ library ExitBookLib {
             deadline: SafeCast.toUint40(deadline),
             fullFillOnly: fullFillOnly,
             status: ExitStatus.Open,
-            asset: asset,
-            sizeRemaining: SafeCast.toUint128(shares),
-            sizeTotal: SafeCast.toUint128(shares),
-            quotedAssets: quotedAssets,
+            sizeRemaining: SafeCast.toUint128(sizing.shares),
+            sizeTotal: SafeCast.toUint128(sizing.shares),
+            quotedAssets: sizing.quotedAssets,
+            minShareRate: sizing.minShareRate,
             startRate: SafeCast.toUint96(ramp.startRate),
             endRate: SafeCast.toUint96(ramp.endRate),
             rampStart: SafeCast.toUint32(ramp.rampStart),

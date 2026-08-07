@@ -2,11 +2,14 @@
 pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
+import {console2} from "forge-std/console2.sol";
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, IMorpho, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
@@ -44,7 +47,21 @@ interface IVaultLike {
     function balanceOf(address account) external view returns (uint256);
     function approve(address spender, uint256 amount) external returns (bool);
     function deposit(uint256 assets, address receiver) external returns (uint256 shares);
+    function redeem(uint256 shares, address receiver, address owner) external returns (uint256 assets);
     function convertToAssets(uint256 shares) external view returns (uint256);
+    function convertToShares(uint256 assets) external view returns (uint256);
+    function previewRedeem(uint256 shares) external view returns (uint256);
+    function maxRedeem(address owner) external view returns (uint256);
+    function totalSupply() external view returns (uint256);
+    function fallbackExit(uint256 shares, address receiver, address owner, uint256 maxIterations)
+        external
+        returns (uint256, uint256, uint256, uint256);
+}
+
+interface IControllerLike {
+    function pauseFor(uint256 duration) external;
+    function grantRole(bytes32 role, address account) external;
+    function PAUSER_ROLE() external view returns (bytes32);
 }
 
 interface ICoreLike {
@@ -59,6 +76,9 @@ interface ICoreLike {
         returns (uint256, uint256);
     function supplyCollateral(MarketParams memory p, uint256 assets, address onBehalf, bytes memory data) external;
     function setAuthorization(address authorized, bool newIsAuthorized) external;
+    function liquidate(MarketParams memory p, address borrower, uint256 seized, uint256 repaidShares, bytes memory d)
+        external
+        returns (uint256, uint256);
     function position(Id id, address user)
         external
         view
@@ -147,6 +167,124 @@ contract ExitBookTest is Test, LidoLendDeployer {
     // ERC-4626 BOOK
     // ---
 
+    /* The vault's own share rate tracks the market's supply-share price, which is why the ERC-4626 book can
+       pin its price floor on the vault without reaching into the core. */
+    function test_erc4626_vaultShareRateTracksTheMarket() public {
+        _depositToVault(LENDER, 100 ether);
+
+        (uint256 tsa0, uint256 tss0,,) = MorphoBalancesLib.expectedMarketBalances(IMorpho(d.core), d.params);
+        uint256 market0 = SharesMathLib.toAssetsDown(vaultBook.SHARE_RATE_UNIT(), tsa0, tss0);
+        uint256 vault0 = IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT());
+
+        _drain(BORROWER, 200 ether, 80 ether);
+        vm.warp(block.timestamp + 180 days);
+
+        (uint256 tsa1, uint256 tss1,,) = MorphoBalancesLib.expectedMarketBalances(IMorpho(d.core), d.params);
+        uint256 market1 = SharesMathLib.toAssetsDown(vaultBook.SHARE_RATE_UNIT(), tsa1, tss1);
+        uint256 vault1 = IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT());
+
+        assertGt(market1, market0, "the market rate rose with accrued interest");
+        // Same relative move, to the basis point: the vault is a fixed-ratio wrapper over the supply position.
+        assertEq((vault1 - vault0) * 1e18 / vault0, (market1 - market0) * 1e18 / market0, "vault rate moved with it");
+    }
+
+    /* The same tracking holds downward: a socialised loss drops the supply-share price, and the vault's own
+       share rate falls with it by the same relative amount. */
+    function test_erc4626_vaultShareRateTracksTheMarketDownward() public {
+        _depositToVault(LENDER, 100 ether);
+        _drain(BORROWER, 200 ether, 80 ether); // LTV 0.4 at parity
+
+        (uint256 tsa0, uint256 tss0,,) = MorphoBalancesLib.expectedMarketBalances(IMorpho(d.core), d.params);
+        uint256 market0 = SharesMathLib.toAssetsDown(vaultBook.SHARE_RATE_UNIT(), tsa0, tss0);
+        uint256 vault0 = IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT());
+
+        // Collateral collapses to a fifth of the debt, then a liquidator sweeps every unit of it: what the
+        // seizure cannot repay is written off against the suppliers.
+        vm.mockCall(d.oracle, abi.encodeWithSignature("price()"), abi.encode(uint256(2e35)));
+        address liquidator = address(0x5000);
+        loan.mint(liquidator, 1_000 ether);
+        vm.startPrank(liquidator);
+        loan.approve(d.core, type(uint256).max);
+        ICoreLike(d.core).liquidate(d.params, BORROWER, 200 ether, 0, "");
+        vm.stopPrank();
+
+        (uint256 tsa1, uint256 tss1,,) = MorphoBalancesLib.expectedMarketBalances(IMorpho(d.core), d.params);
+        uint256 market1 = SharesMathLib.toAssetsDown(vaultBook.SHARE_RATE_UNIT(), tsa1, tss1);
+        uint256 vault1 = IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT());
+
+        assertLt(market1, market0, "the loss was socialised onto suppliers");
+        assertLt(vault1, vault0, "and the vault's share rate fell with it");
+        assertEq((vault0 - vault1) * 1e18 / vault0, (market0 - market1) * 1e18 / market0, "by the same relative amount");
+    }
+
+    /* Another lender coming and going must never push the share rate down, or their ordinary activity would
+       trip the price floor on somebody else's request. Both legs round in the position's favour, so the rate is
+       monotone under third-party deposits and redemptions. */
+    function testFuzz_erc4626_shareRateNeverFallsOnAnotherLendersActivity(uint256 depositSeed, uint256 redeemSeed)
+        public
+    {
+        _depositToVault(LENDER, 100 ether);
+        uint256 rateBefore = IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT());
+
+        address other = address(0x4000);
+        uint256 amount = bound(depositSeed, 1, 1_000 ether);
+        uint256 otherShares = _depositToVault(other, amount);
+        uint256 rateAfterDeposit = IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT());
+        assertGe(rateAfterDeposit, rateBefore, "a third party's deposit never lowers the rate");
+
+        vm.prank(other);
+        IVaultLike(d.vault).redeem(bound(redeemSeed, 1, otherShares), other, other);
+        assertGe(
+            IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT()),
+            rateAfterDeposit,
+            "nor does their redemption"
+        );
+    }
+
+    /* The price floor reads a pure share price, so neither an empty market nor a paused controller moves it —
+       only the liquidity views react to those. */
+    function test_erc4626_shareRateIgnoresLiquidityAndPause() public {
+        uint256 shares = _depositToVault(LENDER, 100 ether);
+        uint256 rate0 = IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT());
+
+        // 1 · drain every unit of liquidity. Nothing is borrowed until the last step, so the activation wait
+        //     accrues no interest and the rate reading is clean.
+        _drain(BORROWER, 400 ether, 100 ether);
+        assertEq(IVaultLike(d.vault).maxRedeem(LENDER), 0, "nothing is redeemable any more");
+        assertEq(IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT()), rate0, "the rate did not move");
+        assertEq(IVaultLike(d.vault).previewRedeem(shares), IVaultLike(d.vault).convertToAssets(shares), "no fee leg");
+
+        // 2 · pause the controller
+        IControllerLike controller = IControllerLike(d.controllerProxy);
+        controller.grantRole(controller.PAUSER_ROLE(), address(this));
+        controller.pauseFor(1 days);
+        assertEq(IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT()), rate0, "pause did not move it");
+    }
+
+    /* A fallback exit burns vault shares and the core supply shares behind them together. The wrapper ratio
+       between the two has to survive that, or the price floor would drift for reasons that are not price. */
+    function test_erc4626_shareRateSurvivesFallbackExit() public {
+        uint256 shares = _depositToVault(LENDER, 100 ether);
+        _drain(BORROWER, 400 ether, 95 ether); // leaves the position mostly illiquid
+
+        uint256 rate0 = IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT());
+        (uint256 tsa0, uint256 tss0,,) = MorphoBalancesLib.expectedMarketBalances(IMorpho(d.core), d.params);
+        uint256 market0 = SharesMathLib.toAssetsDown(vaultBook.SHARE_RATE_UNIT(), tsa0, tss0);
+
+        vm.prank(LENDER);
+        (uint256 burned,,, uint256 debtCanceled) = IVaultLike(d.vault).fallbackExit(shares / 2, LENDER, LENDER, 0);
+        assertGt(burned, 0, "the exit burned vault shares");
+        assertGt(debtCanceled, 0, "and settled debt behind them");
+
+        uint256 rate1 = IVaultLike(d.vault).convertToAssets(vaultBook.SHARE_RATE_UNIT());
+        (uint256 tsa1, uint256 tss1,,) = MorphoBalancesLib.expectedMarketBalances(IMorpho(d.core), d.params);
+        uint256 market1 = SharesMathLib.toAssetsDown(vaultBook.SHARE_RATE_UNIT(), tsa1, tss1);
+
+        // Both sides are read the same way, so compare what the floor actually sees: the vault rate relative to
+        // the market rate must not move because of the burn.
+        assertEq(rate1 * 1e18 / market1, rate0 * 1e18 / market0, "wrapper ratio held through settle");
+    }
+
     /* Full single fill at a flat priority fee: flat price → no yield → reward is purely the fee. */
     function test_erc4626_fill_pushesPayouts() public {
         uint256 shares = _depositToVault(LENDER, 10 ether);
@@ -154,8 +292,9 @@ contract ExitBookTest is Test, LidoLendDeployer {
 
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), shares, _flat(PRIORITY_FEE), deadline, false);
+        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, _flat(PRIORITY_FEE), deadline, false);
 
         Request memory request = vaultBook.getExitRequest(id);
         assertEq(request.owner, LENDER, "owner stored");
@@ -193,9 +332,10 @@ contract ExitBookTest is Test, LidoLendDeployer {
 
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
         uint256 id = vaultBook.placeExitRequest(
-            IERC4626(d.vault), shares, _flat(PRIORITY_FEE), block.timestamp + 20 days, false
+            IERC4626(d.vault), exitAssets, _flat(PRIORITY_FEE), block.timestamp + 20 days, false
         );
 
         _drain(BORROWER, 60 ether, 6 ether); // leaves ~4 loan idle — not enough for the whole request
@@ -221,8 +361,10 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 shares = _depositToVault(LENDER, 8 ether);
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), shares, _flat(0), block.timestamp + 1 days, false);
+        uint256 id =
+            vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, _flat(0), block.timestamp + 1 days, false);
 
         vm.prank(LENDER);
         vaultBook.cancelExitRequest(id);
@@ -241,8 +383,9 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 deadline = block.timestamp + 7 days;
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), shares, _flat(PRIORITY_FEE), deadline, false);
+        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, _flat(PRIORITY_FEE), deadline, false);
 
         vm.warp(deadline);
         loan.mint(FILLER, 10 ether);
@@ -262,8 +405,10 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 shares = _depositToVault(LENDER, 10 ether);
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), shares, _flat(0), block.timestamp + 1 days, false);
+        uint256 id =
+            vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, _flat(0), block.timestamp + 1 days, false);
 
         RequestPreview memory preview = vaultBook.previewFill(id);
         assertEq(preview.id, id, "preview carries the id");
@@ -295,10 +440,11 @@ contract ExitBookTest is Test, LidoLendDeployer {
         vm.expectRevert();
         IERC4626(d.vault).redeem(cap + 1, LENDER, LENDER);
 
-        // A full-fill-only request sized exactly at the cap is fully fillable and clears in one shot: the book
+        // A request that must close in one fill, sized exactly at the cap, clears in one shot: the book
         // reports precisely what redeem accepts, no gap.
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(cap);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), cap, _flat(0), block.timestamp + 7 days, true);
+        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, _flat(0), block.timestamp + 7 days, true);
         assertEq(vaultBook.previewFill(id).filledShares, cap, "book reports the whole cap fillable");
 
         vm.prank(FILLER);
@@ -312,12 +458,15 @@ contract ExitBookTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
 
+        uint256 halfPositionAssets = IERC4626(d.vault).convertToAssets(shares / 2);
         vm.prank(LENDER);
-        uint256 id1 =
-            vaultBook.placeExitRequest(IERC4626(d.vault), shares / 2, _flat(0), block.timestamp + 1 days, false);
+        uint256 id1 = vaultBook.placeExitRequest(
+            IERC4626(d.vault), halfPositionAssets, _flat(0), block.timestamp + 1 days, false
+        );
         vm.prank(LENDER);
-        uint256 id2 =
-            vaultBook.placeExitRequest(IERC4626(d.vault), shares / 2, _flat(0), block.timestamp + 1 days, false);
+        uint256 id2 = vaultBook.placeExitRequest(
+            IERC4626(d.vault), halfPositionAssets, _flat(0), block.timestamp + 1 days, false
+        );
 
         assertEq(vaultBook.getOwnerRequestCount(LENDER), 2, "two lender requests");
         uint256[] memory ids = vaultBook.getOwnerRequestIds(LENDER, 0, 10);
@@ -334,12 +483,15 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 shares = _depositToVault(LENDER, 20 ether);
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 halfPositionAssets = IERC4626(d.vault).convertToAssets(shares / 2);
         vm.prank(LENDER);
-        uint256 id1 =
-            vaultBook.placeExitRequest(IERC4626(d.vault), shares / 2, _flat(0), block.timestamp + 1 days, false);
+        uint256 id1 = vaultBook.placeExitRequest(
+            IERC4626(d.vault), halfPositionAssets, _flat(0), block.timestamp + 1 days, false
+        );
         vm.prank(LENDER);
-        uint256 id2 =
-            vaultBook.placeExitRequest(IERC4626(d.vault), shares / 2, _flat(0), block.timestamp + 1 days, false);
+        uint256 id2 = vaultBook.placeExitRequest(
+            IERC4626(d.vault), halfPositionAssets, _flat(0), block.timestamp + 1 days, false
+        );
 
         // caller passes its own id set — the lender's ids plus a non-existent one
         uint256[] memory ids = new uint256[](3);
@@ -370,12 +522,15 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 shares = _depositToVault(LENDER, 20 ether);
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 halfPositionAssets = IERC4626(d.vault).convertToAssets(shares / 2);
         vm.prank(LENDER);
-        uint256 id1 =
-            vaultBook.placeExitRequest(IERC4626(d.vault), shares / 2, _flat(0), block.timestamp + 1 days, false);
+        uint256 id1 = vaultBook.placeExitRequest(
+            IERC4626(d.vault), halfPositionAssets, _flat(0), block.timestamp + 1 days, false
+        );
         vm.prank(LENDER);
-        uint256 id2 =
-            vaultBook.placeExitRequest(IERC4626(d.vault), shares / 2, _flat(0), block.timestamp + 1 days, false);
+        uint256 id2 = vaultBook.placeExitRequest(
+            IERC4626(d.vault), halfPositionAssets, _flat(0), block.timestamp + 1 days, false
+        );
 
         uint256[] memory ids = new uint256[](3);
         ids[0] = id1;
@@ -401,13 +556,13 @@ contract ExitBookTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
 
-        uint256 slice = shares / 4;
+        uint256 sliceAssets = IERC4626(d.vault).convertToAssets(shares / 4);
         uint256[3] memory ids;
         for (uint256 i; i < 3; ++i) {
             vm.prank(LENDER);
             ids[i] = vaultBook.placeExitRequest(
                 IERC4626(d.vault),
-                slice,
+                sliceAssets,
                 _rampHold(startRate, endRate, rampStart, rampDuration),
                 createdAt + 20 days,
                 false
@@ -455,12 +610,12 @@ contract ExitBookTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
 
-        uint256 slice = shares / 4;
+        uint256 sliceAssets = IERC4626(d.vault).convertToAssets(shares / 4);
         uint256[3] memory ids;
         for (uint256 i; i < 3; ++i) {
             vm.prank(LENDER);
             ids[i] = vaultBook.placeExitRequest(
-                IERC4626(d.vault), slice, _ramp(startRate, endRate, rampDuration), createdAt + 20 days, false
+                IERC4626(d.vault), sliceAssets, _ramp(startRate, endRate, rampDuration), createdAt + 20 days, false
             );
         }
 
@@ -498,8 +653,10 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 shares = _depositToVault(LENDER, amount);
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), shares, _flat(0), block.timestamp + 1 days, false);
+        uint256 id =
+            vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, _flat(0), block.timestamp + 1 days, false);
 
         // the fill redeems ~`amount` of loan (flat price, no yield)
         vm.prank(FILLER);
@@ -516,10 +673,11 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 shares = _depositToVault(LENDER, 5 ether);
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
         vm.expectRevert(ExitBookBase.StartFeeAboveEnd.selector);
         vaultBook.placeExitRequest(
-            IERC4626(d.vault), shares, _ramp(0.05e18, 0.01e18, 1 days), block.timestamp + 7 days, false
+            IERC4626(d.vault), exitAssets, _ramp(0.05e18, 0.01e18, 1 days), block.timestamp + 7 days, false
         );
     }
 
@@ -528,9 +686,10 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 shares = _depositToVault(LENDER, 5 ether);
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
         vm.expectRevert(ExitBookBase.PriorityFeeTooHigh.selector);
-        vaultBook.placeExitRequest(IERC4626(d.vault), shares, _flat(0.2e18), block.timestamp + 7 days, false);
+        vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, _flat(0.2e18), block.timestamp + 7 days, false);
     }
 
     /// @dev A ramp whose climb ends after the request deadline is rejected at placement.
@@ -540,9 +699,10 @@ contract ExitBookTest is Test, LidoLendDeployer {
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
         vm.prank(LENDER);
         // ramp end (10 days) overshoots the window to the deadline (5 days)
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.expectRevert(ExitBookBase.RampPastDeadline.selector);
         vaultBook.placeExitRequest(
-            IERC4626(d.vault), shares, _ramp(0, 0.05e18, 10 days), block.timestamp + 5 days, false
+            IERC4626(d.vault), exitAssets, _ramp(0, 0.05e18, 10 days), block.timestamp + 5 days, false
         );
     }
 
@@ -559,15 +719,16 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 deadline = block.timestamp + 7 days;
         vm.prank(LENDER);
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), shares, _flat(0), deadline, false);
+        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, _flat(0), deadline, false);
 
         vaultBook.setVaultAllowed(IERC4626(d.vault), false); // governance forbids the vault
 
         // no new requests against it
         vm.prank(LENDER);
         vm.expectRevert(Erc4626ExitBook.VaultNotAllowed.selector);
-        vaultBook.placeExitRequest(IERC4626(d.vault), shares, _flat(0), deadline, false);
+        vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, _flat(0), deadline, false);
 
         // but the already-placed request still fills
         vm.prank(FILLER);
@@ -588,8 +749,9 @@ contract ExitBookTest is Test, LidoLendDeployer {
 
         vm.prank(LENDER);
         ICoreLike(d.core).setAuthorization(address(morphoBook), true);
+        uint256 exitAssets = _supplyQuote(supplyShares);
         vm.prank(LENDER);
-        uint256 id = morphoBook.placeExitRequest(d.marketId, supplyShares, _flat(PRIORITY_FEE), deadline, false);
+        uint256 id = morphoBook.placeExitRequest(d.marketId, exitAssets, _flat(PRIORITY_FEE), deadline, false);
 
         uint256 owed = morphoBook.getExitRequest(id).quotedAssets;
         uint256 fee = owed * PRIORITY_FEE / WAD;
@@ -615,9 +777,10 @@ contract ExitBookTest is Test, LidoLendDeployer {
         MorphoExitBook fresh = new MorphoExitBook(d.core, address(this), MAX_LIFETIME);
         vm.prank(LENDER);
         ICoreLike(d.core).setAuthorization(address(fresh), true);
+        uint256 exitAssets = _supplyQuote(1 ether);
         vm.prank(LENDER);
         vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
-        fresh.placeExitRequest(d.marketId, 1 ether, _flat(0), block.timestamp + 1 days, false);
+        fresh.placeExitRequest(d.marketId, exitAssets, _flat(0), block.timestamp + 1 days, false);
     }
 
     /* Disallowing a market blocks new requests but leaves already-placed ones fillable. */
@@ -626,14 +789,15 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 deadline = block.timestamp + 7 days;
         vm.prank(LENDER);
         ICoreLike(d.core).setAuthorization(address(morphoBook), true);
+        uint256 exitAssets = _supplyQuote(supplyShares);
         vm.prank(LENDER);
-        uint256 id = morphoBook.placeExitRequest(d.marketId, supplyShares, _flat(0), deadline, false);
+        uint256 id = morphoBook.placeExitRequest(d.marketId, exitAssets, _flat(0), deadline, false);
 
         morphoBook.setMarketAllowed(d.params, false); // governance forbids the market
 
         vm.prank(LENDER);
         vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
-        morphoBook.placeExitRequest(d.marketId, supplyShares, _flat(0), deadline, false);
+        morphoBook.placeExitRequest(d.marketId, exitAssets, _flat(0), deadline, false);
 
         vm.prank(FILLER);
         morphoBook.fillExitRequest(id, 0, 0);
@@ -658,19 +822,22 @@ contract ExitBookTest is Test, LidoLendDeployer {
     /// @dev Placing without authorizing the book on the core to manage the supply position reverts.
     function testRevert_morpho_place_notAuthorized() public {
         _supplyDirect(LENDER, 10 ether);
+        uint256 exitAssets = _supplyQuote(1 ether);
         vm.prank(LENDER);
         vm.expectRevert(MorphoExitBook.NotAuthorizedOnMorpho.selector);
-        morphoBook.placeExitRequest(d.marketId, 1 ether, _flat(0), block.timestamp + 1 days, false);
+        morphoBook.placeExitRequest(d.marketId, exitAssets, _flat(0), block.timestamp + 1 days, false);
     }
 
-    /* Placing for more supply shares than the lender holds reverts at placement (like ERC-4626). */
-    function testRevert_morpho_place_insufficientBacking() public {
+    /* Placing for more than the lender holds is accepted; only the backed part is ever fillable. */
+    function test_morpho_place_acceptsMoreThanTheLenderHolds() public {
         uint256 supplyShares = _supplyDirect(LENDER, 10 ether);
         vm.prank(LENDER);
         ICoreLike(d.core).setAuthorization(address(morphoBook), true);
         vm.prank(LENDER);
-        vm.expectRevert(MorphoExitBook.InsufficientBacking.selector);
-        morphoBook.placeExitRequest(d.marketId, supplyShares + 1, _flat(0), block.timestamp + 1 days, false);
+        uint256 id = morphoBook.placeExitRequest(d.marketId, 100 ether, _flat(0), block.timestamp + 1 days, false);
+
+        assertGt(morphoBook.getExitRequest(id).sizeTotal, supplyShares, "request is larger than the position");
+        assertEq(morphoBook.previewFill(id).filledShares, supplyShares, "only the backed part is fillable");
     }
 
     /* previewFill drops to zero once the owner revokes authorization, and the fill then reverts cleanly. */
@@ -678,8 +845,9 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 supplyShares = _supplyDirect(LENDER, 10 ether);
         vm.prank(LENDER);
         ICoreLike(d.core).setAuthorization(address(morphoBook), true);
+        uint256 exitAssets = _supplyQuote(supplyShares);
         vm.prank(LENDER);
-        uint256 id = morphoBook.placeExitRequest(d.marketId, supplyShares, _flat(0), block.timestamp + 1 days, false);
+        uint256 id = morphoBook.placeExitRequest(d.marketId, exitAssets, _flat(0), block.timestamp + 1 days, false);
 
         assertGt(morphoBook.previewFill(id).filledShares, 0, "fillable while authorized");
 
@@ -698,6 +866,13 @@ contract ExitBookTest is Test, LidoLendDeployer {
     // ---
 
     /// @dev A flat priority fee: `rate` from creation, no ramp.
+    /// @dev Loan assets `shares` of core supply are worth right now — the Morpho book sizes requests in assets.
+    function _supplyQuote(uint256 shares) internal view returns (uint256) {
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
+            MorphoBalancesLib.expectedMarketBalances(IMorpho(d.core), d.params);
+        return SharesMathLib.toAssetsDown(shares, totalSupplyAssets, totalSupplyShares);
+    }
+
     function _flat(uint256 rate) internal pure returns (PriorityRamp memory) {
         return PriorityRamp({startRate: rate, endRate: rate, rampStart: 0, rampEnd: 0});
     }

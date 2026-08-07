@@ -22,17 +22,20 @@ interface IErc4626ExitBook is IExitBook {
     /// @param allowed True to allow new requests against it; false to block them (already-placed ones still fill).
     function setVaultAllowed(IERC4626 vault, bool allowed) external;
 
-    /// @notice Open an exit backed by `shares` of an allowed `vault`. Permission-only: the caller must have
-    ///         approved this book for `shares` and hold them; the fill redeems them via the allowance.
+    /// @notice Open an exit against the caller's shares in an allowed `vault`, sized by the asset amount they
+    ///         want out. Permission-only: nothing is escrowed, and the fill redeems the caller's shares through
+    ///         the allowance they granted this book.
     /// @param vault The allowed ERC-4626 vault.
-    /// @param shares Vault shares to exit.
+    /// @param assets Loan-asset amount to exit. Converted to source shares at the vault's current share rate and
+    ///        stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them
+    ///        live.
     /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end.
     /// @param deadline Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
     /// @param fullFillOnly When true a fill must cover the whole remaining size in one shot.
     /// @return id The new request id.
     function placeExitRequest(
         IERC4626 vault,
-        uint256 shares,
+        uint256 assets,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
