@@ -176,6 +176,49 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         _assertManagedLeCore(m);
     }
 
+    /// @dev Core fee shares minted directly to the vault are not managed backing. A deposit that triggers their
+    ///      accrual therefore receives the same shares and post-deposit claim as a control deposit made after an
+    ///      explicit accrual; the entrant cannot capture fees earned before entry.
+    function test_pendingFeeShares_doNotTransferValueToEntrant() public {
+        Market storage m = _market();
+        _depositFor(m, _actor("incumbent"), 1_000 ether);
+
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 10_000 ether);
+        m.supplyCollateral(borrower, 10_000 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 800 ether);
+
+        m.core.setFeeRecipient(address(m.vault));
+        m.core.setFee(m.params, 0.1e18);
+        vm.warp(block.timestamp + 365 days);
+
+        uint256 managedBefore = m.vault.managedSupplyShares();
+        uint256 coreBefore = _coreSupplyShares(m);
+        assertEq(coreBefore, managedBefore, "setup has no unmanaged shares");
+        uint256 expectedAssetsBefore = m.vault.totalAssets();
+        uint256 snapshot = vm.snapshotState();
+
+        address entrant = _actor("entrant");
+        uint256 sharesBeforeAccrual = _depositFor(m, entrant, 100 ether);
+        uint256 claimBeforeAccrual = m.vault.convertToAssets(sharesBeforeAccrual);
+        uint256 feeShares = _coreSupplyShares(m) - m.vault.managedSupplyShares();
+        assertNotEq(feeShares, 0, "pending fees accrued");
+
+        assertTrue(vm.revertToState(snapshot), "snapshot restored");
+
+        m.accrueInterest();
+        assertEq(m.vault.managedSupplyShares(), managedBefore, "fee shares are not managed backing");
+        assertEq(_coreSupplyShares(m) - m.vault.managedSupplyShares(), feeShares, "same fee shares accrued");
+        assertEq(m.vault.totalAssets(), expectedAssetsBefore, "expected and accrued valuations match");
+
+        uint256 controlShares = _depositFor(m, entrant, 100 ether);
+        uint256 controlClaim = m.vault.convertToAssets(controlShares);
+        assertEq(sharesBeforeAccrual, controlShares, "entry price is independent of accrual timing");
+        assertEq(claimBeforeAccrual, controlClaim, "entrant captures no pending fee value");
+        _assertManagedLeCore(m);
+    }
+
     // ── defense in depth: reject a nonzero deposit minting zero shares ──
 
     /// @dev Even if a legitimate share price ever grew enough to floor a tiny deposit to zero shares (here via
