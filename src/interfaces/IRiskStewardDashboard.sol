@@ -76,8 +76,8 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     // ---
 
     /// @notice Raise the activation delay floor, cap, and guardian-quorum fallback. Reverts unless all values rise
-    ///         or hold. The controller still bounds the cap and enforces floor <= cap and a nonzero fallback > cap
-    ///         on write.
+    ///         or hold. The controller bounds the cap and fallback to 7 days and enforces floor <= cap and a
+    ///         nonzero fallback > cap on write.
     function increaseActivationDelays(
         Id marketId,
         uint40 newMinActivationDelay,

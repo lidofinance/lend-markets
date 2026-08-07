@@ -51,6 +51,10 @@ contract ActivationHarness {
         return ($.config.minActivationDelay, $.config.maxActivationDelay);
     }
 
+    function maxGuardiansQuorumDelay() external view returns (uint40) {
+        return $.config.maxGuardiansQuorumDelay;
+    }
+
     function deposit(address borrower, uint256 assets) external {
         _total[borrower] += assets;
         $.credit(borrower, assets, false);
@@ -217,17 +221,20 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.currentInflow(), 0, "instant deposit does not touch the inflow throttle");
     }
 
-    function test_instantDeposit_belowThresholdActivatesOnlyDeposit() public {
+    /// @notice Even when existing dust plus an instant deposit reaches the threshold exactly, only the trusted
+    ///         deposit becomes active; the dust remains dormant.
+    function test_instantDeposit_dustPlusDepositAtThreshold_activatesOnlyDeposit() public {
         address borrower = address(0xC2);
         h.setMinActivationAmount(10 ether);
-        h.deposit(borrower, 4 ether);
+        uint256 dustBefore = 10 ether - 1;
+        h.deposit(borrower, dustBefore);
 
-        h.depositInstant(borrower, 1 ether);
+        h.depositInstant(borrower, 1);
 
         (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(active, 1 ether, "instant deposit is active regardless of the threshold");
+        assertEq(active, 1, "instant deposit is active regardless of the threshold");
         assertEq(activating, 0, "instant deposit skips the timer");
-        assertEq(dust, 4 ether, "instant deposit does not activate existing dust");
+        assertEq(dust, dustBefore, "instant deposit does not activate existing dust");
         assertEq(h.currentInflow(), 0, "instant deposit does not touch the inflow throttle");
     }
 
@@ -313,6 +320,18 @@ contract CollateralActivationLibTest is Test {
     function testRevert_setMaxGuardiansQuorumDelay_notAboveMaxActivationDelay() public {
         vm.expectRevert(CollateralActivationLib.InvalidMaxGuardiansQuorumDelay.selector);
         h.setMaxGuardiansQuorumDelay(1 hours); // == maxActivationDelay
+    }
+
+    /// @dev The hard MAX_DELAY_DURATION boundary itself is accepted.
+    function test_setMaxGuardiansQuorumDelay_atBound() public {
+        h.setMaxGuardiansQuorumDelay(7 days);
+        assertEq(h.maxGuardiansQuorumDelay(), 7 days, "quorum fallback stored at the upper bound");
+    }
+
+    /// @dev A quorum-fallback delay above the hard MAX_DELAY_DURATION bound reverts.
+    function testRevert_setMaxGuardiansQuorumDelay_aboveBound() public {
+        vm.expectRevert(CollateralActivationLib.MaxGuardiansQuorumDelayExceeded.selector);
+        h.setMaxGuardiansQuorumDelay(7 days + 1);
     }
 
     /// @notice A withdrawal that drains an activating lot below the threshold folds the remainder into dust: it

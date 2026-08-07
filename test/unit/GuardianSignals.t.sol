@@ -789,12 +789,13 @@ contract GuardianSignalsTest is Test {
     function test_unsuspect_doesNotExtendSnapshotExpiry() public {
         gs.setSuspectWindow(10 days);
         _suspect(GUARDIAN_2, BOB);
+        vm.warp(block.timestamp + 1 days);
         _suspect(GUARDIAN_3, BOB);
         uint256 remainingExpiry = gs.getOpinion(MARKET, BOB).suspectExpiryTimestamp;
 
         vm.warp(block.timestamp + 1 days);
         _suspect(GUARDIAN_1, BOB);
-        vm.warp(block.timestamp + 8 days);
+        vm.warp(block.timestamp + 7 days);
         vm.prank(GUARDIAN_1);
         gs.unsuspect(MARKET, GUARDIAN_1, _one(BOB));
 

@@ -96,9 +96,9 @@ The controller adds the missing judgment as two linked safeguards, keyed per `(m
 
 ### Collateral activation
 
-Freshly supplied collateral cannot back a new borrow until it has matured through a timed gate. Activation runs on every collateral supply, sorting each borrower's collateral into three buckets:
+Freshly supplied non-instant collateral cannot back a new borrow until it has matured through a timed gate. Activation runs on every collateral supply, sorting each borrower's collateral into three buckets:
 
-- `dust` — collateral supplied below the activation minimum (`minActivationAmount`). It accumulates here until a supply lifts the total to or past the minimum, when the whole amount moves into `activating`. Freely withdrawable, and outside the timer.
+- `dust` — non-instant collateral below the activation minimum (`minActivationAmount`). It accumulates here until a non-instant supply lifts the total to or past the minimum, when the whole amount moves into `activating`. Freely withdrawable, and outside the timer.
 - `activating` — in the timer, maturing toward `active`. An `activatingLockAmount` portion can be held back from withdrawal for `activatingLockDuration`.
 - `active` — matured collateral, the only kind that backs a new loan, derived as `total` minus the un-matured buckets rather than stored on its own. Freely withdrawable.
 
@@ -123,7 +123,7 @@ A `maxGuardiansQuorumDelay` fallback matures a lot anyway if the committee stall
 
 #### Inflow delay
 
-The base wait is fixed when the collateral is supplied, computed from the market's recent inflow so address-splitting cannot dodge the throttle:
+The base wait is fixed when non-instant collateral is supplied, computed from the market's recent inflow so address-splitting cannot dodge the throttle:
 
 ```
 delay = minActivationDelay + (maxActivationDelay − minActivationDelay) × inflow / maxDelayInflow
@@ -133,7 +133,7 @@ unlockTime = activatingStart + delay + strikes × delayPerStrike
            + (activatingStart < suspectExpiry ? suspects × delayPerSuspect : 0)
 ```
 
-`inflow` is the market's recent collateral inflow, capped at `maxDelayInflow` and decaying at a fixed rate (draining from the cap to zero over `maxActivationDelay`), plus the incoming lot. More recent volume → longer delay, giving guardians more time to vet the larger supplies that carry more risk for lenders.
+`inflow` is the market's recent collateral inflow, capped at `maxDelayInflow` and decaying at a fixed rate (draining from the cap to zero over `maxActivationDelay`), plus the incoming non-instant lot. More recent volume → longer delay, giving guardians more time to vet the larger supplies that carry more risk for lenders.
 
 All activating collateral shares one timer (`activatingStart`). A top-up that extends the deadline restarts it for the whole lot, so a top-up after `suspectExpiry` clears the suspect surcharge.
 
@@ -154,11 +154,11 @@ All activating collateral shares one timer (`activatingStart`). A top-up that ex
 
 #### Instant activation
 
-A supply whose caller is on the instant-activation allowlist matures at supply — `unlockTime = 0`, skipping both the timer and the gate. The allowlist is keyed on the supply caller, not the position owner, so a trusted router activating on behalf of users qualifies while the users themselves stay on the timer. Governance grants it mainly to looping contracts that help borrowers build leveraged positions: for these the delay would only hurt the looping UX without adding safety, since a loop position does not pull lender funds out of the market.
+A supply whose caller is on the instant-activation allowlist matures at supply — `unlockTime = 0`, skipping both the timer and the gate. It activates only its own amount regardless of size: it never creates dust and leaves any existing dust untouched. The allowlist is keyed on the supply caller, not the position owner, so a trusted router activating on behalf of users qualifies while the users themselves stay on the timer. Governance grants it mainly to looping contracts that help borrowers build leveraged positions: for these the delay would only hurt the looping UX without adding safety, since a loop position does not pull lender funds out of the market.
 
 #### Withdrawal & holds
 
-Voluntary withdrawal comes off the collateral in waterfall order: dust first, then `activating` above a configurable lock, then `active`. Only `dust` and `activating` are drained as stored buckets — `active` is the matured remainder, which the rest of the withdrawal simply reduces. The lock keeps an `activatingLockAmount` portion of maturing collateral unwithdrawable for `activatingLockDuration` from the lot's start — an anti-Sybil measure, so while it holds a borrower cannot pull a maturing position all the way back out. Once the duration elapses the locked portion becomes withdrawable even if the lot has not matured. An unlocked drain that leaves the total inactive remainder below `minActivationAmount` folds it into `dust` and clears its timer, the mirror of a sub-threshold deposit staying dust. This demotion is skipped while a lock holds, since moving a locked remainder into freely-withdrawable dust would bypass the lock. Forced paths (liquidation, settle) pass lock 0 and therefore apply the same demotion after reaching all collateral. A same-tx supply then withdraw reverses its own inflow contribution (flash-loan undo, via transient storage).
+Voluntary withdrawal comes off the collateral in waterfall order: dust first, then `activating` above a configurable lock, then `active`. Only `dust` and `activating` are drained as stored buckets — `active` is the matured remainder, which the rest of the withdrawal simply reduces. The lock keeps an `activatingLockAmount` portion of maturing collateral unwithdrawable for `activatingLockDuration` from the lot's start — an anti-Sybil measure, so while it holds a borrower cannot pull a maturing position all the way back out. Once the duration elapses the locked portion becomes withdrawable even if the lot has not matured. A drain with no lock floor that leaves the total inactive remainder below `minActivationAmount` folds the remaining `activating` into `dust` and clears its timer, the mirror of a sub-threshold deposit staying dust. Voluntary withdrawal skips this demotion while a lock holds, since moving a locked remainder into freely-withdrawable dust would bypass the lock. Forced paths (liquidation, settle) pass a zero lock floor instead: they can drain the otherwise protected `activating` collateral and, if the total inactive remainder is sub-threshold, move its remaining `activating` portion into `dust`. A same-tx supply then withdraw reverses its own inflow contribution (flash-loan undo, via transient storage).
 
 A borrower with open debt cannot withdraw all of its collateral: a withdrawal must leave the remaining `active` covering the debt at LLTV. Active collateral below `minActivationAmount` backs no borrow at all, so a position can't be left stranded at a tiny high-LTV size at the head of the settlement queue — the capacity check folds that floor in rather than a separate revert. To pull everything out, repay the debt to zero first.
 

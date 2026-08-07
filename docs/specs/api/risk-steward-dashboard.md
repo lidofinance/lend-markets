@@ -17,10 +17,10 @@ Emitted when a steward is appointed to or removed from a market.
 ### `ActivationDelaysIncreased`
 
 ```solidity
-event ActivationDelaysIncreased(Id indexed marketId, uint256 newMin, uint256 newMax);
+event ActivationDelaysIncreased(Id indexed marketId, uint256 newMinActivationDelay, uint256 newMaxActivationDelay, uint256 newMaxGuardiansQuorumDelay);
 ```
 
-Emitted when the activation delay floor and cap are raised on a market.
+Emitted when the activation delay floor, cap, and guardian-quorum fallback are raised on a market.
 
 ### `ActivatingLockIncreased`
 
@@ -130,12 +130,13 @@ Whether `steward` may pull this dashboard's levers on `marketId`.
 ```solidity
 function increaseActivationDelays(
     Id marketId,
-    uint40 newMin,
-    uint40 newMax
+    uint40 newMinActivationDelay,
+    uint40 newMaxActivationDelay,
+    uint40 newMaxGuardiansQuorumDelay
 ) external;
 ```
 
-Raise the activation delay floor and cap. Reverts unless both rise or hold. The controller still bounds the cap and enforces floor <= cap on write.
+Raise the activation delay floor, cap, and guardian-quorum fallback. Reverts unless all values rise or hold. The controller bounds the cap and fallback to 7 days and enforces floor <= cap and a nonzero fallback > cap on write.
 
 ### `increaseActivatingLock`
 

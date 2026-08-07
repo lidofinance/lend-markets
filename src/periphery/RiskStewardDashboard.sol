@@ -95,10 +95,10 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     ) external onlyMarketSteward(marketId) {
         ILidoLendMarketController controller = _controller(marketId);
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
-        if (
-            newMinActivationDelay < cfg.minActivationDelay || newMaxActivationDelay < cfg.maxActivationDelay
-                || newMaxGuardiansQuorumDelay < cfg.maxGuardiansQuorumDelay
-        ) revert NotTightened();
+        if (newMinActivationDelay < cfg.minActivationDelay || newMaxActivationDelay < cfg.maxActivationDelay) {
+            revert NotTightened();
+        }
+        if (newMaxGuardiansQuorumDelay < cfg.maxGuardiansQuorumDelay) revert NotTightened();
 
         cfg.minActivationDelay = newMinActivationDelay;
         cfg.maxActivationDelay = newMaxActivationDelay;
