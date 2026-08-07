@@ -65,13 +65,14 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
     function placeExitRequest(
         IERC4626 vault,
         uint256 assets,
+        address receiver,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
     ) external returns (uint256 id) {
         if (!isVaultAllowed[vault]) revert VaultNotAllowed();
 
-        id = _createRequest(msg.sender, _size(vault, assets), ramp, deadline, fullFillOnly);
+        id = _createRequest(msg.sender, receiver, _size(vault, assets), ramp, deadline, fullFillOnly);
 
         vaultOf[id] = vault;
     }

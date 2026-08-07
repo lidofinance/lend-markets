@@ -176,7 +176,7 @@ contract ExitBookHandler is CommonBase, StdCheats, StdUtils {
             PriorityRamp({startRate: startRate, endRate: endRate, rampStart: rampStart, rampEnd: rampEnd});
 
         vm.prank(a);
-        uint256 id = BOOK.placeExitRequest(VAULT, exitAssets, ramp, deadline, false);
+        uint256 id = BOOK.placeExitRequest(VAULT, exitAssets, a, ramp, deadline, false);
         _sync(id);
     }
 

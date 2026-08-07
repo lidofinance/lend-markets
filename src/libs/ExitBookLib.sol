@@ -44,6 +44,7 @@ library ExitBookLib {
     function add(
         State storage self,
         address owner,
+        address receiver,
         Sizing memory sizing,
         PriorityRamp calldata ramp,
         uint256 deadline,
@@ -52,6 +53,7 @@ library ExitBookLib {
         id = ++self.nextId;
         self.requests[id] = Request({
             owner: owner,
+            receiver: receiver,
             createdAt: SafeCast.toUint40(block.timestamp),
             deadline: SafeCast.toUint40(deadline),
             fullFillOnly: fullFillOnly,

@@ -55,6 +55,7 @@ struct Request {
     uint40 deadline;
     bool fullFillOnly;
     ExitStatus status;
+    address receiver;
     uint128 sizeRemaining;
     uint128 sizeTotal;
     uint256 quotedAssets;
@@ -77,6 +78,7 @@ One exit request's source-agnostic lifecycle state. The backing source (which va
 | `deadline` | `uint40` | Last timestamp the request may be filled. Chosen by the lender, capped at `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`. |
 | `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot or be rejected. |
 | `status` | `ExitStatus` | Open / Filled / Cancelled (Expired is derived). |
+| `receiver` | `address` | Address credited the lender's proceeds. |
 | `sizeRemaining` | `uint128` | Outstanding shares to fill. The concrete book defines the fixed placement entitlement. |
 | `sizeTotal` | `uint128` | Original shares used to apportion the full placement quote across fills. |
 | `quotedAssets` | `uint256` | Asset value quoted for all `sizeTotal` shares at sizing. |
@@ -115,7 +117,7 @@ A request paired with its live fill preview, for one-call scans. `id` is the reg
 #### `ExitRequested`
 
 ```solidity
-event ExitRequested(uint256 indexed id, address indexed owner, address asset, uint256 shares, uint256 minShareRate, PriorityRamp ramp, uint256 deadline, bool fullFillOnly);
+event ExitRequested(uint256 indexed id, address indexed owner, address indexed receiver, address asset, uint256 shares, uint256 minShareRate, PriorityRamp ramp, uint256 deadline, bool fullFillOnly);
 ```
 
 #### `ExitProcessed`
@@ -504,6 +506,7 @@ Allow or disallow `vault` for new requests. `ALLOWLIST_MANAGER_ROLE` only.
 function placeExitRequest(
     IERC4626 vault,
     uint256 assets,
+    address receiver,
     PriorityRamp calldata ramp,
     uint256 deadline,
     bool fullFillOnly
@@ -516,6 +519,7 @@ function placeExitRequest(
 | --- | --- | --- |
 | `vault` | `IERC4626` | The allowed ERC-4626 vault. |
 | `assets` | `uint256` | Loan-asset amount to exit. Converted to source shares at the vault's current share rate and stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them live. |
+| `receiver` | `address` | Address credited the lender's proceeds of every fill. |
 | `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
 | `deadline` | `uint256` | Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
 | `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot. |
@@ -630,6 +634,7 @@ Register `marketParams` (which must name a live Morpho market, checked on both a
 function placeExitRequest(
     Id marketId,
     uint256 assets,
+    address receiver,
     PriorityRamp calldata ramp,
     uint256 deadline,
     bool fullFillOnly
@@ -642,6 +647,7 @@ function placeExitRequest(
 | --- | --- | --- |
 | `marketId` | `Id` | The allowed market's id (its `MarketParams` hash, registered via `setMarketAllowed`). |
 | `assets` | `uint256` | Loan-asset amount to exit. Converted to supply shares at the market's current share rate and stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them live. |
+| `receiver` | `address` | Address credited the lender's proceeds of every fill. |
 | `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
 | `deadline` | `uint256` | Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
 | `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot. |

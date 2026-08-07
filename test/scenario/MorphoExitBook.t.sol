@@ -87,7 +87,7 @@ contract MorphoExitBookTest is LidoLendSetup {
     function _place(address lender, uint256 shares, bool fullFillOnly) internal returns (uint256 id) {
         uint256 assets = _quote(shares); // reads the market, so it must not sit inside the prank
         vm.prank(lender);
-        id = book.placeExitRequest(_m().id, assets, _ramp(), block.timestamp + MAX_LIFETIME, fullFillOnly);
+        id = book.placeExitRequest(_m().id, assets, lender, _ramp(), block.timestamp + MAX_LIFETIME, fullFillOnly);
     }
 
     /// @dev Forge a malformed but representable market price where the lender's full share amount quotes to zero.
@@ -240,7 +240,7 @@ contract MorphoExitBookTest is LidoLendSetup {
 
         uint256 exitAssets = _quote(shares);
         vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
-        fresh.placeExitRequest(m.id, exitAssets, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        fresh.placeExitRequest(m.id, exitAssets, lender, _ramp(), block.timestamp + MAX_LIFETIME, false);
         vm.stopPrank();
     }
 
@@ -261,7 +261,7 @@ contract MorphoExitBookTest is LidoLendSetup {
 
         uint256 exitAssets = _quote(shares);
         vm.expectRevert(MorphoExitBook.NotAuthorizedOnMorpho.selector);
-        book.placeExitRequest(m.id, exitAssets, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        book.placeExitRequest(m.id, exitAssets, lender, _ramp(), block.timestamp + MAX_LIFETIME, false);
         vm.stopPrank();
     }
 
@@ -276,7 +276,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         uint256 shares = _lenderSupply(lender, 10 ether);
 
         vm.prank(lender);
-        uint256 id = book.placeExitRequest(_m().id, 100 ether, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        uint256 id = book.placeExitRequest(_m().id, 100 ether, lender, _ramp(), block.timestamp + MAX_LIFETIME, false);
         assertGt(book.getExitRequest(id).sizeTotal, shares, "request is larger than the position");
 
         assertEq(book.previewFill(id).filledShares, shares, "only the backed part is fillable");
@@ -292,7 +292,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         uint256 exitAssets = _quote(shares);
         vm.prank(lender);
         vm.expectRevert(ExitBookBase.ZeroShares.selector);
-        book.placeExitRequest(_m().id, exitAssets, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        book.placeExitRequest(_m().id, exitAssets, lender, _ramp(), block.timestamp + MAX_LIFETIME, false);
     }
 
     /// @dev The Morpho request stores the exact full-share quote derived from the live market totals.
@@ -357,7 +357,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         uint256 exitAssets = _quote(shares2);
         vm.prank(lender2);
         vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
-        book.placeExitRequest(m.id, exitAssets, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        book.placeExitRequest(m.id, exitAssets, lender, _ramp(), block.timestamp + MAX_LIFETIME, false);
 
         // BUT the in-flight request still fills (fill uses stored params, never re-checks isMarketAllowed).
         _fillAndAssert(id, 12 hours);
@@ -529,7 +529,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         uint256 cap = idle.toSharesDown(tsa, tss);
 
         vm.prank(lender);
-        uint256 id = book.placeExitRequest(m.id, idle + 1, _ramp(), block.timestamp + MAX_LIFETIME, true);
+        uint256 id = book.placeExitRequest(m.id, idle + 1, lender, _ramp(), block.timestamp + MAX_LIFETIME, true);
 
         uint256 size = book.getExitRequest(id).sizeTotal;
         assertGt(size, cap, "the request sits above the naive liquidity cap");

@@ -175,6 +175,7 @@ contract ExitBookFeeSplitTest is Test {
         id = book.placeExitRequest(
             IERC4626(address(vault)),
             IERC4626(address(vault)).convertToAssets(shares),
+            lender,
             ramp,
             block.timestamp + 30 days,
             false
@@ -254,7 +255,7 @@ contract ExitBookFeeSplitTest is Test {
     function _place(uint256 shares, PriorityRamp memory ramp, uint256 deadline) internal returns (uint256) {
         uint256 exitAssets = IERC4626(address(vault)).convertToAssets(shares);
         vm.prank(lender);
-        return book.placeExitRequest(IERC4626(address(vault)), exitAssets, ramp, deadline, false);
+        return book.placeExitRequest(IERC4626(address(vault)), exitAssets, lender, ramp, deadline, false);
     }
 
     function _status(uint256 id) internal view returns (uint8) {
@@ -330,8 +331,9 @@ contract ExitBookFeeSplitTest is Test {
         sv.approve(address(book), shares);
         uint256 exitAssets = IERC4626(address(sv)).convertToAssets(shares);
         vm.prank(lender);
-        uint256 id =
-            book.placeExitRequest(IERC4626(address(sv)), exitAssets, _zeroRamp(), block.timestamp + 30 days, false);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(sv)), exitAssets, lender, _zeroRamp(), block.timestamp + 30 days, false
+        );
 
         assertEq(
             book.getExitRequest(id).quotedAssets,
@@ -360,6 +362,7 @@ contract ExitBookFeeSplitTest is Test {
         uint256 id = book.placeExitRequest(
             IERC4626(address(sv)),
             IERC4626(address(sv)).convertToAssets(shares),
+            lender,
             _zeroRamp(),
             block.timestamp + 30 days,
             false
@@ -386,8 +389,9 @@ contract ExitBookFeeSplitTest is Test {
         sv.approve(address(book), shares);
         uint256 exitAssets = IERC4626(address(sv)).convertToAssets(shares);
         vm.prank(lender);
-        uint256 id =
-            book.placeExitRequest(IERC4626(address(sv)), exitAssets, _zeroRamp(), block.timestamp + 30 days, false);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(sv)), exitAssets, lender, _zeroRamp(), block.timestamp + 30 days, false
+        );
         uint256 quoted = book.getExitRequest(id).quotedAssets;
 
         // Fill in an uneven partition (2, 3, 5) by capping the live allowance before each fill.
@@ -422,8 +426,9 @@ contract ExitBookFeeSplitTest is Test {
         sv.approve(address(book), shares);
         uint256 exitAssets = _assetsSizing(IERC4626(address(sv)), shares);
         vm.prank(lender);
-        uint256 id =
-            book.placeExitRequest(IERC4626(address(sv)), exitAssets, _zeroRamp(), block.timestamp + 30 days, false);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(sv)), exitAssets, lender, _zeroRamp(), block.timestamp + 30 days, false
+        );
         assertEq(book.getExitRequest(id).sizeTotal, shares, "the request is sized to the partitioned shares");
 
         uint256 quotedAssets = book.getExitRequest(id).quotedAssets;
@@ -437,6 +442,121 @@ contract ExitBookFeeSplitTest is Test {
 
         assertEq(asset.balanceOf(lender) - lenderBefore, quotedAssets, "all partitions telescope to the quote");
         assertEq(book.getExitRequest(id).sizeRemaining, 0, "partition fully fills the request");
+    }
+
+    // ---
+    // PAYOUT RECEIVER
+    // ---
+
+    /// @dev Placement announces the whole record an indexer needs: the id, the owner and the receiver as topics
+    ///      (the three axes anyone filters on), and the size, floor and schedule as data.
+    function test_place_announcesTheRecord() public {
+        address receiver = address(0xBE33E);
+        uint256 depositAmount = 100 ether;
+        asset.mint(lender, depositAmount);
+
+        vm.startPrank(lender);
+        asset.approve(address(vault), depositAmount);
+        uint256 shares = vault.deposit(depositAmount, lender);
+        vm.stopPrank();
+
+        uint256 exitAssets = IERC4626(address(vault)).convertToAssets(shares);
+        uint256 expectedShares = vault.convertToShares(exitAssets);
+        uint256 expectedRate = vault.convertToAssets(book.SHARE_RATE_UNIT());
+        uint256 deadline = block.timestamp + 30 days;
+        PriorityRamp memory ramp = _ramp();
+
+        vm.expectEmit(true, true, true, true, address(book));
+        emit ExitBookBase.ExitRequested(
+            book.lastRequestId() + 1,
+            lender,
+            receiver,
+            address(asset),
+            expectedShares,
+            expectedRate,
+            ramp,
+            deadline,
+            false
+        );
+        vm.prank(lender);
+        book.placeExitRequest(IERC4626(address(vault)), exitAssets, receiver, ramp, deadline, false);
+    }
+
+    /// @dev Place a request for `depositAmt` worth of vault shares, paid out to `receiver`. Only the lender's
+    ///      own deposit backs it.
+    function _lenderPlaceTo(uint256 depositAmt, address receiver) internal returns (uint256 id, uint256 shares) {
+        asset.mint(lender, depositAmt);
+        vm.startPrank(lender);
+        asset.approve(address(vault), depositAmt);
+        shares = vault.deposit(depositAmt, lender);
+        uint256 exitAssets = IERC4626(address(vault)).convertToAssets(shares);
+        id = book.placeExitRequest(
+            IERC4626(address(vault)), exitAssets, receiver, _zeroRamp(), block.timestamp + 30 days, false
+        );
+        vm.stopPrank();
+    }
+
+    /// @dev Let the book redeem exactly `shares` of the lender's position, so the next fill is capped there.
+    function _allowFill(uint256 shares) internal {
+        vm.prank(lender);
+        vault.approve(address(book), shares);
+    }
+
+    /// @dev The proceeds go to the receiver named at placement, not to the owner whose position is redeemed.
+    ///      The owner still supplies the shares, still owns the request, and receives nothing.
+    function test_fill_paysTheReceiverNotTheOwner() public {
+        _setServiceFee(0);
+        address receiver = address(0xBE11E);
+        (uint256 id, uint256 shares) = _lenderPlaceTo(100 ether, receiver);
+        _allowFill(shares);
+
+        uint256 quoted = book.getExitRequest(id).quotedAssets;
+        assertEq(book.getExitRequest(id).receiver, receiver, "the receiver is recorded on the request");
+
+        uint256 lenderBefore = asset.balanceOf(lender);
+        uint256 lenderShares = vault.balanceOf(lender);
+
+        vm.prank(filler);
+        book.fillExitRequest(id, 0, 0);
+
+        assertEq(asset.balanceOf(receiver), quoted, "the receiver is credited the whole quote");
+        assertEq(asset.balanceOf(lender), lenderBefore, "the owner is paid nothing");
+        assertEq(lenderShares - vault.balanceOf(lender), shares, "yet the owner's shares are what got redeemed");
+        assertEq(book.getExitRequest(id).owner, lender, "and the owner still owns the request");
+    }
+
+    /// @dev Every partial fill pays the same receiver; the split is unaffected by the redirect.
+    function test_fill_receiverIsPaidOnEveryPartialFill() public {
+        _setServiceFee(0);
+        address receiver = address(0xBE22E);
+        (uint256 id, uint256 shares) = _lenderPlaceTo(100 ether, receiver);
+
+        uint256 quoted = book.getExitRequest(id).quotedAssets;
+        uint256 half = shares / 2;
+
+        _allowFill(half);
+        vm.prank(filler);
+        book.fillExitRequest(id, 0, 0);
+        assertEq(asset.balanceOf(receiver), Math.mulDiv(quoted, half, shares), "first partial lands on the receiver");
+
+        _allowFill(shares - half);
+        vm.prank(filler);
+        book.fillExitRequest(id, 0, 0);
+        assertEq(asset.balanceOf(receiver), quoted, "and the tail telescopes to the full quote");
+        assertEq(asset.balanceOf(lender), 0, "the owner is never paid");
+    }
+
+    /// @dev A request cannot be pointed at the zero address — the proceeds would be burned on every fill.
+    function testRevert_place_zeroReceiver() public {
+        asset.mint(lender, 10 ether);
+        vm.startPrank(lender);
+        asset.approve(address(vault), 10 ether);
+        vault.deposit(10 ether, lender);
+        vm.expectRevert(ExitBookBase.ZeroAddress.selector);
+        book.placeExitRequest(
+            IERC4626(address(vault)), 10 ether, address(0), _zeroRamp(), block.timestamp + 30 days, false
+        );
+        vm.stopPrank();
     }
 
     /// @dev A scanner reads the payout token off the preview: the record does not copy it, so a batch scan over
@@ -490,6 +610,7 @@ contract ExitBookFeeSplitTest is Test {
         uint256 id = book.placeExitRequest(
             IERC4626(address(rv)),
             IERC4626(address(rv)).convertToAssets(shares),
+            lender,
             _zeroRamp(),
             block.timestamp + 30 days,
             false
@@ -521,8 +642,9 @@ contract ExitBookFeeSplitTest is Test {
         sv.approve(address(book), shares);
         uint256 exitAssets = _assetsSizing(IERC4626(address(sv)), shares);
         vm.prank(lender);
-        uint256 id =
-            book.placeExitRequest(IERC4626(address(sv)), exitAssets, _zeroRamp(), block.timestamp + 30 days, false);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(sv)), exitAssets, lender, _zeroRamp(), block.timestamp + 30 days, false
+        );
         assertEq(book.getExitRequest(id).sizeTotal, shares, "the request is sized to the partitioned shares");
         uint256 quoted = book.getExitRequest(id).quotedAssets;
 
@@ -625,8 +747,9 @@ contract ExitBookFeeSplitTest is Test {
         sv.approve(address(book), shares);
         uint256 exitAssets = IERC4626(address(sv)).convertToAssets(shares);
         vm.prank(lender);
-        uint256 id =
-            book.placeExitRequest(IERC4626(address(sv)), exitAssets, _zeroRamp(), block.timestamp + 30 days, false);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(sv)), exitAssets, lender, _zeroRamp(), block.timestamp + 30 days, false
+        );
 
         uint256 quotedAssets = book.getExitRequest(id).quotedAssets;
         assertGt(quotedAssets, type(uint128).max, "quote stored as uint256, above uint128");
@@ -644,7 +767,7 @@ contract ExitBookFeeSplitTest is Test {
         sv.approve(address(book), 1);
         uint256 exitAssets = IERC4626(address(sv)).convertToAssets(1);
         vm.expectRevert(ExitBookBase.ZeroShares.selector);
-        book.placeExitRequest(IERC4626(address(sv)), exitAssets, _ramp(), block.timestamp + 30 days, false);
+        book.placeExitRequest(IERC4626(address(sv)), exitAssets, lender, _ramp(), block.timestamp + 30 days, false);
         vm.stopPrank();
     }
 
@@ -659,7 +782,7 @@ contract ExitBookFeeSplitTest is Test {
         sv.approve(address(book), shares);
         uint256 exitAssets = IERC4626(address(sv)).convertToAssets(shares);
         vm.expectRevert(ExitBookBase.ZeroShares.selector);
-        book.placeExitRequest(IERC4626(address(sv)), exitAssets, _zeroRamp(), block.timestamp + 30 days, false);
+        book.placeExitRequest(IERC4626(address(sv)), exitAssets, lender, _zeroRamp(), block.timestamp + 30 days, false);
         vm.stopPrank();
     }
 
@@ -759,7 +882,7 @@ contract ExitBookFeeSplitTest is Test {
 
         vm.prank(lender);
         vm.expectRevert(IExitBook.ZeroAssetQuote.selector);
-        book.placeExitRequest(IERC4626(address(vault)), 1, _ramp(), block.timestamp + 30 days, false);
+        book.placeExitRequest(IERC4626(address(vault)), 1, lender, _ramp(), block.timestamp + 30 days, false);
     }
 
     /// @dev A request whose price floor is breached reports nothing fillable, so a filler is never sent into a
@@ -808,6 +931,7 @@ contract ExitBookFeeSplitTest is Test {
         book.placeExitRequest(
             IERC4626(address(vault)),
             exitAssets,
+            lender,
             PriorityRamp({startRate: 0.05e18, endRate: 0.01e18, rampStart: 0, rampEnd: 1 days}),
             block.timestamp + 30 days,
             false
@@ -823,6 +947,7 @@ contract ExitBookFeeSplitTest is Test {
         book.placeExitRequest(
             IERC4626(address(vault)),
             exitAssets,
+            lender,
             PriorityRamp({startRate: 0, endRate: 0.2e18, rampStart: 0, rampEnd: 1 days}), // > MAX_PRIORITY_FEE
             block.timestamp + 30 days,
             false
@@ -838,6 +963,7 @@ contract ExitBookFeeSplitTest is Test {
         book.placeExitRequest(
             IERC4626(address(vault)),
             exitAssets,
+            lender,
             PriorityRamp({startRate: 0, endRate: 0.05e18, rampStart: 0, rampEnd: 10 days}),
             block.timestamp + 5 days,
             false
@@ -850,7 +976,7 @@ contract ExitBookFeeSplitTest is Test {
         uint256 exitAssets = IERC4626(address(vault)).convertToAssets(0);
         vm.prank(lender);
         vm.expectRevert(ExitBookBase.ZeroShares.selector);
-        book.placeExitRequest(IERC4626(address(vault)), exitAssets, _ramp(), block.timestamp + 30 days, false);
+        book.placeExitRequest(IERC4626(address(vault)), exitAssets, lender, _ramp(), block.timestamp + 30 days, false);
     }
 
     // ── G6: vault allow-list gating ──
@@ -865,7 +991,7 @@ contract ExitBookFeeSplitTest is Test {
         other.approve(address(book), shares);
         uint256 exitAssets = IERC4626(address(other)).convertToAssets(shares);
         vm.expectRevert(Erc4626ExitBook.VaultNotAllowed.selector);
-        book.placeExitRequest(IERC4626(address(other)), exitAssets, _ramp(), block.timestamp + 30 days, false);
+        book.placeExitRequest(IERC4626(address(other)), exitAssets, lender, _ramp(), block.timestamp + 30 days, false);
         vm.stopPrank();
     }
 
@@ -876,8 +1002,9 @@ contract ExitBookFeeSplitTest is Test {
         _setServiceFee(0);
 
         vm.prank(lender);
-        uint256 id =
-            book.placeExitRequest(IERC4626(address(vault)), 200 ether, _ramp(), block.timestamp + 30 days, false);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(vault)), 200 ether, lender, _ramp(), block.timestamp + 30 days, false
+        );
         assertGt(book.getExitRequest(id).sizeTotal, shares, "request is larger than the position");
 
         vm.prank(filler);
@@ -901,7 +1028,9 @@ contract ExitBookFeeSplitTest is Test {
         zeroPrice.approve(address(book), shares);
         uint256 exitAssets = IERC4626(address(zeroPrice)).convertToAssets(shares);
         vm.expectRevert(ExitBookBase.ZeroShares.selector);
-        book.placeExitRequest(IERC4626(address(zeroPrice)), exitAssets, _ramp(), block.timestamp + 30 days, false);
+        book.placeExitRequest(
+            IERC4626(address(zeroPrice)), exitAssets, lender, _ramp(), block.timestamp + 30 days, false
+        );
         vm.stopPrank();
     }
 
@@ -923,7 +1052,7 @@ contract ExitBookFeeSplitTest is Test {
         uint256 exitAssets = IERC4626(address(vault)).convertToAssets(more);
         vm.prank(lender);
         vm.expectRevert(Erc4626ExitBook.VaultNotAllowed.selector);
-        book.placeExitRequest(IERC4626(address(vault)), exitAssets, _ramp(), block.timestamp + 30 days, false);
+        book.placeExitRequest(IERC4626(address(vault)), exitAssets, lender, _ramp(), block.timestamp + 30 days, false);
 
         // ...but the in-flight request still fills
         vm.prank(filler);
@@ -1022,6 +1151,7 @@ contract ExitBookFeeSplitTest is Test {
         uint256 id = book.placeExitRequest(
             IERC4626(address(zv)),
             IERC4626(address(zv)).convertToAssets(shares),
+            lender,
             _ramp(),
             block.timestamp + 30 days,
             false
@@ -1069,6 +1199,7 @@ contract ExitBookFeeSplitTest is Test {
         book.placeExitRequest(
             IERC4626(address(vault)),
             exitAssets,
+            lender,
             PriorityRamp({startRate: 0, endRate: 0.05e18, rampStart: 2 days, rampEnd: 1 days}), // start > end
             block.timestamp + 30 days,
             false
@@ -1081,7 +1212,7 @@ contract ExitBookFeeSplitTest is Test {
         uint256 exitAssets = IERC4626(address(vault)).convertToAssets(1 ether);
         vm.prank(lender);
         vm.expectRevert(ExitBookBase.DeadlineInPast.selector);
-        book.placeExitRequest(IERC4626(address(vault)), exitAssets, _ramp(), block.timestamp, false);
+        book.placeExitRequest(IERC4626(address(vault)), exitAssets, lender, _ramp(), block.timestamp, false);
     }
 
     /// @dev Placing with a deadline beyond `now + MAX_REQUEST_LIFETIME` reverts DeadlineTooFar.
@@ -1090,7 +1221,9 @@ contract ExitBookFeeSplitTest is Test {
         uint256 exitAssets = IERC4626(address(vault)).convertToAssets(1 ether);
         vm.prank(lender);
         vm.expectRevert(ExitBookBase.DeadlineTooFar.selector);
-        book.placeExitRequest(IERC4626(address(vault)), exitAssets, _ramp(), block.timestamp + 365 days + 1, false);
+        book.placeExitRequest(
+            IERC4626(address(vault)), exitAssets, lender, _ramp(), block.timestamp + 365 days + 1, false
+        );
     }
 
     // ── views ──

@@ -48,6 +48,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     event ExitRequested(
         uint256 indexed id,
         address indexed owner,
+        address indexed receiver,
         address asset,
         uint256 shares,
         uint256 minShareRate,
@@ -178,7 +179,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         (uint256 lenderAssets, uint256 fillerFee, uint256 serviceCut) =
             _splitProceeds(assetsOut, quotedOwed, _priorityFeeRate(request));
 
-        if (lenderAssets != 0) asset.safeTransfer(request.owner, lenderAssets);
+        if (lenderAssets != 0) asset.safeTransfer(request.receiver, lenderAssets);
 
         if (fillerFee != 0) asset.safeTransfer(msg.sender, fillerFee);
 
@@ -330,11 +331,13 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     /// @dev Validate and append a request (called by a concrete book's `placeExitRequest`).
     function _createRequest(
         address account,
+        address receiver,
         Sizing memory sizing,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
     ) internal returns (uint256 id) {
+        if (receiver == address(0)) revert ZeroAddress();
         if (sizing.shares == 0) revert ZeroShares();
         if (sizing.quotedAssets == 0) revert ZeroAssetQuote();
         if (ramp.endRate > MAX_PRIORITY_FEE) revert PriorityFeeTooHigh();
@@ -344,9 +347,17 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         if (deadline > block.timestamp + MAX_REQUEST_LIFETIME) revert DeadlineTooFar();
         if (block.timestamp + ramp.rampEnd > deadline) revert RampPastDeadline();
 
-        id = _book.add(account, sizing, ramp, deadline, fullFillOnly);
+        id = _book.add(account, receiver, sizing, ramp, deadline, fullFillOnly);
         emit ExitRequested(
-            id, account, address(sizing.asset), sizing.shares, sizing.minShareRate, ramp, deadline, fullFillOnly
+            id,
+            account,
+            receiver,
+            address(sizing.asset),
+            sizing.shares,
+            sizing.minShareRate,
+            ramp,
+            deadline,
+            fullFillOnly
         );
     }
 

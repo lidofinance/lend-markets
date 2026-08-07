@@ -51,6 +51,7 @@ struct Sizing {
 ///        `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`.
 /// @param fullFillOnly When true a fill must cover the whole remaining size in one shot or be rejected.
 /// @param status Open / Filled / Cancelled (Expired is derived).
+/// @param receiver Address credited the lender's proceeds.
 /// @param sizeRemaining Outstanding shares to fill. The concrete book defines the fixed placement entitlement.
 /// @param sizeTotal Original shares used to apportion the full placement quote across fills.
 /// @param quotedAssets Asset value quoted for all `sizeTotal` shares at sizing.
@@ -66,6 +67,7 @@ struct Request {
     uint40 deadline;
     bool fullFillOnly;
     ExitStatus status;
+    address receiver;
     uint128 sizeRemaining;
     uint128 sizeTotal;
     uint256 quotedAssets;

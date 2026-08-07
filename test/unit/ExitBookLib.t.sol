@@ -25,6 +25,7 @@ contract EBHarness {
     ) external returns (uint256) {
         return s.add(
             owner,
+            owner,
             Sizing({asset: asset, shares: shares, quotedAssets: quotedAssets, minShareRate: 0}),
             ramp,
             deadline,

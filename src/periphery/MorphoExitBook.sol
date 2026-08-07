@@ -105,6 +105,7 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     function placeExitRequest(
         Id marketId,
         uint256 assets,
+        address receiver,
         PriorityRamp calldata ramp,
         uint256 deadline,
         bool fullFillOnly
@@ -113,7 +114,7 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
 
         if (!MORPHO.isAuthorized(msg.sender, address(this))) revert NotAuthorizedOnMorpho();
 
-        id = _createRequest(msg.sender, _size(_marketParams[marketId], assets), ramp, deadline, fullFillOnly);
+        id = _createRequest(msg.sender, receiver, _size(_marketParams[marketId], assets), ramp, deadline, fullFillOnly);
 
         _marketIdOf[id] = marketId;
     }
