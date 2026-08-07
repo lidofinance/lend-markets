@@ -21,15 +21,16 @@ contract EBHarness {
         uint256 quotedAssets,
         PriorityRamp calldata ramp,
         uint256 deadline,
-        bool fullFillOnly
+        uint256 minFillShares
     ) external returns (uint256) {
         return s.add(
             owner,
             owner,
-            Sizing({asset: asset, shares: shares, quotedAssets: quotedAssets, minShareRate: 0}),
+            Sizing({
+                asset: asset, shares: shares, quotedAssets: quotedAssets, minShareRate: 0, minFillShares: minFillShares
+            }),
             ramp,
-            deadline,
-            fullFillOnly
+            deadline
         );
     }
 
@@ -88,7 +89,7 @@ contract ExitBookLibTest is Test {
     }
 
     function _add(address owner, uint256 shares) internal returns (uint256) {
-        return h.add(owner, ASSET, shares, QUOTED_ASSETS, _ramp(), block.timestamp + 1 days, false);
+        return h.add(owner, ASSET, shares, QUOTED_ASSETS, _ramp(), block.timestamp + 1 days, 0);
     }
 
     // ── mutations ──
@@ -197,7 +198,7 @@ contract ExitBookLibTest is Test {
                 SafeCast.SafeCastOverflowedUintDowncast.selector, 128, uint256(type(uint128).max) + 1
             )
         );
-        h.add(ALICE, ASSET, uint256(type(uint128).max) + 1, QUOTED_ASSETS, _ramp(), block.timestamp + 1, false);
+        h.add(ALICE, ASSET, uint256(type(uint128).max) + 1, QUOTED_ASSETS, _ramp(), block.timestamp + 1, 0);
     }
 
     /// @dev A deadline above uint40 max reverts on the SafeCast downcast when packing the request.
@@ -205,7 +206,7 @@ contract ExitBookLibTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 40, uint256(type(uint40).max) + 1)
         );
-        h.add(ALICE, ASSET, 1 ether, QUOTED_ASSETS, _ramp(), uint256(type(uint40).max) + 1, false);
+        h.add(ALICE, ASSET, 1 ether, QUOTED_ASSETS, _ramp(), uint256(type(uint40).max) + 1, 0);
     }
 
     /// @dev A ramp rate above uint96 max reverts on the SafeCast downcast when packing the request.
@@ -215,7 +216,7 @@ contract ExitBookLibTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 96, uint256(type(uint96).max) + 1)
         );
-        h.add(ALICE, ASSET, 1 ether, QUOTED_ASSETS, r, block.timestamp + 1, false);
+        h.add(ALICE, ASSET, 1 ether, QUOTED_ASSETS, r, block.timestamp + 1, 0);
     }
 
     // ── fuzz: id monotonicity & remaining bound ──

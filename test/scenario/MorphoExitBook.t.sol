@@ -82,12 +82,15 @@ contract MorphoExitBookTest is LidoLendSetup {
         return shares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
     }
 
-    /// @dev Place for the position `shares` are worth. The book takes assets, so the helper quotes them back;
-    ///      the round trip may shave a share, which is fine for size-agnostic assertions.
-    function _place(address lender, uint256 shares, bool fullFillOnly) internal returns (uint256 id) {
-        uint256 assets = _quote(shares); // reads the market, so it must not sit inside the prank
+    /// @dev Place for the position `shares` are worth, with a minimum single-fill size also given in shares.
+    ///      The book takes assets now, so the helper quotes both back; the round trip may shave a share, which is
+    ///      fine for size-agnostic assertions. `type(uint256).max` is passed through unquoted — it is the sentinel
+    ///      that demands a single closing fill.
+    function _place(address lender, uint256 shares, uint256 minFillShares) internal returns (uint256 id) {
+        uint256 assets = _quote(shares);
+        uint256 minFillAssets = minFillShares == type(uint256).max ? minFillShares : _quote(minFillShares);
         vm.prank(lender);
-        id = book.placeExitRequest(_m().id, assets, lender, _ramp(), block.timestamp + MAX_LIFETIME, fullFillOnly);
+        id = book.placeExitRequest(_m().id, assets, lender, minFillAssets, _ramp(), block.timestamp + MAX_LIFETIME);
     }
 
     /// @dev Forge a malformed but representable market price where the lender's full share amount quotes to zero.
@@ -208,7 +211,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         address lender = _actor("lender");
 
         uint256 shares = _lenderSupply(lender, 10 ether);
-        uint256 id = _place(lender, shares, true);
+        uint256 id = _place(lender, shares, type(uint256).max);
 
         // Preview before fill: full position is fillable (idle == full supply).
         RequestPreview memory pv = book.previewFill(id);
@@ -240,7 +243,7 @@ contract MorphoExitBookTest is LidoLendSetup {
 
         uint256 exitAssets = _quote(shares);
         vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
-        fresh.placeExitRequest(m.id, exitAssets, lender, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        fresh.placeExitRequest(m.id, exitAssets, lender, 0, _ramp(), block.timestamp + MAX_LIFETIME);
         vm.stopPrank();
     }
 
@@ -261,7 +264,7 @@ contract MorphoExitBookTest is LidoLendSetup {
 
         uint256 exitAssets = _quote(shares);
         vm.expectRevert(MorphoExitBook.NotAuthorizedOnMorpho.selector);
-        book.placeExitRequest(m.id, exitAssets, lender, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        book.placeExitRequest(m.id, exitAssets, lender, 0, _ramp(), block.timestamp + MAX_LIFETIME);
         vm.stopPrank();
     }
 
@@ -276,7 +279,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         uint256 shares = _lenderSupply(lender, 10 ether);
 
         vm.prank(lender);
-        uint256 id = book.placeExitRequest(_m().id, 100 ether, lender, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        uint256 id = book.placeExitRequest(_m().id, 100 ether, lender, 0, _ramp(), block.timestamp + MAX_LIFETIME);
         assertGt(book.getExitRequest(id).sizeTotal, shares, "request is larger than the position");
 
         assertEq(book.previewFill(id).filledShares, shares, "only the backed part is fillable");
@@ -292,7 +295,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         uint256 exitAssets = _quote(shares);
         vm.prank(lender);
         vm.expectRevert(ExitBookBase.ZeroShares.selector);
-        book.placeExitRequest(_m().id, exitAssets, lender, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        book.placeExitRequest(_m().id, exitAssets, lender, 0, _ramp(), block.timestamp + MAX_LIFETIME);
     }
 
     /// @dev The Morpho request stores the exact full-share quote derived from the live market totals.
@@ -306,7 +309,7 @@ contract MorphoExitBookTest is LidoLendSetup {
             MorphoBalancesLib.expectedMarketBalances(m.core, m.params);
         uint256 expectedQuote = shares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
 
-        uint256 id = _place(lender, shares, false);
+        uint256 id = _place(lender, shares, 0);
         assertEq(book.getExitRequest(id).quotedAssets, expectedQuote, "exact Morpho quote");
     }
 
@@ -345,7 +348,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         address lender = _actor("lender");
 
         uint256 shares = _lenderSupply(lender, 10 ether);
-        uint256 id = _place(lender, shares, true); // placed while allowed
+        uint256 id = _place(lender, shares, type(uint256).max); // placed while allowed
 
         // Disallow the market.
         book.setMarketAllowed(m.params, false);
@@ -357,7 +360,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         uint256 exitAssets = _quote(shares2);
         vm.prank(lender2);
         vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
-        book.placeExitRequest(m.id, exitAssets, lender, _ramp(), block.timestamp + MAX_LIFETIME, false);
+        book.placeExitRequest(m.id, exitAssets, lender, 0, _ramp(), block.timestamp + MAX_LIFETIME);
 
         // BUT the in-flight request still fills (fill uses stored params, never re-checks isMarketAllowed).
         _fillAndAssert(id, 12 hours);
@@ -374,7 +377,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         address lender = _actor("lender");
 
         uint256 shares = _lenderSupply(lender, 10 ether);
-        uint256 id = _place(lender, shares, true);
+        uint256 id = _place(lender, shares, type(uint256).max);
 
         // Authorized: there is something fillable.
         assertGt(book.previewFill(id).filledShares, 0, "authorized: fillable");
@@ -403,7 +406,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         address borrower = _actor("borrower");
 
         uint256 shares = _lenderSupply(lender, 100 ether);
-        uint256 id = _place(lender, shares, false); // partial fills allowed
+        uint256 id = _place(lender, shares, 0); // partial fills allowed
         uint256 createdAt = book.getExitRequest(id).createdAt;
 
         // Borrower draws 90 ether, leaving ~10 ether idle. (`_borrowOut` warps past the activation delay.)
@@ -475,7 +478,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         address filler = _actor("filler");
 
         uint256 shares = _lenderSupply(lender, 100 ether);
-        uint256 id = _place(lender, shares, false);
+        uint256 id = _place(lender, shares, 0);
 
         // Borrower drains essentially all idle liquidity.
         _borrowOut(borrower, 100 ether);
@@ -529,7 +532,8 @@ contract MorphoExitBookTest is LidoLendSetup {
         uint256 cap = idle.toSharesDown(tsa, tss);
 
         vm.prank(lender);
-        uint256 id = book.placeExitRequest(m.id, idle + 1, lender, _ramp(), block.timestamp + MAX_LIFETIME, true);
+        uint256 id =
+            book.placeExitRequest(m.id, idle + 1, lender, type(uint256).max, _ramp(), block.timestamp + MAX_LIFETIME);
 
         uint256 size = book.getExitRequest(id).sizeTotal;
         assertGt(size, cap, "the request sits above the naive liquidity cap");
@@ -563,7 +567,7 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertGt(sMax, available, "rounding gap exists at the boundary");
         assertLe(sMax, ownerShares, "owner backs the full request");
 
-        uint256 id = _place(lender, sMax, false); // partial fills allowed
+        uint256 id = _place(lender, sMax, 0); // partial fills allowed
 
         vm.prank(address(0x2000));
         book.fillExitRequest(id, 0, 0);
@@ -583,7 +587,7 @@ contract MorphoExitBookTest is LidoLendSetup {
     function test_marketParamsOf_returnsRequestMarket() public {
         address lender = address(0xA11CE);
         uint256 shares = _lenderSupply(lender, 10 ether);
-        uint256 id = _place(lender, shares, false);
+        uint256 id = _place(lender, shares, 0);
 
         MarketParams memory p = book.marketParamsOf(id);
         assertEq(p.loanToken, _m().params.loanToken, "loan token matches the request market");

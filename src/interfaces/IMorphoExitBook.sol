@@ -36,16 +36,19 @@ interface IMorphoExitBook is IExitBook {
     ///        stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them
     ///        live.
     /// @param receiver Address credited the lender's proceeds of every fill.
+    /// @param minFillAssets Smallest amount a single fill may close; 0 for no minimum. A fill qualifies at or
+    ///        above it, or when it takes the whole of what is left, so the minimum never locks in a sub-minimum
+    ///        remainder on its own. At or above the request's own quote only a full close qualifies. Converted
+    ///        to shares at placement and enforced in shares thereafter.
     /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end.
     /// @param deadline Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
-    /// @param fullFillOnly When true a fill must cover the whole remaining size in one shot.
     /// @return id The new request id.
     function placeExitRequest(
         Id marketId,
         uint256 assets,
         address receiver,
+        uint256 minFillAssets,
         PriorityRamp calldata ramp,
-        uint256 deadline,
-        bool fullFillOnly
+        uint256 deadline
     ) external returns (uint256 id);
 }

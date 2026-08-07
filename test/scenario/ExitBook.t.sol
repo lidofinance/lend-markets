@@ -294,8 +294,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
         uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id =
-            vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, _flat(PRIORITY_FEE), deadline, false);
+        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, 0, _flat(PRIORITY_FEE), deadline);
 
         Request memory request = vaultBook.getExitRequest(id);
         assertEq(request.owner, LENDER, "owner stored");
@@ -336,7 +335,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
         uint256 id = vaultBook.placeExitRequest(
-            IERC4626(d.vault), exitAssets, LENDER, _flat(PRIORITY_FEE), block.timestamp + 20 days, false
+            IERC4626(d.vault), exitAssets, LENDER, 0, _flat(PRIORITY_FEE), block.timestamp + 20 days
         );
 
         _drain(BORROWER, 60 ether, 6 ether); // leaves ~4 loan idle — not enough for the whole request
@@ -364,9 +363,8 @@ contract ExitBookTest is Test, LidoLendDeployer {
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
         uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(
-            IERC4626(d.vault), exitAssets, LENDER, _flat(0), block.timestamp + 1 days, false
-        );
+        uint256 id =
+            vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, 0, _flat(0), block.timestamp + 1 days);
 
         vm.prank(LENDER);
         vaultBook.cancelExitRequest(id);
@@ -387,8 +385,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
         uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id =
-            vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, _flat(PRIORITY_FEE), deadline, false);
+        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, 0, _flat(PRIORITY_FEE), deadline);
 
         vm.warp(deadline);
         loan.mint(FILLER, 10 ether);
@@ -410,9 +407,8 @@ contract ExitBookTest is Test, LidoLendDeployer {
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
         uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(
-            IERC4626(d.vault), exitAssets, LENDER, _flat(0), block.timestamp + 1 days, false
-        );
+        uint256 id =
+            vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, 0, _flat(0), block.timestamp + 1 days);
 
         RequestPreview memory preview = vaultBook.previewFill(id);
         assertEq(preview.id, id, "preview carries the id");
@@ -448,8 +444,9 @@ contract ExitBookTest is Test, LidoLendDeployer {
         // reports precisely what redeem accepts, no gap.
         uint256 exitAssets = IERC4626(d.vault).convertToAssets(cap);
         vm.prank(LENDER);
-        uint256 id =
-            vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, _flat(0), block.timestamp + 7 days, true);
+        uint256 id = vaultBook.placeExitRequest(
+            IERC4626(d.vault), exitAssets, LENDER, type(uint256).max, _flat(0), block.timestamp + 7 days
+        );
         assertEq(vaultBook.previewFill(id).filledShares, cap, "book reports the whole cap fillable");
 
         vm.prank(FILLER);
@@ -466,11 +463,11 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 halfPositionAssets = IERC4626(d.vault).convertToAssets(shares / 2);
         vm.prank(LENDER);
         uint256 id1 = vaultBook.placeExitRequest(
-            IERC4626(d.vault), halfPositionAssets, LENDER, _flat(0), block.timestamp + 1 days, false
+            IERC4626(d.vault), halfPositionAssets, LENDER, 0, _flat(0), block.timestamp + 1 days
         );
         vm.prank(LENDER);
         uint256 id2 = vaultBook.placeExitRequest(
-            IERC4626(d.vault), halfPositionAssets, LENDER, _flat(0), block.timestamp + 1 days, false
+            IERC4626(d.vault), halfPositionAssets, LENDER, 0, _flat(0), block.timestamp + 1 days
         );
 
         assertEq(vaultBook.getOwnerRequestCount(LENDER), 2, "two lender requests");
@@ -491,11 +488,11 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 halfPositionAssets = IERC4626(d.vault).convertToAssets(shares / 2);
         vm.prank(LENDER);
         uint256 id1 = vaultBook.placeExitRequest(
-            IERC4626(d.vault), halfPositionAssets, LENDER, _flat(0), block.timestamp + 1 days, false
+            IERC4626(d.vault), halfPositionAssets, LENDER, 0, _flat(0), block.timestamp + 1 days
         );
         vm.prank(LENDER);
         uint256 id2 = vaultBook.placeExitRequest(
-            IERC4626(d.vault), halfPositionAssets, LENDER, _flat(0), block.timestamp + 1 days, false
+            IERC4626(d.vault), halfPositionAssets, LENDER, 0, _flat(0), block.timestamp + 1 days
         );
 
         // caller passes its own id set — the lender's ids plus a non-existent one
@@ -530,11 +527,11 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 halfPositionAssets = IERC4626(d.vault).convertToAssets(shares / 2);
         vm.prank(LENDER);
         uint256 id1 = vaultBook.placeExitRequest(
-            IERC4626(d.vault), halfPositionAssets, LENDER, _flat(0), block.timestamp + 1 days, false
+            IERC4626(d.vault), halfPositionAssets, LENDER, 0, _flat(0), block.timestamp + 1 days
         );
         vm.prank(LENDER);
         uint256 id2 = vaultBook.placeExitRequest(
-            IERC4626(d.vault), halfPositionAssets, LENDER, _flat(0), block.timestamp + 1 days, false
+            IERC4626(d.vault), halfPositionAssets, LENDER, 0, _flat(0), block.timestamp + 1 days
         );
 
         uint256[] memory ids = new uint256[](3);
@@ -569,9 +566,9 @@ contract ExitBookTest is Test, LidoLendDeployer {
                 IERC4626(d.vault),
                 sliceAssets,
                 LENDER,
+                0,
                 _rampHold(startRate, endRate, rampStart, rampDuration),
-                createdAt + 20 days,
-                false
+                createdAt + 20 days
             );
         }
 
@@ -621,12 +618,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         for (uint256 i; i < 3; ++i) {
             vm.prank(LENDER);
             ids[i] = vaultBook.placeExitRequest(
-                IERC4626(d.vault),
-                sliceAssets,
-                LENDER,
-                _ramp(startRate, endRate, rampDuration),
-                createdAt + 20 days,
-                false
+                IERC4626(d.vault), sliceAssets, LENDER, 0, _ramp(startRate, endRate, rampDuration), createdAt + 20 days
             );
         }
 
@@ -666,9 +658,8 @@ contract ExitBookTest is Test, LidoLendDeployer {
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
         uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(
-            IERC4626(d.vault), exitAssets, LENDER, _flat(0), block.timestamp + 1 days, false
-        );
+        uint256 id =
+            vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, 0, _flat(0), block.timestamp + 1 days);
 
         // the fill redeems ~`amount` of loan (flat price, no yield)
         vm.prank(FILLER);
@@ -689,7 +680,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         vm.expectRevert(ExitBookBase.StartFeeAboveEnd.selector);
         vaultBook.placeExitRequest(
-            IERC4626(d.vault), exitAssets, LENDER, _ramp(0.05e18, 0.01e18, 1 days), block.timestamp + 7 days, false
+            IERC4626(d.vault), exitAssets, LENDER, 0, _ramp(0.05e18, 0.01e18, 1 days), block.timestamp + 7 days
         );
     }
 
@@ -701,9 +692,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
         vm.expectRevert(ExitBookBase.PriorityFeeTooHigh.selector);
-        vaultBook.placeExitRequest(
-            IERC4626(d.vault), exitAssets, LENDER, _flat(0.2e18), block.timestamp + 7 days, false
-        );
+        vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, 0, _flat(0.2e18), block.timestamp + 7 days);
     }
 
     /// @dev A ramp whose climb ends after the request deadline is rejected at placement.
@@ -716,7 +705,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.expectRevert(ExitBookBase.RampPastDeadline.selector);
         vaultBook.placeExitRequest(
-            IERC4626(d.vault), exitAssets, LENDER, _ramp(0, 0.05e18, 10 days), block.timestamp + 5 days, false
+            IERC4626(d.vault), exitAssets, LENDER, 0, _ramp(0, 0.05e18, 10 days), block.timestamp + 5 days
         );
     }
 
@@ -724,9 +713,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
     function testRevert_erc4626_place_vaultNotAllowed() public {
         vm.prank(LENDER);
         vm.expectRevert(Erc4626ExitBook.VaultNotAllowed.selector);
-        vaultBook.placeExitRequest(
-            IERC4626(address(0xdead)), 1 ether, LENDER, _flat(0), block.timestamp + 1 days, false
-        );
+        vaultBook.placeExitRequest(IERC4626(address(0xdead)), 1 ether, LENDER, 0, _flat(0), block.timestamp + 1 days);
     }
 
     /* Disallowing a vault blocks new requests but leaves already-placed ones fillable. */
@@ -737,14 +724,14 @@ contract ExitBookTest is Test, LidoLendDeployer {
         IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
         uint256 exitAssets = IERC4626(d.vault).convertToAssets(shares);
         vm.prank(LENDER);
-        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, _flat(0), deadline, false);
+        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, 0, _flat(0), deadline);
 
         vaultBook.setVaultAllowed(IERC4626(d.vault), false); // governance forbids the vault
 
         // no new requests against it
         vm.prank(LENDER);
         vm.expectRevert(Erc4626ExitBook.VaultNotAllowed.selector);
-        vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, _flat(0), deadline, false);
+        vaultBook.placeExitRequest(IERC4626(d.vault), exitAssets, LENDER, 0, _flat(0), deadline);
 
         // but the already-placed request still fills
         vm.prank(FILLER);
@@ -767,7 +754,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         ICoreLike(d.core).setAuthorization(address(morphoBook), true);
         uint256 exitAssets = _supplyQuote(supplyShares);
         vm.prank(LENDER);
-        uint256 id = morphoBook.placeExitRequest(d.marketId, exitAssets, LENDER, _flat(PRIORITY_FEE), deadline, false);
+        uint256 id = morphoBook.placeExitRequest(d.marketId, exitAssets, LENDER, 0, _flat(PRIORITY_FEE), deadline);
 
         uint256 owed = morphoBook.getExitRequest(id).quotedAssets;
         uint256 fee = owed * PRIORITY_FEE / WAD;
@@ -796,7 +783,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 exitAssets = _supplyQuote(1 ether);
         vm.prank(LENDER);
         vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
-        fresh.placeExitRequest(d.marketId, exitAssets, LENDER, _flat(0), block.timestamp + 1 days, false);
+        fresh.placeExitRequest(d.marketId, exitAssets, LENDER, 0, _flat(0), block.timestamp + 1 days);
     }
 
     /* Disallowing a market blocks new requests but leaves already-placed ones fillable. */
@@ -807,13 +794,13 @@ contract ExitBookTest is Test, LidoLendDeployer {
         ICoreLike(d.core).setAuthorization(address(morphoBook), true);
         uint256 exitAssets = _supplyQuote(supplyShares);
         vm.prank(LENDER);
-        uint256 id = morphoBook.placeExitRequest(d.marketId, exitAssets, LENDER, _flat(0), deadline, false);
+        uint256 id = morphoBook.placeExitRequest(d.marketId, exitAssets, LENDER, 0, _flat(0), deadline);
 
         morphoBook.setMarketAllowed(d.params, false); // governance forbids the market
 
         vm.prank(LENDER);
         vm.expectRevert(MorphoExitBook.MarketNotAllowed.selector);
-        morphoBook.placeExitRequest(d.marketId, exitAssets, LENDER, _flat(0), deadline, false);
+        morphoBook.placeExitRequest(d.marketId, exitAssets, LENDER, 0, _flat(0), deadline);
 
         vm.prank(FILLER);
         morphoBook.fillExitRequest(id, 0, 0);
@@ -841,7 +828,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         uint256 exitAssets = _supplyQuote(1 ether);
         vm.prank(LENDER);
         vm.expectRevert(MorphoExitBook.NotAuthorizedOnMorpho.selector);
-        morphoBook.placeExitRequest(d.marketId, exitAssets, LENDER, _flat(0), block.timestamp + 1 days, false);
+        morphoBook.placeExitRequest(d.marketId, exitAssets, LENDER, 0, _flat(0), block.timestamp + 1 days);
     }
 
     /* Placing for more than the lender holds is accepted; only the backed part is ever fillable. */
@@ -850,8 +837,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         vm.prank(LENDER);
         ICoreLike(d.core).setAuthorization(address(morphoBook), true);
         vm.prank(LENDER);
-        uint256 id =
-            morphoBook.placeExitRequest(d.marketId, 100 ether, LENDER, _flat(0), block.timestamp + 1 days, false);
+        uint256 id = morphoBook.placeExitRequest(d.marketId, 100 ether, LENDER, 0, _flat(0), block.timestamp + 1 days);
 
         assertGt(morphoBook.getExitRequest(id).sizeTotal, supplyShares, "request is larger than the position");
         assertEq(morphoBook.previewFill(id).filledShares, supplyShares, "only the backed part is fillable");
@@ -864,8 +850,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         ICoreLike(d.core).setAuthorization(address(morphoBook), true);
         uint256 exitAssets = _supplyQuote(supplyShares);
         vm.prank(LENDER);
-        uint256 id =
-            morphoBook.placeExitRequest(d.marketId, exitAssets, LENDER, _flat(0), block.timestamp + 1 days, false);
+        uint256 id = morphoBook.placeExitRequest(d.marketId, exitAssets, LENDER, 0, _flat(0), block.timestamp + 1 days);
 
         assertGt(morphoBook.previewFill(id).filledShares, 0, "fillable while authorized");
 

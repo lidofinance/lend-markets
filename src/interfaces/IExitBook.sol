@@ -85,6 +85,6 @@ interface IExitBook {
     /// @notice The request at `id` paired with its live fill preview — the single-id `getRequestPreviews`.
     /// @param id The request to preview.
     /// @return The request with the shares fillable now and the assets they would yield (all 0 when the request
-    ///         is closed, expired, unbacked, or quoting under its `minShareRate` floor).
+    ///         is closed, expired, unbacked, below its minimum fill, or quoting under its `minShareRate` floor).
     function previewFill(uint256 id) external view returns (RequestPreview memory);
 }

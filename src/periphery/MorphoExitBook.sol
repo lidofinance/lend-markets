@@ -106,15 +106,15 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
         Id marketId,
         uint256 assets,
         address receiver,
+        uint256 minFillAssets,
         PriorityRamp calldata ramp,
-        uint256 deadline,
-        bool fullFillOnly
+        uint256 deadline
     ) external returns (uint256 id) {
         if (!isMarketAllowed[marketId]) revert MarketNotAllowed();
 
         if (!MORPHO.isAuthorized(msg.sender, address(this))) revert NotAuthorizedOnMorpho();
 
-        id = _createRequest(msg.sender, receiver, _size(_marketParams[marketId], assets), ramp, deadline, fullFillOnly);
+        id = _createRequest(msg.sender, receiver, _size(_marketParams[marketId], assets, minFillAssets), ramp, deadline);
 
         _marketIdOf[id] = marketId;
     }
@@ -122,7 +122,11 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     /// @dev Size a placement: the lender names an asset amount, the request is stored in the supply shares it
     ///      buys at the market's current share rate. What they actually hold is not checked — the fill reads it
     ///      live.
-    function _size(MarketParams memory marketParams, uint256 assets) private view returns (Sizing memory sizing) {
+    function _size(MarketParams memory marketParams, uint256 assets, uint256 minFillAssets)
+        private
+        view
+        returns (Sizing memory sizing)
+    {
         (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
             MorphoBalancesLib.expectedMarketBalances(MORPHO, marketParams);
 
@@ -130,6 +134,11 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
         sizing.shares = assets.toSharesDown(totalSupplyAssets, totalSupplyShares);
         sizing.quotedAssets = sizing.shares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
         sizing.minShareRate = SHARE_RATE_UNIT.toAssetsDown(totalSupplyAssets, totalSupplyShares);
+        // A minimum at the request's own size already admits only a full close, and capping there keeps an
+        // unbounded minimum out of the conversion.
+        sizing.minFillShares = minFillAssets > sizing.quotedAssets
+            ? sizing.shares
+            : minFillAssets.toSharesDown(totalSupplyAssets, totalSupplyShares);
     }
 
     // ---

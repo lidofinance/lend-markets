@@ -35,11 +35,13 @@ struct PriorityRamp {
 /// @param shares Source shares the named asset amount buys, the request's fixed size.
 /// @param quotedAssets Asset value of those shares at the same rate — what the fills apportion.
 /// @param minShareRate Loan assets per `SHARE_RATE_UNIT` source shares, the floor fills are held to.
+/// @param minFillShares Smallest size a single fill may close, capped at `shares`.
 struct Sizing {
     IERC20 asset;
     uint256 shares;
     uint256 quotedAssets;
     uint256 minShareRate;
+    uint256 minFillShares;
 }
 
 /// @notice One exit request's source-agnostic lifecycle state. The backing source (which vault / which market)
@@ -49,7 +51,6 @@ struct Sizing {
 /// @param createdAt Creation timestamp: the fee schedule's start.
 /// @param deadline Last timestamp the request may be filled. Chosen by the lender, capped at
 ///        `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`.
-/// @param fullFillOnly When true a fill must cover the whole remaining size in one shot or be rejected.
 /// @param status Open / Filled / Cancelled (Expired is derived).
 /// @param receiver Address credited the lender's proceeds.
 /// @param sizeRemaining Outstanding shares to fill. The concrete book defines the fixed placement entitlement.
@@ -57,6 +58,8 @@ struct Sizing {
 /// @param quotedAssets Asset value quoted for all `sizeTotal` shares at sizing.
 /// @param minShareRate Loan assets per `SHARE_RATE_UNIT` source shares at sizing. A fill is rejected while
 ///        the source quotes less.
+/// @param minFillShares Smallest size a single fill may close; 0 for no minimum. A fill qualifies at or above
+///        it, or when it takes the whole remaining size. At or above `sizeTotal` only a full close qualifies.
 /// @param startRate Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold.
 /// @param endRate Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline.
 /// @param rampStart Seconds from `createdAt` the rate holds at `startRate` before the climb begins.
@@ -65,13 +68,13 @@ struct Request {
     address owner;
     uint40 createdAt;
     uint40 deadline;
-    bool fullFillOnly;
     ExitStatus status;
     address receiver;
     uint128 sizeRemaining;
     uint128 sizeTotal;
     uint256 quotedAssets;
     uint256 minShareRate;
+    uint256 minFillShares;
     uint96 startRate;
     uint96 endRate;
     uint32 rampStart;
@@ -81,7 +84,7 @@ struct Request {
 /// @notice A request paired with its live fill preview, for one-call scans. `id` is the registry key (a
 ///         `Request` does not carry its own id, and does not copy the source's loan token); `filledShares`
 ///         and `assetsOut` mirror `previewFill` and are 0
-///         when the request is closed, expired, unbacked, or under its rate floor.
+///         when the request is closed, expired, unbacked, below its minimum fill, or under its rate floor.
 /// @param id The request's registry id.
 /// @param request The stored request.
 /// @param asset The loan token this request pays out in, resolved from its source at read time.

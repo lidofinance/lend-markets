@@ -47,8 +47,7 @@ library ExitBookLib {
         address receiver,
         Sizing memory sizing,
         PriorityRamp calldata ramp,
-        uint256 deadline,
-        bool fullFillOnly
+        uint256 deadline
     ) internal returns (uint256 id) {
         id = ++self.nextId;
         self.requests[id] = Request({
@@ -56,12 +55,12 @@ library ExitBookLib {
             receiver: receiver,
             createdAt: SafeCast.toUint40(block.timestamp),
             deadline: SafeCast.toUint40(deadline),
-            fullFillOnly: fullFillOnly,
             status: ExitStatus.Open,
             sizeRemaining: SafeCast.toUint128(sizing.shares),
             sizeTotal: SafeCast.toUint128(sizing.shares),
             quotedAssets: sizing.quotedAssets,
             minShareRate: sizing.minShareRate,
+            minFillShares: sizing.minFillShares,
             startRate: SafeCast.toUint96(ramp.startRate),
             endRate: SafeCast.toUint96(ramp.endRate),
             rampStart: SafeCast.toUint32(ramp.rampStart),

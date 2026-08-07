@@ -53,13 +53,13 @@ struct Request {
     address owner;
     uint40 createdAt;
     uint40 deadline;
-    bool fullFillOnly;
     ExitStatus status;
     address receiver;
     uint128 sizeRemaining;
     uint128 sizeTotal;
     uint256 quotedAssets;
     uint256 minShareRate;
+    uint256 minFillShares;
     uint96 startRate;
     uint96 endRate;
     uint32 rampStart;
@@ -76,13 +76,13 @@ One exit request's source-agnostic lifecycle state. The backing source (which va
 | `owner` | `address` | The exiting lender whose position the fill redeems, and the only address that may cancel. |
 | `createdAt` | `uint40` | Creation timestamp: the fee schedule's start. |
 | `deadline` | `uint40` | Last timestamp the request may be filled. Chosen by the lender, capped at `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`. |
-| `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot or be rejected. |
 | `status` | `ExitStatus` | Open / Filled / Cancelled (Expired is derived). |
 | `receiver` | `address` | Address credited the lender's proceeds. |
 | `sizeRemaining` | `uint128` | Outstanding shares to fill. The concrete book defines the fixed placement entitlement. |
 | `sizeTotal` | `uint128` | Original shares used to apportion the full placement quote across fills. |
 | `quotedAssets` | `uint256` | Asset value quoted for all `sizeTotal` shares at sizing. |
 | `minShareRate` | `uint256` | Loan assets per `SHARE_RATE_UNIT` source shares at sizing. A fill is rejected while the source quotes less. |
+| `minFillShares` | `uint256` | Smallest size a single fill may close; 0 for no minimum. A fill qualifies at or above it, or when it takes the whole remaining size. At or above `sizeTotal` only a full close qualifies. |
 | `startRate` | `uint96` | Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold. |
 | `endRate` | `uint96` | Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline. |
 | `rampStart` | `uint32` | Seconds from `createdAt` the rate holds at `startRate` before the climb begins. |
@@ -100,7 +100,7 @@ struct RequestPreview {
 }
 ```
 
-A request paired with its live fill preview, for one-call scans. `id` is the registry key (a `Request` does not carry its own id, and does not copy the source's loan token); `filledShares` and `assetsOut` mirror `previewFill` and are 0 when the request is closed, expired, unbacked, or under its rate floor.
+A request paired with its live fill preview, for one-call scans. `id` is the registry key (a `Request` does not carry its own id, and does not copy the source's loan token); `filledShares` and `assetsOut` mirror `previewFill` and are 0 when the request is closed, expired, unbacked, below its minimum fill, or under its rate floor.
 
 **Fields**
 
@@ -117,7 +117,7 @@ A request paired with its live fill preview, for one-call scans. `id` is the reg
 #### `ExitRequested`
 
 ```solidity
-event ExitRequested(uint256 indexed id, address indexed owner, address indexed receiver, address asset, uint256 shares, uint256 minShareRate, PriorityRamp ramp, uint256 deadline, bool fullFillOnly);
+event ExitRequested(uint256 indexed id, address indexed owner, address indexed receiver, address asset, uint256 shares, uint256 minShareRate, uint256 minFillShares, PriorityRamp ramp, uint256 deadline);
 ```
 
 #### `ExitProcessed`
@@ -425,7 +425,7 @@ function previewFill(uint256 id) external view returns (RequestPreview memory);
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `<none>` | `RequestPreview` | The request with the shares fillable now and the assets they would yield (all 0 when the request is closed, expired, unbacked, or quoting under its `minShareRate` floor). |
+| `<none>` | `RequestPreview` | The request with the shares fillable now and the assets they would yield (all 0 when the request is closed, expired, unbacked, below its minimum fill, or quoting under its `minShareRate` floor). |
 
 The request at `id` paired with its live fill preview — the single-id `getRequestPreviews`.
 
@@ -507,9 +507,9 @@ function placeExitRequest(
     IERC4626 vault,
     uint256 assets,
     address receiver,
+    uint256 minFillAssets,
     PriorityRamp calldata ramp,
-    uint256 deadline,
-    bool fullFillOnly
+    uint256 deadline
 ) external returns (uint256 id);
 ```
 
@@ -520,9 +520,9 @@ function placeExitRequest(
 | `vault` | `IERC4626` | The allowed ERC-4626 vault. |
 | `assets` | `uint256` | Loan-asset amount to exit. Converted to source shares at the vault's current share rate and stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them live. |
 | `receiver` | `address` | Address credited the lender's proceeds of every fill. |
+| `minFillAssets` | `uint256` | Smallest amount a single fill may close; 0 for no minimum. A fill qualifies at or above it, or when it takes the whole of what is left, so the minimum never locks in a sub-minimum remainder on its own. At or above the request's own quote only a full close qualifies. Converted to shares at placement and enforced in shares thereafter. |
 | `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
 | `deadline` | `uint256` | Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
-| `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot. |
 
 **Returns**
 
@@ -635,9 +635,9 @@ function placeExitRequest(
     Id marketId,
     uint256 assets,
     address receiver,
+    uint256 minFillAssets,
     PriorityRamp calldata ramp,
-    uint256 deadline,
-    bool fullFillOnly
+    uint256 deadline
 ) external returns (uint256 id);
 ```
 
@@ -648,9 +648,9 @@ function placeExitRequest(
 | `marketId` | `Id` | The allowed market's id (its `MarketParams` hash, registered via `setMarketAllowed`). |
 | `assets` | `uint256` | Loan-asset amount to exit. Converted to supply shares at the market's current share rate and stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them live. |
 | `receiver` | `address` | Address credited the lender's proceeds of every fill. |
+| `minFillAssets` | `uint256` | Smallest amount a single fill may close; 0 for no minimum. A fill qualifies at or above it, or when it takes the whole of what is left, so the minimum never locks in a sub-minimum remainder on its own. At or above the request's own quote only a full close qualifies. Converted to shares at placement and enforced in shares thereafter. |
 | `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
 | `deadline` | `uint256` | Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
-| `fullFillOnly` | `bool` | When true a fill must cover the whole remaining size in one shot. |
 
 **Returns**
 

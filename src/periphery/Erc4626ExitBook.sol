@@ -66,24 +66,28 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
         IERC4626 vault,
         uint256 assets,
         address receiver,
+        uint256 minFillAssets,
         PriorityRamp calldata ramp,
-        uint256 deadline,
-        bool fullFillOnly
+        uint256 deadline
     ) external returns (uint256 id) {
         if (!isVaultAllowed[vault]) revert VaultNotAllowed();
 
-        id = _createRequest(msg.sender, receiver, _size(vault, assets), ramp, deadline, fullFillOnly);
+        id = _createRequest(msg.sender, receiver, _size(vault, assets, minFillAssets), ramp, deadline);
 
         vaultOf[id] = vault;
     }
 
     /// @dev Size a placement: the lender names an asset amount, the request is stored in the shares it buys at
     ///      the vault's current share rate. What they actually hold is not checked — the fill reads it live.
-    function _size(IERC4626 vault, uint256 assets) private view returns (Sizing memory sizing) {
+    function _size(IERC4626 vault, uint256 assets, uint256 minFillAssets) private view returns (Sizing memory sizing) {
         sizing.asset = IERC20(vault.asset());
         sizing.shares = vault.convertToShares(assets);
         sizing.quotedAssets = vault.convertToAssets(sizing.shares);
         sizing.minShareRate = _vaultShareRate(vault);
+        // A minimum at the request's own size already admits only a full close, and capping there keeps an
+        // unbounded minimum out of the conversion.
+        sizing.minFillShares =
+            minFillAssets > sizing.quotedAssets ? sizing.shares : vault.convertToShares(minFillAssets);
     }
 
     // ---

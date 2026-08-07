@@ -52,9 +52,9 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         address asset,
         uint256 shares,
         uint256 minShareRate,
+        uint256 minFillShares,
         PriorityRamp ramp,
-        uint256 deadline,
-        bool fullFillOnly
+        uint256 deadline
     );
 
     event ExitProcessed(
@@ -307,7 +307,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
 
     /// @dev The request at `id` with its live fill preview — shared body of `previewFill` and the
     ///      `getRequestPreviews` batch. The fill figures are `(0, 0)` when the request is closed, expired,
-    ///      unbacked, or quoting under its `minShareRate` floor.
+    ///      unbacked, below its minimum fill, or quoting under its `minShareRate` floor.
     function _requestPreview(uint256 id) internal view returns (RequestPreview memory) {
         Request storage request = _book.requests[id];
         uint256 filledShares;
@@ -334,8 +334,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         address receiver,
         Sizing memory sizing,
         PriorityRamp calldata ramp,
-        uint256 deadline,
-        bool fullFillOnly
+        uint256 deadline
     ) internal returns (uint256 id) {
         if (receiver == address(0)) revert ZeroAddress();
         if (sizing.shares == 0) revert ZeroShares();
@@ -347,7 +346,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         if (deadline > block.timestamp + MAX_REQUEST_LIFETIME) revert DeadlineTooFar();
         if (block.timestamp + ramp.rampEnd > deadline) revert RampPastDeadline();
 
-        id = _book.add(account, receiver, sizing, ramp, deadline, fullFillOnly);
+        id = _book.add(account, receiver, sizing, ramp, deadline);
         emit ExitRequested(
             id,
             account,
@@ -355,21 +354,22 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
             address(sizing.asset),
             sizing.shares,
             sizing.minShareRate,
+            sizing.minFillShares,
             ramp,
-            deadline,
-            fullFillOnly
+            deadline
         );
     }
 
-    /// @dev Source fillable shares with the `fullFillOnly` policy applied. The source's share rate is returned
-    ///      alongside.
+    /// @dev Source fillable shares with the lender's minimum-fill policy applied: a fill has to reach that size,
+    ///      or take the whole of what is left, so the minimum never locks in a sub-minimum remainder on its own.
+    ///      The source's share rate is returned alongside.
     function _fillableShares(uint256 id, Request storage request)
         internal
         view
         returns (uint256 fillableShares, uint256 shareRate)
     {
         (fillableShares, shareRate) = _availableShares(id, request);
-        if (request.fullFillOnly && fillableShares < request.sizeRemaining) fillableShares = 0;
+        if (fillableShares < request.minFillShares && fillableShares < request.sizeRemaining) fillableShares = 0;
     }
 
     /// @dev The priority-fee rate (WAD) in force now: `startRate` while within the `rampStart` hold, then
@@ -394,7 +394,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     // ---
 
     /// @dev Shares fillable right now from the source (remaining size capped by live backing) before the
-    ///      `fullFillOnly` policy is applied, together with the source's share rate: loan assets per
+    ///      minimum-fill policy is applied, together with the source's share rate: loan assets per
     ///      `SHARE_RATE_UNIT` shares, rounded down. The rate is meaningful only when the share count is
     ///      non-zero — a source that reports nothing fillable may report no rate either. No state change.
     function _availableShares(uint256 id, Request storage request)
