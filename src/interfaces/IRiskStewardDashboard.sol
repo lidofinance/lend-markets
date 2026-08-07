@@ -15,8 +15,13 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     /// @notice Emitted when a steward is appointed to or removed from a market.
     event MarketStewardSet(Id indexed marketId, address indexed steward, bool enabled);
 
-    /// @notice Emitted when the activation delay floor and cap are raised on a market.
-    event ActivationDelaysIncreased(Id indexed marketId, uint256 newMin, uint256 newMax);
+    /// @notice Emitted when the activation delay floor, cap, and guardian-quorum fallback are raised on a market.
+    event ActivationDelaysIncreased(
+        Id indexed marketId,
+        uint256 newMinActivationDelay,
+        uint256 newMaxActivationDelay,
+        uint256 newMaxGuardiansQuorumDelay
+    );
 
     /// @notice Emitted when the Sybil lock amount and duration are raised on a market.
     event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 newDuration);
@@ -70,9 +75,15 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     // RISK LEVERS
     // ---
 
-    /// @notice Raise the activation delay floor and cap. Reverts unless both rise or hold. The controller still
-    ///         bounds the cap and enforces floor <= cap on write.
-    function increaseActivationDelays(Id marketId, uint40 newMin, uint40 newMax) external;
+    /// @notice Raise the activation delay floor, cap, and guardian-quorum fallback. Reverts unless all values rise
+    ///         or hold. The controller bounds the cap and fallback to 7 days and enforces floor <= cap and a
+    ///         nonzero fallback > cap on write.
+    function increaseActivationDelays(
+        Id marketId,
+        uint40 newMinActivationDelay,
+        uint40 newMaxActivationDelay,
+        uint40 newMaxGuardiansQuorumDelay
+    ) external;
 
     /// @notice Raise the Sybil lock amount and duration. Reverts unless both rise or hold. The controller still
     ///         bounds the duration on write.

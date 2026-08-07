@@ -304,7 +304,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
                 suspectPruned = true;
             }
         }
-        if (suspectPruned) _snapshotSuspects(marketId, account, signal);
+        if (suspectPruned) _snapshotSuspects(signal);
     }
 
     // ---
@@ -454,7 +454,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         _pruneExpiredSuspects(marketId, account);
         signal.suspectedBy.add(guardian);
         signal.suspectedAt[guardian] = block.timestamp.toUint40();
-        _snapshotSuspects(marketId, account, signal);
+        _snapshotSuspects(signal);
         emit Suspected(marketId, account, guardian, msg.sender, block.timestamp);
     }
 
@@ -464,15 +464,26 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         GuardiansSignal storage signal = _signals[marketId][account];
         if (!signal.suspectedBy.remove(guardian)) return;
         signal.suspectedAt[guardian] = 0;
-        _snapshotSuspects(marketId, account, signal);
+        _snapshotSuspects(signal);
         emit SuspectCleared(marketId, account, guardian, msg.sender);
     }
 
-    /// @dev Snapshot the active suspect count against `block.timestamp` so the delay read skips a re-scan. Run on
+    /// @dev Snapshot the active suspect count and latest remaining report so the delay read skips a re-scan. Run on
     ///      every report/retraction, after pruning expired ones.
-    function _snapshotSuspects(Id marketId, address account, GuardiansSignal storage signal) internal {
-        signal.suspectReportedAt = block.timestamp.toUint40();
-        signal.suspectCount = _activeSuspectCount(marketId, account).toUint16();
+    function _snapshotSuspects(GuardiansSignal storage signal) internal {
+        uint256 count;
+        uint40 latestReportedAt;
+        uint256 window = _suspectWindow;
+        address[] memory suspects = signal.suspectedBy.values();
+        for (uint256 i; i < suspects.length; ++i) {
+            uint40 reportedAt = signal.suspectedAt[suspects[i]];
+            if (uint256(reportedAt) + window >= block.timestamp) {
+                ++count;
+                if (reportedAt > latestReportedAt) latestReportedAt = reportedAt;
+            }
+        }
+        signal.suspectReportedAt = latestReportedAt;
+        signal.suspectCount = count.toUint16();
     }
 
     /// @dev The raw counters the activation lib turns into a delay: flag count, snapshotted active-suspect count,
@@ -486,16 +497,6 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         strikeCount = signal.flaggedBy.length();
         suspectCount = signal.suspectCount;
         suspectExpiryTimestamp = uint256(signal.suspectReportedAt) + _suspectWindow;
-    }
-
-    /// @dev Count the live suspect reports on `account` still inside the suspect window (`t + window >= now`).
-    function _activeSuspectCount(Id marketId, address account) internal view returns (uint256 count) {
-        GuardiansSignal storage signal = _signals[marketId][account];
-        uint256 window = _suspectWindow;
-        address[] memory suspects = signal.suspectedBy.values();
-        for (uint256 i; i < suspects.length; ++i) {
-            if (uint256(signal.suspectedAt[suspects[i]]) + window >= block.timestamp) ++count;
-        }
     }
 
     /// @dev Drop suspect reports on `account` whose window has lapsed. A lapsed report already stopped counting,

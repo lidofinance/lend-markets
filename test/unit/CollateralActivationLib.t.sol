@@ -51,6 +51,10 @@ contract ActivationHarness {
         return ($.config.minActivationDelay, $.config.maxActivationDelay);
     }
 
+    function maxGuardiansQuorumDelay() external view returns (uint40) {
+        return $.config.maxGuardiansQuorumDelay;
+    }
+
     function deposit(address borrower, uint256 assets) external {
         _total[borrower] += assets;
         $.credit(borrower, assets, false);
@@ -217,6 +221,23 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.currentInflow(), 0, "instant deposit does not touch the inflow throttle");
     }
 
+    /// @notice Even when existing dust plus an instant deposit reaches the threshold exactly, only the trusted
+    ///         deposit becomes active; the dust remains dormant.
+    function test_instantDeposit_dustPlusDepositAtThreshold_activatesOnlyDeposit() public {
+        address borrower = address(0xC2);
+        h.setMinActivationAmount(10 ether);
+        uint256 dustBefore = 10 ether - 1;
+        h.deposit(borrower, dustBefore);
+
+        h.depositInstant(borrower, 1);
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active, 1, "instant deposit is active regardless of the threshold");
+        assertEq(activating, 0, "instant deposit skips the timer");
+        assertEq(dust, dustBefore, "instant deposit does not activate existing dust");
+        assertEq(h.currentInflow(), 0, "instant deposit does not touch the inflow throttle");
+    }
+
     /// @notice Quorum-scan gate: past the base timer, a lot stays activating until the guardian frontier has
     ///         scanned past its unlock; once it does, the lot matures.
     function test_sync_gateHoldsUntilQuorumScansPastUnlock() public {
@@ -301,6 +322,18 @@ contract CollateralActivationLibTest is Test {
         h.setMaxGuardiansQuorumDelay(1 hours); // == maxActivationDelay
     }
 
+    /// @dev The hard MAX_DELAY_DURATION boundary itself is accepted.
+    function test_setMaxGuardiansQuorumDelay_atBound() public {
+        h.setMaxGuardiansQuorumDelay(7 days);
+        assertEq(h.maxGuardiansQuorumDelay(), 7 days, "quorum fallback stored at the upper bound");
+    }
+
+    /// @dev A quorum-fallback delay above the hard MAX_DELAY_DURATION bound reverts.
+    function testRevert_setMaxGuardiansQuorumDelay_aboveBound() public {
+        vm.expectRevert(CollateralActivationLib.MaxGuardiansQuorumDelayExceeded.selector);
+        h.setMaxGuardiansQuorumDelay(7 days + 1);
+    }
+
     /// @notice A withdrawal that drains an activating lot below the threshold folds the remainder into dust: it
     ///         leaves the timer, so it never matures and stays off the guardian scan, and only a fresh crossing
     ///         deposit re-throttles it. The inactive total is unchanged, so `active` is too.
@@ -372,6 +405,36 @@ contract CollateralActivationLibTest is Test {
         (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
         assertEq(activating, 1 ether, "locked remainder stays activating, not demoted");
         assertEq(dust, 0, "locked remainder not folded into freely-withdrawable dust");
+    }
+
+    /// @notice Once a lock expires, a sub-threshold activating remainder is not added to existing dust when their
+    ///         sum reaches the threshold. The buckets stay separate instead of forming above-threshold dust.
+    function test_withdraw_expiredLock_doesNotCreateAboveThresholdDust() public {
+        h.setConfig(
+            CollateralActivationConfig({
+                minActivationDelay: 1 minutes,
+                maxActivationDelay: 1 hours,
+                activatingLockAmount: 9 ether,
+                activatingLockDuration: 30 minutes,
+                maxDelayInflow: 10_000 ether,
+                minActivationAmount: 10 ether,
+                maxGuardiansQuorumDelay: 0,
+                delayPerStrike: 1 hours,
+                delayPerSuspect: 30 minutes
+            })
+        );
+        address borrower = address(0x10CD);
+
+        h.deposit(borrower, 20 ether);
+        h.withdraw(borrower, 11 ether); // leaves the 9 ether lock floor activating
+        h.deposit(borrower, 9 ether); // remains separate dust while the lock is active
+
+        vm.warp(block.timestamp + 30 minutes);
+        h.withdraw(borrower, 1 ether);
+
+        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(activating, 9 ether, "sub-threshold activating remainder stays timed");
+        assertEq(dust, 8 ether, "existing dust remains below the threshold");
     }
 
     // ── ACT-04: withdrawal demotion reverses the same-tx inflow of the demoted remainder ──
@@ -534,6 +597,53 @@ contract CollateralActivationLibTest is Test {
         (, uint256 activating,) = h.bucketsOf(borrower);
         assertEq(activating, 6 ether, "partial seizure leaves the remainder activating");
         assertEq(h.currentInflow(), 6 ether, "inflow reversed by exactly the seized activating (10 - 4)");
+    }
+
+    /// @notice A forced seizure that leaves less than the activation minimum demotes the remainder to untimed
+    ///         dust, just like an unlocked withdrawal. The demoted amount no longer carries activation inflow and
+    ///         cannot mature on the old timer.
+    function test_seize_demotesSubThresholdActivatingToDust() public {
+        uint256 threshold = 10 ether;
+        uint256 remainder = threshold - 1;
+        address borrower = address(0xAC5E);
+        h.setMinActivationAmount(uint128(threshold));
+
+        h.deposit(borrower, 2 * threshold);
+        h.seize(borrower, threshold + 1);
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active, 0, "sub-threshold remainder is not active");
+        assertEq(activating, 0, "sub-threshold remainder leaves the timer");
+        assertEq(dust, remainder, "sub-threshold remainder becomes dust");
+        assertEq(h.currentInflow(), 0, "demoted remainder carries no activation inflow");
+
+        vm.warp(block.timestamp + 2 hours);
+        h.sync(borrower, 0);
+        (active, activating, dust) = h.bucketsOf(borrower);
+        assertEq(active, 0, "demoted remainder does not mature");
+        assertEq(activating, 0, "timer stays empty");
+        assertEq(dust, remainder, "remainder stays dust");
+    }
+
+    /// @notice Regression for the audit sequence: a seizure leaves a sub-threshold remainder, another deposit
+    ///         supplies just below the threshold, then a withdrawal drains one unit. The two remainders must not
+    ///         be combined into an above-threshold dust bucket.
+    function test_seizeRemainder_thenDustTopUpAndDebit_dustStaysBelowThreshold() public {
+        uint256 threshold = 10 ether;
+        uint256 remainder = threshold - 1;
+        address borrower = address(0xAC5F);
+        h.setMinActivationAmount(uint128(threshold));
+
+        h.deposit(borrower, 2 * threshold);
+        h.seize(borrower, threshold + 1);
+        h.deposit(borrower, remainder);
+        h.withdraw(borrower, 1);
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active, 0, "collateral remains inactive");
+        assertEq(activating, 2 * remainder - 1, "threshold-crossing top-up stays in activation");
+        assertEq(dust, 0, "no above-threshold dust is formed");
+        assertLt(dust, threshold, "dust remains below the activation threshold");
     }
 
     /// @notice A seizure waterfalls dust first, then activating. Only the activating it drains carries throttle

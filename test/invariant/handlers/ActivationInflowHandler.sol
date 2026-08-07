@@ -23,7 +23,7 @@ contract ActivationInflowHandler is Test {
     CollateralActivationLib.State internal $;
 
     uint256 public constant CAP = 10_000 ether; // maxDelayInflow
-    uint256 internal constant MIN_ACT = 1 ether; // minActivationAmount
+    uint256 public constant MIN_ACT = 1 ether; // minActivationAmount
     uint256 internal constant MAX_DELAY = 1 hours;
 
     address[4] internal actors;
@@ -51,6 +51,10 @@ contract ActivationInflowHandler is Test {
 
     function currentInflow() external view returns (uint256) {
         return $.calcDecayedInflow();
+    }
+
+    function activationState(uint256 actorIndex) external view returns (uint256 activating, uint256 dust) {
+        return $.getActivationState(actors[actorIndex]);
     }
 
     /// @notice A fuzzed batch of activation mutations in ONE tx, asserting the per-tx inflow invariant after each.

@@ -294,7 +294,7 @@ Governance-tunable activation parameters, validated by `CollateralActivationLib.
 | `activatingLockAmount` | `uint128` | Lock on activating collateral, honored by `withdraw`. 0 disables it. Forced paths pass floor 0. |
 | `activatingLockDuration` | `uint40` | How long, from `activatingStart`, the `activatingLockAmount` portion stays unwithdrawable. Once it elapses the locked collateral becomes withdrawable even if the lot has not matured. 0 disables the lock. |
 | `minActivationAmount` | `uint128` | Dust threshold. Collateral below it does not enter activation. |
-| `maxGuardiansQuorumDelay` | `uint40` | Liveness fallback for the quorum gate, measured from the lot's start. Once it elapses the lot matures even if the guardian quorum has not scanned past the unlock. Must exceed the base-delay cap (maxActivationDelay), else it fires at the unlock and the quorum gets no window. 0 matures at the base unlock (no gate). |
+| `maxGuardiansQuorumDelay` | `uint40` | Liveness fallback for the quorum gate, measured from the lot's start. Once it elapses the lot matures even if the guardian quorum has not scanned past the unlock. Must exceed the base-delay cap (maxActivationDelay), else it fires at the unlock and the quorum gets no window. 0 matures at the base unlock (no gate). A nonzero value cannot exceed 7 days. |
 | `delayPerStrike` | `uint40` | Activation-delay surcharge added per guardian strike. 0 disables it, so strikes do not slow activation and only the ban gates a flagged borrower. |
 | `delayPerSuspect` | `uint40` | Activation-delay surcharge added per active suspect report, applied only to lots whose activation started before the suspect snapshot lapses. 0 disables it. |
 

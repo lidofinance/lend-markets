@@ -21,7 +21,7 @@ struct BlockInfoWithHash {
 
 /// @notice Per-account guardian signal, stored per `(market, account)`.
 /// @param banned           Latched ban. A quorum of flags or a forced `ban` sets it, held until `unban`.
-/// @param suspectReportedAt Timestamp of the last suspect report or retraction. Anchors the suspect snapshot.
+/// @param suspectReportedAt Timestamp of the latest active suspect report. Anchors the suspect snapshot.
 /// @param suspectCount     Active suspect reports at `suspectReportedAt`, snapshotted on report/retraction so the
 ///        delay needn't re-scan. The surcharge `suspectCount * delayPerSuspect` applies to a lot whose activation
 ///        began before the snapshot lapses (`suspectReportedAt + suspectWindow`).

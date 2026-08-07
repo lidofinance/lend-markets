@@ -74,7 +74,7 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
 
         // 1) Raise the activation delays through the dashboard; the live controller stores them.
         vm.prank(STEWARD);
-        c.dashboard.increaseActivationDelays(c.id, 20 minutes, 3 hours);
+        c.dashboard.increaseActivationDelays(c.id, 20 minutes, 3 hours, 0);
 
         CollateralActivationConfig memory cfg1 = c.controller.collateralActivationConfig();
         assertEq(cfg1.minActivationDelay, 20 minutes, "floor raised on the live controller");
@@ -114,7 +114,7 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
 
         vm.prank(STEWARD);
         vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
-        c.dashboard.increaseActivationDelays(c.id, 5 minutes, 3 hours); // 5 min < deploy floor 10 min
+        c.dashboard.increaseActivationDelays(c.id, 5 minutes, 3 hours, 0); // 5 min < deploy floor 10 min
     }
 
     /// @notice The dashboard only adds the direction guard: a raise that is in-direction but past the
@@ -124,7 +124,7 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
 
         vm.prank(STEWARD);
         vm.expectRevert(CollateralActivationLib.MaxActivationDelayExceeded.selector);
-        c.dashboard.increaseActivationDelays(c.id, 20 minutes, 8 days); // raise, but above MAX_DELAY_DURATION
+        c.dashboard.increaseActivationDelays(c.id, 20 minutes, 8 days, 0); // raise, but above MAX_DELAY_DURATION
     }
 
     /// @notice A non-steward cannot pull a lever.
@@ -133,7 +133,7 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
 
         vm.prank(address(0xBAD));
         vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
-        c.dashboard.increaseActivationDelays(c.id, 20 minutes, 3 hours);
+        c.dashboard.increaseActivationDelays(c.id, 20 minutes, 3 hours, 0);
     }
 
     /// @notice A market id the core has no controller for is rejected, even for an appointed steward.
@@ -145,7 +145,7 @@ contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
 
         vm.prank(STEWARD);
         vm.expectRevert(abi.encodeWithSelector(IRiskStewardDashboard.UnknownMarket.selector, bogus));
-        c.dashboard.increaseActivationDelays(bogus, 20 minutes, 3 hours);
+        c.dashboard.increaseActivationDelays(bogus, 20 minutes, 3 hours, 0);
     }
 
     function test_dashboard_freezesRealController() public {
