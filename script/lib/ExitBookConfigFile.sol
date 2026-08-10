@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 struct ExitBookConfig {
     address agent; // DEFAULT_ADMIN_ROLE + FEE_MANAGER_ROLE + RECOVERER_ROLE

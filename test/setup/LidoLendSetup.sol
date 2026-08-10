@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {Test, console2} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -33,7 +33,7 @@ import {IrmKind, Market, Protocol} from "./Types.sol";
 import {MarketActions} from "./MarketActions.sol";
 
 /// @notice Base for Lido Lend tests. Deploys with `new` (no `vm.getCode`; the fork core and IRM are
-///         0.8.35-compatible): one `LidoLend` core and one guardian registry (singletons), then any number
+///         0.8.36-compatible): one `LidoLend` core and one guardian registry (singletons), then any number
 ///         of markets on that core (`_addMarket`). Seeds a non-trivial oracle price from a logged seed.
 ///         Action helpers live in `MarketActions` (`using ... for Market` → `market.borrow(bob, x)`);
 ///         funding (`deal`) stays here because it is StdCheats, not a `vm` cheatcode.

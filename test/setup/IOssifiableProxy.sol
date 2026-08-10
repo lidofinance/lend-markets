@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 /// @notice Admin surface of `OssifiableProxy`. Paired with each proxied contract's typed handle in
 ///         `Protocol`, so a test reaches both the implementation's methods (typed handle) and the proxy's

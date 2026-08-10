@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {IVaultV2} from "@vault-v2/src/interfaces/IVaultV2.sol";
 import {IMorphoMarketV1AdapterLike} from "../utils/IMorphoMarketV1AdapterLike.sol";
@@ -189,7 +189,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer, ForkTest {
         });
         ctx.marketId = AdapterId.unwrap(ctx.adapterParams.id());
 
-        // vault-v2 compiles at 0.8.28, this suite at 0.8.35, so `vm.getCode` finds no same-version artifact.
+        // vault-v2 compiles at 0.8.28, this suite at 0.8.36, so `vm.getCode` finds no same-version artifact.
         // Read the bytecode straight from `out/` instead (version-agnostic), the way the other scenario suites do.
         ctx.vault = IVaultV2(_deployOut("VaultV2.sol", "VaultV2", abi.encode(address(this), address(ctx.loanToken))));
         ctx.adapter = IMorphoMarketV1AdapterLike(
@@ -346,7 +346,7 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer, ForkTest {
     }
 
     /// @dev Deploy a contract from its compiled artifact in `out/`, reading the bytecode directly. vault-v2
-    ///      compiles at 0.8.28 while this suite is 0.8.35, so `vm.getCode` finds no same-version artifact;
+    ///      compiles at 0.8.28 while this suite is 0.8.36, so `vm.getCode` finds no same-version artifact;
     ///      reading the JSON is version-agnostic.
     function _deployOut(string memory file, string memory name, bytes memory args) internal returns (address a) {
         string memory json = vm.readFile(string.concat("out/", file, "/", name, ".json"));

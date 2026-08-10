@@ -7,14 +7,14 @@
   },
   "lib/lido-lend": {
     "branch": {
-      "name": "feat/settle-borrow-anchor",
-      "rev": "5ff49deb02cbd67dea543c72f30701ac5bb47734"
+      "name": "main",
+      "rev": "e582aa61d490d4fddc77d279bc432ef11af3b4e4"
     }
   },
   "lib/lido-lend-irm": {
     "branch": {
       "name": "main",
-      "rev": "6c46b24eaa75d62d0676f8faf1621ca34f8b1a4a"
+      "rev": "a7d8c81da8fd903c7ef1b96843467c73e1c99af8"
     }
   },
   "lib/openzeppelin-contracts": {

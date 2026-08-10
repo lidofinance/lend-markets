@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 /// @dev Typed test surface of the vendored `src/adapters/EthereumGeneralAdapter1.sol` (including what
 ///      it inherits from `GeneralAdapter1` and `CoreAdapter`). The contract itself pins solc 0.8.28,
-///      so 0.8.35 test code cannot import it; its artifact is deployed via `deployCode` and driven
+///      so 0.8.36 test code cannot import it; its artifact is deployed via `deployCode` and driven
 ///      through this interface. Signatures must match the vendored contract exactly.
 interface IGeneralAdapter1 {
     function nativeTransfer(address receiver, uint256 amount) external;
