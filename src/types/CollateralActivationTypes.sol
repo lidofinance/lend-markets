@@ -21,10 +21,11 @@ pragma solidity 0.8.36;
 ///        unwithdrawable. Once it elapses the locked collateral becomes withdrawable even if the lot has not
 ///        matured. 0 disables the lock.
 /// @param minActivationAmount Dust threshold. Collateral below it does not enter activation.
-/// @param maxGuardiansQuorumDelay Liveness fallback for the quorum gate, measured from the lot's start. Once
-///        it elapses the lot matures even if the guardian quorum has not scanned past the unlock. Must exceed
-///        the base-delay cap (maxActivationDelay), else it fires at the unlock and the quorum gets no window.
-///        0 matures at the base unlock (no gate). A nonzero value cannot exceed 7 days.
+/// @param maxGuardiansQuorumDelay Liveness fallback for the quorum gate, measured from the lot's start. A lot can
+///        mature only after its full unlock time, including guardian surcharges; after that, it needs either a
+///        frontier covering the unlock or this fallback timestamp to have elapsed. A nonzero value must exceed the
+///        base-delay cap (`maxActivationDelay`) and cannot exceed 7 days. 0 removes the additional quorum wait after
+///        the full unlock.
 /// @param delayPerStrike Activation-delay surcharge added per guardian strike. 0 disables it, so strikes do not
 ///        slow activation and only the ban gates a flagged borrower.
 /// @param delayPerSuspect Activation-delay surcharge added per active suspect report, applied only to lots whose

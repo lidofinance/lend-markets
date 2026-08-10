@@ -81,8 +81,7 @@
   `lib/lido-lend/FORK_NOTES.md`.
 - The forked core accounting (positions, supply/borrow shares, interest accrual, market creation,
   liquidate, settle) changes only through a `lib/lido-lend` pin bump.
-- All Lido extension logic — policy, controller hooks, settlement flavours, watermark, batch
-  orchestration, lender auth — lives in the controller (`src/controllers/WethWstEthController.sol`).
+- Lido-layer policy and orchestration live in this repository: the per-market policy entry point is `src/controllers/LidoLendMarketController.sol`, while guardian state, vault settlement orchestration, and optional periphery remain in their own contracts under `src/`.
 
 ## Solidity Style
 
@@ -94,10 +93,7 @@ Read before writing or reviewing contracts.
 Specs live in `docs/specs/` in two layers (see `docs/specs/README.md`). They capture what a reviewer
 needs before reading code, not what the code already says.
 
-- **Conceptual specs** (hand-written): the architecture, the access-control matrix, per-market
-  parameters, and the invariants and threat model the code cannot state itself. `architecture.md` is the
-  system and controller-subsystem reference, `roles.md` maps every privilege to its role and holder,
-  `markets/<market>.md` is per market.
+- **Conceptual specs** (hand-written): the architecture, cross-contract mechanisms, access-control matrix, per-market parameters, and the invariants and threat model the code cannot state itself. `architecture.md` is the system topology and runtime-boundary reference; `market-controller.md`, `guardian-signals.md`, `lender-settlement.md`, and `exit-books.md` own their respective state machines and formulas; `roles.md` maps every privilege to its role and holder; `markets/<market>.md` is per market.
 - **API reference** (`docs/specs/api/`, generated): the per-contract surface — functions, structs, state
   variables — rendered from the Solidity NatSpec by `tools/gen_api_from_artifacts.py` (`make doc`). It is
   the single source for per-member behaviour, so never hand-write or hand-edit it: keep the NatSpec

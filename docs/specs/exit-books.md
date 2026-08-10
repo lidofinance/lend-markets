@@ -2,11 +2,11 @@
 
 ## What problem Exit Books solve
 
-An Exit Book operates on a source: either an ERC-4626 vault or a Morpho market. A lender position in that source is recorded in vault shares or Morpho supply shares, which represent a claim on an underlying loan asset such as USDC. The lender can own enough shares for an exit while the source is temporarily unable to return all of the underlying asset because some of its liquidity is in use.
+An Exit Book operates on a source: either an ERC-4626 vault or a market in the Morpho-compatible `LidoLend` core. A lender position in that source is recorded in vault shares or core supply shares, which represent a claim on an underlying loan asset such as USDC. The lender can own enough shares for an exit while the source is temporarily unable to return all of the underlying asset because some of its liquidity is in use.
 
 An Exit Book lets the lender publish an asset-denominated exit request without transferring the source shares into the book. Another party, called a filler, finds the request and executes it directly or through a helper. Each successful fill withdraws exactly the asset amount removed from the request. If the source lacks liquidity, a filler can first make liquidity available through a source-native operation and then fill the request. A helper contract can execute both steps atomically.
 
-The lender chooses a receiver and a priority-fee schedule. The receiver gets the filled amount minus the priority fee. The filler directs the rest of that fee to a reward recipient, after a configured service-fee cut. The fee rises over time as a Dutch auction, so a request can become more attractive to fillers without letting a filler withdraw more than the requested asset amount.
+The lender chooses a receiver and a priority-fee schedule. The receiver gets the filled amount minus the priority fee. The filler directs the rest of that fee to a reward recipient, after the configured service fee. The configured priority fee can rise over time as a Dutch auction, so a request can become more attractive to fillers without letting a filler withdraw more than the requested asset amount.
 
 Because source withdrawal always equals the request debit, appreciation stays with the lender. If the source shares become more valuable between placement and execution, the fill burns fewer shares; it does not turn that appreciation into an additional filler reward. An optional share-burn limit protects the lender in the opposite direction.
 
@@ -34,8 +34,10 @@ The Exit Book layer has one shared implementation and two concrete books:
 | --- | --- |
 | `ExitBookBase` | Stores the common request registry and implements lifecycle, fill accounting, the fee auction, payouts, pause, and shared roles |
 | `Erc4626ExitBook` | Connects requests to allowlisted ERC-4626 vaults |
-| `MorphoExitBook` | Connects requests to allowlisted markets on one immutable Morpho deployment |
+| `MorphoExitBook` | Connects requests to allowlisted markets in one immutable Morpho-compatible core |
 | `ExitBookLib` | Implements the append-only registry operations used by `ExitBookBase` |
+
+In this deployment, `MorphoExitBook` connects to the `LidoLend` core deployed with the book. References to a Morpho market in this document mean a market inside that core, not a separate external Morpho deployment.
 
 Each deployed book has its own request-id sequence. A request id is meaningful only together with the book address. The concrete book stores the backing source separately for every request: `vaultOf(id)` for ERC-4626 and `marketParamsOf(id)` for Morpho.
 
@@ -82,10 +84,10 @@ sequenceDiagram
     Book->>Source: Withdraw the filled amount from owner's position
     Source-->>Book: Exact loan assets and actual share burn
     Book->>Book: Verify exact output and optional share-burn limit
-    Book->>Book: Compute priority fee, live service cut, and payouts
+    Book->>Book: Compute priority fee, live service fee, and payouts
     Book-->>Receiver: Filled amount after priority fee
     opt net reward is positive
-        Book-->>RewardRecipient: Priority fee after service cut
+        Book-->>RewardRecipient: Priority fee after service fee
     end
     opt service-fee payout is positive
         Book-->>FeeRecipient: Configured service-fee payout
@@ -389,7 +391,7 @@ fillerReward   = priorityFee - serviceCut
 receiverAssets + fillerReward + serviceCut = fillAssets
 ```
 
-The priority fee is carved out of the filled request amount. `rewardRecipient` receives the entire net filler reward; the book does not split yield or any other source value into a separate payment.
+The priority fee is deducted from the filled request amount. `rewardRecipient` receives the entire net filler reward; the book does not split yield or any other source value into a separate payment.
 
 ### Fill after external liquidity preparation
 
@@ -409,7 +411,7 @@ receiverAssets = 98
 fillerReward = 1.5
 ```
 
-The 98 receiver assets, 1.5 treasury reward, and 0.5 service cut sum to the exact 100-asset source withdrawal. The helper could instead have deposited through the vault or repaid debt; the fill accounting would be identical. Amounts are shown without token-unit rounding for readability.
+The 98 receiver assets, 1.5 treasury reward, and 0.5 service fee sum to the exact 100-asset source withdrawal. The helper could instead have deposited through the vault or repaid debt; the fill accounting would be identical. Amounts are shown without token-unit rounding for readability.
 
 ## Operating a filler
 
@@ -419,7 +421,7 @@ The contracts do not select or execute requests automatically. A filler implemen
 
 Index `ExitRequested`, `ExitProcessed`, and `ExitCancelled`, then reconcile candidate ids with `getRequests(ids)` at a single block tag. A block tag is the exact block number or hash used for every read in one calculation. Using one prevents the inputs from silently describing different chain states. `getOwnerRequestIds` supports owner views, and scanning `[1, lastRequestId()]` in batches is a log-independent fallback.
 
-For a cold start, read `MAX_REQUEST_LIFETIME()`, translate the cutoff timestamp to an earliest block, and search `ExitRequested` logs far enough back that no older request can remain fillable. Query in block ranges accepted by the RPC provider and include margins for block-boundary estimation, reorgs, and the chosen finality policy.
+For an initial index build, read `MAX_REQUEST_LIFETIME()`, translate the cutoff timestamp to an earliest block, and search `ExitRequested` logs far enough back that no older request can remain fillable. Query in block ranges accepted by the RPC provider and include margins for block-boundary estimation, reorgs, and the chosen finality policy.
 
 Resolve the source on the same book with `vaultOf(id)` or `marketParamsOf(id)`. Neither the common `Request` record nor `ExitRequested` contains it. Discard `NotCreated`, closed, expired, or paused requests.
 
@@ -448,7 +450,7 @@ Morpho estimatedSharesBurned <= ownerSupplyShares
 
 These are filters, not execution guarantees. The source operation and full-call simulation remain authoritative.
 
-The Exit Book has no capital or slippage parameter because it performs no liquidity operation. A helper that supplies assets should check the returned or balance-delta shares against its own minimum. A helper that repays should bound the debt and assets affected. In either case, its capital budget should account for loan-asset balance, approvals, source headroom, and the value and liquidity of the resulting position.
+The Exit Book has no capital or slippage parameter because it performs no liquidity operation. A helper that supplies assets should check the returned or balance-delta shares against its own minimum. A helper that repays should bound the debt and assets affected. In either case, its capital budget should account for loan-asset balance, approvals, remaining source capacity, and the value and liquidity of the resulting position.
 
 ### Price the candidate
 
@@ -470,7 +472,7 @@ Before submission:
 
 1. Re-read the request and all owner, source, and execution-route state at one block tag.
 2. Recalculate the amount constraints, expected burn, share protection, route effects, and payouts.
-3. Check backing, permission, source controls, route-specific headroom, loan-asset balance, and approvals.
+3. Check backing, permission, source controls, route-specific remaining capacity, loan-asset balance, and approvals.
 4. Simulate the complete transaction, ending with `fillExitRequest(id, fillAssets, rewardRecipient)`, from the actual executor address.
 5. Submit only a successful and profitable simulation.
 
@@ -497,7 +499,7 @@ The simulation is only a snapshot. State may change before transaction inclusion
 | Source liquidity improves | A fixed external liquidity operation may commit more capital than the fill needs unless the helper adjusts it |
 | Source liquidity worsens | The chosen route may no longer create enough liquidity for the withdrawal |
 | Share price or source rounding changes | Actual share burn may exceed the owner protection limit |
-| Backing, authorization, source policy, route headroom, or token approval changes | An external route or source withdrawal may fail |
+| Backing, authorization, source policy, route capacity, or token approval changes | An external route or source withdrawal may fail |
 | Governance changes the service fee | The live payout split changes, and no onchain minimum reward protects the filler |
 
 ## Governance, pause, and compatibility assumptions
@@ -508,8 +510,10 @@ Each deployed book has independent fee configuration, roles, and a pause flag. P
 
 Both books share one configured Risk Steward Committee as their sole initial `PAUSER_ROLE` holder. `RESUMER_ROLE` has no initial holder. Restoring a paused book therefore requires the Lido DAO Agent, as `DEFAULT_ADMIN_ROLE` holder, to grant a governance resumer before `resume()` can be called.
 
-The supported loan asset transfers exact amounts and does not rebase. Neither the asset nor the source, including its hooks, may call back into or reenter the book during an operation. A malicious or non-conforming allowlisted source is outside the model.
+> [!WARNING]
+> **Allowlisted-source trust boundary.** The supported loan asset must transfer exact amounts without rebasing. Neither the asset nor the source, including its hooks, may call back into or reenter the book during an operation. Allowlisting a source is therefore a security decision; the book does not guarantee safe behavior for a malicious or non-conforming source.
 
-The Morpho fee recipient must not own an open Morpho Exit Book request. Pending fee shares are not part of that account's stored position until accrual, so placement and offchain backing checks could otherwise understate its shares. The book does not enforce this restriction onchain. It is a continuing governance invariant rather than a one-time deployment check.
+> [!WARNING]
+> **Unenforced Morpho fee-recipient invariant.** The Morpho fee recipient must not own an open Morpho Exit Book request. Pending fee shares are not part of that account's stored position until accrual, so placement and offchain backing checks could otherwise understate its shares. The book does not enforce this restriction onchain; governance must maintain it for the full lifetime of every open request.
 
 Exact role holders and privileges are documented in [roles.md](roles.md), deployment procedures in the [deployment runbook](../../script/DEPLOYMENT.md), and the complete callable surface in the generated [API reference](api/exit-book.md).

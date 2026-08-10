@@ -15,7 +15,8 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     /// @notice Emitted when a steward is appointed to or removed from a market.
     event MarketStewardSet(Id indexed marketId, address indexed steward, bool enabled);
 
-    /// @notice Emitted when the activation delay floor, cap, and guardian-quorum fallback are raised on a market.
+    /// @notice Emitted after an accepted non-decreasing update to a market's activation delay floor, cap, and
+    ///         guardian-quorum fallback.
     event ActivationDelaysIncreased(
         Id indexed marketId,
         uint256 newMinActivationDelay,
@@ -23,7 +24,7 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
         uint256 newMaxGuardiansQuorumDelay
     );
 
-    /// @notice Emitted when the Sybil lock amount and duration are raised on a market.
+    /// @notice Emitted after an accepted non-decreasing update to a market's activation lock.
     event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 newDuration);
 
     /// @notice Emitted when a steward revokes a caller's instant activation on a market.
@@ -89,8 +90,8 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     ///         bounds the duration on write.
     function increaseActivatingLock(Id marketId, uint128 newAmount, uint40 newDuration) external;
 
-    /// @notice Revoke a caller's instant activation on a market. Risk-reducing, so no direction guard; forwards
-    ///         to the controller, which emits the state change.
+    /// @notice Set a caller's instant activation permission to false on a market. Risk-reducing, so no direction
+    ///         guard; the controller records and emits the requested false value even if it was already false.
     function revokeInstantActivation(Id marketId, address caller) external;
 
     /// @notice Freeze a market. Only an appointed steward of that market may call.

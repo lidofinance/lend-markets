@@ -2,7 +2,9 @@
 
 # LidoLendMarketController
 
-Full external surface of `LidoLendMarketController`: the core hook interface and AccessControlEnumerable (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the borrower dashboard. The controller implements this interface, so it is the single source for the dashboard struct, events, errors, and the function docs the contract inherits.
+Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
+
+Contract-specific external surface of `LidoLendMarketController`: the inherited core hook interface, Lido policy, freeze/pause, settlement-queue views, and borrower dashboard. Standard role membership and administration use the inherited `IAccessControlEnumerable` surface. The controller implements this interface, so it is the source for its dashboard struct, events, errors, and policy-function docs.
 
 ## Enums
 
@@ -50,12 +52,12 @@ One-read borrower snapshot for off-chain dashboards: collateral split, activatio
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `active` | `uint256` | Matured collateral, borrowable. |
+| `active` | `uint256` | Derived collateral outside the stored inactive buckets, including matured and instantly activated amounts. It supports borrowing only when the total meets the current activation threshold. |
 | `activating` | `uint256` | Collateral inside the activation timer, not yet borrowable. |
-| `dust` | `uint256` | Collateral below the activation threshold, withdrawable. |
+| `dust` | `uint256` | Stored untimed collateral classified as dust. Configuration changes do not reclassify it, so it need not remain below the current activation threshold. It is withdrawable and not borrowable. |
 | `unlockTime` | `uint256` | Activation unlock timestamp, 0 when there is no timer. |
 | `flagCount` | `uint256` | Raw guardian flags on the account, regardless of status. |
-| `banned` | `bool` | Hard-blocked by a latched guardian ban. |
+| `banned` | `bool` | Effective guardian ban: either the stored latch or a flag count at or above the current quorum. |
 | `debtAssets` | `uint256` | Current borrow debt, in loan assets. |
 | `settlementLtv` | `uint256` | Borrower's personal post-cut target LTV (WAD), 0 when unset. |
 | `isNextToSettle` | `bool` | The borrower is next in line to be settled. |
@@ -294,7 +296,7 @@ Governance-tunable activation parameters, validated by `CollateralActivationLib.
 | `activatingLockAmount` | `uint128` | Lock on activating collateral, honored by `withdraw`. 0 disables it. Forced paths pass floor 0. |
 | `activatingLockDuration` | `uint40` | How long, from `activatingStart`, the `activatingLockAmount` portion stays unwithdrawable. Once it elapses the locked collateral becomes withdrawable even if the lot has not matured. 0 disables the lock. |
 | `minActivationAmount` | `uint128` | Dust threshold. Collateral below it does not enter activation. |
-| `maxGuardiansQuorumDelay` | `uint40` | Liveness fallback for the quorum gate, measured from the lot's start. Once it elapses the lot matures even if the guardian quorum has not scanned past the unlock. Must exceed the base-delay cap (maxActivationDelay), else it fires at the unlock and the quorum gets no window. 0 matures at the base unlock (no gate). A nonzero value cannot exceed 7 days. |
+| `maxGuardiansQuorumDelay` | `uint40` | Liveness fallback for the quorum gate, measured from the lot's start. A lot can mature only after its full unlock time, including guardian surcharges; after that, it needs either a frontier covering the unlock or this fallback timestamp to have elapsed. A nonzero value must exceed the base-delay cap (`maxActivationDelay`) and cannot exceed 7 days. 0 removes the additional quorum wait after the full unlock. |
 | `delayPerStrike` | `uint40` | Activation-delay surcharge added per guardian strike. 0 disables it, so strikes do not slow activation and only the ban gates a flagged borrower. |
 | `delayPerSuspect` | `uint40` | Activation-delay surcharge added per active suspect report, applied only to lots whose activation started before the suspect snapshot lapses. 0 disables it. |
 
@@ -546,7 +548,7 @@ function currentActivationDelay(
 ) external view returns (uint256);
 ```
 
-Activation delay a deposit of `inflowIncrement` would incur at the current inflow — for borrowers gauging the wait.
+Base inflow-throttle delay for a hypothetical `inflowIncrement` at the current decayed inflow. Excludes instant activation, dust aggregation, the minimum amount, and guardian surcharges; it is not a complete quote for a specific collateral supply.
 
 ### `hasInstantActivation`
 
@@ -604,9 +606,9 @@ Number of borrowers tracked in the settlement queue.
 function hasBadDebt() external view returns (bool);
 ```
 
-True if any tracked borrower is bad debt — its debt value exceeds its collateral value.
+Whether the current settlement-queue root has bad debt: its debt value exceeds its collateral value.
 
-O(1): it checks the riskiest tracked position (the highest debt/collateral), whose solvency implies every tracked position is solvent, so the settle gate need only check that one.
+O(1): checks only the root selected by the rounded borrow-share/raw-collateral key. It does not scan all tracked borrowers. Equal keys and separate debt/collateral valuation rounding mean that a solvent root does not prove every other tracked position is solvent.
 
 ### `nextSettlementBorrower`
 

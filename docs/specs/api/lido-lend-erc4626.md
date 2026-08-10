@@ -2,6 +2,8 @@
 
 # LidoLendERC4626
 
+Standard inherited ERC-20 share-token and ERC-4626 vault functions are not repeated; see [ERC-4626](https://eips.ethereum.org/EIPS/eip-4626).
+
 Single-market ERC-4626 wrapper for a Morpho Blue fork market with settle exit support.
 
 Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
