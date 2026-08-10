@@ -32,9 +32,17 @@ npm start            # serves http://127.0.0.1:8899
 
 The page is organized into global tabs (header, active-market bar, and log stay visible across all of
 them): **network** (node, snapshot, seed, time & blocks), **protocol** (deploy core / mock tokens /
-create market), **market** (overview, actions, participants, state, oracle, control, guardian,
+create market / bundler), **market** (overview, actions, participants, state, oracle, control, guardian,
 controller config, IRM), **script** (scenario input + history), and **txs** (transaction inspector).
 Typical flow moves left to right: network → protocol → market.
+
+**Bundler.** `deploy bundler` puts up Bundler3, the vendored general adapter and the Lido vault adapter
+against the current core, straight from the forge artifacts — the two upstream contracts pin solc
+0.8.28, so the 0.8.35 devnet script cannot deploy them. Leaving the token fields empty also deploys the
+WETH / stETH / wstETH trio the general adapter's constructor requires (it reads `stETH()` off the wstETH
+address, which a plain mock token does not have); create the market on those addresses to bundle against
+it. Frontend usage — how to shape a bundle, and worked recipes including the two Lido-specific adapter
+actions — is in [docs/integration/bundler.md](../docs/integration/bundler.md).
 
 Reverts are decoded: a failed action logs the protocol error name (e.g. `InsufficientActiveCollateral()`,
 `SupplyCapExceeded(…)`) or the core's string reason, instead of raw selector bytes. Every sent tx also
