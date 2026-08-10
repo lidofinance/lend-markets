@@ -30,12 +30,16 @@ interface ICircuitBreakerConfig {
 abstract contract ProtocolDeployer is LidoLendPrimitives {
     error AgentCannotBeDeployer();
     error AgentCannotBeExecutor();
+    error ExitBookPauserCannotBeAgent();
+    error ExitBookPauserCannotBeDeployer();
+    error ExitBookPauserCannotBeExecutor();
     error ExecutorCannotBeDeployer();
     error UnexpectedChainId(uint256 expected, uint256 actual);
     error MissingCircuitBreaker();
     error CircuitBreakerNotContract(address circuitBreaker);
     error UnexpectedCircuitBreakerAdmin(address expected, address actual);
     error DuplicateMarketId(string firstMarket, string secondMarket);
+    error MissingExitBookPauser();
 
     function _requireChainId(uint256 expected) internal view {
         if (block.chainid != expected) revert UnexpectedChainId(expected, block.chainid);
@@ -148,6 +152,10 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         if (cfg.agent == deployer) revert AgentCannotBeDeployer();
         if (cfg.evmScriptExecutor == deployer) revert ExecutorCannotBeDeployer();
         if (cfg.agent == cfg.evmScriptExecutor) revert AgentCannotBeExecutor();
+        if (cfg.pauser == address(0)) revert MissingExitBookPauser();
+        if (cfg.pauser == deployer) revert ExitBookPauserCannotBeDeployer();
+        if (cfg.pauser == cfg.agent) revert ExitBookPauserCannotBeAgent();
+        if (cfg.pauser == cfg.evmScriptExecutor) revert ExitBookPauserCannotBeExecutor();
 
         MorphoExitBook morpho = new MorphoExitBook(cfg.core, deployer, cfg.maxRequestLifetime);
         _handOverExitBook(morpho, cfg, deployer);
@@ -164,6 +172,8 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.agent);
         book.grantRole(book.FEE_MANAGER_ROLE(), cfg.agent);
         book.grantRole(book.RECOVERER_ROLE(), cfg.agent);
+        book.grantRole(book.PAUSER_ROLE(), cfg.pauser);
+        // RESUMER_ROLE deliberately starts empty. Governance grants it only when it needs to resume the book.
         book.grantRole(book.DEFAULT_ADMIN_ROLE(), cfg.agent);
         book.revokeRole(book.DEFAULT_ADMIN_ROLE(), deployer);
     }

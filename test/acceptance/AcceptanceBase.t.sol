@@ -92,6 +92,7 @@ interface IReadMorphoBook {
     function MORPHO() external view returns (address);
     function MAX_REQUEST_LIFETIME() external view returns (uint256);
     function paused() external view returns (bool);
+    function pause() external;
     function setMarketAllowed(MarketParams calldata marketParams, bool allowed) external;
 }
 
@@ -99,6 +100,7 @@ interface IReadErc4626Book {
     function isVaultAllowed(address vault) external view returns (bool);
     function MAX_REQUEST_LIFETIME() external view returns (uint256);
     function paused() external view returns (bool);
+    function pause() external;
     function setVaultAllowed(address vault, bool allowed) external;
 }
 
@@ -237,6 +239,8 @@ abstract contract AcceptanceContext is Test {
     uint256 internal marketDeployedBlock;
     uint256 internal exitBooksDeployedBlock;
     uint256 internal expectedExitBookMaxRequestLifetime;
+    address[] internal expectedExitBookPausers;
+    address[] internal expectedExitBookResumers;
 
     // Expected controller holders, materialized in the artifact from the factory's fixed role topology.
     address internal rAdmin;
@@ -303,6 +307,10 @@ abstract contract AcceptanceContext is Test {
             erc4626Book = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.erc4626");
             expectedExitBookMaxRequestLifetime = vm.parseTomlUint(exitBooksArtifact, ".exit_books.max_request_lifetime");
             exitBooksDeployedBlock = vm.parseTomlUint(exitBooksArtifact, ".exit_books.deployed_block");
+            expectedExitBookPausers = vm.parseTomlAddressArray(exitBooksArtifact, ".roles.pausers");
+            expectedExitBookResumers = vm.parseTomlAddressArray(exitBooksArtifact, ".roles.resumers");
+            assertEq(expectedExitBookPausers.length, 1, "exit-book artifact must have one pauser");
+            assertEq(expectedExitBookResumers.length, 0, "exit-book artifact must have no resumer");
         }
         oracle = _addr(".market.oracle");
         guardianSignals = _addr(".market.guardian_signals");
@@ -775,6 +783,22 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         }
     }
 
+    function _assertExitBookPausePath() internal {
+        if (morphoBook == address(0)) {
+            vm.skip(true, "acceptance: exit books are not deployed");
+            return;
+        }
+
+        address pauser = expectedExitBookPausers[0];
+        vm.startPrank(pauser);
+        IReadMorphoBook(morphoBook).pause();
+        IReadErc4626Book(erc4626Book).pause();
+        vm.stopPrank();
+
+        assertTrue(IReadMorphoBook(morphoBook).paused(), "configured pauser did not pause morpho exit book");
+        assertTrue(IReadErc4626Book(erc4626Book).paused(), "configured pauser did not pause ERC-4626 exit book");
+    }
+
     /// @dev Mirror of the `LidoLendActivateMarket` EasyTrack motion, run by the executor. The curve config
     ///      MUST be applied before `createMarket` — its first `borrowRate` ping reverts on an unset config.
     function _activate(address testPauserCommittee) internal {
@@ -929,8 +953,8 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
         holders[1] = _arr2(executor, agent);
         holders[2] = _arr1(agent);
         holders[3] = _arr1(agent);
-        holders[4] = new address[](0);
-        holders[5] = new address[](0);
+        holders[4] = expectedExitBookPausers;
+        holders[5] = expectedExitBookResumers;
         _assertExactRoleHolders(book, exitBooksDeployedBlock, roles, holders);
     }
 

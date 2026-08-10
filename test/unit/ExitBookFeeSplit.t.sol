@@ -310,7 +310,7 @@ contract ExitBookFeeSplitTest is Test {
             rewardRecipient,
             address(asset),
             100 ether,
-            expected.receiverAssets,
+            liveShares,
             expected.fillerReward,
             expected.serviceCut
         );
@@ -413,28 +413,156 @@ contract ExitBookFeeSplitTest is Test {
         );
     }
 
-    function test_maxShareBurn_floorRejectsPartialWhileFullBoundaryPasses() public {
+    function test_maxShareBurn_splitFillsCanExceedNominalBudgetWithinCeilBound() public {
         ExitFeeVault source = new ExitFeeVault(IERC20(address(asset)), exitFeeRecipient);
         book.setVaultAllowed(IERC4626(address(source)), true);
-        uint256 shares = _deposit(IERC4626(address(source)), 3);
+        uint256 fillCount = 10;
+        uint256 assets = 10;
+        uint256 shares = _deposit(IERC4626(address(source)), 20);
         _approve(IERC4626(address(source)), shares);
-        uint128 maxShareBurn = uint128(source.previewWithdraw(2));
-        assertEq(maxShareBurn, 3, "full withdrawal includes one fee unit");
+        uint256 maxShareBurn = source.previewWithdraw(assets);
+        assertEq(maxShareBurn, 11, "one-shot quote includes one fee unit");
+        uint256 perFillLimit = Math.mulDiv(maxShareBurn, 1, assets, Math.Rounding.Ceil);
+        assertEq(perFillLimit, 2, "each small fill gets two share units");
+
+        vm.prank(lender);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(source)), assets, lender, 1, maxShareBurn, _zeroRamp(), block.timestamp + 30 days
+        );
+
+        uint256 sharesBefore = source.balanceOf(lender);
+        for (uint256 i = 0; i < fillCount; ++i) {
+            // The per-call exit fee rounds up, so every fill reaches its ceiling-rounded share limit.
+            assertEq(source.previewWithdraw(1), perFillLimit, "live burn reaches the per-fill limit");
+            uint256 sharesBeforeFill = source.balanceOf(lender);
+            vm.prank(filler);
+            book.fillExitRequest(id, 1, filler);
+            assertEq(sharesBeforeFill - source.balanceOf(lender), 2, "each small fill burns two shares");
+            assertEq(book.getExitRequest(id).assetsRemaining, assets - i - 1, "exact remainder");
+        }
+
+        uint256 sharesBurned = sharesBefore - source.balanceOf(lender);
+        assertGt(sharesBurned, maxShareBurn, "split fills exceed the nominal budget");
+        assertEq(sharesBurned, maxShareBurn + fillCount - 1, "burn reaches the exact n-fill ceiling bound");
+        assertEq(source.balanceOf(lender), 0, "all source shares burned");
+        assertEq(asset.balanceOf(exitFeeRecipient), fillCount, "one rounded fee unit paid per fill");
+        assertEq(_status(id), uint8(ExitStatus.Filled));
+    }
+
+    function testFuzz_maxShareBurn_splitPartitionReachesCumulativeCeilBound(
+        uint8 assetsSeed,
+        uint8 fillCountSeed,
+        uint256 partitionSeed
+    ) public {
+        ExitFeeVault source = new ExitFeeVault(IERC20(address(asset)), exitFeeRecipient);
+        book.setVaultAllowed(IERC4626(address(source)), true);
+        uint256 assets = bound(uint256(assetsSeed), 2, 10);
+        uint256 fillCount = bound(uint256(fillCountSeed), 2, assets);
+        uint256 shares = _deposit(IERC4626(address(source)), assets + fillCount);
+        _approve(IERC4626(address(source)), shares);
+        uint256 maxShareBurn = source.previewWithdraw(assets);
+        assertEq(maxShareBurn, assets + 1, "one-shot quote has one rounded fee unit");
+
+        vm.prank(lender);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(source)), assets, lender, 1, maxShareBurn, _zeroRamp(), block.timestamp + 30 days
+        );
+
+        uint256 sharesBefore = source.balanceOf(lender);
+        uint256 remaining = assets;
+        for (uint256 i = 0; i < fillCount; ++i) {
+            uint256 remainingFills = fillCount - i;
+            uint256 fillAssets = remaining;
+            if (remainingFills > 1) {
+                uint256 maxPart = remaining - (remainingFills - 1);
+                fillAssets = 1 + uint256(keccak256(abi.encode(partitionSeed, i))) % maxPart;
+            }
+
+            uint256 expectedBurn = fillAssets + 1;
+            uint256 ceilLimit = Math.mulDiv(maxShareBurn, fillAssets, assets, Math.Rounding.Ceil);
+            assertEq(source.previewWithdraw(fillAssets), expectedBurn, "live source burn");
+            assertEq(ceilLimit, expectedBurn, "modeled per-fill ceil limit");
+
+            uint256 sharesBeforeFill = source.balanceOf(lender);
+            vm.prank(filler);
+            book.fillExitRequest(id, fillAssets, filler);
+            assertEq(sharesBeforeFill - source.balanceOf(lender), expectedBurn, "actual per-fill burn");
+
+            remaining -= fillAssets;
+            assertEq(book.getExitRequest(id).assetsRemaining, remaining, "exact partition remainder");
+        }
+
+        uint256 sharesBurned = sharesBefore - source.balanceOf(lender);
+        assertEq(remaining, 0, "partition covers the request");
+        assertEq(sharesBurned, maxShareBurn + fillCount - 1, "exact cumulative ceiling bound");
+        assertEq(asset.balanceOf(exitFeeRecipient), fillCount, "one rounded fee unit per fill");
+        assertEq(_status(id), uint8(ExitStatus.Filled));
+    }
+
+    function test_maxShareBurn_fullFillAtExactLimitPasses() public {
+        ExitFeeVault source = new ExitFeeVault(IERC20(address(asset)), exitFeeRecipient);
+        book.setVaultAllowed(IERC4626(address(source)), true);
+        uint256 assets = 10;
+        uint256 shares = _deposit(IERC4626(address(source)), 11);
+        _approve(IERC4626(address(source)), shares);
+        uint256 maxShareBurn = source.previewWithdraw(assets);
+        assertEq(maxShareBurn, 11, "full quote includes one exit-fee unit");
+
+        vm.prank(lender);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(source)), assets, lender, assets, maxShareBurn, _zeroRamp(), block.timestamp + 30 days
+        );
+
+        uint256 liveBurn = source.previewWithdraw(assets);
+        assertEq(liveBurn, maxShareBurn, "actual burn is exactly the enabled boundary");
+        uint256 sharesBefore = source.balanceOf(lender);
+        uint256 assetsBefore = asset.balanceOf(lender);
+
+        vm.prank(filler);
+        book.fillExitRequest(id, assets, filler);
+
+        assertEq(sharesBefore - source.balanceOf(lender), maxShareBurn, "equality at the full-fill limit passes");
+        assertEq(asset.balanceOf(lender) - assetsBefore, assets, "receiver gets the exact withdrawal");
+        assertEq(source.allowance(lender, address(book)), 0, "exact approved backing is consumed");
+        assertEq(asset.balanceOf(exitFeeRecipient), 1, "exit fee is paid");
+        assertEq(book.getExitRequest(id).assetsRemaining, 0, "request is closed");
+        assertEq(_status(id), uint8(ExitStatus.Filled));
+    }
+
+    function testRevert_maxShareBurn_partialBurnAboveCeilLimitRollsBack() public {
+        ExitFeeVault source = new ExitFeeVault(IERC20(address(asset)), exitFeeRecipient);
+        book.setVaultAllowed(IERC4626(address(source)), true);
+        uint256 shares = _deposit(IERC4626(address(source)), 4);
+        _approve(IERC4626(address(source)), shares);
+        uint256 maxShareBurn = source.previewWithdraw(2);
 
         vm.prank(lender);
         uint256 id = book.placeExitRequest(
             IERC4626(address(source)), 2, lender, 0, maxShareBurn, _zeroRamp(), block.timestamp + 30 days
         );
 
-        vm.prank(filler);
-        vm.expectRevert(abi.encodeWithSelector(ExitBookBase.ShareBurnExceedsMaximum.selector, 2, 1));
-        book.fillExitRequest(id, 1, filler);
-        assertEq(book.getExitRequest(id).assetsRemaining, 2, "partial fill rolled back");
+        vm.prank(address(source));
+        assertTrue(asset.transfer(address(0xBEEF), 1), "source loss applied");
+        uint256 ceilLimit = Math.mulDiv(maxShareBurn, 1, 2, Math.Rounding.Ceil);
+        uint256 liveBurn = source.previewWithdraw(1);
+        assertEq(ceilLimit, 2, "partial ceil limit");
+        assertEq(liveBurn, ceilLimit + 1, "live burn is one unit above the boundary");
+
+        bytes32 requestBefore = keccak256(abi.encode(book.getExitRequest(id)));
+        uint256 lenderSharesBefore = source.balanceOf(lender);
+        uint256 allowanceBefore = source.allowance(lender, address(book));
+        uint256 sourceAssetsBefore = asset.balanceOf(address(source));
 
         vm.prank(filler);
-        book.fillExitRequest(id, 2, filler);
-        assertEq(source.balanceOf(lender), shares - maxShareBurn, "full fill burns the exact cap");
-        assertEq(_status(id), uint8(ExitStatus.Filled));
+        vm.expectRevert(abi.encodeWithSelector(ExitBookBase.ShareBurnExceedsMaximum.selector, liveBurn, ceilLimit));
+        book.fillExitRequest(id, 1, filler);
+
+        assertEq(keccak256(abi.encode(book.getExitRequest(id))), requestBefore, "request rolls back");
+        assertEq(source.balanceOf(lender), lenderSharesBefore, "share burn rolls back");
+        assertEq(source.allowance(lender, address(book)), allowanceBefore, "allowance rolls back");
+        assertEq(asset.balanceOf(address(source)), sourceAssetsBefore, "source withdrawal rolls back");
+        assertEq(asset.balanceOf(address(book)), 0, "book holds no assets");
+        assertEq(asset.balanceOf(exitFeeRecipient), 0, "exit fee rolls back");
     }
 
     function test_fill_partialSlicesWithdrawExactAssetsAndRetainYield() public {
@@ -624,8 +752,9 @@ contract ExitBookFeeSplitTest is Test {
         asset.mint(filler, 50 ether);
 
         uint256 fillerAssetsBefore = asset.balanceOf(filler);
+        uint256 expectedSharesBurned = vault.previewWithdraw(100 ether);
         vm.expectEmit(true, true, true, true, address(book));
-        emit ExitBookBase.ExitProcessed(1, filler, filler, address(asset), 100 ether, 100 ether, 0, 0);
+        emit ExitBookBase.ExitProcessed(1, filler, filler, address(asset), 100 ether, expectedSharesBurned, 0, 0);
         vm.prank(filler);
         book.fillExitRequest(id, 100 ether, filler);
 
@@ -810,8 +939,11 @@ contract ExitBookFeeSplitTest is Test {
         asset.approve(address(source), 60 ether);
         source.deposit(60 ether, filler);
 
+        uint256 expectedSharesBurned = source.previewWithdraw(100 ether);
         vm.expectEmit(true, true, true, true, address(book));
-        emit ExitBookBase.ExitProcessed(id, filler, rewardRecipient, address(asset), 100 ether, 92 ether, 8 ether, 0);
+        emit ExitBookBase.ExitProcessed(
+            id, filler, rewardRecipient, address(asset), 100 ether, expectedSharesBurned, 8 ether, 0
+        );
         book.fillExitRequest(id, 100 ether, rewardRecipient);
         vm.stopPrank();
 

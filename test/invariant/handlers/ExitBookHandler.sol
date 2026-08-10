@@ -219,7 +219,7 @@ contract ExitBookHandler is CommonBase, StdAssertions, StdCheats, StdUtils {
         uint256 sharesBurned = before_.ownerShares - sharesAfter;
         if (before_.request.maxShareBurn != 0) {
             uint256 maxSharesForFill =
-                Math.mulDiv(before_.request.maxShareBurn, fillAssets, before_.request.assetsTotal);
+                Math.mulDiv(before_.request.maxShareBurn, fillAssets, before_.request.assetsTotal, Math.Rounding.Ceil);
             assertLe(sharesBurned, maxSharesForFill, "burn respects owner protection");
         }
     }
@@ -363,7 +363,7 @@ contract ExitBookHandler is CommonBase, StdAssertions, StdCheats, StdUtils {
         IAllocatableVault(address(VAULT)).allocate(allocated);
         IAllocatableVault(address(VAULT)).realizeLoss(allocated);
 
-        uint256 maximum = Math.mulDiv(r.maxShareBurn, fillAssets, r.assetsTotal);
+        uint256 maximum = Math.mulDiv(r.maxShareBurn, fillAssets, r.assetsTotal, Math.Rounding.Ceil);
         uint256 sharesBurned = VAULT.previewWithdraw(fillAssets);
         if (
             sharesBurned <= maximum || sharesBurned > VAULT.balanceOf(r.owner)

@@ -37,9 +37,10 @@ interface IMorphoExitBook is IExitBook {
     /// @param receiver Address credited the filled amount minus the priority fee.
     /// @param minFillAssets Smallest amount a non-final fill may process; 0 for no minimum. A fill that
     ///        closes the whole remaining request always qualifies. Values above `assets` are capped to `assets`.
-    /// @param maxShareBurn Full-request supply-share limit. Each fill gets
-    ///        `floor(maxShareBurn * fillAssets / assetsTotal)`. Must fit `uint128`; 0 disables the limit, while a
-    ///        non-zero value must be at least the placement share quote.
+    /// @param maxShareBurn Nominal full-request supply-share budget. A fill may burn at most
+    ///        `ceil(maxShareBurn * fillAssets / assetsTotal)`. Across a split request, total burn may exceed this
+    ///        value by at most one raw share unit per additional fill. Must fit `uint128`; 0 disables the limit,
+    ///        and a non-zero value must cover the placement share quote.
     /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end.
     /// @param deadline Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
     /// @return id The new request id.

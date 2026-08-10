@@ -48,8 +48,8 @@ interface IExitBook {
     /// @notice Debit request `id` and withdraw exactly `fillAssets` from its source. The receiver gets
     ///         `fillAssets` minus the priority fee; `rewardRecipient` gets the priority fee minus the service cut.
     ///         Reverts unless the source can honour the exact withdrawal. When share-burn protection is enabled,
-    ///         every fill must also fit its proportional share limit. Callers prepare any required source liquidity
-    ///         before filling, either beforehand or earlier in the same transaction.
+    ///         every fill must also fit its independently rounded-up share limit. Callers prepare any required
+    ///         source liquidity before filling, either beforehand or earlier in the same transaction.
     /// @param id The request to fill.
     /// @param fillAssets Exact asset amount to debit from the request, withdraw, and use as the priority-fee basis.
     /// @param rewardRecipient Non-zero address credited the priority fee minus the service cut.

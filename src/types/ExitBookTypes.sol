@@ -43,7 +43,9 @@ struct PriorityRamp {
 /// @param assetsRemaining Outstanding asset amount to exit.
 /// @param assetsTotal Original asset amount requested.
 /// @param minFillAssets Minimum non-final fill; 0 disables it. Whole-remainder fills qualify; capped at assetsTotal.
-/// @param maxShareBurn Full-request share limit; each fill gets `floor(maxShareBurn * fillAssets / assetsTotal)`.
+/// @param maxShareBurn Nominal full-request share budget. A fill may burn at most
+///        `ceil(maxShareBurn * fillAssets / assetsTotal)`; across split fills, total burn may exceed this value by
+///        at most one raw share unit per additional fill.
 /// @param startRate Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold.
 /// @param endRate Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline.
 /// @param rampStart Seconds from `createdAt` the rate holds at `startRate` before the climb begins.

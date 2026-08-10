@@ -10,7 +10,12 @@ import {CollateralActivationConfig} from "../../src/types/CollateralActivationTy
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
 import {ArtifactMetadata} from "../../script/lib/ArtifactMetadata.sol";
-import {ProtocolConfigFile, ProtocolDeployment, MarketDeployment} from "../../script/lib/ProtocolConfigFile.sol";
+import {
+    ProtocolConfigFile,
+    ProtocolDeployment,
+    MarketDeployment,
+    ExitBooksDeployment
+} from "../../script/lib/ProtocolConfigFile.sol";
 
 contract ProtocolConfigFileHarness {
     function containsMarketId(string memory artifact, bytes32 id) external pure returns (bool) {
@@ -29,6 +34,13 @@ contract ProtocolConfigFileHarness {
         returns (string memory)
     {
         return ProtocolConfigFile.writeProtocol(protocol, metadata);
+    }
+
+    function writeExitBooks(ExitBooksDeployment memory exitBooks, ArtifactMetadata memory metadata)
+        external
+        returns (string memory)
+    {
+        return ProtocolConfigFile.writeExitBooks(exitBooks, metadata);
     }
 
     function requireMarketIdUndeployed(bytes32 id, string memory deployment) external view {
@@ -106,7 +118,7 @@ contract ProtocolConfigFileTest is Test {
         vm.removeDir(string.concat("deployed/", run), true);
     }
 
-    function test_writeProtocol_recordsIrmConfigFactory() external {
+    function test_writeProtocolAndExitBooks_recordsGovernanceConfiguration() external {
         string memory run = _prepareRun("protocol-config-factory-unit");
         vm.setEnv("ARTIFACTS_DIR", run);
         ProtocolDeployment memory protocol = ProtocolDeployment({
@@ -130,14 +142,33 @@ contract ProtocolConfigFileTest is Test {
             evmScriptExecutor: address(0x1B)
         });
 
-        string memory artifact = vm.readFile(harness.writeProtocol(protocol, _metadata(run)));
+        string memory protocolArtifact = vm.readFile(harness.writeProtocol(protocol, _metadata(run)));
 
         assertEq(
-            vm.parseTomlAddress(artifact, ".protocol.irm_config_factory"),
+            vm.parseTomlAddress(protocolArtifact, ".protocol.irm_config_factory"),
             protocol.irmConfigFactory,
             "IRM config factory"
         );
-        assertEq(vm.parseTomlAddress(artifact, ".protocol.circuit_breaker"), protocol.circuitBreaker);
+        assertEq(vm.parseTomlAddress(protocolArtifact, ".protocol.circuit_breaker"), protocol.circuitBreaker);
+        address pauser = makeAddr("exitBookPauser");
+        ExitBooksDeployment memory exitBooks = ExitBooksDeployment({
+            morpho: address(0x10),
+            erc4626: address(0x11),
+            deployedBlock: 100,
+            deployer: address(0x12),
+            agent: address(0x13),
+            evmScriptExecutor: address(0x14),
+            pauser: pauser,
+            maxRequestLifetime: 365 days
+        });
+
+        string memory exitBooksArtifact = vm.readFile(harness.writeExitBooks(exitBooks, _metadata(run)));
+
+        address[] memory pausers = vm.parseTomlAddressArray(exitBooksArtifact, ".roles.pausers");
+        address[] memory resumers = vm.parseTomlAddressArray(exitBooksArtifact, ".roles.resumers");
+        assertEq(pausers.length, 1);
+        assertEq(pausers[0], pauser);
+        assertEq(resumers.length, 0);
         vm.removeDir(string.concat("deployed/", run), true);
     }
 

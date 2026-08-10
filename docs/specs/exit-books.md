@@ -235,14 +235,14 @@ Equal ramp offsets create an instantaneous jump from `startRate` to `endRate` at
 
 ### Enabling share-burn protection
 
-At placement, `requiredShares` is the current share cost of a full exit. It is used immediately for placement validation and is neither stored nor emitted. An owner that wants downside protection supplies `maxShareBurn`, the greatest total share burn it accepts for the original request amount:
+At placement, `requiredShares` is the current share cost of a full exit. It is used immediately for placement validation and is neither stored nor emitted. An owner that wants downside protection supplies `maxShareBurn`, the nominal full-request share budget from which each fill's rounded-up share limit is derived:
 
 ```text
 maxShareBurn == 0            protection is disabled
 maxShareBurn >= requiredShares  protection is enabled
 ```
 
-A non-zero value below `requiredShares` is rejected because the protection cap would already be below the book's own placement estimate. For example, if the full withdrawal is quoted at 1,000 shares, a limit of 900 cannot cover that quote. Besides rejecting a request whose initial quote already violates its limit, this catches common share-unit mistakes, especially for Morpho supply shares.
+A non-zero value below `requiredShares` is rejected because the full-fill protection limit would already be below the book's own placement estimate. For example, if the full withdrawal is quoted at 1,000 shares, a limit of 900 cannot cover that quote. Besides rejecting a request whose initial quote already violates its limit, this catches common share-unit mistakes, especially for Morpho supply shares.
 
 The quote is only a placement snapshot. It neither reserves those shares nor controls how many shares a later fill burns. Live source state and `maxShareBurn`, when enabled, decide whether execution remains possible.
 
@@ -341,18 +341,19 @@ Assets measure how much of the request is closed and paid. Shares measure how mu
 When `maxShareBurn` is non-zero, each fill must satisfy:
 
 ```text
-maxSharesForFill = floor(maxShareBurn * fillAssets / assetsTotal)
+maxSharesForFill = ceil(maxShareBurn * fillAssets / assetsTotal)
 sharesBurned <= maxSharesForFill
 ```
 
-The limit scales the owner's full-request cap to the amount being filled. It is calculated independently for each fill, so fractional capacity is not carried forward. With `assetsTotal = 3` and `maxShareBurn = 10`, three one-asset fills each get a maximum of 3 shares, not 3, 3, and 4. A small partial fill may therefore fail even when a full fill at the same share price would pass.
+The limit scales the owner's nominal full-request share budget to the amount being filled and rounds that per-fill allowance up independently. Each fill therefore receives either the proportional floor or one additional raw share unit. With `assetsTotal = 3` and `maxShareBurn = 10`, three one-asset fills each get a limit of 4 share units; a single full fill gets a limit of 10.
 
-Because every successful fill stays within its proportional limit, the sum of all successful burns cannot exceed the full-request `maxShareBurn`.
+> [!WARNING]
+> Per-fill ceiling rounding is an accepted risk: `maxShareBurn` is not a strict cumulative cap for a split request. If `n` successful fills close the request, total burn is at most `maxShareBurn + n - 1` raw share units, or one extra unit per additional fill. Integrators must account for this allowance when setting exposure limits. A non-zero `minFillAssets` limits `n`; setting it to `assetsTotal` forces one fill and preserves a strict cap. The economic impact depends on the value of a raw share unit; low-resolution or unusually valuable share units require explicit allowlist review.
 
 ### What happens when the share price changes
 
 - If shares appreciate, withdrawing the exact filled asset amount burns fewer shares. The unburned shares and all value they represent remain in the lender's source position.
-- If shares lose value, the same asset withdrawal burns more shares. A request without `maxShareBurn` accepts that live cost; a protected request rejects a fill that exceeds its proportional cap.
+- If shares lose value, the same asset withdrawal burns more shares. A request without `maxShareBurn` accepts that live cost; a protected request rejects a fill that exceeds its rounded-up per-fill limit.
 
 For example, a lender starts with 1,000 shares worth 1 asset each and places a request for 100 assets. At execution, each share is worth 1.2 assets. Ignoring source rounding, an exact 100-asset withdrawal burns about 83.33 shares, not 100. With a 1% priority fee and no service fee, the receiver gets 99 assets, the reward recipient gets 1 asset, and the lender retains about 916.67 shares worth 1,100 assets. Assuming the receiver is the lender's account, the lender's total post-fill value is 1,199 assets: the only value paid for execution is the 1-asset priority fee. The 200 assets of appreciation were not transferred to the filler.
 
@@ -434,7 +435,7 @@ At the same block tag, read:
 1. Choose `fillAssets` within the remainder and minimum-fill rule.
 2. Determine whether the source can withdraw that amount. If it cannot, choose an external liquidity route and the account that should receive any position the route creates.
 3. Estimate the share burn after the whole route. For ERC-4626, `previewWithdraw(fillAssets)` is a starting point, but a preceding vault deposit or direct market supply can change live state. Withdrawal fees and nonlinear vault rules can also make the preview insufficient. For Morpho, use `toSharesUp` with expected totals after any supply or repay, including pending interest and fee shares.
-4. If `maxShareBurn` is enabled, compare the estimate with the fill's proportional cap.
+4. If `maxShareBurn` is enabled, compare the estimate with the fill's rounded-up limit defined above.
 5. Apply the helper's own capital, approval, minimum-position, and slippage limits to every external operation.
 6. Select a non-zero `rewardRecipient` controlled by the filler or its treasury.
 
@@ -478,10 +479,12 @@ Requests may share owner backing, source liquidity, and filler capital. Simulate
 After inclusion, reconcile `ExitProcessed`:
 
 ```text
-filledAssets = receiverAssets + fillerReward + serviceCut
+receiverAssets = filledAssets - fillerReward - serviceCut
 ```
 
-Event `filledAssets` must equal the submitted `fillAssets`; it is also the exact source withdrawal. The event identifies the `executor` and `rewardRecipient` separately. It does not report external liquidity operations or `sharesBurned`, so those require source events, source state, or transaction tracing.
+The event also records `sharesBurned`, the live source-share cost of the exact withdrawal. Check it against the request's share-burn protection and the source withdrawal event. It cannot be reconstructed later from Exit Book state alone.
+
+Event `filledAssets` must equal the submitted `fillAssets`; it is also the exact source withdrawal. The event identifies the `executor` and `rewardRecipient` separately. It does not report external liquidity operations, so those require source events, source state, or transaction tracing.
 
 ### Inclusion races
 
@@ -502,6 +505,8 @@ The simulation is only a snapshot. State may change before transaction inclusion
 The source allowlist gates only new placements. Delisting a source preserves its per-request metadata and does not block existing fills. The ERC-4626 allowlist rejects the zero vault. The Morpho allowlist requires an already-created market when enabling or disabling it and retains the market parameters for old requests.
 
 Each deployed book has independent fee configuration, roles, and a pause flag. Pausing one book blocks its placements and fills, while cancellation, reads, configuration, recovery, and direct source access remain available. `pause()` and `resume()` are idempotent. Deadlines and priority-fee ramps continue advancing while paused.
+
+Both books share one configured Risk Steward Committee as their sole initial `PAUSER_ROLE` holder. `RESUMER_ROLE` has no initial holder. Restoring a paused book therefore requires the Lido DAO Agent, as `DEFAULT_ADMIN_ROLE` holder, to grant a governance resumer before `resume()` can be called.
 
 The supported loan asset transfers exact amounts and does not rebase. Neither the asset nor the source, including its hooks, may call back into or reenter the book during an operation. A malicious or non-conforming allowlisted source is outside the model.
 

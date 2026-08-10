@@ -83,7 +83,7 @@ One exit request's source-agnostic lifecycle state. The backing source (which va
 | `assetsRemaining` | `uint128` | Outstanding asset amount to exit. |
 | `assetsTotal` | `uint128` | Original asset amount requested. |
 | `minFillAssets` | `uint128` | Minimum non-final fill; 0 disables it. Whole-remainder fills qualify; capped at assetsTotal. |
-| `maxShareBurn` | `uint128` | Full-request share limit; each fill gets `floor(maxShareBurn * fillAssets / assetsTotal)`. |
+| `maxShareBurn` | `uint128` | Nominal full-request share budget. A fill may burn at most `ceil(maxShareBurn * fillAssets / assetsTotal)`; across split fills, total burn may exceed this value by at most one raw share unit per additional fill. |
 | `startRate` | `uint96` | Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold. |
 | `endRate` | `uint96` | Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline. |
 | `rampStart` | `uint32` | Seconds from `createdAt` the rate holds at `startRate` before the climb begins. |
@@ -100,7 +100,7 @@ event ExitRequested(uint256 indexed id, address indexed owner, address indexed r
 #### `ExitProcessed`
 
 ```solidity
-event ExitProcessed(uint256 indexed id, address indexed executor, address indexed rewardRecipient, address asset, uint256 filledAssets, uint256 receiverAssets, uint256 fillerReward, uint256 serviceCut);
+event ExitProcessed(uint256 indexed id, address indexed executor, address indexed rewardRecipient, address asset, uint256 filledAssets, uint256 sharesBurned, uint256 fillerReward, uint256 serviceCut);
 ```
 
 #### `ExitCancelled`
@@ -370,7 +370,7 @@ function fillExitRequest(
 | `fillAssets` | `uint256` | Exact asset amount to debit from the request, withdraw, and use as the priority-fee basis. |
 | `rewardRecipient` | `address` | Non-zero address credited the priority fee minus the service cut. |
 
-Debit request `id` and withdraw exactly `fillAssets` from its source. The receiver gets `fillAssets` minus the priority fee; `rewardRecipient` gets the priority fee minus the service cut. Reverts unless the source can honour the exact withdrawal. When share-burn protection is enabled, every fill must also fit its proportional share limit. Callers prepare any required source liquidity before filling, either beforehand or earlier in the same transaction.
+Debit request `id` and withdraw exactly `fillAssets` from its source. The receiver gets `fillAssets` minus the priority fee; `rewardRecipient` gets the priority fee minus the service cut. Reverts unless the source can honour the exact withdrawal. When share-burn protection is enabled, every fill must also fit its independently rounded-up share limit. Callers prepare any required source liquidity before filling, either beforehand or earlier in the same transaction.
 
 #### `cancelExitRequest`
 
@@ -645,7 +645,7 @@ function placeExitRequest(
 | `assets` | `uint256` | Loan-asset amount to debit across fills. Must fit `uint128`. |
 | `receiver` | `address` | Address credited the filled amount minus the priority fee. |
 | `minFillAssets` | `uint256` | Smallest amount a non-final fill may process; 0 for no minimum. A fill that closes the whole remaining request always qualifies. Values above `assets` are capped to `assets`. |
-| `maxShareBurn` | `uint256` | Full-request vault-share limit. Each fill gets `floor(maxShareBurn * fillAssets / assetsTotal)`. Must fit `uint128`; 0 disables the limit, while a non-zero value must be at least the placement share quote. |
+| `maxShareBurn` | `uint256` | Nominal full-request vault-share budget. A fill may burn at most `ceil(maxShareBurn * fillAssets / assetsTotal)`. Across a split request, total burn may exceed this value by at most one raw share unit per additional fill. Must fit `uint128`; 0 disables the limit, and a non-zero value must cover the placement share quote. |
 | `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
 | `deadline` | `uint256` | Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
 
@@ -795,7 +795,7 @@ function placeExitRequest(
 | `assets` | `uint256` | Loan-asset amount to debit across fills. Must fit `uint128`. |
 | `receiver` | `address` | Address credited the filled amount minus the priority fee. |
 | `minFillAssets` | `uint256` | Smallest amount a non-final fill may process; 0 for no minimum. A fill that closes the whole remaining request always qualifies. Values above `assets` are capped to `assets`. |
-| `maxShareBurn` | `uint256` | Full-request supply-share limit. Each fill gets `floor(maxShareBurn * fillAssets / assetsTotal)`. Must fit `uint128`; 0 disables the limit, while a non-zero value must be at least the placement share quote. |
+| `maxShareBurn` | `uint256` | Nominal full-request supply-share budget. A fill may burn at most `ceil(maxShareBurn * fillAssets / assetsTotal)`. Across a split request, total burn may exceed this value by at most one raw share unit per additional fill. Must fit `uint128`; 0 disables the limit, and a non-zero value must cover the placement share quote. |
 | `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
 | `deadline` | `uint256` | Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
 

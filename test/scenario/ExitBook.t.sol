@@ -209,6 +209,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
         vm.startPrank(FILLER);
         loan.approve(d.vault, expectedDeposit);
         IVaultLike(d.vault).deposit(expectedDeposit, FILLER);
+        uint256 expectedSharesBurned = IVaultLike(d.vault).previewWithdraw(10 ether);
         vm.expectEmit(true, true, true, true, address(vaultBook));
         emit ExitBookBase.ExitProcessed(
             id,
@@ -216,7 +217,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
             REWARD_RECIPIENT,
             address(loan),
             10 ether,
-            10 ether - priorityFee,
+            expectedSharesBurned,
             priorityFee - serviceCut,
             serviceCut
         );

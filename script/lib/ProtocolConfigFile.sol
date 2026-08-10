@@ -63,6 +63,7 @@ struct ExitBooksDeployment {
     address deployer;
     address agent;
     address evmScriptExecutor;
+    address pauser;
     uint256 maxRequestLifetime;
 }
 
@@ -169,6 +170,8 @@ library ProtocolConfigFile {
         s = string.concat(s, _kvArray("allowlist_managers", _pair(d.agent, d.evmScriptExecutor)));
         s = string.concat(s, _kvArray("fee_managers", _singleton(d.agent)));
         s = string.concat(s, _kvArray("recoverers", _singleton(d.agent)));
+        s = string.concat(s, _kvArray("pausers", _singleton(d.pauser)));
+        s = string.concat(s, _kvArray("resumers", new address[](0)));
         vm.writeFile(path, s);
     }
 

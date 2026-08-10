@@ -325,12 +325,12 @@ def render_event_or_error(node, keyword, level) -> list:
 
 
 def render_contract(rel, name, reg, level, extra_enums=(), extra_structs=(), extra_events=(), extra_errors=(),
-                    extra_funcs=(), bases=()) -> list:
+                    extra_funcs=(), extra_statevars=(), bases=()) -> list:
     """Render a contract's members with types and events first, functions after. No entity heading — the
     page title (one level up) owns the name, so sections sit at `level` and members at `level + 1`.
-    extra_enums/extra_structs/extra_events/extra_errors/extra_funcs are members declared elsewhere (file-scope
-    types, events and errors that live on the implemented interface, or functions whose richer natspec lives on
-    the concrete contract rather than the interface) folded into the sections.
+    extra_enums/extra_structs/extra_events/extra_errors/extra_funcs/extra_statevars are members declared elsewhere
+    (file-scope types, inherited members, or functions whose richer natspec lives on the concrete contract rather
+    than the interface) folded into the sections.
     bases is a list of (rel, name) base interfaces whose members are merged in (a member declared on a Lido base
     interface the rendered one inherits is part of this contract's surface)."""
     node = find(ast_of(rel), "ContractDefinition", name)
@@ -341,7 +341,7 @@ def render_contract(rel, name, reg, level, extra_enums=(), extra_structs=(), ext
     for brel, bname in bases:
         members += find(ast_of(brel), "ContractDefinition", bname)["nodes"]
     statevars = [n for n in members if n.get("nodeType") == "VariableDeclaration"
-                 and n.get("stateVariable") and n.get("visibility") == "public"]
+                 and n.get("stateVariable") and n.get("visibility") == "public"] + list(extra_statevars)
     funcs = [n for n in members if n.get("nodeType") == "FunctionDefinition"
              and (n.get("kind") == "constructor" or n.get("visibility") in ("public", "external"))] + list(extra_funcs)
     enums = [n for n in members if n.get("nodeType") == "EnumDefinition"] + list(extra_enums)
@@ -409,6 +409,8 @@ EXIT_BOOK_BASE_C = "ExitBookBase.sol/ExitBookBase.json"
 EXIT_BOOK_4626_C = "Erc4626ExitBook.sol/Erc4626ExitBook.json"
 EXIT_BOOK_MORPHO_C = "MorphoExitBook.sol/MorphoExitBook.json"
 EXIT_BOOK_TYPES = "ExitBookTypes.sol/ExitBookTypes.json"
+EXIT_BOOK_LIB = "ExitBookLib.sol/ExitBookLib.json"
+ASSET_RECOVERER = "AssetRecoverer.sol/AssetRecoverer.json"
 
 def iface_members(rel, name, node_type):
     """Events and errors of a contract often live on its interface, not the contract itself. Pull them by node
@@ -457,22 +459,45 @@ def main() -> int:
     # The lender exit-book layer: an abstract base plus two source-specific concrete books.
     exit_body = ["The lender exit-book layer. An abstract `ExitBookBase` holds the shared fill, cancel, and "
                  "fee surface, and a concrete book binds it to a source — `Erc4626ExitBook` over a vault, "
-                 "`MorphoExitBook` over a market.", ""]
+                 "`MorphoExitBook` over a market. Standard inherited `AccessControlEnumerable` surface is not "
+                 "repeated here. On Exit Books, every recovery function requires `RECOVERER_ROLE`.", ""]
     ebt = ast_of(EXIT_BOOK_TYPES)
+    exit_base = find(ast_of(EXIT_BOOK_BASE_C), "ContractDefinition", "ExitBookBase")
+    exit_lib = find(ast_of(EXIT_BOOK_LIB), "ContractDefinition", "ExitBookLib")
+    recoverer = find(ast_of(ASSET_RECOVERER), "ContractDefinition", "AssetRecoverer")
+    recoverer_funcs = [n for n in recoverer["nodes"] if n.get("nodeType") == "FunctionDefinition"
+                       and n.get("visibility") in ("public", "external")]
+    base_statevar_names = {
+        "ALLOWLIST_MANAGER_ROLE", "FEE_MANAGER_ROLE", "RECOVERER_ROLE", "MAX_PRIORITY_FEE", "MAX_SERVICE_FEE",
+        "MAX_REQUEST_LIFETIME", "feeRecipient", "serviceFee"
+    }
+    base_statevars = [n for n in exit_base["nodes"] if n.get("nodeType") == "VariableDeclaration"
+                      and n.get("name") in base_statevar_names]
     exit_body += [f"{'#' * BASE} ExitBookBase", ""] + render_contract(
         EXIT_BOOK_BASE, "IExitBook", reg, BASE + 1,
         extra_enums=[find(ebt, "EnumDefinition", "ExitStatus")],
-        extra_structs=[find(ebt, "StructDefinition", s) for s in ("PriorityRamp", "Request", "RequestPreview")],
-        extra_events=iface_members(EXIT_BOOK_BASE_C, "ExitBookBase", "EventDefinition"),
-        extra_errors=iface_members(EXIT_BOOK_BASE_C, "ExitBookBase", "ErrorDefinition"))
+        extra_structs=[find(ebt, "StructDefinition", s) for s in ("PriorityRamp", "Request")],
+        extra_events=(iface_members(EXIT_BOOK_BASE_C, "ExitBookBase", "EventDefinition")
+                      + [n for n in recoverer["nodes"] if n.get("nodeType") == "EventDefinition"]),
+        extra_errors=(iface_members(EXIT_BOOK_BASE_C, "ExitBookBase", "ErrorDefinition")
+                      + [n for n in exit_lib["nodes"] if n.get("nodeType") == "ErrorDefinition"]
+                      + [n for n in recoverer["nodes"] if n.get("nodeType") == "ErrorDefinition"]),
+        extra_funcs=recoverer_funcs,
+        extra_statevars=base_statevars)
+    erc4626_constructor = next(n for n in find(ast_of(EXIT_BOOK_4626_C), "ContractDefinition", "Erc4626ExitBook")["nodes"]
+                               if n.get("nodeType") == "FunctionDefinition" and n.get("kind") == "constructor")
     exit_body += [f"{'#' * BASE} Erc4626ExitBook", ""] + render_contract(
         EXIT_BOOK_4626, "IErc4626ExitBook", reg, BASE + 1,
         extra_events=iface_members(EXIT_BOOK_4626_C, "Erc4626ExitBook", "EventDefinition"),
-        extra_errors=iface_members(EXIT_BOOK_4626_C, "Erc4626ExitBook", "ErrorDefinition"))
+        extra_errors=iface_members(EXIT_BOOK_4626_C, "Erc4626ExitBook", "ErrorDefinition"),
+        extra_funcs=[erc4626_constructor])
+    morpho_constructor = next(n for n in find(ast_of(EXIT_BOOK_MORPHO_C), "ContractDefinition", "MorphoExitBook")["nodes"]
+                              if n.get("nodeType") == "FunctionDefinition" and n.get("kind") == "constructor")
     exit_body += [f"{'#' * BASE} MorphoExitBook", ""] + render_contract(
         EXIT_BOOK_MORPHO, "IMorphoExitBook", reg, BASE + 1,
         extra_events=iface_members(EXIT_BOOK_MORPHO_C, "MorphoExitBook", "EventDefinition"),
-        extra_errors=iface_members(EXIT_BOOK_MORPHO_C, "MorphoExitBook", "ErrorDefinition"))
+        extra_errors=iface_members(EXIT_BOOK_MORPHO_C, "MorphoExitBook", "ErrorDefinition"),
+        extra_funcs=[morpho_constructor])
     written.append(write_page("exit-book.md", "Exit Books", exit_body))
 
     written.append(write_page("risk-steward-dashboard.md", "RiskStewardDashboard",

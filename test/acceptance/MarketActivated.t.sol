@@ -28,4 +28,8 @@ contract MarketActivatedAcceptance is AcceptanceBase {
     function test_circuitBreakerPausesControllerAndClearsRegistration() external {
         _assertCircuitBreakerPausePath();
     }
+
+    function test_exitBookPauserPausesBothBooks() external {
+        _assertExitBookPausePath();
+    }
 }

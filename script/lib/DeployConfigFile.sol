@@ -12,8 +12,9 @@ struct DeployConfig {
     address agent;
     address evmScriptExecutor;
     string circuitBreakerArtifact; // one fixed CircuitBreaker per deployed core/factory
-    bool exitBooks; // deploy the protocol's two exit books
-    uint256 exitBookMaxRequestLifetime; // used only when exitBooks is true
+    bool exitBooks; // deploy the protocol's two exit books with the integrated protocol deployment
+    address exitBookPauser; // Risk Steward Committee for integrated or standalone Exit Book deployment
+    uint256 exitBookMaxRequestLifetime; // used by integrated or standalone Exit Book deployment
     string[] markets; // per-market config names (markets/<name>.toml, oracles/<name>.toml, guardians/<name>.toml)
 }
 
@@ -22,6 +23,9 @@ library DeployConfigFile {
 
     error AgentCannotBeDeployer();
     error AgentCannotBeExecutor();
+    error ExitBookPauserCannotBeAgent();
+    error ExitBookPauserCannotBeDeployer();
+    error ExitBookPauserCannotBeExecutor();
     error ExecutorCannotBeDeployer();
     error RegistryAgentMismatch(address expected, address actual);
     error RegistryChainIdMismatch(uint256 expected, uint256 actual);
@@ -37,6 +41,7 @@ library DeployConfigFile {
         cfg.evmScriptExecutor = ConfigToml.requireAddress(toml, ".evm_script_executor");
         cfg.circuitBreakerArtifact = ConfigToml.requireString(toml, ".circuit_breaker_artifact");
         cfg.exitBooks = vm.parseTomlBool(toml, ".exit_books");
+        cfg.exitBookPauser = ConfigToml.requireAddress(toml, ".exit_book_pauser");
         cfg.exitBookMaxRequestLifetime = vm.parseTomlUint(toml, ".exit_book_max_request_lifetime");
         cfg.markets = vm.parseTomlStringArray(toml, ".markets");
     }
@@ -53,6 +58,11 @@ library DeployConfigFile {
         if (cfg.agent == deployer) revert AgentCannotBeDeployer();
         if (cfg.evmScriptExecutor == deployer) revert ExecutorCannotBeDeployer();
         if (cfg.agent == cfg.evmScriptExecutor) revert AgentCannotBeExecutor();
+        if (cfg.exitBooks) {
+            if (cfg.exitBookPauser == deployer) revert ExitBookPauserCannotBeDeployer();
+            if (cfg.exitBookPauser == cfg.agent) revert ExitBookPauserCannotBeAgent();
+            if (cfg.exitBookPauser == cfg.evmScriptExecutor) revert ExitBookPauserCannotBeExecutor();
+        }
     }
 
     function requireRegistryGovernance(DeployConfig memory cfg, string memory registry) internal view {

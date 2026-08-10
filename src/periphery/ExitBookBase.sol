@@ -65,7 +65,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         address indexed rewardRecipient,
         address asset,
         uint256 filledAssets,
-        uint256 receiverAssets,
+        uint256 sharesBurned,
         uint256 fillerReward,
         uint256 serviceCut
     );
@@ -200,13 +200,18 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
 
         _book.recordFill(id, fillAssets);
 
+        uint256 sharesBurned;
         {
             uint256 balanceBefore = asset.balanceOf(address(this));
-            uint256 sharesBurned = _withdraw(id, request.owner, fillAssets);
+            sharesBurned = _withdraw(id, request.owner, fillAssets);
             uint256 assetsOut = asset.balanceOf(address(this)) - balanceBefore;
             if (assetsOut != fillAssets) revert AssetsOutMismatch(fillAssets, assetsOut);
             if (request.maxShareBurn != 0) {
-                uint256 maxSharesForFill = Math.mulDiv(request.maxShareBurn, fillAssets, request.assetsTotal);
+                // Match source withdrawals that round share burn up. Ceiling adds at most one raw share unit above
+                // the proportional floor per fill; across a split request, total allowance may exceed maxShareBurn
+                // by at most one unit per additional fill.
+                uint256 maxSharesForFill =
+                    Math.mulDiv(request.maxShareBurn, fillAssets, request.assetsTotal, Math.Rounding.Ceil);
                 if (sharesBurned > maxSharesForFill) revert ShareBurnExceedsMaximum(sharesBurned, maxSharesForFill);
             }
         }
@@ -228,7 +233,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         if (serviceCut != 0) asset.safeTransfer(feeRecipient, serviceCut);
 
         emit ExitProcessed(
-            id, msg.sender, rewardRecipient, address(asset), fillAssets, receiverAssets, fillerReward, serviceCut
+            id, msg.sender, rewardRecipient, address(asset), fillAssets, sharesBurned, fillerReward, serviceCut
         );
     }
 
