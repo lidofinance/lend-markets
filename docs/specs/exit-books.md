@@ -74,7 +74,7 @@ sequenceDiagram
     Filler->>Executor: Submit the execution plan
     opt source needs more liquidity
         Executor->>Source: Deposit to vault, supply to market, or repay debt
-        Source-->>Executor: Operation completes; credit the selected account
+        Source-->>Executor: Operation completes and credits the selected account
     end
     Executor->>Book: Submit fill amount and reward recipient
     Book->>Book: Validate request and debit the chosen amount
@@ -142,8 +142,8 @@ stateDiagram-v2
     direction LR
 
     state "Open: assetsRemaining is positive" as Open
-    state "Filled: assetsRemaining is zero; record retained" as Filled
-    state "Cancelled: assetsRemaining is zero; record retained" as Cancelled
+    state "Filled: assetsRemaining is zero and the record is retained" as Filled
+    state "Cancelled: assetsRemaining is zero and the record is retained" as Cancelled
 
     [*] --> Open: successful placement
     Open --> Open: successful partial fill
