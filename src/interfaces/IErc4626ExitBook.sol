@@ -19,29 +19,30 @@ interface IErc4626ExitBook is IExitBook {
 
     /// @notice Allow or disallow `vault` for new requests. `ALLOWLIST_MANAGER_ROLE` only.
     /// @param vault The vault to allow or disallow.
-    /// @param allowed True to allow new requests against it; false to block them (already-placed ones still fill).
+    /// @param allowed True to allow new requests; false to block them without changing existing fill eligibility.
     function setVaultAllowed(IERC4626 vault, bool allowed) external;
 
-    /// @notice Open an exit against the caller's shares in an allowed `vault`, sized by the asset amount they
-    ///         want out. Permission-only: nothing is escrowed, and the fill redeems the caller's shares through
-    ///         the allowance they granted this book.
+    /// @notice Open an asset-denominated exit against the caller's shares in an allowed `vault`. Nothing is
+    ///         escrowed. Placement snapshots the full request's `previewWithdraw` share quote and requires enough
+    ///         current balance and allowance, but does not reserve either. Each fill debits and withdraws the same
+    ///         exact asset amount.
     /// @param vault The allowed ERC-4626 vault.
-    /// @param assets Loan-asset amount to exit. Converted to source shares at the vault's current share rate and
-    ///        stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them
-    ///        live.
-    /// @param receiver Address credited the lender's proceeds of every fill.
-    /// @param minFillAssets Smallest amount a single fill may close; 0 for no minimum. A fill qualifies at or
-    ///        above it, or when it takes the whole of what is left, so the minimum never locks in a sub-minimum
-    ///        remainder on its own. At or above the request's own quote only a full close qualifies. Converted
-    ///        to shares at placement and enforced in shares thereafter.
+    /// @param assets Loan-asset amount to debit across fills. Must fit `uint128`.
+    /// @param receiver Address credited the filled amount minus the priority fee.
+    /// @param minFillAssets Smallest amount a non-final fill may process; 0 for no minimum. A fill that
+    ///        closes the whole remaining request always qualifies. Values above `assets` are capped to `assets`.
+    /// @param maxShareBurn Full-request vault-share limit. Each fill gets
+    ///        `floor(maxShareBurn * fillAssets / assetsTotal)`. Must fit `uint128`; 0 disables the limit, while a
+    ///        non-zero value must be at least the placement share quote.
     /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end.
-    /// @param deadline Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
+    /// @param deadline Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
     /// @return id The new request id.
     function placeExitRequest(
         IERC4626 vault,
         uint256 assets,
         address receiver,
         uint256 minFillAssets,
+        uint256 maxShareBurn,
         PriorityRamp calldata ramp,
         uint256 deadline
     ) external returns (uint256 id);

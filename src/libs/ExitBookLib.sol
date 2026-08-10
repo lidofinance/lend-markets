@@ -3,7 +3,7 @@ pragma solidity 0.8.35;
 
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {ExitStatus, Request, PriorityRamp, Sizing} from "../types/ExitBookTypes.sol";
+import {ExitStatus, Request, PriorityRamp} from "../types/ExitBookTypes.sol";
 
 /// @title ExitBookLib
 /// @author Lido
@@ -16,7 +16,7 @@ library ExitBookLib {
     // ERRORS
     // ---
 
-    /// @notice The request is not open (filled or cancelled).
+    /// @notice The request does not exist or is not open.
     error RequestClosed();
     /// @notice The request is past its `deadline` and can no longer be filled.
     error RequestExpired();
@@ -45,22 +45,25 @@ library ExitBookLib {
         State storage self,
         address owner,
         address receiver,
-        Sizing memory sizing,
+        IERC20 asset,
+        uint256 assets,
+        uint256 minFillAssets,
+        uint256 maxShareBurn,
         PriorityRamp calldata ramp,
         uint256 deadline
     ) internal returns (uint256 id) {
         id = ++self.nextId;
         self.requests[id] = Request({
             owner: owner,
-            receiver: receiver,
             createdAt: SafeCast.toUint40(block.timestamp),
             deadline: SafeCast.toUint40(deadline),
+            receiver: receiver,
             status: ExitStatus.Open,
-            sizeRemaining: SafeCast.toUint128(sizing.shares),
-            sizeTotal: SafeCast.toUint128(sizing.shares),
-            quotedAssets: sizing.quotedAssets,
-            minShareRate: sizing.minShareRate,
-            minFillShares: sizing.minFillShares,
+            asset: asset,
+            assetsRemaining: SafeCast.toUint128(assets),
+            assetsTotal: SafeCast.toUint128(assets),
+            minFillAssets: SafeCast.toUint128(minFillAssets),
+            maxShareBurn: SafeCast.toUint128(maxShareBurn),
             startRate: SafeCast.toUint96(ramp.startRate),
             endRate: SafeCast.toUint96(ramp.endRate),
             rampStart: SafeCast.toUint32(ramp.rampStart),
@@ -69,17 +72,17 @@ library ExitBookLib {
         self.ownerRequestIds[owner].push(id);
     }
 
-    /// @notice Debit filled shares, marking `Filled` once fully drained.
-    function recordFill(State storage self, uint256 id, uint256 filledShares) internal {
+    /// @notice Debit filled assets, marking `Filled` once fully drained.
+    function recordFill(State storage self, uint256 id, uint256 filledAssets) internal {
         Request storage request = self.requests[id];
 
         // Only an open request can be filled — guards against re-closing a cancelled/filled request (a
-        // zero-share call would otherwise corrupt its status to `Filled`).
+        // zero-asset call would otherwise corrupt its status to `Filled`).
         if (request.status != ExitStatus.Open) revert RequestClosed();
 
-        request.sizeRemaining -= SafeCast.toUint128(filledShares);
+        request.assetsRemaining -= SafeCast.toUint128(filledAssets);
 
-        if (request.sizeRemaining == 0) request.status = ExitStatus.Filled;
+        if (request.assetsRemaining == 0) request.status = ExitStatus.Filled;
     }
 
     /// @notice Cancel `id` on behalf of `caller` (must be the owner). Marks `Cancelled`; nothing to refund.
@@ -90,7 +93,7 @@ library ExitBookLib {
 
         if (request.status != ExitStatus.Open) revert RequestClosed();
 
-        request.sizeRemaining = 0;
+        request.assetsRemaining = 0;
         request.status = ExitStatus.Cancelled;
     }
 
@@ -102,7 +105,7 @@ library ExitBookLib {
     function requireFillable(State storage self, uint256 id) internal view returns (Request storage request) {
         request = self.requests[id];
 
-        if (request.owner == address(0) || request.status != ExitStatus.Open) revert RequestClosed();
+        if (request.status != ExitStatus.Open) revert RequestClosed();
 
         if (block.timestamp > request.deadline) revert RequestExpired();
     }

@@ -21,33 +21,34 @@ interface IMorphoExitBook is IExitBook {
     function marketParamsOf(uint256 requestId) external view returns (MarketParams memory);
 
     /// @notice Register `marketParams` (which must name a live Morpho market, checked on both allow and
-    ///         disallow) and allow or disallow it for new requests. The params are kept permanently (so
-    ///         requests already placed stay fillable after a disallow); disallowing only flips the gate.
+    ///         disallow) and allow or disallow it for new requests. The params are kept permanently;
+    ///         disallowing only flips the placement gate and does not change existing fill eligibility.
     ///         `ALLOWLIST_MANAGER_ROLE` only.
     /// @param marketParams The market's full params; its id (the params' hash) is the allow-list key.
-    /// @param allowed True to allow new requests against it; false to block them (already-placed ones still fill).
+    /// @param allowed True to allow new requests; false to block them without changing existing fill eligibility.
     function setMarketAllowed(MarketParams calldata marketParams, bool allowed) external;
 
-    /// @notice Open an exit against the caller's supply position in an allowed Morpho market, named by its
-    ///         `marketId` and sized by the asset amount they want out. Permission-only: nothing is escrowed, and
-    ///         the fill withdraws on the caller's behalf, so they must have authorized this book on Morpho.
+    /// @notice Open an asset-denominated exit against the caller's supply position in an allowed Morpho market.
+    ///         Nothing is escrowed. Placement snapshots the full request's supply-share quote and requires enough
+    ///         current supply, but does not reserve it. Each fill debits and withdraws the same exact asset amount,
+    ///         so authorization must remain live.
     /// @param marketId The allowed market's id (its `MarketParams` hash, registered via `setMarketAllowed`).
-    /// @param assets Loan-asset amount to exit. Converted to supply shares at the market's current share rate and
-    ///        stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them
-    ///        live.
-    /// @param receiver Address credited the lender's proceeds of every fill.
-    /// @param minFillAssets Smallest amount a single fill may close; 0 for no minimum. A fill qualifies at or
-    ///        above it, or when it takes the whole of what is left, so the minimum never locks in a sub-minimum
-    ///        remainder on its own. At or above the request's own quote only a full close qualifies. Converted
-    ///        to shares at placement and enforced in shares thereafter.
+    /// @param assets Loan-asset amount to debit across fills. Must fit `uint128`.
+    /// @param receiver Address credited the filled amount minus the priority fee.
+    /// @param minFillAssets Smallest amount a non-final fill may process; 0 for no minimum. A fill that
+    ///        closes the whole remaining request always qualifies. Values above `assets` are capped to `assets`.
+    /// @param maxShareBurn Full-request supply-share limit. Each fill gets
+    ///        `floor(maxShareBurn * fillAssets / assetsTotal)`. Must fit `uint128`; 0 disables the limit, while a
+    ///        non-zero value must be at least the placement share quote.
     /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end.
-    /// @param deadline Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
+    /// @param deadline Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
     /// @return id The new request id.
     function placeExitRequest(
         Id marketId,
         uint256 assets,
         address receiver,
         uint256 minFillAssets,
+        uint256 maxShareBurn,
         PriorityRamp calldata ramp,
         uint256 deadline
     ) external returns (uint256 id);

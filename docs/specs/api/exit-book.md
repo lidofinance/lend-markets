@@ -2,11 +2,11 @@
 
 # Exit Books
 
-The lender exit-book layer. An abstract `ExitBookBase` holds the shared fill, cancel, and fee surface, and a concrete book binds it to a source — `Erc4626ExitBook` over a vault, `MorphoExitBook` over a market.
+The lender exit-book layer. An abstract `ExitBookBase` holds the shared fill, cancel, and fee surface, and a concrete book binds it to a source — `Erc4626ExitBook` over a vault, `MorphoExitBook` over a market. Standard inherited `AccessControlEnumerable` surface is not repeated here. On Exit Books, every recovery function requires `RECOVERER_ROLE`.
 
 ## ExitBookBase
 
-Source-agnostic surface of an exit book: configure the service fee, fill and cancel requests, and read them (with optional live fill previews). Concrete books (ERC-4626, Morpho, ...) add their own `placeExitRequest` and allow-list admin on top.
+Source-agnostic surface of an exit book: configure the service fee, fill and cancel requests, and read them. Concrete books (ERC-4626, Morpho, ...) add their own `placeExitRequest` and allow-list admin on top.
 
 ### Enums
 
@@ -14,13 +14,14 @@ Source-agnostic surface of an exit book: configure the service fee, fill and can
 
 ```solidity
 enum ExitStatus {
+    NotCreated,
     Open,
     Filled,
     Cancelled
 }
 ```
 
-Lifecycle marker. `Expired` is not stored — it is derived from `block.timestamp > deadline`.
+Lifecycle marker. `NotCreated` is the zero-value sentinel for unknown ids, not a stored request state. `Expired` is not stored — it is derived from `block.timestamp > deadline`.
 
 ### Structs
 
@@ -35,7 +36,7 @@ struct PriorityRamp {
 }
 ```
 
-Lender-set priority-fee schedule — a Dutch auction on the fee carved out of the amount owed. The rate holds at `startRate` for `rampStart` seconds from creation, then climbs linearly to `endRate` by `rampEnd`, then holds at `endRate` until the deadline. Rates are WAD fractions, each capped at `MAX_PRIORITY_FEE`.
+Lender-set priority-fee schedule — a Dutch auction on the fee carved out of each fill. The rate holds at `startRate` for `rampStart` seconds from creation, then climbs linearly to `endRate` by `rampEnd`, then holds at `endRate` until the deadline. Rates are WAD fractions, each capped at `MAX_PRIORITY_FEE`.
 
 **Fields**
 
@@ -53,13 +54,13 @@ struct Request {
     address owner;
     uint40 createdAt;
     uint40 deadline;
-    ExitStatus status;
     address receiver;
-    uint128 sizeRemaining;
-    uint128 sizeTotal;
-    uint256 quotedAssets;
-    uint256 minShareRate;
-    uint256 minFillShares;
+    ExitStatus status;
+    IERC20 asset;
+    uint128 assetsRemaining;
+    uint128 assetsTotal;
+    uint128 minFillAssets;
+    uint128 maxShareBurn;
     uint96 startRate;
     uint96 endRate;
     uint32 rampStart;
@@ -67,63 +68,39 @@ struct Request {
 }
 ```
 
-One exit request's source-agnostic lifecycle state. The backing source (which vault / which market) lives in a per-id mapping outside this record. Shares are `uint128` (capped via SafeCast at creation) so the record packs tighter.
+One exit request's source-agnostic lifecycle state. The backing source (which vault / which market) lives in a per-id mapping outside this record. Remaining and total assets are stored as `uint128`.
 
 **Fields**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `owner` | `address` | The exiting lender whose position the fill redeems, and the only address that may cancel. |
+| `owner` | `address` | The exiting lender whose position the fill withdraws from, and the only address that may cancel. |
 | `createdAt` | `uint40` | Creation timestamp: the fee schedule's start. |
 | `deadline` | `uint40` | Last timestamp the request may be filled. Chosen by the lender, capped at `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`. |
-| `status` | `ExitStatus` | Open / Filled / Cancelled (Expired is derived). |
-| `receiver` | `address` | Address credited the lender's proceeds. |
-| `sizeRemaining` | `uint128` | Outstanding shares to fill. The concrete book defines the fixed placement entitlement. |
-| `sizeTotal` | `uint128` | Original shares used to apportion the full placement quote across fills. |
-| `quotedAssets` | `uint256` | Asset value quoted for all `sizeTotal` shares at sizing. |
-| `minShareRate` | `uint256` | Loan assets per `SHARE_RATE_UNIT` source shares at sizing. A fill is rejected while the source quotes less. |
-| `minFillShares` | `uint256` | Smallest size a single fill may close; 0 for no minimum. A fill qualifies at or above it, or when it takes the whole remaining size. At or above `sizeTotal` only a full close qualifies. |
+| `receiver` | `address` | Address credited the filled amount minus the priority fee. |
+| `status` | `ExitStatus` | NotCreated for an unknown id; stored requests are Open / Filled / Cancelled (Expired is derived). |
+| `asset` | `IERC20` | The underlying loan token paid out — the request, proceeds, and fees are denominated in it. |
+| `assetsRemaining` | `uint128` | Outstanding asset amount to exit. |
+| `assetsTotal` | `uint128` | Original asset amount requested. |
+| `minFillAssets` | `uint128` | Minimum non-final fill; 0 disables it. Whole-remainder fills qualify; capped at assetsTotal. |
+| `maxShareBurn` | `uint128` | Full-request share limit; each fill gets `floor(maxShareBurn * fillAssets / assetsTotal)`. |
 | `startRate` | `uint96` | Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold. |
 | `endRate` | `uint96` | Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline. |
 | `rampStart` | `uint32` | Seconds from `createdAt` the rate holds at `startRate` before the climb begins. |
 | `rampEnd` | `uint32` | Seconds from `createdAt` the climb reaches `endRate`. |
-
-#### `RequestPreview`
-
-```solidity
-struct RequestPreview {
-    uint256 id;
-    Request request;
-    IERC20 asset;
-    uint256 filledShares;
-    uint256 assetsOut;
-}
-```
-
-A request paired with its live fill preview, for one-call scans. `id` is the registry key (a `Request` does not carry its own id, and does not copy the source's loan token); `filledShares` and `assetsOut` mirror `previewFill` and are 0 when the request is closed, expired, unbacked, below its minimum fill, or under its rate floor.
-
-**Fields**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `id` | `uint256` | The request's registry id. |
-| `request` | `Request` | The stored request. |
-| `asset` | `IERC20` | The loan token this request pays out in, resolved from its source at read time. |
-| `filledShares` | `uint256` | Shares fillable right now (see `previewFill`). |
-| `assetsOut` | `uint256` | Assets those shares would yield right now (see `previewFill`). |
 
 ### Events
 
 #### `ExitRequested`
 
 ```solidity
-event ExitRequested(uint256 indexed id, address indexed owner, address indexed receiver, address asset, uint256 shares, uint256 minShareRate, uint256 minFillShares, PriorityRamp ramp, uint256 deadline);
+event ExitRequested(uint256 indexed id, address indexed owner, address indexed receiver, address asset, uint256 assets, uint256 minFillAssets, uint256 maxShareBurn, PriorityRamp ramp, uint256 deadline);
 ```
 
 #### `ExitProcessed`
 
 ```solidity
-event ExitProcessed(uint256 indexed id, address indexed filler, address asset, uint256 filledShares, uint256 lenderAssets, uint256 fillerFee, uint256 serviceCut);
+event ExitProcessed(uint256 indexed id, address indexed executor, address indexed rewardRecipient, address asset, uint256 filledAssets, uint256 receiverAssets, uint256 fillerReward, uint256 serviceCut);
 ```
 
 #### `ExitCancelled`
@@ -138,15 +115,43 @@ event ExitCancelled(uint256 indexed id);
 event ServiceFeeSet(address indexed feeRecipient, uint256 serviceFee);
 ```
 
-### Errors
-
-#### `ZeroAssetQuote`
+#### `Paused`
 
 ```solidity
-error ZeroAssetQuote();
+event Paused(address account);
 ```
 
-Thrown when a request's full share amount quotes to zero assets at placement.
+#### `Unpaused`
+
+```solidity
+event Unpaused(address account);
+```
+
+#### `EtherRecovered`
+
+```solidity
+event EtherRecovered(address indexed recipient, uint256 amount);
+```
+
+#### `ERC20Recovered`
+
+```solidity
+event ERC20Recovered(address indexed token, address indexed recipient, uint256 amount);
+```
+
+#### `ERC721Recovered`
+
+```solidity
+event ERC721Recovered(address indexed token, uint256 tokenId, address indexed recipient);
+```
+
+#### `ERC1155Recovered`
+
+```solidity
+event ERC1155Recovered(address indexed token, uint256 tokenId, address indexed recipient, uint256 amount);
+```
+
+### Errors
 
 #### `ZeroAddress`
 
@@ -154,10 +159,10 @@ Thrown when a request's full share amount quotes to zero assets at placement.
 error ZeroAddress();
 ```
 
-#### `ZeroShares`
+#### `ZeroAssets`
 
 ```solidity
-error ZeroShares();
+error ZeroAssets();
 ```
 
 #### `ZeroMaxLifetime`
@@ -202,28 +207,34 @@ error RampStartAfterEnd();
 error RampPastDeadline();
 ```
 
-#### `ShareRateBelowMinimum`
+#### `FillExceedsRemaining`
 
 ```solidity
-error ShareRateBelowMinimum();
+error FillExceedsRemaining(uint256 requested, uint256 remaining);
 ```
 
-#### `NoFillableShares`
+#### `FillBelowMinimum`
 
 ```solidity
-error NoFillableShares();
+error FillBelowMinimum(uint256 requested, uint256 minimum);
 ```
 
-#### `NoAssetsRedeemed`
+#### `MaxShareBurnBelowQuote`
 
 ```solidity
-error NoAssetsRedeemed();
+error MaxShareBurnBelowQuote(uint256 maximum, uint256 quote);
 ```
 
-#### `AssetsOutBelowMin`
+#### `ShareBurnExceedsMaximum`
 
 ```solidity
-error AssetsOutBelowMin();
+error ShareBurnExceedsMaximum(uint256 actual, uint256 maximum);
+```
+
+#### `AssetsOutMismatch`
+
+```solidity
+error AssetsOutMismatch(uint256 expected, uint256 actual);
 ```
 
 #### `DeadlineInPast`
@@ -238,15 +249,69 @@ error DeadlineInPast();
 error DeadlineTooFar();
 ```
 
-### Functions
-
-#### `SHARE_RATE_UNIT`
+#### `EnforcedPause`
 
 ```solidity
-function SHARE_RATE_UNIT() external view returns (uint256);
+error EnforcedPause();
 ```
 
-Share amount a source share rate is quoted per — the unit of a request's `minShareRate`.
+#### `RequestClosed`
+
+```solidity
+error RequestClosed();
+```
+
+The request does not exist or is not open.
+
+#### `RequestExpired`
+
+```solidity
+error RequestExpired();
+```
+
+The request is past its `deadline` and can no longer be filled.
+
+#### `NotOwner`
+
+```solidity
+error NotOwner();
+```
+
+The caller is not the request's owner.
+
+#### `ZeroRecipient`
+
+```solidity
+error ZeroRecipient();
+```
+
+The recovery recipient was the zero address.
+
+#### `EtherTransferFailed`
+
+```solidity
+error EtherTransferFailed();
+```
+
+The Ether transfer to the recipient failed.
+
+### Functions
+
+#### `PAUSER_ROLE`
+
+```solidity
+function PAUSER_ROLE() external view returns (bytes32);
+```
+
+Role allowed to pause request placement and fills.
+
+#### `RESUMER_ROLE`
+
+```solidity
+function RESUMER_ROLE() external view returns (bytes32);
+```
+
+Role allowed to resume request placement and fills.
 
 #### `setServiceFee`
 
@@ -258,18 +323,42 @@ function setServiceFee(address recipient, uint256 fee) external;
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `recipient` | `address` | Address paid the service fee (a cut of each fill's filler reward); the zero address is allowed only when `fee` is 0. |
+| `recipient` | `address` | Address paid the service fee (a cut of the priority fee); the zero address is allowed only when `fee` is 0. |
 | `fee` | `uint256` | Service-fee rate (WAD), capped at `MAX_SERVICE_FEE`. |
 
 Set the service fee and its recipient. `FEE_MANAGER_ROLE` only.
+
+#### `paused`
+
+```solidity
+function paused() external view returns (bool);
+```
+
+Whether request placement and fills are paused.
+
+#### `pause`
+
+```solidity
+function pause() external;
+```
+
+Pause request placement and fills until an authorized resume. `PAUSER_ROLE` only.
+
+#### `resume`
+
+```solidity
+function resume() external;
+```
+
+Resume request placement and fills. `RESUMER_ROLE` only.
 
 #### `fillExitRequest`
 
 ```solidity
 function fillExitRequest(
     uint256 id,
-    uint256 depositAssets,
-    uint256 minAssetsOut
+    uint256 fillAssets,
+    address rewardRecipient
 ) external;
 ```
 
@@ -278,10 +367,10 @@ function fillExitRequest(
 | Name | Type | Description |
 | --- | --- | --- |
 | `id` | `uint256` | The request to fill. |
-| `depositAssets` | `uint256` | Asset amount to first deposit into the request's source (becoming the depositor) so the fill can be honoured; 0 to fill against existing liquidity only. |
-| `minAssetsOut` | `uint256` | Slippage floor on the redeem proceeds: the fill reverts (rolling back any deposit) if fewer assets arrive; 0 to skip. |
+| `fillAssets` | `uint256` | Exact asset amount to debit from the request, withdraw, and use as the priority-fee basis. |
+| `rewardRecipient` | `address` | Non-zero address credited the priority fee minus the service cut. |
 
-Fill request `id` against available source liquidity, paying the lender, the filler (caller), and the service in the same transaction.
+Debit request `id` and withdraw exactly `fillAssets` from its source. The receiver gets `fillAssets` minus the priority fee; `rewardRecipient` gets the priority fee minus the service cut. Reverts unless the source can honour the exact withdrawal. When share-burn protection is enabled, every fill must also fit its proportional share limit. Callers prepare any required source liquidity before filling, either beforehand or earlier in the same transaction.
 
 #### `cancelExitRequest`
 
@@ -295,7 +384,7 @@ function cancelExitRequest(uint256 id) external;
 | --- | --- | --- |
 | `id` | `uint256` | The request to cancel. |
 
-Cancel an open request; nothing is refunded (the book holds no balances). Caller must own it.
+Cancel an open request, including while paused or after its deadline. Sets the remaining amount to zero and moves no assets. Caller must own it.
 
 #### `getExitRequest`
 
@@ -309,14 +398,14 @@ function getExitRequest(uint256 id) external view returns (Request memory);
 | --- | --- | --- |
 | `id` | `uint256` | The request id. |
 
-The stored request at `id` (a zeroed record if it never existed).
+The stored request at `id` (a zeroed `NotCreated` record if it never existed).
 
 #### `getRequests`
 
 ```solidity
 function getRequests(
     uint256[] calldata ids
-) external view returns (Request[] memory);
+) external view returns (Request[] memory requests);
 ```
 
 **Parameters**
@@ -329,9 +418,9 @@ function getRequests(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `<none>` | `Request[]` | The request records, one per id, in the same order. |
+| `requests` | `Request[]` | The request records, one per id, in the same order. |
 
-The stored requests at `ids` (closed ones included) — a cheap batch read with no source calls.
+The stored requests at `ids` (closed and `NotCreated` records included) with no source calls.
 
 #### `lastRequestId`
 
@@ -368,7 +457,7 @@ function getOwnerRequestIds(
     address owner,
     uint256 offset,
     uint256 count
-) external view returns (uint256[] memory);
+) external view returns (uint256[] memory ids);
 ```
 
 **Parameters**
@@ -383,51 +472,66 @@ function getOwnerRequestIds(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `<none>` | `uint256[]` | The owner's request ids in `[offset, offset + count)`. |
+| `ids` | `uint256[]` | The owner's request ids in `[offset, offset + count)`. |
 
 A page of `owner`'s request ids in creation order (closed ones included).
 
-#### `getRequestPreviews`
+#### `recoverEther`
 
 ```solidity
-function getRequestPreviews(
-    uint256[] calldata ids
-) external view returns (RequestPreview[] memory);
+function recoverEther(address recipient) external;
 ```
 
-**Parameters**
+Recover the contract's full Ether balance to `recipient`.
 
-| Name | Type | Description |
-| --- | --- | --- |
-| `ids` | `uint256[]` | The request ids to preview. |
-
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `RequestPreview[]` | One preview per id, in the same order. |
-
-`previewFill` for each id in `ids` (an off-chain-gathered set), in one call.
-
-#### `previewFill`
+#### `recoverERC20`
 
 ```solidity
-function previewFill(uint256 id) external view returns (RequestPreview memory);
+function recoverERC20(
+    address token,
+    address recipient,
+    uint256 amount
+) external;
 ```
 
-**Parameters**
+Recover `amount` of the ERC-20 `token` to `recipient`.
+
+#### `recoverERC721`
+
+```solidity
+function recoverERC721(
+    address token,
+    address recipient,
+    uint256 tokenId
+) external;
+```
+
+Recover `tokenId` of the ERC-721 `token` to `recipient`.
+
+#### `recoverERC1155`
+
+```solidity
+function recoverERC1155(
+    address token,
+    address recipient,
+    uint256 tokenId
+) external;
+```
+
+Recover the full balance of `tokenId` of the ERC-1155 `token` to `recipient`.
+
+### State variables
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `id` | `uint256` | The request to preview. |
-
-**Returns**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `<none>` | `RequestPreview` | The request with the shares fillable now and the assets they would yield (all 0 when the request is closed, expired, unbacked, below its minimum fill, or quoting under its `minShareRate` floor). |
-
-The request at `id` paired with its live fill preview — the single-id `getRequestPreviews`.
+| `ALLOWLIST_MANAGER_ROLE` | `bytes32` (constant) | Role allowed to manage which markets or vaults may receive new requests. |
+| `FEE_MANAGER_ROLE` | `bytes32` (constant) | Role allowed to set the service fee and its recipient. |
+| `RECOVERER_ROLE` | `bytes32` (constant) | Role allowed to recover tokens held by the contract. |
+| `MAX_PRIORITY_FEE` | `uint256` (constant) | Cap on a request's priority-fee rate (WAD), checked at `place` — 10%. |
+| `MAX_SERVICE_FEE` | `uint256` (constant) | Hard cap on the service fee — a cut of the priority fee (WAD) — 25%. |
+| `MAX_REQUEST_LIFETIME` | `uint256` (immutable) | Cap on a request's lifetime: its `deadline` may be at most `createdAt + MAX_REQUEST_LIFETIME`. |
+| `feeRecipient` | `address` | Recipient of the service fee. |
+| `serviceFee` | `uint256` | Service fee: a cut of each fill's priority fee, as a WAD rate. |
 
 ## Erc4626ExitBook
 
@@ -449,6 +553,12 @@ event VaultAllowedSet(address indexed vault, bool allowed);
 error VaultNotAllowed();
 ```
 
+#### `InsufficientBacking`
+
+```solidity
+error InsufficientBacking();
+```
+
 #### `ZeroVault`
 
 ```solidity
@@ -456,6 +566,19 @@ error ZeroVault();
 ```
 
 ### Functions
+
+#### `constructor`
+
+```solidity
+constructor(address admin, uint256 maxLifetime_);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `admin` | `address` | Non-zero initial holder of `DEFAULT_ADMIN_ROLE`. |
+| `maxLifetime_` | `uint256` | Non-zero maximum request lifetime in seconds. |
 
 #### `isVaultAllowed`
 
@@ -496,7 +619,7 @@ function setVaultAllowed(IERC4626 vault, bool allowed) external;
 | Name | Type | Description |
 | --- | --- | --- |
 | `vault` | `IERC4626` | The vault to allow or disallow. |
-| `allowed` | `bool` | True to allow new requests against it; false to block them (already-placed ones still fill). |
+| `allowed` | `bool` | True to allow new requests; false to block them without changing existing fill eligibility. |
 
 Allow or disallow `vault` for new requests. `ALLOWLIST_MANAGER_ROLE` only.
 
@@ -508,6 +631,7 @@ function placeExitRequest(
     uint256 assets,
     address receiver,
     uint256 minFillAssets,
+    uint256 maxShareBurn,
     PriorityRamp calldata ramp,
     uint256 deadline
 ) external returns (uint256 id);
@@ -518,11 +642,12 @@ function placeExitRequest(
 | Name | Type | Description |
 | --- | --- | --- |
 | `vault` | `IERC4626` | The allowed ERC-4626 vault. |
-| `assets` | `uint256` | Loan-asset amount to exit. Converted to source shares at the vault's current share rate and stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them live. |
-| `receiver` | `address` | Address credited the lender's proceeds of every fill. |
-| `minFillAssets` | `uint256` | Smallest amount a single fill may close; 0 for no minimum. A fill qualifies at or above it, or when it takes the whole of what is left, so the minimum never locks in a sub-minimum remainder on its own. At or above the request's own quote only a full close qualifies. Converted to shares at placement and enforced in shares thereafter. |
+| `assets` | `uint256` | Loan-asset amount to debit across fills. Must fit `uint128`. |
+| `receiver` | `address` | Address credited the filled amount minus the priority fee. |
+| `minFillAssets` | `uint256` | Smallest amount a non-final fill may process; 0 for no minimum. A fill that closes the whole remaining request always qualifies. Values above `assets` are capped to `assets`. |
+| `maxShareBurn` | `uint256` | Full-request vault-share limit. Each fill gets `floor(maxShareBurn * fillAssets / assetsTotal)`. Must fit `uint128`; 0 disables the limit, while a non-zero value must be at least the placement share quote. |
 | `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
-| `deadline` | `uint256` | Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
+| `deadline` | `uint256` | Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
 
 **Returns**
 
@@ -530,7 +655,7 @@ function placeExitRequest(
 | --- | --- | --- |
 | `id` | `uint256` | The new request id. |
 
-Open an exit against the caller's shares in an allowed `vault`, sized by the asset amount they want out. Permission-only: nothing is escrowed, and the fill redeems the caller's shares through the allowance they granted this book.
+Open an asset-denominated exit against the caller's shares in an allowed `vault`. Nothing is escrowed. Placement snapshots the full request's `previewWithdraw` share quote and requires enough current balance and allowance, but does not reserve either. Each fill debits and withdraws the same exact asset amount.
 
 ## MorphoExitBook
 
@@ -564,6 +689,12 @@ error MarketNotCreated();
 error NotAuthorizedOnMorpho();
 ```
 
+#### `InsufficientBacking`
+
+```solidity
+error InsufficientBacking();
+```
+
 #### `ZeroMorpho`
 
 ```solidity
@@ -571,6 +702,20 @@ error ZeroMorpho();
 ```
 
 ### Functions
+
+#### `constructor`
+
+```solidity
+constructor(address morpho, address admin, uint256 maxLifetime_);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `morpho` | `address` | Non-zero Morpho deployment used as the source. |
+| `admin` | `address` | Non-zero initial holder of `DEFAULT_ADMIN_ROLE`. |
+| `maxLifetime_` | `uint256` | Non-zero maximum request lifetime in seconds. |
 
 #### `MORPHO`
 
@@ -624,9 +769,9 @@ function setMarketAllowed(
 | Name | Type | Description |
 | --- | --- | --- |
 | `marketParams` | `MarketParams` | The market's full params; its id (the params' hash) is the allow-list key. |
-| `allowed` | `bool` | True to allow new requests against it; false to block them (already-placed ones still fill). |
+| `allowed` | `bool` | True to allow new requests; false to block them without changing existing fill eligibility. |
 
-Register `marketParams` (which must name a live Morpho market, checked on both allow and disallow) and allow or disallow it for new requests. The params are kept permanently (so requests already placed stay fillable after a disallow); disallowing only flips the gate. `ALLOWLIST_MANAGER_ROLE` only.
+Register `marketParams` (which must name a live Morpho market, checked on both allow and disallow) and allow or disallow it for new requests. The params are kept permanently; disallowing only flips the placement gate and does not change existing fill eligibility. `ALLOWLIST_MANAGER_ROLE` only.
 
 #### `placeExitRequest`
 
@@ -636,6 +781,7 @@ function placeExitRequest(
     uint256 assets,
     address receiver,
     uint256 minFillAssets,
+    uint256 maxShareBurn,
     PriorityRamp calldata ramp,
     uint256 deadline
 ) external returns (uint256 id);
@@ -646,11 +792,12 @@ function placeExitRequest(
 | Name | Type | Description |
 | --- | --- | --- |
 | `marketId` | `Id` | The allowed market's id (its `MarketParams` hash, registered via `setMarketAllowed`). |
-| `assets` | `uint256` | Loan-asset amount to exit. Converted to supply shares at the market's current share rate and stored as the request's fixed size; the caller's holdings are not checked here, the fill reads them live. |
-| `receiver` | `address` | Address credited the lender's proceeds of every fill. |
-| `minFillAssets` | `uint256` | Smallest amount a single fill may close; 0 for no minimum. A fill qualifies at or above it, or when it takes the whole of what is left, so the minimum never locks in a sub-minimum remainder on its own. At or above the request's own quote only a full close qualifies. Converted to shares at placement and enforced in shares thereafter. |
+| `assets` | `uint256` | Loan-asset amount to debit across fills. Must fit `uint128`. |
+| `receiver` | `address` | Address credited the filled amount minus the priority fee. |
+| `minFillAssets` | `uint256` | Smallest amount a non-final fill may process; 0 for no minimum. A fill that closes the whole remaining request always qualifies. Values above `assets` are capped to `assets`. |
+| `maxShareBurn` | `uint256` | Full-request supply-share limit. Each fill gets `floor(maxShareBurn * fillAssets / assetsTotal)`. Must fit `uint128`; 0 disables the limit, while a non-zero value must be at least the placement share quote. |
 | `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
-| `deadline` | `uint256` | Fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
+| `deadline` | `uint256` | Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
 
 **Returns**
 
@@ -658,4 +805,4 @@ function placeExitRequest(
 | --- | --- | --- |
 | `id` | `uint256` | The new request id. |
 
-Open an exit against the caller's supply position in an allowed Morpho market, named by its `marketId` and sized by the asset amount they want out. Permission-only: nothing is escrowed, and the fill withdraws on the caller's behalf, so they must have authorized this book on Morpho.
+Open an asset-denominated exit against the caller's supply position in an allowed Morpho market. Nothing is escrowed. Placement snapshots the full request's supply-share quote and requires enough current supply, but does not reserve it. Each fill debits and withdraws the same exact asset amount, so authorization must remain live.

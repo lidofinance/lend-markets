@@ -91,12 +91,14 @@ interface IReadMorphoBook {
     function isMarketAllowed(bytes32 id) external view returns (bool);
     function MORPHO() external view returns (address);
     function MAX_REQUEST_LIFETIME() external view returns (uint256);
+    function paused() external view returns (bool);
     function setMarketAllowed(MarketParams calldata marketParams, bool allowed) external;
 }
 
 interface IReadErc4626Book {
     function isVaultAllowed(address vault) external view returns (bool);
     function MAX_REQUEST_LIFETIME() external view returns (uint256);
+    function paused() external view returns (bool);
     function setVaultAllowed(address vault, bool allowed) external;
 }
 
@@ -433,6 +435,8 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
                 expectedExitBookMaxRequestLifetime,
                 "ERC-4626 exit-book max lifetime"
             );
+            assertFalse(IReadMorphoBook(morphoBook).paused(), "morpho exit book is paused");
+            assertFalse(IReadErc4626Book(erc4626Book).paused(), "ERC-4626 exit book is paused");
         }
 
         // Additional direct core, asset, and operational-state checks.
@@ -790,7 +794,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertNotEq(irmConfig, address(0), "IRM config factory entry missing");
     }
 
-    /// @dev Mirror of the separate exit-book allow-list EasyTrack motion, when exit books are deployed.
+    /// @dev Mirror of the exit-book allow-list governance action, when exit books are deployed.
     function _allowlistExitBooks() internal {
         if (morphoBook != address(0)) {
             MarketParams memory p = _params();
@@ -913,16 +917,20 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
     }
 
     function _assertExitBookRoleHolderCompleteness(address book) internal {
-        bytes32[] memory roles = new bytes32[](4);
+        bytes32[] memory roles = new bytes32[](6);
         roles[0] = DEFAULT_ADMIN_ROLE;
         roles[1] = ALLOWLIST_MANAGER_ROLE;
         roles[2] = FEE_MANAGER_ROLE;
         roles[3] = RECOVERER_ROLE;
-        address[][] memory holders = new address[][](4);
+        roles[4] = PAUSER_ROLE;
+        roles[5] = RESUMER_ROLE;
+        address[][] memory holders = new address[][](6);
         holders[0] = _arr1(agent);
         holders[1] = _arr2(executor, agent);
         holders[2] = _arr1(agent);
         holders[3] = _arr1(agent);
+        holders[4] = new address[](0);
+        holders[5] = new address[](0);
         _assertExactRoleHolders(book, exitBooksDeployedBlock, roles, holders);
     }
 
