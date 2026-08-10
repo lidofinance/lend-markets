@@ -26,7 +26,7 @@ The Morpho Blue fork that holds the canonical accounting for every market — su
 
 - **Controller binding.** `createMarket(params, controller, enableSettlement)` binds one controller per market at creation, immutable afterwards. A market with no controller is vanilla Morpho.
 - **Hooks.** With the action's amounts resolved but before the state change is applied, the core calls `controller.on(id, event, payload)` under a reentrancy lock. The hook may revert (aborting the action) but cannot rewrite the resolved amounts.
-- **`settle`.** Cancels borrower debt against lender supply at the oracle price, with no liquidation incentive and **no borrower health check** — excluding bad-debt borrowers is the controller's duty. The caller anchors a partial or full cut on burned supply shares or canceled borrow shares. The wrapper chooses the borrow anchor only for an affordable full close; direct core callers may use either anchor for a partial cut. The core leaves borrower eligibility to the controller and bounds the actual spend by the lender's supply shares. Settlement remains a per-market opt-in.
+- **`settle`.** Cancels exact borrower shares against lender supply at the oracle price, with no liquidation incentive and **no borrower health check** — excluding bad-debt borrowers is the controller's duty. The core derives the debt assets and lender share burn from the requested borrow shares. The controller quotes that request already capped to what the caller's supply-share budget can pay. The core leaves borrower eligibility to the controller and rejects a cut that exceeds the lender's supply position. Settlement remains a per-market opt-in.
 - **Proxy.** `OssifiableProxy`, upgradeable until ossified.
 
 `flashLoan` sits outside controller policy: it is token-global with no market id, no hook or reentrancy lock, not owner-gated, and uncollateralized — the core transfers the tokens out and pulls them back in the same call, reverting only on zero assets.
@@ -67,13 +67,7 @@ Full surface: [API reference](api/risk-steward-dashboard.md).
 
 ### Exit books
 
-The filler-served exit registry. A lender posts a request to exit a slice of their supply, naming it in loan assets; the book converts that to source shares at the placement rate and the request is fixed at that size, whether or not the lender holds it. Nothing is escrowed, so a request is only ever worth what still backs it: the fill reads the live position and closes only what the lender both holds and has granted the book access to — an allowance on the vault, an authorization on the market. An abstract `ExitBookBase` (with `ExitBookLib`) holds the shared fill and cancel surface, and a concrete book binds it to a source with its own placement entry point — `Erc4626ExitBook` over a vault, `MorphoExitBook` over a market.
-
-Any filler drains whatever liquidity the source has into a request, earning a priority fee that holds at its start rate through an initial hold, climbs linearly to its end rate, then holds there to the deadline (a Dutch auction). Each rate is capped at the global `MAX_PRIORITY_FEE = 10%`. A large exit therefore completes over time without the lender chasing liquidity transaction by transaction. At placement the book snapshots the full request's asset quote, rounding down; partial fills receive cumulative portions of it, and whatever the redeem yields above the apportioned quote is the filler's reward, less the service fee's cut of it. What the lender named is the size, not a promise: the payout is the quote those shares bought, minus the priority fee.
-
-The lender also names a minimum single fill: a fill qualifies at or above it, or when it takes the whole of what is left, so the minimum never locks in a sub-minimum remainder on its own. A minimum at or above the request's own quote therefore admits only a full close. The lender's share of every fill goes to a receiver named at placement, which need not be the lender. Only the lender may cancel, and only the lender's position is drawn down.
-
-A request also pins the source's share rate at placement — loan assets per share — and a fill is refused while the source quotes less. This is what keeps a lender from being exited into a loss they did not choose: a socialized loss drops the rate, and the request stops being fillable until it recovers. A request whose rate never recovers is therefore never filled: it expires at its deadline. The floor is not optional and not adjustable after placement, so a lender who wants out at any rate cannot express that through the book — they cancel the stuck request and either redeem from the source directly or place a fresh one at the lower rate. A floor-blocked request previews as nothing fillable, indistinguishable from one with no backing, so a filler scanning previews cannot tell the two apart.
+The filler-served exit registry. A lender posts a request to exit a fixed slice of their supply, then any filler drains whatever liquidity the market has into it, earning a `PriorityRamp` priority fee that holds at `startRate` through `rampStart`, climbs linearly to the request's `endRate` by `rampEnd`, then holds at `endRate` to the deadline (a Dutch auction). Each rate is capped at the global `MAX_PRIORITY_FEE = 10%`. A large exit completes over time without the lender chasing liquidity transaction by transaction. At placement the book snapshots the full request's asset quote; partial fills receive cumulative portions of that quote, assigning any division remainder to the final fill. An abstract `ExitBookBase` (with `ExitBookLib`) holds the shared `fillExitRequest` / `cancelExitRequest` surface, and a concrete book binds it to a source with its own `placeExitRequest` — `Erc4626ExitBook` over a vault, `MorphoExitBook` over a market.
 
 Full surface: [API reference](api/exit-book.md).
 
@@ -101,9 +95,9 @@ The controller adds the missing judgment as two linked safeguards, keyed per `(m
 
 ### Collateral activation
 
-Freshly supplied collateral cannot back a new borrow until it has matured through a timed gate. Activation runs on every collateral supply, sorting each borrower's collateral into three buckets:
+Freshly supplied non-instant collateral cannot back a new borrow until it has matured through a timed gate. Activation runs on every collateral supply, sorting each borrower's collateral into three buckets:
 
-- `dust` — collateral supplied below the activation minimum (`minActivationAmount`). It accumulates here until a supply lifts the total to or past the minimum, when the whole amount moves into `activating`. Freely withdrawable, and outside the timer.
+- `dust` — non-instant collateral below the activation minimum (`minActivationAmount`). It accumulates here until a non-instant supply lifts the total to or past the minimum, when the whole amount moves into `activating`. Freely withdrawable, and outside the timer.
 - `activating` — in the timer, maturing toward `active`. An `activatingLockAmount` portion can be held back from withdrawal for `activatingLockDuration`.
 - `active` — matured collateral, the only kind that backs a new loan, derived as `total` minus the un-matured buckets rather than stored on its own. Freely withdrawable.
 
@@ -128,7 +122,7 @@ A `maxGuardiansQuorumDelay` fallback matures a lot anyway if the committee stall
 
 #### Inflow delay
 
-The base wait is fixed when the collateral is supplied, computed from the market's recent inflow so address-splitting cannot dodge the throttle:
+The base wait is fixed when non-instant collateral is supplied, computed from the market's recent inflow so address-splitting cannot dodge the throttle:
 
 ```
 delay = minActivationDelay + (maxActivationDelay − minActivationDelay) × inflow / maxDelayInflow
@@ -138,7 +132,7 @@ unlockTime = activatingStart + delay + strikes × delayPerStrike
            + (activatingStart < suspectExpiry ? suspects × delayPerSuspect : 0)
 ```
 
-`inflow` is the market's recent collateral inflow, capped at `maxDelayInflow` and decaying at a fixed rate (draining from the cap to zero over `maxActivationDelay`), plus the incoming lot. More recent volume → longer delay, giving guardians more time to vet the larger supplies that carry more risk for lenders.
+`inflow` is the market's recent collateral inflow, capped at `maxDelayInflow` and decaying at a fixed rate (draining from the cap to zero over `maxActivationDelay`), plus the incoming non-instant lot. More recent volume → longer delay, giving guardians more time to vet the larger supplies that carry more risk for lenders.
 
 All activating collateral shares one timer (`activatingStart`). A top-up that extends the deadline restarts it for the whole lot, so a top-up after `suspectExpiry` clears the suspect surcharge.
 
@@ -159,11 +153,11 @@ All activating collateral shares one timer (`activatingStart`). A top-up that ex
 
 #### Instant activation
 
-A supply whose caller is on the instant-activation allowlist matures at supply — `unlockTime = 0`, skipping both the timer and the gate. The allowlist is keyed on the supply caller, not the position owner, so a trusted router activating on behalf of users qualifies while the users themselves stay on the timer. Governance grants it mainly to looping contracts that help borrowers build leveraged positions: for these the delay would only hurt the looping UX without adding safety, since a loop position does not pull lender funds out of the market.
+A supply whose caller is on the instant-activation allowlist matures at supply — `unlockTime = 0`, skipping both the timer and the gate. It activates only its own amount regardless of size: it never creates dust and leaves any existing dust untouched. The allowlist is keyed on the supply caller, not the position owner, so a trusted router activating on behalf of users qualifies while the users themselves stay on the timer. Governance grants it mainly to looping contracts that help borrowers build leveraged positions: for these the delay would only hurt the looping UX without adding safety, since a loop position does not pull lender funds out of the market.
 
 #### Withdrawal & holds
 
-Voluntary withdrawal comes off the collateral in waterfall order: dust first, then `activating` above a configurable lock, then `active`. Only `dust` and `activating` are drained as stored buckets — `active` is the matured remainder, which the rest of the withdrawal simply reduces. The lock keeps an `activatingLockAmount` portion of maturing collateral unwithdrawable for `activatingLockDuration` from the lot's start — an anti-Sybil measure, so while it holds a borrower cannot pull a maturing position all the way back out. Once the duration elapses the locked portion becomes withdrawable even if the lot has not matured. A withdrawal that drops the `activating` remainder below `minActivationAmount` folds it back into `dust` and clears its timer, the mirror of a sub-threshold deposit staying dust. This demotion is skipped while a lock holds, since moving a locked remainder into freely-withdrawable dust would bypass the lock. Forced paths (liquidation, settle) pass lock 0 and reach all collateral. A same-tx supply then withdraw reverses its own inflow contribution (flash-loan undo, via transient storage).
+Voluntary withdrawal comes off the collateral in waterfall order: dust first, then `activating` above a configurable lock, then `active`. Only `dust` and `activating` are drained as stored buckets — `active` is the matured remainder, which the rest of the withdrawal simply reduces. The lock keeps an `activatingLockAmount` portion of maturing collateral unwithdrawable for `activatingLockDuration` from the lot's start — an anti-Sybil measure, so while it holds a borrower cannot pull a maturing position all the way back out. Once the duration elapses the locked portion becomes withdrawable even if the lot has not matured. A drain with no lock floor that leaves the total inactive remainder below `minActivationAmount` folds the remaining `activating` into `dust` and clears its timer, the mirror of a sub-threshold deposit staying dust. Voluntary withdrawal skips this demotion while a lock holds, since moving a locked remainder into freely-withdrawable dust would bypass the lock. Forced paths (liquidation, settle) pass a zero lock floor instead: they can drain the otherwise protected `activating` collateral and, if the total inactive remainder is sub-threshold, move its remaining `activating` portion into `dust`. A same-tx supply then withdraw reverses its own inflow contribution (flash-loan undo, via transient storage).
 
 A borrower with open debt cannot withdraw all of its collateral: a withdrawal must leave the remaining `active` covering the debt at LLTV. Active collateral below `minActivationAmount` backs no borrow at all, so a position can't be left stranded at a tiny high-LTV size at the head of the settlement queue — the capacity check folds that floor in rather than a separate revert. To pull everything out, repay the debt to zero first.
 
@@ -196,7 +190,7 @@ stateDiagram-v2
     end note
 ```
 
-Alongside strikes, a guardian can raise a softer **suspect** report. It never bans — it only lengthens the activation delay (`delayPerSuspect` per report). The delay reads a single per-account snapshot: a count of reports plus an expiry of `now + suspectWindow`. The snapshot is re-taken on every report or retraction, and counts only the reports still fresh at that moment. So a still-fresh earlier report is folded into the new snapshot and rides its longer expiry, while an already-expired one is dropped. A `prune` that removes a departed guardian's report re-takes the snapshot too, so that report stops counting right away.
+Alongside strikes, a guardian can raise a softer **suspect** report. It never bans — it only lengthens the activation delay (`delayPerSuspect` per report). The delay reads a single per-account snapshot: a count of reports plus the latest active report's timestamp and `suspectWindow`. The snapshot is re-taken on every report or retraction, and counts only the reports still fresh at that moment. So a still-fresh earlier report is folded into the new snapshot and rides its longer expiry, while an already-expired one is dropped. A retraction restores the latest timestamp among the remaining reports, so it cannot extend their expiry. A `prune` that removes a departed guardian's report re-takes the snapshot the same way, so that report stops counting right away without extending the survivors.
 
 Two override roles sit above the guardians, one per risk direction. `ACCESS_LIMITER_ROLE` can force a `ban` without waiting for a quorum, but has no holder at deployment. To restore access (a slower, more careful step), `ACCESS_RESTORER_ROLE` can `unban`; that also clears the flag set, so the guardians start their judgement over.
 
@@ -247,6 +241,8 @@ Taking the **max** lets the riskiest position de-lever in meaningful steps. Rule
 
 A borrower may also set a **settlement LTV**: a personal target LTV used to size its cut. A positive personal slice is required by the wrapper's targeted `settle` and remains available at any liquidity level. The personal asset allowance is sized only by that target and does not inherit the market's collateral-dust sweep. Ordinary up-rounding into borrow shares still applies, so a near-full personal allowance can reach the last borrow share. Only a queue-root asset slice that would strand collateral below `fullCutBelowCollateral` is promoted to the full debt by dust policy. `settlementFor` exposes both the personal quote and the prospective queue-root quote for the named borrower; the latter does not imply that the borrower is currently the root. `nextSettlementBorrower` atomically returns the current root and the larger personal or root-policy slice. The controller gates root-policy execution by the settling lender's illiquid tail, `max(lenderSupplyAssets - marketFreeLiquidity, 0)`.
 
+Both quotes take the caller's core supply budget and answer with the cut that budget actually funds, so the returned borrow-share handle is executable as-is and the supply cost alongside it is what the core will burn. A caller wanting the policy cut regardless of budget passes `type(uint256).max`. Shrinking inside the controller keeps the three slice fields describing one cut: a budget that cannot cover a promoted full close comes back as a partial with the remainder restated, rather than as a full-close quote the caller would silently under-execute.
+
 **Controller execution rules.** Let:
 
 - `P` be the personal target-LTV allowance in borrow shares, with no dust promotion;
@@ -272,7 +268,7 @@ The settle hook applies the following matrix in order; the bad-debt gate is mark
 
 `P`, `R`, and `C` are compared after the policy's asset quote is rounded up into borrow shares. The lender-tail branch instead compares the core's actual asset result `A` against `T`.
 
-A full close uses the borrow anchor only when both policy and the remaining request budget can afford it; otherwise the vault uses a supply-anchored partial.
+Every cut uses borrow shares as the core accounting input. The controller converts the caller's remaining supply-share budget down into an affordable borrow-share cut, so the vault forwards the quoted handle unchanged. A full-close quote closes the borrower only when that budget covers its derived supply burn; otherwise the borrower receives a smaller partial cut.
 
 ```mermaid
 flowchart LR
@@ -299,9 +295,10 @@ flowchart LR
 
 **Known limits.**
 
-- A fully de-levered borrower keeps its equity as free collateral but loses all its leverage (par, no penalty). For a queue root with debt under the absolute floor, or whose root-policy cut would leave collateral under `fullCutBelowCollateral`, policy requests a full-debt cut. It closes in one transaction only when the request's remaining core-share budget covers it; otherwise the vault applies a supply-anchored partial. A personal settlement-LTV quote is not promoted by this collateral-dust rule.
+- A fully de-levered borrower keeps its equity as free collateral but loses all its leverage (par, no penalty). For a queue root with debt under the absolute floor, or whose root-policy cut would leave collateral under `fullCutBelowCollateral`, policy requests a full-debt cut. It closes in one transaction only when the request's remaining core-share budget covers it; otherwise the quote comes back as a partial cut sized to that budget. A personal settlement-LTV quote is not promoted by this collateral-dust rule.
 - A single transaction settles only a bounded number of borrowers (the fallback loop's iteration cap), so a lender pulling a large fraction of the pool partial-fills and repeats across transactions. Settlement preserves free loan-asset liquidity: supply assets and borrow assets fall by the same amount, which lowers utilization without releasing WETH. Reach per transaction depends on how debt is split across positions, not on any one policy value.
 - If a chosen debt slice prices to zero collateral units, the core reverts `settlement slice too small`. Repay or otherwise remove that dust debt, then retry the exit.
+- Supply-budget conversion rounds down before the core derives its rounded-up supply burn. The actual burn therefore never exceeds the request budget, but it may be slightly smaller. At the fully utilized empty-book boundary, a complete vault exit can leave zero-value core supply shares alongside one debt-asset wei from the virtual-share buffer.
 - Policy is quoted in loan assets and rounded up into borrow shares. Actual canceled debt may exceed the nominal quote by one borrow-share conversion step, which can be worth more than one asset raw unit at an elevated borrow-share price; if that step reaches the last borrow share, even a personal quote is represented as a rounding full close. If root and personal quotes round to the same share count, the controller treats the cut as personal and does not enter the lender-tail branch.
 - The lender-tail bound uses live transaction state. Withdrawing or borrowing market liquidity increases `lenderSupplyAssets - marketFreeLiquidity` in the same transaction and therefore increases the root allowance; restoring liquidity later does not retroactively undo the cut. Flash loans alone do not change accounting totals, but bundled liquidity-changing actions do. The design has no prior-block snapshot or cooldown.
 
