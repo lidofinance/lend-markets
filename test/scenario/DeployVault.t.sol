@@ -143,13 +143,21 @@ contract DeployVaultScenarioTest is LidoLendSetup {
         vm.startPrank(lender);
         IERC4626(vault2Addr).approve(address(book), type(uint256).max);
         vm.expectRevert(Erc4626ExitBook.VaultNotAllowed.selector);
-        book.placeExitRequest(IERC4626(vault2Addr), 10 ether, _flat(0), block.timestamp + 1 days, false);
+        book.placeExitRequest(IERC4626(vault2Addr), 10 ether, lender, 0, 0, _flat(0), block.timestamp + 1 days);
         vm.stopPrank();
 
         book.setVaultAllowed(IERC4626(vault2Addr), true);
 
         vm.prank(lender);
-        book.placeExitRequest(IERC4626(vault2Addr), 10 ether, _flat(0), block.timestamp + 1 days, false);
+        uint256 id =
+            book.placeExitRequest(IERC4626(vault2Addr), 10 ether, lender, 0, 0, _flat(0), block.timestamp + 1 days);
+
+        address filler = _actor("filler");
+        vm.prank(filler);
+        book.fillExitRequest(id, 10 ether, filler);
+
+        assertEq(m.loanToken.balanceOf(lender), 10 ether, "allowed vault exits through the book");
+        assertEq(book.getExitRequest(id).assetsRemaining, 0, "request filled");
     }
 
     function _flat(uint256 rate) internal pure returns (PriorityRamp memory) {

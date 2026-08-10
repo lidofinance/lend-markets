@@ -47,6 +47,36 @@ contract DeployConfigFileTest is Test {
         harness.requireActorSeparation(_config(agent, agent), makeAddr("deployer"));
     }
 
+    function testRevert_requireActorSeparation_exitBookPauserIsDeployer() external {
+        address pauser = makeAddr("exitBookPauser");
+        DeployConfig memory cfg = _config(makeAddr("agent"), makeAddr("executor"));
+        cfg.exitBooks = true;
+        cfg.exitBookPauser = pauser;
+
+        vm.expectRevert(DeployConfigFile.ExitBookPauserCannotBeDeployer.selector);
+        harness.requireActorSeparation(cfg, pauser);
+    }
+
+    function testRevert_requireActorSeparation_exitBookPauserIsAgent() external {
+        address agent = makeAddr("agent");
+        DeployConfig memory cfg = _config(agent, makeAddr("executor"));
+        cfg.exitBooks = true;
+        cfg.exitBookPauser = agent;
+
+        vm.expectRevert(DeployConfigFile.ExitBookPauserCannotBeAgent.selector);
+        harness.requireActorSeparation(cfg, makeAddr("deployer"));
+    }
+
+    function testRevert_requireActorSeparation_exitBookPauserIsExecutor() external {
+        address executor = makeAddr("executor");
+        DeployConfig memory cfg = _config(makeAddr("agent"), executor);
+        cfg.exitBooks = true;
+        cfg.exitBookPauser = executor;
+
+        vm.expectRevert(DeployConfigFile.ExitBookPauserCannotBeExecutor.selector);
+        harness.requireActorSeparation(cfg, makeAddr("deployer"));
+    }
+
     function test_requireRegistryGovernance_acceptsMatchingRegistry() external {
         address agent = makeAddr("agent");
         address executor = makeAddr("executor");

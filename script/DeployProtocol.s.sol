@@ -78,6 +78,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
                 ExitBookConfig({
                     agent: cfg.agent,
                     evmScriptExecutor: cfg.evmScriptExecutor,
+                    pauser: cfg.exitBookPauser,
                     core: protocol.core,
                     maxRequestLifetime: cfg.exitBookMaxRequestLifetime
                 }),
@@ -90,6 +91,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
                 deployer: deployer,
                 agent: cfg.agent,
                 evmScriptExecutor: cfg.evmScriptExecutor,
+                pauser: cfg.exitBookPauser,
                 maxRequestLifetime: cfg.exitBookMaxRequestLifetime
             });
             console2.log("morphoExitBook  :", morpho);

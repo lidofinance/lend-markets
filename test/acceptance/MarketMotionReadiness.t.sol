@@ -31,6 +31,10 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
         _assertExitBooksNotAllowed();
     }
 
+    function test_exitBookPauserPausesBothBooks() external {
+        _assertExitBookPausePath();
+    }
+
     function testRevert_pausedControllerIsRejected() external {
         vm.prank(circuitBreaker);
         IReadController(controller).pauseFor(1 days);

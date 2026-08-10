@@ -6,14 +6,16 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 /// @notice Shared value types of the exit book. File-scope so `ExitBookBase`, its concrete books, and
 ///         `IExitBook` use them as bare `Request` / `ExitStatus`.
 
-/// @notice Lifecycle marker. `Expired` is not stored — it is derived from `block.timestamp > deadline`.
+/// @notice Lifecycle marker. `NotCreated` is the zero-value sentinel for unknown ids, not a stored request state.
+///         `Expired` is not stored — it is derived from `block.timestamp > deadline`.
 enum ExitStatus {
+    NotCreated,
     Open,
     Filled,
     Cancelled
 }
 
-/// @notice Lender-set priority-fee schedule — a Dutch auction on the fee carved out of the amount owed. The rate
+/// @notice Lender-set priority-fee schedule — a Dutch auction on the fee carved out of each fill. The rate
 ///         holds at `startRate` for `rampStart` seconds from creation, then climbs linearly to `endRate` by
 ///         `rampEnd`, then holds at `endRate` until the deadline. Rates are WAD fractions, each capped at
 ///         `MAX_PRIORITY_FEE`.
@@ -30,18 +32,20 @@ struct PriorityRamp {
 }
 
 /// @notice One exit request's source-agnostic lifecycle state. The backing source (which vault / which market)
-///         lives in a per-id mapping outside this record. Shares are `uint128` (capped via SafeCast at creation)
-///         so the record packs tighter.
-/// @param owner The exiting lender, credited the proceeds and the only address that may cancel.
+///         lives in a per-id mapping outside this record. Remaining and total assets are stored as `uint128`.
+/// @param owner The exiting lender whose position the fill withdraws from, and the only address that may cancel.
 /// @param createdAt Creation timestamp: the fee schedule's start.
 /// @param deadline Last timestamp the request may be filled. Chosen by the lender, capped at
 ///        `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`.
-/// @param fullFillOnly When true a fill must cover the whole remaining size in one shot or be rejected.
-/// @param status Open / Filled / Cancelled (Expired is derived).
-/// @param asset The underlying loan token paid out — proceeds and fees are denominated in it.
-/// @param sizeRemaining Outstanding shares to fill. The concrete book defines the fixed placement entitlement.
-/// @param sizeTotal Original shares used to apportion the full placement quote across fills.
-/// @param quotedAssets Asset value quoted for all `sizeTotal` shares at placement.
+/// @param receiver Address credited the filled amount minus the priority fee.
+/// @param status NotCreated for an unknown id; stored requests are Open / Filled / Cancelled (Expired is derived).
+/// @param asset The underlying loan token paid out — the request, proceeds, and fees are denominated in it.
+/// @param assetsRemaining Outstanding asset amount to exit.
+/// @param assetsTotal Original asset amount requested.
+/// @param minFillAssets Minimum non-final fill; 0 disables it. Whole-remainder fills qualify; capped at assetsTotal.
+/// @param maxShareBurn Nominal full-request share budget. A fill may burn at most
+///        `ceil(maxShareBurn * fillAssets / assetsTotal)`; across split fills, total burn may exceed this value by
+///        at most one raw share unit per additional fill.
 /// @param startRate Priority-fee rate (WAD) in force from `createdAt` through the `rampStart` hold.
 /// @param endRate Priority-fee rate (WAD) reached at `createdAt + rampEnd` and held to the deadline.
 /// @param rampStart Seconds from `createdAt` the rate holds at `startRate` before the climb begins.
@@ -50,28 +54,15 @@ struct Request {
     address owner;
     uint40 createdAt;
     uint40 deadline;
-    bool fullFillOnly;
+    address receiver;
     ExitStatus status;
     IERC20 asset;
-    uint128 sizeRemaining;
-    uint128 sizeTotal;
-    uint256 quotedAssets;
+    uint128 assetsRemaining;
+    uint128 assetsTotal;
+    uint128 minFillAssets;
+    uint128 maxShareBurn;
     uint96 startRate;
     uint96 endRate;
     uint32 rampStart;
     uint32 rampEnd;
-}
-
-/// @notice A request paired with its live fill preview, for one-call scans. `id` is the registry key (a
-///         `Request` does not carry its own id); `filledShares`/`assetsOut` mirror `previewFill` and are 0
-///         when the request is closed, expired, or has no backing right now.
-/// @param id The request's registry id.
-/// @param request The stored request.
-/// @param filledShares Shares fillable right now (see `previewFill`).
-/// @param assetsOut Assets those shares would yield right now (see `previewFill`).
-struct RequestPreview {
-    uint256 id;
-    Request request;
-    uint256 filledShares;
-    uint256 assetsOut;
 }
