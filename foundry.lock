@@ -8,7 +8,7 @@
   "lib/lido-lend": {
     "branch": {
       "name": "main",
-      "rev": "e582aa61d490d4fddc77d279bc432ef11af3b4e4"
+      "rev": "490f9d7b3aba2edde9403f90ffa6a69628fdd44f"
     }
   },
   "lib/lido-lend-irm": {
