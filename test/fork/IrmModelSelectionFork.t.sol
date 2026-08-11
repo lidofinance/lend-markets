@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 // Mainnet-fork mirror of the IRM model-selection scenario. The mock-token flavour, the shared
 // `IrmScenarioBase` harness, the candidate IRMs, and the adaptive parameter-upgrade tests stay in

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 // IRM model-selection harness.
 // The adaptive candidate is the real `AdaptiveCurveIrm` from the `lido-lend-irm` submodule; the pegged and kinked
@@ -32,7 +32,7 @@ import {MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/lido-lend/src/
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 // Adaptive-curve math, reused by the local CapD prototype. These libraries are pragma ^0.8.0 (not strict
-// 0.8.19 like AdaptiveCurveIrm), so they share this 0.8.35 compilation unit.
+// 0.8.19 like AdaptiveCurveIrm), so they share this 0.8.36 compilation unit.
 import {MathLib as MorphoMathLib} from "@lido-lend/src/libraries/MathLib.sol";
 import {MathLib as IrmMathLib, WAD_INT} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/MathLib.sol";
 import {ExpLib} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/ExpLib.sol";

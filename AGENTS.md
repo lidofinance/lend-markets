@@ -141,7 +141,7 @@ test/
 
 Every suite builds on `LidoLendSetup` (abstract base) — do not re-implement deployment:
 
-- **Deploys with `new`, not `vm.getCode`** (the fork core and IRM are 0.8.35-compatible). One
+- **Deploys with `new`, not `vm.getCode`** (the fork core and IRM are 0.8.36-compatible). One
   `LidoLend` core and one guardian registry are **singletons**; a core hosts **many markets**.
   `Protocol { config, core, guardianSignals, Market[] markets }`; each `Market` carries its
   per-market contracts (controller/vault/oracle/irm), its own config, and a handle on the core.
