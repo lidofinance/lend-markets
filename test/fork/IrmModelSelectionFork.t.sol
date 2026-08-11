@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.35;
 
-// Fork mirror of the IRM model-selection scenario, run against ALREADY-DEPLOYED, ALREADY-ACTIVATED markets
-// rather than a freshly deployed stack. One market per candidate: the activation motion routed the
-// `weth-wsteth` market to the protocol's `AdaptiveCurveIrm` and `weth-wsteth-kinked` to the deployed
-// `LinearKinkIrm`, so this suite never routes anything — it binds the market whose IRM it wants to exercise and
-// reads the routed instance back off the router. The mock-token flavour, the shared `IrmScenarioBase` harness,
-// and the adaptive parameter-upgrade tests stay in `test/scenario/IrmModelSelection.t.sol`; only the fork
-// flavour lives here so every fork suite is under `test/fork/`.
+// Fork mirror of the adaptive IRM scenario, run against an ALREADY-DEPLOYED, ALREADY-ACTIVATED market rather
+// than a freshly deployed stack. Alternative model selection remains in the local scenario suite: deployment
+// creates the market's AdaptiveCurve configuration, while choosing another routed implementation is an
+// activation decision rather than a market-config artifact.
 // Not production code.
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
@@ -21,8 +18,8 @@ import {ForkStack} from "./helpers/ForkStack.sol";
 import {IIrmRouter} from "@lido-lend-irm/src/irm-router/interfaces/IIrmRouter.sol";
 import {Id as IrmId} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
+import {AdaptiveCurveConfig} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveConfig.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
-import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.sol";
 import {IOwnerManager} from "@lido-lend-irm/src/common/IOwnerManager.sol";
 
 interface IWETHFork {
@@ -109,8 +106,7 @@ contract IrmModelSelectionForkTest is IrmScenarioBase, ForkStack {
         _setInitialParams();
     }
 
-    /// @dev The candidate's live owner (both `AdaptiveCurveIrm` and `LinearKinkIrm` are `OwnerManagerBase`, and
-    ///      their param setters accept the owner). Used by `_setInitialParams` here and by the base's `_retune`.
+    /// @dev The deployed AdaptiveCurveIrm owner can apply a test config on the fork.
     function _candidateAdmin() internal view override returns (address) {
         return IOwnerManager(_candidate).owner();
     }
@@ -157,16 +153,9 @@ contract IrmModelSelectionForkTest is IrmScenarioBase, ForkStack {
     ///      curve's `maxBorrowRate`.
     function _setInitialParams() private {
         vm.startPrank(_candidateAdmin());
-        if (_irmKind == IrmKind.Adaptive) {
-            _adaptiveCapApr = INITIAL_CAP_APR;
-            AdaptiveCurveIrm(_candidate).setMarketCurveParams(_toIrmParams(params), _initialAdaptiveParams());
-        } else {
-            LinearKinkIrm(_candidate)
-                .setMarketKinkParams(
-                    _toIrmParams(params),
-                    _kinkParams(uint256(0.005 ether) / YEAR, uint256(0.02 ether) / YEAR, uint256(0.014 ether) / YEAR)
-                );
-        }
+        _adaptiveCapApr = INITIAL_CAP_APR;
+        AdaptiveCurveConfig config = new AdaptiveCurveConfig(_initialAdaptiveParams());
+        AdaptiveCurveIrm(_candidate).applyIrmConfig(_toIrmParams(params), address(config));
         vm.stopPrank();
     }
 
@@ -188,12 +177,5 @@ contract IrmModelSelectionForkTest is IrmScenarioBase, ForkStack {
         boundMarket = _marketForRole("weth-wsteth");
         if (bytes(boundMarket).length == 0) return; // not applicable to this deployment
         _run(IrmKind.Adaptive);
-    }
-
-    /// @dev Runs the multi-year IRM comparison scenario on the market routed to the linear-kink IRM.
-    function test_scenario_kinked() public {
-        boundMarket = _marketForRole("weth-wsteth-kinked");
-        if (bytes(boundMarket).length == 0) return; // not applicable to this deployment
-        _run(IrmKind.Kinked);
     }
 }

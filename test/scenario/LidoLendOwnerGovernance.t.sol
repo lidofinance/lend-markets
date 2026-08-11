@@ -90,8 +90,8 @@ contract LidoLendOwnerGovernanceTest is LidoLendSetup {
         facade.setMarketCollateralActivationConfig(market2.id, activation2);
         facade.setMarketSettlementConfig(market1.id, settlement1);
         facade.setMarketSettlementConfig(market2.id, settlement2);
-        facade.grantMarketInstantActivation(market1.id, address(0x1111));
-        facade.grantMarketInstantActivation(market2.id, address(0x2222));
+        facade.setInstantActivation(market1.id, address(0x1111), true);
+        facade.setInstantActivation(market2.id, address(0x2222), true);
         vm.stopPrank();
 
         assertEq(market1.controller.supplyCap(), 101 ether, "market 1 supply cap");

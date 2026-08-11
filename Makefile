@@ -1,8 +1,32 @@
 # Shortcuts wrap the foundry commands documented in README/AGENTS.md.
 # CI calls a subset of these so local and CI behavior stay in sync.
 
+# Make normally lets an included file replace exported environment variables. Preserve the public inputs so
+# precedence is consistently: command line > exported environment > .env > defaults.
+DOTENV_OVERRIDE_VARS := CONFIG FORK_CONFIG RUN MARKET MARKET_A MARKET_B ORACLE GUARDIAN_GROUP PIN_BLOCK \
+	VAULT ADAPTER RPC_URL DEPLOYER_PRIVATE_KEY ETHERSCAN_API_KEY VERIFY RESUME CHAIN_ID EXECUTOR ARTIFACTS_DIR \
+	FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED ACCEPTANCE_RPC_URL ACCEPTANCE_REGISTRY ACCEPTANCE_PAUSER_COMMITTEE \
+	ACCEPTANCE_ENABLE_SETTLEMENT
+
+define capture_exported_value
+_DOTENV_ORIGIN_$(1) := $$(origin $(1))
+_DOTENV_VALUE_$(1) := $$(value $(1))
+endef
+$(foreach variable,$(DOTENV_OVERRIDE_VARS),$(eval $(call capture_exported_value,$(variable))))
+
 -include .env
+
+define restore_exported_value
+ifneq ($$(filter environment%,$$(_DOTENV_ORIGIN_$(1))),)
+$(1) := $$(_DOTENV_VALUE_$(1))
+endif
+endef
+$(foreach variable,$(DOTENV_OVERRIDE_VARS),$(eval $(call restore_exported_value,$(variable))))
+
 export
+unexport DOTENV_OVERRIDE_VARS
+unexport $(addprefix _DOTENV_ORIGIN_,$(DOTENV_OVERRIDE_VARS))
+unexport $(addprefix _DOTENV_VALUE_,$(DOTENV_OVERRIDE_VARS))
 
 FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test
 FORK_PATH := test/fork/**
@@ -11,12 +35,11 @@ FORK_PATH := test/fork/**
 # `deployed/$(RUN)/` by passing it as ARTIFACTS_DIR. RPC credentials stay in `.env`; the command line carries
 # only the non-secret deployment choices.
 CONFIG ?= mainnet
+FORK_CONFIG ?= fork-$(CONFIG)
 RUN ?=
 MARKET ?= weth-wsteth
 ORACLE ?= weth-wsteth
 GUARDIAN_GROUP ?= $(MARKET)
-CIRCUIT_BREAKER ?= lido-lend
-IRM ?= linear-kink
 PIN_BLOCK ?=
 VAULT ?= weth-wsteth
 ADAPTER ?= $(VAULT)
@@ -49,7 +72,7 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-linear-kink-irm deploy-vault-v2 verify-vault-v2 deploy-exit-books deploy-protocol deploy-market deploy-run activate-markets deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop test-fork-live test-fork-provision
+.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-vault-v2 verify-vault-v2 deploy-exit-books deploy-protocol deploy-market deploy-run activate-markets deploy-wizard acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop test-fork-live test-fork-provision
 
 help:
 	@echo "Targets:"
@@ -59,15 +82,14 @@ help:
 	@echo "  test-local    forge test on the local suites only (excludes test/fork/; no RPC)"
 	@echo "  test-fork     forge test on test/fork/ only; the suites revert without the fork setup"
 	@echo "  deploy-oracle CONFIG=<config> RUN=<run> ORACLE=<name>"
-	@echo "  deploy-circuit-breaker CONFIG=<config> RUN=<run> CIRCUIT_BREAKER=<name>"
+	@echo "  deploy-circuit-breaker CONFIG=<config> RUN=<run>"
 	@echo "  deploy-protocol CONFIG=<config> RUN=<run>  (backbone + exit books; markets are separate)"
 	@echo "  deploy-guardian CONFIG=<config> RUN=<run> GUARDIAN_GROUP=<group>  (before its markets)"
-	@echo "  deploy-linear-kink-irm CONFIG=<config> RUN=<run> IRM=<name>"
 	@echo "  deploy-vault-v2 CONFIG=<config> RUN=<existing-run> VAULT=<name> ADAPTER=<name>"
 	@echo "  verify-vault-v2 RUN=<run> VAULT=<name> ADAPTER=<name>  (deploy-vault-v2 runs this itself)"
 	@echo "  deploy-exit-books CONFIG=<config> RUN=<existing-run>"
 	@echo "  deploy-market CONFIG=<config> RUN=<run> MARKET=<name>"
-	@echo "  deploy-run CONFIG=<config> RUN=<run> CIRCUIT_BREAKER=<name> ORACLE=<name> MARKET=<name>"
+	@echo "  deploy-run CONFIG=<config> RUN=<run> ORACLE=<name> MARKET=<name>"
 	@echo "             (current single-CircuitBreaker, single-oracle, single-market workflow)"
 	@echo "                 deploy targets verify by default; set VERIFY=false for local networks"
 	@echo "                 retry an interrupted target immediately with RESUME=true"
@@ -88,12 +110,13 @@ help:
 	@echo "  doc           forge build --ast + regenerate docs/specs/api/ from NatSpec"
 	@echo "  ci            build + lint + test-local  (mirrors ci.yml's local job)"
 	@echo "  clean         forge clean"
-	@echo "  provision-fork CONFIG=<config> [PIN_BLOCK=<n>]  deploy + activate onto a local anvil fork"
-	@echo "                  RPC_URL must point at a real archive node — that is what anvil forks"
+	@echo "  provision-fork CONFIG=<network> [FORK_CONFIG=<config>] [PIN_BLOCK=<n>]"
+	@echo "                  deploy + activate using fork-<network> config by default"
+	@echo "                  RPC_URL is the archive node when no compatible anvil already runs"
 	@echo "                  PIN_BLOCK pins the upstream block, making the run reproducible"
 	@echo "  test-fork-live  run the fork suites against an already-provisioned local anvil"
 	@echo "  provision-stop  stop the anvil provision-fork started"
-	@echo "  test-fork-provision  one-shot: provision-fork -> test-fork against it -> provision-stop"
+	@echo "  test-fork-provision  one-shot: provision -> test; stops only an anvil started by this invocation"
 
 build:
 	forge build
@@ -138,18 +161,13 @@ deploy-oracle-usdy:
 
 deploy-circuit-breaker:
 	$(require_deploy_context)
-	@$(DEPLOY_ENV) forge script script/DeployCircuitBreaker.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(CIRCUIT_BREAKER)" $(DEPLOY_FLAGS)
-	$(call archive_broadcast,DeployCircuitBreaker.s.sol,circuit-breaker-$(CIRCUIT_BREAKER))
+	@$(DEPLOY_ENV) forge script script/DeployCircuitBreaker.s.sol --sig 'run(string)' "$(CONFIG)" $(DEPLOY_FLAGS)
+	$(call archive_broadcast,DeployCircuitBreaker.s.sol,circuit-breaker)
 
 deploy-guardian:
 	$(require_deploy_context)
 	@$(DEPLOY_ENV) forge script script/DeployGuardianSignals.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(GUARDIAN_GROUP)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployGuardianSignals.s.sol,guardian-$(GUARDIAN_GROUP))
-
-deploy-linear-kink-irm:
-	$(require_deploy_context)
-	@$(DEPLOY_ENV) forge script script/DeployLinearKinkIrm.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(IRM)" $(DEPLOY_FLAGS)
-	$(call archive_broadcast,DeployLinearKinkIrm.s.sol,irm-$(IRM))
 
 # The vault + its Morpho adapter in one broadcast: the adapter's parent vault is a constructor immutable.
 # Needs an existing run — the adapter's other immutables are that run's core and IRM router.
@@ -164,7 +182,11 @@ deploy-vault-v2:
 # artifacts recorded.
 verify-vault-v2:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
+	@test -n "$(VAULT)" || { echo "ERROR: set VAULT"; exit 1; }
+	@test -n "$(ADAPTER)" || { echo "ERROR: set ADAPTER"; exit 1; }
 	@test -n "$(ETHERSCAN_API_KEY)" || { echo "ERROR: set ETHERSCAN_API_KEY"; exit 1; }
+	@ARTIFACTS_DIR="$(RUN)" forge script script/DeployVaultV2.s.sol \
+		--sig 'validateArtifacts(string,string)' "$(VAULT)" "$(ADAPTER)"
 	@set -e; \
 	V="deployed/$(RUN)/vaults/$(VAULT).toml"; A="deployed/$(RUN)/adapters/$(ADAPTER).toml"; \
 	test -f "$$V" || { echo "ERROR: no vault artifact at $$V"; exit 1; }; \
@@ -198,7 +220,7 @@ deploy-market:
 # The current mainnet profile has one WstETH oracle and one market. Keep the composition explicit until the
 # config itself contains a typed deploy plan; do not guess an oracle implementation from a market name in Make.
 deploy-run:
-	$(MAKE) deploy-circuit-breaker CONFIG="$(CONFIG)" RUN="$(RUN)" CIRCUIT_BREAKER="$(CIRCUIT_BREAKER)"
+	$(MAKE) deploy-circuit-breaker CONFIG="$(CONFIG)" RUN="$(RUN)"
 	$(MAKE) deploy-oracle CONFIG="$(CONFIG)" RUN="$(RUN)" ORACLE="$(ORACLE)"
 	$(MAKE) deploy-protocol CONFIG="$(CONFIG)" RUN="$(RUN)"
 	$(MAKE) deploy-guardian CONFIG="$(CONFIG)" RUN="$(RUN)" GUARDIAN_GROUP="$(GUARDIAN_GROUP)"
@@ -237,20 +259,19 @@ fork-run:
 deploy-wizard:
 	@printf 'Config [mainnet]: '; read config; config=$${config:-mainnet}; \
 	printf 'Run directory (required): '; read run; test -n "$$run" || { echo 'ERROR: run directory is required'; exit 1; }; \
-	printf 'Step (circuit-breaker, oracle, oracle-usdy, guardian, kink-irm, vault-v2, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
-	printf 'Resource name (blank uses lido-lend for CircuitBreaker, weth-wsteth otherwise): '; read name; \
-	if [ -z "$$name" ]; then case "$$step" in circuit-breaker) name=lido-lend ;; kink-irm) name=linear-kink ;; *) name=weth-wsteth ;; esac; fi; \
+	printf 'Step (circuit-breaker, oracle, oracle-usdy, guardian, vault-v2, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
+	printf 'Resource name (shared by oracle/guardian/market for full; ignored for circuit-breaker/protocol/exit-books): '; read name; \
+	name=$${name:-weth-wsteth}; \
 	case "$$step" in \
-		circuit-breaker) exec $(MAKE) deploy-circuit-breaker CONFIG="$$config" RUN="$$run" CIRCUIT_BREAKER="$$name" ;; \
+		circuit-breaker) exec $(MAKE) deploy-circuit-breaker CONFIG="$$config" RUN="$$run" ;; \
 		oracle) exec $(MAKE) deploy-oracle CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		oracle-usdy) exec $(MAKE) deploy-oracle-usdy CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		guardian) exec $(MAKE) deploy-guardian CONFIG="$$config" RUN="$$run" GUARDIAN_GROUP="$$name" ;; \
-		kink-irm) exec $(MAKE) deploy-linear-kink-irm CONFIG="$$config" RUN="$$run" IRM="$$name" ;; \
 		vault-v2) exec $(MAKE) deploy-vault-v2 CONFIG="$$config" RUN="$$run" VAULT="$$name" ADAPTER="$$name" ;; \
 		exit-books) exec $(MAKE) deploy-exit-books CONFIG="$$config" RUN="$$run" ;; \
 		protocol) exec $(MAKE) deploy-protocol CONFIG="$$config" RUN="$$run" ;; \
 		market) exec $(MAKE) deploy-market CONFIG="$$config" RUN="$$run" MARKET="$$name" ;; \
-		full) exec $(MAKE) deploy-run CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
+		full) exec $(MAKE) deploy-run CONFIG="$$config" RUN="$$run" ORACLE="$$name" MARKET="$$name" GUARDIAN_GROUP="$$name" ;; \
 		*) echo 'ERROR: unknown step'; exit 1 ;; \
 	esac
 
@@ -295,11 +316,12 @@ clean:
 
 # Deploy + activate the fork markets on a local anvil fork of CONFIG's network, leaving `deployed/fork/` for the
 # fork suites to bind to. Every step is an ordinary deploy target; only the final activation is a script rather
-# than a governance motion. RPC_URL is the UPSTREAM archive node anvil forks — the deploy steps themselves are
-# pointed at the local anvil by the driver.
+# than a governance motion. FORK_CONFIG defaults to fork-$(CONFIG), keeping test-only role holders out of the
+# production config. RPC_URL is the upstream archive node when the driver starts anvil; deploy steps target the
+# local node in either mode.
 provision-fork:
-	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL to a mainnet archive RPC (this is what anvil forks)"; exit 1; }
-	bash script/provision-fork.sh "$(RPC_URL)" "$(CONFIG)" "$(PIN_BLOCK)"
+	@PROVISION_RESULT_FILE="$(PROVISION_RESULT_FILE)" PROVISION_REQUEST_TOKEN="$(PROVISION_REQUEST_TOKEN)" \
+		bash script/provision-fork.sh "$(RPC_URL)" "$(FORK_CONFIG)" "$(PIN_BLOCK)"
 
 provision-stop:
 	bash script/provision-fork.sh stop
@@ -308,10 +330,44 @@ provision-stop:
 # tests. Fails with what to do when nothing is provisioned.
 test-fork-live:
 	bash script/provision-fork.sh check
-	$(MAKE) test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork
+	$(MAKE) test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork FORK_BLOCK=
 
-# One-shot local flow: provision, run the fork suites against the provisioned anvil, then tear it down. The
-# fork-test exit status survives the teardown.
+# One-shot local flow. A private request/result handshake says whether this invocation started or reused Anvil;
+# cleanup stops only the exact started identity, including when a signal lands as recursive make returns.
 test-fork-provision:
-	$(MAKE) provision-fork
-	$(MAKE) test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork; status=$$?; $(MAKE) provision-stop; exit $$status
+	@set -e; \
+	umask 077; \
+	tmp_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/lido-lend-provision.XXXXXX"); \
+	result_file="$$tmp_dir/result"; request_token="request-$${tmp_dir##*/}-$$$$"; \
+	started_pid=; started_at=; started_token=; result_mode=; \
+	load_result() { \
+		test -f "$$result_file" || return 1; \
+		test "$$(sed -n '1p' "$$result_file")" = "$$request_token" || return 2; \
+		result_mode=$$(sed -n '2p' "$$result_file"); \
+		case "$$result_mode" in \
+			reused) started_pid=; started_at=; started_token= ;; \
+			started) \
+				started_pid=$$(sed -n '3p' "$$result_file"); \
+				started_at=$$(sed -n '4p' "$$result_file"); \
+				started_token=$$(sed -n '5p' "$$result_file"); \
+				case "$$started_pid" in ''|*[!0-9]*) return 3 ;; esac; \
+				test -n "$$started_at" && test -n "$$started_token" || return 3 ;; \
+			*) return 3 ;; \
+		esac; \
+	}; \
+	cleanup() { \
+		status=$$?; trap - EXIT HUP INT TERM; set +e; \
+		load_result; result_status=$$?; \
+		if test "$$result_status" -eq 0 && test "$$result_mode" = started; then \
+			bash script/provision-fork.sh stop-if-owned "$$started_pid" "$$started_at" "$$started_token"; stop_status=$$?; \
+			test "$$status" -ne 0 || status=$$stop_status; \
+		fi; \
+		test "$$status" -ne 0 || test "$$result_status" -eq 0 || status=1; \
+		rm -rf "$$tmp_dir"; \
+		exit "$$status"; \
+	}; \
+	trap cleanup EXIT; \
+	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+	$(MAKE) provision-fork PROVISION_RESULT_FILE="$$result_file" PROVISION_REQUEST_TOKEN="$$request_token"; \
+	load_result || { echo 'ERROR: provision did not publish a valid result for this invocation' >&2; exit 1; }; \
+	$(MAKE) test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork FORK_BLOCK=

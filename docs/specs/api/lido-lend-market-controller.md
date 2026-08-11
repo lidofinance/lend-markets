@@ -2,7 +2,7 @@
 
 # LidoLendMarketController
 
-Full external surface of `LidoLendMarketController`: the core hook interface and AccessControl (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the borrower dashboard. The controller implements this interface, so it is the single source for the dashboard struct, events, errors, and the function docs the contract inherits.
+Full external surface of `LidoLendMarketController`: the core hook interface and AccessControlEnumerable (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the borrower dashboard. The controller implements this interface, so it is the single source for the dashboard struct, events, errors, and the function docs the contract inherits.
 
 ## Enums
 
@@ -39,11 +39,12 @@ struct BorrowerPosition {
     uint256 debtAssets;
     uint256 settlementLtv;
     bool isNextToSettle;
-    uint256 slice;
+    uint256 personalSliceAssets;
+    uint256 queueRootSliceAssets;
 }
 ```
 
-One-read borrower snapshot for off-chain dashboards: collateral split, activation timer, guardian signal, debt, personal settle-down LTV, and live settle exposure.
+One-read borrower snapshot for off-chain dashboards: collateral split, activation timer, guardian signal, debt, personal settlement target, current queue status, and policy quotes.
 
 **Fields**
 
@@ -56,9 +57,10 @@ One-read borrower snapshot for off-chain dashboards: collateral split, activatio
 | `flagCount` | `uint256` | Raw guardian flags on the account, regardless of status. |
 | `banned` | `bool` | Hard-blocked by a latched guardian ban. |
 | `debtAssets` | `uint256` | Current borrow debt, in loan assets. |
-| `settlementLtv` | `uint256` | Borrower's personal settle-down target LTV (WAD), 0 when unset. |
+| `settlementLtv` | `uint256` | Borrower's personal post-cut target LTV (WAD), 0 when unset. |
 | `isNextToSettle` | `bool` | The borrower is next in line to be settled. |
-| `slice` | `uint256` | Loan assets that may be cut from this position in one settle now. |
+| `personalSliceAssets` | `uint256` | Personal settlement-LTV allowance in loan assets. |
+| `queueRootSliceAssets` | `uint256` | Prospective queue-root policy allowance in loan assets. |
 
 ### `SupplyHookData`
 
@@ -260,9 +262,9 @@ Payload for the `Settle` hook.
 | `borrower` | `address` | The address whose debt is canceled and collateral seized. |
 | `receiver` | `address` | The address receiving the seized collateral. |
 | `supplySharesBurned` | `uint256` | The supply shares burned from onBehalf, after resolution. |
-| `borrowAssetsCanceled` | `uint256` | The loan-token debt canceled, computed in core. |
+| `borrowAssetsCanceled` | `uint256` | The loan-token debt canceled, computed in core. Warning: this is the canceled shares priced up, so it can exceed the market's `totalBorrowAssets` by one unit, and the core floors that total at zero when it applies the cut. A controller deriving post-cut state from this value must apply the same floor instead of subtracting directly. |
 | `borrowSharesCanceled` | `uint256` | The borrow shares burned from borrower, computed in core. |
-| `seizedAssets` | `uint256` | The collateral-token amount seized, computed in core. |
+| `seizedAssets` | `uint256` | The collateral-token amount seized, computed in core. This is the canceled shares priced down, so it can be worth up to one loan-asset unit less than `borrowAssetsCanceled`. |
 
 ### `CollateralActivationConfig`
 
@@ -292,7 +294,7 @@ Governance-tunable activation parameters, validated by `CollateralActivationLib.
 | `activatingLockAmount` | `uint128` | Lock on activating collateral, honored by `withdraw`. 0 disables it. Forced paths pass floor 0. |
 | `activatingLockDuration` | `uint40` | How long, from `activatingStart`, the `activatingLockAmount` portion stays unwithdrawable. Once it elapses the locked collateral becomes withdrawable even if the lot has not matured. 0 disables the lock. |
 | `minActivationAmount` | `uint128` | Dust threshold. Collateral below it does not enter activation. |
-| `maxGuardiansQuorumDelay` | `uint40` | Liveness fallback for the quorum gate, measured from the lot's start. Once it elapses the lot matures even if the guardian quorum has not scanned past the unlock. Must exceed the base-delay cap (maxActivationDelay), else it fires at the unlock and the quorum gets no window. 0 matures at the base unlock (no gate). |
+| `maxGuardiansQuorumDelay` | `uint40` | Liveness fallback for the quorum gate, measured from the lot's start. Once it elapses the lot matures even if the guardian quorum has not scanned past the unlock. Must exceed the base-delay cap (maxActivationDelay), else it fires at the unlock and the quorum gets no window. 0 matures at the base unlock (no gate). A nonzero value cannot exceed 7 days. |
 | `delayPerStrike` | `uint40` | Activation-delay surcharge added per guardian strike. 0 disables it, so strikes do not slow activation and only the ban gates a flagged borrower. |
 | `delayPerSuspect` | `uint40` | Activation-delay surcharge added per active suspect report, applied only to lots whose activation started before the suspect snapshot lapses. 0 disables it. |
 
@@ -322,6 +324,14 @@ event SupplyCapSet(uint256 cap, address indexed account);
 
 Emitted when the supply cap is set.
 
+### `GuardianSignalsSet`
+
+```solidity
+event GuardianSignalsSet(address indexed guardianSignals);
+```
+
+Emitted once when the market binds its guardian-signals registry at initialization.
+
 ## Errors
 
 ### `Unauthorized`
@@ -331,6 +341,14 @@ error Unauthorized();
 ```
 
 Thrown when the hook caller is not the core.
+
+### `ZeroAddress`
+
+```solidity
+error ZeroAddress();
+```
+
+Thrown when a required address argument is zero.
 
 ### `InvalidMarketId`
 
@@ -380,6 +398,14 @@ error InsufficientActiveCollateral();
 
 Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
 
+### `ActivationLockActive`
+
+```solidity
+error ActivationLockActive();
+```
+
+Thrown when a withdrawal would leave raw collateral below the amount still held in the un-matured buckets (a locked activating lot plus dust).
+
 ### `ZeroBorrowAssets`
 
 ```solidity
@@ -388,13 +414,13 @@ error ZeroBorrowAssets();
 
 Thrown when a borrow would mint borrow shares while transferring zero loan assets.
 
-### `BorrowBelowDustMarketMinimum`
+### `BorrowShareRateExceeded`
 
 ```solidity
-error BorrowBelowDustMarketMinimum(uint256 minimum, uint256 attempted);
+error BorrowShareRateExceeded();
 ```
 
-Thrown when a borrow draws fewer than `minimum` loan assets while the market's total borrow assets are still below that floor — the dust regime where borrow-share inflation would be cheap.
+Thrown when a borrow, repay, or settle would push the market's borrow-share rate over the ceiling.
 
 ### `PositionAccountingMismatch`
 
@@ -419,6 +445,14 @@ error SettlementExceedsAllowed();
 ```
 
 Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
+
+### `SettlementExceedsSettleableSupply`
+
+```solidity
+error SettlementExceedsSettleableSupply();
+```
+
+Thrown when a root-policy cut exceeds the lender's illiquid supply tail.
 
 ## Functions
 
@@ -462,13 +496,13 @@ function RESUMER_ROLE() external view returns (bytes32);
 
 Role allowed to lift a pause.
 
-### `DUST_MARKET_MIN_BORROW`
+### `MAX_BORROW_SHARE_RATE`
 
 ```solidity
-function DUST_MARKET_MIN_BORROW() external view returns (uint256);
+function MAX_BORROW_SHARE_RATE() external view returns (uint256);
 ```
 
-While the market's total borrow assets sit below this amount, every borrow must draw at least this much loan assets. It fences borrow-share inflation by keeping the market out of the dust regime where a 1-wei borrow mints a disproportionate slice of the outstanding shares.
+Ceiling on the market's borrow-share rate; borrow/repay/settle may not push past it (liquidation exempt). Bounds rounding-driven borrow-share inflation.
 
 ### `maxDeposit`
 
@@ -514,14 +548,6 @@ function currentActivationDelay(
 
 Activation delay a deposit of `inflowIncrement` would incur at the current inflow — for borrowers gauging the wait.
 
-### `grantInstantActivation`
-
-```solidity
-function grantInstantActivation(address caller) external;
-```
-
-Whitelist a trusted caller contract (e.g. a router supplying on behalf of users) so its supplies cross straight into `active`, skipping the activation timer and inflow throttle. Risk-increasing path (waives the anti-flash/Sybil delay): reserved for trusted, access-gated callers — never a permissionless helper, which would waive the throttle for everyone routing through it. Keyed on the supply caller, not the position owner. Ban and freeze still gate as usual.
-
 ### `hasInstantActivation`
 
 ```solidity
@@ -536,7 +562,7 @@ Whether `caller`'s supplies skip the activation timer.
 function setSettlementConfig(SettlementConfig calldata config) external;
 ```
 
-Set the settlement config in one shot — the knobs size the same cut and move together. A cut is the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the cut that lowers the borrower's LTV by `ltvStepBps`. `fullCutBelowCollateral` lifts the cut to the full debt when the post-cut collateral would be dust.
+Sets all queue-root settlement sizing parameters atomically. The nominal queue-root cut is the maximum of `sliceFloorBps` of its debt, `sliceFloorAssets`, and the cut required to lower its LTV by `ltvStepBps`. If that cut would leave collateral below `fullCutBelowCollateral`, the queue-root allowance is promoted to the full debt. Personal settlement-LTV quotes are unaffected.
 
 ### `settlementConfig`
 
@@ -552,7 +578,7 @@ The current settlement config.
 function setSettlementLtv(uint256 ltv) external;
 ```
 
-Borrower opts into auto-settle down to a target post-cut LTV (WAD). 0 clears it.
+Sets the caller's personal post-cut target LTV (WAD). When current LTV exceeds it, the position may be settled without being the queue root. 0 clears it.
 
 ### `settlementLtv`
 
@@ -562,7 +588,7 @@ function settlementLtv(
 ) external view returns (uint256 ltv, uint256 sliceAssets);
 ```
 
-Borrower's personal settle-down target LTV (WAD) and the slice it currently implies.
+Borrower's personal post-cut target LTV (WAD) and its target-LTV slice, excluding root policy.
 
 ### `settlementBorrowersCount`
 
@@ -585,20 +611,23 @@ O(1): it checks the riskiest tracked position (the highest debt/collateral), who
 ### `nextSettlementBorrower`
 
 ```solidity
-function nextSettlementBorrower() external view returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
+function nextSettlementBorrower(
+    uint256 budgetSupplyShares
+) external view returns (address borrower, SettlementSlice memory slice);
 ```
 
-The settle cut the policy allows against the queue root (the borrower a head-first settle cuts first): `settlementFor` applied to it, with the root address. `borrower` is address(0) when empty.
+The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance or the borrower's own settlement-LTV allowance — shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 for the policy cut itself, unshrunk. A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
 
 ### `settlementFor`
 
 ```solidity
 function settlementFor(
-    address borrower
-) external view returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
+    address borrower,
+    uint256 budgetSupplyShares
+) external view returns (SettlementQuote memory quote);
 ```
 
-The settle cut the policy allows against `borrower`, as the two anchors a core `settle` accepts: the caller passes one and 0 for the other — `supplyShares` to settle supply-anchored, `borrowShares` borrow-anchored. `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All zero when ineligible.
+The borrower's personal cut and its prospective queue-root cut, each shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 for the policy cuts themselves, unshrunk. The queue-root quote does not assert that the borrower is currently the root. A candidate that grants no cut is represented by an all-zero slice.
 
 ### `settlementBorrowers`
 
@@ -617,7 +646,7 @@ A window of queued borrowers (approximate top-down order) and their risk keys: u
 function freeze() external;
 ```
 
-Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation maturation is deferred. Debt-free positions can still withdraw their collateral.
+Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation maturation is deferred. Freeze adds no debt gate to debt-free withdrawals, but existing activation locks still apply.
 
 ### `unfreeze`
 
@@ -659,7 +688,7 @@ function positionOf(
 ) external view returns (BorrowerPosition memory);
 ```
 
-One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt, personal settle-down LTV, and live settle exposure (next-to-settle flag + slice).
+One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt, personal settlement target, current queue status, and policy quotes.
 
 ### `collateralActivationConfig`
 
@@ -679,13 +708,13 @@ function setCollateralActivationConfig(
 
 Replace the collateral-activation config.
 
-### `revokeInstantActivation`
+### `setInstantActivation`
 
 ```solidity
-function revokeInstantActivation(address caller) external;
+function setInstantActivation(address caller, bool enabled) external;
 ```
 
-Remove a caller's instant activation, restoring the timer for its supplies.
+Set whether a caller's supplies activate instantly.
 
 ### `supplyCap`
 

@@ -9,25 +9,13 @@ loan_token = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"        # WETH
 collateral_token = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"  # wstETH
 # Zero resolves the oracle artifact recorded under this name.
 oracle = "0x0000000000000000000000000000000000000000"
-# fork-weth-wsteth-kinked deploys its own instance so the two markets hash to different ids.
 oracle_artifact = "weth-wsteth"
 lltv = "945000000000000000"  # 0.945 WAD
-# No irm_artifact key: routed to the backbone AdaptiveCurveIrm, so it carries [curve] below.
-# Zero deploys or resolves the registry identified by guardian_group.
+# Zero resolves the already-deployed registry identified by guardian_group.
 guardian_signals = "0x0000000000000000000000000000000000000000"
 guardian_group = "fork-weth-wsteth"
-# Resolved from deployed/<RUN>/circuit-breakers/<name>.toml and prepended to roles.pausers.
-circuit_breaker_artifact = "lido-lend"
 vault_name = "Lido wstETH/WETH Fork Vault"
 vault_symbol = "lidoWSTETH-WETH-FORK"
-
-[roles]
-managers = []
-# Additional direct pausers only; the referenced CircuitBreaker is prepended automatically.
-pausers = []
-freezers = []
-unfreezers = []
-resumers = ["0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"]   # Agent
 
 # Amounts are strings because TOML integers are limited to int64.
 [activation]

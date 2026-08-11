@@ -30,12 +30,13 @@ fork — the node that HOLDS the deployment — and `ARTIFACTS_DIR` names the de
 not match the forked chain. No registry is composed and no preparation step is needed.
 
 Locally, `make provision-fork` deploys and activates the fork markets onto a local anvil fork of the network
-`CONFIG` names (mainnet by default) and leaves it running; `make test-fork-provision` chains provision -> test
--> teardown:
+`CONFIG` names (mainnet by default), using the test-only `FORK_CONFIG=fork-<CONFIG>`, and leaves it running;
+`make test-fork-provision` chains provision -> test and stops Anvil only when that invocation started it:
 
 ```sh
 make test-fork-provision RPC_URL=<mainnet-archive-rpc>     # one shot
 make provision-fork RPC_URL=<archive-rpc>                  # or keep the anvil for repeated runs
+make provision-fork                                        # reuses a compatible anvil already on :8545
 make test-fork-live                                       # re-run the suites against it, no re-provisioning
 make provision-stop
 ```
@@ -77,7 +78,9 @@ make test-fork-provision  # provision -> test-fork against it -> teardown
 ```
 
 Environment variables are documented in `.env.example`. Copy it to `.env` and set `RPC_URL`; fork tests
-additionally need `ARTIFACTS_DIR`, which the provisioning targets above pass for you.
+additionally need `ARTIFACTS_DIR`, which the provisioning targets above pass for you. For every documented
+input, command-line assignments take precedence over exported environment values, which take precedence over
+`.env` and then Makefile defaults.
 
 CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`). Locally `forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that provisions a deployment onto a local anvil fork from the `RPC_URL` secret and runs `test/fork/` against it), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same provisioned anvil), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
 

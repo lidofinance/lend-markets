@@ -111,9 +111,10 @@ library MarketActions {
     }
 
     /// @notice Lender (`owner`) targeted-settles `shares` against `borrowers`, collateral to `receiver`.
-    ///         Best-effort and liquidity-neutral: asserts `sharesBurned <= shares`, `loanAssets == 0`, the
-    ///         owner's share burn, the collateral received by `receiver`, and — when `owner != receiver` —
-    ///         that the owner's own collateral is untouched (all of it routed to `receiver`).
+    ///         Best-effort within the batch but reverts when no borrower is settled. On success, asserts
+    ///         `sharesBurned <= shares`, `loanAssets == 0`, the owner's share burn, the collateral received by
+    ///         `receiver`, and — when `owner != receiver` — that the owner's own collateral is untouched (all of it
+    ///         routed to `receiver`).
     function settle(Market storage self, address owner, uint256 shares, address[] memory borrowers, address receiver)
         internal
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)

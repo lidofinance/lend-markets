@@ -110,6 +110,44 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
+    /// @dev Keys around the former uint96 boundary retain their exact value and order.
+    function test_keysAroundUint96Boundary_remainDistinct() public {
+        uint256 boundary = uint256(type(uint96).max) + 1;
+        h.upsert(_a(1), boundary - 1);
+        h.upsert(_a(2), boundary);
+
+        (address root, uint256 rootKey) = h.peek();
+        assertEq(root, _a(2), "first key above uint96 boundary is root");
+        assertEq(rootKey, boundary, "full key retained");
+        assertEq(_keyOf(_a(1)), boundary - 1, "key below boundary retained");
+    }
+
+    /// @dev Two keys that formerly saturated must remain ordered whichever one is inserted first.
+    function test_keysAboveUint96Boundary_orderRegardlessOfInsertion() public {
+        uint256 lower = uint256(type(uint96).max) + 1;
+        uint256 higher = lower + 1;
+
+        h.upsert(_a(1), higher);
+        h.upsert(_a(2), lower);
+        (address root,) = h.peek();
+        assertEq(root, _a(1), "higher first insertion remains root");
+
+        h = new HeapHarness();
+        h.upsert(_a(2), lower);
+        h.upsert(_a(1), higher);
+        (root,) = h.peek();
+        assertEq(root, _a(1), "higher second insertion becomes root");
+    }
+
+    /// @dev The largest risk key settlement can commit — max uint128 borrow shares against one raw collateral
+    ///      unit — is below uint256 and must not lose precision in the heap.
+    function test_maxSettlementRiskKey_retainsFullPrecision() public {
+        uint256 key = uint256(type(uint128).max) * 1e18;
+        h.upsert(_a(1), key);
+        (, uint256 rootKey) = h.peek();
+        assertEq(rootKey, key, "188-bit key retained");
+    }
+
     /// @dev Re-keying a non-root account above the current root sifts it up to become the new root.
     function test_rekeyUp_promotesToRoot() public {
         h.upsert(_a(1), 100);
@@ -175,7 +213,7 @@ contract MaxHeapLibTest is Test {
         assertEq(rootKey, 100, "root still the global max");
     }
 
-    // ── edge cases: saturation, zero key, ties, fresh-insert sift-up, bounds ──
+    // ── edge cases: zero key, ties, fresh-insert sift-up, bounds ──
 
     /// @dev Multiple accounts sharing the same key still satisfy the parent >= child heap property.
     function test_tiedKeys_heapHolds() public {
@@ -281,17 +319,17 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
-    // ── edge cases: saturation, zero key, ties, fresh-insert sift-up, bounds ──
+    // ── edge cases: zero key, ties, fresh-insert sift-up, bounds ──
 
-    /// @dev Keys above uint96 max are clamped to the uint96 cap on store; a saturated account is the root.
-    function test_saturatesKeysAboveUint96() public {
-        h.upsert(_a(1), type(uint256).max); // saturates to type(uint96).max
-        h.upsert(_a(2), uint256(type(uint96).max)); // already the cap
+    /// @dev Keys above the former uint96 cap retain their full order on store.
+    function test_retainsKeysAboveUint96() public {
+        h.upsert(_a(1), type(uint256).max);
+        h.upsert(_a(2), uint256(type(uint96).max));
         h.upsert(_a(3), 50);
-        assertEq(_keyOf(_a(1)), uint256(type(uint96).max), "key saturates to uint96 max");
-        assertEq(_keyOf(_a(2)), uint256(type(uint96).max), "cap stored as-is");
+        assertEq(_keyOf(_a(1)), type(uint256).max, "max key retained");
+        assertEq(_keyOf(_a(2)), uint256(type(uint96).max), "former cap retained exactly");
         (address root,) = h.peek();
-        assertTrue(root == _a(1) || root == _a(2), "a saturated account is root");
+        assertEq(root, _a(1), "larger full key is root");
         _assertHeap();
     }
 

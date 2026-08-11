@@ -141,7 +141,7 @@ contract ActivationTest is LidoLendSetup {
     ///      with no warp past the timer.
     function test_instantActivation_bypassesTheTimer() public {
         Market storage m = _m();
-        m.controller.grantInstantActivation(_actor("borrower"));
+        m.controller.setInstantActivation(_actor("borrower"), true);
         address borrower = _seedLenderAndCollateral(100 ether);
 
         // No warp: instant activation routes the lot straight to active, so the borrow works immediately.

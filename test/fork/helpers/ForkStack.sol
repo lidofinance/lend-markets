@@ -19,7 +19,6 @@ import {ILidoLendERC4626} from "../../../src/interfaces/ILidoLendERC4626.sol";
 import {IGuardianSignals} from "../../../src/interfaces/IGuardianSignals.sol";
 import {CollateralActivationConfig} from "../../../src/types/CollateralActivationTypes.sol";
 import {WAD} from "../../../src/libs/Constants.sol";
-import {ProtocolConfigFile} from "../../../script/lib/ProtocolConfigFile.sol";
 import {ForkTest} from "./ForkTest.sol";
 
 /// @dev Read-only view of the IRM router's manager — production wiring assigns it to the EasyTrack
@@ -92,19 +91,35 @@ abstract contract ForkStack is Test, ForkTest {
     ///      artifacts. A run recording no markets at all IS a broken setup and reverts, so a mistyped role cannot
     ///      pass as an absent one.
     function _marketForRole(string memory role) internal returns (string memory) {
-        Vm.DirEntry[] memory entries = vm.readDir(ProtocolConfigFile.marketsDir());
+        Vm.DirEntry[] memory entries = vm.readDir(string.concat(_runArtifactsDir(), "/markets"));
         uint256 seen;
+        uint256 matches;
+        string memory marketName;
+        bytes32 expected = keccak256(bytes(role));
         for (uint256 i; i < entries.length; ++i) {
             if (entries[i].isDir || entries[i].isSymlink) continue;
             ++seen;
-            string memory artifact = vm.readFile(entries[i].path);
-            if (!vm.keyExistsToml(artifact, ".market.role")) continue;
-            if (keccak256(bytes(vm.parseTomlString(artifact, ".market.role"))) != keccak256(bytes(role))) continue;
-            return vm.parseTomlString(artifact, ".market.name");
+            string memory artifact = _readCompatibleArtifact(entries[i].path);
+            require(
+                vm.keyExistsToml(artifact, ".market.role"),
+                string.concat("ForkStack: market artifact is missing market.role: ", entries[i].path)
+            );
+            string memory recorded = vm.parseTomlString(artifact, ".market.role");
+            require(
+                bytes(recorded).length != 0,
+                string.concat("ForkStack: market artifact has empty market.role: ", entries[i].path)
+            );
+            if (keccak256(bytes(recorded)) != expected) continue;
+            ++matches;
+            require(matches == 1, string.concat("ForkStack: multiple markets have role '", role, "'"));
+            marketName = vm.parseTomlString(artifact, ".market.name");
         }
         require(seen != 0, "ForkStack: the bound run records no markets");
-        vm.skip(true, string.concat("ForkStack: run has no market for role '", role, "'"));
-        return "";
+        if (matches == 0) {
+            vm.skip(true, string.concat("ForkStack: run has no market for role '", role, "'"));
+            return "";
+        }
+        return marketName;
     }
 
     /// @notice Resolve and validate the market recorded as `name` in the run, returning a fully-typed handle.
@@ -285,7 +300,7 @@ abstract contract ForkStack is Test, ForkTest {
         // Instant-activate the pin borrower's own supply (keyed on the supply caller), so its collateral is
         // borrowable with no maturation wait. Granting instant activation is manager-gated.
         _grantSelfManager(m);
-        m.controller.grantInstantActivation(pinBorrower);
+        m.controller.setInstantActivation(pinBorrower, true);
 
         deal(address(m.collateralToken), pinBorrower, collateral);
         vm.startPrank(pinBorrower);

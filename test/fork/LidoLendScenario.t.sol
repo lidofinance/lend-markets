@@ -9,6 +9,7 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {SettlementSlice} from "../../src/types/SettlementTypes.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
 
@@ -147,7 +148,7 @@ contract LidoLendScenarioTest is ForkStack {
     ///         borrows with no maturation wait. Revoking restores the timer for fresh deposits.
     function test_instantActivation_skipsMaturationDelay() public {
         TestMarket memory ctx = _ctx();
-        ctx.controller.grantInstantActivation(BORROWER);
+        ctx.controller.setInstantActivation(BORROWER, true);
         assertTrue(ctx.controller.hasInstantActivation(BORROWER), "borrower whitelisted");
 
         _requireDepositHeadroom(m, 10 ether);
@@ -166,7 +167,7 @@ contract LidoLendScenarioTest is ForkStack {
         assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrowed with no maturation wait");
 
         // Revoke restores the timer: a fresh deposit enters activation instead of going straight to active.
-        ctx.controller.revokeInstantActivation(BORROWER);
+        ctx.controller.setInstantActivation(BORROWER, false);
         uint256 more = _mintWstETH(ctx.market, BORROWER, 15 ether);
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, more, BORROWER, "");
@@ -284,7 +285,7 @@ contract LidoLendScenarioTest is ForkStack {
         // Drain free liquidity to zero so the lender's cut must go through settle, then require the test borrower
         // is the queue root — a pre-existing riskier borrower would otherwise take the slice.
         _pinFreeLiquidity(m, 0);
-        (address root,,,) = ctx.controller.nextSettlementBorrower();
+        (address root,) = ctx.controller.nextSettlementBorrower(0);
         require(root == BORROWER, "settle_happyPath: a pre-existing riskier borrower outranks the test borrower");
 
         _settleAndAssert(ctx, borrowerCollateral);
@@ -334,35 +335,35 @@ contract LidoLendScenarioTest is ForkStack {
 
         // (1) Initial queue order: the three test borrowers are all tracked and the highest-LTV one is at the root.
         assertEq(ctx.controller.settlementBorrowersCount(), countBefore + 3, "all three active borrowers tracked");
-        (address root,,,) = ctx.controller.nextSettlementBorrower();
+        (address root,) = ctx.controller.nextSettlementBorrower(0);
         assertEq(root, BORROWER, "highest-LTV borrower at root");
 
         // Saturate to zero free liquidity so the cuts below settle (adds an over-collateralized pin borrower that
         // ranks below the near-LLTV root, leaving the queue order intact).
         _pinFreeLiquidity(m, 0);
-        (root,,,) = ctx.controller.nextSettlementBorrower();
+        (root,) = ctx.controller.nextSettlementBorrower(0);
         require(root == BORROWER, "settle_heap: pin disturbed the queue root");
 
         // (2) A partial cut on the root, half the allowed slice. Cutting half reduces the root's key without
         //     flipping it below the runner-up.
-        uint256 firstCutShares = _sliceShares(ctx) / 2;
+        uint256 firstCutShares = _rootCutShares(ctx) / 2;
         vm.prank(LENDER);
-        ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, BORROWER, LENDER);
-        (root,,,) = ctx.controller.nextSettlementBorrower();
+        ctx.market.settle(ctx.marketParams, firstCutShares, LENDER, BORROWER, LENDER);
+        (root,) = ctx.controller.nextSettlementBorrower(0);
         assertEq(root, BORROWER, "BORROWER still highest after first partial cut");
 
         // (3) Targeting the second borrower while it isn't the queue root is rejected by the controller hook:
         //     a non-root borrower without a personal settlement LTV has a zero slice, so any cut exceeds it.
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementExceedsAllowed()"));
-        ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (4) SECOND_BORROWER opts in to a 5% post-cut LTV — they are now eligible regardless of
         //     queue position. The same cut now succeeds against them.
         vm.prank(SECOND_BORROWER);
         ctx.controller.setSettlementLtv(0.05e18);
         vm.prank(LENDER);
-        ctx.market.settle(ctx.marketParams, 0, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (5) THIRD_BORROWER (lowest LTV, no settlement LTV) is never touched throughout the scenario.
         Position memory _pLow = ctx.market.position(ctx.id, THIRD_BORROWER);
@@ -404,7 +405,7 @@ contract LidoLendScenarioTest is ForkStack {
         ctx.market.borrow(ctx.marketParams, tailDebt, 0, SECOND_BORROWER, SECOND_BORROWER);
 
         // Precondition at the LIVE rate: the test borrower heads the queue and nobody is bad debt yet.
-        (address root,,,) = ctx.controller.nextSettlementBorrower();
+        (address root,) = ctx.controller.nextSettlementBorrower(0);
         assertEq(root, BORROWER, "high-LTV borrower is the queue head");
         require(
             !ctx.controller.hasBadDebt(), "settle_badDebt: a pre-existing borrower is already bad debt at live rate"
@@ -414,7 +415,7 @@ contract LidoLendScenarioTest is ForkStack {
         _pinFreeLiquidity(m, 0);
 
         // Cut sized to the allowed slice at the real rate (reused after the rebase is cleared).
-        uint256 cut = _sliceShares(ctx) / 2;
+        uint256 cut = _rootCutShares(ctx) / 2;
 
         // Negative rebase RELATIVE to the head's position: drop the wstETH rate so the head's collateral is worth
         // ~10% less than its debt (bad debt) regardless of the live rate. The tail stays healthy.
@@ -432,15 +433,15 @@ contract LidoLendScenarioTest is ForkStack {
         // guard fires on every settle path.
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementBadDebt()"));
-        ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, cut, LENDER, BORROWER, LENDER);
 
         // Restore the rate; the head is solvent again; the same cut against the head now succeeds.
         vm.clearMockedCalls();
         assertFalse(ctx.controller.hasBadDebt(), "head solvent after restore");
-        (root,,,) = ctx.controller.nextSettlementBorrower();
+        (root,) = ctx.controller.nextSettlementBorrower(0);
         require(root == BORROWER, "settle_badDebt: root drifted off the test borrower after restore");
         vm.prank(LENDER);
-        ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, cut, LENDER, BORROWER, LENDER);
     }
 
     /// @notice Settle works on an unhealthy-but-solvent position (LLTV < LTV < 100%).
@@ -466,7 +467,7 @@ contract LidoLendScenarioTest is ForkStack {
         vm.prank(BORROWER);
         ctx.market.borrow(ctx.marketParams, borrowAmount, 0, BORROWER, BORROWER);
 
-        (address root,,,) = ctx.controller.nextSettlementBorrower();
+        (address root,) = ctx.controller.nextSettlementBorrower(0);
         require(root == BORROWER, "settle_unhealthy: a pre-existing riskier borrower outranks the test borrower");
         _pinFreeLiquidity(m, 0);
 
@@ -490,15 +491,7 @@ contract LidoLendScenarioTest is ForkStack {
         assertFalse(ctx.controller.hasBadDebt(), "head is not bad debt");
 
         // The cut succeeds even though the borrower is unhealthy. Slice sized from the mocked-price policy slice.
-        uint256 cut = _sliceShares(ctx) / 2;
-        vm.prank(LENDER);
-        (uint256 collateralSeized, uint256 debtCanceled,,) =
-            ctx.market.settle(ctx.marketParams, 0, cut, LENDER, BORROWER, LENDER);
-
-        assertGt(debtCanceled, 0, "debt cancelled");
-        assertEq(collateralSeized, debtCanceled * ORACLE_PRICE_SCALE / droppedPrice, "collateral seized at oracle rate");
-        uint128 rcAfter = ctx.market.position(ctx.id, BORROWER).collateral;
-        assertEq(uint256(rcAfter), rc - collateralSeized, "borrower collateral debited");
+        _settleUnhealthyAndAssert(ctx, _rootCutShares(ctx) / 2, droppedPrice, rc);
     }
 
     /// @notice setSettlementLtv stores the borrower's target LTV; rejects ltv >= 1e18.
@@ -557,16 +550,16 @@ contract LidoLendScenarioTest is ForkStack {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, coldDebt, 0, SECOND_BORROWER, SECOND_BORROWER);
 
-        (address rootBefore,,,) = ctx.controller.nextSettlementBorrower();
+        (address rootBefore,) = ctx.controller.nextSettlementBorrower(0);
         require(rootBefore == BORROWER, "settlementLtv_bump: a pre-existing riskier borrower heads the queue");
-        uint256 sliceBefore = ctx.controller.positionOf(rootBefore).slice;
+        uint256 sliceBefore = _dashboardSliceAssets(ctx.controller, rootBefore);
 
         // BORROWER opts in to a 30% post-cut LTV — a deep target.
         vm.prank(BORROWER);
         ctx.controller.setSettlementLtv(0.3e18);
 
-        (address rootAfter,,,) = ctx.controller.nextSettlementBorrower();
-        uint256 sliceAfter = ctx.controller.positionOf(rootAfter).slice;
+        (address rootAfter,) = ctx.controller.nextSettlementBorrower(0);
+        uint256 sliceAfter = _dashboardSliceAssets(ctx.controller, rootAfter);
         assertEq(rootAfter, BORROWER, "root unchanged");
         assertGt(sliceAfter, sliceBefore, "settlement LTV raised the slice");
 
@@ -608,7 +601,7 @@ contract LidoLendScenarioTest is ForkStack {
 
         // The mechanism only needs SECOND_BORROWER NOT to be the queue root: as a non-root borrower its policy slice
         // is zero, so eligibility must come from its personal settlement LTV, not from heading the queue.
-        (address root,,,) = ctx.controller.nextSettlementBorrower();
+        (address root,) = ctx.controller.nextSettlementBorrower(0);
         require(root != SECOND_BORROWER, "settle_personalLtv: tail borrower unexpectedly heads the queue");
 
         uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
@@ -617,7 +610,7 @@ contract LidoLendScenarioTest is ForkStack {
         // Targeting tail SECOND_BORROWER without a settlement LTV -> zero slice -> hook revert.
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementExceedsAllowed()"));
-        ctx.market.settle(ctx.marketParams, 0, cut, LENDER, SECOND_BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, cut, LENDER, SECOND_BORROWER, LENDER);
 
         // SECOND_BORROWER opts in to 5% post-cut LTV — slice is large enough for the cut.
         vm.prank(SECOND_BORROWER);
@@ -626,7 +619,7 @@ contract LidoLendScenarioTest is ForkStack {
         uint128 colBefore = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
-            ctx.market.settle(ctx.marketParams, 0, cut, LENDER, SECOND_BORROWER, LENDER);
+            ctx.market.settle(ctx.marketParams, cut, LENDER, SECOND_BORROWER, LENDER);
 
         uint128 colAfter = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
         assertEq(uint256(colAfter), uint256(colBefore) - collateralSeized, "tail collateral debited");
@@ -750,11 +743,11 @@ contract LidoLendScenarioTest is ForkStack {
     }
 
     function _settleAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
-        uint256 sharesToExit = _sliceShares(ctx);
+        uint256 sharesToExit = _rootCutShares(ctx);
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
-            ctx.market.settle(ctx.marketParams, 0, sharesToExit, LENDER, BORROWER, LENDER);
+            ctx.market.settle(ctx.marketParams, sharesToExit, LENDER, BORROWER, LENDER);
 
         uint256 expectedCollateralSeized = debtCanceled * ORACLE_PRICE_SCALE / ctx.price;
         assertEq(collateralSeized, expectedCollateralSeized, "oracle-rate collateral");
@@ -764,15 +757,55 @@ contract LidoLendScenarioTest is ForkStack {
         _assertBorrowerCollateralDebited(ctx, borrowerCollateral, collateralSeized);
     }
 
-    /// @dev Loan-asset slice the controller will allow against the current queue root, converted to
-    ///      lender supply shares with Morpho's virtual-offset rounding.
-    function _sliceShares(TestMarket memory ctx) internal view returns (uint256) {
-        (address root,,,) = ctx.controller.nextSettlementBorrower();
-        uint256 sliceAssets = ctx.controller.positionOf(root).slice;
-        if (sliceAssets == type(uint256).max) return type(uint256).max;
-        Market memory _m = ctx.market.market(ctx.id);
-        (uint128 totalSupplyAssets, uint128 totalSupplyShares) = (_m.totalSupplyAssets, _m.totalSupplyShares);
-        return SharesMathLib.toSharesDown(sliceAssets, uint256(totalSupplyAssets), uint256(totalSupplyShares));
+    /// @dev Borrow-share cut allowed for the current queue root.
+    function _rootCutShares(TestMarket memory ctx) internal view returns (uint256) {
+        (, SettlementSlice memory slice) = ctx.controller.nextSettlementBorrower(0);
+        return slice.borrowShares;
+    }
+
+    function _expectedSettlementAmounts(TestMarket memory ctx, uint256 borrowShares, uint256 price)
+        internal
+        view
+        returns (uint256 debt, uint256 collateral)
+    {
+        Market memory market_ = ctx.market.market(ctx.id);
+        debt = SharesMathLib.toAssetsUp(borrowShares, market_.totalBorrowAssets, market_.totalBorrowShares);
+        collateral = Math.mulDiv(
+            SharesMathLib.toAssetsDown(borrowShares, market_.totalBorrowAssets, market_.totalBorrowShares),
+            ORACLE_PRICE_SCALE,
+            price
+        );
+    }
+
+    function _settleUnhealthyAndAssert(
+        TestMarket memory ctx,
+        uint256 borrowShares,
+        uint256 price,
+        uint256 collateralBefore
+    ) internal {
+        (uint256 expectedDebt, uint256 expectedCollateral) = _expectedSettlementAmounts(ctx, borrowShares, price);
+        vm.prank(LENDER);
+        (uint256 collateralSeized, uint256 debtCanceled,,) =
+            ctx.market.settle(ctx.marketParams, borrowShares, LENDER, BORROWER, LENDER);
+
+        assertEq(debtCanceled, expectedDebt, "debt uses the up-rounded borrow-share value");
+        assertEq(collateralSeized, expectedCollateral, "collateral uses the down-rounded borrow-share value");
+        assertEq(
+            ctx.market.position(ctx.id, BORROWER).collateral,
+            collateralBefore - collateralSeized,
+            "borrower collateral debited"
+        );
+    }
+
+    function _dashboardSliceAssets(ILidoLendMarketController controller, address borrower)
+        internal
+        view
+        returns (uint256)
+    {
+        ILidoLendMarketController.BorrowerPosition memory dashboard = controller.positionOf(borrower);
+        return dashboard.personalSliceAssets > dashboard.queueRootSliceAssets
+            ? dashboard.personalSliceAssets
+            : dashboard.queueRootSliceAssets;
     }
 
     /// @dev Largest debt (loan assets) borrowable against `collateral` at `price`, at the live market LLTV.

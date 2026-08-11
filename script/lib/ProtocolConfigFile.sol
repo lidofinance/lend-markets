@@ -4,16 +4,15 @@ pragma solidity 0.8.35;
 import {Vm} from "forge-std/Vm.sol";
 
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
-import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 
-import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
-import {IrmSelection} from "./MarketConfigFile.sol";
 
 struct ProtocolConfig {
     address agent;
     address evmScriptExecutor;
+    address circuitBreaker;
 }
 
 struct ProtocolDeployment {
@@ -21,13 +20,15 @@ struct ProtocolDeployment {
     string network;
     uint256 chainId;
     bytes32 configHash;
+    string circuitBreakerArtifact;
     address core;
     address ownerFacade;
     address irmRouter;
     address adaptiveCurveIrm;
+    address irmConfigFactory;
     address factory;
-    address builder;
     address riskStewardDashboard;
+    address circuitBreaker;
     address guardianSignalsImpl;
     uint256 deployedBlock;
     address deployer;
@@ -41,19 +42,17 @@ struct MarketDeployment {
     string role;
     string oracleArtifact;
     string guardianGroup;
-    string circuitBreakerArtifact;
     bytes32 id;
-    address builder;
+    address factory;
     address controller;
     address vault;
     /// @dev The market's immutable `params.irm`: the protocol IRM router, never the model itself.
-    address irmRouter;
-    address ownerFacade;
-    address riskStewardDashboard;
-    LidoLendMarketBuilder.MarketSpec market;
-    MarketRoles roles;
-    /// @dev The model routed behind the router at activation, and its params.
-    IrmSelection irm;
+    address irm;
+    LidoLendMarketFactory.MarketSpec market;
+    LidoLendMarketFactory.ERC4626WrapperSpec erc4626WrapperSpec;
+    AdaptiveCurveParams curveParams;
+    /// @dev Immutable parameter holder applied to the routed IRM during activation.
+    address irmConfig;
     uint256 deployedBlock;
 }
 
@@ -61,9 +60,7 @@ struct ExitBooksDeployment {
     address morpho;
     address erc4626;
     uint256 deployedBlock;
-    address deployer;
-    address agent;
-    address evmScriptExecutor;
+    address pauser;
     uint256 maxRequestLifetime;
 }
 
@@ -72,6 +69,8 @@ library ProtocolConfigFile {
 
     error MarketAlreadyRecorded(string name);
     error MarketIdAlreadyRecorded(bytes32 id);
+    error MarketRoleAlreadyRecorded(string role);
+    error MarketRoleMissing(string path);
     error ExitBooksAlreadyRecorded();
     error ArtifactAlreadyExists(string path);
 
@@ -89,32 +88,19 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("network", d.network));
         s = string.concat(s, _kv("chain_id", d.chainId));
         s = string.concat(s, _kv("config_hash", d.configHash));
+        s = string.concat(s, _kv("circuit_breaker_artifact", d.circuitBreakerArtifact));
         s = string.concat(s, _kv("core", d.core));
         s = string.concat(s, _kv("owner_facade", d.ownerFacade));
         s = string.concat(s, _kv("irm_router", d.irmRouter));
         s = string.concat(s, _kv("adaptive_curve_irm", d.adaptiveCurveIrm));
+        s = string.concat(s, _kv("irm_config_factory", d.irmConfigFactory));
         s = string.concat(s, _kv("factory", d.factory));
-        s = string.concat(s, _kv("builder", d.builder));
         s = string.concat(s, _kv("risk_steward_dashboard", d.riskStewardDashboard));
+        s = string.concat(s, _kv("circuit_breaker", d.circuitBreaker));
         s = string.concat(s, _kv("guardian_signals_impl", d.guardianSignalsImpl));
         s = string.concat(s, _kv("deployed_block", d.deployedBlock));
         s = string.concat(s, _kv("agent", d.agent));
         s = string.concat(s, _kv("evm_script_executor", d.evmScriptExecutor));
-        s = string.concat(s, "\n[proxy_admins]\n");
-        s = string.concat(s, _kv("core", d.agent));
-        s = string.concat(s, _kv("irm_router", d.agent));
-        s = string.concat(s, "\n[roles.owner_facade]\n");
-        s = string.concat(s, _kvArray("default_admins", _singleton(d.agent)));
-        s = string.concat(s, _kvArray("market_creators", _singleton(d.evmScriptExecutor)));
-        s = string.concat(s, _kvArray("market_managers", _singleton(d.evmScriptExecutor)));
-        s = string.concat(s, _kvArray("guardian_managers", _singleton(d.evmScriptExecutor)));
-        s = string.concat(s, _kvArray("fee_managers", _singleton(d.agent)));
-        s = string.concat(s, "\n[roles.risk_steward_dashboard]\n");
-        s = string.concat(s, _kvArray("default_admins", _singleton(d.agent)));
-        s = string.concat(s, _kvArray("steward_admins", _singleton(d.evmScriptExecutor)));
-        s = string.concat(s, "\n[roles.irm_router]\n");
-        s = string.concat(s, _kv("owner", d.agent));
-        s = string.concat(s, _kv("manager", d.evmScriptExecutor));
         vm.writeFile(path, s);
     }
 
@@ -142,10 +128,9 @@ library ProtocolConfigFile {
 
         string memory s = ArtifactMetadataFile.header(metadata, "market-deployment");
         s = string.concat(s, _marketSection(d));
-        s = string.concat(s, _rolesSection(d.roles, d.ownerFacade, d.riskStewardDashboard));
         s = string.concat(s, _activationSection(d.market));
         s = string.concat(s, _settlementSection(d.market));
-        s = string.concat(s, _irmParamsSection(d.irm));
+        s = string.concat(s, _curveSection(d.curveParams));
         vm.writeFile(path, s);
     }
 
@@ -163,11 +148,7 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("erc4626", d.erc4626));
         s = string.concat(s, _kv("deployed_block", d.deployedBlock));
         s = string.concat(s, _kv("max_request_lifetime", d.maxRequestLifetime));
-        s = string.concat(s, "\n[roles]\n");
-        s = string.concat(s, _kvArray("default_admins", _singleton(d.agent)));
-        s = string.concat(s, _kvArray("allowlist_managers", _pair(d.agent, d.evmScriptExecutor)));
-        s = string.concat(s, _kvArray("fee_managers", _singleton(d.agent)));
-        s = string.concat(s, _kvArray("recoverers", _singleton(d.agent)));
+        s = string.concat(s, _kv("pauser", d.pauser));
         vm.writeFile(path, s);
     }
 
@@ -187,6 +168,28 @@ library ProtocolConfigFile {
         _requireMarketIdUndeployed(id, _marketsDir(ArtifactMetadataFile.artifactsDir(deployment)));
     }
 
+    function requireMarketRoleUndeployed(string memory role) internal view {
+        _requireMarketRoleUndeployed(role, marketsDir());
+    }
+
+    function requireMarketRoleUndeployed(string memory role, string memory deployment) internal view {
+        _requireMarketRoleUndeployed(role, _marketsDir(ArtifactMetadataFile.artifactsDir(deployment)));
+    }
+
+    function requireMarketsCompatible(ArtifactMetadata memory expected) internal view {
+        _requireDirectoryCompatible(_marketsDir(ArtifactMetadataFile.artifactsDir(expected.deployment)), expected);
+    }
+
+    function _requireDirectoryCompatible(string memory dir, ArtifactMetadata memory expected) private view {
+        if (!vm.exists(dir)) return;
+
+        Vm.DirEntry[] memory entries = vm.readDir(dir);
+        for (uint256 i; i < entries.length; ++i) {
+            if (entries[i].isDir || entries[i].isSymlink) continue;
+            ArtifactMetadataFile.requireCompatible(entries[i].path, expected);
+        }
+    }
+
     function _requireMarketIdUndeployed(bytes32 id, string memory dir) private view {
         if (!vm.exists(dir)) return;
 
@@ -194,6 +197,21 @@ library ProtocolConfigFile {
         for (uint256 i; i < entries.length; ++i) {
             if (entries[i].isDir || entries[i].isSymlink) continue;
             if (containsMarketId(vm.readFile(entries[i].path), id)) revert MarketIdAlreadyRecorded(id);
+        }
+    }
+
+    function _requireMarketRoleUndeployed(string memory role, string memory dir) private view {
+        if (!vm.exists(dir)) return;
+
+        bytes32 expected = keccak256(bytes(role));
+        Vm.DirEntry[] memory entries = vm.readDir(dir);
+        for (uint256 i; i < entries.length; ++i) {
+            if (entries[i].isDir || entries[i].isSymlink) continue;
+            string memory artifact = vm.readFile(entries[i].path);
+            if (!vm.keyExistsToml(artifact, ".market.role")) revert MarketRoleMissing(entries[i].path);
+            string memory recorded = vm.parseTomlString(artifact, ".market.role");
+            if (bytes(recorded).length == 0) revert MarketRoleMissing(entries[i].path);
+            if (keccak256(bytes(recorded)) == expected) revert MarketRoleAlreadyRecorded(role);
         }
     }
 
@@ -245,41 +263,20 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("collateral_token", d.market.collateralToken));
         s = string.concat(s, _kv("oracle", d.market.oracle));
         s = string.concat(s, _kv("oracle_artifact", d.oracleArtifact));
-        s = string.concat(s, _kv("irm", d.irmRouter));
-        s = string.concat(s, _kv("irm_artifact", d.irm.artifact));
+        s = string.concat(s, _kv("irm", d.irm));
+        s = string.concat(s, _kv("irm_config", d.irmConfig));
         s = string.concat(s, _kvQuoted("lltv", d.market.lltv));
         s = string.concat(s, _kv("guardian_signals", d.market.guardianSignals));
         s = string.concat(s, _kv("guardian_group", d.guardianGroup));
-        s = string.concat(s, _kv("circuit_breaker_artifact", d.circuitBreakerArtifact));
-        s = string.concat(s, _kv("builder", d.builder));
+        s = string.concat(s, _kv("factory", d.factory));
         s = string.concat(s, _kv("controller", d.controller));
         s = string.concat(s, _kv("vault", d.vault));
-        s = string.concat(s, _kv("vault_name", d.market.vaultName));
-        s = string.concat(s, _kv("vault_symbol", d.market.vaultSymbol));
-        s = string.concat(s, _kv("circuit_breaker", d.roles.pausers[0]));
+        s = string.concat(s, _kv("vault_name", d.erc4626WrapperSpec.name));
+        s = string.concat(s, _kv("vault_symbol", d.erc4626WrapperSpec.symbol));
         s = string.concat(s, _kv("deployed_block", d.deployedBlock));
     }
 
-    function _rolesSection(MarketRoles memory r, address ownerFacade, address riskStewardDashboard)
-        private
-        pure
-        returns (string memory s)
-    {
-        address[] memory managers = _appendUnique(r.managers, ownerFacade);
-        managers = _appendUnique(managers, riskStewardDashboard);
-        address[] memory unfreezers = _appendUnique(r.unfreezers, ownerFacade);
-
-        s = "\n[roles]\n";
-        s = string.concat(s, _kv("admin", r.admin));
-        s = string.concat(s, _kv("proxy_admin", r.proxyAdmin));
-        s = string.concat(s, _kvArray("managers", managers));
-        s = string.concat(s, _kvArray("pausers", r.pausers));
-        s = string.concat(s, _kvArray("freezers", r.freezers));
-        s = string.concat(s, _kvArray("unfreezers", unfreezers));
-        s = string.concat(s, _kvArray("resumers", r.resumers));
-    }
-
-    function _activationSection(LidoLendMarketBuilder.MarketSpec memory m) private pure returns (string memory s) {
+    function _activationSection(LidoLendMarketFactory.MarketSpec memory m) private pure returns (string memory s) {
         s = "\n[activation]\n";
         s = string.concat(s, _kvQuoted("min_activation_delay", m.activationConfig.minActivationDelay));
         s = string.concat(s, _kvQuoted("max_activation_delay", m.activationConfig.maxActivationDelay));
@@ -292,26 +289,12 @@ library ProtocolConfigFile {
         s = string.concat(s, _kvQuoted("delay_per_suspect", m.activationConfig.delayPerSuspect));
     }
 
-    function _settlementSection(LidoLendMarketBuilder.MarketSpec memory m) private pure returns (string memory s) {
+    function _settlementSection(LidoLendMarketFactory.MarketSpec memory m) private pure returns (string memory s) {
         s = "\n[settlement]\n";
         s = string.concat(s, _kvQuoted("slice_floor_bps", m.settlementConfig.sliceFloorBps));
         s = string.concat(s, _kvQuoted("slice_floor_assets", m.settlementConfig.sliceFloorAssets));
         s = string.concat(s, _kvQuoted("full_cut_below_collateral", m.settlementConfig.fullCutBelowCollateral));
         s = string.concat(s, _kvQuoted("ltv_step_bps", m.settlementConfig.ltvStepBps));
-    }
-
-    /// @dev Emits `[kink]` or `[curve]`, never both, mirroring the market config. Consumers branch on
-    ///      `market.irm_artifact`.
-    function _irmParamsSection(IrmSelection memory irm) private pure returns (string memory) {
-        return irm.kinked ? _kinkSection(irm.kink) : _curveSection(irm.curve);
-    }
-
-    function _kinkSection(LinearKinkParams memory p) private pure returns (string memory s) {
-        s = "\n[kink]\n";
-        s = string.concat(s, _kvQuoted("optimal_utilization", uint256(p.optimalUtilization)));
-        s = string.concat(s, _kvQuoted("base_rate", uint256(p.baseRate)));
-        s = string.concat(s, _kvQuoted("slope1", uint256(p.slope1)));
-        s = string.concat(s, _kvQuoted("slope2", uint256(p.slope2)));
     }
 
     function _curveSection(AdaptiveCurveParams memory p) private pure returns (string memory s) {
@@ -339,30 +322,6 @@ library ProtocolConfigFile {
         return string.concat(artifactsDir, "/markets");
     }
 
-    function _singleton(address value) private pure returns (address[] memory values) {
-        values = new address[](1);
-        values[0] = value;
-    }
-
-    function _pair(address first, address second) private pure returns (address[] memory values) {
-        values = new address[](2);
-        values[0] = first;
-        values[1] = second;
-    }
-
-    function _appendUnique(address[] memory values, address value) private pure returns (address[] memory result) {
-        if (value == address(0)) return values;
-        for (uint256 i; i < values.length; ++i) {
-            if (values[i] == value) return values;
-        }
-
-        result = new address[](values.length + 1);
-        for (uint256 i; i < values.length; ++i) {
-            result[i] = values[i];
-        }
-        result[values.length] = value;
-    }
-
     function _kv(string memory key, string memory value) private pure returns (string memory) {
         return string.concat(key, " = \"", value, "\"\n");
     }
@@ -385,14 +344,6 @@ library ProtocolConfigFile {
 
     function _kvQuoted(string memory key, int256 value) private pure returns (string memory) {
         return string.concat(key, " = \"", vm.toString(value), "\"\n");
-    }
-
-    function _kvArray(string memory key, address[] memory values) private pure returns (string memory s) {
-        s = string.concat(key, " = [");
-        for (uint256 i; i < values.length; ++i) {
-            s = string.concat(s, i == 0 ? "\"" : ", \"", vm.toString(values[i]), "\"");
-        }
-        s = string.concat(s, "]\n");
     }
 
     function _requireArtifactAbsent(string memory path) private view {

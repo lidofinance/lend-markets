@@ -2,6 +2,7 @@
 pragma solidity 0.8.35;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
@@ -50,6 +51,9 @@ contract SettlementSafetyTest is LidoLendSetup {
         Market storage m = _m();
         (address lender, address borrower, uint256 shares) = _seed(100 ether, 9900); // ~99% of LLTV-max
 
+        vm.prank(borrower);
+        m.controller.setSettlementLtv(0.5e18); // targeted settlement must have a positive personal slice
+
         MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 2); // collateral value now below the debt
         m.accrueInterest();
 
@@ -57,7 +61,7 @@ contract SettlementSafetyTest is LidoLendSetup {
         bs[0] = borrower;
         vm.prank(lender);
         vm.expectRevert(ILidoLendMarketController.SettlementBadDebt.selector);
-        m.vault.settle(shares, bs, lender, lender);
+        m.vault.settle(shares / 100, bs, lender, lender);
     }
 
     /// @dev Withdrawing collateral under open debt may not leave active collateral below the activation
@@ -239,12 +243,9 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.controller.setSettlementLtv(1e18); // >= WAD
     }
 
-    /// @dev Eligibility is queue-root OR a personal settlement LTV (no global watermark): a NON-root borrower
-    ///      is ineligible. The lender-facing `vault.settle` is best-effort, so it SKIPS an ineligible target
-    ///      (cancels nothing, no revert); after the target opts into a personal LTV it becomes eligible and
-    ///      the same call cancels exactly the predicted slice. (The direct `core.settle` instead reverts
-    ///      `SettlementIneligible` on a non-zero cut — the best-effort skip lives in the vault.)
-    function test_settle_nonRootSkipped_thenEligibleViaPersonalLtv() public {
+    /// @dev Targeted settlement requires a personal settlement LTV; queue-root status alone does not qualify. A
+    ///      NON-root borrower is initially ineligible, then opts in and the same call cancels the predicted slice.
+    function test_settle_nonRootReverts_thenEligibleViaPersonalLtv() public {
         Market storage m = _m();
         address lender = _actor("lender");
         _fund(m.loanToken, lender, 1000 ether);
@@ -262,23 +263,31 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.borrow(a, 80 ether);
         m.borrow(b, 80 ether);
 
-        (address root,,,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower(0);
         address nonRoot = root == a ? b : a;
         address[] memory bs = new address[](1);
         bs[0] = nonRoot;
 
-        // Ineligible non-root -> the best-effort vault settle cancels nothing.
+        // Ineligible non-root -> the vault batch settles nothing and reverts atomically.
+        vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
         vm.prank(lender);
-        (,,, uint256 cancelledBefore) = m.vault.settle(shares, bs, lender, lender);
-        assertEq(cancelledBefore, 0, "ineligible non-root: best-effort settle skips it");
+        m.vault.settle(shares, bs, lender, lender);
 
         // It opts into a settlement LTV below its current LTV -> eligible -> cancels exactly the slice.
         vm.prank(nonRoot);
-        m.controller.setSettlementLtv(0.05e18);
-        uint256 sliceAssets = m.controller.positionOf(nonRoot).slice;
+        // Any nonzero-debt position is above this target, regardless of the seeded oracle price.
+        m.controller.setSettlementLtv(1);
+        uint256 sliceAssets = m.controller.positionOf(nonRoot).personalSliceAssets;
+        address[] memory mixed = new address[](2);
+        mixed[0] = _actor("empty-settlement-target");
+        mixed[1] = nonRoot;
         vm.prank(lender);
-        (,,, uint256 cancelledAfter) = m.vault.settle(shares, bs, lender, lender);
-        assertEq(cancelledAfter, sliceAssets, "after opt-in: eligible, cancels the personal-LTV slice exactly");
+        (,,, uint256 cancelledAfter) = m.vault.settle(shares, mixed, lender, lender);
+        assertEq(
+            cancelledAfter,
+            sliceAssets,
+            "mixed batch skips the empty target and cancels the eligible personal-LTV slice exactly"
+        );
     }
 
     /// @dev Probes whether the `UnknownHookEvent` body guard is reachable with an

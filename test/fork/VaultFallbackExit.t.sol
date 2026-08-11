@@ -2,8 +2,9 @@
 pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, Market, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -144,10 +145,15 @@ contract VaultFallbackExitTest is ForkStack {
         assertGt(Math.mulDiv(rawCollateral, mockedPrice, ORACLE_PRICE_SCALE), debtAssets, "borrower solvent");
         assertFalse(m.controller.hasBadDebt(), "no bad debt after rebase");
 
+        // Targeted settlement is borrower-opt-in. A near-zero target admits both direct-settle tests below;
+        // fallbackExit still selects the same borrower through the risk queue.
+        vm.prank(BORROWER);
+        m.controller.setSettlementLtv(1);
+
         // Both settle paths below cut BORROWER (fallbackExit head-first via the queue root; settle by naming it),
         // which needs BORROWER to be the queue root. A near-max debt keeps it the riskiest on a quiet market;
         // assert it so a pre-existing riskier borrower cannot silently hijack the cut.
-        (address root,,,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower(0);
         require(
             root == BORROWER,
             "VaultFallbackExit: a pre-existing riskier borrower outranks the test borrower in the settle queue"
@@ -194,6 +200,8 @@ contract VaultFallbackExitTest is ForkStack {
         borrowers[0] = BORROWER;
 
         uint256 wethBefore = WETH.balanceOf(LENDER); // fresh lender holds no idle WETH (all deposited)
+        Market memory marketBefore = core.market(marketId);
+        uint256 borrowerBorrowSharesBefore = core.position(marketId, BORROWER).borrowShares;
 
         uint256 shares = vault.balanceOf(LENDER) / 2;
         vm.prank(LENDER);
@@ -205,22 +213,22 @@ contract VaultFallbackExitTest is ForkStack {
         assertGt(collateralSeized, 0, "settle seized collateral for the cut");
         assertGt(sharesBurned, 0, "shares burned for the settled slice");
         assertEq(loanAssets, 0, "settle withdrew no ordinary liquidity");
-        assertEq(collateralSeized, debtCanceled * ORACLE_PRICE_SCALE / mockedPrice, "collateral seized at mocked rate");
+        _assertSettlementAccounting(marketBefore, borrowerBorrowSharesBefore, collateralSeized, debtCanceled);
         assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
     }
 
-    /* settle covers a cut below the market's ordinary liquidity. The new core gate allows settling up
-       to onBehalf's supply minus free liquidity (here equal to the borrower's debt), so a sub-liquidity
-       cut that the old `debtCanceled > availableLiquidity` gate rejected now goes through. */
+    /* A personal targeted cut remains available even when the request is fully covered by ordinary liquidity. */
 
-    function test_settle_smallCutBelowLiquiditySucceeds() public {
+    function test_settle_smallCutBelowLiquidityUsesPersonalPolicy() public {
         _setupExitWithIdle(); // IDLE_TARGET of ordinary liquidity sits in the market
 
         address[] memory borrowers = new address[](1);
         borrowers[0] = BORROWER;
 
         uint256 wethBefore = WETH.balanceOf(LENDER);
+        Market memory marketBefore = core.market(marketId);
+        uint256 borrowerBorrowSharesBefore = core.position(marketId, BORROWER).borrowShares;
         uint256 shares = vault.balanceOf(LENDER) / 40; // ~0.5 WETH worth, well below the idle liquidity
         vm.prank(LENDER);
         (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
@@ -229,9 +237,27 @@ contract VaultFallbackExitTest is ForkStack {
         assertGt(collateralSeized, 0, "sub-liquidity settle seized collateral under the new gate");
         assertGt(sharesBurned, 0, "shares burned for the slice");
         assertEq(loanAssets, 0, "settle withdrew no ordinary liquidity");
-        assertEq(collateralSeized, debtCanceled * ORACLE_PRICE_SCALE / mockedPrice, "collateral seized at mocked rate");
+        _assertSettlementAccounting(marketBefore, borrowerBorrowSharesBefore, collateralSeized, debtCanceled);
         assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
+    }
+
+    function _assertSettlementAccounting(
+        Market memory marketBefore,
+        uint256 borrowerBorrowSharesBefore,
+        uint256 collateralSeized,
+        uint256 debtCanceled
+    ) internal view {
+        uint256 borrowSharesCut = borrowerBorrowSharesBefore - core.position(marketId, BORROWER).borrowShares;
+        uint256 expectedDebt =
+            SharesMathLib.toAssetsUp(borrowSharesCut, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
+        uint256 expectedCollateral = Math.mulDiv(
+            SharesMathLib.toAssetsDown(borrowSharesCut, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares),
+            ORACLE_PRICE_SCALE,
+            mockedPrice
+        );
+        assertEq(debtCanceled, expectedDebt, "debt uses the up-rounded borrow-share value");
+        assertEq(collateralSeized, expectedCollateral, "collateral uses the down-rounded borrow-share value");
     }
 
     /// @dev Largest debt (loan assets) borrowable against `collateral` at `price`, at the market LLTV.

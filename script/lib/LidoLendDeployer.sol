@@ -5,6 +5,7 @@ import {Id, IMorpho, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 
+import {AdaptiveCurveConfig} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveConfig.sol";
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
@@ -64,8 +65,7 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         LidoLendOwner(d.ownerFacade).grantRole(LidoLendOwner(d.ownerFacade).MARKET_MANAGER_ROLE(), cfg.admin);
         LidoLendOwner(d.ownerFacade).grantRole(LidoLendOwner(d.ownerFacade).GUARDIAN_MANAGER_ROLE(), cfg.admin);
 
-        d.guardianSignals =
-            _deployGuardianSignals(address(new GuardianSignals()), cfg.admin, cfg.admin, cfg.guardians, cfg.quorum);
+        d.guardianSignals = _deployGuardianSignals(address(new GuardianSignals()), cfg.admin, cfg.guardians, cfg.quorum);
         d.oracle = _deployOracle(cfg.oracleSource, cfg.admin);
         d.irm = _deployIrm(d.core, cfg.admin);
 
@@ -81,7 +81,7 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
 
         LidoLendOwner(d.ownerFacade).createMarket(d.params, d.controllerProxy, cfg.enableSettlement);
 
-        d.vault = _deployVault(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
+        d.vault = _deployERC4626Wrapper(d.core, d.params, d.controllerProxy, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
 
         LidoLendMarketController controller = LidoLendMarketController(d.controllerProxy);
         controller.grantRole(controller.MANAGER_ROLE(), cfg.admin);
@@ -112,7 +112,7 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         });
     }
 
-    /// @dev The router probes the model, so curve parameters must be set first.
+    /// @dev The router probes the model, so its config must be applied first.
     function _configureAdaptiveIrm(address router, MarketParams memory params, address owner)
         internal
         virtual
@@ -127,7 +127,8 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         });
 
         AdaptiveCurveIrm irm = new AdaptiveCurveIrm(router, owner, owner);
-        irm.setMarketCurveParams(irmParams, _curveConfig());
+        AdaptiveCurveConfig config = new AdaptiveCurveConfig(_curveConfig());
+        irm.applyIrmConfig(irmParams, address(config));
         IrmRouter(router).setMarketIrm(irmParams, IIrm(address(irm)));
         return address(irm);
     }
@@ -148,7 +149,7 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         proxy = _behindProxy(impl, admin, initData);
     }
 
-    function _deployVault(
+    function _deployERC4626Wrapper(
         address core,
         MarketParams memory params,
         address controller,

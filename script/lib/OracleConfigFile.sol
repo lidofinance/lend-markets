@@ -3,12 +3,13 @@ pragma solidity 0.8.35;
 
 import {Vm} from "forge-std/Vm.sol";
 
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
+
 import {ConfigToml} from "./ConfigToml.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 
 struct WstEthOracleConfig {
     address wstETH;
-    address proxyAdmin;
 }
 
 struct UsdyOracleConfig {
@@ -16,7 +17,6 @@ struct UsdyOracleConfig {
     address feed;
     address loanToken;
     address collateralToken;
-    address proxyAdmin;
 }
 
 library OracleConfigFile {
@@ -35,7 +35,6 @@ library OracleConfigFile {
     function readWstEth(string memory name) internal view returns (WstEthOracleConfig memory cfg) {
         string memory toml = vm.readFile(configPath(name));
         cfg.wstETH = ConfigToml.requireAddress(toml, ".wsteth");
-        cfg.proxyAdmin = ConfigToml.requireAddress(toml, ".proxy_admin");
     }
 
     function readUsdy(string memory name) internal view returns (UsdyOracleConfig memory cfg) {
@@ -44,7 +43,6 @@ library OracleConfigFile {
         cfg.feed = ConfigToml.requireAddress(toml, ".feed");
         cfg.loanToken = ConfigToml.requireAddress(toml, ".loan_token");
         cfg.collateralToken = ConfigToml.requireAddress(toml, ".collateral_token");
-        cfg.proxyAdmin = ConfigToml.requireAddress(toml, ".proxy_admin");
     }
 
     function configPath(string memory name) internal pure returns (string memory) {
@@ -79,12 +77,13 @@ library OracleConfigFile {
         artifact = string.concat(artifact, "name = \"", name, "\"\n");
         artifact = string.concat(artifact, "address = \"", vm.toString(oracle), "\"\n");
         artifact = string.concat(artifact, reused ? "reused = true\n" : "reused = false\n");
+        address admin = OssifiableProxy(payable(oracle)).proxy__getAdmin();
+        artifact = string.concat(artifact, "proxy_admin = \"", vm.toString(admin), "\"\n");
         string memory raw = readRaw(name);
         if (hasKey(raw, ".wsteth")) {
             WstEthOracleConfig memory cfg = readWstEth(name);
             artifact = string.concat(artifact, "kind = \"wsteth-rate\"\n");
             artifact = string.concat(artifact, "wsteth = \"", vm.toString(cfg.wstETH), "\"\n");
-            artifact = string.concat(artifact, "proxy_admin = \"", vm.toString(cfg.proxyAdmin), "\"\n");
         } else {
             UsdyOracleConfig memory cfg = readUsdy(name);
             artifact = string.concat(artifact, "kind = \"usdy-stable\"\n");
@@ -92,7 +91,6 @@ library OracleConfigFile {
             artifact = string.concat(artifact, "feed = \"", vm.toString(cfg.feed), "\"\n");
             artifact = string.concat(artifact, "loan_token = \"", vm.toString(cfg.loanToken), "\"\n");
             artifact = string.concat(artifact, "collateral_token = \"", vm.toString(cfg.collateralToken), "\"\n");
-            artifact = string.concat(artifact, "proxy_admin = \"", vm.toString(cfg.proxyAdmin), "\"\n");
         }
         vm.writeFile(path, artifact);
     }
@@ -106,6 +104,13 @@ library OracleConfigFile {
         string memory path = deployedPath(name);
         if (!vm.exists(path)) return address(0);
         return vm.parseTomlAddress(vm.readFile(path), ".oracle.address");
+    }
+
+    function readDeployed(string memory name, ArtifactMetadata memory expected) internal view returns (address) {
+        string memory path = deployedPath(name);
+        if (!vm.exists(path)) return address(0);
+        string memory artifact = ArtifactMetadataFile.requireCompatible(path, expected);
+        return vm.parseTomlAddress(artifact, ".oracle.address");
     }
 
     function deployedPath(string memory name) internal view returns (string memory) {

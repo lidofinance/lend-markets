@@ -280,7 +280,7 @@ contract WstEthWethLeverageInstantActivationTest is ForkStack {
         (Stack memory s, WstEthWethLeverageHelper helper, uint256 initialCollateral) = _setup();
 
         // Trust the router: its supplies skip the timer and are active immediately.
-        s.controller.grantInstantActivation(address(helper));
+        s.controller.setInstantActivation(address(helper), true);
 
         // The router's own token/ETH balances are asserted as DELTAS: its CREATE deployment address may carry a
         // pre-existing balance on the mainnet fork (a real account can already sit there), so "strands nothing"

@@ -10,6 +10,7 @@ import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
+import {LinearKinkConfig} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkConfig.sol";
 import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.sol";
 import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 import {IIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.sol";
@@ -141,8 +142,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
     ///      self-grants MANAGER_ROLE and sets the delay parameters. Also mirrors it to `protocol` so
     ///      single-market tests can read `protocol.guardianSignals`.
     function _deployMarketGuardian(DeployConfig memory cfg, address admin) private returns (address guardianSignals) {
-        guardianSignals =
-            _deployGuardianSignals(address(new GuardianSignals()), admin, admin, cfg.guardians, cfg.quorum);
+        guardianSignals = _deployGuardianSignals(address(new GuardianSignals()), admin, cfg.guardians, cfg.quorum);
         GuardianSignals gs = GuardianSignals(guardianSignals);
         gs.grantRole(gs.MANAGER_ROLE(), admin);
         gs.setSuspectWindow(cfg.suspectWindow);
@@ -165,8 +165,8 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         });
         Id id = params.id();
 
-        // `irm` is the shared router. Deploy the chosen frozen IRM, set its per-market params, and route the
-        // market to it through the router (all owner-gated, done as `admin`).
+        // `irm` is the shared router. Deploy the chosen IRM and its immutable config, apply that config, and route
+        // the market through the router (all owner-gated calls run as `admin`).
         _routeMarketIrm(irm, params, admin);
 
         // One GuardianSignals per market, deployed and seeded before the controller (which binds to it).
@@ -203,7 +203,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         m.collateralToken = IERC20(cfg.collateralToken);
     }
 
-    /// @dev Thin frame-splitters over the base `_deployController` / `_deployVault` steps: they exist only to
+    /// @dev Thin frame-splitters over the base `_deployController` / `_deployERC4626Wrapper` steps: they exist only to
     ///      keep `_addMarket`'s frame under the `via_ir = false` stack limit, not to add logic.
     function _deployMarketController(DeployConfig memory cfg, address core, Id id, address guardianSignals)
         private
@@ -217,7 +217,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         private
         returns (address)
     {
-        return _deployVault(core, params, controller, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
+        return _deployERC4626Wrapper(core, params, controller, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
     }
 
     /// @notice Oracle deployment: seeded mock behind a proxy. Override for a fork oracle (real feeds).
@@ -235,9 +235,9 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         return _behindProxy(impl, admin, abi.encodeCall(MockPriceOracle.initialize, (oraclePrice)));
     }
 
-    /// @dev Route the market's frozen IRM through the shared `router`: the adaptive kind is the deployer's
+    /// @dev Route the market's selected IRM through the shared `router`: the adaptive kind is the deployer's
     ///      `_configureAdaptiveIrm` step; `Fixed` swaps in a flat LinearKink emulating a constant rate. All
-    ///      setters are owner-gated, so they run pranked as `admin`.
+    ///      configuration and routing calls are owner-gated, so they run pranked as `admin`.
     function _routeMarketIrm(address router, MarketParams memory params, address admin) private {
         if (irmKind == IrmKind.Fixed) {
             IrmMarketParams memory irmParams = IrmMarketParams({
@@ -248,8 +248,9 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 lltv: params.lltv
             });
             LinearKinkIrm kink = new LinearKinkIrm(admin, admin);
+            LinearKinkConfig config = new LinearKinkConfig(_kinkParams());
             vm.startPrank(admin);
-            kink.setMarketKinkParams(irmParams, _kinkParams());
+            kink.applyIrmConfig(irmParams, address(config));
             IrmRouter(router).setMarketIrm(irmParams, IIrm(address(kink)));
             vm.stopPrank();
         } else {

@@ -15,7 +15,7 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
 
@@ -203,7 +203,7 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
         // The direct-lender fallback settle names BORROWER, but the policy only cuts the settlement-queue ROOT
         // (a non-root borrower gets a zero allowed slice). On this quiet market BORROWER is the sole debtor, so it
         // must be the root; assert it so a pre-existing riskier borrower cannot silently starve the cut.
-        (address root,,,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower(0);
         require(
             root == BORROWER,
             "MetaMorphoV2Integration: a pre-existing borrower outranks the test borrower in the settle queue"
@@ -246,10 +246,11 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
     function _settleDirectLenderAndAssert(uint256 supplyShares) internal {
         uint256 directCollateralBefore = m.collateralToken.balanceOf(DIRECT_LENDER);
         uint256 borrowerRawCollateralBefore = core.position(marketId, BORROWER).collateral;
+        (, SettlementSlice memory slice) = m.controller.nextSettlementBorrower(supplyShares);
 
         vm.prank(DIRECT_LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
-            core.settle(params, 0, supplyShares, DIRECT_LENDER, BORROWER, DIRECT_LENDER);
+            core.settle(params, slice.borrowShares, DIRECT_LENDER, BORROWER, DIRECT_LENDER);
 
         uint256 directSupplySharesAfter = core.position(marketId, DIRECT_LENDER).supplyShares;
         uint256 borrowerRawCollateralAfter = core.position(marketId, BORROWER).collateral;

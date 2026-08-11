@@ -3,6 +3,7 @@ pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../types/SettlementTypes.sol";
@@ -12,8 +13,32 @@ import {SettlementConfig} from "../types/SettlementTypes.sol";
 ///         splits the core's owner-only surface and per-market governance surface across distinct roles, so each
 ///         capability can be delegated independently. Per-market calls resolve the target controller and guardian
 ///         registry from the core, giving governance one stable facade address for every market.
-/// @dev Role-management events and the unauthorized-caller error come from OpenZeppelin's `IAccessControl`.
-interface ILidoLendOwner {
+/// @dev Role-management events and the unauthorized-caller error come from OpenZeppelin's
+///      `IAccessControlEnumerable`.
+interface ILidoLendOwner is IAccessControlEnumerable {
+    // ---
+    // IMMUTABLES
+    // ---
+
+    /// @notice The `LidoLend` core this facade owns.
+    function LIDO_LEND() external view returns (ILidoLend);
+
+    // ---
+    // ROLES
+    // ---
+
+    /// @notice Role allowed to create markets on the core.
+    function MARKET_CREATOR_ROLE() external view returns (bytes32);
+
+    /// @notice Role allowed to update core fees.
+    function FEE_MANAGER_ROLE() external view returns (bytes32);
+
+    /// @notice Role allowed to update per-market controller policy.
+    function MARKET_MANAGER_ROLE() external view returns (bytes32);
+
+    /// @notice Role allowed to manage guardian registries.
+    function GUARDIAN_MANAGER_ROLE() external view returns (bytes32);
+
     // ---
     // ERRORS
     // ---
@@ -23,13 +48,6 @@ interface ILidoLendOwner {
 
     /// @notice The market id has no controller on the core (unknown or controller-less).
     error UnknownMarket(Id marketId);
-
-    // ---
-    // VIEWS
-    // ---
-
-    /// @notice The `LidoLend` core this facade owns.
-    function LIDO_LEND() external view returns (ILidoLend);
 
     // ---
     // MARKET CREATION (MARKET_CREATOR_ROLE)
@@ -65,8 +83,8 @@ interface ILidoLendOwner {
     /// @notice Replace a market's settlement configuration.
     function setMarketSettlementConfig(Id marketId, SettlementConfig calldata config) external;
 
-    /// @notice Allow a trusted caller to supply collateral with instant activation on a market.
-    function grantMarketInstantActivation(Id marketId, address caller) external;
+    /// @notice Set whether a caller's supplies activate instantly on a market.
+    function setInstantActivation(Id marketId, address caller, bool enabled) external;
 
     // ---
     // GUARDIAN MANAGEMENT (GUARDIAN_MANAGER_ROLE)

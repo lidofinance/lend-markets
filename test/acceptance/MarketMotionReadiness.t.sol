@@ -2,7 +2,7 @@
 pragma solidity 0.8.35;
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
-import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, IMorpho} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {AcceptanceBase, IReadController, IReadDashboard} from "./AcceptanceBase.t.sol";
 
@@ -15,13 +15,15 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
         super.setUp();
         if (core.code.length == 0) return; // base skipped: no ACCEPTANCE_REGISTRY configured
         if (_isMarketActivated()) vm.skip(true, "acceptance: market is already activated");
+        _loadExpectedSettlementChoice();
+        _loadExpectedPauserCommittee();
     }
 
     function test_deployedInertAndReadyForMotion() external {
         _assertComponentsDeployed();
         _assertWiring();
         _assertConfig();
-        _assertBuilderValidation();
+        _assertFactoryValidation();
         _assertRoles();
         _assertRoleHolderCompleteness();
         // the executor (motion runner) holds every privilege the motion needs
@@ -31,9 +33,20 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
         _assertExitBooksNotAllowed();
     }
 
+    function test_exitBookPauserPausesBothBooks() external {
+        _assertExitBookPausePath();
+    }
+
     function testRevert_pausedControllerIsRejected() external {
         vm.prank(circuitBreaker);
         IReadController(controller).pauseFor(1 days);
+        vm.expectRevert();
+        this.assertWiring();
+    }
+
+    function testRevert_wrongCoreOwnerIsRejected() external {
+        vm.prank(facade);
+        IMorpho(core).setOwner(makeAddr("wrongCoreOwner"));
         vm.expectRevert();
         this.assertWiring();
     }
@@ -62,7 +75,7 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
     function testRevert_unexpectedInstantActivationCallerIsRejected() external {
         address caller = makeAddr("unexpectedInstantActivationCaller");
         vm.prank(facade);
-        IReadController(controller).grantInstantActivation(caller);
+        IReadController(controller).setInstantActivation(caller, true);
         address[] memory candidates = new address[](1);
         candidates[0] = caller;
         vm.expectRevert();

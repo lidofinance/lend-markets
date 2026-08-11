@@ -28,10 +28,6 @@ contract OraclePreflightHarness {
         return OraclePreflight.validateProxy(oracle, admin);
     }
 
-    function validateConfigProxyAdmin(address configProxyAdmin, address expectedProxyAdmin) external pure {
-        OraclePreflight.validateConfigProxyAdmin(configProxyAdmin, expectedProxyAdmin);
-    }
-
     function validateUsdy(UsdyOracleConfig memory cfg, address oracle, address loanToken, address collateralToken)
         external
     {
@@ -158,14 +154,6 @@ contract OraclePreflightTest is Test {
         harness.validateProxy(fake, admin);
     }
 
-    function testRevert_validate_rejectsWrongConfigProxyAdmin() external {
-        address wrongConfigAdmin = makeAddr("wrongConfigAdmin");
-        vm.expectRevert(
-            abi.encodeWithSelector(OraclePreflight.OracleConfigProxyAdminMismatch.selector, admin, wrongConfigAdmin)
-        );
-        harness.validateConfigProxyAdmin(wrongConfigAdmin, admin);
-    }
-
     function testRevert_validate_rejectsZeroPrice() external {
         wstEth.setRate(0);
         vm.expectRevert(OraclePreflight.OraclePriceIsZero.selector);
@@ -173,7 +161,7 @@ contract OraclePreflightTest is Test {
     }
 
     function _config() private view returns (WstEthOracleConfig memory) {
-        return WstEthOracleConfig({wstETH: address(wstEth), proxyAdmin: admin});
+        return WstEthOracleConfig({wstETH: address(wstEth)});
     }
 
     function test_validate_acceptsMatchingUsdyOracle() external {
@@ -193,8 +181,7 @@ contract OraclePreflightTest is Test {
             usdyOracle: address(nav),
             feed: address(feed),
             loanToken: address(loan),
-            collateralToken: address(collateral),
-            proxyAdmin: admin
+            collateralToken: address(collateral)
         });
 
         harness.validateUsdy(cfg, usdyOracle, address(loan), address(collateral));
@@ -216,8 +203,7 @@ contract OraclePreflightTest is Test {
             usdyOracle: address(nav),
             feed: address(feed),
             loanToken: address(loan),
-            collateralToken: address(collateral),
-            proxyAdmin: admin
+            collateralToken: address(collateral)
         });
         address wrongCollateral = makeAddr("wrongUsdyCollateral");
 

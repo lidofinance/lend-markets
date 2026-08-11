@@ -3,8 +3,9 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 
-import {MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
+import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {ProtocolDeployer} from "../../script/lib/ProtocolDeployer.sol";
+import {ExitBookConfig} from "../../script/lib/ExitBookConfigFile.sol";
 
 contract CircuitBreakerConfigStub {
     address public immutable ADMIN;
@@ -15,96 +16,94 @@ contract CircuitBreakerConfigStub {
 }
 
 contract ProtocolDeployerHarness is ProtocolDeployer {
-    function requireMarketRolePolicy(
-        MarketRoles memory roles,
-        address agent,
-        address executor,
-        address deploymentCaller
-    ) external view {
-        _requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+    function deployExitBooks(ExitBookConfig memory cfg) external returns (address morpho, address erc4626) {
+        return _deployExitBooks(cfg, address(this));
+    }
+
+    function requireCircuitBreakerPolicy(address circuitBreaker, address executor) external view {
+        _requireCircuitBreakerPolicy(circuitBreaker, executor);
     }
 }
 
 contract ProtocolDeployerTest is Test {
     ProtocolDeployerHarness internal deployer;
-    address internal agent;
     address internal executor;
-    address internal deploymentCaller;
 
     function setUp() external {
         deployer = new ProtocolDeployerHarness();
-        agent = makeAddr("agent");
         executor = makeAddr("executor");
-        deploymentCaller = makeAddr("deployer");
     }
 
-    function testRevert_requireMarketRolePolicy_missingCircuitBreaker() external {
-        MarketRoles memory roles = _roles();
-
+    function testRevert_requireCircuitBreakerPolicy_missingCircuitBreaker() external {
         vm.expectRevert(ProtocolDeployer.MissingCircuitBreaker.selector);
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+        deployer.requireCircuitBreakerPolicy(address(0), executor);
     }
 
-    function test_requireMarketRolePolicy_acceptsAdditionalPausers() external {
-        MarketRoles memory roles = _roles();
-        roles.pausers = new address[](2);
-        roles.pausers[0] = address(new CircuitBreakerConfigStub(executor));
-        roles.pausers[1] = makeAddr("additional pauser");
-
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+    function testRevert_requireCircuitBreakerPolicy_rejectsNonContract() external {
+        address circuitBreaker = makeAddr("circuitBreaker");
+        vm.expectRevert(abi.encodeWithSelector(ProtocolDeployer.CircuitBreakerNotContract.selector, circuitBreaker));
+        deployer.requireCircuitBreakerPolicy(circuitBreaker, executor);
     }
 
-    function test_requireMarketRolePolicy_acceptsExecutorAdministeredCircuitBreaker() external {
-        MarketRoles memory roles = _roles();
-        roles.pausers = new address[](1);
-        roles.pausers[0] = address(new CircuitBreakerConfigStub(executor));
-
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+    function testRevert_requireCircuitBreakerPolicy_rejectsWrongAdmin() external {
+        address actualAdmin = makeAddr("actualAdmin");
+        address circuitBreaker = address(new CircuitBreakerConfigStub(actualAdmin));
+        vm.expectRevert(
+            abi.encodeWithSelector(ProtocolDeployer.UnexpectedCircuitBreakerAdmin.selector, executor, actualAdmin)
+        );
+        deployer.requireCircuitBreakerPolicy(circuitBreaker, executor);
     }
 
-    function testRevert_requireMarketRolePolicy_executorHasDirectFreezerRole() external {
-        MarketRoles memory roles = _rolesWithCircuitBreaker();
-        roles.freezers = _arr1(executor);
-
-        vm.expectRevert(ProtocolDeployer.ExecutorHasDirectMarketRole.selector);
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+    function test_requireCircuitBreakerPolicy_acceptsExecutorAdministeredCircuitBreaker() external {
+        deployer.requireCircuitBreakerPolicy(address(new CircuitBreakerConfigStub(executor)), executor);
     }
 
-    function testRevert_requireMarketRolePolicy_executorIsAdditionalPauser() external {
-        MarketRoles memory roles = _rolesWithCircuitBreaker();
-        roles.pausers = new address[](2);
-        roles.pausers[0] = address(new CircuitBreakerConfigStub(executor));
-        roles.pausers[1] = executor;
+    function test_deployExitBooks_assignsPauserAndLeavesResumerEmpty() external {
+        address pauser = makeAddr("exitBookPauser");
 
-        vm.expectRevert(ProtocolDeployer.ExecutorHasDirectMarketRole.selector);
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+        (address morpho, address erc4626) = deployer.deployExitBooks(_exitBookConfig(pauser));
+
+        _assertExitBookPauseRoles(ExitBookBase(morpho), pauser);
+        _assertExitBookPauseRoles(ExitBookBase(erc4626), pauser);
     }
 
-    function testRevert_requireMarketRolePolicy_deployerHasDirectResumerRole() external {
-        MarketRoles memory roles = _rolesWithCircuitBreaker();
-        roles.resumers = _arr1(deploymentCaller);
-
-        vm.expectRevert(ProtocolDeployer.DeployerHasDirectMarketRole.selector);
-        deployer.requireMarketRolePolicy(roles, agent, executor, deploymentCaller);
+    function testRevert_deployExitBooks_missingPauser() external {
+        vm.expectRevert(ProtocolDeployer.MissingExitBookPauser.selector);
+        deployer.deployExitBooks(_exitBookConfig(address(0)));
     }
 
-    function _roles() private view returns (MarketRoles memory roles) {
-        roles.admin = agent;
-        roles.proxyAdmin = agent;
-        roles.managers = new address[](0);
-        roles.pausers = new address[](0);
-        roles.freezers = new address[](0);
-        roles.unfreezers = new address[](0);
-        roles.resumers = new address[](0);
+    function testRevert_deployExitBooks_pauserIsDeployer() external {
+        vm.expectRevert(ProtocolDeployer.ExitBookPauserCannotBeDeployer.selector);
+        deployer.deployExitBooks(_exitBookConfig(address(deployer)));
     }
 
-    function _rolesWithCircuitBreaker() private returns (MarketRoles memory roles) {
-        roles = _roles();
-        roles.pausers = _arr1(address(new CircuitBreakerConfigStub(executor)));
+    function testRevert_deployExitBooks_pauserIsAgent() external {
+        ExitBookConfig memory cfg = _exitBookConfig(address(0xA11CE));
+
+        vm.expectRevert(ProtocolDeployer.ExitBookPauserCannotBeAgent.selector);
+        deployer.deployExitBooks(cfg);
     }
 
-    function _arr1(address holder) private pure returns (address[] memory holders) {
-        holders = new address[](1);
-        holders[0] = holder;
+    function testRevert_deployExitBooks_pauserIsExecutor() external {
+        ExitBookConfig memory cfg = _exitBookConfig(address(0xE0E0));
+
+        vm.expectRevert(ProtocolDeployer.ExitBookPauserCannotBeExecutor.selector);
+        deployer.deployExitBooks(cfg);
+    }
+
+    function _exitBookConfig(address pauser) private pure returns (ExitBookConfig memory cfg) {
+        cfg = ExitBookConfig({
+            agent: address(0xA11CE),
+            evmScriptExecutor: address(0xE0E0),
+            pauser: pauser,
+            core: address(0xC0DE),
+            maxRequestLifetime: 365 days
+        });
+    }
+
+    function _assertExitBookPauseRoles(ExitBookBase book, address pauser) private view {
+        assertEq(book.getRoleMemberCount(book.PAUSER_ROLE()), 1);
+        assertTrue(book.hasRole(book.PAUSER_ROLE(), pauser));
+        assertEq(book.getRoleMemberCount(book.RESUMER_ROLE()), 0);
     }
 }

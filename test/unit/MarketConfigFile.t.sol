@@ -3,15 +3,20 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 
-import {LidoLendMarketBuilder, MarketRoles} from "../../src/periphery/LidoLendMarketBuilder.sol";
-import {MarketConfigFile, IrmSelection} from "../../script/lib/MarketConfigFile.sol";
-import {IrmConfigFile} from "../../script/lib/IrmConfigFile.sol";
+import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
+import {MarketConfigFile} from "../../script/lib/MarketConfigFile.sol";
 
 contract MarketConfigFileHarness {
     function parse(string memory toml)
         external
-        view
-        returns (LidoLendMarketBuilder.MarketSpec memory market, MarketRoles memory roles, IrmSelection memory irm)
+        pure
+        returns (
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
+            AdaptiveCurveParams memory curve
+        )
     {
         return MarketConfigFile.parse(toml);
     }
@@ -27,68 +32,17 @@ contract MarketConfigFileTest is Test {
     }
 
     function test_parse_acceptsQuotedWideValues() external view {
-        (LidoLendMarketBuilder.MarketSpec memory market,, IrmSelection memory irm) = harness.parse(toml);
+        (
+            LidoLendMarketFactory.MarketSpec memory market,
+            LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec,
+            AdaptiveCurveParams memory curve
+        ) = harness.parse(toml);
 
         assertEq(market.lltv, 0.8e18, "lltv");
-        assertEq(irm.curve.curveSteepness, 4e18, "curve steepness");
-        assertEq(irm.curve.targetUtilization, 0.9e18, "target utilization");
-    }
-
-    /// @dev A config with no `irm_artifact` key is an adaptive-curve market: the overwhelmingly common case
-    ///      keeps working without the new key.
-    function test_parse_defaultsToTheBackboneAdaptiveCurveIrm() external view {
-        (,, IrmSelection memory irm) = harness.parse(toml);
-
-        assertEq(irm.artifact, IrmConfigFile.ADAPTIVE_CURVE, "irm artifact defaults to adaptive-curve");
-        assertFalse(irm.kinked, "not kinked");
-    }
-
-    function test_parse_kinkedMarketReadsKinkParams() external view {
-        (,, IrmSelection memory irm) = harness.parse(_kinkedToml());
-
-        assertEq(irm.artifact, "linear-kink", "irm artifact");
-        assertTrue(irm.kinked, "kinked");
-        assertEq(uint256(irm.kink.optimalUtilization), 0.9e18, "optimal utilization");
-        assertEq(uint256(irm.kink.baseRate), 158548959, "base rate");
-        assertEq(uint256(irm.kink.slope1), 634195839, "slope1");
-        assertEq(uint256(irm.kink.slope2), 443937087, "slope2");
-    }
-
-    /// @dev The model and its params travel together: naming the kinked IRM while carrying `[curve]` is a
-    ///      config error, not a market that silently activates with the wrong params.
-    function testRevert_parse_kinkedMarketCarryingCurveParams() external {
-        string memory invalid = vm.replace(_kinkedToml(), "[kink]", "[curve]");
-
-        vm.expectRevert(abi.encodeWithSelector(MarketConfigFile.InvalidConfigValue.selector, ".kink"));
-        harness.parse(invalid);
-    }
-
-    function testRevert_parse_adaptiveMarketCarryingKinkParams() external {
-        string memory invalid = vm.replace(toml, "[curve]", "[kink]");
-
-        vm.expectRevert(abi.encodeWithSelector(MarketConfigFile.InvalidConfigValue.selector, ".curve"));
-        harness.parse(invalid);
-    }
-
-    function testRevert_parse_kinkOptimalUtilizationAtFullUtilization() external {
-        string memory invalid = vm.replace(
-            _kinkedToml(),
-            "optimal_utilization = \"900000000000000000\"",
-            "optimal_utilization = \"1000000000000000000\""
-        );
-
-        vm.expectRevert(
-            abi.encodeWithSelector(MarketConfigFile.InvalidConfigValue.selector, ".kink.optimal_utilization")
-        );
-        harness.parse(invalid);
-    }
-
-    /// @dev `LinearKinkIrm.MAX_BORROW_RATE` is 800%/yr on `baseRate + slope1 + slope2`.
-    function testRevert_parse_kinkPeakRateOverModelCap() external {
-        string memory invalid = vm.replace(_kinkedToml(), "slope2 = \"443937087\"", "slope2 = \"253678335870\"");
-
-        vm.expectRevert(abi.encodeWithSelector(MarketConfigFile.InvalidConfigValue.selector, ".kink.peak_rate"));
-        harness.parse(invalid);
+        assertEq(erc4626WrapperSpec.name, "Test Vault", "ERC-4626 wrapper name");
+        assertEq(erc4626WrapperSpec.symbol, "TEST", "ERC-4626 wrapper symbol");
+        assertEq(curve.curveSteepness, 4e18, "curve steepness");
+        assertEq(curve.targetUtilization, 0.9e18, "target utilization");
     }
 
     function testRevert_parse_sliceFloorBpsOverLimit() external {
@@ -139,35 +93,6 @@ contract MarketConfigFileTest is Test {
         harness.parse(invalid);
     }
 
-    /// @dev The same market, opted into the deployed `linear-kink` IRM: `[kink]` replaces `[curve]`. Rates are
-    ///      per-second WAD — 0.5%/yr base, 2%/yr slope1, 1.4%/yr slope2.
-    function _kinkedToml() private view returns (string memory) {
-        string memory withRef = vm.replace(
-            toml, "lltv = \"800000000000000000\"", "lltv = \"800000000000000000\"\nirm_artifact = \"linear-kink\""
-        );
-        return string.concat(
-            vm.replace(
-                withRef,
-                string.concat(
-                    "[curve]\n",
-                    "curve_steepness = \"4000000000000000000\"\n",
-                    "adjustment_speed = \"1585489599188\"\n",
-                    "target_utilization = \"900000000000000000\"\n",
-                    "initial_rate_at_target = \"1268391679\"\n",
-                    "min_rate_at_target = \"31709791\"\n",
-                    "max_rate_at_target = \"63419583967\"\n",
-                    "max_borrow_rate = \"0\"\n"
-                ),
-                ""
-            ),
-            "[kink]\n",
-            "optimal_utilization = \"900000000000000000\"\n",
-            "base_rate = \"158548959\"\n",
-            "slope1 = \"634195839\"\n",
-            "slope2 = \"443937087\"\n"
-        );
-    }
-
     function _validToml() private pure returns (string memory) {
         return string.concat(
             "[market]\n",
@@ -178,12 +103,6 @@ contract MarketConfigFileTest is Test {
             "guardian_signals = \"0x0000000000000000000000000000000000000004\"\n",
             "vault_name = \"Test Vault\"\n",
             "vault_symbol = \"TEST\"\n",
-            "[roles]\n",
-            "managers = []\n",
-            "pausers = []\n",
-            "freezers = []\n",
-            "unfreezers = []\n",
-            "resumers = []\n",
             "[activation]\n",
             "min_activation_delay = 600\n",
             "max_activation_delay = 7200\n",

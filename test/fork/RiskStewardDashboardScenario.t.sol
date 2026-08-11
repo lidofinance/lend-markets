@@ -96,7 +96,7 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         uint40 newMin = cfg0.minActivationDelay + 10 minutes;
         uint40 newMax = cfg0.maxActivationDelay + 1 hours;
         vm.prank(STEWARD);
-        dashboard.increaseActivationDelays(m.id, newMin, newMax);
+        dashboard.increaseActivationDelays(m.id, newMin, newMax, cfg0.maxGuardiansQuorumDelay);
 
         CollateralActivationConfig memory cfg1 = m.controller.collateralActivationConfig();
         assertEq(cfg1.minActivationDelay, newMin, "floor raised on the live controller");
@@ -122,7 +122,7 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         address borrower = _freshActor(m, "riskStewardDashboard.borrower");
         uint256 ethIn = 3 * uint256(cfg0.minActivationAmount);
 
-        m.controller.grantInstantActivation(borrower);
+        m.controller.setInstantActivation(borrower, true);
         uint256 col = _mintWstETH(borrower, ethIn);
         require(col >= uint256(cfg0.minActivationAmount), "collateral must clear the live dust threshold");
         vm.prank(borrower);
@@ -149,7 +149,9 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         vm.prank(STEWARD);
         vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
         // Hold the cap, drop the floor by one second: a lowering, so the tighten-only guard rejects it.
-        dashboard.increaseActivationDelays(m.id, cfg0.minActivationDelay - 1, cfg0.maxActivationDelay);
+        dashboard.increaseActivationDelays(
+            m.id, cfg0.minActivationDelay - 1, cfg0.maxActivationDelay, cfg0.maxGuardiansQuorumDelay
+        );
     }
 
     /// @notice The dashboard only adds the direction guard: a raise that is in-direction but past the
@@ -161,7 +163,7 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         vm.expectRevert(CollateralActivationLib.MaxActivationDelayExceeded.selector);
         // In-direction (hold the floor, raise the cap) but above MAX_DELAY_DURATION (7 days): passes the
         // tighten-only guard, then the controller's bound validation rejects it.
-        dashboard.increaseActivationDelays(m.id, cfg0.minActivationDelay, 8 days);
+        dashboard.increaseActivationDelays(m.id, cfg0.minActivationDelay, 8 days, cfg0.maxGuardiansQuorumDelay);
     }
 
     /// @notice A non-steward cannot pull a lever.
@@ -170,7 +172,7 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
 
         vm.prank(stranger);
         vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
-        dashboard.increaseActivationDelays(m.id, 20 minutes, 3 hours);
+        dashboard.increaseActivationDelays(m.id, 20 minutes, 3 hours, 0);
     }
 
     /// @notice A market id the core has no controller for is rejected, even for an appointed steward.
@@ -181,7 +183,15 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
 
         vm.prank(STEWARD);
         vm.expectRevert(abi.encodeWithSelector(IRiskStewardDashboard.UnknownMarket.selector, bogus));
-        dashboard.increaseActivationDelays(bogus, 20 minutes, 3 hours);
+        dashboard.increaseActivationDelays(bogus, 20 minutes, 3 hours, 0);
+    }
+
+    /// @notice An appointed steward freezes the already-deployed controller through the live dashboard wiring.
+    function test_dashboard_freezesRealController() public {
+        vm.prank(STEWARD);
+        dashboard.freezeMarket(m.id);
+
+        assertTrue(m.controller.isFrozen(), "dashboard froze the live controller");
     }
 
     // ---

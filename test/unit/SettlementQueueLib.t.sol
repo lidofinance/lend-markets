@@ -3,10 +3,19 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
-import {MarketView, PositionView, SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {MarketView, PositionView, SettlementConfig, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 
 uint256 constant WAD = 1e18;
+
+/// @dev Morpho's virtual amounts, restated here so the share recomputes stay independent of the library.
+uint256 constant VIRTUAL_ASSETS = 1;
+uint256 constant VIRTUAL_SHARES = 1e6;
+
+/// @dev Share-rate ceiling a live market stays under: the controller caps the borrow-share rate at this, and
+///      supply shares are minted at 1e6 per asset and only fall relative to assets as interest accrues.
+uint256 constant MAX_SHARE_RATE = 1e7;
 
 /// @dev Harness exposing the internal settlement-queue library over a storage State (L0 via harness).
 contract SQHarness {
@@ -46,12 +55,41 @@ contract SQHarness {
         return s.settlementBorrowers(o, m);
     }
 
-    function allowedSlice(MarketView memory mv, address b, PositionView memory p) external view returns (uint256) {
-        return s.allowedSlice(mv, b, p);
+    function queueRootSlice(MarketView memory mv, address b, PositionView memory p)
+        external
+        view
+        returns (uint256 sliceAssets)
+    {
+        (, sliceAssets) = s.allowedSliceAssets(mv, b, p);
+    }
+
+    function personalSlice(MarketView memory mv, address b, PositionView memory p)
+        external
+        view
+        returns (uint256 sliceAssets)
+    {
+        (sliceAssets,) = s.allowedSliceAssets(mv, b, p);
+    }
+
+    function personalQuote(MarketView memory mv, address b, PositionView memory p)
+        external
+        view
+        returns (SettlementSlice memory)
+    {
+        (uint256 sliceAssets,) = s.allowedSliceAssets(mv, b, p);
+        return SettlementQueueLib.settlementSlice(mv, p, sliceAssets, 0);
     }
 
     function sliceToLtv(uint256 d, uint256 c, uint256 t) external returns (uint256) {
         return SettlementQueueLib.sliceToLtv(d, c, t);
+    }
+
+    function settlementSlice(MarketView memory mv, PositionView memory p, uint256 sliceAssets, uint256 budget)
+        external
+        pure
+        returns (SettlementSlice memory)
+    {
+        return SettlementQueueLib.settlementSlice(mv, p, sliceAssets, budget);
     }
 }
 
@@ -175,6 +213,30 @@ contract SettlementQueueLibTest is Test {
         // re-key: make _b(2) less risky (still present, no duplicate)
         q.sync(_b(2), _pos(10, 100));
         assertEq(q.size(), 1, "still one (re-key, not insert)");
+    }
+
+    /// @dev The full risk key is `borrowShares * 1e18 / rawCollateral`; it must order positions above the former
+    ///      uint96 saturation boundary by their real ratio, not insertion history.
+    function test_sync_ordersKeysAboveUint96Boundary() public {
+        uint256 lower = uint256(type(uint96).max) + 1;
+        uint256 higher = lower + 1;
+        q.sync(_b(1), _pos(lower, WAD));
+        q.sync(_b(2), _pos(higher, WAD));
+
+        assertEq(q.peekRoot(), _b(2), "higher full-precision key is root");
+        (, uint256[] memory keys) = q.settlementBorrowers(0, 1);
+        assertEq(keys[0], higher, "root exposes full key");
+    }
+
+    /// @dev An ordinary 80%-LTV position with an 18-decimal loan and 6-decimal collateral has a risk key far
+    ///      above uint96, so its exact key must remain usable for ordering.
+    function test_sync_sixDecimalCollateral_retainsOrdinaryLtvKey() public {
+        uint256 rawCollateral = 1e6;
+        uint256 borrowShares = 8e23;
+        q.sync(_b(1), _pos(borrowShares, rawCollateral));
+
+        (, uint256[] memory keys) = q.settlementBorrowers(0, 1);
+        assertEq(keys[0], 8e35, "ordinary 6-decimal collateral key retained");
     }
 
     /// @dev A position synced with zero borrow shares (no debt) is removed from the queue.
@@ -321,7 +383,21 @@ contract SettlementQueueLibTest is Test {
         assertEq(zero.length, 0, "maxCount 0 -> empty");
     }
 
-    // ── allowedSlice: max-of-rules, floor only for the root, debt clamp, dust lift ──
+    /// @dev Targeted settlement excludes the queue-root policy. With a 30-asset root floor and a 20-asset personal
+    ///      slice, the automatic path gets 30 while the targeted path gets 20.
+    function test_allowedSlice_canExcludeRootPolicy() public {
+        PositionView memory root = _pos(75, 100);
+        q.sync(_b(1), root);
+        q.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 0, sliceFloorAssets: 30, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        );
+        q.setSettlementLtv(_b(1), 0.6875e18);
+
+        assertEq(q.queueRootSlice(_market(1e36), _b(1), root), 30, "queue-root policy slice");
+        assertEq(q.personalSlice(_market(1e36), _b(1), root), 20, "targeted path uses personal policy only");
+    }
+
+    // ── allowedSlice: independent personal and prospective queue-root quotes ──
     // Non-parity price (1.5e36) and non-1:1 shares isolate the slice logic while keeping values non-round.
 
     /// @dev An oversized floor for the root borrower is clamped down to the borrower's debt.
@@ -337,7 +413,7 @@ contract SettlementQueueLibTest is Test {
         );
         q.sync(_b(1), _pos(100, 1_000)); // root
         // debtAssets == 100 (1:1 shares). collateralValue = 1000·1.5e36/1e36 = 1500.
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 1_000));
+        uint256 slice = q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 1_000));
         assertEq(slice, 100, "clamped to debt");
     }
 
@@ -350,21 +426,20 @@ contract SettlementQueueLibTest is Test {
         );
         q.sync(_b(1), _pos(1_000, 1_000)); // root; debtAssets == 1000, collateralValue = 1500 at price 1.5e36
         // bps term = 1% of debt = 10; abs floor 900 is the largest term and < debt (1000) -> returned as-is.
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(1_000, 1_000));
+        uint256 slice = q.queueRootSlice(_market(1.5e36), _b(1), _pos(1_000, 1_000));
         assertEq(slice, 900, "absolute floor wins, returned unclamped (below debt)");
     }
 
-    /// @dev A non-root borrower without a settlement-LTV opt-in gets neither floor nor cut (slice 0).
-    function test_allowedSlice_nonRoot_getsNoFloor() public {
-        // Two borrowers; _b(1) is riskier (root). A non-root borrower with NO settlement-LTV opt-in gets
-        // neither the root cut nor a settlement cut -> allowedSlice is 0 (floor terms apply to root only).
+    /// @dev The queue-root quote is prospective: a non-root exposes the cut it would receive if it became root,
+    ///      while its personal quote remains zero without an opt-in.
+    function test_allowedSlices_nonRoot_exposesProspectiveQueueRootCut() public {
         q.setSettlementConfig(
             SettlementConfig({sliceFloorBps: 5_000, sliceFloorAssets: 50, fullCutBelowCollateral: 0, ltvStepBps: 1_000})
         );
         q.sync(_b(1), _pos(90, 100)); // root (riskier)
         q.sync(_b(2), _pos(40, 100)); // non-root
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(2), _pos(40, 100));
-        assertEq(slice, 0, "non-root without opt-in gets no floor and no cut");
+        assertEq(q.personalSlice(_market(1.5e36), _b(2), _pos(40, 100)), 0, "no personal opt-in");
+        assertEq(q.queueRootSlice(_market(1.5e36), _b(2), _pos(40, 100)), 40, "prospective cut capped at debt");
     }
 
     /// @dev The root borrower receives the bps debt-fraction floor when no larger term applies.
@@ -378,7 +453,7 @@ contract SettlementQueueLibTest is Test {
             })
         );
         q.sync(_b(1), _pos(100, 10_000)); // root, very low LTV so only the floor applies
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 10_000));
+        uint256 slice = q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 10_000));
         assertEq(slice, 20, "root gets the 20% debt-fraction floor");
     }
 
@@ -391,7 +466,7 @@ contract SettlementQueueLibTest is Test {
         q.sync(_b(2), _pos(50, 100)); // non-root
         q.setSettlementLtv(_b(2), 0.3e18);
         // _b(2): debtAssets=50, collateralValue=150 (price 1.5e36). cut = sliceToLtv(50, 150, 0.3) = 7.
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(2), _pos(50, 100));
+        uint256 slice = q.personalSlice(_market(1.5e36), _b(2), _pos(50, 100));
         assertEq(slice, _expectedSlice(50, 150, 0.3e18), "settlement-LTV cut applied to a non-root borrower");
         assertEq(slice, 7, "exact");
     }
@@ -406,7 +481,7 @@ contract SettlementQueueLibTest is Test {
         // debtAssets=80, collateralValue=150; target = currentLtv − ltvStepBps·WAD/BPS.
         uint256 currentLtv = 80 * WAD / 150;
         uint256 target = currentLtv - (1_000 * WAD / 10_000);
-        uint256 slice = q.allowedSlice(_market(1.5e36), _b(1), _pos(80, 100));
+        uint256 slice = q.queueRootSlice(_market(1.5e36), _b(1), _pos(80, 100));
         assertEq(slice, _expectedSlice(80, 150, target), "root cut is exactly the LTV-step term (beats the floor)");
     }
 
@@ -418,17 +493,57 @@ contract SettlementQueueLibTest is Test {
         q.sync(_b(1), _pos(100, 100));
 
         _setFloor(2_000, 87); // remaining == threshold → no lift
-        assertEq(q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 100)), 20, "remaining==threshold: no lift");
+        assertEq(q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 100)), 20, "remaining==threshold: no lift");
 
         _setFloor(2_000, 88); // remaining < threshold → lift to the full debt
-        assertEq(q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 100)), 100, "remaining<threshold: lift to debt");
+        assertEq(q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 100)), 100, "remaining<threshold: lift to debt");
+    }
+
+    /// @dev The collateral dust sweep applies only to queue-root policy. Both nominal cuts would leave collateral
+    ///      below the floor, but the personal target remains partial while the queue-root quote becomes a full close.
+    function test_allowedSlices_dustLift_appliesOnlyToQueueRoot() public {
+        PositionView memory position = _pos(100, 100);
+        q.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 2_000, sliceFloorAssets: 0, fullCutBelowCollateral: 98, ltvStepBps: 0})
+        );
+        q.setSettlementLtv(_b(1), 0.65e18);
+
+        assertEq(q.personalSlice(_market(1.5e36), _b(1), position), 7, "personal cut ignores dust sweep");
+        assertEq(q.queueRootSlice(_market(1.5e36), _b(1), position), 100, "queue-root cut is promoted");
+    }
+
+    /// @dev Removing personal dust promotion does not change share conversion: a target-LTV asset cut one unit below
+    ///      the debt may still round up to every borrow share. This is a rounding full close, not a dust-policy lift.
+    function test_personalQuote_nearFullAssetCutMayRoundToFullBorrowShares() public {
+        MarketView memory marketView = MarketView({
+            totalSupplyAssets: 1e18,
+            totalSupplyShares: 1e6,
+            totalBorrowAssets: 1e18,
+            totalBorrowShares: 1e6,
+            price: 1e36,
+            lltv: 0.86e18
+        });
+        PositionView memory position = _pos(2, 1_000_000_000_002);
+        q.setSettlementConfig(
+            SettlementConfig({
+                sliceFloorBps: 0, sliceFloorAssets: 0, fullCutBelowCollateral: type(uint96).max, ltvStepBps: 0
+            })
+        );
+        q.setSettlementLtv(_b(1), 0.5e18);
+
+        uint256 personalSliceAssets = q.personalSlice(marketView, _b(1), position);
+        SettlementSlice memory quote = q.personalQuote(marketView, _b(1), position);
+
+        assertEq(personalSliceAssets, 1_000_000_000_000, "target cut stays one asset below the debt");
+        assertEq(quote.borrowShares, position.borrowShares, "up-rounding reaches every borrow share");
+        assertEq(quote.remainingBorrowShares, 0, "share rounding identifies a full close");
     }
 
     /// @dev A zero fullCutBelowCollateral disables the dust lift entirely.
     function test_allowedSlice_fullCutZero_neverLifts() public {
         _setFloor(2_000, 0);
         q.sync(_b(1), _pos(100, 100));
-        assertEq(q.allowedSlice(_market(1.5e36), _b(1), _pos(100, 100)), 20, "fullCutBelowCollateral==0 never lifts");
+        assertEq(q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 100)), 20, "fullCutBelowCollateral==0 never lifts");
     }
 
     // ── queue: truncation & re-key ordering ──
@@ -440,5 +555,131 @@ contract SettlementQueueLibTest is Test {
         q.sync(_b(3), _pos(30, 100));
         (address[] memory page,) = q.settlementBorrowers(1, 10); // offset 1, want 10, size 3 → 2
         assertEq(page.length, 2, "offset+maxCount > size truncates to size-offset");
+    }
+
+    // ── budget capping ──
+
+    /// @dev Independent recompute of the supply a borrow-share cut burns, from the Morpho share formulas:
+    ///      debt is `toAssetsUp` of the cut, then the burn is `toSharesUp` of that debt.
+    function _coreBurn(MarketView memory mv, uint256 borrowShares) internal pure returns (uint256) {
+        uint256 debtAssets = Math.mulDiv(
+            borrowShares,
+            mv.totalBorrowAssets + VIRTUAL_ASSETS,
+            mv.totalBorrowShares + VIRTUAL_SHARES,
+            Math.Rounding.Ceil
+        );
+        return Math.mulDiv(
+            debtAssets, mv.totalSupplyShares + VIRTUAL_SHARES, mv.totalSupplyAssets + VIRTUAL_ASSETS, Math.Rounding.Ceil
+        );
+    }
+
+    /// @dev A budget beyond the cut's cost leaves every field alone, matching the unshrunk policy quote.
+    function test_settlementSlice_ampleBudget_matchesTheUnshrunkQuote() public view {
+        MarketView memory mv = _market(1.5e36);
+        PositionView memory p = _pos(100e18, 500e18);
+        SettlementSlice memory policy = q.settlementSlice(mv, p, 40e18, 0);
+        SettlementSlice memory funded = q.settlementSlice(mv, p, 40e18, type(uint128).max);
+
+        assertEq(funded.borrowShares, policy.borrowShares, "borrowShares untouched");
+        assertEq(funded.supplyShares, policy.supplyShares, "supplyShares untouched");
+        assertEq(funded.remainingBorrowShares, policy.remainingBorrowShares, "remaining untouched");
+    }
+
+    /// @dev A short budget shrinks the cut and the shaved shares land in the remainder, so the three fields keep
+    ///      describing one and the same position.
+    function test_settlementSlice_shortBudget_keepsFieldsConsistent() public view {
+        MarketView memory mv = _market(1.5e36);
+        PositionView memory p = _pos(100e18, 500e18);
+        SettlementSlice memory policy = q.settlementSlice(mv, p, 40e18, 0);
+        SettlementSlice memory funded = q.settlementSlice(mv, p, 40e18, policy.supplyShares / 4);
+
+        assertLt(funded.borrowShares, policy.borrowShares, "cut shrank");
+        assertEq(
+            funded.borrowShares + funded.remainingBorrowShares, p.borrowShares, "fields still span the whole position"
+        );
+        assertEq(funded.supplyShares, _coreBurn(mv, funded.borrowShares), "supply cost recomputed for the shrunk cut");
+    }
+
+    /// @dev A positive budget that funds no borrow share at all is reported as an unavailable cut, not a
+    ///      partial one. (0 is the sentinel for "no budget cap" and is covered above.)
+    function test_settlementSlice_unaffordable_isAllZero() public view {
+        MarketView memory mv = _market(1.5e36);
+        SettlementSlice memory funded = q.settlementSlice(mv, _pos(100e18, 500e18), 40e18, 1);
+
+        assertEq(funded.borrowShares, 0, "no cut");
+        assertEq(funded.supplyShares, 0, "no cost");
+        assertEq(funded.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+    }
+
+    /// @dev The contract the vault relies on: whatever budget a caller brings, the supply the core burns for the
+    ///      returned handle fits inside it, so the caller's budget accounting can never underflow.
+    /// forge-config: default.fuzz.runs = 20000
+    function testFuzz_settlementSlice_burnFitsInBudget(
+        uint256 borrowShares,
+        uint256 collateral,
+        uint256 sliceAssets,
+        uint256 budgetSupplyShares,
+        uint256 totalBorrowAssets,
+        uint256 totalBorrowShares,
+        uint256 totalSupplyAssets,
+        uint256 totalSupplyShares
+    ) public view {
+        MarketView memory mv = _fuzzMarket(totalBorrowAssets, totalBorrowShares, totalSupplyAssets, totalSupplyShares);
+        PositionView memory p = _fuzzPosition(mv, borrowShares, collateral);
+        sliceAssets = bound(sliceAssets, 1, 1e30);
+        budgetSupplyShares = bound(budgetSupplyShares, 1, mv.totalSupplyShares + VIRTUAL_SHARES);
+
+        SettlementSlice memory funded = q.settlementSlice(mv, p, sliceAssets, budgetSupplyShares);
+        if (funded.borrowShares == 0) return;
+
+        assertLe(_coreBurn(mv, funded.borrowShares), budgetSupplyShares, "burn fits the budget");
+    }
+
+    /// @dev `supplyShares` is the cut's cost, not a low estimate: budgeting exactly it funds the whole policy cut.
+    /// forge-config: default.fuzz.runs = 20000
+    function testFuzz_quotedSupplyCost_fundsTheQuotedCut(
+        uint256 borrowShares,
+        uint256 collateral,
+        uint256 sliceAssets,
+        uint256 totalBorrowAssets,
+        uint256 totalBorrowShares,
+        uint256 totalSupplyAssets,
+        uint256 totalSupplyShares
+    ) public view {
+        MarketView memory mv = _fuzzMarket(totalBorrowAssets, totalBorrowShares, totalSupplyAssets, totalSupplyShares);
+        PositionView memory p = _fuzzPosition(mv, borrowShares, collateral);
+        sliceAssets = bound(sliceAssets, 1, 1e30);
+
+        SettlementSlice memory policy = q.settlementSlice(mv, p, sliceAssets, 0);
+        if (policy.borrowShares == 0) return;
+
+        SettlementSlice memory funded = q.settlementSlice(mv, p, sliceAssets, policy.supplyShares);
+        assertEq(funded.borrowShares, policy.borrowShares, "the quoted cost funds the quoted cut");
+    }
+
+    /// @dev A market snapshot with share rates a live market can actually hold. Leaving assets and shares
+    ///      independent lets the fuzzer build books that no market reaches (all debt, no debt shares), where the
+    ///      core's own share math overflows long before any settlement policy runs.
+    function _fuzzMarket(uint256 tba, uint256 tbs, uint256 tsa, uint256 tss) internal pure returns (MarketView memory) {
+        uint256 borrowAssets = bound(tba, 0, 1e30);
+        uint256 supplyAssets = bound(tsa, 0, 1e30);
+        return MarketView({
+            totalSupplyAssets: supplyAssets,
+            totalSupplyShares: bound(tss, 0, MAX_SHARE_RATE * (supplyAssets + VIRTUAL_ASSETS)),
+            totalBorrowAssets: borrowAssets,
+            totalBorrowShares: bound(tbs, 0, MAX_SHARE_RATE * (borrowAssets + VIRTUAL_ASSETS)),
+            price: 1.5e36,
+            lltv: 0.86e18
+        });
+    }
+
+    /// @dev A position never holds more borrow shares than the book, and a lender never more supply shares.
+    function _fuzzPosition(MarketView memory mv, uint256 borrowShares, uint256 collateral)
+        internal
+        pure
+        returns (PositionView memory)
+    {
+        uint256 shares = mv.totalBorrowShares == 0 ? 0 : bound(borrowShares, 1, mv.totalBorrowShares);
+        return _pos(shares, bound(collateral, 1, 1e30));
     }
 }

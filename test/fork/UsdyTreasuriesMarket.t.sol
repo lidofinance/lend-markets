@@ -252,7 +252,7 @@ contract UsdyTreasuriesMarketTest is ForkStack {
 
         // Loud preconditions for the settle leg: it cuts the queue ROOT head-first, so our borrower must be it;
         // and a bad-debt position anywhere in the queue would block settlement — assert neither is the case.
-        (address root,,,) = m.controller.nextSettlementBorrower();
+        (address root,) = m.controller.nextSettlementBorrower(0);
         require(root == BORROWER, "UsdyTreasuries: a pre-existing riskier borrower outranks the test borrower");
         require(!m.controller.hasBadDebt(), "UsdyTreasuries: unexpected bad debt blocks the settle leg");
 

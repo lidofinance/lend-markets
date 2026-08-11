@@ -3,8 +3,10 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 
-import {ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
+import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
+import {DeployConfigFile} from "../../script/lib/DeployConfigFile.sol";
 import {ForkTest} from "../fork/helpers/ForkTest.sol";
+import {ForkStack} from "../fork/helpers/ForkStack.sol";
 
 /// @dev Exposes {ForkTest}'s run binding and artifact readers so they can be exercised without creating an
 ///      RPC fork: everything except `_fork`'s `createSelectFork` + chain-id assertion is pure file IO.
@@ -38,16 +40,32 @@ contract ForkArtifactsHarness is ForkTest {
     }
 }
 
+contract ForkStackRoleHarness is ForkStack {
+    function bindRun(string memory runName) external {
+        _bindRun(runName);
+    }
+
+    function marketForRole(string memory role) external returns (string memory) {
+        return _marketForRole(role);
+    }
+}
+
 contract ForkArtifactsTest is Test {
     bytes32 internal constant MARKET_ID = 0x1111111111111111111111111111111111111111111111111111111111111111;
+    bytes32 internal constant CONFIG_HASH = bytes32(uint256(0xCAFE));
+    string internal constant CIRCUIT_BREAKER_ARTIFACT = "lido-lend";
     address internal constant CORE = address(0x1001);
     address internal constant CONTROLLER = address(0x2001);
-    address internal constant KINK_IRM = address(0x3001);
+    address internal constant ORACLE = address(0x3001);
+    address internal constant AGENT = address(0xA11);
+    address internal constant EXECUTOR = address(0xE11);
 
     ForkArtifactsHarness internal h;
+    ForkStackRoleHarness internal roles;
 
     function setUp() public {
         h = new ForkArtifactsHarness();
+        roles = new ForkStackRoleHarness();
     }
 
     // ---
@@ -78,6 +96,80 @@ contract ForkArtifactsTest is Test {
         string memory tag = "unknown-network";
         _writeProtocol(tag, "no-such-network");
         vm.expectRevert(bytes("ForkTest: file not found: script/config/no-such-network.toml"));
+        h.bindRun(_runName(tag));
+        _cleanup(tag);
+    }
+
+    function testRevert_bind_headerDeploymentDoesNotMatchRequestedRun() public {
+        string memory tag = "header-deployment";
+        ArtifactMetadata memory metadata = _metadata(tag);
+        metadata.deployment = "another-run";
+        _writeProtocol(tag, "mainnet", metadata, _runName(tag), 1, CONFIG_HASH);
+
+        string memory path = string.concat(_runDir(tag), "/protocol.toml");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ArtifactMetadataFile.ArtifactDeploymentMismatch.selector, path, _runName(tag), metadata.deployment
+            )
+        );
+        h.bindRun(_runName(tag));
+        _cleanup(tag);
+    }
+
+    function testRevert_bind_protocolDeploymentDoesNotMatchHeader() public {
+        string memory tag = "protocol-deployment";
+        _writeProtocol(tag, "mainnet", _metadata(tag), "another-run", 1, CONFIG_HASH);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ForkTest.ProtocolDeploymentMismatch.selector, _runName(tag), "another-run")
+        );
+        h.bindRun(_runName(tag));
+        _cleanup(tag);
+    }
+
+    function testRevert_bind_protocolHeaderChainDoesNotMatchProtocolSection() public {
+        string memory tag = "header-chain";
+        ArtifactMetadata memory metadata = _metadata(tag);
+        metadata.chainId = 2;
+        _writeProtocol(tag, "mainnet", metadata, _runName(tag), 1, CONFIG_HASH);
+
+        string memory path = string.concat(_runDir(tag), "/protocol.toml");
+        vm.expectRevert(
+            abi.encodeWithSelector(ArtifactMetadataFile.ArtifactChainIdMismatch.selector, path, uint256(1), uint256(2))
+        );
+        h.bindRun(_runName(tag));
+        _cleanup(tag);
+    }
+
+    function testRevert_bind_protocolHeaderConfigDoesNotMatchProtocolSection() public {
+        string memory tag = "header-config";
+        ArtifactMetadata memory metadata = _metadata(tag);
+        metadata.configHash = bytes32(uint256(0xBAD));
+        _writeProtocol(tag, "mainnet", metadata, _runName(tag), 1, CONFIG_HASH);
+
+        string memory path = string.concat(_runDir(tag), "/protocol.toml");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ArtifactMetadataFile.ArtifactConfigHashMismatch.selector, path, CONFIG_HASH, metadata.configHash
+            )
+        );
+        h.bindRun(_runName(tag));
+        _cleanup(tag);
+    }
+
+    function testRevert_bind_protocolCompatibilityHashIsNotCanonical() public {
+        string memory tag = "header-compatibility";
+        ArtifactMetadata memory metadata = _metadata(tag);
+        metadata.compatibilityHash = bytes32(uint256(0xBAD));
+        _writeProtocol(tag, "mainnet", metadata, _runName(tag), 1, CONFIG_HASH);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployConfigFile.RegistryCompatibilityHashMismatch.selector,
+                _compatibilityHash("mainnet", 1),
+                metadata.compatibilityHash
+            )
+        );
         h.bindRun(_runName(tag));
         _cleanup(tag);
     }
@@ -113,7 +205,7 @@ contract ForkArtifactsTest is Test {
     function test_artifactAddr_resolvesPerResourceArtifact() public {
         string memory tag = "artifact";
         _bind(tag);
-        assertEq(h.artifactAddr("irms/linear-kink.toml", "irm.address"), KINK_IRM, "irms/linear-kink");
+        assertEq(h.artifactAddr("oracles/weth-wsteth.toml", "oracle.address"), ORACLE, "oracles/weth-wsteth");
         _cleanup(tag);
     }
 
@@ -152,11 +244,114 @@ contract ForkArtifactsTest is Test {
         _cleanup(tag);
     }
 
+    function testRevert_artifact_compatibilityMismatch() public {
+        string memory tag = "artifact-compatibility";
+        _bind(tag);
+        ArtifactMetadata memory metadata = _metadata(tag);
+        metadata.compatibilityHash = bytes32(uint256(0xBAD));
+        string memory path = string.concat(_runDir(tag), "/oracles/weth-wsteth.toml");
+        vm.writeFile(
+            path,
+            string.concat(
+                ArtifactMetadataFile.header(metadata, "oracle"), "\n[oracle]\naddress = \"", vm.toString(ORACLE), "\"\n"
+            )
+        );
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ArtifactMetadataFile.ArtifactCompatibilityHashMismatch.selector,
+                path,
+                _compatibilityHash("mainnet", 1),
+                metadata.compatibilityHash
+            )
+        );
+        h.artifactAddr("oracles/weth-wsteth.toml", "oracle.address");
+        _cleanup(tag);
+    }
+
+    function testRevert_marketForRole_missingRoleField() public {
+        string memory tag = "missing-role-field";
+        _writeProtocol(tag, "mainnet");
+        string memory dir = _rolesDir(tag);
+        vm.createDir(dir, true);
+        string memory path = string.concat(dir, "/market.toml");
+        vm.writeFile(
+            path,
+            string.concat(
+                ArtifactMetadataFile.header(_metadata(tag), "market-deployment"), "\n[market]\nname = \"market\"\n"
+            )
+        );
+        roles.bindRun(_runName(tag));
+
+        vm.expectRevert(
+            bytes(string.concat("ForkStack: market artifact is missing market.role: ", vm.projectRoot(), "/", path))
+        );
+        roles.marketForRole("weth-wsteth");
+        _cleanup(tag);
+    }
+
+    function testRevert_marketForRole_duplicateRole() public {
+        string memory tag = "duplicate-role";
+        _writeProtocol(tag, "mainnet");
+        string memory dir = _rolesDir(tag);
+        vm.createDir(dir, true);
+        _writeRoleMarket(tag, "first", "weth-wsteth");
+        _writeRoleMarket(tag, "second", "weth-wsteth");
+        roles.bindRun(_runName(tag));
+
+        vm.expectRevert(bytes("ForkStack: multiple markets have role 'weth-wsteth'"));
+        roles.marketForRole("weth-wsteth");
+        _cleanup(tag);
+    }
+
+    function test_marketForRole_returnsUniqueMatch() public {
+        string memory tag = "unique-role";
+        _writeProtocol(tag, "mainnet");
+        string memory dir = _rolesDir(tag);
+        vm.createDir(dir, true);
+        _writeRoleMarket(tag, "eth-market", "weth-wsteth");
+        _writeRoleMarket(tag, "treasury-market", "usdy-usdt");
+        roles.bindRun(_runName(tag));
+
+        assertEq(roles.marketForRole("weth-wsteth"), "eth-market");
+        _cleanup(tag);
+    }
+
+    function testRevert_marketForRole_compatibilityMismatch() public {
+        string memory tag = "role-compatibility";
+        _writeProtocol(tag, "mainnet");
+        string memory dir = _rolesDir(tag);
+        vm.createDir(dir, true);
+        ArtifactMetadata memory metadata = _metadata(tag);
+        metadata.compatibilityHash = bytes32(uint256(0xBAD));
+        string memory path = string.concat(dir, "/market.toml");
+        vm.writeFile(
+            path,
+            string.concat(
+                ArtifactMetadataFile.header(metadata, "market-deployment"),
+                "\n[market]\nname = \"market\"\nrole = \"weth-wsteth\"\n"
+            )
+        );
+        roles.bindRun(_runName(tag));
+
+        string memory absolutePath = string.concat(vm.projectRoot(), "/", path);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ArtifactMetadataFile.ArtifactCompatibilityHashMismatch.selector,
+                absolutePath,
+                _compatibilityHash("mainnet", 1),
+                metadata.compatibilityHash
+            )
+        );
+        roles.marketForRole("weth-wsteth");
+        _cleanup(tag);
+    }
+
     // ---
     // FIXTURE
     // ---
 
-    /// @dev Write a minimal but structurally real run (protocol + one market + one IRM artifact) and bind it.
+    /// @dev Write a minimal but structurally real run (protocol + one market + one oracle artifact) and bind it.
     ///      Each test owns its own run directory: forge runs a contract's test functions in parallel, and the
     ///      fixture lives on the real filesystem, so a shared directory would have tests clean up under each
     ///      other.
@@ -166,27 +361,96 @@ contract ForkArtifactsTest is Test {
         vm.writeFile(
             string.concat(_runDir(tag), "/markets/weth-wsteth.toml"),
             string.concat(
-                "[market]\nname = \"weth-wsteth\"\nid = \"",
+                ArtifactMetadataFile.header(_metadata(tag), "market-deployment"),
+                "\n[market]\nname = \"weth-wsteth\"\nid = \"",
                 vm.toString(MARKET_ID),
                 "\"\ncontroller = \"",
                 vm.toString(CONTROLLER),
                 "\"\n"
             )
         );
-        vm.createDir(string.concat(_runDir(tag), "/irms"), true);
+        vm.createDir(string.concat(_runDir(tag), "/oracles"), true);
         vm.writeFile(
-            string.concat(_runDir(tag), "/irms/linear-kink.toml"),
-            string.concat("[irm]\naddress = \"", vm.toString(KINK_IRM), "\"\n")
+            string.concat(_runDir(tag), "/oracles/weth-wsteth.toml"),
+            string.concat(
+                ArtifactMetadataFile.header(_metadata(tag), "oracle"),
+                "\n[oracle]\naddress = \"",
+                vm.toString(ORACLE),
+                "\"\n"
+            )
         );
         h.bindRun(_runName(tag));
     }
 
     function _writeProtocol(string memory tag, string memory network) internal {
+        ArtifactMetadata memory metadata = _metadata(tag);
+        metadata.compatibilityHash = _compatibilityHash(network, 1);
+        _writeProtocol(tag, network, metadata, _runName(tag), 1, CONFIG_HASH);
+    }
+
+    function _writeProtocol(
+        string memory tag,
+        string memory network,
+        ArtifactMetadata memory metadata,
+        string memory protocolDeployment,
+        uint256 protocolChainId,
+        bytes32 protocolConfigHash
+    ) internal {
         vm.createDir(_runDir(tag), true);
         vm.writeFile(
             string.concat(_runDir(tag), "/protocol.toml"),
-            string.concat("[protocol]\nnetwork = \"", network, "\"\nchain_id = 1\ncore = \"", vm.toString(CORE), "\"\n")
+            string.concat(
+                ArtifactMetadataFile.header(metadata, "protocol-deployment"),
+                "\n[protocol]\ndeployment = \"",
+                protocolDeployment,
+                "\"\nnetwork = \"",
+                network,
+                "\"\nchain_id = ",
+                vm.toString(protocolChainId),
+                "\nconfig_hash = \"",
+                vm.toString(protocolConfigHash),
+                "\"\nagent = \"",
+                vm.toString(AGENT),
+                "\"\nevm_script_executor = \"",
+                vm.toString(EXECUTOR),
+                "\"\ncircuit_breaker_artifact = \"",
+                CIRCUIT_BREAKER_ARTIFACT,
+                "\"\ncore = \"",
+                vm.toString(CORE),
+                "\"\n"
+            )
         );
+    }
+
+    function _rolesDir(string memory tag) internal pure returns (string memory) {
+        return string.concat(_runDir(tag), "/markets");
+    }
+
+    function _writeRoleMarket(string memory tag, string memory name, string memory role) internal {
+        vm.writeFile(
+            string.concat(_rolesDir(tag), "/", name, ".toml"),
+            string.concat(
+                ArtifactMetadataFile.header(_metadata(tag), "market-deployment"),
+                "\n[market]\nname = \"",
+                name,
+                "\"\nrole = \"",
+                role,
+                "\"\n"
+            )
+        );
+    }
+
+    function _metadata(string memory tag) internal pure returns (ArtifactMetadata memory) {
+        return ArtifactMetadata({
+            deployment: _runName(tag),
+            chainId: 1,
+            configHash: CONFIG_HASH,
+            compatibilityHash: _compatibilityHash("mainnet", 1)
+        });
+    }
+
+    function _compatibilityHash(string memory network, uint256 chainId) internal pure returns (bytes32) {
+        return DeployConfigFile.canonicalCompatibilityHash(network, chainId, AGENT, EXECUTOR, CIRCUIT_BREAKER_ARTIFACT);
     }
 
     function _runName(string memory tag) internal pure returns (string memory) {

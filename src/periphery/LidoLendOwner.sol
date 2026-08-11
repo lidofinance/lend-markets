@@ -3,7 +3,7 @@ pragma solidity 0.8.35;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 
 import {IGuardianSignals} from "../interfaces/IGuardianSignals.sol";
 import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
@@ -15,7 +15,7 @@ import {SettlementConfig} from "../types/SettlementTypes.sol";
 /// @author Lido Lending contributors.
 /// @notice Stable role-gated governance facade over a `LidoLend` core and all its markets. Core-owner calls and
 ///         per-market controller and guardian-registry calls sit behind independent capability roles.
-contract LidoLendOwner is AccessControl, ILidoLendOwner {
+contract LidoLendOwner is AccessControlEnumerable, ILidoLendOwner {
     // ---
     // ROLES
     // ---
@@ -117,8 +117,8 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
     }
 
     /// @inheritdoc ILidoLendOwner
-    function grantMarketInstantActivation(Id marketId, address caller) external onlyRole(MARKET_MANAGER_ROLE) {
-        _controller(marketId).grantInstantActivation(caller);
+    function setInstantActivation(Id marketId, address caller, bool enabled) external onlyRole(MARKET_MANAGER_ROLE) {
+        _controller(marketId).setInstantActivation(caller, enabled);
     }
 
     // ---
@@ -135,21 +135,7 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
         external
         onlyRole(GUARDIAN_MANAGER_ROLE)
     {
-        IGuardianSignals guardians = _guardians(marketId);
-        uint256 guardianCount = guardians.getGuardianCount();
-
-        if (guardianCount < guardians.MAX_GUARDIANS_COUNT()) {
-            guardians.addGuardian(newGuardian);
-            guardians.removeGuardian(oldGuardian);
-            return;
-        }
-
-        uint256 quorum = guardians.getQuorum();
-        bool restoreQuorum = quorum == guardianCount;
-        if (restoreQuorum) guardians.setQuorum(quorum - 1);
-        guardians.removeGuardian(oldGuardian);
-        guardians.addGuardian(newGuardian);
-        if (restoreQuorum) guardians.setQuorum(quorum);
+        _guardians(marketId).replaceGuardian(oldGuardian, newGuardian);
     }
 
     /// @inheritdoc ILidoLendOwner

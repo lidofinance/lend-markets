@@ -3,35 +3,31 @@ pragma solidity 0.8.35;
 
 import {Vm} from "forge-std/Vm.sol";
 
-import {ConfigToml} from "./ConfigToml.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 
 struct GuardianSignalsConfig {
-    address admin;
-    address proxyAdmin;
     uint256 quorum;
     uint256 suspectWindow;
     address[] guardians;
-    address accessLimiter;
 }
 
 library GuardianSignalsConfigFile {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
     error ArtifactAlreadyExists(string path);
+    error InvalidQuorum(uint256 quorum, uint256 guardiansCount);
 
     function read(string memory name) internal view returns (GuardianSignalsConfig memory) {
         return parse(vm.readFile(configPath(name)));
     }
 
     function parse(string memory toml) internal view returns (GuardianSignalsConfig memory cfg) {
-        cfg.admin = ConfigToml.requireAddress(toml, ".admin");
-        cfg.proxyAdmin = ConfigToml.requireAddress(toml, ".proxy_admin");
         cfg.quorum = vm.parseTomlUint(toml, ".quorum");
         cfg.suspectWindow = vm.parseTomlUint(toml, ".suspect_window");
         cfg.guardians = vm.parseTomlAddressArray(toml, ".guardians");
-        cfg.accessLimiter =
-            vm.keyExistsToml(toml, ".access_limiter") ? vm.parseTomlAddress(toml, ".access_limiter") : address(0);
+        if (cfg.quorum == 0 || cfg.quorum > cfg.guardians.length) {
+            revert InvalidQuorum(cfg.quorum, cfg.guardians.length);
+        }
     }
 
     function configPath(string memory name) internal pure returns (string memory) {
@@ -76,11 +72,8 @@ library GuardianSignalsConfigFile {
         artifact =
             string.concat(artifact, reused ? "reused = true\nrecorded_block = " : "reused = false\ndeployed_block = ");
         artifact = string.concat(artifact, vm.toString(blockNumber), "\n");
-        artifact = string.concat(artifact, "admin = \"", vm.toString(cfg.admin), "\"\n");
-        artifact = string.concat(artifact, "proxy_admin = \"", vm.toString(cfg.proxyAdmin), "\"\n");
         artifact = string.concat(artifact, "quorum = ", vm.toString(cfg.quorum), "\n");
         artifact = string.concat(artifact, "suspect_window = ", vm.toString(cfg.suspectWindow), "\n");
-        artifact = string.concat(artifact, "access_limiter = \"", vm.toString(cfg.accessLimiter), "\"\n");
         artifact = string.concat(artifact, _addressArray("guardians", cfg.guardians));
         vm.writeFile(path, artifact);
     }
@@ -94,6 +87,13 @@ library GuardianSignalsConfigFile {
         string memory path = deployedPath(name);
         if (!vm.exists(path)) return address(0);
         return vm.parseTomlAddress(vm.readFile(path), ".guardian_signals.address");
+    }
+
+    function readDeployed(string memory name, ArtifactMetadata memory expected) internal view returns (address) {
+        string memory path = deployedPath(name);
+        if (!vm.exists(path)) return address(0);
+        string memory artifact = ArtifactMetadataFile.requireCompatible(path, expected);
+        return vm.parseTomlAddress(artifact, ".guardian_signals.address");
     }
 
     function deployedPath(string memory name) internal view returns (string memory) {

@@ -2,7 +2,7 @@
 
 # RiskStewardDashboard
 
-Full external surface of `RiskStewardDashboard`: AccessControl (inherited), per-market steward management, and the bounded tighten-only risk levers. The dashboard implements this interface, so it is the single source for the events, errors, and the function docs the contract inherits.
+Dashboard-specific external surface: per-market steward management and bounded risk-reduction levers. Access-control membership and administration use the inherited `IAccessControlEnumerable` surface.
 
 ## Events
 
@@ -17,18 +17,26 @@ Emitted when a steward is appointed to or removed from a market.
 ### `ActivationDelaysIncreased`
 
 ```solidity
-event ActivationDelaysIncreased(Id indexed marketId, uint40 newMin, uint40 newMax);
+event ActivationDelaysIncreased(Id indexed marketId, uint256 newMinActivationDelay, uint256 newMaxActivationDelay, uint256 newMaxGuardiansQuorumDelay);
 ```
 
-Emitted when the activation delay floor and cap are raised on a market.
+Emitted when the activation delay floor, cap, and guardian-quorum fallback are raised on a market.
 
 ### `ActivatingLockIncreased`
 
 ```solidity
-event ActivatingLockIncreased(Id indexed marketId, uint128 newAmount, uint40 newDuration);
+event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 newDuration);
 ```
 
 Emitted when the Sybil lock amount and duration are raised on a market.
+
+### `InstantActivationRevoked`
+
+```solidity
+event InstantActivationRevoked(Id indexed marketId, address indexed caller);
+```
+
+Emitted when a steward revokes a caller's instant activation on a market.
 
 ## Errors
 
@@ -47,6 +55,22 @@ error NotMarketSteward();
 ```
 
 The caller is not a steward of the target market.
+
+### `ZeroSteward`
+
+```solidity
+error ZeroSteward();
+```
+
+A zero-address steward was supplied.
+
+### `ZeroAddress`
+
+```solidity
+error ZeroAddress();
+```
+
+Thrown when a required address argument is zero.
 
 ### `UnknownMarket`
 
@@ -106,12 +130,13 @@ Whether `steward` may pull this dashboard's levers on `marketId`.
 ```solidity
 function increaseActivationDelays(
     Id marketId,
-    uint40 newMin,
-    uint40 newMax
+    uint40 newMinActivationDelay,
+    uint40 newMaxActivationDelay,
+    uint40 newMaxGuardiansQuorumDelay
 ) external;
 ```
 
-Raise the activation delay floor and cap. Reverts unless both rise or hold. The controller still bounds the cap and enforces floor <= cap on write.
+Raise the activation delay floor, cap, and guardian-quorum fallback. Reverts unless all values rise or hold. The controller bounds the cap and fallback to 7 days and enforces floor <= cap and a nonzero fallback > cap on write.
 
 ### `increaseActivatingLock`
 
@@ -132,3 +157,11 @@ function revokeInstantActivation(Id marketId, address caller) external;
 ```
 
 Revoke a caller's instant activation on a market. Risk-reducing, so no direction guard; forwards to the controller, which emits the state change.
+
+### `freezeMarket`
+
+```solidity
+function freezeMarket(Id marketId) external;
+```
+
+Freeze a market. Only an appointed steward of that market may call.

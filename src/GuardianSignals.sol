@@ -114,18 +114,19 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @inheritdoc IGuardianSignals
+    function replaceGuardian(address oldGuardian, address newGuardian) external onlyRole(MANAGER_ROLE) {
+        if (newGuardian == address(0)) revert ZeroAddress();
+        if (_guardians.contains(newGuardian)) revert AlreadyGuardian();
+        _removeGuardian(oldGuardian);
+        _addGuardian(newGuardian);
+    }
+
+    /// @inheritdoc IGuardianSignals
     /// @dev Reverts if removal would drop the set below `quorum`. Clears the guardian's delegate and heartbeat, so
     ///      re-adding it starts fresh. Its existing signals linger (still counted) until a permissionless `prune`.
     function removeGuardian(address guardian) external onlyRole(MANAGER_ROLE) {
-        if (!_guardians.remove(guardian)) revert NotGuardian();
+        _removeGuardian(guardian);
         if (_guardians.length() < _quorum) revert WouldBreakQuorum();
-        address oldDelegate = _delegates[guardian];
-        if (oldDelegate != address(0)) {
-            delete _delegates[guardian];
-            emit DelegateSet(guardian, oldDelegate, address(0));
-        }
-        delete _heartbeats[guardian];
-        emit GuardianRemoved(guardian);
     }
 
     /// @inheritdoc IGuardianSignals
@@ -285,7 +286,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
             address flagger = flaggers[i];
             if (!_guardians.contains(flagger)) {
                 signal.flaggedBy.remove(flagger);
-                emit FlagPruned(marketId, account, flagger, signal.flaggedBy.length().toUint16());
+                emit FlagPruned(marketId, account, flagger, signal.flaggedBy.length());
             }
         }
         // Re-evaluate against the survivors: latch if they still meet quorum. A never-latched derived ban dropped
@@ -303,7 +304,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
                 suspectPruned = true;
             }
         }
-        if (suspectPruned) _snapshotSuspects(marketId, account, signal);
+        if (suspectPruned) _snapshotSuspects(signal);
     }
 
     // ---
@@ -391,13 +392,24 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         uint40 frontierTimestamp = Arrays.sort(timestamps)[n - quorum].toUint40();
         if (frontierTimestamp > _quorumFrontierTimestamp) {
             _quorumFrontierTimestamp = frontierTimestamp;
-            emit QuorumFrontierAdvanced(frontierTimestamp);
+            emit QuorumFrontierAdvanced(msg.sender, frontierTimestamp);
         }
     }
 
     function _setQuorum(uint256 newQuorum) internal {
         if (newQuorum == 0 || newQuorum > _guardians.length()) revert BadQuorum();
         _quorum = newQuorum.toUint8();
+    }
+
+    function _removeGuardian(address guardian) internal {
+        if (!_guardians.remove(guardian)) revert NotGuardian();
+        address oldDelegate = _delegates[guardian];
+        if (oldDelegate != address(0)) {
+            delete _delegates[guardian];
+            emit DelegateSet(guardian, oldDelegate, address(0));
+        }
+        delete _heartbeats[guardian];
+        emit GuardianRemoved(guardian);
     }
 
     function _addGuardian(address guardian) internal {
@@ -418,7 +430,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
             signal.banned = true;
             emit Banned(marketId, account);
         }
-        emit Flagged(marketId, account, guardian, msg.sender, strikes.toUint16());
+        emit Flagged(marketId, account, guardian, msg.sender, strikes);
     }
 
     /// @dev Never lifts a ban. Before dropping the count, latch any currently-effective ban — including a
@@ -430,7 +442,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
             emit Banned(marketId, account);
         }
         if (!signal.flaggedBy.remove(guardian)) return;
-        emit Unflagged(marketId, account, guardian, msg.sender, signal.flaggedBy.length().toUint16());
+        emit Unflagged(marketId, account, guardian, msg.sender, signal.flaggedBy.length());
     }
 
     /// @dev Single-account suspect report. Records (or refreshes) the guardian's timestamp, then snapshots
@@ -442,7 +454,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         _pruneExpiredSuspects(marketId, account);
         signal.suspectedBy.add(guardian);
         signal.suspectedAt[guardian] = block.timestamp.toUint40();
-        _snapshotSuspects(marketId, account, signal);
+        _snapshotSuspects(signal);
         emit Suspected(marketId, account, guardian, msg.sender, block.timestamp);
     }
 
@@ -452,15 +464,26 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         GuardiansSignal storage signal = _signals[marketId][account];
         if (!signal.suspectedBy.remove(guardian)) return;
         signal.suspectedAt[guardian] = 0;
-        _snapshotSuspects(marketId, account, signal);
+        _snapshotSuspects(signal);
         emit SuspectCleared(marketId, account, guardian, msg.sender);
     }
 
-    /// @dev Snapshot the active suspect count against `block.timestamp` so the delay read skips a re-scan. Run on
+    /// @dev Snapshot the active suspect count and latest remaining report so the delay read skips a re-scan. Run on
     ///      every report/retraction, after pruning expired ones.
-    function _snapshotSuspects(Id marketId, address account, GuardiansSignal storage signal) internal {
-        signal.suspectReportedAt = block.timestamp.toUint40();
-        signal.suspectCount = _activeSuspectCount(marketId, account).toUint16();
+    function _snapshotSuspects(GuardiansSignal storage signal) internal {
+        uint256 count;
+        uint40 latestReportedAt;
+        uint256 window = _suspectWindow;
+        address[] memory suspects = signal.suspectedBy.values();
+        for (uint256 i; i < suspects.length; ++i) {
+            uint40 reportedAt = signal.suspectedAt[suspects[i]];
+            if (uint256(reportedAt) + window >= block.timestamp) {
+                ++count;
+                if (reportedAt > latestReportedAt) latestReportedAt = reportedAt;
+            }
+        }
+        signal.suspectReportedAt = latestReportedAt;
+        signal.suspectCount = count.toUint16();
     }
 
     /// @dev The raw counters the activation lib turns into a delay: flag count, snapshotted active-suspect count,
@@ -474,16 +497,6 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         strikeCount = signal.flaggedBy.length();
         suspectCount = signal.suspectCount;
         suspectExpiryTimestamp = uint256(signal.suspectReportedAt) + _suspectWindow;
-    }
-
-    /// @dev Count the live suspect reports on `account` still inside the suspect window (`t + window >= now`).
-    function _activeSuspectCount(Id marketId, address account) internal view returns (uint256 count) {
-        GuardiansSignal storage signal = _signals[marketId][account];
-        uint256 window = _suspectWindow;
-        address[] memory suspects = signal.suspectedBy.values();
-        for (uint256 i; i < suspects.length; ++i) {
-            if (uint256(signal.suspectedAt[suspects[i]]) + window >= block.timestamp) ++count;
-        }
     }
 
     /// @dev Drop suspect reports on `account` whose window has lapsed. A lapsed report already stopped counting,

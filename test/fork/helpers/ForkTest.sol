@@ -4,7 +4,8 @@ pragma solidity 0.8.35;
 import {CommonBase} from "forge-std/Base.sol";
 import {console2} from "forge-std/Test.sol";
 
-import {ArtifactMetadataFile} from "../../../script/lib/ArtifactMetadata.sol";
+import {ArtifactMetadata, ArtifactMetadataFile} from "../../../script/lib/ArtifactMetadata.sol";
+import {DeployConfigFile} from "../../../script/lib/DeployConfigFile.sol";
 
 /// @notice Fork acquisition and artifact access for suites that drive an already-deployed protocol.
 /// @dev `RPC_URL` is the node to fork, `ARTIFACTS_DIR` the deploy run under `deployed/`, and the optional
@@ -13,10 +14,12 @@ import {ArtifactMetadataFile} from "../../../script/lib/ArtifactMetadata.sol";
 ///      revert; nothing skips.
 abstract contract ForkTest is CommonBase {
     error ForkChainIdMismatch(uint256 expected, uint256 actual);
+    error ProtocolDeploymentMismatch(string expected, string actual);
 
     string private _runDir;
     /// @dev The network config the run names, source of `[external]`.
     string private _externalsPath;
+    ArtifactMetadata private _artifactMetadata;
     bool private _bound;
 
     /// @notice Creates the fork and binds the deploy run named by `ARTIFACTS_DIR`.
@@ -57,7 +60,22 @@ abstract contract ForkTest is CommonBase {
     ///      it through `_fork`.
     function _bindRun(string memory runName) internal {
         string memory runDir = ArtifactMetadataFile.artifactsDir(runName);
-        string memory protocol = _read(string.concat(runDir, "/protocol.toml"));
+        string memory protocolPath = string.concat(runDir, "/protocol.toml");
+        string memory protocol = _read(protocolPath);
+
+        string memory recordedDeployment = vm.parseTomlString(protocol, ".protocol.deployment");
+        if (keccak256(bytes(recordedDeployment)) != keccak256(bytes(runName))) {
+            revert ProtocolDeploymentMismatch(runName, recordedDeployment);
+        }
+        DeployConfigFile.requireProtocolArtifactCompatibility(protocol);
+
+        ArtifactMetadata memory metadata = ArtifactMetadata({
+            deployment: runName,
+            chainId: vm.parseTomlUint(protocol, ".protocol.chain_id"),
+            configHash: vm.parseTomlBytes32(protocol, ".protocol.config_hash"),
+            compatibilityHash: vm.parseTomlBytes32(protocol, ".artifact.compatibility_hash")
+        });
+        protocol = ArtifactMetadataFile.requireExact(protocolPath, metadata);
 
         string memory externalsPath =
             string.concat("script/config/", vm.parseTomlString(protocol, ".protocol.network"), ".toml");
@@ -65,6 +83,7 @@ abstract contract ForkTest is CommonBase {
 
         _runDir = runDir;
         _externalsPath = externalsPath;
+        _artifactMetadata = metadata;
         _bound = true;
     }
 
@@ -97,7 +116,7 @@ abstract contract ForkTest is CommonBase {
     /// @notice The market id recorded in `markets/<name>.toml`.
     function _marketId(string memory name) internal view returns (bytes32) {
         string memory relPath = _marketArtifact(name);
-        string memory toml = _read(_artifactPath(relPath));
+        string memory toml = _readArtifact(relPath);
         return vm.parseTomlBytes32(toml, _key(toml, relPath, "market.id"));
     }
 
@@ -111,14 +130,25 @@ abstract contract ForkTest is CommonBase {
     /// @notice Address at dotted `key` in the run artifact at `relPath`, for the per-resource artifacts the
     ///         typed accessors do not cover.
     function _artifactAddr(string memory relPath, string memory key) internal view returns (address) {
-        string memory toml = _read(_artifactPath(relPath));
+        string memory toml = _readArtifact(relPath);
         return vm.parseTomlAddress(toml, _key(toml, relPath, key));
     }
 
     /// @notice `uint256` at dotted `key` in the run artifact at `relPath`.
     function _artifactUint(string memory relPath, string memory key) internal view returns (uint256) {
-        string memory toml = _read(_artifactPath(relPath));
+        string memory toml = _readArtifact(relPath);
         return vm.parseTomlUint(toml, _key(toml, relPath, key));
+    }
+
+    /// @dev Shared by {ForkStack}'s directory scan so it cannot bypass the bound run's metadata checks.
+    function _readCompatibleArtifact(string memory path) internal view returns (string memory) {
+        require(_bound, "ForkTest: _fork() not called");
+        return ArtifactMetadataFile.requireCompatible(path, _artifactMetadata);
+    }
+
+    function _runArtifactsDir() internal view returns (string memory) {
+        require(_bound, "ForkTest: _fork() not called");
+        return _runDir;
     }
 
     // ---
@@ -133,6 +163,10 @@ abstract contract ForkTest is CommonBase {
         require(_bound, "ForkTest: _fork() not called");
         path = string.concat(_runDir, "/", relPath);
         require(vm.isFile(path), string.concat("ForkTest: run artifact not found: ", path));
+    }
+
+    function _readArtifact(string memory relPath) private view returns (string memory) {
+        return _readCompatibleArtifact(_artifactPath(relPath));
     }
 
     function _requireFile(string memory path) private view {
