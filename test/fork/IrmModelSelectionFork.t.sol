@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 // Fork mirror of the adaptive IRM scenario, run against an ALREADY-DEPLOYED, ALREADY-ACTIVATED market rather
 // than a freshly deployed stack. Alternative model selection remains in the local scenario suite: deployment

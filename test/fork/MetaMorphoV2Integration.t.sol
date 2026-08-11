@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {IVaultV2} from "@vault-v2/src/interfaces/IVaultV2.sol";
 import {IMorphoMarketV1AdapterLike} from "../utils/IMorphoMarketV1AdapterLike.sol";
@@ -152,7 +152,6 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
     ///      shared), and the direct lender's supply shares are returned for the later fallback settle.
     function _seedVaultAndDirectLender() internal returns (uint256 directSupplyShares) {
         uint256 vaultIdleBefore = m.loanToken.balanceOf(address(vault2));
-
         _mintWETH(USER, 10 ether);
         vm.prank(USER);
         m.loanToken.approve(address(vault2), type(uint256).max);

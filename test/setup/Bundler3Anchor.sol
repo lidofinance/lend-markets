@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 // Compile anchor for the stock Bundler3 dispatcher. Forge only compiles lib files that something
 // imports: with no import anywhere, the contract would never be built and no artifact would
 // appear in `out/` for the tests to deploy. But none of our files may import it either - it
-// accepts solc 0.8.28 and nothing else, while the rest of this repo is 0.8.35, and no compiler
+// accepts solc 0.8.28 and nothing else, while the rest of this repo is 0.8.36, and no compiler
 // version satisfies both sides of such an import.
 //
 // This file is the way through: it accepts 0.8.28 itself and does nothing but import the

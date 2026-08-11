@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 /// @notice Shared value types of the settlement subsystem. Defined at file scope (not in a library) so the
 ///         controller and `SettlementQueueLib` can use them as bare `MarketView` / `PositionView` /

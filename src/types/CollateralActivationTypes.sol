@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 /// @notice Value types of the collateral-activation subsystem, kept at file scope so the controller and its
 ///         interface can import `CollateralActivationConfig` without pulling in the logic library

@@ -158,6 +158,20 @@
     <div id="marketList" class="list" style="margin-top:10px"></div>
   </section>
 
+  <section data-group="protocol">
+    <h2>bundler</h2>
+    <small>Bundler3 plus the vendored general adapter and the Lido vault adapter, wired to the current core.
+      Leave the token fields empty to deploy the WETH / stETH / wstETH trio the general adapter needs — a plain
+      mock token has no <code>stETH()</code> and its constructor would revert. Create the market on these
+      addresses if you want to bundle against it.</small>
+    <div class="row">
+      <div><label>WETH (optional)</label><input id="bundlerWeth" placeholder="0x… deploys a mock if empty" /></div>
+      <div><label>wstETH (optional)</label><input id="bundlerWstEth" placeholder="0x… deploys a mock if empty" /></div>
+    </div>
+    <button id="deployBundlerBtn" class="primary">deploy bundler</button>
+    <div id="bundlerInfo" class="kv" style="margin-top:10px"></div>
+  </section>
+
   <section data-group="market" style="order:4">
     <h2>oracle price (active market)</h2>
     <div id="curPrice" class="kv" style="margin-bottom:8px"></div>
@@ -360,7 +374,7 @@
 const $ = (id) => document.getElementById(id);
 const E = window.ethers;
 let provider, signer, accounts = [];
-let core = null, guardianSignals = null, tokens = [], markets = [];
+let core = null, guardianSignals = null, tokens = [], markets = [], bundler = null;
 
 const ERC20 = ["function mint(address,uint256)","function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)","function approve(address,uint256) returns (bool)","function allowance(address,address) view returns (uint256)"];
 const MP = "(address,address,address,address,uint256)"; // MarketParams: loan,collateral,oracle,irm(router),lltv
@@ -630,7 +644,7 @@ async function refreshStatus(){
     $("nodeMode").textContent = s.running? s.mode : "stopped";
     if (s.accounts && !accounts.length){ accounts=s.accounts; $("signer").innerHTML=accounts.map((a,i)=>`<option value="${a.key}">#${i} ${a.address}</option>`).join(""); }
     if (s.rpc) $("rpc").value = s.rpc;
-    core = s.state?.core || null; guardianSignals = s.state?.guardianSignals || null; tokens = s.state?.tokens || []; markets = s.state?.markets || [];
+    core = s.state?.core || null; guardianSignals = s.state?.guardianSignals || null; tokens = s.state?.tokens || []; markets = s.state?.markets || []; bundler = s.state?.bundler || null;
     recording = s.history || []; archive = s.archive || []; renderHistory();
     $("nodeInfo").innerHTML = kv({ mode:s.mode||"—", rpc:s.rpc||"—", fork:s.forkUrl||"—" });
     renderAll();
@@ -642,6 +656,7 @@ function renderMktAddrs(){ const m=activeMarket(); if(!m){ $("mktAddrs").innerHT
 function renderAll(){
   $("coreBadge").textContent = "core: "+short(core)+"  ·  guardian: "+short(guardianSignals);
   $("coreInfo").innerHTML = core? kv({core, guardianSignals}) : "";
+  $("bundlerInfo").innerHTML = bundler? kv({bundler3:bundler.bundler3, generalAdapter:bundler.generalAdapter, vaultAdapter:bundler.vaultAdapter, WETH:bundler.weth, stETH:bundler.stEth, wstETH:bundler.wstEth}) : "";
   $("tokenList").innerHTML = tokens.map(t=>`<div class="addr" onclick="copy('${t.address}')">${t.symbol} (${t.decimals}) — ${t.address}</div>`).join("") || "<small>none yet</small>";
   const opts = tokens.map((t,i)=>`<option value="${t.address}">${t.symbol} — ${short(t.address)}</option>`).join("");
   $("loanSel").innerHTML = opts + `<option value="__custom">custom address…</option>`;
@@ -688,6 +703,7 @@ $("connectBtn").onclick=connect;
 // deploy core / token / market — thin wrappers over the ACTIONS registry (record + replay)
 $("deployCoreBtn").onclick=act("deployCore");
 $("deployTokenBtn").onclick=act("deployToken",()=>({symbol:$("tokSymbol").value.trim(),decimals:Number($("tokDecimals").value)}));
+$("deployBundlerBtn").onclick=act("deployBundler",()=>({weth:$("bundlerWeth").value.trim(),wstEth:$("bundlerWstEth").value.trim()}));
 $("createMarketBtn").onclick=act("createMarket",()=>({
   loan: $("loanSel").value==="__custom" ? $("loanCustom").value.trim() : $("loanSel").value,
   collateral: $("collSel").value==="__custom" ? $("collCustom").value.trim() : $("collSel").value,
@@ -1111,6 +1127,7 @@ function onMarketChange(){ renderMktAddrs(); refreshPrice(); refreshMktCtl(); re
 const ACTIONS = {
   // setup (server-backed forge; always signs with the account-dropdown key)
   deployCore: async()=>{ const r=await api("/api/deploy/core",{rpc:$("rpc").value.trim(),privateKey:$("signer").value}); core=r.core; guardianSignals=r.guardianSignals; ok("core "+short(core)+" · guardian "+short(guardianSignals)); (r.txHashes||[]).forEach(h=>logTx(h,"deployCore")); await refreshStatus(); },
+  deployBundler: async(p)=>{ if(!core) throw new Error("deploy core first"); const r=await api("/api/deploy/bundler",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,core,weth:p.weth||undefined,wstEth:p.wstEth||undefined}); ok("bundler3 "+short(r.bundler.bundler3)+" · general "+short(r.bundler.generalAdapter)+" · vault "+short(r.bundler.vaultAdapter)); (r.txHashes||[]).forEach(h=>logTx(h,"deployBundler")); await refreshStatus(); },
   deployToken: async(p)=>{ const r=await api("/api/deploy/token",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,symbol:p.symbol,decimals:Number(p.decimals)}); ok("token "+r.token.symbol+" "+short(r.token.address)); (r.txHashes||[]).forEach(h=>logTx(h,"deployToken")); await refreshStatus(); },
   createMarket: async(p)=>{ if(!core) throw new Error("deploy core first"); p.loan=resolveToken(p.loan); p.collateral=resolveToken(p.collateral); const [ld,cd]=await Promise.all([readDecimals(p.loan),readDecimals(p.collateral)]); const oraclePrice=E.parseUnits(String(p.price),36+ld-cd).toString(); const lltv=E.parseUnits(String(p.lltv),18).toString(); const minActivation=E.parseUnits(String(p.minActivation),cd).toString(); const r=await api("/api/market/create",{rpc:$("rpc").value.trim(),privateKey:$("signer").value,core,loanToken:p.loan,collateralToken:p.collateral,oraclePrice,lltv,minActivation}); ok("market "+short(r.market.vault)); (r.txHashes||[]).forEach(h=>logTx(h,"createMarket")); await refreshStatus(); $("activeMarket").value=String(markets.length-1); onMarketChange(); },
   selectMarket: async(p)=>{ $("activeMarket").value=String(p.index); onMarketChange(); ok("active market #"+p.index); },
@@ -1194,7 +1211,7 @@ function renderHistory(){
 function loadArchive(i){ const h=archive[i]; if(!h) return; $("scriptInput").value=JSON.stringify(h.steps,null,2); ok("loaded archived session ("+h.steps.length+" steps) into input"); }
 // actions NOT sent as the signer (cheats, node/time control, actor switch, forge-key deploys); everything
 // else is a tx from the current signer, so we stamp `from` for explicit, reorder-safe scripts.
-const NO_FROM = new Set(["actAs","useKey","selectMarket","deployCore","deployToken","createMarket","warp","mine","setNextTs","freezeChain","resumeChain","intervalMine","snapshot","revertSnapshot","deal","setEth","fund","watch"]);
+const NO_FROM = new Set(["actAs","useKey","selectMarket","deployCore","deployToken","deployBundler","createMarket","warp","mine","setNextTs","freezeChain","resumeChain","intervalMine","snapshot","revertSnapshot","deal","setEth","fund","watch"]);
 async function recordStep(name, params){
   const step=Object.assign({a:name}, params||{}); if(!NO_FROM.has(name) && signer) step.from=signer.address;
   try{ const r=await api("/api/history",{step}); recording=r.history; }catch{ recording.push(step); }
