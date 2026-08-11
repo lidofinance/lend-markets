@@ -8,6 +8,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const { ethers } = require("ethers");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const PORT = Number(process.env.DEVUI_PORT || 8899);
@@ -25,7 +26,7 @@ const ANVIL_ACCOUNTS = [
 ];
 
 let anvil = null; // { proc, mode, rpc, forkUrl }
-let state = { core: null, guardianSignals: null, tokens: [], markets: [] };
+let state = { core: null, guardianSignals: null, tokens: [], markets: [], bundler: null };
 
 // Scenario history: the chronological log of executed actions, persisted server-side so it survives a
 // page reload. Archived (not deleted) on node stop/start — the last few sessions are kept alongside.
@@ -158,7 +159,7 @@ app.post("/api/node/start", async (req, res) => {
     return res.status(500).json({ error: exited ? "anvil exited immediately (port busy, or not on PATH)" : "anvil did not come up in time" });
   }
   anvil = { proc, mode, rpc: DEFAULT_RPC, forkUrl: forkUrl || null };
-  state = { core: null, guardianSignals: null, tokens: [], markets: [] };
+  state = { core: null, guardianSignals: null, tokens: [], markets: [], bundler: null };
   archiveHistory("node start"); // fresh chain → fresh history, prior session kept in the archive
   res.json({ running: true, mode, rpc: DEFAULT_RPC, accounts: ANVIL_ACCOUNTS });
 });
@@ -166,7 +167,7 @@ app.post("/api/node/start", async (req, res) => {
 app.post("/api/node/stop", (_req, res) => {
   if (anvil) { anvil.proc._intentional = true; try { anvil.proc.kill(); } catch {} }
   anvil = null;
-  state = { core: null, guardianSignals: null, tokens: [], markets: [] };
+  state = { core: null, guardianSignals: null, tokens: [], markets: [], bundler: null };
   archiveHistory("node stop");
   res.json({ running: false });
 });
@@ -270,6 +271,99 @@ app.post("/api/market/create", async (req, res) => {
   state.markets.push(market);
   const txHashes = recordForgeTxs(r.out, "createMarket");
   res.json({ market, txHashes });
+});
+
+// ── 2d · deploy the bundler stack ──
+// Deployed straight from the forge artifacts rather than through the devnet script: Bundler3 and the
+// vendored general adapter pin solc 0.8.28, so a 0.8.35 script cannot `new` them (the test setup reads
+// the same artifacts for the same reason).
+function artifactOf(file, name) {
+  const json = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "out", file, name + ".json"), "utf8"));
+  return { abi: json.abi, bytecode: json.bytecode.object };
+}
+
+// The bundler's tokens are ordinary deployments, so they belong in the same registry the token list and the
+// market selects read — otherwise the only way to build a market on them is pasting a custom address.
+async function registerToken(provider, address, fallbackSymbol) {
+  if (state.tokens.some((t) => t.address.toLowerCase() === address.toLowerCase())) return;
+  let symbol = fallbackSymbol;
+  let decimals = 18;
+  try {
+    const erc20 = new ethers.Contract(
+      address,
+      ["function symbol() view returns (string)", "function decimals() view returns (uint8)"],
+      provider
+    );
+    symbol = await erc20.symbol();
+    decimals = Number(await erc20.decimals());
+  } catch {
+    // a non-standard token still deploys fine; it just keeps the fallback label
+  }
+  state.tokens.push({ address, symbol, decimals });
+}
+
+async function deployArtifact(wallet, file, name, args, label) {
+  const { abi, bytecode } = artifactOf(file, name);
+  const contract = await new ethers.ContractFactory(abi, bytecode, wallet).deploy(...args);
+  const receipt = await contract.deploymentTransaction().wait();
+  txLog.push({ hash: receipt.hash, label });
+  txLog = txLog.slice(-1000);
+  return { address: await contract.getAddress(), hash: receipt.hash };
+}
+
+app.post("/api/deploy/bundler", async (req, res) => {
+  const p = req.body || {};
+  const core = p.core || state.core;
+  if (!core) return res.status(400).json({ error: "no core; deploy core first" });
+
+  // `cacheTimeout: -1` stops the provider serving a stale nonce to the next deploy in the sequence.
+  const provider = new ethers.JsonRpcProvider(p.rpc || anvil?.rpc || DEFAULT_RPC, undefined, { cacheTimeout: -1 });
+  const wallet = new ethers.NonceManager(new ethers.Wallet(p.privateKey || ANVIL_ACCOUNTS[0].key, provider));
+  const txHashes = [];
+  const deploy = async (file, name, args, label) => {
+    const d = await deployArtifact(wallet, file, name, args, label);
+    txHashes.push(d.hash);
+    return d.address;
+  };
+
+  try {
+    const bundler = { core };
+
+    // The general adapter's constructor reads `stETH()` off the wstETH address, so a plain MockERC20
+    // cannot back it. Supply real ones, or let this deploy the Lido token trio the adapter expects.
+    if (p.wstEth) {
+      bundler.wstEth = p.wstEth;
+      bundler.stEth = await new ethers.Contract(p.wstEth, ["function stETH() view returns (address)"], provider)
+        .stETH();
+    } else {
+      bundler.stEth = await deploy("Mocks.sol", "MockStETH", [], "deployBundler:stETH");
+      bundler.wstEth = await deploy("Mocks.sol", "MockWstETH", [bundler.stEth], "deployBundler:wstETH");
+    }
+    bundler.weth = p.weth || (await deploy("Mocks.sol", "MockWETH", [], "deployBundler:WETH"));
+
+    bundler.bundler3 = await deploy("Bundler3.sol", "Bundler3", [], "deployBundler:Bundler3");
+    bundler.generalAdapter = await deploy(
+      "EthereumGeneralAdapter1.sol",
+      "EthereumGeneralAdapter1",
+      [bundler.bundler3, core, bundler.weth, bundler.wstEth],
+      "deployBundler:generalAdapter"
+    );
+    bundler.vaultAdapter = await deploy(
+      "LidoLendVaultAdapter.sol",
+      "LidoLendVaultAdapter",
+      [bundler.bundler3],
+      "deployBundler:vaultAdapter"
+    );
+
+    await registerToken(provider, bundler.weth, "WETH");
+    await registerToken(provider, bundler.stEth, "stETH");
+    await registerToken(provider, bundler.wstEth, "wstETH");
+
+    state.bundler = bundler;
+    res.json({ bundler, tokens: state.tokens, txHashes });
+  } catch (e) {
+    res.status(500).json({ error: "deployBundler failed", log: String(e?.shortMessage || e?.message || e).slice(-4000) });
+  }
 });
 
 // ── run the headless activity runner (tools/run-scenario.js) against the current node, driven from the UI so the
