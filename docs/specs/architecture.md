@@ -142,7 +142,7 @@ This map covers deployed contracts and external runtime boundaries. Internal lib
 
 The Morpho Blue fork that holds canonical supply, borrow, collateral, interest, and liquidation accounting for every market. The fork adds owner-gated market creation, immutable controller binding, pre-state policy hooks, and optional [lender settlement](lender-settlement.md) that cancels borrower debt against lender supply. The controller may allow or revert an action but cannot rewrite amounts already resolved by the core. Token-global `flashLoan` has no market id and therefore remains outside controller policy.
 
-Full specification: [Lido Lend](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md).
+Full specification: [Lido Lend](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md). Fork provenance and local changes: [FORK_NOTES](https://github.com/lidofinance/lido-lend/blob/main/FORK_NOTES.md).
 
 #### LidoLendMarketController
 

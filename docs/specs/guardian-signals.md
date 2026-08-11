@@ -1,90 +1,58 @@
 # Guardian Signals
 
-`GuardianSignals` lets a committee add human or automated judgement to rules that the lending core cannot derive from balances alone. Its primary case is a compromised account preparing to borrow against collateral: the core can prove that the position is solvent, but it cannot tell whether the account or collateral is legitimate.
+`GuardianSignals` records guardian judgement that a market controller uses for account bans and collateral activation. The registry does not call the lending core or move assets; controllers read its state and enforce the result.
 
-Guardians therefore publish two kinds of market-scoped opinion:
+Guardians publish three signals:
 
-- a **flag** is a strike; enough distinct flags ban the account from borrowing;
-- a **suspect report** is a weaker signal; it can lengthen collateral activation but cannot ban an account.
+- a **flag** adds one strike; enough distinct guardian identities ban the account;
+- a **suspect report** can add collateral-activation delay but cannot ban; and
+- a **heartbeat** reports how far a guardian has scanned the chain.
 
-Guardians also publish **heartbeats** describing how far they have scanned the chain. The stored **quorum frontier** is the highest timestamp the registry has accepted from a quorum calculation. It can only increase, so it may differ from a frontier recalculated from the current committee. A controller uses the stored value to avoid maturing collateral before enough guardians have had an opportunity to inspect it.
-
-The registry does not call the lending core or move user assets. A market controller reads it and enforces the opinion. See [Market controller](market-controller.md) for the activation and borrow rules, the [GuardianSignals API](api/guardian-signals.md) for the contract surface, and [Actors and roles](roles.md) for the authority assigned to committee-management and override roles.
+Account signals are market-scoped. Committee membership, quorum, suspect-window configuration, heartbeats, and the resulting **quorum frontier** belong to the registry as a whole.
 
 ## Place in the market
 
-One registry represents one guardian committee. It may serve several markets because account signals are stored by `(marketId, account)`. The following configuration and liveness state are instead shared by every market using that registry:
+One registry represents one guardian committee and may serve several markets. Flags and suspect reports are stored by `(marketId, account)`, while every bound market shares:
 
 - guardian membership and delegates;
-- quorum;
-- suspect window;
-- guardian heartbeats;
-- the quorum frontier.
+- one quorum for both flags and heartbeats;
+- one suspect window; and
+- one set of heartbeats and one quorum frontier.
 
-A market needing a different committee, quorum, suspect window, or operational boundary uses a separate registry. The registry does not validate whether a supplied market id exists; only the controller bound to a real market gives that id operational meaning.
+A heartbeat is not market-scoped. Its timestamp contributes to the frontier consumed by every controller bound to the registry, so the committee's scan coverage must include all of those markets. A market that needs an independent committee, configuration, or scan frontier uses a separate registry.
 
-```mermaid
-flowchart LR
-    Guardian["Guardian or its delegate"] -->|"flags, suspect reports, heartbeats"| Registry["GuardianSignals"]
-    Governance["Governance roles"] -->|"committee configuration and overrides"| Registry
-    Registry -->|"opinion for market and account"| Controller["Market controller"]
-    Controller -->|"borrow ban and activation delay"| Position["Borrower position"]
-```
+The current committee is capped at 32 guardians, which bounds frontier recomputation over current heartbeats. The suspect window may be zero and cannot exceed 30 days. The registry accepts any market id; only a controller bound to an existing market gives that id operational effect.
 
 ### What the controller reads
 
-The controller obtains the account state in one call:
+For one `(marketId, account)`, `getOpinion` returns the fields below. The delay multipliers are current market-controller configuration.
 
-```solidity
-getOpinion(marketId, account) -> GuardiansOpinion({
-    banned,
-    strikeCount,
-    suspectCount,
-    suspectExpiryTimestamp,
-    quorumFrontierTimestamp
-})
-```
+| Field | Controller use |
+|---|---|
+| `banned` | Blocks borrowing and prevents the account's activating collateral from maturing |
+| `strikeCount` | Adds `strikeCount * delayPerStrike` to activation |
+| `suspectCount`, `suspectExpiryTimestamp` | Add `suspectCount * delayPerSuspect` to a lot started before the snapshot expiry |
+| `quorumFrontierTimestamp` | Gates collateral maturation |
 
-It consumes the fields as follows:
-
-- `banned` is the effective ban, including both a persistent stored ban (the **latch**) and a flag count at or above the current quorum;
-- `strikeCount` adds `strikeCount * delayPerStrike` to the account's collateral-activation delay;
-- `suspectCount` adds `suspectCount * delayPerSuspect` to an activating collateral lot whose shared start time is before `suspectExpiryTimestamp`;
-- `quorumFrontierTimestamp` is the stored monotonic frontier used by the activation gate.
-
-For a borrow, the controller checks the caller, debt owner, and receiver for a ban. The debt owner's full opinion also feeds collateral activation. A ban blocks new borrowing and prevents the banned account's activating collateral from maturing; it does not seize assets or stop repayment and exit paths.
+A borrow checks the caller, debt owner, and receiver for a ban. The debt owner's strike, suspect-snapshot, and frontier fields also feed collateral activation. A ban does not seize assets or block repayment, liquidation, settlement, or debt-free exit paths.
 
 ## Guardian identity and delegates
 
-A guardian is one address in the registry's committee set. Each guardian may appoint one delegate, normally a separate operational signing key, with `setDelegate`. Only the guardian address can set or clear its own delegate.
+A guardian is one address in the committee set. It may appoint one delegate, and only the guardian can replace or clear that delegate. Signalling and heartbeat calls name an `onBehalf` guardian; the caller must be that current guardian or its current delegate. State is stored under the guardian identity, so delegate rotation preserves its flags, suspect reports, and heartbeat.
 
-Every signalling or heartbeat call names an `onBehalf` guardian. The caller must be either that guardian or its current delegate, and `onBehalf` must still belong to the committee. The registry stores the result under the guardian address, not the raw caller. Consequently:
-
-- a guardian and its delegate cannot cast two votes;
-- replacing a delegate preserves the guardian's flags, suspect reports, and heartbeat;
-- rotating or clearing a delegate does not erase the guardian's recorded opinion;
-- no caller can act on behalf of an address while that address is outside the guardian set.
-
-A delegate has the guardian's full signalling and heartbeat authority while appointed. A compromised delegate can therefore add or retract that guardian's signals and publish heartbeats until the guardian replaces or clears it.
-
-Repeated `flag` calls by the same guardian do not change state for that account. Repeating `suspect` refreshes that guardian's report time and creates a new aggregate suspect snapshot.
+Each guardian identity contributes at most one flag and one suspect report per `(marketId, account)`. The registry does not require delegate addresses to be unique: one signing address may represent several guardians and submit a distinct signal or heartbeat for each. Quorum therefore counts guardian identities, not independent callers or signing keys. Its security assumptions rely on committee members using independent keys.
 
 ## Flags, strikes, and bans
 
-Each distinct guardian flag on `(marketId, account)` contributes one strike. The registry's current quorum determines the effective status:
+Each distinct guardian flag contributes one strike:
 
 ```text
-effective ban = latched ban || strike count >= current quorum
+effective ban = latched ban || strikeCount >= current quorum
 ```
 
-The distinction between an **effective** ban and a **latched** ban matters when governance changes the quorum.
+A distinct flag that reaches quorum writes the latch. A direct access-limiter ban also writes it without adding flags. Lowering quorum can instead create a **derived ban** without writing the latch; raising quorum can lift that derived ban.
 
-- A new flag that reaches quorum writes the latch immediately.
-- A direct `ban` override writes the latch immediately without adding guardian flags.
-- Lowering the quorum can make existing flags sufficient without writing the latch. This is a derived ban.
-- Raising the quorum can lift a derived ban, but never a latched one.
-- `unflag` first latches any ban already effective at the old strike count, then removes the guardian's flag. A guardian therefore cannot retract a flag to lift an effective ban.
-- `unban` is the only operation that clears a latched ban. It also clears every guardian flag on the account, so the committee starts the flag decision again. It does not clear suspect reports.
+An `unflag` first latches any ban effective before the removal, even if that call removes no flag. A guardian therefore cannot retract out of an effective ban. Permissionless pruning applies the same rule after removing departed guardians' flags: it latches the ban if the survivors still meet quorum, or lets an unlatched derived ban lapse if they do not. Only the access-restorer path clears a latch; it also clears all flags but leaves suspect reports intact.
 
 ```mermaid
 stateDiagram-v2
@@ -95,168 +63,114 @@ stateDiagram-v2
     state "Latched ban<br/>latch = true" as Latched
 
     [*] --> Unbanned
-    Unbanned --> Latched: new flag reaches quorum or direct ban
-    Unbanned --> Derived: quorum is lowered to or below the existing count
-    Derived --> Unbanned: unban, quorum raised above the count, or prune leaves count below quorum
-    Derived --> Latched: new flag, unflag, direct ban, or prune leaves count at or above quorum
+    Unbanned --> Latched: distinct flag reaches quorum or direct ban
+    Unbanned --> Derived: quorum lowered to or below existing count
+    Derived --> Unbanned: unban, quorum raised, or prune drops count
+    Derived --> Latched: distinct flag, unflag, direct ban, or prune keeps quorum
     Latched --> Latched: unflag, prune, or quorum change
-    Latched --> Unbanned: authorized unban clears all flags
+    Latched --> Unbanned: authorized unban clears flags
 ```
 
 ### Quorum changes
 
-The quorum must be non-zero and no greater than the current guardian count. Changing it does not scan accounts or write their ban latches; effective status is evaluated when an account is read.
+Quorum must satisfy `1 <= quorum <= guardianCount`. It controls both the flag threshold and the rank of the heartbeat frontier:
 
-This makes two boundary cases explicit:
+- lowering quorum can create derived bans and raises or preserves the live frontier candidate because fewer guardian identities are required;
+- raising quorum can lift derived bans and lowers or preserves the live candidate, but it cannot lower the stored frontier.
 
-- lowering the quorum can create a derived ban immediately;
-- raising it can lift only a derived ban that no intervening action latched.
-
-An account whose flag count meets the new lower quorum becomes latched on a later new flag, on `unflag` before the flag is removed, or on `prune` when the flags surviving that prune still meet quorum.
+Changing quorum does not scan accounts or write ban latches. A later flag, unflag, or prune can latch a derived ban. Frontier recomputation after a quorum change is described below.
 
 ## Suspect reports
 
-A suspect report is an activation-delay signal, not a ban. Each guardian has at most one raw report on an account, recorded with that guardian's latest report timestamp. The registry turns these raw reports into an aggregate snapshot so a controller can read one count and one expiry without iterating the committee.
-
-The stored snapshot is:
+A suspect report is an activation-delay signal. Each guardian has at most one raw report per account, timestamped at its most recent submission. The registry snapshots these reports so controllers can read one count and expiry without scanning the reporter set:
 
 ```text
-suspectCount            = reports still inside the suspect window at snapshot time
-suspectReportedAt       = latest report timestamp among those active reports
+suspectCount            = reports active under the current window at snapshot time
+suspectReportedAt       = latest timestamp among those reports
 suspectExpiryTimestamp  = suspectReportedAt + current suspectWindow
 ```
 
-A raw report is active at the boundary: it counts while `reportedAt + suspectWindow >= block.timestamp` and is expired only after that sum is smaller than the current time.
-
-The controller applies `suspectCount * delayPerSuspect` to a collateral lot when:
+A raw report counts at the boundary where `reportedAt + suspectWindow == block.timestamp`; it expires only after that time. The controller applies the snapshot when:
 
 ```text
 activatingStart < suspectExpiryTimestamp
 ```
 
-The comparison is against the lot's start, not the time at which the controller reads the opinion. A snapshot marks which activation lots receive its surcharge; the passage of wall-clock time does not remove that surcharge from a lot whose start already falls before the snapshot expiry.
+The lot's start time, not the later read time, decides whether the surcharge applies. Once selected, the passage of time does not remove the surcharge from that lot. A zero suspect window therefore does not disable reporting: a report at time `t` can still affect lots started before `t`. Setting `delayPerSuspect` to zero is what makes the numerical surcharge zero.
 
-### When the snapshot changes
+### Snapshot lifecycle
 
-Snapshot-producing actions recount the reports that are still active under the current suspect window. The snapshot keeps the latest report timestamp among those survivors; it does not use the time of the retraction or prune:
-
-| Action | Raw-report update | Snapshot update |
+| Action | Raw reports | Stored snapshot |
 |---|---|---|
-| `suspect` | Prune raw reports whose individual window has elapsed, then add or refresh the named guardian at `block.timestamp` | Recount active raw reports; the new report is latest, so `suspectReportedAt = block.timestamp` |
-| successful `unsuspect` | Prune individually expired reports, then remove the named guardian's live report | Recount active survivors and set `suspectReportedAt` to their latest stored report time |
-| `prune` removes a departed guardian's suspect report | Remove every report on the account whose guardian is no longer in the committee | If at least one was removed, recount active survivors and set `suspectReportedAt` to their latest stored report time |
-| read through `getOpinion` | No raw-report scan | Return the stored count and `suspectReportedAt + current suspectWindow` |
+| `suspect` | Remove expired reports, then add or refresh the named guardian | Recount active reports and anchor to the new report time |
+| successful `unsuspect` | Remove expired reports and the named live report | Recount survivors and anchor to their latest stored report time |
+| `prune` removes a departed guardian's report | Remove reports whose authors are outside the committee | Recount survivors only when at least one such report was removed |
+| `getOpinion` | No scan or cleanup | Return the stored count and add the current window to the stored anchor |
 
-If `unsuspect` finds no report for the named guardian after its preliminary expired-report cleanup, it does not create a new snapshot or emit a clearance. That cleanup may still have removed expired raw reports belonging to any guardian.
+Refresh can extend the shared snapshot horizon for every report counted in it. Retraction or pruning does not refresh survivors; removing the latest report can move the horizon back to an older report.
 
-A new or refreshed suspect report becomes the latest report and moves the aggregate expiry to its own timestamp plus the window. Older active reports included in that snapshot therefore share the newer expiry. Retraction and pruning do not refresh the surviving reports: with the window unchanged, they restore the common expiry to the latest stored timestamp among the reports that remain, and may shorten it when the latest report is removed.
+Changing `suspectWindow` immediately changes the expiry computed from the stored anchor, but does not recount `suspectCount`. The next snapshot-producing action recounts under the new window.
 
-Changing `suspectWindow` changes the computed expiry of every stored snapshot immediately because reads add the current window to the stored `suspectReportedAt`. It does not recompute the stored `suspectCount`; the next snapshot-producing action recounts raw reports under the new window.
+> [!WARNING]
+> **A snapshot can outlive its raw reports.** A no-op `unsuspect` can remove expired raw reports and return without rebuilding the snapshot. The raw set may then be empty while the stored count remains nonzero; increasing the suspect window can extend that historical snapshot and apply it to later-started lots.
 
 ### Example
 
-Assume a one-hour suspect window:
+With a one-hour window:
 
-1. Guardian A reports at `10:00`. The snapshot is `{count: 1, reportedAt: 10:00, expiry: 11:00}`.
-2. Guardian B reports at `10:30`. A is still individually fresh, so the new snapshot is `{count: 2, reportedAt: 10:30, expiry: 11:30}`.
-3. B retracts at `10:45`. A is still fresh at the recount. The resulting snapshot is `{count: 1, reportedAt: 10:00, expiry: 11:00}`.
+1. Guardian A reports at `10:00`: `{count: 1, expiry: 11:00}`.
+2. Guardian B reports at `10:30`: A is still active, so the snapshot becomes `{count: 2, expiry: 11:30}`.
+3. B retracts at `10:45`: A remains, and the snapshot returns to `{count: 1, expiry: 11:00}`.
 
-B's report temporarily moved the aggregate horizon applied to both reports to `11:30`. Retracting B does not refresh A; it restores A's original `11:00` horizon. An activation lot started before `11:00` receives the remaining one-report surcharge.
+B temporarily extends the shared horizon but does not refresh A permanently.
 
 ## Guardian removal and permissionless pruning
 
-Removing a guardian updates the bounded committee set immediately. It also clears that guardian's delegate and heartbeat. Removal does not iterate every market and account, so it does not delete the guardian's existing flags and suspect reports. Permissionless `prune(marketId, account)` is the direct membership-cleanup path for each affected pair. An `unban` can instead clear stale flags, while a later `suspect` or `unsuspect` call can remove raw suspect reports that have expired by then.
+Removing a guardian revokes its authority immediately and clears its delegate and heartbeat. It cannot reduce the current committee below quorum. Removal does not scan all markets and accounts, so the guardian's flags and suspect reports remain stored and continue to affect opinions until cleaned up.
 
-Before any per-account cleanup:
+Anyone may call `prune(marketId, account)` for an identified affected pair. There is no onchain list of all affected pairs, so operators must identify them from events or external indexing. Pruning removes signals authored by addresses outside the current committee; it never clears a latched ban.
 
-- a removed guardian's stored flag still contributes to `strikeCount` and effective ban evaluation;
-- a removed guardian can remain represented in the stored suspect snapshot;
-- while the removed guardian remains outside the committee, no caller can add, retract, or refresh signals on its behalf. Its former delegate may still act under a different current guardian identity if separately authorized.
+Re-adding a former guardian before pruning does not start its per-account state from zero. Its old signals remain associated with that identity, and membership pruning no longer treats them as departed-guardian entries. `replaceGuardian` atomically preserves committee size and quorum. It clears the outgoing guardian's delegate and heartbeat, but does not clear per-account signals already stored under either address.
 
-For flags, `prune` first removes every flag whose guardian is no longer in the committee. It then handles the resulting status:
-
-- a latched ban stays latched regardless of the surviving count;
-- an unlatched account whose surviving flags still meet quorum becomes latched;
-- a ban derived only from a lowered quorum lapses if pruning drops the surviving count below quorum.
-
-For suspect reports, `prune` removes reports from departed guardians. If it removes at least one, it recounts active survivors and anchors the snapshot to their latest stored report time. With the window unchanged, pruning cannot extend the common expiry; removing the latest report can shorten it.
-
-`replaceGuardian` performs removal and addition atomically, preserving committee size and quorum. The new guardian starts without a delegate or heartbeat. Replacement does not clear per-account signals belonging to the old guardian; they remain subject to the same per-account cleanup rules.
+> [!WARNING]
+> **The 32-guardian cap does not bound historical signal sets.** Repeated rotations can grow one account's stored flag or suspect set beyond 32. Pruning, suspect snapshot updates, and `unban` scan or clear the whole stored set, with no paginated cleanup; enough unpruned history can make those calls exceed block gas. Affected accounts should be pruned as guardians rotate.
 
 ## Heartbeats and the quorum frontier
 
-A heartbeat says how far one guardian reports having scanned the chain. It carries:
+A heartbeat contains a reported block hash, number, and scan timestamp. The registry accepts it only when:
 
-```solidity
-BlockInfoWithHash({
-    hash,
-    number,
-    timestamp
-})
-```
+- the number is not in the future;
+- the nonzero hash equals `blockhash(number)`;
+- the timestamp is not in the future; and
+- the timestamp does not regress for that guardian.
 
-The guardian or its delegate submits the heartbeat on behalf of the guardian. The registry accepts it only when:
-
-- `number` is not ahead of the current block;
-- `hash` is non-zero and equals `blockhash(number)`;
-- `timestamp` is not in the future;
-- `timestamp` is not below that guardian's previous heartbeat timestamp.
-
-Because the EVM returns a zero hash for the current block and for blocks outside its `blockhash` lookback, the non-zero hash rule also restricts usable proofs to blocks whose hashes the EVM can still retrieve.
-
-The block number and hash prove that the named block is canonical within that lookup window. Only the guardian-reported timestamp is stored. The block number is retained in the event for off-chain consumers.
+The EVM returns zero for the current block and for blocks outside the `blockhash` lookback window, so neither can provide an accepted proof. Number and hash authenticate the referenced block within that window; they do not authenticate the supplied timestamp. Only the timestamp is stored, while the block number remains in the event.
 
 > [!WARNING]
-> **Accepted guardian-timestamp trust.** The contract does not derive or verify the supplied timestamp against the block header. The future and regression checks bound each report, and quorum requires several guardian identities, but quorum does not prove that the reported timestamp belongs to the referenced block. A dishonest quorum can therefore advance the scan frontier without having scanned through that time.
+> **Accepted guardian-timestamp trust.** The frontier uses the guardian-supplied timestamp without checking it against the block header. A caller controlling the configured quorum of guardian identities can therefore advance the frontier without having scanned through that time. Quorum may be one, and several identities may share one delegate key.
 
 ### Frontier calculation
 
-For the current guardian set, the candidate frontier is the quorum-th highest stored heartbeat timestamp: the greatest time that at least a quorum of guardians have all reported scanning past.
+For current guardians, the candidate frontier is the quorum-th highest stored heartbeat timestamp.
 
-> **Example.** With five guardians, quorum three, and heartbeat timestamps `{100, 95, 90, 80, 70}`, the candidate frontier is `90`. At least three guardians have reported scanning through that time.
+> **Example.** With five guardians, quorum three, and timestamps `{100, 95, 90, 80, 70}`, the candidate is `90`.
 
-The stored frontier can only increase: recomputation writes a new value only when the candidate is greater. It never moves backward after a guardian removal, replacement, quorum change, or lower heartbeat. It therefore represents the highest frontier ever accepted, not necessarily the lower frontier calculated from the current committee after membership changes.
+The stored frontier is a monotonic historical maximum. It never moves backward after a guardian removal, replacement, quorum change, or lower live candidate, so it may be higher than a value recalculated from the current committee.
 
-A heartbeat that can advance the stored frontier attempts the recomputation in the same call. Anyone may call `syncQuorumFrontier` to recompute it explicitly, including after membership or quorum changes for which that automatic recomputation is insufficient.
+A heartbeat that can raise the stored frontier recomputes it in the same call. Membership and quorum changes do not recompute it. Anyone may call `syncQuorumFrontier` to perform that calculation explicitly; it can raise the stored value but never lower it.
 
 ### How the controller uses the frontier
 
-The frontier is one input to collateral maturation. A frozen market never matures a lot. When the market is not frozen and a lot's activation timer has elapsed, the controller allows it to mature when either:
-
-- the stored quorum frontier has reached the lot's unlock time; or
-- the fallback deadline `activatingStart + maxGuardiansQuorumDelay` has elapsed.
-
-Both branches still require the lot's unlock time to have passed. Setting `maxGuardiansQuorumDelay` to zero removes the frontier wait, but not the activation timer itself.
+When the market is not frozen, a lot may mature only after `unlockTime = activatingStart + storedBaseDelay + current guardian surcharges`, and after either the stored frontier reaches `unlockTime` or the fallback deadline `activatingStart + maxGuardiansQuorumDelay` passes. A ban still blocks maturation. Setting the fallback to zero removes only the frontier wait.
 
 > [!WARNING]
-> **Accepted liveness trade-off.** After the configured fallback deadline, collateral may mature without any further frontier progress. Setting the fallback to zero removes the frontier wait entirely. This prevents guardian silence from locking ordinary collateral activation forever, but it weakens the scan requirement after the timeout. A ban still blocks maturation and borrowing.
+> **Accepted liveness trade-off.** The fallback prevents guardian silence from locking activation forever, but permits maturation without new scan evidence after the deadline.
 
-The exact timer and fallback rules live in [Market controller](market-controller.md).
+`GuardianSignals` itself is not frozen or paused: reports, configuration, and frontier progress continue while a controller is stopped. The next relevant hook reads the then-current registry state. The full activation state machine is in [Market controller](market-controller.md).
 
 ## Governance overrides
 
-Three capabilities sit outside ordinary guardian signalling:
-
-| Capability | Effect |
-|---|---|
-| committee manager | Add, replace, or remove guardians; set quorum and the registry-wide suspect window |
-| access limiter | Directly latch a ban on any `(marketId, account)` without guardian quorum |
-| access restorer | Clear the ban latch and all guardian flags for an account |
-
-These powers do not move assets. Their holders, impact classes, and governance paths are specified in [Actors and roles](roles.md). A direct ban behaves like any other latched ban. A direct unban leaves suspect reports untouched, so their activation-delay effect may remain after borrowing access is restored.
-
-## Security and liveness properties
-
-- **One guardian, one signal.** A guardian and its delegate share the same identity. Each guardian contributes at most one flag and one suspect report to an account.
-- **Quorum before ordinary ban.** No single ordinary flag bans unless the configured quorum is one. The direct access-limiter override is a separate privileged path.
-- **A latched ban persists.** Guardian retractions, pruning, and quorum changes cannot lift a latched ban. Only the access-restorer path can do so.
-- **Suspect never bans.** Suspect reports only feed the activation-delay count.
-- **Frontier is monotonic.** Once accepted, a quorum frontier cannot be reduced through heartbeat or committee configuration.
-- **Signals survive delegate rotation.** Replacing an operational signing key does not discard the guardian's opinion or heartbeat.
-- **A delegate carries guardian authority.** Until rotated or cleared, it can add and retract that guardian's signals and submit its heartbeats.
-- **Removal is not per-account cleanup.** Membership removal stops actions on behalf of that identity immediately but deliberately avoids an unbounded scan over stored accounts; permissionless `prune` provides targeted cleanup.
-- **Guardian timestamps are trusted input.** Hash validation proves the block reference, while quorum and the no-future/no-regression checks bound—but do not independently attest—the reported scan timestamps.
-- **Controller fallback provides scan liveness.** A market may allow activation after its configured fallback delay even when the guardian frontier stops advancing; bans continue to block maturation and borrowing.
+The committee manager changes membership, quorum, and the registry-wide suspect window. The access limiter can directly latch a ban without quorum. The access restorer clears the latch and every flag, but leaves suspect reports and their activation effect intact. Role holders and governance paths are listed in [Actors and roles](roles.md).
 
 ## Related references
 

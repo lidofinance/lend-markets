@@ -534,8 +534,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         uint256 preShares = marketView.totalBorrowShares;
         _requireBorrowRateTransition(preAssets, preShares, hookData.borrowAssetsCanceled, hookData.borrowSharesCanceled);
 
-        // bad-debt gate: revert if the queue root (riskiest position) is bad debt. An empty queue has no root
-        // (peekRoot returns address(0)), so this falls through to the eligibility gate below.
+        // Bad-debt gate: revert if the queue root (a borrower with a maximum stored rounded risk key) is bad
+        // debt. An empty queue has no root (peekRoot returns address(0)), so this falls through to the
+        // eligibility gate below.
         address riskiestBorrower = _settlementQueue.peekRoot();
         bool isRiskiestBorrower = riskiestBorrower == borrower;
         if (_isBadDebt(marketView, isRiskiestBorrower ? position : _positionView(id, riskiestBorrower))) {
