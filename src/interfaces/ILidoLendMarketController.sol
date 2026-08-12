@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLendMarketConfigurator} from "./ILidoLendMarketConfigurator.sol";
 import {IPausableUntil} from "./IPausableUntil.sol";
-import {SettlementConfig} from "../types/SettlementTypes.sol";
+import {SettlementConfig, SettlementQuote, SettlementSlice} from "../types/SettlementTypes.sol";
 
 /// @title ILidoLendMarketController
-/// @notice Full external surface of `LidoLendMarketController`: the core hook interface and AccessControl
-///         (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the
-///         borrower dashboard. The controller implements this interface, so it is the single source for
-///         the dashboard struct, events, errors, and the function docs the contract inherits.
+/// @notice Contract-specific external surface of `LidoLendMarketController`: the inherited core hook interface,
+///         Lido policy, freeze/pause, settlement-queue views, and borrower dashboard. Standard role membership and
+///         administration use the inherited `IAccessControlEnumerable` surface. The controller implements this
+///         interface, so it is the source for its dashboard struct, events, errors, and policy-function docs.
 interface ILidoLendMarketController is
     ILidoLendBaseMarketController,
-    IAccessControl,
+    IAccessControlEnumerable,
     ILidoLendMarketConfigurator,
     IPausableUntil
 {
@@ -33,12 +33,18 @@ interface ILidoLendMarketController is
     /// @notice Emitted when the supply cap is set.
     event SupplyCapSet(uint256 cap, address indexed account);
 
+    /// @notice Emitted once when the market binds its guardian-signals registry at initialization.
+    event GuardianSignalsSet(address indexed guardianSignals);
+
     // ---
     // ERRORS
     // ---
 
     /// @notice Thrown when the hook caller is not the core.
     error Unauthorized();
+
+    /// @notice Thrown when a required address argument is zero.
+    error ZeroAddress();
 
     /// @notice Thrown when the hook id is not this controller's market.
     error InvalidMarketId();
@@ -58,12 +64,15 @@ interface ILidoLendMarketController is
     /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
 
+    /// @notice Thrown when a withdrawal would leave raw collateral below the amount still held in the
+    ///         un-matured buckets (a locked activating lot plus dust).
+    error ActivationLockActive();
+
     /// @notice Thrown when a borrow would mint borrow shares while transferring zero loan assets.
     error ZeroBorrowAssets();
 
-    /// @notice Thrown when a borrow draws fewer than `minimum` loan assets while the market's total borrow assets
-    ///         are still below that floor — the dust regime where borrow-share inflation would be cheap.
-    error BorrowBelowDustMarketMinimum(uint256 minimum, uint256 attempted);
+    /// @notice Thrown when a borrow, repay, or settle would push the market's borrow-share rate over the ceiling.
+    error BorrowShareRateExceeded();
 
     /// @notice Thrown when a core-applied position delta exceeds the controller's read of that position.
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
@@ -75,22 +84,28 @@ interface ILidoLendMarketController is
     /// @notice Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
     error SettlementExceedsAllowed();
 
+    /// @notice Thrown when a root-policy cut exceeds the lender's illiquid supply tail.
+    error SettlementExceedsSettleableSupply();
+
     // ---
     // TYPES
     // ---
 
     /// @notice One-read borrower snapshot for off-chain dashboards: collateral split, activation timer,
-    ///         guardian signal, debt, personal settle-down LTV, and live settle exposure.
-    /// @param active Matured collateral, borrowable.
+    ///         guardian signal, debt, personal settlement target, current queue status, and policy quotes.
+    /// @param active Derived collateral outside the stored inactive buckets, including matured and instantly
+    ///        activated amounts. It supports borrowing only when the total meets the current activation threshold.
     /// @param activating Collateral inside the activation timer, not yet borrowable.
-    /// @param dust Collateral below the activation threshold, withdrawable.
+    /// @param dust Stored untimed collateral classified as dust. Configuration changes do not reclassify it, so it
+    ///        need not remain below the current activation threshold. It is withdrawable and not borrowable.
     /// @param unlockTime Activation unlock timestamp, 0 when there is no timer.
     /// @param flagCount Raw guardian flags on the account, regardless of status.
-    /// @param banned Hard-blocked by a latched guardian ban.
+    /// @param banned Effective guardian ban: either the stored latch or a flag count at or above the current quorum.
     /// @param debtAssets Current borrow debt, in loan assets.
-    /// @param settlementLtv Borrower's personal settle-down target LTV (WAD), 0 when unset.
+    /// @param settlementLtv Borrower's personal post-cut target LTV (WAD), 0 when unset.
     /// @param isNextToSettle The borrower is next in line to be settled.
-    /// @param slice Loan assets that may be cut from this position in one settle now.
+    /// @param personalSliceAssets Personal settlement-LTV allowance in loan assets.
+    /// @param queueRootSliceAssets Prospective queue-root policy allowance in loan assets.
     struct BorrowerPosition {
         uint256 active;
         uint256 activating;
@@ -101,7 +116,8 @@ interface ILidoLendMarketController is
         uint256 debtAssets;
         uint256 settlementLtv;
         bool isNextToSettle;
-        uint256 slice;
+        uint256 personalSliceAssets;
+        uint256 queueRootSliceAssets;
     }
 
     // ---
@@ -128,10 +144,9 @@ interface ILidoLendMarketController is
     // CONFIG
     // ---
 
-    /// @notice While the market's total borrow assets sit below this amount, every borrow must draw at least
-    ///         this much loan assets. It fences borrow-share inflation by keeping the market out of the dust
-    ///         regime where a 1-wei borrow mints a disproportionate slice of the outstanding shares.
-    function DUST_MARKET_MIN_BORROW() external view returns (uint256);
+    /// @notice Ceiling on the market's borrow-share rate; borrow/repay/settle may not push past it (liquidation
+    ///         exempt). Bounds rounding-driven borrow-share inflation.
+    function MAX_BORROW_SHARE_RATE() external view returns (uint256);
 
     // ---
     // LENDER LIMITS
@@ -145,6 +160,9 @@ interface ILidoLendMarketController is
     ///         the idle liquidity, 0 while paused.
     function maxWithdrawableAssets(address supplier) external view returns (uint256);
 
+    /// @notice The guardian-signals registry this controller reads for the borrow gate and activation scaling.
+    function guardianSignals() external view returns (address);
+
     // ---
     // COLLATERAL ACTIVATION
     // ---
@@ -152,16 +170,10 @@ interface ILidoLendMarketController is
     /// @notice Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
     function currentInflow() external view returns (uint256);
 
-    /// @notice Activation delay a deposit of `inflowIncrement` would incur at the current inflow — for
-    ///         borrowers gauging the wait.
+    /// @notice Base inflow-throttle delay for a hypothetical `inflowIncrement` at the current decayed inflow.
+    ///         Excludes instant activation, dust aggregation, the minimum amount, and guardian surcharges; it is not
+    ///         a complete quote for a specific collateral supply.
     function currentActivationDelay(uint256 inflowIncrement) external view returns (uint256);
-
-    /// @notice Whitelist a trusted caller contract (e.g. a router supplying on behalf of users) so its supplies
-    ///         cross straight into `active`, skipping the activation timer and inflow throttle. Risk-increasing
-    ///         path (waives the anti-flash/Sybil delay): reserved for trusted, access-gated callers — never a
-    ///         permissionless helper, which would waive the throttle for everyone routing through it. Keyed on
-    ///         the supply caller, not the position owner. Ban and freeze still gate as usual.
-    function grantInstantActivation(address caller) external;
 
     /// @notice Whether `caller`'s supplies skip the activation timer.
     function hasInstantActivation(address caller) external view returns (bool);
@@ -170,44 +182,48 @@ interface ILidoLendMarketController is
     // SETTLEMENT QUEUE
     // ---
 
-    /// @notice Set the settlement config in one shot — the knobs size the same cut and move together. A cut
-    ///         is the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the cut that lowers the
-    ///         borrower's LTV by `ltvStepBps`. `fullCutBelowCollateral` lifts the cut to the full debt when
-    ///         the post-cut collateral would be dust.
+    /// @notice Sets all queue-root settlement sizing parameters atomically. The nominal queue-root cut is the
+    ///         maximum of `sliceFloorBps` of its debt, `sliceFloorAssets`, and the cut required to lower its LTV by
+    ///         `ltvStepBps`. If that cut would leave collateral below `fullCutBelowCollateral`, the queue-root
+    ///         allowance is promoted to the full debt. Personal settlement-LTV quotes are unaffected.
     function setSettlementConfig(SettlementConfig calldata config) external;
 
     /// @notice The current settlement config.
     function settlementConfig() external view returns (SettlementConfig memory);
 
-    /// @notice Borrower opts into auto-settle down to a target post-cut LTV (WAD). 0 clears it.
+    /// @notice Sets the caller's personal post-cut target LTV (WAD). When current LTV exceeds it, the position may
+    ///         be settled without being the queue root. 0 clears it.
     function setSettlementLtv(uint256 ltv) external;
 
-    /// @notice Borrower's personal settle-down target LTV (WAD) and the slice it currently implies.
+    /// @notice Borrower's personal post-cut target LTV (WAD) and its target-LTV slice, excluding root policy.
     function settlementLtv(address borrower) external view returns (uint256 ltv, uint256 sliceAssets);
 
     /// @notice Number of borrowers tracked in the settlement queue.
     function settlementBorrowersCount() external view returns (uint256);
 
-    /// @notice True if any tracked borrower is bad debt — its debt value exceeds its collateral value.
-    /// @dev O(1): it checks the riskiest tracked position (the highest debt/collateral), whose solvency
-    ///      implies every tracked position is solvent, so the settle gate need only check that one.
+    /// @notice Whether the current settlement-queue root has bad debt: its debt value exceeds its collateral value.
+    /// @dev O(1): checks only the root selected by the rounded borrow-share/raw-collateral key. It does not scan all
+    ///      tracked borrowers. Equal keys and separate debt/collateral valuation rounding mean that a solvent root
+    ///      does not prove every other tracked position is solvent.
     function hasBadDebt() external view returns (bool);
 
-    /// @notice The settle cut the policy allows against the queue root (the borrower a head-first settle cuts
-    ///         first): `settlementFor` applied to it, with the root address. `borrower` is address(0) when empty.
-    function nextSettlementBorrower()
+    /// @notice The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance
+    ///         or the borrower's own settlement-LTV allowance — shrunk to what `budgetSupplyShares` of core supply
+    ///         funds. Pass 0 for the policy cut itself, unshrunk. A concrete lender may execute the root-policy
+    ///         part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
+    function nextSettlementBorrower(uint256 budgetSupplyShares)
         external
         view
-        returns (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
+        returns (address borrower, SettlementSlice memory slice);
 
-    /// @notice The settle cut the policy allows against `borrower`, as the two anchors a core `settle` accepts:
-    ///         the caller passes one and 0 for the other — `supplyShares` to settle supply-anchored, `borrowShares`
-    ///         borrow-anchored. `remainingBorrowShares` is the debt left after the cut, 0 for a full close. All
-    ///         zero when ineligible.
-    function settlementFor(address borrower)
+    /// @notice The borrower's personal cut and its prospective queue-root cut, each shrunk to what
+    ///         `budgetSupplyShares` of core supply funds. Pass 0 for the policy cuts themselves, unshrunk. The
+    ///         queue-root quote does not assert that the borrower is currently the root. A candidate that grants
+    ///         no cut is represented by an all-zero slice.
+    function settlementFor(address borrower, uint256 budgetSupplyShares)
         external
         view
-        returns (uint256 supplyShares, uint256 borrowShares, uint256 remainingBorrowShares);
+        returns (SettlementQuote memory quote);
 
     /// @notice A window of queued borrowers (approximate top-down order) and their risk keys: up to
     ///         `maxCount` starting at `offset`. Past the end the arrays are empty, so callers can page.
@@ -221,7 +237,8 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation
-    ///         maturation is deferred. Debt-free positions can still withdraw their collateral.
+    ///         maturation is deferred. Freeze adds no debt gate to debt-free withdrawals, but existing activation
+    ///         locks still apply.
     function freeze() external;
 
     /// @notice Lift the freeze.
@@ -241,6 +258,6 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt,
-    ///         personal settle-down LTV, and live settle exposure (next-to-settle flag + slice).
+    ///         personal settlement target, current queue status, and policy quotes.
     function positionOf(address borrower) external view returns (BorrowerPosition memory);
 }

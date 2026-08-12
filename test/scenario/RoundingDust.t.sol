@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -21,8 +21,8 @@ contract RoundingDustTest is LidoLendSetup {
         MockERC20 coll = new MockERC20("Coll", "COLL", 18);
         _deployProtocol(_defaultConfig(address(loan), address(coll), address(coll)));
         Market storage m = protocol.markets[0];
-        m.controller.grantInstantActivation(B1);
-        m.controller.grantInstantActivation(B2);
+        m.controller.setInstantActivation(B1, true);
+        m.controller.setInstantActivation(B2, true);
     }
 
     function _gap(string memory label) internal returns (uint256 dust) {
@@ -56,6 +56,8 @@ contract RoundingDustTest is LidoLendSetup {
         vm.stopPrank();
     }
 
+    /// @dev Traces the core loan-balance-minus-idle gap across supply/borrow/accrue/partial+full repay and
+    ///      asserts the final gap is exactly zero once all debt is repaid.
     function test_traceDustOrigin() public {
         Market storage m = protocol.markets[0];
 
@@ -66,9 +68,10 @@ contract RoundingDustTest is LidoLendSetup {
         vm.stopPrank();
         _gap("after supply  ");
 
-        _supplyCollateralAndBorrow(B1, 100 ether, 40 ether);
+        uint256 maxBorrow = 100 ether * oraclePrice / 1e36 * 80 / 100;
+        _supplyCollateralAndBorrow(B1, 100 ether, maxBorrow / 2);
         _gap("after borrow1 ");
-        _supplyCollateralAndBorrow(B2, 100 ether, 30 ether);
+        _supplyCollateralAndBorrow(B2, 100 ether, maxBorrow * 3 / 8);
         _gap("after borrow2 ");
 
         vm.warp(block.timestamp + 365 days);

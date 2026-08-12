@@ -1,6 +1,6 @@
-# ETH / wstETH Market
+# WETH / wstETH Market
 
-Borrow **WETH** against **wstETH** collateral. The market runs the shared stack unchanged — controller, guardian signals, collateral activation, settlement queue, vault, freeze/pause — described in [architecture.md](../architecture.md). Only the oracle, the liquidation path, and the risk parameters are market-specific.
+This market lets borrowers borrow **WETH** against **wstETH** collateral. It uses the shared [architecture](../architecture.md), [controller policy](../market-controller.md), and lender-settlement mechanisms.
 
 ## Parameters
 
@@ -9,31 +9,37 @@ Borrow **WETH** against **wstETH** collateral. The market runs the shared stack 
 | Loan token | WETH |
 | Collateral token | wstETH |
 | Oracle | `WstEthRateOracle` |
-| IRM | `AdaptiveCurveIrm` |
-| LLTV | set at market creation (governance parameter) |
+| Interest-rate model | Governance-selected through `IrmRouter` |
+| Liquidation loan-to-value threshold | Selected by governance and fixed when the market is created |
+| Lender settlement | Enabled or disabled when the market is created |
 
-## Oracle — WstEthRateOracle
+Market lending and collateral flows transfer WETH and wstETH. Converting between ETH and WETH, or between stETH and wstETH, is a separate user or adapter action.
 
-wstETH is priced by its **on-chain accounting rate**, not a market price. stETH is valued at par to ETH, so 1 wstETH is worth its wstETH→stETH rate in ETH.
+## Oracle
 
+`WstEthRateOracle` values one wstETH in WETH from the amount of stETH that backs it, assuming one stETH equals one ETH:
+
+```text
+price() = getStETHByWstETH(1e36)
 ```
-price() = getStETHByWstETH(1e36)        // ETH per wstETH, at ORACLE_PRICE_SCALE = 1e36
-```
 
-Querying at the `1e36` input keeps the rate's low-order digits, rather than flooring `stEthPerToken()` at `1e18` and then scaling.
+The result uses the core oracle scale of `1e36`.
 
-> **Example.** 1 wstETH backed by 1.15 stETH → `price() = 1.15e36`: 1 wstETH ≈ 1.15 ETH.
+> **Example.** If 1 wstETH is backed by 1.15 stETH, the oracle values it at 1.15 WETH and returns `1.15e36`.
 
-The rate rises monotonically as staking rewards accrue. It does **not** reflect a stETH/ETH market depeg. Depeg and slashing risk are handled by the activation delay, freeze, and the fast-depreciation response below — not by the price feed (ADR 009).
+The accounting rate normally rises with staking rewards but can decrease when Lido recognizes losses.
 
-## Liquidation
+> [!WARNING]
+> The oracle does not use a secondary-market stETH/ETH price. A depeg that does not reduce the accounting rate can therefore make the protocol overvalue wstETH. Liquidation may become uneconomic, and settlement may transfer collateral whose realizable value is below the debt canceled. Collateral activation and freeze do not correct this price-basis gap.
 
-- **Morpho liquidation** — the inherited path for ordinary unhealthy positions.
-- **Lender self-liquidation** — a lender settles an unhealthy borrower through its own lending position (the settlement queue), only when pool liquidity is exhausted and the position is **not** bad debt (ADR 013).
+## Liquidation and lender settlement
 
-No dedicated stETH-liquidity facility (no AMM, no backstop) is included (ADR 011).
+Ordinary unhealthy positions use the inherited core liquidation path. If lender settlement was enabled at market creation, its collateral leg transfers wstETH to the selected receiver using the same accounting-rate oracle. The shared rules are described in [Settlement and Lender Exits](../lender-settlement.md).
+
+The current v1 design adds no dedicated stETH liquidity facility or protocol liquidity backstop.
 
 ## Fast collateral depreciation
 
-A sudden wstETH value drop (slashing, oracle compromise, bridge hack) is not a normal liquidation case. The response is a **freeze**, followed by an operational incident response.
+A fast market-value loss or compromise of the accounting-rate source can make the reported price unsuitable for ordinary liquidation or settlement. A controller pause blocks both paths; freeze does not.
 
+The contracts do not detect such an incident. Detection and response are operational.

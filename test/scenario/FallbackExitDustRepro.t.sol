@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
@@ -20,6 +20,8 @@ contract FallbackExitDustReproTest is LidoLendSetup {
         _deployProtocol(_defaultConfig(address(loan), address(collateral), address(collateral)));
     }
 
+    /// @dev On a populated, high-utilization market whose share ratio has drifted with interest, every vault lender
+    ///      exits its full position — including the last — and the vault drains to zero with no dust stranding.
     function test_regression_lastLenderCanExitOnPopulatedMarket() public {
         Market storage m = protocol.markets[0];
 

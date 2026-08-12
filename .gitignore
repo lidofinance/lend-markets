@@ -22,3 +22,7 @@
 
 # Logs
 *.log
+
+# Per-run deploy artifacts (dated registries, activation plans, resolver records) — never committed.
+/deployed/*
+!deployed/.gitkeep

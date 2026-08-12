@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 
@@ -33,6 +33,7 @@ contract WstEthRateOracleTest is Test {
 
     // ── mutations ──
 
+    /// @dev Constructing with a zero wstETH address reverts ZeroAddress.
     function testRevert_constructor_zeroAddress() public {
         vm.expectRevert(WstEthRateOracle.ZeroAddress.selector);
         new WstEthRateOracle(address(0));
@@ -40,6 +41,7 @@ contract WstEthRateOracleTest is Test {
 
     // ── views ──
 
+    /// @dev price returns the wstETH->stETH rate scaled to 1e36, recomputed independently from stEthPerToken.
     function test_price_recomputeFromRate() public {
         wsteth.setStEthPerToken(1.15e18);
         // price = getStETHByWstETH(1e36) = 1e36 * 1.15e18 / 1e18 = 1.15e36.
@@ -47,6 +49,7 @@ contract WstEthRateOracleTest is Test {
         assertEq(oracle.price(), 1.15e36, "explicit value");
     }
 
+    /// @dev Across a realistic rate band, price equals the rate scaled to 1e36.
     function testFuzz_price_equalsScaledRate(uint256 ratePerToken) public {
         ratePerToken = bound(ratePerToken, 1e18, 2e18); // wstETH ≥ stETH, realistic band
         wsteth.setStEthPerToken(ratePerToken);
@@ -60,6 +63,7 @@ contract WstEthRateOracleTest is Test {
         assertEq(oracle.price(), 0, "zero rate propagates as zero price, no floor");
     }
 
+    /// @dev A rate far above any real value passes through to price without overflow.
     function test_price_largeRate_noOverflow() public {
         wsteth.setStEthPerToken(10e18); // far above any real wstETH rate
         assertEq(oracle.price(), 10e36, "large rate passes through without overflow");

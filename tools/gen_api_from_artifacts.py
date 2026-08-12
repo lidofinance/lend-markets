@@ -152,10 +152,11 @@ def render_param(v: dict) -> str:
 
 def function_signature(fn: dict) -> str:
     params = [render_param(p) for p in fn["parameters"]["parameters"]]
-    if fn.get("kind") == "constructor":
+    kind = fn.get("kind")
+    if kind == "constructor":
         head, tail = "constructor", ""
     else:
-        head = f"function {fn.get('name', '')}"
+        head = kind if kind in ("fallback", "receive") else f"function {fn.get('name', '')}"
         tail = ""
         if fn.get("visibility"):
             tail += f" {fn['visibility']}"
@@ -249,7 +250,8 @@ def paras(*texts) -> list:
 
 
 def render_function(fn, reg, level) -> list:
-    name = "constructor" if fn.get("kind") == "constructor" else fn.get("name", "")
+    kind = fn.get("kind")
+    name = kind if kind in ("constructor", "fallback", "receive") else fn.get("name", "")
     nd = resolve_doc(fn, reg)
     out = [f"{'#' * level} `{name}`", ""]
     out += ["```solidity", function_signature(fn), "```", ""]  # signature, then its parameter tables
@@ -325,12 +327,12 @@ def render_event_or_error(node, keyword, level) -> list:
 
 
 def render_contract(rel, name, reg, level, extra_enums=(), extra_structs=(), extra_events=(), extra_errors=(),
-                    extra_funcs=(), bases=()) -> list:
+                    extra_funcs=(), extra_statevars=(), bases=()) -> list:
     """Render a contract's members with types and events first, functions after. No entity heading — the
     page title (one level up) owns the name, so sections sit at `level` and members at `level + 1`.
-    extra_enums/extra_structs/extra_events/extra_errors/extra_funcs are members declared elsewhere (file-scope
-    types, events and errors that live on the implemented interface, or functions whose richer natspec lives on
-    the concrete contract rather than the interface) folded into the sections.
+    extra_enums/extra_structs/extra_events/extra_errors/extra_funcs/extra_statevars are members declared elsewhere
+    (file-scope types, inherited members, or functions whose richer natspec lives on the concrete contract rather
+    than the interface) folded into the sections.
     bases is a list of (rel, name) base interfaces whose members are merged in (a member declared on a Lido base
     interface the rendered one inherits is part of this contract's surface)."""
     node = find(ast_of(rel), "ContractDefinition", name)
@@ -341,7 +343,7 @@ def render_contract(rel, name, reg, level, extra_enums=(), extra_structs=(), ext
     for brel, bname in bases:
         members += find(ast_of(brel), "ContractDefinition", bname)["nodes"]
     statevars = [n for n in members if n.get("nodeType") == "VariableDeclaration"
-                 and n.get("stateVariable") and n.get("visibility") == "public"]
+                 and n.get("stateVariable") and n.get("visibility") == "public"] + list(extra_statevars)
     funcs = [n for n in members if n.get("nodeType") == "FunctionDefinition"
              and (n.get("kind") == "constructor" or n.get("visibility") in ("public", "external"))] + list(extra_funcs)
     enums = [n for n in members if n.get("nodeType") == "EnumDefinition"] + list(extra_enums)
@@ -393,10 +395,20 @@ def render_contract(rel, name, reg, level, extra_enums=(), extra_structs=(), ext
 
 API_DIR = ROOT / "docs" / "specs" / "api"
 HEADER = "<!-- GENERATED FROM NatSpec by tools/gen_api_from_artifacts.py — do not edit by hand; run `make doc`. -->"
+ACCESS_CONTROL_NOTE = (
+    "Standard inherited role-membership and role-administration functions are not repeated; see "
+    "[OpenZeppelin AccessControlEnumerable]"
+    "(https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable)."
+)
+ERC4626_NOTE = (
+    "Standard inherited ERC-20 share-token and ERC-4626 vault functions are not repeated; see "
+    "[ERC-4626](https://eips.ethereum.org/EIPS/eip-4626)."
+)
 
 VAULT = "LidoLendERC4626.sol/LidoLendERC4626.json"
 VAULT_IFACE = "ILidoLendERC4626.sol/ILidoLendERC4626.json"
 GUARDIAN = "IGuardianSignals.sol/IGuardianSignals.json"
+GUARDIAN_VIEW = "IGuardianSignalsView.sol/IGuardianSignalsView.json"
 GUARDIAN_TYPES = "GuardianSignalsTypes.sol/GuardianSignalsTypes.json"
 WSTETH_ORACLE = "WstEthRateOracle.sol/WstEthRateOracle.json"
 USDY_ORACLE = "UsdyStableOracle.sol/UsdyStableOracle.json"
@@ -404,10 +416,18 @@ EXIT_BOOK_BASE = "IExitBook.sol/IExitBook.json"
 EXIT_BOOK_4626 = "IErc4626ExitBook.sol/IErc4626ExitBook.json"
 EXIT_BOOK_MORPHO = "IMorphoExitBook.sol/IMorphoExitBook.json"
 DASHBOARD = "IRiskStewardDashboard.sol/IRiskStewardDashboard.json"
+MARKET_FACTORY = "LidoLendMarketFactory.sol/LidoLendMarketFactory.json"
+OWNER = "ILidoLendOwner.sol/ILidoLendOwner.json"
+OWNER_C = "LidoLendOwner.sol/LidoLendOwner.json"
+VAULT_ADAPTER = "LidoLendVaultAdapter.sol/LidoLendVaultAdapter.json"
+ETHEREUM_ADAPTER = "EthereumGeneralAdapter1.sol/EthereumGeneralAdapter1.json"
+OSSIFIABLE_PROXY = "OssifiableProxy.sol/OssifiableProxy.json"
 EXIT_BOOK_BASE_C = "ExitBookBase.sol/ExitBookBase.json"
 EXIT_BOOK_4626_C = "Erc4626ExitBook.sol/Erc4626ExitBook.json"
 EXIT_BOOK_MORPHO_C = "MorphoExitBook.sol/MorphoExitBook.json"
 EXIT_BOOK_TYPES = "ExitBookTypes.sol/ExitBookTypes.json"
+EXIT_BOOK_LIB = "ExitBookLib.sol/ExitBookLib.json"
+ASSET_RECOVERER = "AssetRecoverer.sol/AssetRecoverer.json"
 
 def iface_members(rel, name, node_type):
     """Events and errors of a contract often live on its interface, not the contract itself. Pull them by node
@@ -435,20 +455,22 @@ def main() -> int:
     activation_cfg = struct_from_source("src/types/CollateralActivationTypes.sol", "CollateralActivationConfig")
     hook_funcs = [f for f in iface_members(CONTROLLER_IMPL, "LidoLendMarketController", "FunctionDefinition")
                   if f["name"] in ("on", "marketId")]
-    written.append(write_page("lido-lend-market-controller.md", "LidoLendMarketController",
-                              render_contract(CONTROLLER, "ILidoLendMarketController", reg, BASE,
-                                              bases=[(CONFIGURATOR, "ILidoLendMarketConfigurator")],
-                                              extra_enums=hook_enums,
-                                              extra_structs=hook_structs + [activation_cfg],
-                                              extra_funcs=hook_funcs)))
+    controller_body = [ACCESS_CONTROL_NOTE, ""] + render_contract(
+        CONTROLLER, "ILidoLendMarketController", reg, BASE,
+        bases=[(CONFIGURATOR, "ILidoLendMarketConfigurator")],
+        extra_enums=hook_enums,
+        extra_structs=hook_structs + [activation_cfg],
+        extra_funcs=hook_funcs)
+    written.append(write_page("lido-lend-market-controller.md", "LidoLendMarketController", controller_body))
     vault_events = iface_members(VAULT_IFACE, "ILidoLendERC4626", "EventDefinition")
     vault_errors = iface_members(VAULT_IFACE, "ILidoLendERC4626", "ErrorDefinition")
-    written.append(write_page("lido-lend-erc4626.md", "LidoLendERC4626",
-                              render_contract(VAULT, "LidoLendERC4626", reg, BASE,
-                                              extra_events=vault_events, extra_errors=vault_errors)))
+    vault_body = [ERC4626_NOTE, ""] + render_contract(
+        VAULT, "LidoLendERC4626", reg, BASE, extra_events=vault_events, extra_errors=vault_errors)
+    written.append(write_page("lido-lend-erc4626.md", "LidoLendERC4626", vault_body))
 
     gt = ast_of(GUARDIAN_TYPES)
-    gbody = render_contract(GUARDIAN, "IGuardianSignals", reg, BASE,
+    gbody = [ACCESS_CONTROL_NOTE, ""] + render_contract(GUARDIAN, "IGuardianSignals", reg, BASE,
+                            bases=[(GUARDIAN_VIEW, "IGuardianSignalsView")],
                             extra_structs=[find(gt, "StructDefinition", s)
                                            for s in ("BlockInfoWithHash", "GuardiansOpinion")])
     written.append(write_page("guardian-signals.md", "GuardianSignals", gbody))
@@ -456,43 +478,94 @@ def main() -> int:
     # The lender exit-book layer: an abstract base plus two source-specific concrete books.
     exit_body = ["The lender exit-book layer. An abstract `ExitBookBase` holds the shared fill, cancel, and "
                  "fee surface, and a concrete book binds it to a source — `Erc4626ExitBook` over a vault, "
-                 "`MorphoExitBook` over a market.", ""]
+                 "`MorphoExitBook` over a market. Standard inherited `AccessControlEnumerable` surface is not "
+                 "repeated here. On Exit Books, every recovery function requires `RECOVERER_ROLE`.", ""]
     ebt = ast_of(EXIT_BOOK_TYPES)
+    exit_base = find(ast_of(EXIT_BOOK_BASE_C), "ContractDefinition", "ExitBookBase")
+    exit_lib = find(ast_of(EXIT_BOOK_LIB), "ContractDefinition", "ExitBookLib")
+    recoverer = find(ast_of(ASSET_RECOVERER), "ContractDefinition", "AssetRecoverer")
+    recoverer_funcs = [n for n in recoverer["nodes"] if n.get("nodeType") == "FunctionDefinition"
+                       and n.get("visibility") in ("public", "external")]
+    base_statevar_names = {
+        "ALLOWLIST_MANAGER_ROLE", "FEE_MANAGER_ROLE", "RECOVERER_ROLE", "MAX_PRIORITY_FEE", "MAX_SERVICE_FEE",
+        "MAX_REQUEST_LIFETIME", "feeRecipient", "serviceFee"
+    }
+    base_statevars = [n for n in exit_base["nodes"] if n.get("nodeType") == "VariableDeclaration"
+                      and n.get("name") in base_statevar_names]
     exit_body += [f"{'#' * BASE} ExitBookBase", ""] + render_contract(
         EXIT_BOOK_BASE, "IExitBook", reg, BASE + 1,
         extra_enums=[find(ebt, "EnumDefinition", "ExitStatus")],
-        extra_structs=[find(ebt, "StructDefinition", s) for s in ("PriorityRamp", "Request", "RequestPreview")],
-        extra_events=iface_members(EXIT_BOOK_BASE_C, "ExitBookBase", "EventDefinition"),
-        extra_errors=iface_members(EXIT_BOOK_BASE_C, "ExitBookBase", "ErrorDefinition"))
+        extra_structs=[find(ebt, "StructDefinition", s) for s in ("PriorityRamp", "Request")],
+        extra_events=(iface_members(EXIT_BOOK_BASE_C, "ExitBookBase", "EventDefinition")
+                      + [n for n in recoverer["nodes"] if n.get("nodeType") == "EventDefinition"]),
+        extra_errors=(iface_members(EXIT_BOOK_BASE_C, "ExitBookBase", "ErrorDefinition")
+                      + [n for n in exit_lib["nodes"] if n.get("nodeType") == "ErrorDefinition"]
+                      + [n for n in recoverer["nodes"] if n.get("nodeType") == "ErrorDefinition"]),
+        extra_funcs=recoverer_funcs,
+        extra_statevars=base_statevars)
+    erc4626_constructor = next(n for n in find(ast_of(EXIT_BOOK_4626_C), "ContractDefinition", "Erc4626ExitBook")["nodes"]
+                               if n.get("nodeType") == "FunctionDefinition" and n.get("kind") == "constructor")
     exit_body += [f"{'#' * BASE} Erc4626ExitBook", ""] + render_contract(
         EXIT_BOOK_4626, "IErc4626ExitBook", reg, BASE + 1,
         extra_events=iface_members(EXIT_BOOK_4626_C, "Erc4626ExitBook", "EventDefinition"),
-        extra_errors=iface_members(EXIT_BOOK_4626_C, "Erc4626ExitBook", "ErrorDefinition"))
+        extra_errors=iface_members(EXIT_BOOK_4626_C, "Erc4626ExitBook", "ErrorDefinition"),
+        extra_funcs=[erc4626_constructor])
+    morpho_constructor = next(n for n in find(ast_of(EXIT_BOOK_MORPHO_C), "ContractDefinition", "MorphoExitBook")["nodes"]
+                              if n.get("nodeType") == "FunctionDefinition" and n.get("kind") == "constructor")
     exit_body += [f"{'#' * BASE} MorphoExitBook", ""] + render_contract(
         EXIT_BOOK_MORPHO, "IMorphoExitBook", reg, BASE + 1,
         extra_events=iface_members(EXIT_BOOK_MORPHO_C, "MorphoExitBook", "EventDefinition"),
-        extra_errors=iface_members(EXIT_BOOK_MORPHO_C, "MorphoExitBook", "ErrorDefinition"))
+        extra_errors=iface_members(EXIT_BOOK_MORPHO_C, "MorphoExitBook", "ErrorDefinition"),
+        extra_funcs=[morpho_constructor])
     written.append(write_page("exit-book.md", "Exit Books", exit_body))
 
-    written.append(write_page("risk-steward-dashboard.md", "RiskStewardDashboard",
-                              render_contract(DASHBOARD, "IRiskStewardDashboard", reg, BASE)))
+    dashboard_body = [ACCESS_CONTROL_NOTE, ""] + render_contract(
+        DASHBOARD, "IRiskStewardDashboard", reg, BASE)
+    written.append(write_page("risk-steward-dashboard.md", "RiskStewardDashboard", dashboard_body))
+
+    written.append(write_page("lido-lend-market-factory.md", "LidoLendMarketFactory",
+                              render_contract(MARKET_FACTORY, "LidoLendMarketFactory", reg, BASE)))
+
+    owner_constructor = [n for n in find(ast_of(OWNER_C), "ContractDefinition", "LidoLendOwner")["nodes"]
+                         if n.get("nodeType") == "FunctionDefinition" and n.get("kind") == "constructor"]
+    owner_body = [ACCESS_CONTROL_NOTE, ""]
+    owner_body += render_contract(OWNER, "ILidoLendOwner", reg, BASE, extra_funcs=owner_constructor)
+    written.append(write_page("lido-lend-owner.md", "LidoLendOwner", owner_body))
+
+    adapter_body = ["The local Bundler3 integration surface. Every non-constructor action below is callable only by "
+                    "the configured Bundler3 contract. Standard inherited Bundler3 adapter functions are documented "
+                    "by [Bundler3](https://github.com/morpho-org/bundler3) and are not repeated here.", ""]
+    adapter_body += [f"{'#' * BASE} LidoLendVaultAdapter", ""] + render_contract(
+        VAULT_ADAPTER, "LidoLendVaultAdapter", reg, BASE + 1)
+    adapter_body += [f"{'#' * BASE} EthereumGeneralAdapter1", ""] + render_contract(
+        ETHEREUM_ADAPTER, "EthereumGeneralAdapter1", reg, BASE + 1)
+    written.append(write_page("bundler3-adapters.md", "Bundler3 Adapters", adapter_body))
+
+    proxy_body = ["This page covers the local proxy-admin extension. Standard inherited ERC-1967 proxy surface, "
+                  "including the delegated calldata fallback, is not repeated. The ossify, change-admin, and upgrade "
+                  "methods require the current nonzero proxy admin; after ossification they remain permanently "
+                  "unavailable.", ""]
+    proxy_body += render_contract(OSSIFIABLE_PROXY, "OssifiableProxy", reg, BASE)
+    written.append(write_page("ossifiable-proxy.md", "OssifiableProxy", proxy_body))
 
     written.append(write_page("wst-eth-rate-oracle.md", "WstEthRateOracle",
                               render_contract(WSTETH_ORACLE, "WstEthRateOracle", reg, BASE)))
     written.append(write_page("usdy-stable-oracle.md", "UsdyStableOracle",
                               render_contract(USDY_ORACLE, "UsdyStableOracle", reg, BASE)))
 
-    # Shared types: Id/MarketParams/Position are forked Morpho core (defer detail to the fork);
-    # SettlementConfig is ours, parsed from source since its file emits no artifact.
+    # Shared types: Id/MarketParams/Position are forked Morpho core (defer detail to the fork). The settlement types
+    # are ours and are parsed from source because their file emits no standalone artifact.
     tbody = ["The core market types (`Id`, `MarketParams`, `Position`) belong to the forked Morpho core — their "
-             "full semantics live in [`lib/lido-lend/FORK_NOTES.md`](../../../lib/lido-lend/FORK_NOTES.md).", ""]
+             "full semantics live in the [Lido Lend specification]"
+             "(https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md).", ""]
     id_node = find(ast_of(IMORPHO), "UserDefinedValueTypeDefinition", "Id")
     tbody += [f"{'#' * BASE} `Id`", "",
               "```solidity", f"type Id is {id_node['underlyingType']['typeDescriptions']['typeString']}", "```", "",
               ID_FALLBACK, ""]
     for s in ("MarketParams", "Position"):
         tbody += render_struct(find(ast_of(IMORPHO), "StructDefinition", s), BASE)
-    tbody += render_struct(struct_from_source("src/types/SettlementTypes.sol", "SettlementConfig"), BASE)
+    for s in ("SettlementSlice", "SettlementQuote", "SettlementConfig"):
+        tbody += render_struct(struct_from_source("src/types/SettlementTypes.sol", s), BASE)
     written.append(write_page("shared-types.md", "Shared Types", tbody))
 
     for stale in sorted(API_DIR.glob("*.md")):  # drop pages left by earlier names

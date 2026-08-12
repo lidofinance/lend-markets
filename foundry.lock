@@ -1,14 +1,20 @@
 {
+  "lib/bundler3": {
+    "rev": "9afc2f4ea32c9dbeba2205a485731b8a98f7ae4c"
+  },
+  "lib/circuit-breaker": {
+    "rev": "6829a5a962ece56564bd9d72d01c29cabf157579"
+  },
   "lib/lido-lend": {
     "branch": {
       "name": "main",
-      "rev": "ec7171654bdb7211e07bf696a813f2e7a290a1e2"
+      "rev": "490f9d7b3aba2edde9403f90ffa6a69628fdd44f"
     }
   },
   "lib/lido-lend-irm": {
     "branch": {
       "name": "main",
-      "rev": "ce459215fd045dfd4c6a84f5460904d24650f8bf"
+      "rev": "998de75d94702eee47e37a12b96b7a449052f87c"
     }
   },
   "lib/openzeppelin-contracts": {

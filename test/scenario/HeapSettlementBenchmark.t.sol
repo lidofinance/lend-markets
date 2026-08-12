@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams, Position, Market} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Test, console2} from "forge-std/Test.sol";
@@ -11,53 +10,16 @@ import {Test, console2} from "forge-std/Test.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
+import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 
-interface IWETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function deposit() external payable;
-}
-
-interface IWstETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function stEthPerToken() external view returns (uint256);
-}
-
-interface IOracle {
-    function price() external view returns (uint256);
-}
-
-contract ControllableWstEthOracle is IOracle {
-    IWstETH public immutable WSTETH;
-    uint256 private _override;
-
-    constructor(address wstETH_) {
-        WSTETH = IWstETH(wstETH_);
-    }
-
-    function price() external view override returns (uint256) {
-        if (_override != 0) return _override;
-        return WSTETH.stEthPerToken() * 1e18;
-    }
-
-    function setOverridePrice(uint256 p) external {
-        _override = p;
-    }
-
-    function clearOverride() external {
-        _override = 0;
-    }
-}
-
+/// @notice Gas benchmark of the settlement heap walk: seed a queue of borrower positions in a chosen
+///         shape, drive a lender exit through repeated `settle` cuts, and log iterations and gas.
+/// @dev Local-EVM only: mock tokens and a constant-price oracle, deployed fresh per test through
+///      `LidoLendDeployer`, so the numbers are deterministic and no RPC is involved.
 contract HeapSettlementBenchmark is Test, LidoLendDeployer {
-    using MarketParamsLib for MarketParams;
-
-    address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address internal constant WSTETH_ADDRESS = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
-
-    IWETH internal constant WETH = IWETH(WETH_ADDRESS);
-    IWstETH internal constant WSTETH = IWstETH(WSTETH_ADDRESS);
+    MockERC20 internal WETH;
+    MockERC20 internal WSTETH;
 
     uint256 internal constant LLTV = 0.8e18;
     address internal constant LENDER = address(0x9000);
@@ -66,12 +28,14 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     uint96 internal constant SLICE_FLOOR = 1 ether;
     uint128 internal constant DUST_THRESHOLD = 0.005 ether;
     uint256 internal constant MIN_COLLATERAL_ACTIVATION = 10e18;
-    uint256 internal _wstEthRate;
+    // Fixed collateral rate for the mock oracle: one wstETH is worth 1.2 WETH. A constant (rather than
+    // a seeded price) keeps the benchmark's gas numbers comparable across runs.
+    uint256 internal constant WSTETH_RATE = 1.2e18;
 
     struct Ctx {
         ILidoLend market;
         ILidoLendMarketController controller;
-        ControllableWstEthOracle oracle;
+        MockPriceOracle oracle;
         MarketParams marketParams;
         Id id;
         uint256 price;
@@ -84,52 +48,57 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         uint256 gasUsed;
     }
 
+    function setUp() public {
+        WETH = new MockERC20("Wrapped Ether", "WETH", 18);
+        WSTETH = new MockERC20("Wrapped stETH", "wstETH", 18);
+    }
+
     // ── Uniform-LTV scenarios
     // ──────────────────────────────────────
 
+    /// @dev Benchmarks the settlement heap walk over 20 equal small (0.5) uniform-LTV positions on a quarter-pool exit.
     function test_AllSmallEqual() public {
-        _skip();
         _runUniform("AllSmallEqual(20x0.5)", 20, 0.5 ether, 0.7e18, 4);
     }
 
+    /// @dev Benchmarks the settlement heap walk over 5 equal large (10) uniform-LTV positions on a quarter-pool exit.
     function test_AllLargeEqual() public {
-        _skip();
         _runUniform("AllLargeEqual(5x10)", 5, 10 ether, 0.7e18, 4);
     }
 
+    /// @dev Benchmarks the settlement heap walk for a tiny (~1%) exit against a large uniform pool.
     function test_SmallExitLargePool() public {
-        _skip();
         _runUniform("SmallExit1%(10x5)", 10, 5 ether, 0.7e18, 100);
     }
 
+    /// @dev Benchmarks the settlement heap walk for a 50% exit against a uniform pool.
     function test_LargeExit50Pct() public {
-        _skip();
         _runUniform("LargeExit50%(10x5)", 10, 5 ether, 0.7e18, 2);
     }
 
     // ── Mixed-debt scenarios
     // ───────────────────────────────────────
 
+    /// @dev Benchmarks the settlement heap walk over a mixed debt profile (10 small + 3 large) on a quarter-pool exit.
     function test_MixedSmallAndLarge() public {
-        _skip();
         uint256[] memory debts = _buildDebts(10, 0.5 ether, 3, 10 ether);
         _runScenario(_deployCtx(), "Mixed(10x0.5+3x10)", debts, 0.7e18, _sum(debts) / 4);
     }
 
+    /// @dev Benchmarks the heap walk when a dust tail is seeded before one whale (insertion order stresses the heap).
     function test_DustTailThenWhale() public {
-        _skip();
         uint256[] memory debts = _buildDebts(10, 0.1 ether, 1, 40 ether);
         _runScenario(_deployCtx(), "DustTailThenWhale(10x0.1+1x40)", debts, 0.7e18, _sum(debts) / 4);
     }
 
+    /// @dev Benchmarks the heap walk when the whale is seeded before the dust tail (reverse insertion order).
     function test_WhaleThenDustTail() public {
-        _skip();
         uint256[] memory debts = _buildDebts(1, 40 ether, 10, 0.1 ether);
         _runScenario(_deployCtx(), "WhaleThenDustTail(1x40+10x0.1)", debts, 0.7e18, _sum(debts) / 4);
     }
 
+    /// @dev Benchmarks the heap walk with two tied whales contending for the heap root plus smaller positions.
     function test_TwoEqualWhalesAtTop() public {
-        _skip();
         uint256[] memory debts = _buildDebts(2, 15 ether, 3, 3 ether);
         _runScenario(_deployCtx(), "TwoEqualWhales(2x15+3x3)", debts, 0.7e18, _sum(debts) / 4);
     }
@@ -137,8 +106,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ── Variable-LTV scenarios
     // ─────────────────────────────────────
 
+    /// @dev Benchmarks the heap walk over positions spread across a gradient of LTVs (30%..72%).
     function test_GradientLTV() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 10;
         uint256[] memory debts = new uint256[](n);
@@ -150,8 +119,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         _runScenarioWithLTVs(ctx, "GradientLTV(10x3,LTV30-72%)", debts, ltvs, _sum(debts) / 4);
     }
 
+    /// @dev Benchmarks the heap walk with positions clustered in a tight high-LTV band (69..71%) plus low-LTV outliers.
     function test_ClusterNearTop() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256[] memory debts = new uint256[](8);
         uint256[] memory ltvs = new uint256[](8);
@@ -169,7 +138,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     /// @notice Worst case for the heap walk: many large positions packed into a 2% LTV band, so
     ///         every cut barely re-orders the queue and the exit has to rotate through all of them.
     function test_ManyLargeCloseLTV() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 20;
         uint256[] memory debts = new uint256[](n);
@@ -184,14 +152,15 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ── Serial exits
     // ───────────────────────────────────────────────
 
+    /// @dev Benchmarks repeated small exits (10 rounds) draining a uniform pool, tracking per-round iterations and gas.
     function test_SerialSmallExits() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256[] memory debts = _uniformDebts(10, 5 ether);
         uint256 total = _sum(debts);
         _seedBorrowers(ctx, debts, 0.7e18, total);
 
         console2.log("=== SerialSmallExits(10x5%x10rounds) ===");
+        uint256 drainedAcrossRounds;
         for (uint256 round; round < 10; ++round) {
             uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
             if (lenderShares == 0) break;
@@ -199,30 +168,33 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
             if (roundShares > lenderShares) roundShares = lenderShares;
             if (roundShares == 0) break;
             SettlementResult memory res = _settleLoop(ctx, roundShares);
+            drainedAcrossRounds += res.totalDebtCanceled;
             console2.log("  round", round, "iter", res.iterations);
             console2.log("    debt_canceled", res.totalDebtCanceled, "gas", res.gasUsed);
         }
+        assertGt(drainedAcrossRounds, 0, "serial exits cancelled debt");
+        assertLt(ctx.controller.settlementBorrowersCount(), debts.length, "serial exits shrank the queue");
         _logPositions(ctx, debts.length);
     }
 
     // ── Dust scenarios (withdraw to high LTV) ──────────────────────
 
+    /// @dev Benchmarks the heap walk over 100 dust positions each withdrawn to a high (~78%) LTV.
     function test_100DustPositions() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         _seedDustBorrowers(ctx, 100, 0.3 ether, 0.78e18);
         _runDustScenario(ctx, "100DustPositions(100x0.3@~78%LTV)", 100, 0.3 ether, 4);
     }
 
+    /// @dev Benchmarks the heap walk over 1000 dust positions each withdrawn to a high (~78%) LTV.
     function test_1000DustPositions() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         _seedDustBorrowers(ctx, 1000, 0.3 ether, 0.78e18);
         _runDustScenario(ctx, "1000DustPositions(1000x0.3@~78%LTV)", 1000, 0.3 ether, 4);
     }
 
+    /// @dev Benchmarks the heap walk over 1000 mixed-size positions (900 small + 90 mid + 10 large) on a quarter exit.
     function test_1000MixedPositions() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 1000;
         uint256[] memory debts = new uint256[](n);
@@ -244,6 +216,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         console2.log("  total_debt:", total);
 
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, total / 4));
+        // A capped uniform-LTV pass slices debt but need not fully close any position, so don't assert a heap drop.
+        assertGt(res.totalDebtCanceled, 0, "the quarter-pool exit cancels debt");
         _logSettlementResult(res);
         console2.log("  heap_size:", ctx.controller.settlementBorrowersCount());
     }
@@ -251,8 +225,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ── Whale + dust
     // ───────────────────────────────────────────────
 
+    /// @dev Benchmarks the heap walk over 99 low-LTV dust positions plus one high-value whale that the exit hits first.
     function test_DustAndOneWhale100() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 100;
         uint256 dustDebt = 0.3 ether;
@@ -271,6 +245,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         vm.warp(block.timestamp + 2 hours + 1);
         _borrowAll(ctx, 0, 1, whaleDebt);
         _borrowAll(ctx, 1, n, dustDebt);
+        uint128 whaleBorrowBefore = ctx.market.position(ctx.id, _borrowerAddr(0)).borrowShares;
 
         console2.log("=== DustAndOneWhale100(99x0.3lowLTV+1x100whale) ===");
         console2.log("  heap_size_before:", ctx.controller.settlementBorrowersCount());
@@ -280,6 +255,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
         Position memory _whalePos = ctx.market.position(ctx.id, _borrowerAddr(0));
         (uint128 whaleBorrowAfter, uint128 whaleColAfter) = (_whalePos.borrowShares, _whalePos.collateral);
+        // The high-LTV whale is the heap root; a 75-WETH exit (< its 100 debt) trims it and never reaches the dust.
+        assertGt(res.totalDebtCanceled, 0, "the whale exit cancels something");
+        assertLt(whaleBorrowAfter, whaleBorrowBefore, "the whale was trimmed");
+        assertGt(whaleBorrowAfter, 0, "a 75-WETH exit cannot fully close a 100-WETH whale");
+        assertEq(_countClosed(ctx, 1, n), 0, "the dust tail is never touched");
         console2.log("  whale_debt_remaining:", uint256(whaleBorrowAfter));
         console2.log("  whale_col_remaining:", uint256(whaleColAfter));
         console2.log("  heap_size:", ctx.controller.settlementBorrowersCount());
@@ -289,8 +269,8 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ── Full drain
     // ─────────────────────────────────────────────────
 
+    /// @dev Benchmarks fully draining 2000 dust positions across repeated settle transactions, totaling gas/iterations.
     function test_2000DustFullDrain() public {
-        _skip();
         Ctx memory ctx = _deployCtx();
         uint256 n = 2000;
         uint256 debtPer = 0.3 ether;
@@ -325,6 +305,11 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         console2.log("  total_debt_drained:", totalDebtDrained);
         console2.log("  total_gas:", totalGas);
         console2.log("  positions_remaining:", ctx.controller.settlementBorrowersCount());
+
+        // Real progress, though not to zero: accrued interest leaves a residual tail once the lender's supply runs out.
+        assertGt(totalDebtDrained, 0, "the drain cancelled debt");
+        assertGt(_countClosed(ctx, 0, n), 0, "the drain closed positions");
+        assertLt(ctx.controller.settlementBorrowersCount(), n, "the drain shrank the settlement queue");
     }
 
     // ── Runners
@@ -341,6 +326,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     {
         _seedBorrowers(ctx, debts, ltv, _sum(debts));
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, exitAssets));
+        assertGt(res.totalDebtCanceled, 0, "a funded exit against outstanding debt cancels something");
         _logResult(ctx, label, debts.length, res);
     }
 
@@ -353,6 +339,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     ) internal {
         _seedBorrowersWithLTVs(ctx, debts, ltvs, _sum(debts));
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, exitAssets));
+        assertGt(res.totalDebtCanceled, 0, "a funded exit against outstanding debt cancels something");
         _logResult(ctx, label, debts.length, res);
     }
 
@@ -362,6 +349,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         console2.log("===", label, "===");
         console2.log("  heap_size_before:", ctx.controller.settlementBorrowersCount());
         SettlementResult memory res = _settleLoop(ctx, _assetsToSupplyShares(ctx, debtPer * n / exitDivisor));
+        assertGt(res.totalDebtCanceled, 0, "the dust exit cancels something");
         console2.log("  borrowers:", n);
         _logSettlementResult(res);
         console2.log("  positions_closed:", _countClosed(ctx, 0, n));
@@ -429,7 +417,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     function _seedOneBorrower(Ctx memory ctx, uint256 idx, uint256 debt, uint256 ltv) internal {
         address b = _borrowerAddr(idx);
         uint256 requiredCol = _collateralForDebt(debt, ltv, ctx.price);
-        uint256 ethForCol = (requiredCol * _wstEthRate / 1e18) * 13 / 10;
+        uint256 ethForCol = requiredCol * WSTETH_RATE * 13 / (1e18 * 10);
         if (ethForCol < 15 ether) ethForCol = 15 ether;
         uint256 col = _mintWstETH(ctx.market, b, ethForCol);
         vm.prank(b);
@@ -453,14 +441,15 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
 
     function _settleLoop(Ctx memory ctx, uint256 exitShares) internal returns (SettlementResult memory res) {
         uint256 remaining = exitShares;
+        uint256 heapBefore = ctx.controller.settlementBorrowersCount();
         uint256 gasBefore = gasleft();
 
         for (uint256 i; i < MAX_ITERATIONS; ++i) {
             if (remaining == 0 || ctx.controller.settlementBorrowersCount() == 0) break;
 
-            (address top,,,) = ctx.controller.nextSettlementBorrower();
+            (address top,) = ctx.controller.nextSettlementBorrower(0);
             if (top == address(0)) break;
-            uint256 sliceAssets = ctx.controller.positionOf(top).slice;
+            uint256 sliceAssets = _dashboardSliceAssets(ctx.controller, top);
             uint128 topBorrowShares = ctx.market.position(ctx.id, top).borrowShares;
             uint128 topCol = ctx.market.position(ctx.id, top).collateral;
             uint128 totalBorrowAssets = ctx.market.market(ctx.id).totalBorrowAssets;
@@ -492,6 +481,22 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         }
 
         res.gasUsed = gasBefore - gasleft();
+
+        // Correctness rails for every scenario, independent of the gas numbers.
+        assertLe(res.iterations, MAX_ITERATIONS, "settle walk stays within the iteration cap");
+        assertLe(ctx.controller.settlementBorrowersCount(), heapBefore, "heap never grows during settlement");
+        assertEq(res.totalCollateralSeized == 0, res.totalDebtCanceled == 0, "collateral seized iff debt canceled");
+    }
+
+    function _dashboardSliceAssets(ILidoLendMarketController controller, address borrower)
+        internal
+        view
+        returns (uint256)
+    {
+        ILidoLendMarketController.BorrowerPosition memory dashboard = controller.positionOf(borrower);
+        return dashboard.personalSliceAssets > dashboard.queueRootSliceAssets
+            ? dashboard.personalSliceAssets
+            : dashboard.queueRootSliceAssets;
     }
 
     /// @dev One settle attempt as LENDER, accumulated into `res`; swallows the revert so the caller can
@@ -501,7 +506,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         returns (bool)
     {
         vm.prank(LENDER);
-        try ctx.market.settle(ctx.marketParams, 0, cutShares, LENDER, top, LENDER) returns (
+        try ctx.market.settle(ctx.marketParams, cutShares, LENDER, top, LENDER) returns (
             uint256 colSeized, uint256 debtCanceled, uint256, uint256
         ) {
             res.totalCollateralSeized += colSeized;
@@ -539,20 +544,18 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     // ─────────────────────────────────────────────────
 
     function _deployCtx() internal returns (Ctx memory ctx) {
-        if (_wstEthRate == 0) _wstEthRate = WSTETH.stEthPerToken();
-
         address[] memory guardians = new address[](1);
         guardians[0] = address(this);
 
         Deployed memory d = _deployForkStack(
             DeployConfig({
                 admin: address(this),
-                loanToken: WETH_ADDRESS,
-                collateralToken: WSTETH_ADDRESS,
-                oracleSource: WSTETH_ADDRESS,
+                loanToken: address(WETH),
+                collateralToken: address(WSTETH),
+                oracleSource: address(0), // unused — `_deployOracle` is overridden below
                 lltv: LLTV,
                 enableSettlement: true,
-                activation: CollateralActivationConfigParams({
+                activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     activatingLockAmount: 0,
@@ -566,7 +569,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                     delayPerStrike: 0,
                     delayPerSuspect: 0
                 }),
-                settlementConfig: SettlementConfigParams({
+                settlementConfig: SettlementConfig({
                     sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 100
                 }),
                 guardians: guardians,
@@ -578,7 +581,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
         );
 
         ctx.market = ILidoLend(d.core);
-        ctx.oracle = ControllableWstEthOracle(d.oracle);
+        ctx.oracle = MockPriceOracle(d.oracle);
         ctx.controller = ILidoLendMarketController(d.controllerProxy);
         ctx.marketParams = d.params;
         ctx.id = d.marketId;
@@ -596,22 +599,16 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
             );
     }
 
-    /// @dev Override the default `WstEthRateOracle` with a per-test controllable oracle so
-    ///      benchmark scenarios can pin a known price (off the live wstETH rate).
-    function _deployOracle(address oracleSource, address) internal override returns (address) {
-        return address(new ControllableWstEthOracle(oracleSource));
+    /// @dev Overrides the default `WstEthRateOracle` with a constant-price mock at the fixed rate, in the
+    ///      Morpho 1e36 convention (both tokens have 18 decimals).
+    function _deployOracle(address, address) internal override returns (address) {
+        MockPriceOracle oracle = new MockPriceOracle();
+        oracle.initialize(WSTETH_RATE * 1e18);
+        return address(oracle);
     }
 
     // ── Helpers
     // ─────────────────────────────────────────────────────
-
-    function _skip() internal {
-        vm.skip(!_hasMainnet(), "mainnet fork required");
-    }
-
-    function _hasMainnet() internal view returns (bool) {
-        return block.chainid == 1 && WETH_ADDRESS.code.length != 0 && WSTETH_ADDRESS.code.length != 0;
-    }
 
     function _borrowerAddr(uint256 i) internal pure returns (address) {
         return address(uint160(0x2000 + i));
@@ -674,19 +671,17 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
     }
 
     function _mintWETH(ILidoLend market, address user, uint256 amount) internal {
-        vm.deal(user, amount);
-        vm.prank(user);
-        WETH.deposit{value: amount}();
+        WETH.mint(user, amount);
         vm.prank(user);
         WETH.approve(address(market), type(uint256).max);
     }
 
+    /// @dev `ethAmount` is denominated in loan-token (WETH) terms and converted to wstETH at the fixed rate.
     function _mintWstETH(ILidoLend market, address user, uint256 ethAmount) internal returns (uint256) {
-        uint256 wstETHAmount = (ethAmount * 1e18) / _wstEthRate;
-        bytes32 balSlot = keccak256(abi.encode(user, uint256(0)));
-        vm.store(WSTETH_ADDRESS, balSlot, bytes32(wstETHAmount));
-        bytes32 allowSlot = keccak256(abi.encode(address(market), keccak256(abi.encode(user, uint256(1)))));
-        vm.store(WSTETH_ADDRESS, allowSlot, bytes32(type(uint256).max));
-        return wstETHAmount;
+        uint256 wstEthAmount = (ethAmount * 1e18) / WSTETH_RATE;
+        WSTETH.mint(user, wstEthAmount);
+        vm.prank(user);
+        WSTETH.approve(address(market), type(uint256).max);
+        return wstEthAmount;
     }
 }

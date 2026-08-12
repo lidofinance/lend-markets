@@ -6,23 +6,32 @@
   libraries.
 - `lib/lido-lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported
   via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
+- `lib/bundler3`: stock Morpho bundler3, pinned as a submodule and imported via
+  the `@bundler3/` remapping — the one-transaction bundling dispatcher and its adapter base contracts.
+  The Lido bundler code is `src/adapters/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and
+  `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO
+  token surface).
+- `lib/circuit-breaker`: pinned upstream emergency-pause manager, imported via the
+  `@circuit-breaker/` remapping and deployed as a reusable per-run dependency.
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
-- `src/GuardianSignals.sol`: guardian-signal registry (one per project).
+- `src/GuardianSignals.sol`: guardian-signal registry (one per guardian group; markets may share one).
 - `src/interfaces/`: local interfaces and hook payload structs.
 - `src/oracle/`: local oracle adapters.
 - `src/libs/`: pure libraries (math, data structures). Internal — they inline into call sites.
 - `src/proxy/OssifiableProxy.sol`: imported Lido proxy source. Do not reformat it.
-- `test/scenario/`: end-to-end flows on **freshly deployed** core / controller / vault. May
-  run on a mainnet fork to reach real Lido stETH / wstETH contracts, but the protocol under test
-  is deployed inside the test. Driven through shared helpers; happy path first, then revert and
+- `test/scenario/`: end-to-end flows on **freshly deployed** core / controller / vault, on the local
+  EVM with mock tokens. Driven through shared helpers; happy path first, then revert and
   edge cases. Pure-library fuzz tests live here too.
-- `test/integration/`: same flows on a mainnet fork against the **already-deployed** protocol —
-  addresses come from `deployed-<network>.toml`. Verifies the live system still behaves correctly
-  as its state evolves.
+- `test/fork/`: test suite that runs against a forked network. `NETWORK` selects committed external
+  addresses from `script/config/<network>.toml`; `FORK_REGISTRY` is optional for suites that inspect an
+  existing deployment.
+- `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
+  deployed stack is correctly wired, fully role-wired (event-completeness scan), and either ready for the
+  activation motion or live after it. Expected values and addresses come from immutable artifacts under
+  `deployed/<run>/`; the suite skips unless `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
 - `script/`: deployment scripts.
-- `deployed-<network>.toml`: registry of deployed addresses per network (TOML so the file can
-  carry inline `#` comments — deploy date, governance handover, audit refs). Source of truth
-  for the integration tests; updated on every deploy/upgrade.
+- `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `circuit-breakers/`,
+  `guardians/`, `oracles/`, optional `exit-books.toml`, and archived transaction records.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).
@@ -35,14 +44,27 @@
 ## Build, Test, And Formatting Commands
 
 - Build: `forge build --force`.
-- Test: `forge test`.
+- All tests (local + fork): `make test`. The fork suites require a working fork setup — `RPC_URL`,
+  `NETWORK` (e.g. in `.env`), its committed config, and a matching RPC — and revert without it;
+  a fork suite runs or it fails, it never skips.
+- Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
+- Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
+- Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot`. The
+  fork suites are included — they revert without the fork setup — forking the latest block unless
+  `FORK_BLOCK` pins one. `TEST_SEED` comes from the env when set; otherwise foundry picks
+  one random seed per run and the suites log it (fork suites also log their block), so a run is always
+  replayable by exporting the logged `TEST_SEED`/`FORK_BLOCK`. `make snapshot-diff` diffs a fresh run
+  against `.gas-snapshot` — run both at the same `TEST_SEED`, or the diff picks up seed noise on top of the
+  code change (CI pins `TEST_SEED=1`).
 - Format check for local Solidity files:
-  `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
+  `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
-- Mainnet-fork tests skip when no mainnet fork context is available; guard with
-  `vm.skip(!_hasMainnetLidoContracts(), "mainnet fork with Lido contracts required")`.
-- The mainnet RPC for fork tests comes from `MAINNET_RPC_URL` (see `.env.example`). Each developer
-  uses their own endpoint; do not hardcode addresses in the repo.
+- Writing a fork test: put it under `test/fork/`, extend `helpers/ForkTest.sol`, call `_fork()` first in
+  `setUp`, and read external addresses via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and
+  loads `script/config/<NETWORK>.toml`, reverting when the RPC is unreachable, the config is missing, or
+  its chain ID differs. Set `FORK_REGISTRY` only when the suite reads deployed protocol addresses through
+  `_deployed`; its chain ID is checked too. `FORK_BLOCK` pins a block for replay
+  (why latest: ADR 033).
 
 ## Dependency Policy
 
@@ -59,8 +81,7 @@
   `lib/lido-lend/FORK_NOTES.md`.
 - The forked core accounting (positions, supply/borrow shares, interest accrual, market creation,
   liquidate, settle) changes only through a `lib/lido-lend` pin bump.
-- All Lido extension logic — policy, controller hooks, settlement flavours, watermark, batch
-  orchestration, lender auth — lives in the controller (`src/controllers/WethWstEthController.sol`).
+- Lido-layer policy and orchestration live in this repository: the per-market policy entry point is `src/controllers/LidoLendMarketController.sol`, while guardian state, vault settlement orchestration, and optional periphery remain in their own contracts under `src/`.
 
 ## Solidity Style
 
@@ -72,15 +93,12 @@ Read before writing or reviewing contracts.
 Specs live in `docs/specs/` in two layers (see `docs/specs/README.md`). They capture what a reviewer
 needs before reading code, not what the code already says.
 
-- **Conceptual specs** (hand-written): the architecture, the access-control matrix, per-market
-  parameters, and the invariants and threat model the code cannot state itself. `architecture.md` is the
-  system and controller-subsystem reference, `roles.md` maps every privilege to its role and holder,
-  `markets/<market>.md` is per market.
+- **Conceptual specs** (hand-written): the architecture, cross-contract mechanisms, access-control matrix, per-market parameters, and the invariants and threat model the code cannot state itself. `architecture.md` is the system topology and runtime-boundary reference; `market-controller.md`, `guardian-signals.md`, `lender-settlement.md`, and `exit-books.md` own their respective state machines and formulas; `roles.md` maps every privilege to its role and holder; `markets/<market>.md` is per market.
 - **API reference** (`docs/specs/api/`, generated): the per-contract surface — functions, structs, state
   variables — rendered from the Solidity NatSpec by `tools/gen_api_from_artifacts.py` (`make doc`). It is
   the single source for per-member behaviour, so never hand-write or hand-edit it: keep the NatSpec
   accurate and regenerate. The forked Morpho core is documented under `lib/lido-lend/`.
-- Invariants are **testable**: each one maps to a scenario or integration assertion in `test/`.
+- Invariants are **testable**: each one maps to a scenario, fork, or acceptance assertion in `test/`.
 - Threat model lists the actors (lender, borrower, liquidator, controller admin, guardian, oracle, IRM)
   and what each is trusted not to do.
 - Behaviour-changing PRs update the NatSpec (which regenerates the API reference) and any conceptual spec
@@ -96,27 +114,30 @@ needs before reading code, not what the code already says.
 test/
 ├── setup/        # shared infra — deploy + action helpers + mocks + types (no tests of its own)
 ├── unit/         # L0+L1 — one file per contract / pure library, method-by-method
-├── scenario/     # L2 — end-to-end flows on a freshly deployed stack
+├── scenario/     # L2 — end-to-end flows on a freshly deployed stack (local EVM, mock tokens)
 ├── invariant/    # L4 — handler-based stateful properties
-└── integration/  # L3 — mainnet fork vs the already-deployed protocol (deployed-<network>.toml)
+├── fork/         # fork tests using script/config/<NETWORK>.toml; registry optional for deployed addresses
+└── acceptance/   # L3 — mainnet fork vs immutable artifacts under deployed/<run>/
 ```
 
 - `unit/<Contract>.t.sol` — single contract or pure library in isolation; **flat, one file per
   contract** (no per-contract subfolders), pure-library harnesses + fuzz alongside. Drives one
   contract's methods through every branch.
 - `scenario/<Flow>.t.sol` — full cross-contract flows on a **freshly deployed** protocol (built via
-  `setup/`). May use a mainnet fork to reach real stETH / wstETH / USDY, but the protocol under test
-  is deployed inside the test.
+  `setup/`), on the local EVM with mock tokens.
 - `invariant/<Area>.invariant.t.sol` — handler-based stateful properties (actors, ghosts, bounded
   actions). Handlers under `invariant/handlers/`.
-- `integration/<Flow>.t.sol` — same flows on a mainnet fork against the **already-deployed** protocol;
-  addresses from `deployed-<network>.toml`. Run with `forge test --fork-url $MAINNET_RPC_URL`.
+- `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
+- `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
+  addresses and expected values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
+  Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`); skips without an artifact. See
+  `script/DEPLOYMENT.md`.
 
 ### Setup Infra (`test/setup/`)
 
 Every suite builds on `LidoLendSetup` (abstract base) — do not re-implement deployment:
 
-- **Deploys with `new`, not `vm.getCode`** (the fork core and IRM are 0.8.35-compatible). One
+- **Deploys with `new`, not `vm.getCode`** (the fork core and IRM are 0.8.36-compatible). One
   `LidoLend` core and one guardian registry are **singletons**; a core hosts **many markets**.
   `Protocol { config, core, guardianSignals, Market[] markets }`; each `Market` carries its
   per-market contracts (controller/vault/oracle/irm), its own config, and a handle on the core.
@@ -172,7 +193,8 @@ contract or the test setup.
 ### Discipline
 
 - Tests land with the change. Separate "tests follow-up" PRs are not accepted for new functionality.
-- After source changes, run at least `forge build --force` and `forge test`.
+- After source changes, run at least `forge build --force` and `make test-local` (`make test` when a fork
+  setup is configured).
 
 ## Commit Messages
 

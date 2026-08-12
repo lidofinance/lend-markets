@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+
+import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 import {IRiskStewardDashboard} from "../interfaces/IRiskStewardDashboard.sol";
-import {ILidoLendMarketConfigurator} from "../interfaces/ILidoLendMarketConfigurator.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 
-/// @notice Bounded risk-steward levers over the markets of one core, from a single instance. Each lever reads
-///         a market's current activation config, enforces a tighten-only change, and writes the full config
-///         back. Stewards are appointed per market id, so one dashboard serves every market. The controller
-///         still validates bounds and ordering on write, so this only adds the direction (tighten-only) guard.
-contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
+/// @notice Bounded risk-reduction levers over the markets of one core, from a single instance. Activation-config
+///         changes are tighten-only; the dashboard may revoke instant activation and freeze markets, but exposes no
+///         instant-activation grant or market-unfreeze path. Stewards are appointed per market id, so one dashboard
+///         serves every market.
+contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard {
     using EnumerableSet for EnumerableSet.AddressSet;
 
     // ---
@@ -51,6 +52,7 @@ contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
     // ---
 
     constructor(address admin, ILidoLend lidoLend) {
+        if (admin == address(0) || address(lidoLend) == address(0)) revert ZeroAddress();
         LIDO_LEND = lidoLend;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
@@ -61,14 +63,13 @@ contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
 
     /// @inheritdoc IRiskStewardDashboard
     function addMarketSteward(Id marketId, address steward) external onlyRole(STEWARD_ADMIN_ROLE) {
-        _stewards[marketId].add(steward);
-        emit MarketStewardSet(marketId, steward, true);
+        if (steward == address(0)) revert ZeroSteward();
+        if (_stewards[marketId].add(steward)) emit MarketStewardSet(marketId, steward, true);
     }
 
     /// @inheritdoc IRiskStewardDashboard
     function removeMarketSteward(Id marketId, address steward) external onlyRole(STEWARD_ADMIN_ROLE) {
-        _stewards[marketId].remove(steward);
-        emit MarketStewardSet(marketId, steward, false);
+        if (_stewards[marketId].remove(steward)) emit MarketStewardSet(marketId, steward, false);
     }
 
     /// @inheritdoc IRiskStewardDashboard
@@ -86,16 +87,27 @@ contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
     // ---
 
     /// @inheritdoc IRiskStewardDashboard
-    function increaseActivationDelays(Id marketId, uint40 newMin, uint40 newMax) external onlyMarketSteward(marketId) {
-        ILidoLendMarketConfigurator controller = _configurator(marketId);
+    function increaseActivationDelays(
+        Id marketId,
+        uint40 newMinActivationDelay,
+        uint40 newMaxActivationDelay,
+        uint40 newMaxGuardiansQuorumDelay
+    ) external onlyMarketSteward(marketId) {
+        ILidoLendMarketController controller = _controller(marketId);
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
-        if (newMin < cfg.minActivationDelay || newMax < cfg.maxActivationDelay) revert NotTightened();
+        if (newMinActivationDelay < cfg.minActivationDelay || newMaxActivationDelay < cfg.maxActivationDelay) {
+            revert NotTightened();
+        }
+        if (newMaxGuardiansQuorumDelay < cfg.maxGuardiansQuorumDelay) revert NotTightened();
 
-        cfg.minActivationDelay = newMin;
-        cfg.maxActivationDelay = newMax;
+        cfg.minActivationDelay = newMinActivationDelay;
+        cfg.maxActivationDelay = newMaxActivationDelay;
+        cfg.maxGuardiansQuorumDelay = newMaxGuardiansQuorumDelay;
         controller.setCollateralActivationConfig(cfg);
 
-        emit ActivationDelaysIncreased(marketId, newMin, newMax);
+        emit ActivationDelaysIncreased(
+            marketId, newMinActivationDelay, newMaxActivationDelay, newMaxGuardiansQuorumDelay
+        );
     }
 
     /// @inheritdoc IRiskStewardDashboard
@@ -103,7 +115,7 @@ contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
         external
         onlyMarketSteward(marketId)
     {
-        ILidoLendMarketConfigurator controller = _configurator(marketId);
+        ILidoLendMarketController controller = _controller(marketId);
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
         if (newAmount < cfg.activatingLockAmount || newDuration < cfg.activatingLockDuration) revert NotTightened();
 
@@ -116,7 +128,13 @@ contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
 
     /// @inheritdoc IRiskStewardDashboard
     function revokeInstantActivation(Id marketId, address caller) external onlyMarketSteward(marketId) {
-        _configurator(marketId).revokeInstantActivation(caller);
+        _controller(marketId).setInstantActivation(caller, false);
+        emit InstantActivationRevoked(marketId, caller);
+    }
+
+    /// @inheritdoc IRiskStewardDashboard
+    function freezeMarket(Id marketId) external onlyMarketSteward(marketId) {
+        _controller(marketId).freeze();
     }
 
     // ---
@@ -124,9 +142,9 @@ contract RiskStewardDashboard is AccessControl, IRiskStewardDashboard {
     // ---
 
     /// @dev Resolve a market id to its controller via the core, reverting if the market has none.
-    function _configurator(Id marketId) private view returns (ILidoLendMarketConfigurator) {
+    function _controller(Id marketId) private view returns (ILidoLendMarketController) {
         address controller = LIDO_LEND.marketController(marketId);
         if (controller == address(0)) revert UnknownMarket(marketId);
-        return ILidoLendMarketConfigurator(controller);
+        return ILidoLendMarketController(controller);
     }
 }

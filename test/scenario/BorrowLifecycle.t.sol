@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -30,6 +30,8 @@ contract BorrowLifecycleTest is LidoLendSetup {
         return maxBorrow / 2;
     }
 
+    /// @dev With zero fee, the lender's redeemed gain equals exactly the interest the borrower paid, and every
+    ///      actor ends whole on principal/collateral after the full supply->borrow->accrue->repay->withdraw cycle.
     function test_fullBorrowLifecycle_roundTrips() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -73,6 +75,8 @@ contract BorrowLifecycleTest is LidoLendSetup {
         assertApproxEqAbs(redeemed - 1000 ether, owed - borrowAmt, 10, "lender's gain == the interest paid");
     }
 
+    /// @dev Open debt locks collateral: withdrawing a large slice under near-ceiling debt reverts on the health
+    ///      gate, and the identical withdrawal succeeds once the debt is fully repaid.
     function test_openDebt_locksCollateral_thenRepayUnlocks() public {
         Market storage m = _m();
         address lender = _actor("lender");

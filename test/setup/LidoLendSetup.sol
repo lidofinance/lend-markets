@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {Test, console2} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {IMorpho, Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
-import {LidoLend} from "@lido-lend/src/LidoLend.sol";
 
-import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
-import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
+import {LinearKinkConfig} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkConfig.sol";
 import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.sol";
 import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 import {IIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.sol";
@@ -21,9 +19,9 @@ import {IIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.sol";
 import {Id as IrmId, MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
+import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
-import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
-import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
@@ -35,7 +33,7 @@ import {IrmKind, Market, Protocol} from "./Types.sol";
 import {MarketActions} from "./MarketActions.sol";
 
 /// @notice Base for Lido Lend tests. Deploys with `new` (no `vm.getCode`; the fork core and IRM are
-///         0.8.35-compatible): one `LidoLend` core and one guardian registry (singletons), then any number
+///         0.8.36-compatible): one `LidoLend` core and one guardian registry (singletons), then any number
 ///         of markets on that core (`_addMarket`). Seeds a non-trivial oracle price from a logged seed.
 ///         Action helpers live in `MarketActions` (`using ... for Market` → `market.borrow(bob, x)`);
 ///         funding (`deal`) stays here because it is StdCheats, not a `vm` cheatcode.
@@ -76,7 +74,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
             oracleSource: oracleSource,
             lltv: 0.8e18,
             enableSettlement: true,
-            activation: CollateralActivationConfigParams({
+            activation: CollateralActivationConfig({
                 minActivationDelay: 10 minutes,
                 maxActivationDelay: 2 hours,
                 maxDelayInflow: 10_000 ether,
@@ -87,7 +85,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 delayPerStrike: 2 hours,
                 delayPerSuspect: 0
             }),
-            settlementConfig: SettlementConfigParams({
+            settlementConfig: SettlementConfig({
                 sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
             }),
             guardians: guardians,
@@ -95,19 +93,6 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
             suspectWindow: 0,
             vaultName: "Lido Loan Vault",
             vaultSymbol: "lidoLOAN"
-        });
-    }
-
-    /// @dev Standard adaptive curve parameters (Morpho mainnet-like; pass `_validateConfig`).
-    function _curveConfig() internal pure returns (AdaptiveCurveParams memory) {
-        return AdaptiveCurveParams({
-            curveSteepness: 4e18,
-            adjustmentSpeed: int256(50e18) / int256(365 days),
-            targetUtilization: 9e17,
-            initialRateAtTarget: int256(4e16) / int256(365 days),
-            minRateAtTarget: int256(1e15) / int256(365 days),
-            maxRateAtTarget: int256(2e18) / int256(365 days),
-            maxBorrowRate: 0
         });
     }
 
@@ -144,34 +129,25 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         return _addMarket(cfg);
     }
 
-    /// @notice Deploy the singleton core (behind `OssifiableProxy`). Each market gets its own guardian registry
-    ///         in `_addMarket`.
+    /// @notice Deploy the singleton core (base step) and mirror it to `protocol`. Each market gets its own
+    ///         guardian registry in `_addMarket`.
     function _deployCore(address admin) internal override returns (address core) {
-        core = address(
-            new OssifiableProxy(address(new LidoLend()), admin, abi.encodeWithSignature("initialize(address)", admin))
-        );
+        core = super._deployCore(admin);
         protocol.core = ILidoLend(core);
         protocol.coreProxy = IOssifiableProxy(core);
     }
 
-    /// @dev Deploy and seed this market's guardian registry (one GuardianSignals per market). `initialize` seeds
-    ///      the admin, guardian set, and quorum; `admin` holds DEFAULT_ADMIN_ROLE, so it self-grants
-    ///      MANAGER_ROLE and sets the delay parameters. Split out of `_addMarket` to keep its frame under
-    ///      the stack limit. Also mirrors it to `protocol` so single-market tests can read
-    ///      `protocol.guardianSignals`.
-    function _deployMarketGuardian(DeployConfig memory cfg, address admin) private returns (address guardian) {
-        guardian = address(
-            new OssifiableProxy(
-                address(new GuardianSignals()),
-                admin,
-                abi.encodeWithSignature("initialize(address,address[],uint256)", admin, cfg.guardians, cfg.quorum)
-            )
-        );
-        GuardianSignals gs = GuardianSignals(guardian);
+    /// @dev Deploy and seed this market's guardian registry (one GuardianSignals per market; base step).
+    ///      `initialize` seeds the admin, guardian set, and quorum; `admin` holds DEFAULT_ADMIN_ROLE, so it
+    ///      self-grants MANAGER_ROLE and sets the delay parameters. Also mirrors it to `protocol` so
+    ///      single-market tests can read `protocol.guardianSignals`.
+    function _deployMarketGuardian(DeployConfig memory cfg, address admin) private returns (address guardianSignals) {
+        guardianSignals = _deployGuardianSignals(address(new GuardianSignals()), admin, cfg.guardians, cfg.quorum);
+        GuardianSignals gs = GuardianSignals(guardianSignals);
         gs.grantRole(gs.MANAGER_ROLE(), admin);
         gs.setSuspectWindow(cfg.suspectWindow);
-        protocol.guardianSignals = IGuardianSignals(guardian);
-        protocol.guardianSignalsProxy = IOssifiableProxy(guardian);
+        protocol.guardianSignals = IGuardianSignals(guardianSignals);
+        protocol.guardianSignalsProxy = IOssifiableProxy(guardianSignals);
     }
 
     /// @notice Deploy a market on the existing core: oracle (seeded mock by default), IRM (by `irmKind`),
@@ -182,25 +158,25 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         address core = address(protocol.core);
 
         address oracle = _deployOracle(cfg.oracleSource, admin);
-        address irm = _deployMarketIrm(core, admin);
+        address irm = _deployIrm(core, admin);
 
         MarketParams memory params = MarketParams({
             loanToken: cfg.loanToken, collateralToken: cfg.collateralToken, oracle: oracle, irm: irm, lltv: cfg.lltv
         });
         Id id = params.id();
 
-        // `irm` is the shared router. Deploy the chosen frozen IRM, set its per-market params, and route the
-        // market to it through the router (all owner-gated, done as `admin`).
+        // `irm` is the shared router. Deploy the chosen IRM and its immutable config, apply that config, and route
+        // the market through the router (all owner-gated calls run as `admin`).
         _routeMarketIrm(irm, params, admin);
 
         // One GuardianSignals per market, deployed and seeded before the controller (which binds to it).
-        address guardian = _deployMarketGuardian(cfg, admin);
+        address guardianSignals = _deployMarketGuardian(cfg, admin);
 
-        (address controllerImpl, address controller) = _deployController(cfg, core, admin, id, guardian);
+        (address controller, address controllerImpl) = _deployMarketController(cfg, core, id, guardianSignals);
 
         protocol.core.createMarket(params, controller, cfg.enableSettlement);
 
-        address vault = _deployVault(cfg, core, admin, params, controller);
+        address vault = _deployMarketVault(cfg, core, params, controller);
 
         // The settlement config is set in `initialize`. Grant `admin` MANAGER_ROLE for later policy changes
         // (tests act as `admin`); `admin` holds DEFAULT_ADMIN_ROLE, the MANAGER_ROLE admin.
@@ -216,8 +192,8 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         m.controller = ILidoLendMarketController(controller);
         m.controllerProxy = IOssifiableProxy(controller);
         m.controllerImpl = controllerImpl;
-        m.guardianSignals = IGuardianSignals(guardian);
-        m.guardianSignalsProxy = IOssifiableProxy(guardian);
+        m.guardianSignals = IGuardianSignals(guardianSignals);
+        m.guardianSignalsProxy = IOssifiableProxy(guardianSignals);
         m.vault = ILidoLendERC4626(vault);
         m.vaultProxy = IOssifiableProxy(vault);
         m.oracle = IOracle(oracle);
@@ -227,51 +203,21 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         m.collateralToken = IERC20(cfg.collateralToken);
     }
 
-    /// @dev Deploy the controller impl + `OssifiableProxy`, running `initialize`. Split out of `_addMarket` to
-    ///      keep its frame under the stack limit.
-    function _deployController(DeployConfig memory cfg, address core, address admin, Id id, address guardian)
+    /// @dev Thin frame-splitters over the base `_deployController` / `_deployERC4626Wrapper` steps: they exist only to
+    ///      keep `_addMarket`'s frame under the `via_ir = false` stack limit, not to add logic.
+    function _deployMarketController(DeployConfig memory cfg, address core, Id id, address guardianSignals)
         private
-        returns (address controllerImpl, address controller)
+        returns (address controller, address controllerImpl)
     {
-        controllerImpl = address(new LidoLendMarketController(IMorpho(core)));
-        controller = address(
-            new OssifiableProxy(
-                controllerImpl,
-                admin,
-                abi.encodeWithSignature(
-                    "initialize(bytes32,address,address,(uint40,uint40,uint128,uint128,uint40,uint128,uint40,uint40,uint40),(uint16,uint96,uint96,uint16))",
-                    Id.unwrap(id),
-                    admin,
-                    guardian,
-                    cfg.activation,
-                    cfg.settlementConfig
-                )
-            )
-        );
+        (controller, controllerImpl) =
+            _deployController(core, id, guardianSignals, cfg.admin, cfg.activation, cfg.settlementConfig);
     }
 
-    /// @dev Deploy the vault impl + `OssifiableProxy`, running `initialize`. Split out of `_addMarket` to keep
-    ///      its frame under the stack limit.
-    function _deployVault(
-        DeployConfig memory cfg,
-        address core,
-        address admin,
-        MarketParams memory params,
-        address controller
-    ) private returns (address vault) {
-        vault = address(
-            new OssifiableProxy(
-                address(new LidoLendERC4626(core)),
-                admin,
-                abi.encodeWithSignature(
-                    "initialize((address,address,address,address,uint256),address,string,string)",
-                    params,
-                    controller,
-                    cfg.vaultName,
-                    cfg.vaultSymbol
-                )
-            )
-        );
+    function _deployMarketVault(DeployConfig memory cfg, address core, MarketParams memory params, address controller)
+        private
+        returns (address)
+    {
+        return _deployERC4626Wrapper(core, params, controller, cfg.admin, cfg.vaultName, cfg.vaultSymbol);
     }
 
     /// @notice Oracle deployment: seeded mock behind a proxy. Override for a fork oracle (real feeds).
@@ -286,49 +232,32 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         returns (address)
     {
         address impl = address(new MockPriceOracle());
-        return address(new OssifiableProxy(impl, admin, abi.encodeWithSignature("initialize(uint256)", oraclePrice)));
+        return _behindProxy(impl, admin, abi.encodeCall(MockPriceOracle.initialize, (oraclePrice)));
     }
 
-    /// @dev The shared `IrmRouter` behind an `OssifiableProxy`: the market's `irm` field points at it, and it
-    ///      routes the market to a frozen per-market IRM (deployed in `_routeMarketIrm`). owner == manager ==
-    ///      `owner`, so the harness can route and set curve/kink params as `owner`.
-    function _deployMarketIrm(address core, address owner) internal returns (address) {
-        return address(
-            new OssifiableProxy(
-                address(new IrmRouter(core)),
-                owner,
-                abi.encodeWithSignature("initialize(address,address)", owner, owner)
-            )
-        );
-    }
-
-    /// @dev Deploy the market's frozen IRM (LinearKink for `Fixed`, AdaptiveCurve otherwise), set its per-market
-    ///      params, and route the market to it through the shared `router`. Split out to keep `_addMarket`'s frame
-    ///      under the stack limit. All setters are owner-gated, run as `admin`.
+    /// @dev Route the market's selected IRM through the shared `router`: the adaptive kind is the deployer's
+    ///      `_configureAdaptiveIrm` step; `Fixed` swaps in a flat LinearKink emulating a constant rate. All
+    ///      configuration and routing calls are owner-gated, so they run pranked as `admin`.
     function _routeMarketIrm(address router, MarketParams memory params, address admin) private {
-        IrmMarketParams memory irmParams = IrmMarketParams({
-            loanToken: params.loanToken,
-            collateralToken: params.collateralToken,
-            oracle: params.oracle,
-            irm: params.irm, // == router
-            lltv: params.lltv
-        });
-
-        IIrm irm;
         if (irmKind == IrmKind.Fixed) {
+            IrmMarketParams memory irmParams = IrmMarketParams({
+                loanToken: params.loanToken,
+                collateralToken: params.collateralToken,
+                oracle: params.oracle,
+                irm: params.irm, // == router
+                lltv: params.lltv
+            });
             LinearKinkIrm kink = new LinearKinkIrm(admin, admin);
-            vm.prank(admin);
-            kink.setMarketKinkParams(irmParams, _kinkParams());
-            irm = IIrm(address(kink));
+            LinearKinkConfig config = new LinearKinkConfig(_kinkParams());
+            vm.startPrank(admin);
+            kink.applyIrmConfig(irmParams, address(config));
+            IrmRouter(router).setMarketIrm(irmParams, IIrm(address(kink)));
+            vm.stopPrank();
         } else {
-            AdaptiveCurveIrm adaptive = new AdaptiveCurveIrm(router, admin, admin);
-            vm.prank(admin);
-            adaptive.setMarketCurveParams(irmParams, _curveConfig());
-            irm = IIrm(address(adaptive));
+            vm.startPrank(admin);
+            _configureAdaptiveIrm(router, params, admin);
+            vm.stopPrank();
         }
-
-        vm.prank(admin);
-        IrmRouter(router).setMarketIrm(irmParams, irm);
     }
 
     /// @dev Flat linear-kink curve emulating the old fixed rate: constant `fixedBorrowRate` at any utilization

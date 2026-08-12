@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IExitBook} from "../interfaces/IExitBook.sol";
 import {AssetRecoverer} from "../utils/AssetRecoverer.sol";
-import {ExitStatus, Request, PriorityRamp, RequestPreview} from "../types/ExitBookTypes.sol";
+import {Request, PriorityRamp} from "../types/ExitBookTypes.sol";
 import {ExitBookLib} from "../libs/ExitBookLib.sol";
 import {WAD} from "../libs/Constants.sol";
 
@@ -17,7 +17,7 @@ import {WAD} from "../libs/Constants.sol";
 /// @notice Shared base of the exit books. A lender posts a request to exit a position; a filler later
 ///         closes it against available liquidity for a fee. A concrete book binds it to a source by
 ///         implementing the source operations, so any position that supports them can reuse this primitive.
-abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
+abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecoverer {
     using SafeERC20 for IERC20;
     using ExitBookLib for ExitBookLib.State;
 
@@ -25,7 +25,8 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     // ERRORS
     // ---
 
-    error ZeroShares();
+    error ZeroAddress();
+    error ZeroAssets();
     error ZeroMaxLifetime();
     error FeeTooHigh();
     error FeeRecipientRequired();
@@ -33,11 +34,14 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     error StartFeeAboveEnd();
     error RampStartAfterEnd();
     error RampPastDeadline();
-    error NoFillableShares();
-    error NoAssetsRedeemed();
-    error AssetsOutBelowMin();
+    error FillExceedsRemaining(uint256 requested, uint256 remaining);
+    error FillBelowMinimum(uint256 requested, uint256 minimum);
+    error MaxShareBurnBelowQuote(uint256 maximum, uint256 quote);
+    error ShareBurnExceedsMaximum(uint256 actual, uint256 maximum);
+    error AssetsOutMismatch(uint256 expected, uint256 actual);
     error DeadlineInPast();
     error DeadlineTooFar();
+    error EnforcedPause();
 
     // ---
     // EVENTS
@@ -46,20 +50,23 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     event ExitRequested(
         uint256 indexed id,
         address indexed owner,
+        address indexed receiver,
         address asset,
-        uint256 shares,
+        uint256 assets,
+        uint256 minFillAssets,
+        uint256 maxShareBurn,
         PriorityRamp ramp,
-        uint256 deadline,
-        bool fullFillOnly
+        uint256 deadline
     );
 
     event ExitProcessed(
         uint256 indexed id,
-        address indexed filler,
+        address indexed executor,
+        address indexed rewardRecipient,
         address asset,
-        uint256 filledShares,
-        uint256 lenderAssets,
-        uint256 fillerFee,
+        uint256 filledAssets,
+        uint256 sharesBurned,
+        uint256 fillerReward,
         uint256 serviceCut
     );
 
@@ -67,14 +74,29 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
 
     event ServiceFeeSet(address indexed feeRecipient, uint256 serviceFee);
 
+    event Paused(address account);
+
+    event Unpaused(address account);
+
     // ---
     // CONSTANTS
     // ---
 
+    /// @notice Role allowed to manage which markets or vaults may receive new requests.
+    bytes32 public constant ALLOWLIST_MANAGER_ROLE = keccak256("ALLOWLIST_MANAGER_ROLE");
+    /// @notice Role allowed to set the service fee and its recipient.
+    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
+    /// @notice Role allowed to recover tokens held by the contract.
+    bytes32 public constant RECOVERER_ROLE = keccak256("RECOVERER_ROLE");
+    /// @inheritdoc IExitBook
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    /// @inheritdoc IExitBook
+    bytes32 public constant RESUMER_ROLE = keccak256("RESUMER_ROLE");
+
     /// @notice Cap on a request's priority-fee rate (WAD), checked at `place` — 10%.
     uint256 public constant MAX_PRIORITY_FEE = 0.1e18;
 
-    /// @notice Hard cap on the service fee — a cut of the filler's gross reward (WAD) — 25%.
+    /// @notice Hard cap on the service fee — a cut of the priority fee (WAD) — 25%.
     uint256 public constant MAX_SERVICE_FEE = 0.25e18;
 
     // ---
@@ -91,7 +113,10 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     /// @notice Recipient of the service fee.
     address public feeRecipient;
 
-    /// @notice Service fee: a cut of the filler's gross reward (accrued yield + fee), as a WAD rate.
+    /// @inheritdoc IExitBook
+    bool public paused;
+
+    /// @notice Service fee: a cut of each fill's priority fee, as a WAD rate.
     uint256 public serviceFee;
 
     /// @notice The append-only request registry (see `ExitBookLib`).
@@ -101,19 +126,24 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     // CONSTRUCTOR
     // ---
 
-    constructor(address owner, uint256 maxLifetime_) Ownable(owner) {
+    /// @param admin        Holder of `DEFAULT_ADMIN_ROLE`.
+    /// @param maxLifetime_ Cap on a request's lifetime; must be non-zero.
+    constructor(address admin, uint256 maxLifetime_) {
+        if (admin == address(0)) revert ZeroAddress();
         if (maxLifetime_ == 0) revert ZeroMaxLifetime();
 
         MAX_REQUEST_LIFETIME = maxLifetime_;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
 
     // ---
     // PERMISSIONS
     // ---
 
-    /// @dev Asset recovery is owner-only.
+    /// @dev Asset recovery is `RECOVERER_ROLE`-only.
     function _checkRecoverer() internal view override {
-        _checkOwner();
+        _checkRole(RECOVERER_ROLE);
     }
 
     // ---
@@ -121,7 +151,7 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     // ---
 
     /// @inheritdoc IExitBook
-    function setServiceFee(address recipient, uint256 fee) external onlyOwner {
+    function setServiceFee(address recipient, uint256 fee) external onlyRole(FEE_MANAGER_ROLE) {
         if (fee > MAX_SERVICE_FEE) revert FeeTooHigh();
 
         if (recipient == address(0) && fee != 0) revert FeeRecipientRequired();
@@ -133,54 +163,78 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     }
 
     // ---
+    // PAUSE
+    // ---
+
+    /// @inheritdoc IExitBook
+    function pause() external onlyRole(PAUSER_ROLE) {
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    /// @inheritdoc IExitBook
+    function resume() external onlyRole(RESUMER_ROLE) {
+        paused = false;
+        emit Unpaused(msg.sender);
+    }
+
+    // ---
     // FILL
     // ---
 
     /// @inheritdoc IExitBook
-    /// @dev Checks-effects-interactions: debit shares before the redeem, so a same-request re-entry sees
-    ///      the reduced size and cannot double-fill. The book holds nothing between fills.
-    function fillExitRequest(uint256 id, uint256 depositAssets, uint256 minAssetsOut) external {
+    /// @dev Debits the exact amount before withdrawing it from the source.
+    function fillExitRequest(uint256 id, uint256 fillAssets, address rewardRecipient) external {
+        if (paused) revert EnforcedPause();
+        if (rewardRecipient == address(0)) revert ZeroAddress();
+
         Request storage request = _book.requireFillable(id);
         IERC20 asset = request.asset;
 
-        if (depositAssets != 0) {
-            asset.safeTransferFrom(msg.sender, address(this), depositAssets);
-            _depositLiquidity(id, asset, depositAssets, msg.sender);
+        if (fillAssets == 0) revert ZeroAssets();
+
+        if (fillAssets > request.assetsRemaining) revert FillExceedsRemaining(fillAssets, request.assetsRemaining);
+        if (fillAssets < request.minFillAssets && fillAssets < request.assetsRemaining) {
+            revert FillBelowMinimum(fillAssets, request.minFillAssets);
         }
 
-        uint256 filledShares = _fillableShares(id, request);
-        if (filledShares == 0) revert NoFillableShares();
+        _book.recordFill(id, fillAssets);
 
-        _book.recordFill(id, filledShares);
+        uint256 sharesBurned;
+        {
+            uint256 balanceBefore = asset.balanceOf(address(this));
+            sharesBurned = _withdraw(id, request.owner, fillAssets);
+            uint256 assetsOut = asset.balanceOf(address(this)) - balanceBefore;
+            if (assetsOut != fillAssets) revert AssetsOutMismatch(fillAssets, assetsOut);
+            if (request.maxShareBurn != 0) {
+                // Match source withdrawals that round share burn up. Ceiling adds at most one raw share unit above
+                // the proportional floor per fill; across a split request, total allowance may exceed maxShareBurn
+                // by at most one unit per additional fill.
+                uint256 maxSharesForFill =
+                    Math.mulDiv(request.maxShareBurn, fillAssets, request.assetsTotal, Math.Rounding.Ceil);
+                if (sharesBurned > maxSharesForFill) revert ShareBurnExceedsMaximum(sharesBurned, maxSharesForFill);
+            }
+        }
 
-        // Redeem against the source and measure what actually arrived — never trust a return value.
-        uint256 balanceBefore = asset.balanceOf(address(this));
-        _redeem(id, request.owner, filledShares);
-        uint256 assetsOut = asset.balanceOf(address(this)) - balanceBefore;
-        if (assetsOut == 0) revert NoAssetsRedeemed();
-        // Filler's slippage floor (0 to skip): if the fill under-produced, revert and roll back the deposit.
-        // Late by necessity — `assetsOut` exists only post-redeem — so a griefed fill still burns the redeem
-        // gas, but the filler's deposited capital is never committed below their floor.
-        if (assetsOut < minAssetsOut) revert AssetsOutBelowMin();
+        uint256 receiverAssets;
+        uint256 fillerReward;
+        uint256 serviceCut;
+        {
+            uint256 priorityFee = Math.mulDiv(fillAssets, _priorityFeeRate(request), WAD);
+            serviceCut = Math.mulDiv(priorityFee, serviceFee, WAD);
+            fillerReward = priorityFee - serviceCut;
+            receiverAssets = fillAssets - priorityFee;
+        }
 
-        // Split what arrived three ways with no remainder: the lender gets their fixed-price `owed` minus the
-        // priority fee, the filler gets the accrued yield plus that fee, the service takes a cut of the
-        // filler's gross. `owed` is capped at `assetsOut` so a loss just trims it (no yield);
-        // `feeRate <= MAX_PRIORITY_FEE < WAD`, so the fee never exceeds `owed`.
-        uint256 owed = Math.min(Math.mulDiv(filledShares, request.pricePerShare, WAD), assetsOut);
-        uint256 fee = Math.mulDiv(owed, _priorityFeeRate(request), WAD);
-        uint256 fillerGross = (assetsOut - owed) + fee; // accrued yield + priority fee
-        uint256 serviceCut = Math.mulDiv(fillerGross, serviceFee, WAD);
-        uint256 fillerFee = fillerGross - serviceCut;
-        uint256 lenderAssets = owed - fee;
+        if (receiverAssets != 0) asset.safeTransfer(request.receiver, receiverAssets);
 
-        if (lenderAssets != 0) asset.safeTransfer(request.owner, lenderAssets);
-
-        if (fillerFee != 0) asset.safeTransfer(msg.sender, fillerFee);
+        if (fillerReward != 0) asset.safeTransfer(rewardRecipient, fillerReward);
 
         if (serviceCut != 0) asset.safeTransfer(feeRecipient, serviceCut);
 
-        emit ExitProcessed(id, msg.sender, address(asset), filledShares, lenderAssets, fillerFee, serviceCut);
+        emit ExitProcessed(
+            id, msg.sender, rewardRecipient, address(asset), fillAssets, sharesBurned, fillerReward, serviceCut
+        );
     }
 
     // ---
@@ -240,52 +294,27 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
         }
     }
 
-    /// @inheritdoc IExitBook
-    function previewFill(uint256 id) external view returns (RequestPreview memory) {
-        return _requestPreview(id);
-    }
-
-    /// @inheritdoc IExitBook
-    function getRequestPreviews(uint256[] calldata ids) external view returns (RequestPreview[] memory previews) {
-        previews = new RequestPreview[](ids.length);
-
-        for (uint256 j; j < ids.length; ++j) {
-            previews[j] = _requestPreview(ids[j]);
-        }
-    }
-
     // ---
     // INTERNAL — orchestration
     // ---
 
-    /// @dev The request at `id` with its live fill preview — shared body of `previewFill` and the
-    ///      `getRequestPreviews` batch.
-    function _requestPreview(uint256 id) internal view returns (RequestPreview memory) {
-        (uint256 filledShares, uint256 assetsOut) = _previewFill(id);
-        return RequestPreview({id: id, request: _book.requests[id], filledShares: filledShares, assetsOut: assetsOut});
-    }
-
-    /// @dev Shares fillable now and the assets they would yield, or `(0, 0)` if the request is closed,
-    ///      expired, or has no backing.
-    function _previewFill(uint256 id) internal view returns (uint256 filledShares, uint256 assetsOut) {
-        Request storage request = _book.requests[id];
-        if (request.status != ExitStatus.Open || block.timestamp > request.deadline) return (0, 0);
-        filledShares = _fillableShares(id, request);
-        if (filledShares == 0) return (0, 0);
-        assetsOut = _previewAssets(id, filledShares);
-    }
-
     /// @dev Validate and append a request (called by a concrete book's `placeExitRequest`).
     function _createRequest(
         address account,
+        address receiver,
         IERC20 asset,
-        uint256 shares,
-        uint256 pricePerShare,
+        uint256 assets,
+        uint256 minFillAssets,
+        uint256 requiredShares,
+        uint256 maxShareBurn,
         PriorityRamp calldata ramp,
-        uint256 deadline,
-        bool fullFillOnly
+        uint256 deadline
     ) internal returns (uint256 id) {
-        if (shares == 0) revert ZeroShares();
+        if (receiver == address(0)) revert ZeroAddress();
+        if (assets == 0) revert ZeroAssets();
+        if (maxShareBurn != 0 && maxShareBurn < requiredShares) {
+            revert MaxShareBurnBelowQuote(maxShareBurn, requiredShares);
+        }
         if (ramp.endRate > MAX_PRIORITY_FEE) revert PriorityFeeTooHigh();
         if (ramp.startRate > ramp.endRate) revert StartFeeAboveEnd();
         if (ramp.rampStart > ramp.rampEnd) revert RampStartAfterEnd();
@@ -293,14 +322,9 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
         if (deadline > block.timestamp + MAX_REQUEST_LIFETIME) revert DeadlineTooFar();
         if (block.timestamp + ramp.rampEnd > deadline) revert RampPastDeadline();
 
-        id = _book.add(account, asset, shares, pricePerShare, ramp, deadline, fullFillOnly);
-        emit ExitRequested(id, account, address(asset), shares, ramp, deadline, fullFillOnly);
-    }
-
-    /// @dev Source fillable shares with the `fullFillOnly` policy applied.
-    function _fillableShares(uint256 id, Request storage request) internal view returns (uint256 fillableShares) {
-        fillableShares = _availableShares(id, request);
-        if (request.fullFillOnly && fillableShares < request.sizeRemaining) fillableShares = 0;
+        minFillAssets = Math.min(minFillAssets, assets);
+        id = _book.add(account, receiver, asset, assets, minFillAssets, maxShareBurn, ramp, deadline);
+        emit ExitRequested(id, account, receiver, address(asset), assets, minFillAssets, maxShareBurn, ramp, deadline);
     }
 
     /// @dev The priority-fee rate (WAD) in force now: `startRate` while within the `rampStart` hold, then
@@ -324,17 +348,7 @@ abstract contract ExitBookBase is IExitBook, Ownable, AssetRecoverer {
     // SOURCE OPERATIONS — abstract, implemented by a concrete book
     // ---
 
-    /// @dev Shares fillable right now from the source (remaining size capped by live backing), before the
-    ///      `fullFillOnly` policy is applied. No state change.
-    function _availableShares(uint256 id, Request storage request) internal view virtual returns (uint256);
-
-    /// @dev Pull `shares` of `account`'s position out to this contract (assets land here). The base wraps
-    ///      this with a balance-delta measurement, so the return value is ignored.
-    function _redeem(uint256 id, address account, uint256 shares) internal virtual;
-
-    /// @dev Deposit `depositAssets` of `asset` into the request's source on behalf of `filler`.
-    function _depositLiquidity(uint256 id, IERC20 asset, uint256 depositAssets, address filler) internal virtual;
-
-    /// @dev View estimate of the assets `shares` would yield from the source (for `previewFill`).
-    function _previewAssets(uint256 id, uint256 shares) internal view virtual returns (uint256);
+    /// @dev Withdraw exactly `assets` from `account`'s position to this contract and return the source shares
+    ///      burned. The base measures the received asset balance delta independently.
+    function _withdraw(uint256 id, address account, uint256 assets) internal virtual returns (uint256 sharesBurned);
 }

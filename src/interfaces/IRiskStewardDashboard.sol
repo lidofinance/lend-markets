@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 
 /// @title IRiskStewardDashboard
-/// @notice Full external surface of `RiskStewardDashboard`: AccessControl (inherited), per-market steward
-///         management, and the bounded tighten-only risk levers. The dashboard implements this interface, so
-///         it is the single source for the events, errors, and the function docs the contract inherits.
-interface IRiskStewardDashboard is IAccessControl {
+/// @notice Dashboard-specific external surface: per-market steward management and bounded risk-reduction levers.
+///         Access-control membership and administration use the inherited `IAccessControlEnumerable` surface.
+interface IRiskStewardDashboard is IAccessControlEnumerable {
     // ---
     // EVENTS
     // ---
@@ -16,11 +15,20 @@ interface IRiskStewardDashboard is IAccessControl {
     /// @notice Emitted when a steward is appointed to or removed from a market.
     event MarketStewardSet(Id indexed marketId, address indexed steward, bool enabled);
 
-    /// @notice Emitted when the activation delay floor and cap are raised on a market.
-    event ActivationDelaysIncreased(Id indexed marketId, uint40 newMin, uint40 newMax);
+    /// @notice Emitted after an accepted non-decreasing update to a market's activation delay floor, cap, and
+    ///         guardian-quorum fallback.
+    event ActivationDelaysIncreased(
+        Id indexed marketId,
+        uint256 newMinActivationDelay,
+        uint256 newMaxActivationDelay,
+        uint256 newMaxGuardiansQuorumDelay
+    );
 
-    /// @notice Emitted when the Sybil lock amount and duration are raised on a market.
-    event ActivatingLockIncreased(Id indexed marketId, uint128 newAmount, uint40 newDuration);
+    /// @notice Emitted after an accepted non-decreasing update to a market's activation lock.
+    event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 newDuration);
+
+    /// @notice Emitted when a steward revokes a caller's instant activation on a market.
+    event InstantActivationRevoked(Id indexed marketId, address indexed caller);
 
     // ---
     // ERRORS
@@ -31,6 +39,12 @@ interface IRiskStewardDashboard is IAccessControl {
 
     /// @notice The caller is not a steward of the target market.
     error NotMarketSteward();
+
+    /// @notice A zero-address steward was supplied.
+    error ZeroSteward();
+
+    /// @notice Thrown when a required address argument is zero.
+    error ZeroAddress();
 
     /// @notice The market id has no controller on the core (unknown or not yet created).
     error UnknownMarket(Id marketId);
@@ -62,15 +76,24 @@ interface IRiskStewardDashboard is IAccessControl {
     // RISK LEVERS
     // ---
 
-    /// @notice Raise the activation delay floor and cap. Reverts unless both rise or hold. The controller still
-    ///         bounds the cap and enforces floor <= cap on write.
-    function increaseActivationDelays(Id marketId, uint40 newMin, uint40 newMax) external;
+    /// @notice Raise the activation delay floor, cap, and guardian-quorum fallback. Reverts unless all values rise
+    ///         or hold. The controller bounds the cap and fallback to 7 days and enforces floor <= cap and a
+    ///         nonzero fallback > cap on write.
+    function increaseActivationDelays(
+        Id marketId,
+        uint40 newMinActivationDelay,
+        uint40 newMaxActivationDelay,
+        uint40 newMaxGuardiansQuorumDelay
+    ) external;
 
     /// @notice Raise the Sybil lock amount and duration. Reverts unless both rise or hold. The controller still
     ///         bounds the duration on write.
     function increaseActivatingLock(Id marketId, uint128 newAmount, uint40 newDuration) external;
 
-    /// @notice Revoke a caller's instant activation on a market. Risk-reducing, so no direction guard; forwards
-    ///         to the controller, which emits the state change.
+    /// @notice Set a caller's instant activation permission to false on a market. Risk-reducing, so no direction
+    ///         guard; the controller records and emits the requested false value even if it was already false.
     function revokeInstantActivation(Id marketId, address caller) external;
+
+    /// @notice Freeze a market. Only an appointed steward of that market may call.
+    function freezeMarket(Id marketId) external;
 }

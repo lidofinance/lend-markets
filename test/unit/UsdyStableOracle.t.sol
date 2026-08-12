@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 
@@ -89,11 +89,13 @@ contract UsdyStableOracleTest is Test {
 
     // ── mutations ──
 
+    /// @dev Constructing with a zero USDY oracle address reverts ZeroAddress.
     function testRevert_constructor_zeroUsdyOracle() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
         new UsdyStableOracle(address(0));
     }
 
+    /// @dev Initializing with a zero stable feed address reverts ZeroAddress.
     function testRevert_initialize_zeroStableFeed() public {
         address impl = address(new UsdyStableOracle(address(usdy)));
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
@@ -102,6 +104,7 @@ contract UsdyStableOracleTest is Test {
         );
     }
 
+    /// @dev Initializing with a zero loan token address reverts ZeroAddress.
     function testRevert_initialize_zeroLoanToken() public {
         address impl = address(new UsdyStableOracle(address(usdy)));
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
@@ -112,6 +115,7 @@ contract UsdyStableOracleTest is Test {
 
     // ── views ──
 
+    /// @dev At USDY $1.08 against a $1.00 feed, price equals mulDiv(nav, SCALE, feed) = 1.08e24 at Morpho scale 24.
     function test_price_recompute() public {
         usdy.setPrice(1.08e18); // USDY ≈ $1.08
         feed.setAnswer(1e8); // stablecoin ≈ $1.00
@@ -120,6 +124,7 @@ contract UsdyStableOracleTest is Test {
         assertEq(oracle.price(), 1.08e24, "explicit value");
     }
 
+    /// @dev A stablecoin feed below $1 raises the collateral price above its $1.00-peg value, matching the recompute.
     function test_price_stablecoinDepeg_raisesCollateralPrice() public {
         usdy.setPrice(1.08e18);
         feed.setAnswer(0.98e8); // stablecoin de-pegs below $1 -> USDY worth more stablecoin units
@@ -127,6 +132,7 @@ contract UsdyStableOracleTest is Test {
         assertEq(oracle.price(), _expected(1.08e18, 0.98e8), "exact recompute under depeg");
     }
 
+    /// @dev SCALE is derived from the loan and feed decimals as 10^(36+6+8-18-18) = 1e14.
     function test_scale_isDerivedFromDecimals() public view {
         assertEq(oracle.scale(), 1e14, "scale = 10^(36+6+8-18-18) from loan/feed decimals");
     }
@@ -143,6 +149,7 @@ contract UsdyStableOracleTest is Test {
         assertEq(o.price(), 1.08e36, "explicit value");
     }
 
+    /// @dev Across realistic nav and feed bands, price equals mulDiv(getPrice, SCALE, answer).
     function testFuzz_price_recompute(uint256 getPrice, int256 answer) public {
         getPrice = bound(getPrice, 0.5e18, 5e18);
         answer = int256(bound(uint256(answer), 0.5e8, 2e8)); // positive, realistic stablecoin band
@@ -151,6 +158,7 @@ contract UsdyStableOracleTest is Test {
         assertEq(oracle.price(), _expected(getPrice, answer), "price == mulDiv(getPrice, SCALE, answer)");
     }
 
+    /// @dev Even at a tiny feed answer against a large nav, price matches the recompute with no overflow.
     function testFuzz_price_noOverflow_tinyFeedLargePrice(uint256 getPrice, int256 answer) public {
         getPrice = bound(getPrice, 1e18, 5e18); // up to ~$5 USDY
         answer = int256(bound(uint256(answer), 1, 1e8)); // down to 1 (8-dec) -> very large price

@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 
+import {IGuardianSignals} from "../interfaces/IGuardianSignals.sol";
+import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 import {ILidoLendOwner} from "../interfaces/ILidoLendOwner.sol";
+import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
+import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 /// @title LidoLendOwner
 /// @author Lido Lending contributors.
-/// @notice Role-gated owner of the `LidoLend` core. The core authorizes its admin surface against a single
-///         `owner`; deployed as that owner, this facade re-exposes each owner-only call behind a distinct role
-///         so the capabilities can be delegated independently.
-contract LidoLendOwner is AccessControl, ILidoLendOwner {
+/// @notice Stable role-gated governance facade over a `LidoLend` core and all its markets. Core-owner calls and
+///         per-market controller and guardian-registry calls sit behind independent capability roles.
+contract LidoLendOwner is AccessControlEnumerable, ILidoLendOwner {
     // ---
     // ROLES
     // ---
@@ -22,6 +25,10 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
     bytes32 public constant MARKET_CREATOR_ROLE = keccak256("MARKET_CREATOR_ROLE");
     /// @dev Sets per-market fees and the global fee recipient on the core.
     bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
+    /// @dev Manages controller policy and unfreezes markets resolved from the core by id.
+    bytes32 public constant MARKET_MANAGER_ROLE = keccak256("MARKET_MANAGER_ROLE");
+    /// @dev Manages guardian registries and restores access, resolving each registry from its market controller.
+    bytes32 public constant GUARDIAN_MANAGER_ROLE = keccak256("GUARDIAN_MANAGER_ROLE");
 
     // ---
     // IMMUTABLES
@@ -80,6 +87,81 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
     }
 
     // ---
+    // MARKET MANAGEMENT
+    // ---
+
+    /// @inheritdoc ILidoLendOwner
+    function setMarketSupplyCap(Id marketId, uint256 cap) external onlyRole(MARKET_MANAGER_ROLE) {
+        _controller(marketId).setSupplyCap(cap);
+    }
+
+    /// @inheritdoc ILidoLendOwner
+    function unfreezeMarket(Id marketId) external onlyRole(MARKET_MANAGER_ROLE) {
+        _controller(marketId).unfreeze();
+    }
+
+    /// @inheritdoc ILidoLendOwner
+    function setMarketCollateralActivationConfig(Id marketId, CollateralActivationConfig calldata config)
+        external
+        onlyRole(MARKET_MANAGER_ROLE)
+    {
+        _controller(marketId).setCollateralActivationConfig(config);
+    }
+
+    /// @inheritdoc ILidoLendOwner
+    function setMarketSettlementConfig(Id marketId, SettlementConfig calldata config)
+        external
+        onlyRole(MARKET_MANAGER_ROLE)
+    {
+        _controller(marketId).setSettlementConfig(config);
+    }
+
+    /// @inheritdoc ILidoLendOwner
+    function setInstantActivation(Id marketId, address caller, bool enabled) external onlyRole(MARKET_MANAGER_ROLE) {
+        _controller(marketId).setInstantActivation(caller, enabled);
+    }
+
+    // ---
+    // GUARDIAN MANAGEMENT
+    // ---
+
+    /// @inheritdoc ILidoLendOwner
+    function addGuardian(Id marketId, address guardian) external onlyRole(GUARDIAN_MANAGER_ROLE) {
+        _guardians(marketId).addGuardian(guardian);
+    }
+
+    /// @inheritdoc ILidoLendOwner
+    function replaceGuardian(Id marketId, address oldGuardian, address newGuardian)
+        external
+        onlyRole(GUARDIAN_MANAGER_ROLE)
+    {
+        _guardians(marketId).replaceGuardian(oldGuardian, newGuardian);
+    }
+
+    /// @inheritdoc ILidoLendOwner
+    function removeGuardian(Id marketId, address guardian) external onlyRole(GUARDIAN_MANAGER_ROLE) {
+        _guardians(marketId).removeGuardian(guardian);
+    }
+
+    /// @inheritdoc ILidoLendOwner
+    function setGuardiansQuorum(Id marketId, uint256 quorum) external onlyRole(GUARDIAN_MANAGER_ROLE) {
+        _guardians(marketId).setQuorum(quorum);
+    }
+
+    /// @inheritdoc ILidoLendOwner
+    function setGuardiansSuspectWindow(Id marketId, uint256 suspectWindow) external onlyRole(GUARDIAN_MANAGER_ROLE) {
+        _guardians(marketId).setSuspectWindow(suspectWindow);
+    }
+
+    /// @inheritdoc ILidoLendOwner
+    function unbanGuardianSignals(Id[] calldata marketIds, address account) external onlyRole(GUARDIAN_MANAGER_ROLE) {
+        for (uint256 i; i < marketIds.length; ++i) {
+            Id marketId = marketIds[i];
+            _guardians(marketId).unban(marketId, account);
+        }
+    }
+
+    // ---
     // OWNERSHIP
     // ---
 
@@ -87,5 +169,21 @@ contract LidoLendOwner is AccessControl, ILidoLendOwner {
     function transferLidoLendOwnership(address newOwner) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newOwner == address(0)) revert ZeroAddress();
         LIDO_LEND.setOwner(newOwner);
+    }
+
+    // ---
+    // PRIVATE HELPERS
+    // ---
+
+    /// @dev Resolve a market id to its controller via the core, reverting if the market has none.
+    function _controller(Id marketId) private view returns (ILidoLendMarketController) {
+        address controller = LIDO_LEND.marketController(marketId);
+        if (controller == address(0)) revert UnknownMarket(marketId);
+        return ILidoLendMarketController(controller);
+    }
+
+    /// @dev Resolve the guardian registry used by a market through its controller.
+    function _guardians(Id marketId) private view returns (IGuardianSignals) {
+        return IGuardianSignals(_controller(marketId).guardianSignals());
     }
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -61,6 +61,7 @@ contract GatedCollateralMarketTest is LidoLendSetup {
         MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 9 / 10);
     }
 
+    /// @dev Liquidating into a keeper the gated collateral blocks reverts on the seized-collateral transfer.
     function testRevert_liquidate_seizeToBlockedKeeper() public {
         Market storage m = _m();
         address borrower = _seedUnhealthy();
@@ -76,6 +77,7 @@ contract GatedCollateralMarketTest is LidoLendSetup {
         m.core.liquidate(m.params, borrower, 10 ether, 0, "");
     }
 
+    /// @dev An allowlisted keeper liquidates and receives exactly the seized gated collateral.
     function test_liquidate_toAllowlistedKeeper_succeeds() public {
         Market storage m = _m();
         address borrower = _seedUnhealthy();
@@ -88,6 +90,7 @@ contract GatedCollateralMarketTest is LidoLendSetup {
         assertEq(gated.balanceOf(keeper), seized, "keeper received the seized collateral");
     }
 
+    /// @dev A fallbackExit whose settle leg would move gated collateral to a blocked receiver reverts on transfer.
     function testRevert_fallbackExit_seizeToBlockedReceiver() public {
         Market storage m = _m();
         address lender = _actor("lender2");
@@ -110,6 +113,8 @@ contract GatedCollateralMarketTest is LidoLendSetup {
         m.vault.fallbackExit(shares, receiver, lender, 0);
     }
 
+    /// @dev A fallbackExit to an allowlisted receiver engages the settle leg and delivers exactly the seized
+    /// collateral.
     function test_fallbackExit_toAllowlistedReceiver_seizesCollateral() public {
         Market storage m = _m();
         address lender = _actor("lender3");

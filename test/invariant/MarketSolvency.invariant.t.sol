@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
+
+import {Vm} from "forge-std/Vm.sol";
 
 import {Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 
@@ -36,6 +38,7 @@ contract MarketSolvencyInvariant is LidoLendSetup {
     address internal constant A1 = address(0x9001);
     address internal constant A2 = address(0x9002);
     address internal constant A3 = address(0x9003);
+    address internal constant A4 = address(0x9004); // healthy borrower, deterministic bad-debt test only
 
     address[] internal actors;
 
@@ -52,7 +55,7 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         actors.push(A3);
         // Instant activation for the actors → supplied collateral is immediately borrowable.
         for (uint256 i; i < actors.length; i++) {
-            m.controller.grantInstantActivation(actors[i]);
+            m.controller.setInstantActivation(actors[i], true);
         }
 
         handler = new MarketHandler(
@@ -76,11 +79,13 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         return protocol.markets[0].core.market(protocol.markets[0].id);
     }
 
+    /// @dev The market never lends out more than was supplied — `totalSupplyAssets >= totalBorrowAssets` always.
     function invariant_supplyCoversBorrow() public view {
         MorphoMarket memory mk = _market();
         assertGe(mk.totalSupplyAssets, mk.totalBorrowAssets, "supply must always cover borrow");
     }
 
+    /// @dev The core's real loan-token balance always covers the un-borrowed (idle) supply, so idle stays withdrawable.
     function invariant_idleBackedByTokens() public view {
         Market storage m = protocol.markets[0];
         MorphoMarket memory mk = _market();
@@ -93,6 +98,7 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         assertGe(m.loanToken.balanceOf(address(m.core)), idle, "core loan balance covers idle supply");
     }
 
+    /// @dev The vault forwards every deposit into the core and holds no idle loan tokens itself.
     function invariant_vaultHoldsNoLoanTokens() public view {
         Market storage m = protocol.markets[0];
         assertEq(m.loanToken.balanceOf(address(m.vault)), 0, "vault forwards deposits; holds no idle loan tokens");
@@ -116,6 +122,7 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         assertLe(m.vault.totalAssets(), _market().totalSupplyAssets, "vault totalAssets <= market supply");
     }
 
+    /// @dev The core's collateral-token balance equals the sum of every actor's recorded position collateral.
     function invariant_collateralConservation() public view {
         Market storage m = protocol.markets[0];
         uint256 sum;
@@ -167,39 +174,70 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         emit log_named_uint("liquidations", handler.liquidations());
     }
 
-    /// @dev Deterministic companion to the fuzz run: force a position underwater and fully liquidate it, then
-    ///      assert the bad debt IS socialized (supply drops) AND solvency still holds (supply covers borrow).
+    /// @dev Deterministic bad-debt case with a SECOND, healthy borrower, so solvency is checked against a live
+    ///      debt rather than a market wiped to zero.
     function test_badDebtSocialization_preservesSolvency() public {
         Market storage m = protocol.markets[0];
+        m.controller.setInstantActivation(A4, true);
 
-        _fund(m.loanToken, A1, 1000 ether);
+        _fund(m.loanToken, A1, 2000 ether);
         vm.startPrank(A1);
-        m.loanToken.approve(address(m.vault), 1000 ether);
-        m.vault.deposit(1000 ether, A1);
+        m.loanToken.approve(address(m.vault), 2000 ether);
+        m.vault.deposit(2000 ether, A1);
         vm.stopPrank();
 
+        // A2 borrows to the LLTV; a 50% crash below puts it underwater.
+        uint256 maxBorrow = 100 ether * oraclePrice / 1e36 * 80 / 100;
         _fund(m.collateralToken, A2, 100 ether);
         vm.startPrank(A2);
         m.collateralToken.approve(address(m.core), 100 ether);
-        m.core.supplyCollateral(m.params, 100 ether, A2, ""); // A2 has instant activation -> active
-        vm.stopPrank();
-        uint256 maxBorrow = 100 ether * oraclePrice / 1e36 * 80 / 100;
-        vm.prank(A2);
+        m.core.supplyCollateral(m.params, 100 ether, A2, "");
         m.core.borrow(m.params, maxBorrow * 99 / 100, 0, A2, A2);
+        vm.stopPrank();
 
-        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 2); // crash -> underwater
+        // A4 stays solvent through the crash (40% of the cap -> 80% of the halved cap).
+        uint256 a4Borrow = maxBorrow * 40 / 100;
+        _fund(m.collateralToken, A4, 100 ether);
+        vm.startPrank(A4);
+        m.collateralToken.approve(address(m.core), 100 ether);
+        m.core.supplyCollateral(m.params, 100 ether, A4, "");
+        m.core.borrow(m.params, a4Borrow, 0, A4, A4);
+        vm.stopPrank();
+
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 2);
         m.core.accrueInterest(m.params);
 
         uint256 supplyBefore = m.core.market(m.id).totalSupplyAssets;
+        uint256 a4SharesBefore = m.core.position(m.id, A4).borrowShares;
+
         _fund(m.loanToken, A3, type(uint128).max);
         vm.startPrank(A3);
         m.loanToken.approve(address(m.core), type(uint256).max);
-        m.core.liquidate(m.params, A2, 100 ether, 0, ""); // seize ALL -> realize bad debt
+        vm.recordLogs();
+        m.core.liquidate(m.params, A2, 100 ether, 0, ""); // seize all -> realize bad debt
         vm.stopPrank();
+        uint256 badDebtAssets = _badDebtFromLiquidateLog(address(m.core));
 
         MorphoMarket memory mk = m.core.market(m.id);
-        assertLt(mk.totalSupplyAssets, supplyBefore, "bad debt socialized: totalSupplyAssets dropped");
+        assertEq(mk.totalSupplyAssets, supplyBefore - badDebtAssets, "supply dropped by exactly badDebtAssets");
+        assertGt(badDebtAssets, 0, "the liquidation actually realized bad debt");
+        assertEq(m.core.position(m.id, A2).collateral, 0, "full seize wiped A2's collateral");
+        assertEq(m.core.position(m.id, A2).borrowShares, 0, "A2's debt fully closed");
+        assertEq(m.core.position(m.id, A4).borrowShares, a4SharesBefore, "A4's debt untouched by A2's liquidation");
+        assertGt(mk.totalBorrowAssets, 0, "a live borrow remains -> solvency check is non-vacuous");
         assertGe(mk.totalSupplyAssets, mk.totalBorrowAssets, "solvency survives socialization");
-        assertEq(m.core.position(m.id, A2).collateral, 0, "full seize wiped the collateral");
+    }
+
+    /// @dev `badDebtAssets` from the core's `Liquidate` event — an independent read of the supply write-down.
+    function _badDebtFromLiquidateLog(address core) internal returns (uint256) {
+        bytes32 sig = keccak256("Liquidate(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == core && logs[i].topics[0] == sig) {
+                (,,, uint256 badDebtAssets,) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256, uint256));
+                return badDebtAssets;
+            }
+        }
+        revert("no Liquidate event");
     }
 }

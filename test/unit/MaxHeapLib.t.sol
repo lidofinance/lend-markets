@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 
@@ -97,6 +97,7 @@ contract MaxHeapLibTest is Test {
 
     // ── requirements: root is max, upsert is insert-or-rekey ──
 
+    /// @dev Upserting an already-present account re-keys it in place (size unchanged) and re-heapifies its slot.
     function test_upsertExisting_rekeysNotDuplicates() public {
         h.upsert(_a(1), 10);
         h.upsert(_a(2), 20);
@@ -109,6 +110,45 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
+    /// @dev Keys around the former uint96 boundary retain their exact value and order.
+    function test_keysAroundUint96Boundary_remainDistinct() public {
+        uint256 boundary = uint256(type(uint96).max) + 1;
+        h.upsert(_a(1), boundary - 1);
+        h.upsert(_a(2), boundary);
+
+        (address root, uint256 rootKey) = h.peek();
+        assertEq(root, _a(2), "first key above uint96 boundary is root");
+        assertEq(rootKey, boundary, "full key retained");
+        assertEq(_keyOf(_a(1)), boundary - 1, "key below boundary retained");
+    }
+
+    /// @dev Two keys that formerly saturated must remain ordered whichever one is inserted first.
+    function test_keysAboveUint96Boundary_orderRegardlessOfInsertion() public {
+        uint256 lower = uint256(type(uint96).max) + 1;
+        uint256 higher = lower + 1;
+
+        h.upsert(_a(1), higher);
+        h.upsert(_a(2), lower);
+        (address root,) = h.peek();
+        assertEq(root, _a(1), "higher first insertion remains root");
+
+        h = new HeapHarness();
+        h.upsert(_a(2), lower);
+        h.upsert(_a(1), higher);
+        (root,) = h.peek();
+        assertEq(root, _a(1), "higher second insertion becomes root");
+    }
+
+    /// @dev The largest risk key settlement can commit — max uint128 borrow shares against one raw collateral
+    ///      unit — is below uint256 and must not lose precision in the heap.
+    function test_maxSettlementRiskKey_retainsFullPrecision() public {
+        uint256 key = uint256(type(uint128).max) * 1e18;
+        h.upsert(_a(1), key);
+        (, uint256 rootKey) = h.peek();
+        assertEq(rootKey, key, "188-bit key retained");
+    }
+
+    /// @dev Re-keying a non-root account above the current root sifts it up to become the new root.
     function test_rekeyUp_promotesToRoot() public {
         h.upsert(_a(1), 100);
         h.upsert(_a(2), 40);
@@ -119,6 +159,7 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
+    /// @dev Re-keying the root below its children sifts it down; the largest child becomes the new root.
     function test_rekeyDown_demotesRoot() public {
         h.upsert(_a(1), 100);
         h.upsert(_a(2), 90);
@@ -131,6 +172,7 @@ contract MaxHeapLibTest is Test {
 
     // ── requirements: remove ──
 
+    /// @dev Removing a present account returns true, shrinks size, and promotes the next-largest key to root.
     function test_removeRoot_promotesNextMax() public {
         h.upsert(_a(1), 50);
         h.upsert(_a(2), 90);
@@ -143,6 +185,7 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
+    /// @dev Removing an account not in the heap returns false and leaves size and heap ordering unchanged.
     function test_removeAbsent_isNoop() public {
         h.upsert(_a(1), 50);
         assertFalse(h.remove(_a(9)), "remove returns false when absent");
@@ -170,8 +213,9 @@ contract MaxHeapLibTest is Test {
         assertEq(rootKey, 100, "root still the global max");
     }
 
-    // ── edge cases: saturation, zero key, ties, fresh-insert sift-up, bounds ──
+    // ── edge cases: zero key, ties, fresh-insert sift-up, bounds ──
 
+    /// @dev Multiple accounts sharing the same key still satisfy the parent >= child heap property.
     function test_tiedKeys_heapHolds() public {
         h.upsert(_a(1), 50);
         h.upsert(_a(2), 50);
@@ -180,6 +224,7 @@ contract MaxHeapLibTest is Test {
         _assertHeap(); // equal keys must still satisfy parent >= child
     }
 
+    /// @dev A fresh insert that is the new global maximum sifts up from the leaf to the root.
     function test_upsertFreshInsert_siftsUp() public {
         // Ascending inserts: each new node is the new global max and must climb to the root on insert.
         h.upsert(_a(1), 10);
@@ -191,6 +236,7 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
+    /// @dev Removing the sole element empties the heap, after which peek reverts EmptyHeap.
     function test_removeOnlyElement_emptiesAndPeekReverts() public {
         h.upsert(_a(1), 7);
         assertTrue(h.remove(_a(1)), "removed");
@@ -199,6 +245,7 @@ contract MaxHeapLibTest is Test {
         h.peek();
     }
 
+    /// @dev Re-keying an account to its existing value leaves size and root unchanged.
     function test_rekeySameValue_isNoop() public {
         h.upsert(_a(1), 100);
         h.upsert(_a(2), 90);
@@ -211,6 +258,8 @@ contract MaxHeapLibTest is Test {
 
     // ── property: heap holds after any mutation sequence ──
 
+    /// @dev Across a random upsert/remove sequence, size tracks the reference set and the heap property holds
+    ///      after every mutation.
     function testFuzz_heapPropertyHoldsAcrossSequence(uint256 seed) public {
         address[12] memory actors =
             [_a(1), _a(2), _a(3), _a(4), _a(5), _a(6), _a(7), _a(8), _a(9), _a(10), _a(11), _a(12)];
@@ -241,11 +290,13 @@ contract MaxHeapLibTest is Test {
 
     // ── requirements: empty / singleton ──
 
+    /// @dev peek on an empty heap reverts EmptyHeap.
     function testRevert_peekOnEmpty() public {
         vm.expectRevert(MaxHeapLib.EmptyHeap.selector);
         h.peek();
     }
 
+    /// @dev A single upsert makes that account the root and peek returns its account and key.
     function test_singleton() public {
         h.upsert(_a(1), 42);
         assertEq(h.size(), 1, "size");
@@ -256,6 +307,7 @@ contract MaxHeapLibTest is Test {
 
     // ── requirements: root is max, upsert is insert-or-rekey ──
 
+    /// @dev After several upserts in mixed order, peek returns the account holding the maximum key.
     function test_rootIsMax() public {
         h.upsert(_a(1), 30);
         h.upsert(_a(2), 90);
@@ -267,19 +319,21 @@ contract MaxHeapLibTest is Test {
         _assertHeap();
     }
 
-    // ── edge cases: saturation, zero key, ties, fresh-insert sift-up, bounds ──
+    // ── edge cases: zero key, ties, fresh-insert sift-up, bounds ──
 
-    function test_saturatesKeysAboveUint96() public {
-        h.upsert(_a(1), type(uint256).max); // saturates to type(uint96).max
-        h.upsert(_a(2), uint256(type(uint96).max)); // already the cap
+    /// @dev Keys above the former uint96 cap retain their full order on store.
+    function test_retainsKeysAboveUint96() public {
+        h.upsert(_a(1), type(uint256).max);
+        h.upsert(_a(2), uint256(type(uint96).max));
         h.upsert(_a(3), 50);
-        assertEq(_keyOf(_a(1)), uint256(type(uint96).max), "key saturates to uint96 max");
-        assertEq(_keyOf(_a(2)), uint256(type(uint96).max), "cap stored as-is");
+        assertEq(_keyOf(_a(1)), type(uint256).max, "max key retained");
+        assertEq(_keyOf(_a(2)), uint256(type(uint96).max), "former cap retained exactly");
         (address root,) = h.peek();
-        assertTrue(root == _a(1) || root == _a(2), "a saturated account is root");
+        assertEq(root, _a(1), "larger full key is root");
         _assertHeap();
     }
 
+    /// @dev Key 0 is a valid stored key (only an empty slot marks absence), so the account is present and removable.
     function test_keyZero_isPresentNotAbsent() public {
         h.upsert(_a(1), 0); // key 0 is a valid key; only slot==0 marks an absent account
         assertEq(h.size(), 1, "present");
@@ -290,9 +344,30 @@ contract MaxHeapLibTest is Test {
         assertEq(h.size(), 0, "removed");
     }
 
+    /// @dev nodeAt at an index at or beyond the heap size reverts IndexOutOfBounds.
     function testRevert_nodeAtOutOfRange() public {
         h.upsert(_a(1), 5);
         vm.expectRevert(MaxHeapLib.IndexOutOfBounds.selector);
         h.nodeAt(1); // size is 1; the only valid index is 0
+    }
+
+    /// @dev Sequential root-drain: after N random upserts, repeatedly removing the peeked root yields keys
+    ///      in non-increasing order (each root is the max of what remains) and empties the heap.
+    function testFuzz_drainIsNonIncreasing(uint256 n, uint256 seed) public {
+        n = bound(n, 1, 60);
+        for (uint256 i; i < n; ++i) {
+            uint256 key = uint256(keccak256(abi.encode(seed, i))) % 1e9 + 1;
+            h.upsert(_a(i), key);
+        }
+        assertEq(h.size(), n);
+
+        uint256 prev = type(uint256).max;
+        for (uint256 i; i < n; ++i) {
+            (address top, uint256 key) = h.peek();
+            assertLe(key, prev, "root key non-increasing");
+            prev = key;
+            h.remove(top);
+        }
+        assertEq(h.size(), 0);
     }
 }

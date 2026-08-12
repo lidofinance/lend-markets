@@ -1,0 +1,5 @@
+quorum = 1
+suspect_window = 0
+
+# Required: production guardian committee.
+guardians = []

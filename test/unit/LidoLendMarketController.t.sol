@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {Test, stdError} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
-import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, IMorpho} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
@@ -12,11 +13,11 @@ import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketCon
 
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
-import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementSlice, SettlementQuote} from "../../src/types/SettlementTypes.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
 import {WAD, BPS} from "../../src/libs/Constants.sol";
+import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
@@ -25,7 +26,7 @@ import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 /// @notice Unit/integration suite for `LidoLendMarketController`, modelled from the market-controller spec's
 ///         "Policy boundary" and "Freeze and pause" sections. The controller's `on` hook is driven by the
 ///         core, so the policy is exercised through real market actions on a fresh `setup/` stack. The
-///         libraries it composes (activation/settlement/guardian) are covered in §3–5; here the focus is
+///         libraries it composes (activation/settlement/guardian) are covered separately; here the focus is
 ///         the controller-specific policy: pause (every hook), freeze gate, banned-borrow, active-only
 ///         health, instant activation, settlement config, and setter role-gating.
 contract LidoLendMarketControllerTest is LidoLendSetup {
@@ -54,6 +55,34 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         return protocol.markets[0];
     }
 
+    function test_initialize_emitsGuardianSignalsSet() public {
+        MockERC20 loanToken = new MockERC20("Loan2", "LN2", 18);
+        MockERC20 collateralToken = new MockERC20("Coll2", "CL2", 18);
+
+        vm.recordLogs();
+        _deployProtocol(_defaultConfig(address(loanToken), address(collateralToken), address(collateralToken)));
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 found;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == ILidoLendMarketController.GuardianSignalsSet.selector) {
+                address boundRegistry = address(uint160(uint256(logs[i].topics[1])));
+                assertEq(
+                    ILidoLendMarketController(logs[i].emitter).guardianSignals(),
+                    boundRegistry,
+                    "event carries the emitting controller's bound registry"
+                );
+                found++;
+            }
+        }
+        assertGe(found, 1, "GuardianSignalsSet emitted at initialization");
+    }
+
+    function test_constructor_zeroCoreReverts() public {
+        vm.expectRevert(ILidoLendMarketController.ZeroAddress.selector);
+        new LidoLendMarketController(IMorpho(address(0)));
+    }
+
     /// @dev Lender liquidity + a borrower with matured collateral and an open borrow.
     function _seedBorrower(uint256 liquidity, uint256 collat, uint256 borrow)
         internal
@@ -70,27 +99,24 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         if (borrow > 0) m.borrow(borrower, borrow);
     }
 
-    function _validBlock() internal view returns (BlockInfoWithHash memory) {
-        uint40 n = uint40(block.number - 1);
-        return BlockInfoWithHash({hash: blockhash(n), number: n, timestamp: n});
-    }
-
     /// @dev Flag `account` to quorum (the default registry has the test as the sole guardian, quorum 1).
     function _ban(address account) internal {
         address[] memory a = new address[](1);
         a[0] = account;
-        protocol.guardianSignals.flag(_m().id, a, _validBlock());
+        protocol.guardianSignals.flag(_m().id, address(this), a);
     }
 
     // ── mutations ──
 
     // ── on() access ──
 
+    /// @dev The `on` hook rejects any caller that is not the core with `Unauthorized`.
     function testRevert_on_nonCoreCaller_unauthorized() public {
         vm.expectRevert(ILidoLendMarketController.Unauthorized.selector);
         c.on(_m().id, ILidoLendBaseMarketController.HookEvent.Supply, "");
     }
 
+    /// @dev An `on` call from the core for a market id this controller does not govern reverts `InvalidMarketId`.
     function testRevert_on_wrongMarketId_invalidMarketId() public {
         Id wrongId = Id.wrap(bytes32(uint256(0xDEAD)));
         vm.prank(address(_m().core)); // authorized caller, wrong market
@@ -100,6 +126,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── pause: every hook reverts ──
 
+    /// @dev While paused every action hook reverts: a direct core supply trips the resume check with `ResumedExpected`.
     function test_pause_haltsActions() public {
         c.pauseFor(1 hours);
         Market storage m = _m();
@@ -143,22 +170,26 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertGt(m.vault.maxRedeem(lender), 0, "redeemable after resume");
     }
 
+    /// @dev A finite pause auto-resumes: once its duration elapses the market reads unpaused with no explicit resume.
     function test_pause_autoResumesAfterDuration() public {
         c.pauseFor(1 hours);
         vm.warp(block.timestamp + 1 hours); // resumeSince reached -> resumed
         assertFalse(c.isPaused(), "auto-resumed after the duration");
     }
 
+    /// @dev `pauseFor(0)` reverts `ZeroPauseDuration`.
     function testRevert_pauseFor_zeroDuration() public {
         vm.expectRevert(PausableUntil.ZeroPauseDuration.selector);
         c.pauseFor(0);
     }
 
+    /// @dev `resume` while the market is not paused reverts `PausedExpected`.
     function testRevert_resume_whenNotPaused() public {
         vm.expectRevert(PausableUntil.PausedExpected.selector);
         c.resume();
     }
 
+    /// @dev `resume` lifts a pause before its duration has elapsed.
     function test_resume_early() public {
         c.pauseFor(1 hours);
         assertTrue(c.isPaused(), "paused");
@@ -168,6 +199,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── freeze gate ──
 
+    /// @dev A frozen market rejects new borrows with `MarketIsFrozen`.
     function testRevert_freeze_blocksBorrow() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
         c.freeze();
@@ -177,6 +209,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.borrow(_m().params, 10 ether, 0, borrower, borrower);
     }
 
+    /// @dev While frozen, withdrawing collateral against an open debt reverts `MarketIsFrozen`.
     function testRevert_freeze_blocksWithdrawCollateral_withDebt() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether); // open debt
         c.freeze();
@@ -185,6 +218,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.withdrawCollateral(_m().params, 1 ether, borrower, borrower);
     }
 
+    /// @dev Freeze still permits a debt-free borrower to withdraw its collateral.
     function test_freeze_allowsDebtFreeWithdraw() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0); // no debt
         c.freeze();
@@ -194,6 +228,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(_m().collateralToken.balanceOf(borrower) - before, 1 ether, "collateral returned while frozen");
     }
 
+    /// @dev Freeze still permits repaying an open debt.
     function test_freeze_allowsRepay() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
         c.freeze();
@@ -206,6 +241,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(before - _m().loanToken.balanceOf(borrower), 5 ether, "repay debited the borrower while frozen");
     }
 
+    /// @dev `unfreeze` clears the freeze and lets borrowing resume.
     function test_unfreeze_restoresBorrow() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
         c.freeze();
@@ -217,6 +253,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── banned borrow ──
 
+    /// @dev A borrower flagged to quorum is banned, so its borrow reverts `AddressBanned`.
     function testRevert_borrow_bannedBorrower() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
         _ban(borrower); // quorum 1 -> Banned
@@ -227,6 +264,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── active-only health ──
 
+    /// @dev Borrowing against still-activating (unmatured) collateral reverts `InsufficientActiveCollateral`.
     function testRevert_borrow_againstUnmaturedCollateral() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -242,13 +280,14 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── instant activation ──
 
+    /// @dev An instant-activation grantee's collateral is active on supply, so it can borrow with no maturity wait.
     function test_instantActivation_borrowsWithoutWaiting() public {
         Market storage m = _m();
         address lender = _actor("lender");
         _fund(m.loanToken, lender, 1000 ether);
         m.vaultDeposit(lender, 1000 ether);
         address borrower = _actor("borrower");
-        c.grantInstantActivation(borrower);
+        c.setInstantActivation(borrower, true);
         assertTrue(c.hasInstantActivation(borrower), "granted");
         _fund(m.collateralToken, borrower, 100 ether);
         m.supplyCollateral(borrower, 100 ether); // instant -> straight to active, no warp
@@ -258,6 +297,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── setter role-gating ──
 
+    /// @dev `freeze` without `FREEZER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_freeze_wrongRole() public {
         address nobody = _actor("nobody");
         bytes32 role = c.FREEZER_ROLE();
@@ -266,6 +306,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.freeze();
     }
 
+    /// @dev `pauseFor` without `PAUSER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_pauseFor_wrongRole() public {
         address nobody = _actor("nobody");
         bytes32 role = c.PAUSER_ROLE();
@@ -274,17 +315,18 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.pauseFor(1 hours);
     }
 
-    function testRevert_grantInstantActivation_wrongRole() public {
+    function testRevert_setInstantActivation_wrongRole() public {
         address nobody = _actor("nobody");
         address borrower = _actor("borrower");
         bytes32 role = c.MANAGER_ROLE();
         vm.prank(nobody);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
-        c.grantInstantActivation(borrower);
+        c.setInstantActivation(borrower, true);
     }
 
     // ── ban 3-way: receiver and caller (distinct from onBehalf) ──
 
+    /// @dev The ban gate covers the receiver: borrowing to a banned receiver reverts `AddressBanned`.
     function testRevert_borrow_bannedReceiver() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
         address receiver = _actor("receiver");
@@ -294,6 +336,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.borrow(_m().params, 10 ether, 0, borrower, receiver);
     }
 
+    /// @dev The ban gate covers the caller: a banned authorized operator's borrow reverts `AddressBanned`.
     function testRevert_borrow_bannedCaller() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
         address operator = _actor("operator");
@@ -334,6 +377,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(stored.maxGuardiansQuorumDelay, 4 hours, "maxGuardiansQuorumDelay");
     }
 
+    /// @dev `setCollateralActivationConfig` without `MANAGER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_setCollateralActivationConfig_wrongRole() public {
         CollateralActivationConfig memory cfg = c.collateralActivationConfig();
         address nobody = _actor("nobody");
@@ -343,22 +387,22 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.setCollateralActivationConfig(cfg);
     }
 
-    /// @dev `revokeInstantActivation` (MANAGER_ROLE) clears a previously-granted instant flag.
-    function test_revokeInstantActivation_clearsFlag() public {
+    /// @dev `setInstantActivation` (MANAGER_ROLE) clears a previously-granted instant flag.
+    function test_setInstantActivation_false_clearsFlag() public {
         address borrower = _actor("borrower");
-        c.grantInstantActivation(borrower);
+        c.setInstantActivation(borrower, true);
         assertTrue(c.hasInstantActivation(borrower), "granted");
-        c.revokeInstantActivation(borrower);
+        c.setInstantActivation(borrower, false);
         assertFalse(c.hasInstantActivation(borrower), "revoked");
     }
 
-    function testRevert_revokeInstantActivation_wrongRole() public {
+    function testRevert_setInstantActivationFalse_wrongRole() public {
         address nobody = _actor("nobody");
         address borrower = _actor("borrower");
         bytes32 role = c.MANAGER_ROLE();
         vm.prank(nobody);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, nobody, role));
-        c.revokeInstantActivation(borrower);
+        c.setInstantActivation(borrower, false);
     }
 
     // ── on() unknown hook event (defensive, see note) and onBehalf-banned borrow ──
@@ -389,7 +433,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function testRevert_settle_exceedsAllowed_forgedPayload() public {
         Market storage m = _m();
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
-        (,, uint256 allowedShares,) = c.nextSettlementBorrower();
+        vm.prank(borrower);
+        c.setSettlementLtv(1); // free liquidity remains, so this positive cap is personal-policy only
+        (, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower(0);
+        uint256 allowedShares = allowedSlice.borrowShares;
+        assertGt(allowedShares, 0, "personal policy opens a positive hook cap");
 
         bytes memory data = abi.encode(
             ILidoLendBaseMarketController.SettleHookData({
@@ -405,6 +453,36 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         );
         vm.prank(address(m.core));
         vm.expectRevert(ILidoLendMarketController.SettlementExceedsAllowed.selector);
+        c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
+    }
+
+    /// @dev A root without lender tail cannot use root policy, but the same cut passes after personal opt-in.
+    function test_settle_rootPersonalPolicyBypassesSupplierTail() public {
+        Market storage m = _m();
+        (, address borrower) = _seedBorrower(1000 ether, 1000 ether, 10 ether);
+        c.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 10_000, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        );
+
+        bytes memory data = abi.encode(
+            ILidoLendBaseMarketController.SettleHookData({
+                caller: address(this),
+                onBehalf: address(this), // owns no supply, hence has no illiquid tail
+                borrower: borrower,
+                receiver: address(this),
+                supplySharesBurned: 1,
+                borrowAssetsCanceled: 1,
+                borrowSharesCanceled: 1,
+                seizedAssets: 1
+            })
+        );
+        vm.prank(address(m.core));
+        vm.expectRevert(ILidoLendMarketController.SettlementExceedsSettleableSupply.selector);
+        c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
+
+        vm.prank(borrower);
+        c.setSettlementLtv(1);
+        vm.prank(address(m.core));
         c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
     }
 
@@ -426,7 +504,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         m.borrow(a, 80 ether);
         m.borrow(b, 80 ether);
 
-        (address root,,,) = c.nextSettlementBorrower();
+        (address root,) = c.nextSettlementBorrower(0);
         address nonRoot = root == a ? b : a; // non-root, no personal LTV -> allowedSlice == 0
 
         bytes memory data = abi.encode(
@@ -487,8 +565,10 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     ///      partial cut (no strand-dust lift to a full close).
     function test_settle_admittedAtExactCap_partialSlice() public {
         Market storage m = _m();
-        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether); // 100e18 coll >> 10e18 floor
-        (address root,, uint256 allowedShares, uint256 remaining) = c.nextSettlementBorrower();
+        (, address borrower) = _seedBorrower(10 ether, 100 ether, 10 ether); // zero liquidity enables root policy
+        (address root, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower(0);
+        uint256 allowedShares = allowedSlice.borrowShares;
+        uint256 remaining = allowedSlice.remainingBorrowShares;
         assertEq(root, borrower, "sole borrower is the queue root");
         assertGt(allowedShares, 0, "non-empty allowed slice");
         assertGt(remaining, 0, "partial slice leaves debt behind (not a full close)");
@@ -531,13 +611,13 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         m.borrow(a, 100 ether); // LTV 0.5
         m.borrow(b, 100 ether); // LTV 0.25 -> less risky -> non-root
 
-        (address root,,,) = c.nextSettlementBorrower();
+        (address root,) = c.nextSettlementBorrower(0);
         address nonRoot = root == a ? b : a;
 
         vm.prank(nonRoot);
         c.setSettlementLtv(0.1e18); // below the non-root's current LTV -> opens a positive slice
 
-        (, uint256 borrowShares,) = c.settlementFor(nonRoot);
+        uint256 borrowShares = c.settlementFor(nonRoot, 0).personal.borrowShares;
         assertGt(borrowShares, 0, "settlement-LTV opt-in makes the non-root eligible");
 
         bytes memory data = abi.encode(
@@ -585,6 +665,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.pauseFor(1 hours);
     }
 
+    /// @dev `resume` without `RESUMER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_resume_wrongRole() public {
         c.pauseFor(1 hours);
         address nobody = _actor("nobody");
@@ -594,6 +675,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.resume();
     }
 
+    /// @dev `unfreeze` without `UNFREEZER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_unfreeze_wrongRole() public {
         c.freeze();
         address nobody = _actor("nobody");
@@ -617,6 +699,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(c.supplyCap(), 500 ether, "cap stored");
     }
 
+    /// @dev `setSupplyCap` without `MANAGER_ROLE` reverts `AccessControlUnauthorizedAccount`.
     function testRevert_setSupplyCap_wrongRole() public {
         address nobody = _actor("nobody");
         bytes32 role = c.MANAGER_ROLE();
@@ -822,6 +905,12 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── views ──
 
+    /// @dev The controller exposes the guardian-signals registry it was wired with at deploy.
+    function test_guardianSignals_returnsWiredRegistry() public view {
+        Market storage m = _m();
+        assertEq(m.controller.guardianSignals(), address(m.guardianSignals), "controller exposes its registry");
+    }
+
     // ── lender limits: maxDeposit / maxWithdrawableAssets ──
 
     /// @dev No cap and not paused: supply is unconstrained, so the ceiling is the ERC-4626 sentinel.
@@ -986,6 +1075,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(c.maxWithdrawableAssets(address(m.vault)), 10 ether, "resumed -> restored");
     }
 
+    /// @dev A freshly deployed controller reports neither frozen nor paused.
     function test_views_defaults() public view {
         assertFalse(c.isFrozen(), "not frozen initially");
         assertFalse(c.isPaused(), "not paused initially");
@@ -1034,9 +1124,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(c.settlementBorrowersCount(), 0, "queue empties when debt clears");
     }
 
-    /// @dev `positionOf` dashboard: every field recomputed independently from the seeded position. A borrower
-    ///      with 100 ether active collateral and a 10 ether borrow, not banned, not yet settle-eligible until a
-    ///      personal LTV is set.
+    /// @dev `positionOf` dashboard: every field recomputed independently from the seeded position. The sole borrower
+    ///      is the queue root, so its absolute policy exposure is visible even before a personal LTV is set.
     function test_positionOf_recomputesDashboard() public {
         Market storage m = _m();
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
@@ -1053,9 +1142,9 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         // Fresh borrow with no interest accrued: debt assets == borrowed amount.
         assertEq(d.debtAssets, 10 ether, "debt == borrow (no interest yet)");
         assertEq(d.settlementLtv, 0, "no personal settle LTV");
-        // Sole borrower -> it is the queue root -> next to settle, and its allowed slice is non-empty.
         assertTrue(d.isNextToSettle, "sole borrower is the queue root");
-        assertGt(d.slice, 0, "sole borrower's allowed slice is non-empty");
+        assertEq(d.personalSliceAssets, 0, "no personal slice");
+        assertGt(d.queueRootSliceAssets, 0, "dashboard reports the root-policy slice");
     }
 
     /// @dev `positionOf` reflects a banned borrower and a personal settlement LTV opt-in.
@@ -1199,9 +1288,10 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         MockPriceOracle(address(m.oracle)).setPrice(1.3e36); // fixed, seed-independent
         // Large collateral well above the 10 ether full-close floor, modest borrow -> the policy slice is a
         // genuine partial cut (does not strand sub-floor collateral, so it is not lifted to a full close).
-        (, address borrower) = _seedBorrower(100_000 ether, 1000 ether, 100 ether);
+        (, address borrower) = _seedBorrower(100 ether, 1000 ether, 100 ether);
 
-        (,, uint256 allowedShares,) = c.nextSettlementBorrower();
+        (, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower(0);
+        uint256 allowedShares = allowedSlice.borrowShares;
         assertGt(allowedShares, 0, "borrower is the eligible queue root");
 
         uint256 countBefore = c.settlementBorrowersCount();
@@ -1238,13 +1328,13 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         // Collateral just above the 10 ether floor -> a partial slice would strand sub-floor collateral, so the
         // controller lifts the cut to the full debt and a whole-position cut is admitted.
         address lender = _actor("lender");
-        _fund(m.loanToken, lender, 100_000 ether);
-        m.vaultDeposit(lender, 100_000 ether);
+        _fund(m.loanToken, lender, 10 ether);
+        m.vaultDeposit(lender, 10 ether);
         address borrower = _actor("borrower");
         _fund(m.collateralToken, borrower, 10.2 ether);
         m.supplyCollateral(borrower, 10.2 ether);
         m.activateCollateral();
-        m.borrow(borrower, 10.2 ether * 1.3e36 / 1e36 * 80 / 100 * 90 / 100); // ~90% of LLTV-max
+        m.borrow(borrower, 10 ether); // zero liquidity enables root policy
         assertEq(c.settlementBorrowersCount(), 1, "sole borrower queued");
 
         (uint128 borrowShares, uint128 collateral) = _borrowerPosition(m, borrower);
@@ -1319,7 +1409,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         m.borrow(risky, 100 ether * 1300 / 1000 * 78 / 100); // ~78% LTV -> bad debt once halved
         m.borrow(safe, 100 ether * 1300 / 1000 * 30 / 100); // ~30% LTV -> stays solvent when halved
 
-        (address root,,,) = c.nextSettlementBorrower();
+        (address root,) = c.nextSettlementBorrower(0);
         assertEq(root, risky, "the riskier borrower is the queue root");
 
         uint256 live = MockPriceOracle(address(m.oracle)).price();
@@ -1343,6 +1433,56 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
     }
 
+    /// @dev With an 18-decimal loan and 6-decimal collateral, ordinary LTVs produce keys above uint96. The
+    ///      riskier borrower must still be the root, so its bad debt blocks settlement against a solvent peer.
+    function test_saturatedRiskKeys_nonRootBadDebtIsDetected() public {
+        MockERC20 collateral6 = new MockERC20("Collateral 6", "COLL6", 6);
+        LidoLendDeployer.DeployConfig memory config =
+            _defaultConfig(address(loan), address(collateral6), address(collateral6));
+        config.activation.minActivationAmount = 1;
+        Market storage m = _addMarket(config);
+        LidoLendMarketController controller = LidoLendMarketController(address(m.controller));
+        MockPriceOracle(address(m.oracle)).setPrice(1e48);
+
+        address lender = _actor("six-decimal lender");
+        _fund(m.loanToken, lender, 1_000 ether);
+        m.vaultDeposit(lender, 1_000 ether);
+
+        address risky = _actor("six-decimal risky");
+        address safe = _actor("six-decimal safe");
+        _fund(m.collateralToken, risky, 10e6);
+        _fund(m.collateralToken, safe, 10e6);
+        m.supplyCollateral(risky, 10e6);
+        m.supplyCollateral(safe, 10e6);
+        m.activateCollateral();
+        m.borrow(safe, 3 ether);
+        m.borrow(risky, 7.5 ether);
+
+        (address root,) = controller.nextSettlementBorrower(0);
+        (, uint256[] memory keys) = controller.settlementBorrowers(0, 2);
+        assertEq(root, risky, "higher true key is root");
+        assertGt(keys[0], type(uint96).max, "ordinary 6-decimal position exceeds uint96");
+
+        MockPriceOracle(address(m.oracle)).setPrice(0.5e48);
+        assertTrue(controller.hasBadDebt(), "bad debt at the saturated root is detected");
+
+        bytes memory data = abi.encode(
+            ILidoLendBaseMarketController.SettleHookData({
+                caller: address(this),
+                onBehalf: address(this),
+                borrower: safe,
+                receiver: address(this),
+                supplySharesBurned: 0,
+                borrowAssetsCanceled: 0,
+                borrowSharesCanceled: 1,
+                seizedAssets: 1
+            })
+        );
+        vm.prank(address(m.core));
+        vm.expectRevert(ILidoLendMarketController.SettlementBadDebt.selector);
+        controller.on(m.id, ILidoLendBaseMarketController.HookEvent.Settle, data);
+    }
+
     /// @dev The bad-debt gate is not a false positive on a solvent root: a healthy sole root admits a
     ///      cap-sized cut with a valid seize without reverting — the bad-debt branch passes for a
     ///      comfortably-collateralized root, and the queue still tracks it after the partial cut.
@@ -1350,9 +1490,10 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         Market storage m = _m();
         MockPriceOracle(address(m.oracle)).setPrice(1.3e36); // fixed, seed-independent
         // Healthy: large collateral above the floor, a small borrow -> far from bad debt, partial slice.
-        (, address borrower) = _seedBorrower(100_000 ether, 1000 ether, 50 ether);
+        (, address borrower) = _seedBorrower(50 ether, 1000 ether, 50 ether);
 
-        (,, uint256 allowedShares,) = c.nextSettlementBorrower();
+        (, SettlementSlice memory allowedSlice) = c.nextSettlementBorrower(0);
+        uint256 allowedShares = allowedSlice.borrowShares;
         assertGt(allowedShares, 0, "healthy borrower is the eligible queue root");
 
         bytes memory data = abi.encode(
@@ -1386,11 +1527,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     /// @dev `nextSettlementBorrower` on an empty queue returns the zero tuple (no root, all-zero slice).
     function test_nextSettlementBorrower_emptyQueue() public view {
-        (address borrower, uint256 supplyShares, uint256 borrowShares, uint256 remaining) = c.nextSettlementBorrower();
+        (address borrower, SettlementSlice memory slice) = c.nextSettlementBorrower(0);
         assertEq(borrower, address(0), "no root in an empty queue");
-        assertEq(supplyShares, 0, "supplyShares zero");
-        assertEq(borrowShares, 0, "borrowShares zero");
-        assertEq(remaining, 0, "remainingBorrowShares zero");
+        assertEq(slice.supplyShares, 0, "supplyShares zero");
+        assertEq(slice.borrowShares, 0, "borrowShares zero");
+        assertEq(slice.remainingBorrowShares, 0, "remainingBorrowShares zero");
     }
 
     /// @dev `settlementBorrowers` pages the queue: 3 enqueued borrowers -> (0,2) gives 2, (2,2) gives the last 1,
@@ -1420,23 +1561,172 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(keys2.length, 0, "past the end -> empty keys");
     }
 
-    /// @dev `settlementFor` is zero for an untracked address; for the eligible sole root it returns the same
-    ///      (supplyShares, borrowShares, remainingBorrowShares) tuple as `nextSettlementBorrower` (same slice).
+    /// @dev The automatic root quote is visible without opt-in, while targeted settlement requires a positive
+    ///      personal slice. Here the personal slice dominates the root policy after opt-in.
     function test_settlementFor_ineligibleVsEligible() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
 
         address untracked = _actor("untracked"); // never borrowed, no personal LTV -> ineligible
-        (uint256 us, uint256 ub, uint256 ur) = c.settlementFor(untracked);
-        assertEq(us, 0, "untracked supplyShares zero");
-        assertEq(ub, 0, "untracked borrowShares zero");
-        assertEq(ur, 0, "untracked remaining zero");
+        SettlementQuote memory quote = c.settlementFor(untracked, 0);
+        assertEq(quote.personal.supplyShares, 0, "untracked personal supplyShares zero");
+        assertEq(quote.personal.borrowShares, 0, "untracked personal borrowShares zero");
+        assertEq(quote.queueRoot.supplyShares, 0, "untracked queue-root supplyShares zero");
+        assertEq(quote.queueRoot.borrowShares, 0, "untracked queue-root borrowShares zero");
 
-        (address root, uint256 ns, uint256 nb, uint256 nr) = c.nextSettlementBorrower();
+        (address root, SettlementSlice memory nextSlice) = c.nextSettlementBorrower(0);
         assertEq(root, borrower, "sole borrower is the queue root");
-        (uint256 fs, uint256 fb, uint256 fr) = c.settlementFor(borrower);
-        assertEq(fs, ns, "supplyShares match the root slice");
-        assertEq(fb, nb, "borrowShares match the root slice");
-        assertEq(fr, nr, "remainingBorrowShares match the root slice");
+        quote = c.settlementFor(borrower, 0);
+        assertGt(nextSlice.supplyShares, 0, "absolute root policy quotes a supply cost");
+        assertGt(nextSlice.borrowShares, 0, "absolute root policy quotes a debt cut");
+        assertGt(nextSlice.remainingBorrowShares, 0, "configured root cut is partial");
+        assertEq(quote.personal.supplyShares, 0, "personal supply cost is zero before opt-in");
+        assertEq(quote.personal.borrowShares, 0, "personal borrow anchor is zero before opt-in");
+        assertEq(quote.queueRoot.supplyShares, nextSlice.supplyShares, "prospective queue-root supply quote");
+        assertEq(quote.queueRoot.borrowShares, nextSlice.borrowShares, "prospective queue-root borrow quote");
+
+        vm.prank(borrower);
+        c.setSettlementLtv(1); // every positive-debt position is above this target
+
+        (, nextSlice) = c.nextSettlementBorrower(0);
+        quote = c.settlementFor(borrower, 0);
+        assertGt(quote.personal.supplyShares, 0, "personal policy opens a positive quote");
+        assertEq(quote.personal.supplyShares, nextSlice.supplyShares, "personal supply quote wins");
+        assertEq(quote.personal.borrowShares, nextSlice.borrowShares, "personal borrow quote wins");
+        assertEq(quote.personal.remainingBorrowShares, nextSlice.remainingBorrowShares, "personal remainder wins");
+    }
+
+    /// @dev A budget beyond the policy cost leaves the quote alone, so an ample real budget answers exactly what
+    ///      the 0 request for the unshrunk policy cut does.
+    function test_settlementQuotes_ampleBudget_matchesTheUncappedQuote() public {
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
+        vm.prank(borrower);
+        c.setSettlementLtv(1);
+
+        (address root, SettlementSlice memory plainSlice) = c.nextSettlementBorrower(0);
+        (address budgetedRoot, SettlementSlice memory budgetedSlice) = c.nextSettlementBorrower(type(uint128).max);
+        assertEq(budgetedRoot, root, "same root");
+        assertEq(budgetedSlice.borrowShares, plainSlice.borrowShares, "same cut");
+        assertEq(budgetedSlice.supplyShares, plainSlice.supplyShares, "same cost");
+        assertEq(budgetedSlice.remainingBorrowShares, plainSlice.remainingBorrowShares, "same remainder");
+
+        SettlementQuote memory plainQuote = c.settlementFor(borrower, 0);
+        SettlementQuote memory budgetedQuote = c.settlementFor(borrower, type(uint128).max);
+        assertEq(budgetedQuote.personal.borrowShares, plainQuote.personal.borrowShares, "same personal cut");
+        assertEq(budgetedQuote.queueRoot.borrowShares, plainQuote.queueRoot.borrowShares, "same queue-root cut");
+    }
+
+    /// @dev A budget below the policy cost shrinks the cut, and the slice keeps describing one position: the
+    ///      shaved shares reappear in the remainder and the cost is restated for what actually settles.
+    function test_settlementQuotes_shortBudget_shrinksCutAndRestatesCost() public {
+        _seedBorrower(1000 ether, 100 ether, 10 ether);
+
+        (, SettlementSlice memory plain) = c.nextSettlementBorrower(0);
+        uint256 wholePosition = plain.borrowShares + plain.remainingBorrowShares;
+
+        (, SettlementSlice memory capped) = c.nextSettlementBorrower(plain.supplyShares / 2);
+        assertGt(capped.borrowShares, 0, "half the cost still funds part of the cut");
+        assertLt(capped.borrowShares, plain.borrowShares, "budget shrinks the cut");
+        assertLt(capped.supplyShares, plain.supplyShares, "cost restated for the shrunk cut");
+        assertEq(capped.borrowShares + capped.remainingBorrowShares, wholePosition, "slice still spans the position");
+    }
+
+    /// @dev A positive budget that funds no borrow share reports an unavailable cut, not a zero-sized one, so a
+    ///      caller cannot mistake it for a settleable slice. A budget of 0 asks for the unshrunk policy cut.
+    function test_settlementQuotes_unaffordableBudget_reportNoCut() public {
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 10 ether);
+        vm.prank(borrower);
+        c.setSettlementLtv(1);
+
+        (address root, SettlementSlice memory slice) = c.nextSettlementBorrower(1);
+        assertEq(root, borrower, "the root is still reported");
+        assertEq(slice.borrowShares, 0, "no cut");
+        assertEq(slice.supplyShares, 0, "no cost");
+        assertEq(slice.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+
+        SettlementQuote memory quote = c.settlementFor(borrower, 1);
+        assertEq(quote.personal.borrowShares, 0, "personal candidate unavailable");
+        assertEq(quote.queueRoot.borrowShares, 0, "queue-root candidate unavailable");
+    }
+
+    /// @dev `settlementFor` exposes the queue-policy cut for a non-root borrower without claiming that it is
+    ///      currently executable. `nextSettlementBorrower` remains the atomic source of the actual root and its
+    ///      selected cut.
+    function test_settlementFor_nonRootExposesProspectiveQueueRootQuote() public {
+        Market storage m = _m();
+        MockPriceOracle(address(m.oracle)).setPrice(1e36);
+        c.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 2_000, sliceFloorAssets: 0, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        );
+
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 200 ether);
+        m.vaultDeposit(lender, 200 ether);
+
+        address risky = _actor("risky");
+        address safer = _actor("safer");
+        _fund(m.collateralToken, risky, 100 ether);
+        _fund(m.collateralToken, safer, 200 ether);
+        m.supplyCollateral(risky, 100 ether);
+        m.supplyCollateral(safer, 200 ether);
+        m.activateCollateral();
+        m.borrow(risky, 70 ether);
+        m.borrow(safer, 50 ether);
+
+        (address root,) = c.nextSettlementBorrower(0);
+        SettlementQuote memory quote = c.settlementFor(safer, 0);
+
+        assertEq(root, risky, "riskier borrower remains the actual root");
+        assertEq(quote.personal.supplyShares, 0, "non-root has no personal permission");
+        assertGt(quote.queueRoot.supplyShares, 0, "prospective queue-root supply cost is visible");
+        assertGt(quote.queueRoot.borrowShares, 0, "prospective queue-root borrow anchor is visible");
+    }
+
+    /// @dev An unopted root has an absolute automatic quote but remains ineligible for targeted settlement. This is
+    ///      the API distinction used by `fallbackExit` versus explicit `settle`.
+    function test_settlementQuotes_zeroLiquidityRootRequiresPersonalForTargeted() public {
+        (, address borrower) = _seedBorrower(10 ether, 100 ether, 10 ether);
+
+        (address root, SettlementSlice memory nextSlice) = c.nextSettlementBorrower(0);
+        SettlementQuote memory quote = c.settlementFor(borrower, 0);
+
+        assertEq(root, borrower, "sole borrower is the queue root");
+        assertGt(nextSlice.supplyShares, 0, "automatic root policy is visible");
+        assertGt(nextSlice.borrowShares, 0, "automatic root quote carries a borrow anchor");
+        assertEq(quote.personal.supplyShares, 0, "targeted quote requires a personal slice");
+        assertEq(quote.personal.borrowShares, 0, "targeted borrow anchor is zero without opt-in");
+        assertEq(quote.queueRoot.supplyShares, nextSlice.supplyShares, "queue-root quote is exposed separately");
+    }
+
+    /// @dev Targeted settlement uses only the nominal personal slice even when the borrower is also the queue root
+    ///      and both cuts would strand collateral below the root policy's dust floor. Only the queue-root quote is
+    ///      promoted to a full close.
+    function test_settlementQuotes_zeroLiquidityOptedRootUsesPersonalPolicy() public {
+        SettlementConfig memory cfg = SettlementConfig({
+            sliceFloorBps: 5000, sliceFloorAssets: 0, fullCutBelowCollateral: 1001 ether, ltvStepBps: 0
+        });
+        c.setSettlementConfig(cfg);
+        MockPriceOracle(address(_m().oracle)).setPrice(1.3e36);
+        (, address borrower) = _seedBorrower(100 ether, 1000 ether, 100 ether);
+
+        (address root, SettlementSlice memory rootSlice) = c.nextSettlementBorrower(0);
+        assertEq(root, borrower, "sole borrower is the queue root");
+
+        vm.prank(borrower);
+        c.setSettlementLtv(0.076e18); // live LTV is about 7.69%, so this opens a small positive personal slice
+        (, uint256 personalSliceAssets) = c.settlementLtv(borrower);
+        assertGt(personalSliceAssets, 0, "personal slice is positive");
+        assertLt(personalSliceAssets, 50 ether, "personal slice is below the 50% root floor");
+
+        SettlementQuote memory quote = c.settlementFor(borrower, 0);
+        assertEq(rootSlice.remainingBorrowShares, 0, "queue-root dust sweep quotes a full close");
+        assertLt(quote.personal.supplyShares, rootSlice.supplyShares, "personal supply cost is below root policy");
+        assertLt(quote.personal.borrowShares, rootSlice.borrowShares, "personal borrow anchor is below root policy");
+        assertGt(
+            quote.personal.remainingBorrowShares,
+            rootSlice.remainingBorrowShares,
+            "personal cut leaves more debt than root policy"
+        );
+        assertEq(quote.queueRoot.supplyShares, rootSlice.supplyShares, "queue-root supply quote matches next");
     }
 
     /// @dev `settlementLtv` for a borrower that never opted in returns (0, 0) — no personal LTV, no LTV slice.
@@ -1458,17 +1748,18 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         {
             Market storage m = _m();
             MockPriceOracle(address(m.oracle)).setPrice(1.3e36); // fixed, seed-independent
-            address lender = _actor("lenderA");
-            _fund(m.loanToken, lender, 100_000 ether);
-            m.vaultDeposit(lender, 100_000 ether);
             address a = _actor("borrowerA");
             _fund(m.collateralToken, a, 10.2 ether);
             m.supplyCollateral(a, 10.2 ether);
             m.activateCollateral();
             uint256 maxBorrowA = 10.2 ether * 1.3e36 / 1e36 * 80 / 100; // collateral value × LLTV
-            m.borrow(a, maxBorrowA * 90 / 100);
-            (,, uint256 remainingA) = c.settlementFor(a);
-            assertEq(remainingA, 0, "A near the floor is lifted to a full close");
+            uint256 borrowA = maxBorrowA * 90 / 100;
+            address lender = _actor("lenderA");
+            _fund(m.loanToken, lender, borrowA);
+            m.vaultDeposit(lender, borrowA);
+            m.borrow(a, borrowA); // equal totals keep the fixture simple; the policy quote is liquidity-independent
+            (, SettlementSlice memory sliceA) = c.nextSettlementBorrower(0);
+            assertEq(sliceA.remainingBorrowShares, 0, "A near the floor is lifted to a full close");
         }
 
         // Borrower B: collateral comfortably above the floor -> partial cut leaves debt behind (fresh market = new
@@ -1477,17 +1768,18 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
             Market storage m2 = _addMarket(_defaultConfig(address(loan), address(collateral), address(collateral)));
             MockPriceOracle(address(m2.oracle)).setPrice(1.3e36);
             LidoLendMarketController c2 = LidoLendMarketController(address(m2.controller));
-            address lender2 = _actor("lenderB");
-            _fund(m2.loanToken, lender2, 100_000 ether);
-            m2.vaultDeposit(lender2, 100_000 ether);
             address b = _actor("borrowerB");
             _fund(m2.collateralToken, b, 100 ether);
             m2.supplyCollateral(b, 100 ether);
             m2.activateCollateral();
             uint256 maxBorrowB = 100 ether * 1.3e36 / 1e36 * 80 / 100;
-            m2.borrow(b, maxBorrowB * 90 / 100);
-            (,, uint256 remainingB) = c2.settlementFor(b);
-            assertGt(remainingB, 0, "B above the floor keeps a partial remainder");
+            uint256 borrowB = maxBorrowB * 90 / 100;
+            address lender2 = _actor("lenderB");
+            _fund(m2.loanToken, lender2, borrowB);
+            m2.vaultDeposit(lender2, borrowB);
+            m2.borrow(b, borrowB); // equal totals keep the fixture simple; the policy quote is liquidity-independent
+            (, SettlementSlice memory sliceB) = c2.nextSettlementBorrower(0);
+            assertGt(sliceB.remainingBorrowShares, 0, "B above the floor keeps a partial remainder");
         }
     }
 }

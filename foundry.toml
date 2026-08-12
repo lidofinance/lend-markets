@@ -18,6 +18,10 @@ bytecode_hash = "none"
 fs_permissions = [
     { access = "read", path = "./out" },
     { access = "read", path = "./lib" },
+    { access = "read", path = "./deployments" },
+    { access = "read", path = "./script/config" },
+    { access = "read", path = "./test/acceptance" },
+    { access = "read-write", path = "./deployed" },
 ]
 
 [profile.default.invariant]

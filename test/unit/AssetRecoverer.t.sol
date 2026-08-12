@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 
@@ -63,6 +63,7 @@ contract AssetRecovererTest is Test {
 
     // ── Ether ──
 
+    /// @dev Owner sweeps the contract's entire Ether balance to a recipient, emitting `EtherRecovered` and draining it.
     function test_recoverEther_toRecipient() public {
         vm.deal(address(rec), 3 ether);
 
@@ -76,6 +77,7 @@ contract AssetRecovererTest is Test {
         assertEq(address(rec).balance, 0, "contract drained");
     }
 
+    /// @dev A non-owner caller cannot recover Ether — the `onlyOwner` gate reverts.
     function testRevert_recoverEther_notOwner() public {
         vm.deal(address(rec), 1 ether);
         vm.prank(stranger);
@@ -83,6 +85,7 @@ contract AssetRecovererTest is Test {
         rec.recoverEther(recipient);
     }
 
+    /// @dev Recovering Ether to the zero address reverts with `ZeroRecipient`.
     function testRevert_recoverEther_zeroRecipient() public {
         vm.deal(address(rec), 1 ether);
         vm.prank(owner);
@@ -90,6 +93,7 @@ contract AssetRecovererTest is Test {
         rec.recoverEther(address(0));
     }
 
+    /// @dev Recovering Ether to a recipient that rejects incoming value reverts with `EtherTransferFailed`.
     function testRevert_recoverEther_transferFailed() public {
         address rejector = address(new RejectEther());
         vm.deal(address(rec), 1 ether);
@@ -101,6 +105,7 @@ contract AssetRecovererTest is Test {
 
     // ── ERC-20 ──
 
+    /// @dev Owner recovers a partial ERC-20 amount to a recipient, moving exactly that amount and leaving the rest.
     function test_recoverERC20_toRecipient() public {
         MockERC20 token = new MockERC20("T", "T", 18);
         token.mint(address(rec), 100 ether);
@@ -115,6 +120,7 @@ contract AssetRecovererTest is Test {
         assertEq(token.balanceOf(address(rec)), 60 ether, "only the requested amount left");
     }
 
+    /// @dev A non-owner caller cannot recover ERC-20 tokens — the `onlyOwner` gate reverts.
     function testRevert_recoverERC20_notOwner() public {
         MockERC20 token = new MockERC20("T", "T", 18);
         token.mint(address(rec), 1 ether);
@@ -123,6 +129,7 @@ contract AssetRecovererTest is Test {
         rec.recoverERC20(address(token), recipient, 1 ether);
     }
 
+    /// @dev Recovering ERC-20 tokens to the zero address reverts with `ZeroRecipient`.
     function testRevert_recoverERC20_zeroRecipient() public {
         MockERC20 token = new MockERC20("T", "T", 18);
         token.mint(address(rec), 1 ether);
@@ -133,6 +140,7 @@ contract AssetRecovererTest is Test {
 
     // ── ERC-721 ──
 
+    /// @dev Owner recovers a held ERC-721 token to a recipient, transferring ownership of that token id.
     function test_recoverERC721_toRecipient() public {
         MockERC721 nft = new MockERC721();
         nft.mint(address(rec), 7);
@@ -146,6 +154,7 @@ contract AssetRecovererTest is Test {
         assertEq(nft.ownerOf(7), recipient, "recipient holds the token");
     }
 
+    /// @dev A non-owner caller cannot recover an ERC-721 token — the `onlyOwner` gate reverts.
     function testRevert_recoverERC721_notOwner() public {
         MockERC721 nft = new MockERC721();
         nft.mint(address(rec), 7);
@@ -154,6 +163,7 @@ contract AssetRecovererTest is Test {
         rec.recoverERC721(address(nft), recipient, 7);
     }
 
+    /// @dev Recovering an ERC-721 token to the zero address reverts with `ZeroRecipient`.
     function testRevert_recoverERC721_zeroRecipient() public {
         MockERC721 nft = new MockERC721();
         nft.mint(address(rec), 7);
@@ -164,6 +174,7 @@ contract AssetRecovererTest is Test {
 
     // ── ERC-1155 ──
 
+    /// @dev Owner recovers the full ERC-1155 balance of an id to a recipient, draining the contract's holding of it.
     function test_recoverERC1155_toRecipient() public {
         MockERC1155 multi = new MockERC1155();
         multi.mint(address(rec), 5, 90);
@@ -178,6 +189,7 @@ contract AssetRecovererTest is Test {
         assertEq(multi.balanceOf(address(rec), 5), 0, "contract drained for the id");
     }
 
+    /// @dev A non-owner caller cannot recover an ERC-1155 balance — the `onlyOwner` gate reverts.
     function testRevert_recoverERC1155_notOwner() public {
         MockERC1155 multi = new MockERC1155();
         multi.mint(address(rec), 5, 90);
@@ -186,6 +198,7 @@ contract AssetRecovererTest is Test {
         rec.recoverERC1155(address(multi), recipient, 5);
     }
 
+    /// @dev Recovering an ERC-1155 balance to the zero address reverts with `ZeroRecipient`.
     function testRevert_recoverERC1155_zeroRecipient() public {
         MockERC1155 multi = new MockERC1155();
         multi.mint(address(rec), 5, 90);
