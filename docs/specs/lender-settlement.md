@@ -21,48 +21,28 @@ This is distinct from an [Exit Book](exit-books.md). Settlement changes the comp
 | Borrow share | The core's integer unit of borrower debt. Its value in loan assets changes as interest accrues. |
 | Supply share | The core's integer unit of supplier ownership. Its value in loan assets changes as interest accrues. |
 | Raw unit | The smallest integer unit of a token or share value. It is not one whole token. |
-| Oracle price | The collateral value quoted in loan-token raw units, scaled by `1e36` and adjusted for the two tokens' decimals. |
+| Oracle price | The conversion rate from collateral-token raw units to loan-token raw units, scaled by `1e36` and adjusted for the two tokens' decimals. |
+| LTV | Debt divided by oracle-valued collateral. The controller rounds debt up and collateral value down before comparing them. |
+| LLTV | The market's liquidation loan-to-value threshold. A position becomes liquidatable when its debt exceeds its LLTV-adjusted collateral value. |
 | Supply-share budget | The maximum core supply shares that one quote may consume. |
 
 ## Setup and authorization
 
 Settlement must have been enabled when the market was created; that choice cannot be changed later. The direct path requires the caller to own or be authorized over the core supplier position. Vault paths instead require ownership or allowance over vault shares. These permissions are independent: neither grants the other. The receiver may differ from the position owner.
 
-## Core settlement accounting
+## Core settlement boundary
 
-### Amounts and rounding
+The controller quotes an exact borrow-share amount because that is the core settlement input. From the live totals after interest accrual, the core derives the debt cancellation, supply-share burn, and collateral payout. The exact formulas, rounding, checks, state transition, and debt-clearing boundaries are defined in the [LidoLend core specification](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md#settlement).
 
-The core accepts an exact positive number of borrow shares as the settlement input. After accruing interest it derives every other amount from the live market totals.
-
-| Result | Calculation |
-|---|---|
-| Debt canceled | Convert the borrow-share input to loan assets and round up. |
-| Supplier shares burned | Convert the canceled debt assets to supply shares and round up. |
-| Collateral seized | Convert the borrow-share input to loan assets and round down, then convert that asset value to collateral-token units and round down again. |
-
-Core share conversions include Morpho's fixed buffer of one virtual asset and `1e6` virtual shares. These are accounting constants, not real assets or user-owned shares. They remain in the conversion near an empty market and create the final raw-unit boundaries described below; the exact formulas are in the [core specification](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md#settlement).
-
-Passing the borrower's entire borrow-share balance closes that debt position exactly. The up-rounded debt amount can exceed the remaining total borrow assets by one raw unit at the final boundary, so the core floors the market total at zero when applying the settlement.
-
-The core rejects a zero borrow-share input or receiver, a settlement larger than the borrower's debt, a derived supply burn larger than the supplier's position, and a seizure that is zero or exceeds the borrower's collateral. If positive debt rounds to zero collateral-token units, that debt must be repaid or removed through another path before settlement can succeed.
-
-The collateral calculation intentionally rounds in the other direction. The loan-asset value used to calculate collateral is at most one raw loan-token unit below the up-rounded canceled debt. Rounding down again to collateral-token units can increase that value difference. The borrower therefore never pays a rounding premium to the lender, and there is no liquidation bonus.
-
-### Execution
-
-After interest accrual and before settlement-specific writes, the core sends the resolved supply burn, debt cancellation, and collateral seizure to the market controller. If policy allows the settlement, the core:
-
-1. burns the derived supply shares from the authorized supplier;
-2. reduces total supply assets by the canceled debt assets;
-3. burns the requested borrow shares and reduces total borrow assets;
-4. removes the priced collateral from the borrower; and
-5. transfers that collateral directly to the receiver.
-
-The core deliberately performs no borrower-health check for settlement. The controller's queue and bad-debt rules are the policy boundary. The core and controller read the same oracle separately during one settlement, so the oracle price must be nonzero, consistent across those reads, and independent of the caller. The collateral token can reject the transfer to the receiver. Loan and collateral tokens must transfer the exact requested amount, must not rebase during the operation, and must not call back into the protocol during transfer.
+Before applying the settlement, the core sends the resolved amounts to the controller. The controller may allow or reject the settlement, but it cannot change those amounts. The core does not check borrower health; the queue and settlement policies below provide that additional policy layer.
 
 ## Risk queue and bad-debt gate
 
-The controller tracks borrowers that have both debt and nonzero raw collateral in a max-heap. A borrower with debt but zero collateral is not tracked: its policy quotes are empty, and a direct core settlement cannot seize an allowed positive collateral amount. The position must receive collateral, be repaid, or be handled through liquidation. A max-heap is a queue whose first item has the largest key. The ordering key is:
+The queue selects one borrower for automatic settlement during a lender exit. This borrower is the queue root.
+
+During normal operation, every borrower with debt stays in the queue until that debt is cleared. A collateral withdrawal cannot take the last collateral from a position with debt. A settlement of a solvent position cannot exhaust its collateral while leaving debt, and liquidation clears the remaining debt when it exhausts collateral. The queue can therefore remove an entry when either balance reaches zero.
+
+A max-heap is a queue whose first item has the largest key. The ordering key is:
 
 ```text
 riskKey = borrowShares * 1e18 / rawCollateral
@@ -70,16 +50,25 @@ riskKey = borrowShares * 1e18 / rawCollateral
 
 `rawCollateral` is the collateral-token balance before oracle conversion, and the integer division rounds down. Within one market, every borrower uses the same borrow-share rate and collateral price, so the unrounded ratio is monotonic in LTV. The stored key is a rounded risk estimate, not an exact onchain LTV. The heap root has the largest stored key. Different exact ratios can have the same key, and borrowers with equal keys are not ordered by exact LTV. The core calls the controller before applying each position change; the controller projects the resulting position and updates or removes that borrower's queue entry.
 
-Before authorizing any settlement, the controller checks the tracked root for bad debt. If that root's debt value exceeds its collateral value, every settlement path reverts until the state is resolved outside settlement, for example through repayment or liquidation. The check is constant-time and covers only the selected root; it does not scan all tracked borrowers or untracked zero-collateral debt.
+Before authorizing any settlement, the controller checks the tracked root for bad debt. If that root's debt value exceeds its collateral value, every settlement path reverts until the root becomes solvent or its debt is cleared. Checking one borrower keeps the cost independent of queue length, but it does not prove that every other borrower is solvent.
 
-> [!NOTE]
-> **Accepted root-only bad-debt detection risk.** Rounded queue keys can leave a solvent borrower at the root while another borrower with the same key is already in bad debt. The root-only check can then miss the bad debt, allowing settlement to shift the later loss to remaining suppliers.
+> [!WARNING]
+> **A rounded root check can miss an insolvent borrower.** Two borrowers can have the same rounded `riskKey` even when the non-root borrower's unrounded share-to-collateral ratio is higher. The heap may then keep the other borrower at the root. Near the insolvency boundary, the root can pass the bad-debt test while the tied non-root borrower is already insolvent.
 >
-> Liquidation is available before bad debt and normally acts first, but this is not guaranteed. See ADR 013 for ordinary bad debt.
+> This does not change the missed position by itself. To create zero-collateral debt, the borrower must also have enabled personal settlement. A caller must then select a partial cut whose rounded collateral payout equals the borrower's full collateral balance while borrow shares remain.
+>
+> The controller then removes the zero-collateral borrower from the queue, while the core keeps the remaining debt shares. If that debt is later written off, the remaining suppliers take the loss. The remaining debt can be much larger than one raw loan-token unit.
+>
+> Positions become liquidatable before insolvency, and normal operation assumes that liquidators act in that window. This path also requires the exact `riskKey` tie, personal opt-in, and a partial cut that takes all collateral while leaving debt. Under that assumption, the combination is expected to be extremely rare, although the contracts allow it.
+
+> [!WARNING]
+> **Liquidation-loss boundary.** The bad-debt check compares debt with 100% of collateral value and does not account for the liquidation incentive factor (`LIF`). Ignoring raw-unit rounding, a root with `1 / LIF < LTV <= 100%` passes the settlement gate even though a collateral-exhausting liquidation would write unpaid debt off against suppliers.
+>
+> The design assumes liquidators act once `LTV > LLTV`, before a position reaches this range. The contracts do not enforce that timing.
 
 ## Two settlement policies
 
-The two policies serve different purposes. A borrower enables personal settlement by selecting a target LTV. Root policy requires no borrower action and allows the current queue root to be settled during a lender exit. Both policies first calculate a loan-asset allowance, cap it by the borrower's debt, and convert it to the borrow-share limit enforced at execution. If either debt value or oracle-priced collateral value is zero, both policy candidates are empty. This includes a zero oracle price and a positive price that rounds the collateral value to zero; a direct core call cannot bypass the core's collateral checks.
+A borrower enables personal settlement by selecting a target LTV. Root policy requires no borrower action and allows the current queue root to be settled during a lender exit. Both policies calculate a loan-asset allowance, cap it by the borrower's debt, and convert it to the borrow-share limit enforced at execution. Both candidates are empty when debt or oracle-valued collateral is zero.
 
 ### Personal settlement target
 
@@ -93,7 +82,11 @@ personalSliceAssets =
 
 Here `debtAssets` is the borrower's share debt rounded up, while `collateralValue` prices its entire raw collateral balance rounded down. All raw collateral counts, including collateral that is not yet active for borrowing under the [activation rules](market-controller.md#collateral-activation). The final division rounds down.
 
-The result is zero when debt or priced collateral value is zero, no target is set, or the current LTV is already at or below the target. A positive personal allowance is available regardless of queue position and current market liquidity. It opts the borrower into settlement by any supplier whose core position is properly authorized; it does not select a particular lender or receiver. Only the borrower can change the target. Closing the position does not clear it: the target applies to future debt until the borrower sets it to zero. The queue's collateral-dust rule does not increase the personal allowance.
+The result is zero when debt or priced collateral value is zero, no target is set, or the current LTV is already at or below the target. A positive allowance lets any properly authorized supplier target the borrower, regardless of queue position or free liquidity. The borrower selects only the target LTV, not the supplier or receiver.
+
+A cut within the personal allowance is treated as personal even when the borrower is the current root. The root-only rule that promotes a small collateral remainder to a full close and the settleable-supply limit do not apply, even when settleable supply is zero. A larger cut is treated as root policy and must pass every root-policy check.
+
+Only the borrower can change the target. Closing the position does not clear it: the target applies to future debt until the borrower sets it to zero.
 
 > **Example.** Debt is 80 loan assets, collateral value is 100, and the target is 50%. The formula returns a settlement amount of 60. Ignoring token-unit rounding, settlement leaves debt of 20 and collateral value of 40, which is 50% LTV.
 
@@ -166,8 +159,8 @@ Passing a zero budget asks for the policy quote without budget reduction and is 
 
 The controller exposes two views over this calculation:
 
-- `settlementFor(borrower, budgetSupplyShares)` contains independently budgeted personal and prospective root-policy candidates. They are alternatives, not amounts to add together. The root-policy candidate is executable only if that borrower is still the live root;
-- `nextSettlementBorrower(budgetSupplyShares)` returns the live root and whichever of its personal or root-policy allowances is larger, budgeted to the supplied core shares. An empty queue returns the zero address and an empty candidate.
+- [`settlementFor`](api/lido-lend-market-controller.md#settlementfor) contains independently budgeted personal and prospective root-policy candidates. They are alternatives, not amounts to add together. The root-policy candidate is executable only if that borrower is still the live root;
+- [`nextSettlementBorrower`](api/lido-lend-market-controller.md#nextsettlementborrower) returns the live root and whichever of its personal or root-policy allowances is larger, budgeted to the supplied core shares. An empty queue returns the zero address and an empty candidate.
 
 Quotes simulate pending interest at the time of the read. The vault consumes each quote immediately without an intervening market-state change. A quote read for a later direct-core transaction is state-dependent: elapsed interest or another transaction can change debt, supply, the queue root, oracle price, settlement policy, personal target, or the settling position before inclusion.
 
@@ -175,34 +168,40 @@ Quotes simulate pending interest at the time of the read. The vault consumes eac
 
 The hook validates the core's exact borrow-share cancellation and its live converted asset amounts. The table below describes the settlement-policy decision after the core input checks, controller pause check, and borrow-share-rate transition guard. Rows are evaluated from top to bottom.
 
-- `P` is the personal policy allowance in borrow shares before supply-budget reduction.
-- `R` is the effective root-policy allowance in borrow shares before supply-budget reduction, or zero when the target borrower is not the live root.
-- `C` is the positive number of borrow shares actually canceled by the core.
-- `A` is the corresponding debt canceled in loan assets.
-- `T` is the settling supplier's live settleable supply in loan assets, as defined below.
-
-| First matching condition | Result |
-|---|---|
-| The live queue root has bad debt | Revert `SettlementBadDebt` for every settlement target. This check covers only the selected root; it is not a scan of every borrower. |
-| `C <= P` | Allow a personal-policy settlement whether or not the borrower is the root. Do not check `T`. |
-| The borrower is not the live root | Revert `SettlementExceedsAllowed`. |
-| `C > max(P, R)` | Revert `SettlementExceedsAllowed`. |
-| `A > T` | Revert `SettlementExceedsSettleableSupply`. |
-| Otherwise: the borrower is the root, `P < C <= max(P, R)`, and `A <= T` | Allow a root-policy settlement. |
-
-The policy limits are converted to borrow shares before comparison. If personal and root-policy asset limits round to the same borrow-share amount, the settlement fits the personal limit and the settleable-supply check does not apply.
+The core prices the collateral before calling the hook. The controller reads the oracle again to evaluate queue health and policy limits. Its decision assumes that these reads, and any earlier vault quote in the same transaction, return the same price.
 
 Settleable supply is:
 
 ```text
-supplierSupplyAssets  = supplier's live core supply value, rounded down
-marketFreeLiquidity   = max(totalSupplyAssets - totalBorrowAssets, 0)
+supplierSupplyAssets   = supplier's live core supply value, rounded down
+marketFreeLiquidity    = max(totalSupplyAssets - totalBorrowAssets, 0)
 settleableSupplyAssets = max(supplierSupplyAssets - marketFreeLiquidity, 0)
 ```
 
-This models the supplier withdrawing all available market liquidity first: root policy can convert only the part of that supplier position that would remain. A personal settlement target is the borrower's own authorization and therefore does not use this limit. At the exact boundary, a root-policy settlement equal to the settleable supply succeeds; one raw loan-token unit more reverts. The calculation uses live market totals: a withdrawal or borrow earlier in the same transaction can change the result, and there is no prior-block snapshot or cooldown.
+This models the supplier withdrawing all available market liquidity first: root policy can convert only the part of that supplier position that would remain. Personal policy is the borrower's own authorization and does not use this limit. The calculation uses live market totals, so an earlier withdrawal or borrow in the same transaction can change it.
 
-Every successful settlement also passes the [borrow-share-rate guard](market-controller.md#borrow-share-rate-invariant): settlement cannot create a new ceiling breach, but it may reduce debt while cleaning up an existing breach. The controller removes seized collateral from the borrower's activation buckets before the core reduces raw collateral. Freeze, guardian bans, and activation locks do not block settlement because it reduces the position instead of increasing risk. A controller pause blocks it because pause blocks every market hook.
+- `P` is the personal policy allowance in borrow shares before supply-budget reduction.
+- `R` is the effective root-policy allowance in borrow shares before supply-budget reduction, or zero when the target borrower is not the live root.
+- `C` is the positive number of borrow shares actually canceled by the core.
+- `A` is the corresponding debt canceled in loan assets.
+- `T` is the settling supplier's live settleable supply in loan assets.
+
+| First matching condition | Result |
+|---|---|
+| The live queue root has bad debt | Reject every settlement target. |
+| `C <= P` | Allow a personal-policy settlement whether or not the borrower is the root. Do not check `T`. |
+| The borrower is not the live root | Reject the settlement. |
+| `C > max(P, R)` | Reject the settlement. |
+| `A > T` | Reject the settlement. |
+| Otherwise: the borrower is the root, `P < C <= max(P, R)`, and `A <= T` | Allow a root-policy settlement. |
+
+The table classifies the whole cut; it never splits one settlement between the two policies. If `C <= P`, the cut is personal and `T` is ignored. Otherwise the borrower must be the root, the cut must fit the root allowance, and the entire canceled asset amount must fit `T`. When market free liquidity is zero, `T` equals the supplier's full live supply value.
+
+The policy limits are converted to borrow shares before comparison. If the personal and root-policy asset limits round to the same borrow-share amount, the cut is personal.
+
+At the exact boundary, a root-policy settlement equal to the settleable supply succeeds; one raw loan-token unit more is rejected. There is no prior-block snapshot or cooldown.
+
+Every successful settlement also passes the [borrow-share-rate guard](market-controller.md#borrow-share-rate-transition-guard): settlement cannot create a new ceiling breach, but it may reduce debt while cleaning up an existing breach. The controller removes seized collateral from the borrower's activation buckets before the core reduces raw collateral. Freeze, guardian bans, and activation locks do not block settlement because it reduces the position instead of increasing risk. A controller pause blocks it because pause blocks every market hook.
 
 ## Vault accounting boundary
 
@@ -229,7 +228,7 @@ Both vault exits require nonzero requested shares, a nonzero receiver, and a req
 
 ## Targeted vault settlement
 
-Targeted settlement is liquidity-neutral: it does not withdraw or reserve free loan assets. The caller supplies an ordered borrower list. For each borrower, the vault asks the controller for the **personal** settlement budgeted to the remaining supply shares and sends the resulting borrow-share amount unchanged to the core. Root policy is reserved for the queue-driven fallback path and cannot be invoked through the caller's list.
+Targeted settlement does not withdraw or reserve existing loan-token liquidity. The caller supplies an ordered borrower list. For each borrower, the vault asks the controller for the **personal** settlement budgeted to the remaining supply shares and sends the resulting borrow-share amount unchanged to the core. Root policy is reserved for the queue-driven fallback path and cannot be invoked through the caller's list.
 
 Borrowers with no positive personal settlement consume nothing. Iteration stops when the budget is exhausted or the list ends. If no core supply share is consumed across the entire list, the call reverts instead of silently burning nothing.
 
@@ -240,7 +239,7 @@ vaultSharesBurned =
     ceil(requestedVaultShares * consumedSupplyShares / settlingSupplyShares)
 ```
 
-The owner and caller may differ. In that case the caller must have sufficient vault-share allowance for the amount actually burned. Borrowers with empty candidates are skipped. Any later revert—from quoting, the oracle, the controller, the core, a token transfer, or the final allowance check—aborts the batch and rolls back every earlier settlement. A successful call emits one aggregate vault `Settled` event; each core settlement emits a separate borrower-specific `Settle` event.
+The owner and caller may differ. In that case the caller must have sufficient vault-share allowance for the amount actually burned. An attempted settlement that reverts is not skipped. A successful call emits one aggregate vault `Settled` event; each core settlement emits a separate borrower-specific `Settle` event.
 
 ## Vault fallback exit
 
@@ -262,20 +261,19 @@ The loop stops when:
 - the queue produces no executable positive settlement; or
 - the caller's iteration bound is reached.
 
-A zero iteration input selects the contract's default bound of 150 settlement attempts. Each root quote consumes one iteration, including a zero candidate that stops the loop. The bound counts attempts, not distinct borrowers: a partial settlement can leave the same borrower at the root for another attempt. Queue or iteration exhaustion returns a partial result when the call has made progress, so a large exit may need repeated calls. A positive root candidate that the core cannot execute is not skipped.
+A zero iteration input selects the contract's default bound of 150 settlement attempts. Each root quote consumes one iteration, including a zero candidate that stops the loop. The bound counts attempts, not distinct borrowers: a partial settlement can leave the same borrower at the root for another attempt. Queue or iteration exhaustion returns a partial result when the call has made progress, so a large exit may need repeated calls. A positive root candidate that fails in the core is not skipped; it reverts the call.
 
 > [!NOTE]
 > **Accepted head-of-line rounding boundary.** A positive root quote can still produce zero collateral: canceled debt rounds up, while the collateral seizure is calculated separately and rounds down. `LidoLend.settle()` then reverts before the controller hook, so `fallbackExit` cannot advance to later borrowers.
 >
-> This concerns a dust-sized settlement cut, not necessarily a dust collateral balance. It is reachable through deliberately tiny debt, a partial-repayment remainder, or budget clipping, but is not expected for normally sized WETH/wstETH settlements. A larger budget can fix budget clipping; otherwise, when repayment is available, repaying the root's exact remaining borrow shares removes it from the queue. There is no automatic skip path.
+> This failure depends on the settlement amount, not the borrower's collateral balance. Tiny debt or a partial-repayment remainder can make the calculated collateral payout round to zero. The operational mitigation is to repay the root's exact remaining borrow shares on its behalf. Once that succeeds, `fallbackExit` can be retried.
 
 The vault burns shares for the liquid withdrawal plus the pro-rata shares covered by settlement. If neither step burns any share, the call reverts.
 
-Any later revert in fallback exit rolls back the complete transaction, including the earlier liquid withdrawal and successful settlement iterations. Queue exhaustion or the effective iteration bound may return a partial result, but an oracle, controller, core, token-transfer, or allowance failure does not.
-
 The return value `sharesBurned` covers both steps. The `FallbackExit` event is emitted only when the call reaches queue settlement, and its `sharesBurned` field covers that step alone. The standard ERC-4626 `Withdraw` event describes the liquid withdrawal. Each core settlement emits a borrower-specific `Settle` event, which is required to attribute an aggregate multi-borrower exit.
 
-At the specific final boundary where the vault is the only supplier, `totalSupplyAssets == totalBorrowAssets`, and fallback exit consumes the vault's full managed supply budget, Morpho's virtual shares can leave zero-value core supply shares and residual total borrow assets. The lender can still burn all vault shares and exit because the residual does not represent a remaining lender claim. Its raw size depends on the live share price; there is no universal one-raw-unit bound.
+> [!NOTE]
+> **Final virtual-share boundary.** At the specific final boundary where the vault is the only supplier, `totalSupplyAssets == totalBorrowAssets`, and fallback exit consumes the vault's full managed supply budget, Morpho's virtual shares can leave zero-value core supply shares and residual total borrow assets. The lender can still burn all vault shares and exit because the residual does not represent a remaining lender claim. Its raw size depends on the live share price; there is no universal one-raw-unit bound.
 
 ## Related references
 
@@ -283,4 +281,4 @@ At the specific final boundary where the vault is the only supplier, `totalSuppl
 - [Market controller](market-controller.md) — hook lifecycle, collateral activation, freeze/pause, and share-rate guard.
 - [LidoLendERC4626 API](api/lido-lend-erc4626.md) — generated vault surface.
 - [LidoLendMarketController API](api/lido-lend-market-controller.md) — generated queue, quote, and policy surface.
-- [Lido Lend core specification](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md) — canonical core accounting and trust assumptions.
+- [Lido Lend core specification](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md#settlement) — canonical core settlement accounting and trust assumptions.

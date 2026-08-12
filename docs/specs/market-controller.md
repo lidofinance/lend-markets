@@ -1,6 +1,6 @@
 # Market Controller Policy
 
-`LidoLendMarketController` is the policy layer for one Lido Lend market. The core remains the source of truth for balances, shares, interest, solvency, and token transfers. The controller keeps separate policy state and either allows a core action or reverts the transaction; it cannot change the amounts resolved by the core or take custody of funds.
+`LidoLendMarketController` is the policy layer for one Lido Lend market. The core remains the source of truth for balances, shares, interest, solvency, and token transfers. The controller keeps separate policy state and either allows a core action or reverts. It cannot change the amounts resolved by the core. Binding a controller does not let that address spend user tokens or act for user accounts.
 
 The controller adds:
 
@@ -14,23 +14,23 @@ Settlement policy is specified in [Settlement and lender exits](lender-settlemen
 
 ## Policy boundary
 
-Each controller accepts hooks only from the Lido Lend core and only for its bound market. Most balance-changing actions accrue interest and resolve their asset and share amounts before the hook, but have not yet applied the requested action's accounting. Collateral supply skips accrual. An explicit interest-accrual call invokes the hook before accrual. A later controller, core, callback, or token-transfer revert rolls back the entire call, including prior accrual and controller state changes.
+Each controller accepts hooks only from the Lido Lend core and only for its bound market. It also rejects every hook while paused. Before most hooks, the core accrues interest and converts the request into the exact asset and share amounts that the action will use. The requested action has not yet changed accounting. Collateral supply skips accrual, while an explicit interest-accrual call invokes the hook before accrual.
 
-After caller, market, and pause validation, the action-specific policy is:
+After these shared checks, the controller adds the action-specific rules below. The core applies its own accounting, authorization, liquidity, and solvency checks separately.
 
-| Core action | Controller policy |
+| Core action | Additional controller rule |
 |---|---|
 | Supply loan assets | Enforce the supply cap against accrued supply plus the incoming assets. |
-| Withdraw loan assets | No additional action-specific policy. |
+| Withdraw loan assets | None. |
 | Borrow | Enforce freeze, bans, active-collateral capacity, and the borrow-share-rate guard; synchronize activation and the settlement queue. |
 | Repay | Enforce the borrow-share-rate transition guard and synchronize the settlement queue. |
 | Supply collateral | Synchronize existing activation, classify the deposit, and update the settlement queue. |
 | Withdraw collateral | Enforce freeze, activation, lock, and active-collateral rules; update the settlement queue. |
 | Liquidate | Reduce activation balances and update the settlement queue. The borrow-share-rate guard does not apply. |
-| Accrue interest | No additional action-specific policy. |
+| Accrue interest | None. |
 | Settle | Enforce the borrow-share-rate transition, bad-debt, eligibility, policy-limit, and lender-tail gates; reduce activation balances and update the queue. |
 
-An unknown future hook reverts. “No additional policy” means only that the controller adds no action-specific check; the core's accounting, authorization, liquidity, and solvency rules still apply.
+An unknown future hook reverts.
 
 ### Lender supply cap
 
@@ -52,10 +52,18 @@ borrowCapacity = 0                                      when activeCollateral < 
 borrowCapacity = floor(collateralValue * LLTV / 1e18)  otherwise
 ```
 
-Existing debt is therefore rounded up, while collateral value and LLTV capacity are rounded down. A collateral withdrawal with open debt must leave `debtAssets <= borrowCapacity`. A borrow checks `current debtAssets + resolved borrow assets <= borrowCapacity`.
+Existing debt is therefore rounded up, while collateral value and LLTV capacity are rounded down. A collateral withdrawal with open debt must leave `debtAssets <= borrowCapacity`.
 
-> [!WARNING]
-> **Known active-collateral rounding gap.** After the controller accepts a borrow, the core recomputes the borrower's debt from post-borrow shares and market totals. That value can round above the controller's `current debt + resolved assets` estimate. Inactive collateral can therefore back the difference, for which the controller enforces no separate bound. Closing this implementation gap requires both checks to project the same post-borrow debt.
+A caller may specify a borrow as a loan-token amount or as a number of borrow shares. The core calculates the other value before the hook. If `borrowAssets` is the exact loan-token amount that the core will transfer, the controller requires:
+
+```text
+debtAssets + borrowAssets <= borrowCapacity
+```
+
+> [!NOTE]
+> **Post-borrow rounding may use inactive collateral.** The controller checks current debt plus `borrowAssets`. The core then recomputes debt from the updated borrower shares and market totals. Rounding can make the second value higher.
+>
+> For a borrow specified in shares, the difference is at most one smallest loan-token unit. For a borrow specified in assets, there is no unconditional one-unit bound: the difference can exceed one unit when one borrow share is worth more than one smallest loan-token unit. The core checks the recomputed debt against the borrower's full collateral at the market's LLTV. Inactive collateral may cover the rounding difference, but a borrow that fails this full-collateral check still reverts.
 
 A borrow also fails when the caller, debt owner, or loan receiver is banned. Guardian flags and the stored suspect snapshot can extend the debt owner's activation delay when their configured surcharge is nonzero; only a ban directly blocks borrowing.
 
@@ -77,19 +85,18 @@ Only `dust` and `activating` are stored by the activation subsystem:
 active = core collateral - dust - activating
 ```
 
-The buckets can coexist. All activating collateral for one borrower shares one start time and stored base delay; this document calls it an **activating lot**.
+The buckets can coexist. All activating collateral for one borrower shares one start time and stored base delay; this document calls it an **activating lot**. A collateral-supply hook first synchronizes any existing lot, then classifies the new amount as follows:
 
 ```mermaid
-flowchart TD
-    Incoming["New collateral"] --> Instant{"Caller has instant activation?"}
-    Instant -->|"yes"| Active["Incoming amount is active immediately"]
-    Instant -->|"no"| Combine["Combine with existing dust"]
-    Combine --> Threshold{"Combined amount reaches minActivationAmount?"}
-    Threshold -->|"no"| Dust["Keep as dust"]
-    Threshold -->|"yes"| Activating["Move the combined amount to the activating lot and market inflow"]
-    Activating --> Gate{"A later sync passes the maturation gate?"}
-    Gate -->|"no"| Activating
-    Gate -->|"yes"| Mature["Clear activating; the lot becomes active"]
+flowchart LR
+    New["New collateral"] --> Instant{"Instant-enabled caller?"}
+    Instant -->|"yes"| ActiveNow["New amount active"]
+    Instant -->|"no"| Minimum{"Amount + dust >=<br/>minActivationAmount?"}
+    Minimum -->|"no"| Dust["Remain dust"]
+    Minimum -->|"yes"| Activating["Add amount + dust to<br/>activating lot and inflow"]
+    Activating --> Gate{"Later sync<br/>passes the gate?"}
+    Gate -->|"no"| Waiting["Remain activating"]
+    Gate -->|"yes"| ActiveLater["Lot becomes active"]
 ```
 
 ### Classifying a collateral supply
@@ -114,7 +121,7 @@ baseDelay = minActivationDelay
 baseDelay = maxActivationDelay when effectiveInflow >= maxDelayInflow
 ```
 
-Before a new contribution, stored inflow decays as:
+Before a new contribution, stored inflow decays as shown below, where `elapsed` is the time since the inflow snapshot was last updated:
 
 ```text
 decay = floor(maxDelayInflow * elapsed / maxActivationDelay)
@@ -125,7 +132,7 @@ Splitting a deposit across addresses does not reset this market-wide accumulator
 
 The decay formula always uses the current configuration. Changing `maxDelayInflow` or `maxActivationDelay` therefore reinterprets the existing inflow snapshot. Lowering the cap does not immediately clamp the stored value; a later threshold-crossing normal supply rewrites and clamps it.
 
-Within one transaction, a voluntary withdrawal or forced seizure reverses only activating inflow contributed by the same borrower in that transaction. It cannot erase an earlier transaction's baseline or another borrower's contribution.
+To keep an add-then-remove sequence from inflating future activation delays, the controller records each borrower's inflow contribution during the transaction. If that borrower's collateral is later withdrawn, liquidated, or settled in the same transaction, the controller subtracts at most that recorded contribution. Older inflow and other borrowers' contributions remain unchanged.
 
 ### Maturation gate
 
@@ -159,11 +166,11 @@ A voluntary collateral withdrawal first runs the maturation sync, then consumes:
 2. activating collateral above the current lock floor; and
 3. active collateral.
 
-For `activatingLockDuration` from the lot's start, up to `activatingLockAmount` remains in `activating` and cannot be withdrawn voluntarily. Active collateral may still be withdrawn while that floor remains intact; the lock itself causes a revert only if the requested amount would cross it. Freeze, active-collateral health, and core checks still apply. Once the lock expires, the amount is withdrawable even if the lot has not matured.
+For `activatingLockDuration` from the lot's start, up to `activatingLockAmount` remains in `activating` and cannot be withdrawn voluntarily. Active collateral may still be withdrawn while that floor remains intact; the lock itself causes a revert only if the requested amount would cross it. Freeze, active-collateral health, and core checks still apply. Once the lock expires, it no longer restricts withdrawal, even if the lot has not matured.
 
 With no lock floor, a withdrawal that leaves a nonzero activating amount but a total inactive remainder below the current `minActivationAmount` moves the activating remainder to dust and clears its timer. Demotion is skipped while a lock applies because dust is freely withdrawable.
 
-Liquidation and settlement are forced reductions. They do not mature the lot first and ignore the voluntary lock. They consume dust, then activating, then active collateral, and apply the same sub-threshold demotion with a zero lock floor. Freeze and guardian bans do not block these paths.
+Liquidation and settlement are forced reductions. They do not mature the lot first and ignore the voluntary lock. They consume dust, then activating, then active collateral. If the remaining inactive collateral is below `minActivationAmount`, its activating part becomes dust. Freeze and guardian bans do not block these paths.
 
 ### Configuration changes
 
@@ -176,13 +183,15 @@ Configuration changes do not move collateral between buckets. A lot keeps its st
 | Freeze | Borrowing; debt-bearing collateral withdrawal; maturation from activating to active. | Loan-asset supply and withdrawal, collateral supply, repay, liquidation, settlement, and debt-free collateral withdrawal subject to the activation lock. |
 | Pause | Every core action that invokes the controller, including repayment, liquidation, settlement, and explicit interest accrual. | Core calls without a market hook, including flash loans and authorization changes; ERC-4626 vault-share transfers; controller administration. |
 
-Freeze keeps debt reduction and lender exits live, so it is insufficient when liquidation or settlement is itself unsafe, for example with a stale oracle. Classification and instant activation continue while frozen, but borrowing and maturation remain blocked.
+Freeze keeps debt reduction and lender exits available. Use pause when market turbulence or another incident makes liquidation or settlement unsafe. Classification and instant activation continue while frozen, but borrowing and maturation remain blocked.
 
-Pause is the controller-wide stop. It prevents pending interest from being committed while paused, but does not forgive it: after resume, the next accrual covers the full elapsed interval. A finite pause expires automatically; an indefinite pause requires an authorized resume. Authorities and intended holders are listed in [Roles](roles.md).
+Pause blocks every market action that invokes the controller. It does not stop the interest clock: a later successful accrual covers the time since the market's last update. A finite pause expires automatically; an indefinite pause requires an authorized resume. Authorities and intended holders are listed in [Roles](roles.md).
 
 ## Borrow-share-rate transition guard
 
-Near zero total borrow assets, rounding can leave borrow shares behind. Repeating that boundary can make later debt mint disproportionate shares. The guard compares raw market totals with the core's virtual offsets:
+Debt is recorded in both assets and shares. Near an empty debt book, repayment can reduce `totalBorrowAssets` to zero while some `totalBorrowShares` remain. Those remaining shares make the shares-to-assets ratio unusually high, so a small later borrow can mint an unusually large number of new shares. Without a limit, repeating this borrow-and-near-full-repay cycle could overflow the `uint128` field that stores the share total and prevent new debt from being recorded.
+
+The guard limits this distortion by comparing raw market totals with the core's virtual offsets:
 
 ```text
 totalBorrowShares + 1e6 <= 1e7 * (totalBorrowAssets + 1)
@@ -193,11 +202,11 @@ The core's natural empty-market ratio is `1e6` virtual shares per raw loan-asset
 This is a transition guard, not a permanent market invariant:
 
 - every borrow must leave the market within the ceiling, and a share-based borrow resolving to zero assets reverts;
-- repay and settlement may not cross from at or below the ceiling to above it;
-- when the market already starts above the ceiling, repay and settlement bypass the guard even if that call worsens the ratio; and
+- repay and settlement may not move a market from at or below the ceiling to above it;
+- when the market already starts above the ceiling, repay and settlement remain available for cleanup even if that particular call worsens the ratio; and
 - liquidation is exempt and may move the market above the ceiling.
 
-Rounding in debt reduction can lower total assets faster than total shares. If pre-hook accrual leaves the market above the ceiling, every borrow reverts because borrow conversion cannot reduce the ratio. Positive interest or another permitted transition may restore it; a zero-asset market cannot recover through interest.
+If pre-hook accrual leaves the market above the ceiling, every borrow reverts. Interest can lower the ratio only while `totalBorrowAssets` is nonzero. When the asset total is zero, exact-share repayment can remove the stranded shares.
 
 ## Related specifications
 

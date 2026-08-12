@@ -1,322 +1,150 @@
 # Lido Lend Architecture
 
-[Lido Lend](https://github.com/lidofinance/lido-lend/) is a lending protocol built on a fork of Morpho Blue. Lenders supply loan assets. Borrowers provide collateral and borrow those assets. Repayment returns loan assets to the market, and liquidators reduce debt when a position becomes unhealthy.
+Lido Lend is an isolated-market lending protocol built on a fork of Morpho Blue. Each market lets lenders supply one loan token and lets borrowers borrow that token against one collateral token. Unsafe positions may be liquidated. If a successful liquidation leaves debt after collateral reaches zero, the core writes that debt off against suppliers.
 
-One shared `LidoLend` core stores the canonical accounting for every market. Each market selects its own loan token, collateral token, oracle, interest-rate model, and liquidation loan-to-value (LLTV). Positions and totals are keyed by market, but the accounting logic is shared. An optional controller applies Lido-specific policy before the core changes market state. Vaults, Exit Books, and Bundler3 add user workflows without becoming a second source of market accounting.
+The shared `LidoLend` core keeps the canonical market balances and accounting. The Lido-specific contracts add per-market policy, delayed collateral activation, guardian signals, tokenized lender vaults, and new lender exit paths. They do not maintain a second copy of market balances.
 
-Start here, then follow the links to the mechanism guides and generated API pages:
+## One standard market at a glance
 
-- **[System maps](#system-maps)** show the runtime and governance relationships.
-- **[Contracts](#contracts)** separates the market runtime, deployment/governance periphery, and optional user services.
-- **[Runtime paths](#runtime-paths)** follows a controlled market action and introduces the borrower and lender flows.
-- **[Mechanism guides](#mechanism-guides)** route into the detailed cross-contract state machines and formulas.
-- **[System controls](#system-controls)**, [roles](#roles-and-governance), and [trust boundaries](#trust-boundaries) define the authority and assumptions around those flows.
-
-> [!NOTE]
-> The concrete [WETH / wstETH market](markets/eth-steth.md) describes market-specific assets, oracle assumptions, and parameters. Privileged actions are listed in [roles.md](roles.md).
-
-## Terms used in this document
-
-| Term | Meaning |
-|---|---|
-| Core | The shared `LidoLend` contract that stores market positions and totals and moves market tokens. |
-| Market | One isolated lending pool identified by its tokens, oracle, interest-rate model, and LLTV. |
-| Controller | A policy contract bound to one market. It can allow or revert hooked actions but cannot change their resolved amounts. |
-| Hook | A call from the core to a market controller before the core commits an action. |
-| IRM | Interest-rate model. It calculates the market's borrow rate. |
-| LLTV | Liquidation loan-to-value. It is the debt-to-collateral limit used by the core health check. |
-| ERC-4626 vault | A tokenized lender position whose shares represent a claim on the vault's managed core supply. |
-| Free liquidity | Supplied loan assets that are not currently borrowed and can therefore be withdrawn. |
-| WAD / BPS | Fixed-point denominators: `1e18` for WAD and `10_000` for basis points. |
-
-## System maps
-
-The first diagram shows the normal lending path for one controller-bound market. A controller-less market omits the controller and guardian branch, but still uses the fork-wide core rules.
+Each market selects a loan token, a collateral token, an oracle, an interest-rate model (`IRM`), and a liquidation loan-to-value (`LLTV`). The oracle values collateral in loan-token units. The IRM determines how debt and lender claims grow over time. LLTV is the borrowing limit used by the core health check.
 
 ```mermaid
 flowchart LR
-    subgraph Users["Users"]
-        Borrower["Borrower"]
-        DirectLender["Direct lender"]
-        VaultLender["Vault lender"]
-    end
+    DirectLender["Direct lender"] -->|"supply, withdraw, settle"| Core["LidoLend core<br/>balances, shares, and tokens"]
+    VaultLender["Vault lender"] -->|"deposit and exit"| Vault["LidoLendERC4626<br/>one managed lender position"]
+    Vault -->|"supply, withdraw, settle"| Core
 
-    subgraph Runtime["Runtime around one controlled market"]
-        Core["LidoLend core<br/>canonical positions and totals"]
-        Controller["Market controller<br/>pre-state policy gate"]
-        Guardians["GuardianSignals<br/>account opinions and liveness"]
-        Oracle["Market oracle<br/>collateral price"]
-        IRM["IrmRouter and selected market IRM<br/>borrow rate"]
-        Vault["LidoLendERC4626<br/>transferable lender shares"]
-    end
+    Borrower["Borrower"] -->|"collateral, borrow, repay"| Core
+    Liquidator["Liquidator"] -->|"liquidate an unsafe position"| Core
 
-    Borrower -->|"collateral, borrow, repay"| Core
-    DirectLender -->|"supply and withdraw"| Core
-    VaultLender -->|"deposit and redeem"| Vault
-    Vault -->|"supplier position and settlement"| Core
+    Core -->|"policy hook"| Controller["Market controller<br/>accept or reject"]
+    Controller -->|"read account signals"| Signals["GuardianSignals"]
+    Guardians["Guardians"] -->|"account and review-progress reports"| Signals
 
-    Core -->|"pre-state hook"| Controller
-    Controller -->|"read positions and totals"| Core
-    Controller -->|"read opinion and frontier"| Guardians
-    Core -->|"health and settlement price"| Oracle
-    Controller -->|"policy and queue price"| Oracle
-    Core -->|"accrue at market rate"| IRM
+    Core -->|"collateral price"| Oracle["Market oracle"]
+    Controller -->|"policy price"| Oracle
+    Core -->|"borrow rate"| Router["IrmRouter"]
+    Router -->|"forward by market"| IRM["Selected IRM"]
 ```
 
-Exit Books and Bundler3 are optional execution services. They compose calls around the same core and vault positions; they do not own market accounting.
+The core is the source of truth for supply shares, borrow shares, collateral, market totals, and token custody. A direct lender owns a supply position in the core. A vault combines deposits into one core supply position and gives its depositors transferable ERC-4626 shares.
 
-```mermaid
-flowchart LR
-    User["User or filler"]
-    Bundler["Bundler3 dispatcher"]
-    Adapters["Bundler3 adapters"]
-    ExitBook["Exit Book"]
-    Vault["LidoLendERC4626"]
-    Core["LidoLend core"]
-    LidoAssets["ETH, WETH, stETH, and wstETH"]
+In a controller-bound market, the core calls the controller before most market actions. The controller applies the supply cap, collateral-activation rules, guardian signals, freeze and pause state, and settlement policy. It may allow the action or revert, but it cannot change the amounts calculated by the core. Binding a controller does not let that address spend user tokens or act for user accounts.
 
-    User -->|"direct calls"| ExitBook
-    User -->|"ordered transaction"| Bundler
-    Bundler -->|"adapter actions"| Adapters
-    Bundler -->|"fill request"| ExitBook
-    Adapters -->|"deposit or fallback exit"| Vault
-    Adapters -->|"supply or repay"| Core
-    Adapters -->|"stake, wrap, or unwrap"| LidoAssets
-    ExitBook -->|"withdraw vault position"| Vault
-    ExitBook -->|"withdraw direct supply"| Core
-```
+`GuardianSignals` stores guardian reports about accounts and how far the committee has reviewed protocol activity. The controller uses those reports to block new borrowing or delay collateral activation. `GuardianSignals` does not call the core or move tokens.
 
-Deployment and control are separate from the runtime accounting path. The factory creates initialized components bound to the intended market id, but it does not create the core market. Governance configures the market's IRM route and then creates the market through `LidoLendOwner`, immutably registering its controller.
+## Main user flows
 
-```mermaid
-flowchart LR
-    Governance["DAO governance"]
-    Owner["LidoLendOwner<br/>stable governance entry contract"]
-    ProxyAdmin["Proxy administrator"]
-    Factory["LidoLendMarketFactory<br/>permissionless deployment"]
-    Dashboard["RiskStewardDashboard<br/>bounded risk reduction"]
-    Breaker["CircuitBreaker<br/>temporary emergency pause"]
+### Borrowing and liquidation
 
-    Core["LidoLend core"]
-    IrmRouter["IrmRouter"]
-    MarketIrm["AdaptiveCurveIrm or LinearKinkIrm"]
-    Oracle["Market oracle"]
-    Controller["Market controller"]
-    Guardians["GuardianSignals"]
-    Vault["LidoLendERC4626"]
-    Proxies["OssifiableProxy instances"]
+1. A borrower transfers collateral to the core.
+2. The core counts all of that collateral in its health check. The controller may require the collateral to complete an activation delay before it supports new borrowing.
+3. Once controller policy and the core health check both pass, the borrower receives loan tokens and incurs borrow shares. Interest increases the loan-token value of those shares over time.
+4. Repayment burns borrow shares. A borrower may withdraw collateral only while the remaining position passes both controller policy and the core health check.
+5. When debt exceeds the market's LLTV-adjusted collateral value, anyone may liquidate the position. The liquidator repays debt and may receive collateral. The core applies an LLTV-dependent liquidation incentive factor when calculating any collateral payout. If a successful liquidation ends with no collateral and debt remains, the core writes the remaining debt off against suppliers.
 
-    Governance -->|"exercise capability roles"| Owner
-    Governance -->|"administer proxies"| ProxyAdmin
-    Governance -->|"appoint market stewards"| Dashboard
-    Governance -->|"configure operational pausers"| Breaker
+Guardian reports do not seize collateral. They can delay activation or ban new borrowing. The full activation and guardian rules are in [Market Controller Policy](market-controller.md) and [Guardian Signals](guardian-signals.md).
 
-    Factory -.->|"deploy and initialize"| Controller
-    Factory -.->|"deploy and initialize"| Guardians
-    Factory -.->|"deploy and initialize"| Vault
+### Lender positions and exits
 
-    Owner -->|"create markets and manage core fees"| Core
-    Owner -->|"configure and unfreeze"| Controller
-    Owner -->|"manage registry policy"| Guardians
-    Governance -->|"select each market's route"| IrmRouter
-    Governance -->|"apply each market's config"| MarketIrm
-    IrmRouter -->|"forward rate calls"| MarketIrm
-    Dashboard -->|"tighten and freeze"| Controller
-    Breaker -->|"pause hooks"| Controller
-    ProxyAdmin -->|"upgrade, change admin, or ossify"| Proxies
-    Proxies -.->|"proxy calls to"| Core
-    Proxies -.->|"proxy calls to"| IrmRouter
-    Proxies -.->|"proxy calls to"| Oracle
-    Proxies -.->|"proxy calls to"| Controller
-    Proxies -.->|"proxy calls to"| Guardians
-    Proxies -.->|"proxy calls to"| Vault
-```
+A direct lender supplies loan tokens to the core and receives supply shares. A vault lender deposits loan tokens into `LidoLendERC4626`; the vault supplies them to the core and issues ERC-4626 shares to the depositor. In both cases, borrowers may use the supplied loan tokens, so the whole lender claim may not be immediately withdrawable.
 
-## Contracts
-
-This map covers deployed contracts and external runtime boundaries. Internal libraries, interfaces, and abstract base contracts are documented through the API of the concrete contracts that use them. Common structs and value types are collected in the generated [shared-types reference](api/shared-types.md).
-
-### Market runtime
-
-#### LidoLend (forked core)
-
-The Morpho Blue fork that holds canonical supply, borrow, collateral, interest, and liquidation accounting for every market. The fork adds owner-gated market creation, immutable controller binding, pre-state policy hooks, and optional [lender settlement](lender-settlement.md) that cancels borrower debt against lender supply. The controller may allow or revert an action but cannot rewrite amounts already resolved by the core. Token-global `flashLoan` has no market id and therefore remains outside controller policy.
-
-Full specification: [Lido Lend](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md). Fork provenance and local changes: [FORK_NOTES](https://github.com/lidofinance/lido-lend/blob/main/FORK_NOTES.md).
-
-#### LidoLendMarketController
-
-The per-market policy layer invoked by the core before state-changing actions. It tracks collateral activation, guardian signals, supply caps, freeze and pause state, and the settlement queue; together these rules decide whether the resolved core action may proceed.
-
-Mechanics: [Market controller](market-controller.md). API: [LidoLendMarketController](api/lido-lend-market-controller.md).
-
-#### GuardianSignals
-
-The registry of guardian opinions and liveness reports that controllers consult when deciding whether collateral may mature and an account may borrow. Opinions are keyed by market and account, so one registry can serve several markets; separate registries provide different guardian sets, quorums, or operational isolation.
-
-Mechanics: [Guardian signals](guardian-signals.md). API: [GuardianSignals](api/guardian-signals.md).
-
-#### LidoLendERC4626
-
-The tokenized lender position for one market: a standard, freely transferable ERC-4626 share over the vault's core supply position. When settlement is enabled for the market, it also exposes lender settlement exits for periods when free pool liquidity cannot satisfy a normal withdrawal. A market may have multiple wrappers, each backed by its own core supplier position; the standard component deployment creates one.
-
-Mechanics: [Lender settlement](lender-settlement.md). API: [LidoLendERC4626](api/lido-lend-erc4626.md).
-
-#### Market oracles
-
-- `WstEthRateOracle` quotes wstETH in ETH from Lido's stETH-per-wstETH accounting rate and deliberately has no market-price component. API: [WstEthRateOracle](api/wst-eth-rate-oracle.md).
-- `UsdyStableOracle` quotes USDY in a USD-stablecoin loan asset by combining the USDY redemption NAV with the stablecoin's Chainlink USD price. Its proxy storage binds the market-specific feed and decimal scale. API: [UsdyStableOracle](api/usdy-stable-oracle.md).
-
-Market-specific assumptions and oracle choices are documented in [WETH / wstETH](markets/eth-steth.md).
-
-### Deployment and governance periphery
-
-#### LidoLendOwner
-
-The direct, role-gated governance entry contract that holds the core's single `owner` authority. It gives governance one stable target while separating market creation, core fee management, controller policy and unfreezing, and guardian-registry management into independent roles; market-specific calls resolve the controller and registry through the core.
-
-API: [LidoLendOwner](api/lido-lend-owner.md).
-
-#### LidoLendMarketFactory
-
-A permissionless, stateless component factory with fixed implementations and protocol dependencies. It deploys and validates controller, ERC-4626 wrapper, and guardian-registry proxies, initializes them, assigns their final roles, and removes its temporary permissions. It does not create the market in the core: that is a separate governance action through `LidoLendOwner` after the components have been deployed and validated.
-
-API: [LidoLendMarketFactory](api/lido-lend-market-factory.md).
-
-#### RiskStewardDashboard
-
-The non-upgradeable, per-core contract for bounded risk reduction. Governance may assign one or more stewards to each market. A market steward may freeze that market or tighten a limited set of collateral-activation controls, but cannot loosen policy or unfreeze it.
-
-API: [RiskStewardDashboard](api/risk-steward-dashboard.md).
-
-#### Shared infrastructure
-
-`OssifiableProxy` delegates calls to the core, IRM router, controllers, ERC-4626 wrappers, guardian registries, and market oracles. Its admin may upgrade the implementation, change the proxy admin, or irreversibly remove upgrade authority. Proxy administration is separate from core ownership and implementation-level roles even when governance assigns them to the same holder. API: [OssifiableProxy](api/ossifiable-proxy.md).
-
-The interest-rate stack is a pinned [Lido Lend IRM](https://github.com/lidofinance/lido-lend-irm) dependency. A proxied `IrmRouter` routes each market to a selected IRM implementation. The shared, direct `AdaptiveCurveIrm` keeps each market's pointer to an immutable configuration and its adapting rate. An optional direct `LinearKinkIrm` keeps per-market kink parameters. The permissionless direct `IrmConfigFactory` deploys or reuses immutable configuration contracts for both models.
-
-A separately deployed [CircuitBreaker](https://github.com/lidofinance/circuit-breaker) receives the sole initial `PAUSER_ROLE` on each controller. Its own policy must register the controller and an operational pauser before it can invoke that role. These external dependencies own their API documentation.
-
-### Optional user periphery
-
-#### Exit Books
-
-`Erc4626ExitBook` and `MorphoExitBook` are non-custodial registries for asset-denominated exit requests over vault shares and direct core supply positions. The owner retains the position. A permissionless executor chooses how much of the request to fill and names a separate reward recipient. The book withdraws exactly the filled request amount.
-
-If the source needs more liquidity, a filler may first deposit into the vault, supply to the market, repay debt, or use another source-native operation. A helper or `Bundler3` transaction can perform liquidity preparation and the fill atomically while enforcing its own capital and slippage limits. Appreciation remains in the lender's position. An optional owner limit caps the live share burn after a loss, and a priority fee that can rise over time rewards execution.
-
-Specification: [Exit Books](exit-books.md). API: [Exit Books](api/exit-book.md).
-
-#### Bundler3 adapters
-
-The optional adapters compose Lido actions inside [Bundler3](https://github.com/morpho-org/bundler3) transactions and hold no market accounting or policy:
-
-- `LidoLendVaultAdapter` exposes the vault's fallback exit to a bundle, fixes the burned position to the bundle initiator, and enforces caller-selected minimum payout and minimum shares burned.
-- `EthereumGeneralAdapter1` is the upstream Ethereum general adapter with the MORPHO-token wrapper surface removed; it retains the ETH/stETH/wstETH staking and wrapping actions.
-
-API: [Bundler3 adapters](api/bundler3-adapters.md).
-
-## Runtime paths
-
-Only hook-enabled actions in a controller-bound market enter the policy layer. The core first resolves the action against the current market state and then calls the controller before committing accounting or transfers. A controller-less market skips hook policy but retains the fork-wide core behavior. Token-global flash loans, authorization changes, vault-share transfers, and administrative calls do not use this market hook.
-
-```mermaid
-sequenceDiagram
-    actor User
-    participant Core as LidoLend core
-    participant Controller as Market controller
-    participant Guardians as GuardianSignals
-
-    User->>Core: Submit a market action
-    Core->>Core: Resolve amounts and read pre-state
-    Core->>Controller: Call the pre-state hook
-    Controller->>Core: Read current market and position state
-    Core-->>Controller: Return positions and totals
-    Controller->>Controller: Apply hook-specific policy
-    opt Account opinion or liveness is needed
-        Controller->>Guardians: Read the market/account opinion
-        Guardians-->>Controller: Return strikes, ban, suspects, and frontier
-    end
-
-    alt Policy permits the action
-        Controller-->>Core: Allow
-        Core->>Core: Commit accounting and transfers
-        Core-->>User: Return the result
-    else Policy rejects the action
-        Controller--xCore: Revert
-    end
-```
-
-### Borrower path
-
-All supplied collateral protects the core position from liquidation immediately, but fresh collateral does not necessarily support a new borrow. The controller separates collateral into dust, activating, and active amounts. Activation time depends on market inflow, guardian opinions, guardian liveness, and freeze state. A borrow must fit the active collateral and pass the controller's account, freeze, and borrow-share-rate checks.
-
-The full hook matrix, collateral lifecycle, and safety invariants are in the [market-controller specification](market-controller.md). Guardian identity, quorum, ban, suspect, and liveness behavior are in the [Guardian Signals specification](guardian-signals.md).
-
-### Lender path
-
-A direct lender owns a core supply position; a vault lender owns ERC-4626 shares backed by the vault's managed core position. A normal withdrawal uses free loan-asset liquidity. When liquidity is tied up in loans, settlement can cancel borrower debt against an authorized lender's supply and pay the corresponding collateral instead. Queue policy and lender-side budgeting determine which debt may be settled and how much of the lender position is consumed.
-
-The complete direct, targeted, and fallback flows are in [Settlement and lender exits](lender-settlement.md). Exit Books are a separate optional service: they coordinate a permissionless filler around an existing vault or direct supply position and are specified in [Exit Books](exit-books.md).
-
-## Mechanism guides
-
-Architecture is the entry point; the mechanism guides own the state machines and formulas that cross contract boundaries.
-
-| Mechanism | What it explains | Primary contracts |
+| Exit path | What happens | Payout |
 |---|---|---|
-| [Market controller](market-controller.md) | hook policy, supply cap, collateral activation, freeze and pause, borrow-share-rate safety | `LidoLend`, `LidoLendMarketController` |
-| [Guardian signals](guardian-signals.md) | delegates, strikes, suspect reports, ban latching, heartbeats, and quorum frontier | `GuardianSignals`, `LidoLendMarketController` |
-| [Settlement and lender exits](lender-settlement.md) | risk queue, settlement amounts, supply-share budgets, vault fallback and targeted exits | `LidoLend`, `LidoLendMarketController`, `LidoLendERC4626` |
-| [Exit Books](exit-books.md) | request lifecycle, exact-asset fills, external liquidity composition, share-burn protection, fees, and execution workflow | `Erc4626ExitBook`, `MorphoExitBook` |
+| Ordinary withdrawal | The core or vault burns lender shares and withdraws available loan tokens. The amount is limited by market liquidity. | Loan tokens |
+| Settlement | The lender's supply claim and a borrower's debt are reduced together. The core transfers borrower collateral at the oracle price. Settlement uses no loan-token liquidity and adds no liquidation incentive. | Collateral |
+| Vault fallback exit | The vault first withdraws available loan tokens. It may then settle the remaining lender claim against borrowers selected by controller policy. | Loan tokens, collateral, or both |
+| Exit Book request | A lender publishes a loan-token withdrawal request backed by an existing vault or direct core position. Any account, including that lender, may later fill some or all of it. | The request receiver gets the filled amount minus the request's priority fee. |
 
-## System controls
+The priority fee funds the execution reward. The filler chooses the address that receives that reward, and the book deducts any configured service cut before paying the reward.
 
-Freeze and pause operate at different layers. Neither changes canonical accounting by itself.
+An Exit Book is not a settlement mechanism. It never cancels borrower debt. The lender keeps its vault or core shares until a fill, and the book does not reserve or create liquidity. A fill cannot exceed the amount the source can withdraw at that time. The filler may wait, make an allowed partial fill, or prepare liquidity first.
 
-| State | Blocks | Remains available | Control path |
-|---|---|---|---|
-| Freeze | new borrows, collateral withdrawal with open debt, collateral maturation | repay, supply, debt-free withdrawal subject to activation locks, liquidate, settlement | a bounded risk steward freezes; governance unfreezes |
-| Controller pause | every action that enters that controller's hook | flash loans, authorization changes, vault-share transfers, controller administration | CircuitBreaker pauses for a bounded period; an authorized resumer may end it earlier |
-| Exit Book pause | placement and fills in that book | cancellation, reads, configuration, recovery, direct source use | the book's pause and resume roles |
+A filler may prepare liquidity and fill the request in one transaction. `Bundler3` can execute those calls in a chosen order. Protocol adapters make sure protected actions use the bundle's original user. The Exit Book, vault, and core can also be called directly.
 
-Freeze stops new risk while preserving repayment and forced risk reduction. Controller pause is the stronger response when even liquidation or settlement must stop, such as during an oracle incident. Exit Book pause affects only the optional request service and never locks the owner's underlying source position.
+## Runtime policy and controls
 
-## Roles and governance
+### Controller hook
 
-Authority is split by capability so that routine operations do not inherit the core owner's or proxy administrator's full power:
+A typical controller-checked action follows this sequence:
 
-- `LidoLendOwner` is the stable governance entry contract for market creation, core fees, controller policy, unfreezing, and guardian management. Its capabilities are assigned independently.
-- The proxy administrator controls upgrades, admin transfer, and irreversible ossification. Proxy authority is distinct from core ownership and implementation roles.
-- `RiskStewardDashboard` gives a per-market steward only bounded risk-reduction actions: tighten selected controls or freeze. It cannot loosen policy or unfreeze.
-- `CircuitBreaker` supplies the controller's time-bounded emergency pause path.
-- Guardian signalling, access restoration, Exit Book configuration, and Exit Book pause/resume use their own roles and do not confer custody over lender positions.
+1. A user calls the core.
+2. The core performs initial checks, accrues interest where applicable, and calculates the amounts sent to the controller.
+3. The controller reads its policy state and either returns or reverts.
+4. If the controller returns, the core performs any remaining checks, applies the action to canonical accounting, and moves the required tokens.
 
-No routine operational role can seize or burn lender principal. An Exit Book fee manager can route only the configured service share of the priority fee. The exact function-to-role-to-holder matrix is in [roles.md](roles.md).
+The exact hook point differs by action; the [controller policy matrix](market-controller.md#policy-boundary) records what each hook observes.
+
+Before a controller hook returns, the core rejects any other market action that would normally call a hook. This also applies when the other action targets a market without a controller. Actions without a market hook are not affected by controller pause.
+
+### Freeze and pause
+
+Market stewards act through `RiskStewardDashboard`. They can make collateral-activation rules stricter, remove an account's instant-activation permission, or freeze a market. They cannot make rules looser or unfreeze a market.
+
+| Control | Purpose and effect |
+|---|---|
+| Market freeze | Stops new borrowing, collateral withdrawal while debt remains, and completion of collateral activation. Repayment, liquidation, settlement, and lender withdrawal remain available. Governance can unfreeze the market. |
+| Controller pause | CircuitBreaker lets a registered emergency actor pause controller-checked actions for a limited period. This includes repayment, lender withdrawal, liquidation, settlement, and a direct call to accrue interest. Core functions that do not call the controller and vault-share transfers remain available. |
+| Exit Book pause | Stops new requests and fills in that book. Owners can still cancel requests or use the underlying vault or core position directly. |
+
+An action must pass every control layer that it uses. For example, an unpaused Exit Book cannot fill a request when the source withdrawal reaches a paused market controller.
+
+## Market identity and shared scope
+
+The core identifies a market by five `MarketParams` fields:
+
+```text
+marketId = keccak256(abi.encode(loanToken, collateralToken, oracle, irm, lltv))
+```
+
+Positions, collateral, and supply and borrow totals are isolated by `marketId`. Assets in one market do not back positions in another market.
+
+The controller address and settlement enablement are not part of `MarketParams`. The core stores both when the market is created and exposes no later setter. A controller-less market skips Lido policy, and settlement can be enabled only when a controller is bound.
+
+Accounting isolation does not make every dependency or permission market-specific:
+
+- One core contract and owner serve all markets in that core.
+- Core authorization is global. An operator authorized by one account may act for that account in every market held by the core, subject to each action's normal checks.
+- Token custody is shared by token address. A token-wide failure can affect every market that uses that token.
+- An oracle, IRM router or model, or `GuardianSignals` instance may serve several markets. A failure or privileged change can therefore affect every market that uses that component.
+- `GuardianSignals` does not include the core address in its state keys. Reusing one instance across different cores can merge reports for identical market ids, so deployments should keep each instance within one core.
 
 ## Trust boundaries
 
-Permissionless users are not trusted to choose safe or profitable actions. Contracts enforce the limits shown below. Privileged authorities and external dependencies require the stated assumptions.
-
-| Actor or dependency | Enforced limit or required assumption |
+| Dependency | What the system relies on |
 |---|---|
-| Lender and borrower | Core authorization and solvency checks apply. The controller prevents borrowing against inactive collateral, enforces bans, and limits borrow-share-rate growth. |
-| Exit Book filler or helper | The book enforces the exact request debit, owner permission, share-burn protection, and payout conservation. The filler must enforce the capital and slippage limits of its external liquidity route. |
-| Guardian or delegate | One guardian identity contributes at most one flag and one suspect report per account. Quorum is enforced onchain, but heartbeat timestamps are trusted reports. |
-| Risk steward and emergency pauser | The dashboard exposes only bounded policy tightening and freeze. CircuitBreaker can pause controller hooks only for a bounded period. Neither authority can move user funds. |
-| Governance and proxy admin | Trusted to follow the required governance delay and to select sound implementations, markets, roles, oracles, and IRMs. Proxy upgrades can change all contract guarantees. |
-| Oracle, IRM, and tokens | Trusted to follow their documented interfaces and economic assumptions. Incorrect prices, rates, transfer behavior, or callbacks can stop or distort market actions. |
+| Controller | It can reject every controller-checked action. Binding it does not let that address spend user tokens or act for user accounts. |
+| Guardians and delegates | A guardian may authorize a delegate address to report for it. Reports may ban new borrowing or delay collateral activation. The required quorum counts guardian identities, not independent keys, so shared delegate keys weaken the committee. |
+| Oracle | A wrong or stale value can allow unsafe borrowing, block actions, or misprice liquidation and settlement. |
+| IRM and rate managers | The selected model and configuration determine interest accrual. A reverting, reentrant, or extreme-rate model can block or distort the market. |
+| Loan and collateral tokens | Transfers must move the requested amount without fees, rebasing, arbitrary balance changes, or token callbacks into the protocol. Transfer restrictions may still reject a selected receiver. |
+| Governance roles and proxy admin | Governance roles can change the settings assigned to them. A proxy admin can replace contract code until it permanently removes its own upgrade power, a step called ossification. |
+| Bundler3 and adapters | Bundler3 can call arbitrary targets and must not receive token approvals or core authorization. Grant permissions only to protocol adapters that act for the bundle's original user. |
+| Exit Book filler | The book enforces the lender's request and source withdrawal. It does not protect the filler from the capital cost, slippage, or profitability of separate liquidity preparation. |
 
-Mechanism-specific invariants and failure boundaries are kept beside the state machines they constrain:
+## Market creation and later changes
 
-- borrow-share-rate and collateral policy: [Market controller](market-controller.md);
-- guardian quorum and liveness: [Guardian signals](guardian-signals.md);
-- managed vault supply, settlement budgets, and settleable-supply bounds: [Settlement and lender exits](lender-settlement.md);
-- request and payout conservation: [Exit Books](exit-books.md).
+A controller, vault, oracle, IRM setup, and `GuardianSignals` instance may exist before a core market. These contracts do not create the core's positions or accounting. The core owner creates the market after the required components are configured. Creation fixes the `MarketParams`, controller address, and settlement setting.
 
-## Markets
+`LidoLendOwner` is the standard governance entry contract. In the standard setup, it owns the core and separately receives permissions on controllers and `GuardianSignals`. Moving core ownership to another address stops it from creating markets or setting core fees. Its controller and `GuardianSignals` permissions remain until governance revokes them.
 
-Both market designs reuse the shared controller, guardian signals, collateral activation, vault, freeze, and pause mechanisms. Settlement is available per market but is enabled independently when the market is created. Their assets, oracle assumptions, transfer constraints, and risk parameters differ:
+`LidoLendMarketFactory` is an optional helper for deploying standard controllers, vaults, and `GuardianSignals` instances. In the standard flow, governance uses `LidoLendOwner` to perform the core-owner creation call. A core owner may also create a valid market without the factory.
 
-- **WETH / wstETH** — `WstEthRateOracle` (onchain accounting rate, no market-price component). See [markets/eth-steth.md](markets/eth-steth.md).
-- **USD / Treasuries** — a USDY NAV oracle, transfer-gated collateral.
+Creation does not make market behavior immutable. Proxy admins may change contract code until ossification. Separate IRM roles may still change rate routing or configuration after the relevant proxy is ossified.
+
+Exact role holders and governance paths are in [Privileged Roles](roles.md). Transaction order and deployment checks are in the [deployment runbook](../../script/DEPLOYMENT.md).
+
+## Detailed specifications
+
+| Topic | Owning document |
+|---|---|
+| Core accounting, liquidation, settlement, hooks, and fork changes | [Lido Lend core specification](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md) |
+| Controller checks, collateral activation, freeze, pause, and debt-rounding guard | [Market Controller Policy](market-controller.md) |
+| Guardian membership, account reports, bans, and scan progress | [Guardian Signals](guardian-signals.md) |
+| Direct and vault settlement, borrower selection, limits, and fallback exits | [Settlement and Lender Exits](lender-settlement.md) |
+| Exit requests, fees, source positions, and filler workflow | [Exit Books](exit-books.md) |
+| Privileged capabilities and intended holders | [Privileged Roles](roles.md) |
+| IRM routing, configuration, and rate models | [Lido Lend IRM specification](https://github.com/lidofinance/lido-lend-irm/blob/main/SPECIFICATION.md) |
+| WETH/wstETH parameters and oracle assumptions | [WETH / wstETH](markets/eth-steth.md) |
+| USDY-backed stablecoin markets | [USDY / Stablecoin Markets](markets/stables-usdy.md) |
+| Functions, structs, events, errors, and getters | [Generated API reference](README.md#api-reference-generated) |

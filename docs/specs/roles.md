@@ -1,151 +1,156 @@
 # Privileged Roles
 
-This document maps each privileged Lido Lend action to its contract, role, impact class, and intended holder. Start with [Architecture](architecture.md) for the system model and use the [generated API reference](README.md#api-reference-generated) for exact function parameters and errors.
+This document records the initial privilege topology created by the production deployment scripts. A single `LidoLend` core serves all markets in a deployment, so core ownership is global. Each controller has its own roles. `GuardianSignals` roles belong to a registry, which may serve several markets.
 
-A single `LidoLend` core serves all markets in one deployment. Core-owner roles therefore apply to every market. Controller roles exist once per market. `GuardianSignals` roles exist once per registry, and several markets may share a registry. The deployer has temporary setup authority only during deployment and retains no role or proxy-admin authority after handover.
+The tables cover the integrated production deployment and its production prerequisite and add-on scripts for CircuitBreaker, oracles, new markets, guardian registries, optional IRMs, and Exit Books. Devnet and test helpers intentionally use broader local administrators and are outside this topology. Exact function parameters and errors belong to the [generated API reference](README.md#api-reference-generated).
 
-## Holder and execution terms
+## Onchain holders and governance routes
 
 | Term | Meaning in this document |
 |---|---|
-| Lido DAO Agent | The DAO-controlled address that holds high-impact administration and upgrade authority. |
-| EVMScriptExecutor | The onchain executor used by approved DAO or EasyTrack actions. |
-| EasyTrack | A delayed execution path in which an initiator creates a motion and execution follows an objection window. |
-| Dual Governance | The additional governance gate for actions that materially affect Lido or stETH exposure. |
-| CircuitBreaker | A contract that lets an approved emergency actor pause controller hooks for a bounded duration. |
-| Risk steward | An appointed actor that may apply only the bounded, risk-reducing actions exposed by `RiskStewardDashboard`. |
-| Protocol-wide risk steward | The intended emergency actor for an Exit Book, whose pause affects every source allowlisted in that book. |
+| Lido DAO Agent | The onchain address that initially holds administration, ownership, and proxy-upgrade powers assigned to the DAO. |
+| EVMScriptExecutor | The onchain executor that initially holds routine governance capabilities. |
+| Market steward | An address appointed for one market in `RiskStewardDashboard`; it is not an AccessControl role holder. |
+| Risk Steward Committee | The configured emergency address that initially holds `PAUSER_ROLE` on both Exit Books. |
+| Registered controller pauser | An address registered for one target through CircuitBreaker; the registration is distinct from CircuitBreaker's immutable admin authority. |
 
-## Non-custody rule
-
-No operational role can seize or redirect a user's core or vault position, or permanently remove its recovery path. Protocol payouts go only to recipients selected by the relevant user or caller, or to a configured fee recipient, and remain within their documented caps. Recovery roles may move tokens already held directly by a recovery-enabled contract, but they cannot reach the underlying user position. Temporary pause or freeze controls may stop selected actions without transferring ownership. Only a contract upgrade can introduce a new custody-like power over user positions.
+The contracts see these addresses, not the governance process that controls them. Lido DAO Voting, Dual Governance, and EasyTrack are intended execution routes; their ownership, motion factories, delays, and objection rules are outside this repository's deployment and acceptance checks. An EasyTrack motion may execute through EVMScriptExecutor, but possession of an executor role does not prove that a bounded motion factory exists for that action.
 
 ## Impact classification
 
-Every privileged function is classified by impact. The class decides who may hold it and through which mechanism.
+Impact classes are design labels, not limits enforced by the contracts. They describe the action being taken, not necessarily every action exposed by the role. A role may therefore have more than one class when tightening and loosening the same parameter have different effects.
 
-| Class | Effect | Owner / mechanism |
+| Class | Effect | Intended authority |
 |---|---|---|
 | C0 | take, burn, redirect, confiscate, or permanently prevent recovery of user value | not allowed as an operational action |
-| C1 | upgrade logic, or indirectly introduce a C0 power | Lido DAO (Voting, plus Dual Governance for stETH-exposed surfaces) |
-| C2 | temporarily stop market functions | CircuitBreaker-operated emergency actor, time-limited |
-| C3 | reduce risk or deny new service | risk steward or another bounded security role |
-| C4 | increase risk or scale exposure | Lido DAO, or the routine delay mechanism within approved bounds |
+| C1 | upgrade logic, administer privileged roles, or introduce a C0 power | Lido DAO governance |
+| C2 | temporarily stop controller-hooked actions | CircuitBreaker-operated emergency actor |
+| C3 | reduce risk or deny new service | bounded security or risk-steward path |
+| C4 | increase risk, restore service, or scale exposure | Lido DAO governance or an approved delayed path |
 | C5 | metadata or UI-only impact | bounded operator |
 
-No C0 role exists in the deployed surface.
+No action listed below, other than proxy administration, can directly rewrite or redirect an underlying core or vault position. Proxy administration can change this implementation guarantee until the relevant proxy is ossified.
 
-## Execution mechanisms
+## Initial topology and verification
 
-| Mechanism | Use |
-|---|---|
-| Lido DAO Voting and Dual Governance | Upgrades, role administration, market creation, and risk increases outside approved bounds. Dual Governance adds a gate for actions that materially affect Lido or stETH exposure. |
-| EasyTrack | Bounded routine changes. An initiator creates a motion and execution follows an objection window. |
-| CircuitBreaker | Its registered pauser can trigger one finite pause and must maintain a live heartbeat. Its immutable admin configures bounded pause and heartbeat parameters and pauser registrations. Neither authority can resume a controller or move user assets. |
-| Risk steward | Immediate, bounded risk reduction through the non-upgradeable dashboard. Risk increases return to EasyTrack or DAO governance. |
+The production deployer and market factory use temporary setup authority, grant the holders listed below, and revoke their temporary roles before returning. Calling the permissionless market factory does not give the caller any role. The factory validates the exact controller and guardian-registry sets, including roles that must start empty. The standalone Exit Book script checks its required holders, sole pauser, and empty resumer set; acceptance later checks every listed Exit Book role exactly.
 
-## CircuitBreaker authority
+At deployment, the deployer, Lido DAO Agent, and EVMScriptExecutor must be distinct. An Exit Book pauser must also differ from all three. These checks do not constrain guardians, stewards, delegates, controller pausers, or later role assignments.
 
-The standard deployment uses one direct CircuitBreaker for all factory-deployed controllers. Its immutable `ADMIN` is EVMScriptExecutor. The CircuitBreaker is the sole initial holder of each controller's `PAUSER_ROLE`, but it cannot use that role until its admin registers an operational pauser for the controller.
+Acceptance checks the exact holder set for every AccessControl role listed below and rejects missing or extra holders. It also checks proxy admins, core ownership, and the router and Adaptive IRM owner-manager pairs.
 
-| Authority | Powers | Holder |
+## Proxy administration
+
+The Lido DAO Agent is the initial proxy admin for the shared core and IRM router; every factory-deployed controller, vault, and guardian registry; and each standard oracle proxy. A shared guardian registry has one proxy admin even when several markets use it.
+
+| Authority | Powers | Class | Initial onchain holder |
+|---|---|---|---|
+| `OssifiableProxy` admin | replace the implementation, transfer proxy administration, or irreversibly set the admin to `address(0)` | C1 | Lido DAO Agent |
+
+Proxy administration is independent of implementation roles and can change their guarantees. `LidoLendOwner`, `RiskStewardDashboard`, `AdaptiveCurveIrm`, the optional `LinearKinkIrm`, `IrmConfigFactory`, `LidoLendMarketFactory`, CircuitBreaker, and the Exit Books are direct deployments rather than proxies.
+
+## CircuitBreaker
+
+The production deployment uses one CircuitBreaker instance for its controllers. EVMScriptExecutor is its immutable `ADMIN`, and CircuitBreaker is each controller's sole initial `PAUSER_ROLE` holder.
+
+| Authority | Powers | Production assignment |
 |---|---|---|
-| CircuitBreaker `ADMIN` | Set `pauseDuration` and `heartbeatInterval` within immutable bounds; register, replace, or remove the pauser assigned to a controller | EVMScriptExecutor |
-| Registered pauser | Maintain authorization with `heartbeat`; trigger one pause of its assigned controller, after which that assignment is removed | Governance-selected emergency actor |
+| CircuitBreaker `ADMIN` | change instance-wide pause and heartbeat durations within immutable bounds; register, replace, or remove a pauser for any target | EVMScriptExecutor |
+| Registered controller pauser | maintain a live heartbeat and trigger one finite controller pause per registration | none after component deployment; governance-selected emergency actor after market activation |
 
-The registered pauser cannot change CircuitBreaker parameters, choose the pause duration, resume a controller, or move assets. The admin cannot bypass the immutable parameter bounds.
+A successful pause consumes that controller registration. CircuitBreaker does not validate a target or its pause permission when registration is written. The registered pauser cannot configure CircuitBreaker or resume the controller. The admin cannot exceed the immutable duration bounds or pause through CircuitBreaker without a live registration.
 
-## Proxy ownership and upgrades
+## Interest-rate management
 
-The standard deployment puts the shared `LidoLend` core and `IrmRouter`, plus each factory-deployed market's controller, vault, oracle, and `GuardianSignals` registry, behind an `OssifiableProxy`. The proxy admin is the upgrade authority. It is a proxy-level permission, not an in-contract role.
+In the standard market, the immutable `irm` field points to `IrmRouter`. The router selects an address for each market. `AdaptiveCurveIrm` is the standard model; `LinearKinkIrm` is optional. Each standard model references or stores a per-market configuration.
 
-| Surface | Powers | Class | Holder |
+| Authority | Powers | Class | Initial onchain holder |
 |---|---|---|---|
-| Proxy admin (shared core and IRM router, plus each market's controller, vault, oracle, `GuardianSignals`) | `proxy__upgradeTo` / `proxy__upgradeToAndCall` (replace implementation), `proxy__changeAdmin` (transfer control), `proxy__ossify` (permanently lock by setting admin to `address(0)`) | C1 | Lido DAO Agent (Voting + Dual Governance) |
+| Router or IRM owner | transfer ownership, replace the manager, and use the manager operations below | C1 / C4 | Lido DAO Agent |
+| `IrmRouter` manager | route an uncreated market to any nonzero address without an allowlist or interface check; a live route must pass one `borrowRate` call | C4 | EVMScriptExecutor |
+| Adaptive or Linear IRM manager | apply a compatible configuration contract to a market | C3 / C4 | EVMScriptExecutor |
 
-An upgrade can change core mechanics and could introduce a custody-like power. It therefore uses the slowest authority and, for the stETH-exposed core, Dual Governance under ADR 007. A proxy can permanently remove its upgrade authority through ossification. Deployment assigns every proxy admin to the Lido DAO Agent: the core and IRM-router permissions transfer from the temporary deployer, while market and oracle proxies name the Agent when created.
+The standard `IrmConfigFactory` permissionlessly deploys immutable configs and holds no role, but neither model requires a config to come from that factory. Adaptive rereads the selected config on each rate calculation, so a compatible mutable config can change its parameters without another manager call. Linear copies the returned parameters when the config is applied.
 
-## IRM
-
-In the standard factory deployment, each market's immutable `irm` address points to the proxied `IrmRouter`. The Lido DAO Agent owns the router and its proxy, while EVMScriptExecutor manages each market's route. The direct shared `AdaptiveCurveIrm` and optional `LinearKinkIrm` implementations have the Agent as owner and EVMScriptExecutor as manager. The permissionless `IrmConfigFactory` deploys or reuses immutable configurations by parameter hash; market activation resolves the selected configuration and applies it to the routed IRM. The core and `LidoLendOwner` do not enforce use of this router when a market is created with other valid parameters.
-
-| Authority | Powers | Class | Holder |
-|---|---|---|---|
-| IRM stack owner | transfer ownership, replace the manager, and use the manager operations below | C1 / C4 | Lido DAO Agent |
-| `IrmRouter` manager | select the IRM implementation for a market | C4 | EVMScriptExecutor |
-| selected IRM manager | apply an immutable rate configuration to a market | C4 | EVMScriptExecutor |
-
-## On-chain roles
+## AccessControl roles
 
 ### `LidoLendOwner` and core authority
 
-The core checks its admin functions against one `owner` address. That owner is the `LidoLendOwner` contract, which also provides stable governance entrypoints for market controller and guardian-registry calls. It resolves each target from the core by market id. The DAO does not hold the core's `onlyOwner` permission directly.
+The direct, non-upgradeable `LidoLendOwner` facade is the core's initial `owner`. It gates core-owner calls and dispatches controller and guardian-registry calls through separate capability roles.
 
-| Role | Powers | Class | Holder |
+| Role | Powers | Class | Initial onchain holder |
 |---|---|---|---|
-| `MARKET_CREATOR_ROLE` | `createMarket` for controller-less and controlled markets; creation scales exposure and may bind high-impact policy | C4 / C1 | EVMScriptExecutor |
-| `FEE_MANAGER_ROLE` | `setFee` (≤ `MAX_FEE` = 25%), `setFeeRecipient` | C4 | Lido DAO Agent |
-| `MARKET_MANAGER_ROLE` | per-market `setSupplyCap`, `unfreeze`, `setCollateralActivationConfig`, `setSettlementConfig`, and `setInstantActivation` through the resolved controller | C3 / C4 | EVMScriptExecutor |
-| `GUARDIAN_MANAGER_ROLE` | guardian roster (`addGuardian`, `removeGuardian`, `replaceGuardian`), quorum, suspect window, and per-market `unban` through the resolved registry | C1 / C3 / C4 | EVMScriptExecutor |
-| `DEFAULT_ADMIN_ROLE` | `transferLidoLendOwnership` (the only path to the core's `setOwner`), plus administers the capability roles above | C1 | Lido DAO Agent |
+| `MARKET_CREATOR_ROLE` | create controller-less or controlled markets; fix the controller and settlement enablement at creation | C4 / C1 | EVMScriptExecutor |
+| `FEE_MANAGER_ROLE` | set a market fee up to the core's 25% cap; set the core-wide fee recipient | C3 / C4 | Lido DAO Agent |
+| `MARKET_MANAGER_ROLE` | set supply cap, collateral-activation config, settlement config, and instant-activation callers; unfreeze a market | C3 / C4 | EVMScriptExecutor |
+| `GUARDIAN_MANAGER_ROLE` | change a registry's guardians, quorum, and suspect window; clear a ban for selected market ids | C1 / C3 / C4 | EVMScriptExecutor |
+| `DEFAULT_ADMIN_ROLE` | administer the facade roles; transfer core ownership while the facade is the core owner | C1 | Lido DAO Agent |
 
-The `C4 / C1` classification for market creation does not map to the two function overloads. A proposal is C4 when it only scales ordinary market exposure. It is handled as C1 when it introduces material Lido/stETH exposure or binds policy with upgrade-level impact.
+Controller and guardian calls use two checks: the caller must hold the facade capability, and the facade must hold the target contract's downstream role. EVMScriptExecutor holds the facade capabilities but no controller or guardian-registry role directly.
 
-For factory-deployed components, `LidoLendOwner` holds `MANAGER_ROLE` and `UNFREEZER_ROLE` on each controller, and `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` on each guardian registry. These grants only let that contract dispatch a call: the original caller must still hold the matching capability role on `LidoLendOwner`. EVMScriptExecutor holds none of those downstream roles directly, so the governance entry contract is the stable EasyTrack target.
+Transferring core ownership away disables the facade's core-owner calls. It does not revoke the facade's independent controller or guardian-registry roles. After transfer, the new core owner can call the core's `setOwner` directly.
+
+Guardian roster, quorum, and suspect-window changes apply to the resolved registry and therefore affect every market sharing it. `unban` remains keyed by market id.
+
+Neither the facade nor the core requires factory-produced components or the standard IRM router. `MARKET_CREATOR_ROLE` can therefore create a market outside the standard topology.
 
 ### Market controller
 
-| Role | Powers | Class | Holder |
+| Authority | Powers | Class | Initial onchain holder |
 |---|---|---|---|
-| `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO Agent |
-| `MANAGER_ROLE` | `setCollateralActivationConfig`, `setSettlementConfig`, `setSupplyCap`, `setInstantActivation` | C3 / C4 | `LidoLendOwner` for EasyTrack governance actions; `RiskStewardDashboard` for bounded tighten-only actions |
-| `FREEZER_ROLE` | `freeze` | C3 | `RiskStewardDashboard`, called by the market's appointed steward |
-| `UNFREEZER_ROLE` | `unfreeze` | C4 | `LidoLendOwner` through EasyTrack |
-| `PAUSER_ROLE` | `pauseFor` (stops every controller hook) | C2 | CircuitBreaker |
-| `RESUMER_ROLE` | `resume` | C2 | no holder |
+| `DEFAULT_ADMIN_ROLE` | grant and revoke controller roles | C1 | Lido DAO Agent |
+| `MANAGER_ROLE` | set collateral-activation config, settlement config, supply cap, and instant-activation callers | C3 / C4 | `LidoLendOwner` and `RiskStewardDashboard` |
+| `FREEZER_ROLE` | freeze the market | C3 | `RiskStewardDashboard` |
+| `UNFREEZER_ROLE` | unfreeze the market | C4 | `LidoLendOwner` |
+| `PAUSER_ROLE` | pause all controller hooks for a selected duration, including indefinitely | C2 / C3 | CircuitBreaker |
+| `RESUMER_ROLE` | end a controller pause early | C4 | no initial holder |
+| Instant-activation caller | make new collateral supplied through that caller active immediately, bypassing dust, the activation delay, and inflow throttling | C4 | none initially |
 
-The controller's `MANAGER_ROLE` is broader than either holder's public functions. Governance reaches it only through `LidoLendOwner`. A market steward reaches only the risk-reducing methods exposed by the non-upgradeable `RiskStewardDashboard`. The dashboard also holds `FREEZER_ROLE`, so the steward can call `freezeMarket` without holding a direct controller role. Only `LidoLendOwner.unfreezeMarket` restores service, through the EasyTrack objection window.
+`LidoLendOwner` exposes the full manager surface to its capability holder. `RiskStewardDashboard` holds the same broad controller role, but its direct, non-upgradeable code exposes only bounded tightening, instant-activation revocation, and freeze.
 
-The standard factory's initial controller role assignments contain only the holders in the table above. The Lido DAO Agent is also the controller proxy admin. CircuitBreaker limits emergency pauses to a finite duration; because `RESUMER_ROLE` has no holder, normal recovery occurs when the pause expires. The Lido DAO Agent can change these assignments through `DEFAULT_ADMIN_ROLE`, including granting `RESUMER_ROLE` for an explicit early resume.
+These roles are granted before market creation, but the facade and dashboard cannot resolve this controller until market activation binds it in the core. Market activation does not change the role sets. No caller is enabled for instant collateral activation initially.
 
-`AdaptiveCurveIrm` is a protocol-wide singleton, so there is no separate curve owner or manager for each market. Its owner and manager are assigned once for the shared deployment. The permissionless configuration factory holds no role. An authorized activation action resolves the market's immutable configuration from that factory and passes it to `applyIrmConfig`.
+The initial topology has one unfreeze path through `LidoLendOwner`. A CircuitBreaker pause normally ends when its duration expires. An earlier resume is impossible until the Lido DAO Agent grants `RESUMER_ROLE` to a caller. As controller admin, the Agent can later change any of these role assignments, including granting `PAUSER_ROLE` to an address that may request an indefinite pause.
 
 ### `RiskStewardDashboard`
 
-The standard deployment uses one dashboard for its factory-deployed markets. Its steward set is keyed by market id. The activation methods read the current configuration, require a change toward tighter policy, and write the complete configuration through the controller's `MANAGER_ROLE`. `freezeMarket` calls the controller through `FREEZER_ROLE`.
+One direct, non-upgradeable dashboard serves the markets of one core. Steward membership is stored separately for each market id.
 
-| Role | Powers | Class | Holder |
+| Authority | Powers | Class | Initial onchain holder |
 |---|---|---|---|
-| `DEFAULT_ADMIN_ROLE` | grant and revoke `STEWARD_ADMIN_ROLE` | C1 | Lido DAO Agent |
-| `STEWARD_ADMIN_ROLE` | `addMarketSteward`, `removeMarketSteward` | C3 | EVMScriptExecutor through EasyTrack |
-| per-market steward | `increaseActivationDelays`, `increaseActivatingLock`, `revokeInstantActivation`, `freezeMarket` | C3 | appointed risk steward |
+| `DEFAULT_ADMIN_ROLE` | administer dashboard roles | C1 | Lido DAO Agent |
+| `STEWARD_ADMIN_ROLE` | add or remove a steward for a market | C3 | EVMScriptExecutor |
+| Per-market steward | increase collateral-activation delays or activation lock, revoke instant activation, and freeze the market | C3 | none initially |
 
-Stewards are appointed in a set keyed by market id, not as protocol-wide AccessControl members. `STEWARD_ADMIN_ROLE` manages only that set and cannot introduce custody or upgrade authority. For each controller registered through the standard factory flow, the dashboard holds `MANAGER_ROLE` and `FREEZER_ROLE`. Because `MANAGER_ROLE` is broader than the dashboard's public methods, the boundary depends on the dashboard's non-upgradeable code exposing only bounded risk reductions.
+A steward acts only through the dashboard. The dashboard, not the steward, holds the controller roles.
 
 ### `GuardianSignals`
 
-| Role | Powers | Class | Holder |
+| Role | Powers | Class | Initial onchain holder |
 |---|---|---|---|
-| `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO Agent |
-| `MANAGER_ROLE` | guardian set, quorum, and suspect window (`addGuardian`, `replaceGuardian`, `removeGuardian`, `setQuorum`, `setSuspectWindow`) | C4 | `LidoLendOwner` through EasyTrack |
-| `ACCESS_LIMITER_ROLE` | `ban` (bypass quorum) | C3 | no initial holder; the Lido DAO Agent may grant it later |
-| `ACCESS_RESTORER_ROLE` | `unban` | C4 | `LidoLendOwner` through EasyTrack |
+| `DEFAULT_ADMIN_ROLE` | grant and revoke registry roles | C1 | Lido DAO Agent |
+| `MANAGER_ROLE` | change the guardian set, quorum, and suspect window | C1 / C3 / C4 | `LidoLendOwner` |
+| `ACCESS_LIMITER_ROLE` | ban one account for one market without guardian quorum | C3 | no initial holder |
+| `ACCESS_RESTORER_ROLE` | clear a ban for one account and one market | C4 | `LidoLendOwner` |
 
-For a registry deployed through the standard factory flow, the Lido DAO Agent is the proxy admin and sole `DEFAULT_ADMIN_ROLE` holder. `LidoLendOwner` is the sole `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` holder. `ACCESS_LIMITER_ROLE` has no initial holder; granting it would let that holder bypass guardian quorum. `unban` and guardian-set management use an EasyTrack motion with an objection window. The Lido DAO Agent can change these role assignments through `DEFAULT_ADMIN_ROLE`.
+Guardians and their delegates are privileged actors but are not AccessControl holders. A guardian controls its current delegate, so delegate identities are dynamic and are not pinned by deployment acceptance. Guardian actions and their shared-registry scope are specified in [Guardian Signals](guardian-signals.md).
 
-Guardians and their delegates are privileged actors but are not AccessControl role holders. A registered guardian may set or replace its own delegate. The guardian or its current delegate may flag, unflag, suspect, unsuspect, and submit heartbeats under that guardian's identity. These actions can delay collateral activation or contribute to an account ban, but they cannot change committee configuration, clear a latched ban, or move assets. The exact quorum and lifecycle rules are in [Guardian Signals](guardian-signals.md).
-
-### `ExitBookBase`
-
-| Role | Powers | Class | Holder |
+| Authority | Powers | Class | Initial onchain holder |
 |---|---|---|---|
-| `DEFAULT_ADMIN_ROLE` | grant and revoke the roles below | C1 | Lido DAO Agent |
-| `ALLOWLIST_MANAGER_ROLE` | allow or deny new requests for a source (`setMarketAllowed` / `setVaultAllowed`) | C3 / C4 | EVMScriptExecutor + Lido DAO Agent |
-| `FEE_MANAGER_ROLE` | `setServiceFee` (recipient and service share of the priority fee, capped at `MAX_SERVICE_FEE` = 25%) | C4 | Lido DAO Agent |
-| `RECOVERER_ROLE` | asset recovery (`recoverEther` / `recoverERC20` / `recoverERC721` / `recoverERC1155`) | C4 | Lido DAO Agent |
-| `PAUSER_ROLE` | `pause` (stops placement and fills until governance resumes) | C3 | configured protocol-wide Risk Steward Committee (sole initial holder) |
-| `RESUMER_ROLE` | `resume` | C4 | no initial holder; the Lido DAO Agent grants a governance resumer when needed |
+| Guardian | appoint, replace, or clear its delegate; report signals and heartbeat progress under its own identity | C1 / C3 / C4 | configured guardian set |
+| Current guardian delegate | report signals and heartbeat progress under the guardian's identity | C3 / C4 | none until appointed by a guardian |
 
-An Exit Book is a direct, non-upgradeable `AccessControlEnumerable` contract. Its roles are its complete privileged surface. Delisting a source prevents new requests but does not disable existing requests. `FEE_MANAGER_ROLE` configures a service share of the priority fee within the 25% cap. `RECOVERER_ROLE` recovers tokens held by the contract, and `DEFAULT_ADMIN_ROLE` administers the other roles. Deployment assigns `ALLOWLIST_MANAGER_ROLE` to EVMScriptExecutor and the Lido DAO Agent; `FEE_MANAGER_ROLE`, `RECOVERER_ROLE`, and `DEFAULT_ADMIN_ROLE` to the Agent; and `PAUSER_ROLE` to the configured protocol-wide Risk Steward Committee.
+### Exit Books
 
-The Exit Book pause is indefinite and blocks placement and fills. Cancellation, reads, configuration, recovery, and direct source access remain available; deadlines and fee ramps continue. One book spans all of its sources, so the same configured protocol-wide Risk Steward Committee is the sole initial `PAUSER_ROLE` holder on both books. `RESUMER_ROLE` starts empty. After a pause, the Lido DAO Agent grants an explicit governance resumer before service can resume.
+Each Exit Book is a direct, non-upgradeable `AccessControlEnumerable` contract. The two standard books receive the same initial holder sets.
+
+| Role | Powers | Class | Initial onchain holder |
+|---|---|---|---|
+| `DEFAULT_ADMIN_ROLE` | grant and revoke Exit Book roles | C1 | Lido DAO Agent |
+| `ALLOWLIST_MANAGER_ROLE` | allow or deny new requests for a Morpho market or ERC-4626 vault | C3 / C4 | Lido DAO Agent and EVMScriptExecutor, independently |
+| `FEE_MANAGER_ROLE` | set the fee recipient and service share of the priority fee, capped at 25% | C4 | Lido DAO Agent |
+| `RECOVERER_ROLE` | recover Ether, ERC-20, ERC-721, or ERC-1155 tokens held by the book | C4 | Lido DAO Agent |
+| `PAUSER_ROLE` | pause placement and fills across the whole book | C3 | configured Risk Steward Committee, sole initial holder |
+| `RESUMER_ROLE` | resume placement and fills | C4 | no initial holder |
+
+Delisting one source affects only new requests for that source. Pausing affects placement and fills for every source in the book; cancellation, reads, configuration, recovery, and direct source access remain available. A pause has no automatic expiry. Resume is impossible until the Lido DAO Agent grants `RESUMER_ROLE` to a caller.
