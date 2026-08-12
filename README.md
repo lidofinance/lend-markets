@@ -6,7 +6,7 @@ The Morpho-style market accounting lives in that core, with the interest-rate mo
 
 ## Setup
 
-Install Foundry, then fetch pinned dependencies. Current setup was checked with `forge 1.5.1-stable`.
+Install the Foundry version recorded in `.foundryref`, then fetch pinned dependencies.
 
 ```sh
 git submodule update --init --recursive
@@ -24,9 +24,7 @@ Run the local test suite (everything except `test/fork/`):
 forge test --no-match-path 'test/fork/**'
 ```
 
-Run the fork tests against a real network. `NETWORK` selects
-`script/config/<network>.toml`; the RPC and config chain IDs must match. `FORK_REGISTRY` is optional and
-only needed by a suite that reads an existing deployment:
+Run the fork tests against a real network. `NETWORK` selects `script/config/<network>.toml`; the RPC and config chain IDs must match. `FORK_REGISTRY` is optional and only needed by a suite that reads an existing deployment:
 
 ```sh
 RPC_URL=<rpc-url> NETWORK=mainnet forge test --match-path 'test/fork/**'
@@ -56,13 +54,12 @@ make snapshot        # gas snapshot of the whole suite
 make snapshot-diff   # fresh run diffed against .gas-snapshot
 make slither         # static analysis (requires `slither` in PATH)
 make solhint         # stylistic/security checks (requires `solhint` in PATH)
-make ci              # everything CI runs on PRs: build + lint + local tests
+make ci              # build + lint + local tests; mirrors ci.yml's local job
 ```
 
-Environment variables are documented in `.env.example`. Copy it to `.env` and set `RPC_URL` plus
-`NETWORK` to enable fork tests locally.
+Environment variables are documented in `.env.example`. Copy it to `.env` and set `RPC_URL` plus `NETWORK` to enable fork tests locally.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`). Locally `forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that runs `test/fork/` with the `RPC_URL` secret), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same secret), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
+CI and local setup use the Foundry version in `.foundryref`, read by `.github/actions/repo-setup`. Workflows live under `.github/workflows/`. The main workflows are `ci.yml` (build, lint, local tests, and fork tests), `static.yml` (Slither and Solhint), `coverage.yml`, `gas-diff.yml`, and `fuzz.yml`; additional workflow files check action configuration and compiled contract bytecode sizes.
 
 To run the local pre-commit fmt check, point Git at the bundled hook:
 
@@ -74,9 +71,11 @@ git config core.hooksPath .githooks
 
 ```text
 src/
-├── LidoLendERC4626.sol              # single-market ERC-4626 vault (the lender layer) with settle exit
-├── LidoLendOwner.sol                # owner/admin entrypoint for deployed markets
+├── LidoLendERC4626.sol              # single-market ERC-4626 vault with settlement exits
 ├── GuardianSignals.sol              # guardian-signal registry (address bans and activation strikes)
+├── adapters/
+│   ├── LidoLendVaultAdapter.sol     # Bundler3 adapter for vault fallback exits
+│   └── EthereumGeneralAdapter1.sol  # Ethereum Bundler3 adapter without the MORPHO-token surface
 ├── controllers/
 │   └── LidoLendMarketController.sol # Lido policy: hooks, collateral activation, freeze/pause, gating, settlement queue
 ├── interfaces/                      # local interfaces and hook payload structs
@@ -90,24 +89,29 @@ src/
 │   ├── WstEthRateOracle.sol         # wstETH/ETH accounting-rate adapter
 │   └── UsdyStableOracle.sol         # USDY to stablecoin oracle
 ├── periphery/
+│   ├── LidoLendOwner.sol            # role-gated governance facade over the core and market policy
+│   ├── LidoLendMarketFactory.sol    # stateless component deployment and role-wiring factory
 │   ├── RiskStewardDashboard.sol     # bounded per-market risk levers
-│   ├── ExitBookBase.sol             # lender exit queue (base) and adapters
+│   ├── ExitBookBase.sol             # filler-served exit registry base
 │   ├── Erc4626ExitBook.sol
 │   └── MorphoExitBook.sol
 ├── types/                           # shared value types (activation, settlement, guardian, exit-book)
 ├── proxy/
 │   └── OssifiableProxy.sol          # vendored Lido upgradeable proxy
 └── utils/
+    ├── AssetRecoverer.sol
     └── PausableUntil.sol
 ```
 
 ## Architecture
 
+Start with the [system architecture](docs/specs/architecture.md). It contains the runtime and governance maps and links to the controller, guardian, lender-settlement, and Exit Book mechanism specifications.
+
 The vendored core (`lib/lido-lend`, contract `LidoLend`) is the Morpho-compatible market.
 
 - Upgradeable behind `OssifiableProxy`, with owner-gated market creation.
 - Preserves upstream `MarketParams`, `Position`, `Market`, and market id derivation.
-- Preserves the standard Morpho action signatures, plus a two-anchor `settle` for the lender exit.
+- Preserves the standard Morpho action signatures, plus a borrow-share-anchored `settle` that cancels borrower debt against an authorized supplier position.
 - Binds an optional controller and settlement availability once at market creation, and calls controller hooks for controller-enabled markets.
 
 `LidoLendMarketController` owns Lido policy for a market.
@@ -117,7 +121,7 @@ The vendored core (`lib/lido-lend`, contract `LidoLend`) is the Morpho-compatibl
 - Freeze and pause controls, plus guardian-signal address gating.
 - The settlement queue: risk-ordered borrowers, a per-borrower settlement LTV, and the policy-sized cut.
 
-`LidoLendERC4626` is the single-market ERC-4626 vault, the sole lender, with a fallback settle exit when ordinary liquidity is short.
+`LidoLendERC4626` is the single-market ERC-4626 lender wrapper. It offers targeted settlement and a fallback exit that uses free liquidity first, then settlement when ordinary withdrawal liquidity is short.
 
 Supporting pieces: `GuardianSignals` (shared address bans and activation strikes), `RiskStewardDashboard` (bounded tighten-only risk levers), the exit-book periphery (`ExitBookBase` and its adapters), and the `WstEthRateOracle` / `UsdyStableOracle` adapters.
 

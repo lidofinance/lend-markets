@@ -10,10 +10,10 @@ import {IPausableUntil} from "./IPausableUntil.sol";
 import {SettlementConfig, SettlementQuote, SettlementSlice} from "../types/SettlementTypes.sol";
 
 /// @title ILidoLendMarketController
-/// @notice Full external surface of `LidoLendMarketController`: the core hook interface and AccessControlEnumerable
-///         (both inherited), the Lido-policy levers, freeze/pause, the settlement-queue views, and the
-///         borrower dashboard. The controller implements this interface, so it is the single source for
-///         the dashboard struct, events, errors, and the function docs the contract inherits.
+/// @notice Contract-specific external surface of `LidoLendMarketController`: the inherited core hook interface,
+///         Lido policy, freeze/pause, settlement-queue views, and borrower dashboard. Standard role membership and
+///         administration use the inherited `IAccessControlEnumerable` surface. The controller implements this
+///         interface, so it is the source for its dashboard struct, events, errors, and policy-function docs.
 interface ILidoLendMarketController is
     ILidoLendBaseMarketController,
     IAccessControlEnumerable,
@@ -93,12 +93,14 @@ interface ILidoLendMarketController is
 
     /// @notice One-read borrower snapshot for off-chain dashboards: collateral split, activation timer,
     ///         guardian signal, debt, personal settlement target, current queue status, and policy quotes.
-    /// @param active Matured collateral, borrowable.
+    /// @param active Derived collateral outside the stored inactive buckets, including matured and instantly
+    ///        activated amounts. It supports borrowing only when the total meets the current activation threshold.
     /// @param activating Collateral inside the activation timer, not yet borrowable.
-    /// @param dust Collateral below the activation threshold, withdrawable.
+    /// @param dust Stored untimed collateral classified as dust. Configuration changes do not reclassify it, so it
+    ///        need not remain below the current activation threshold. It is withdrawable and not borrowable.
     /// @param unlockTime Activation unlock timestamp, 0 when there is no timer.
     /// @param flagCount Raw guardian flags on the account, regardless of status.
-    /// @param banned Hard-blocked by a latched guardian ban.
+    /// @param banned Effective guardian ban: either the stored latch or a flag count at or above the current quorum.
     /// @param debtAssets Current borrow debt, in loan assets.
     /// @param settlementLtv Borrower's personal post-cut target LTV (WAD), 0 when unset.
     /// @param isNextToSettle The borrower is next in line to be settled.
@@ -168,8 +170,9 @@ interface ILidoLendMarketController is
     /// @notice Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
     function currentInflow() external view returns (uint256);
 
-    /// @notice Activation delay a deposit of `inflowIncrement` would incur at the current inflow — for
-    ///         borrowers gauging the wait.
+    /// @notice Base inflow-throttle delay for a hypothetical `inflowIncrement` at the current decayed inflow.
+    ///         Excludes instant activation, dust aggregation, the minimum amount, and guardian surcharges; it is not
+    ///         a complete quote for a specific collateral supply.
     function currentActivationDelay(uint256 inflowIncrement) external view returns (uint256);
 
     /// @notice Whether `caller`'s supplies skip the activation timer.
@@ -198,9 +201,10 @@ interface ILidoLendMarketController is
     /// @notice Number of borrowers tracked in the settlement queue.
     function settlementBorrowersCount() external view returns (uint256);
 
-    /// @notice True if any tracked borrower is bad debt — its debt value exceeds its collateral value.
-    /// @dev O(1): it checks the riskiest tracked position (the highest debt/collateral), whose solvency
-    ///      implies every tracked position is solvent, so the settle gate need only check that one.
+    /// @notice Whether the current settlement-queue root has bad debt: its debt value exceeds its collateral value.
+    /// @dev O(1): checks only the root selected by the rounded borrow-share/raw-collateral key. It does not scan all
+    ///      tracked borrowers. Equal keys and separate debt/collateral valuation rounding mean that a solvent root
+    ///      does not prove every other tracked position is solvent.
     function hasBadDebt() external view returns (bool);
 
     /// @notice The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance
