@@ -169,7 +169,7 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @param shares Vault shares to exit through the liquid leg first and settlement second.
     /// @param receiver Recipient of both the redeemed loan assets and the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
-    /// @param maxIterations Cap on borrowers the settle leg cuts; 0 uses `DEFAULT_MAX_SETTLEMENT_ITERATIONS`.
+    /// @param maxIterations Cap on settlement-loop iterations; 0 uses `DEFAULT_MAX_SETTLEMENT_ITERATIONS`.
     /// @return sharesBurned Total shares burned across the liquid and settle legs.
     /// @return loanAssets Loan assets paid to `receiver` by the liquid leg (the settle leg pays only collateral).
     /// @return collateralSeized Collateral seized from settled positions and sent to `receiver`.

@@ -2,7 +2,9 @@
 
 # GuardianSignals
 
-Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address that may appoint one **delegate** (at most one at a time) to act on its behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in {IGuardianSignalsView}; this interface adds the rest.
+Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
+
+Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address that may appoint one **delegate** (at most one at a time) to act on its behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in `IGuardianSignalsView`; this interface adds the rest.
 
 ## Structs
 
@@ -16,7 +18,7 @@ struct BlockInfoWithHash {
 }
 ```
 
-Heartbeat payload: a scanned block plus its hash, validated against `blockhash(number)`. Only the `timestamp` is kept in storage (the frontier gates on time); `number` + `hash` prove the block is real and un-reorged, and `number` is re-emitted in the `Heartbeat` event for off-chain tooling.
+Heartbeat payload: a scanned block identity plus a guardian-reported scan timestamp. `number` + `hash` are validated against `blockhash(number)`; they do not attest the timestamp. Only the timestamp is kept in storage for the frontier, while the block number is re-emitted for off-chain tooling.
 
 **Fields**
 
@@ -24,7 +26,7 @@ Heartbeat payload: a scanned block plus its hash, validated against `blockhash(n
 | --- | --- | --- |
 | `hash` | `bytes32` | The reported block hash, checked against `blockhash(number)`. |
 | `number` | `uint40` | The block number, which may not exceed the current block. |
-| `timestamp` | `uint40` | The block timestamp. |
+| `timestamp` | `uint40` | Guardian-reported scan timestamp. It must not exceed `block.timestamp` and cannot regress for that guardian, but it is not checked against the reported block header. |
 
 ### `GuardiansOpinion`
 
@@ -124,7 +126,7 @@ event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp
 | --- | --- | --- |
 | `guardian` | `address` | The guardian the scan is recorded for. |
 | `blockNumber` | `uint256` | The block number reported as scanned past (carried for off-chain tooling). |
-| `timestamp` | `uint256` | The reported block's timestamp; the quorum-scan frontier orders guardians by this value. |
+| `timestamp` | `uint256` | Guardian-reported scan timestamp; the quorum-scan frontier orders guardians by this value. |
 
 Emitted when a guardian's liveness is recorded.
 
@@ -494,7 +496,7 @@ function heartbeat(
 | `onBehalf` | `address` | The guardian the scan is recorded for. |
 | `lastScannedBlock` | `BlockInfoWithHash` | The block reported as scanned past. |
 
-Record `onBehalf`'s last-scanned block, validated against its block hash and timestamp; callable by the guardian or its delegate, and keyed by the guardian. If the heartbeat raises the quorum frontier, it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
+Record `onBehalf`'s last-scanned block identity and scan timestamp. The block hash is validated; the guardian-reported timestamp is independently required not to regress or exceed `block.timestamp`. Callable by the guardian or its delegate and keyed by the guardian. If the heartbeat raises the quorum frontier, it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
 
 ### `syncQuorumFrontier`
 
@@ -516,9 +518,9 @@ function getHeartbeat(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `timestamp` | `uint40` | The last-scanned block timestamp. |
+| `timestamp` | `uint40` | The guardian-reported scan timestamp. |
 
-The Unix timestamp of the last block `guardian` reported scanning (0 if never, or not a guardian).
+The last scan timestamp reported by `guardian` (0 if never, or not a guardian).
 
 ### `getHeartbeats`
 
@@ -531,9 +533,9 @@ function getHeartbeats() external view returns (address[] memory guardians, uint
 | Name | Type | Description |
 | --- | --- | --- |
 | `guardians` | `address[]` | The current guardian set. |
-| `timestamps` | `uint40[]` | Each guardian's last-scanned block timestamp, aligned by index with `guardians`. |
+| `timestamps` | `uint40[]` | Each guardian's last reported scan timestamp, aligned by index with `guardians`. |
 
-The guardian set paired with each guardian's last-scanned block timestamp, aligned by index.
+The guardian set paired with each guardian's last reported scan timestamp, aligned by index.
 
 ### `getQuorumFrontier`
 
@@ -541,7 +543,7 @@ The guardian set paired with each guardian's last-scanned block timestamp, align
 function getQuorumFrontier() external view returns (uint40);
 ```
 
-Highest block timestamp at least a quorum of guardians have ever scanned past. Monotonic.
+Highest guardian-reported scan timestamp ever accepted from a quorum calculation. Monotonic.
 
 ### `flag`
 
@@ -640,7 +642,7 @@ function getFlaggedBy(
 ) external view returns (address[] memory);
 ```
 
-The guardians currently flagging `account` in `marketId`.
+The raw stored set of guardians flagging `account` in `marketId`. It may include a removed guardian until `prune` is called; `unban` clears the set.
 
 ### `getSuspectedBy`
 
@@ -662,7 +664,52 @@ function getSuspectedBy(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `guardians` | `address[]` | The guardians currently reporting the account as suspect. |
+| `guardians` | `address[]` | The guardians still present in the raw stored suspect set. |
 | `reportedAt` | `uint40[]` | The timestamp of each guardian's last suspect report, aligned by index with `guardians`. |
 
-The guardians with a live suspect report on `account` in `marketId`, paired with each report's timestamp.
+The raw stored suspect-report set for `account` in `marketId`, paired with report timestamps. It may include a removed guardian until `prune`, or an expired report until a later report/retraction cleans it up. Use `getOpinion` for the active snapshotted count consumed by the controller.
+
+### `getOpinion`
+
+```solidity
+function getOpinion(
+    Id marketId,
+    address account
+) external view returns (GuardiansOpinion memory);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market to read the signal in. |
+| `account` | `address` | The account to read. |
+
+**Returns**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `<none>` | `GuardiansOpinion` | The account's bundled signal state. |
+
+Everything the controller needs about `account` in `marketId` in one call: the ban gate, the raw signal counters the activation lib turns into a delay, and the quorum-scan frontier timestamp.
+
+### `isBanned`
+
+```solidity
+function isBanned(Id marketId, address account) external view returns (bool);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market to read the signal in. |
+| `account` | `address` | The account to read. |
+
+**Returns**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `<none>` | `bool` | True if the account's status is `Banned`. |
+
+Whether `account` is banned in `marketId` — the borrow hard-block on the caller and receiver. True when the ban is latched or the flag count is at or above the current quorum.

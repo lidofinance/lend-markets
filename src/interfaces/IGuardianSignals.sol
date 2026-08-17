@@ -12,7 +12,7 @@ import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 ///         that may appoint one **delegate** (at most one at a time) to act on its behalf. A guardian (or its
 ///         delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of
 ///         distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface
-///         the controller depends on (`getOpinion`, `isBanned`) lives in {IGuardianSignalsView}; this interface adds
+///         the controller depends on (`getOpinion`, `isBanned`) lives in `IGuardianSignalsView`; this interface adds
 ///         the rest.
 interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // ---
@@ -65,7 +65,7 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @notice Emitted when a guardian's liveness is recorded.
     /// @param guardian    The guardian the scan is recorded for.
     /// @param blockNumber The block number reported as scanned past (carried for off-chain tooling).
-    /// @param timestamp   The reported block's timestamp; the quorum-scan frontier orders guardians by this value.
+    /// @param timestamp   Guardian-reported scan timestamp; the quorum-scan frontier orders guardians by this value.
     event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp);
 
     /// @notice Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
@@ -206,9 +206,10 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // LIVENESS
     // ---
 
-    /// @notice Record `onBehalf`'s last-scanned block, validated against its block hash and timestamp; callable by
-    ///         the guardian or its delegate, and keyed by the guardian. If the heartbeat raises the quorum frontier,
-    ///         it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
+    /// @notice Record `onBehalf`'s last-scanned block identity and scan timestamp. The block hash is validated; the
+    ///         guardian-reported timestamp is independently required not to regress or exceed `block.timestamp`.
+    ///         Callable by the guardian or its delegate and keyed by the guardian. If the heartbeat raises the
+    ///         quorum frontier, it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
     /// @param onBehalf         The guardian the scan is recorded for.
     /// @param lastScannedBlock The block reported as scanned past.
     function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock) external;
@@ -217,16 +218,16 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     ///         monotonic.
     function syncQuorumFrontier() external;
 
-    /// @notice The Unix timestamp of the last block `guardian` reported scanning (0 if never, or not a guardian).
-    /// @return timestamp The last-scanned block timestamp.
+    /// @notice The last scan timestamp reported by `guardian` (0 if never, or not a guardian).
+    /// @return timestamp The guardian-reported scan timestamp.
     function getHeartbeat(address guardian) external view returns (uint40 timestamp);
 
-    /// @notice The guardian set paired with each guardian's last-scanned block timestamp, aligned by index.
+    /// @notice The guardian set paired with each guardian's last reported scan timestamp, aligned by index.
     /// @return guardians  The current guardian set.
-    /// @return timestamps Each guardian's last-scanned block timestamp, aligned by index with `guardians`.
+    /// @return timestamps Each guardian's last reported scan timestamp, aligned by index with `guardians`.
     function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory timestamps);
 
-    /// @notice Highest block timestamp at least a quorum of guardians have ever scanned past. Monotonic.
+    /// @notice Highest guardian-reported scan timestamp ever accepted from a quorum calculation. Monotonic.
     function getQuorumFrontier() external view returns (uint40);
 
     // ---
@@ -276,14 +277,16 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // VIEWS
     // ---
 
-    /// @notice The guardians currently flagging `account` in `marketId`.
+    /// @notice The raw stored set of guardians flagging `account` in `marketId`. It may include a removed guardian
+    ///         until `prune` is called; `unban` clears the set.
     function getFlaggedBy(Id marketId, address account) external view returns (address[] memory);
 
-    /// @notice The guardians with a live suspect report on `account` in `marketId`, paired with each report's
-    ///         timestamp.
+    /// @notice The raw stored suspect-report set for `account` in `marketId`, paired with report timestamps. It may
+    ///         include a removed guardian until `prune`, or an expired report until a later report/retraction cleans
+    ///         it up. Use `getOpinion` for the active snapshotted count consumed by the controller.
     /// @param marketId    The market to read the signal in.
     /// @param account     The account to read.
-    /// @return guardians  The guardians currently reporting the account as suspect.
+    /// @return guardians  The guardians still present in the raw stored suspect set.
     /// @return reportedAt The timestamp of each guardian's last suspect report, aligned by index with `guardians`.
     function getSuspectedBy(Id marketId, address account)
         external

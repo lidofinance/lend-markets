@@ -1,7 +1,6 @@
 # Deployment
 
-Scripts deploy inert markets. Activation is a separate EasyTrack motion. Role ownership is documented in
-`docs/specs/roles.md`.
+Scripts deploy inert markets. Activation is a separate EasyTrack motion. Role ownership is documented in `docs/specs/roles.md`.
 
 ## Setup
 
@@ -10,13 +9,12 @@ Configuration lives under `script/config/`:
 - `<config>.toml`: network, governance, the CircuitBreaker artifact selector, and optional exit books;
 - `markets/<market>.toml`: market parameters, vault metadata, role, and artifact references;
 - `circuit-breakers/<name>.toml`: immutable bounds and initial pause/heartbeat settings;
-- `oracles/<name>.toml`: oracle inputs; standalone deployment uses the DAO Agent as proxy admin;
-- `guardians/<group>.toml`: GuardianSignals inputs; proxy and role administration are fixed by the factory;
+- `oracles/<name>.toml`: oracle inputs; standalone deployment uses the configured DAO Agent as proxy admin;
+- `guardians/<group>.toml`: GuardianSignals guardian set, quorum, and suspect window; proxy admin and
+  `DEFAULT_ADMIN_ROLE` are fixed by the market factory's immutable `ADMIN`;
 - `vaults/<name>.toml` and `adapters/<name>.toml`: an external vault-v2 vault and its Morpho adapter.
 
-Set `RPC_URL`, `DEPLOYER_PRIVATE_KEY`, and `ETHERSCAN_API_KEY` in `.env`. Deployment targets broadcast and
-verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`;
-all steps for one deployment must use the same `RUN`. Artifacts are immutable and are not overwritten.
+Set `RPC_URL`, `DEPLOYER_PRIVATE_KEY`, and `ETHERSCAN_API_KEY` in `.env`. Deployment targets broadcast and verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`; all steps for one deployment must use the same `RUN`. Artifacts are immutable and are not overwritten.
 
 Each artifact header records two deploy-config hashes. `config_hash` is the exact hash of the complete TOML and
 is retained as provenance. `compatibility_hash` is canonical over the protocol identity that existing-protocol
@@ -34,9 +32,9 @@ markets/<market>.toml
 circuit-breakers/<name>.toml
 guardians/<group>.toml
 oracles/<oracle>.toml
-vaults/<name>.toml
-adapters/<name>.toml
-exit-books.toml
+vaults/<name>.toml       # when a vault-v2 pair is deployed
+adapters/<name>.toml     # when a vault-v2 pair is deployed
+exit-books.toml          # when exit books are deployed
 transactions/<step>.json
 ```
 
@@ -101,9 +99,11 @@ Unrelated resource scripts can read the profile, but `deploy-protocol` fails on 
 `deploy-guardian` rejects a quorum larger than the configured committee. Replace both placeholders only with
 reviewed production inputs.
 
-If broadcast or verification is interrupted, immediately repeat the same target and arguments with
-`RESUME=true`. Do not send another transaction from the deployer first: Foundry resumes the saved nonce
-sequence.
+Integrated and standalone deployment assign both books' sole initial `PAUSER_ROLE` to the configured protocol-wide Risk Steward Committee. `RESUMER_ROLE` starts empty. After a pause, the Lido DAO Agent must grant an explicit governance resumer before either book can resume. A per-market pauser must not receive this global authority implicitly.
+
+Exit Books are direct, non-upgradeable deployments. Incompatible `Request` layouts require new book deployments; never reinterpret existing request storage.
+
+If broadcast or verification is interrupted, immediately repeat the same target and arguments with `RESUME=true`. Do not send another transaction from the deployer first: Foundry resumes the saved nonce sequence.
 
 Deploy a shared GuardianSignals instance for an existing run when needed:
 
@@ -150,7 +150,7 @@ ACCEPTANCE_PAUSER_COMMITTEE=0x... \
 make acceptance-run RUN=mainnet-weth-wsteth MARKET=weth-wsteth
 ```
 
-Exit-book allow-listing is a separate `LidoLendSetMarketExitBookAllowed` motion.
+Exit-book allow-listing is a separate governance action after market activation because `setMarketAllowed` rejects an uncreated market. Run activated-state acceptance only after allow-listing completes.
 
 On a fork or devnet there is no EasyTrack, so `make activate-markets RUN=<run>` replays the motion for every
 market recorded in the run, as the impersonated `EVMScriptExecutor` (read from the run's `protocol.toml`). Before

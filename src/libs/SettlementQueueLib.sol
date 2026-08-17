@@ -12,9 +12,9 @@ import {MarketView, PositionView, SettlementConfig, SettlementSlice} from "../ty
 /// @author Lido Lending contributors.
 /// @notice Risk-ordered queue of borrowers for the settle waterfall, with per-borrower settlement-LTV
 ///         targets and the slice-sizing policy. Wraps a max-heap keyed by
-///         borrowShares * KEY_SCALE / rawCollateral, so the root is the highest-LTV position: a
-///         solvent root means no tracked position is bad debt, which is what makes the bad-debt gate
-///         an O(1) root check.
+///         borrowShares * KEY_SCALE / rawCollateral, so the root has the highest stored rounded risk key.
+///         The controller uses it for an O(1) bad-debt gate, but equal keys and later valuation rounding mean a
+///         solvent root does not prove that every tracked position is solvent.
 /// @dev Self-contained module: the caller embeds `State`, forwards mutations, and supplies a
 ///      `MarketView` (live core/oracle snapshot) for the slice math. The lib makes no external calls;
 ///      the slice arithmetic (`sliceToLtv`) is pure and fuzz-testable.
@@ -55,8 +55,8 @@ library SettlementQueueLib {
 
     /// @notice Embedded settlement-queue state: the risk-ordered heap, the settlement config, and per-borrower
     ///         settlement-LTV targets.
-    /// @param heap Max-heap of borrowers keyed by `_riskKey` (borrowShares * KEY_SCALE / collateral), so the
-    ///        root is the highest-LTV position.
+    /// @param heap Max-heap of borrowers keyed by `_riskKey` (borrowShares * KEY_SCALE / collateral); the root
+    ///        has a maximum stored rounded risk key.
     /// @param config Slice-sizing policy applied to the queue root.
     /// @param settlementLtv Per-borrower target post-cut LTV (WAD), 0 = unset.
     struct State {
@@ -301,8 +301,8 @@ library SettlementQueueLib {
         collateralValue = Math.mulDiv(position.collateral, marketView.price, ORACLE_PRICE_SCALE);
     }
 
-    /// @dev Heap ordering key: borrowShares * KEY_SCALE / collateral, monotonic in LTV so the heap root is the
-    ///      riskiest position. Caller guarantees non-zero collateral.
+    /// @dev Heap ordering key: borrowShares * KEY_SCALE / collateral, monotonic in LTV before rounding. The
+    ///      heap root has a maximum stored rounded key. Caller guarantees non-zero collateral.
     function _riskKey(PositionView memory position) private pure returns (uint256) {
         return Math.mulDiv(position.borrowShares, KEY_SCALE, position.collateral);
     }

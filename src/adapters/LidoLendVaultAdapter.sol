@@ -29,8 +29,7 @@ contract LidoLendVaultAdapter is CoreAdapter {
     ///         to this adapter can only be spent by a bundle its own owner started.
     /// @param  vault The Lido Lend vault to exit.
     /// @param  shares Vault shares to burn. Pass `type(uint256).max` for the initiator's full balance.
-    /// @param  maxIterations Cap on how many borrower positions the settlement may cut; 0 uses the
-    ///         vault default.
+    /// @param  maxIterations Cap on settlement-loop iterations; 0 uses the vault default.
     /// @param  receiver Receives both payout tokens. When it is an adapter, later calls in the bundle
     ///         must transfer both out of it.
     /// @param  minExitAssets Minimum total payout, in loan tokens: the loan tokens paid plus the debt

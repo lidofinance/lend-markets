@@ -42,7 +42,7 @@ contract EthereumGeneralAdapter1 is GeneralAdapter1 {
 
     /// @notice Stakes ETH via Lido.
     /// @dev ETH must have been previously sent to the adapter.
-    /// @param amount The amount of ETH to stake. Pass `type(uint).max` to repay the adapter's ETH balance.
+    /// @param amount The amount of ETH to stake. Pass `type(uint).max` to stake the adapter's ETH balance.
     /// @param maxSharePriceE27 The maximum amount of wei to pay for minting 1 share, scaled by 1e27.
     /// @param referral The address of the referral regarding the Lido Rewards-Share Program.
     /// @param receiver The account receiving the stETH tokens.

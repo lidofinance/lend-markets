@@ -2,6 +2,8 @@
 
 # RiskStewardDashboard
 
+Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
+
 Dashboard-specific external surface: per-market steward management and bounded risk-reduction levers. Access-control membership and administration use the inherited `IAccessControlEnumerable` surface.
 
 ## Events
@@ -20,7 +22,7 @@ Emitted when a steward is appointed to or removed from a market.
 event ActivationDelaysIncreased(Id indexed marketId, uint256 newMinActivationDelay, uint256 newMaxActivationDelay, uint256 newMaxGuardiansQuorumDelay);
 ```
 
-Emitted when the activation delay floor, cap, and guardian-quorum fallback are raised on a market.
+Emitted after an accepted non-decreasing update to a market's activation delay floor, cap, and guardian-quorum fallback.
 
 ### `ActivatingLockIncreased`
 
@@ -28,7 +30,7 @@ Emitted when the activation delay floor, cap, and guardian-quorum fallback are r
 event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 newDuration);
 ```
 
-Emitted when the Sybil lock amount and duration are raised on a market.
+Emitted after an accepted non-decreasing update to a market's activation lock.
 
 ### `InstantActivationRevoked`
 
@@ -156,7 +158,7 @@ Raise the Sybil lock amount and duration. Reverts unless both rise or hold. The 
 function revokeInstantActivation(Id marketId, address caller) external;
 ```
 
-Revoke a caller's instant activation on a market. Risk-reducing, so no direction guard; forwards to the controller, which emits the state change.
+Set a caller's instant activation permission to false on a market. Risk-reducing, so no direction guard; the controller records and emits the requested false value even if it was already false.
 
 ### `freezeMarket`
 
