@@ -815,6 +815,20 @@ contract GuardianSignalsTest is Test {
         assertEq(reportedAt[0], t1, "reporter timestamp");
     }
 
+    /// @dev A report is live through `reportedAt + suspectWindow` inclusive. On that exact second a rebuild
+    ///      neither prunes it nor drops it from the count; the following second does both (test below).
+    function test_suspect_reportOnItsLastSecond_countsAndIsNotPruned() public {
+        gs.setSuspectWindow(1 days);
+        _suspect(GUARDIAN_1, BOB); // reported at t0
+        vm.warp(block.timestamp + 1 days); // exactly t0 + window
+
+        _suspect(GUARDIAN_2, BOB); // prunes expired reports, then rebuilds
+
+        assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 2, "the report still counts on its last second");
+        (address[] memory suspecters,) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(suspecters.length, 2, "and it is not pruned from the set");
+    }
+
     /// @dev An expired report is pruned and stops counting on the next report.
     function test_suspect_expiredReport_prunedAndUncounted() public {
         gs.setSuspectWindow(1 days);
