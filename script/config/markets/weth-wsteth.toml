@@ -1,12 +1,15 @@
 # Economic values are draft.
+
 [market]
+# The part this market plays; consumers bind by it rather than by file name.
+role = "weth-wsteth"
 loan_token = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"        # WETH
 collateral_token = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"  # wstETH
 # Zero resolves the oracle artifact recorded under this name.
 oracle = "0x0000000000000000000000000000000000000000"
 oracle_artifact = "weth-wsteth"
 lltv = "800000000000000000"  # 0.8 WAD
-# Zero deploys or resolves the registry identified by guardian_group.
+# Zero resolves the already-deployed registry identified by guardian_group.
 guardian_signals = "0x0000000000000000000000000000000000000000"
 guardian_group = "weth-wsteth"
 vault_name = "Lido wstETH/WETH Vault"

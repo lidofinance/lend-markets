@@ -1,5 +1,6 @@
 quorum = 1
 suspect_window = 0
 
-# Required: production guardian committee.
+# Required before production deployment. The config reader rejects quorum 1 with an empty committee, so this
+# placeholder cannot accidentally deploy a registry with test actors.
 guardians = []

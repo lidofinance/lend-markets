@@ -22,16 +22,21 @@
 - `test/scenario/`: end-to-end flows on **freshly deployed** core / controller / vault, on the local
   EVM with mock tokens. Driven through shared helpers; happy path first, then revert and
   edge cases. Pure-library fuzz tests live here too.
-- `test/fork/`: test suite that runs against a forked network. `NETWORK` selects committed external
-  addresses from `script/config/<network>.toml`; `FORK_REGISTRY` is optional for suites that inspect an
-  existing deployment.
+- `test/fork/`: test suite that runs against a forked network, binding to an **already-deployed** protocol —
+  fork suites never deploy what they test. `RPC_URL` is the node to fork and `ARTIFACTS_DIR` names the deploy
+  run under `deployed/<run>/` whose artifacts they read; the run records its own network and chain id, so
+  there is no network selector.
 - `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
-  deployed stack is correctly wired, fully role-wired (event-completeness scan), and either ready for the
-  activation motion or live after it. Expected values and addresses come from immutable artifacts under
-  `deployed/<run>/`; the suite skips unless `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
+  deployed stack is correctly wired, has the exact initial-launch role topology (direct enumerable-role checks),
+  and is either ready for the activation motion or live after it. Expected deployment values and addresses come
+  from immutable artifacts under `deployed/<run>/`; reviewed runtime motion choices come from
+  `ACCEPTANCE_PAUSER_COMMITTEE` and `ACCEPTANCE_ENABLE_SETTLEMENT`. The suite skips unless
+  `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
 - `script/`: deployment scripts.
 - `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `circuit-breakers/`,
-  `guardians/`, `oracles/`, optional `exit-books.toml`, and archived transaction records.
+  `guardians/`, `oracles/`, `vaults/`, `adapters/`, optional `exit-books.toml`, and archived
+  transaction records. Read directly by both `test/fork/` (`ARTIFACTS_DIR`) and `test/acceptance/`
+  (`ACCEPTANCE_REGISTRY` -> `protocol.toml`); nothing is composed or prepared in between.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).
@@ -44,9 +49,16 @@
 ## Build, Test, And Formatting Commands
 
 - Build: `forge build --force`.
-- All tests (local + fork): `make test`. The fork suites require a working fork setup — `RPC_URL`,
-  `NETWORK` (e.g. in `.env`), its committed config, and a matching RPC — and revert without it;
+- All tests (local + fork): `make test`. The fork suites require a working fork setup — `RPC_URL` pointing at
+  the node that HOLDS the deployment and `ARTIFACTS_DIR` naming its run on disk — and revert without it;
   a fork suite runs or it fails, it never skips.
+- Local fork setup: `make provision-fork RPC_URL=<archive-rpc>` deploys and activates the `fork-*` markets on a
+  local anvil fork of `CONFIG`'s network (mainnet by default), using `FORK_CONFIG=fork-<CONFIG>` for test-only
+  role holders, into `deployed/fork/` and leaves anvil running; a compatible node already on `:8545` is reused
+  without requiring the archive RPC;
+  `make provision-stop` tears it down; `make test-fork-provision` does provision -> test-fork and stops the
+  node only when that invocation started it (a reused node is left running). Against a real deploy run,
+  `make fork-run RUN=<run>` is the equivalent.
 - Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
 - Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
 - Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot`. The
@@ -59,12 +71,15 @@
 - Format check for local Solidity files:
   `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
-- Writing a fork test: put it under `test/fork/`, extend `helpers/ForkTest.sol`, call `_fork()` first in
-  `setUp`, and read external addresses via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and
-  loads `script/config/<NETWORK>.toml`, reverting when the RPC is unreachable, the config is missing, or
-  its chain ID differs. Set `FORK_REGISTRY` only when the suite reads deployed protocol addresses through
-  `_deployed`; its chain ID is checked too. `FORK_BLOCK` pins a block for replay
-  (why latest: ADR 033).
+- Writing a fork test: put it under `test/fork/`, extend `helpers/ForkStack.sol` (which extends `ForkTest`),
+  call `_fork()` first in `setUp`, bind the market with `_marketForRole("<role>")` + `_bindMarket`, and read external addresses
+  via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and binds the run named by `ARTIFACTS_DIR`,
+  reverting when either is unset, the run has no `protocol.toml`, the network config it names is missing, or
+  its recorded chain id differs from the forked chain. A role the deployment has no market for skips the
+  suite; everything else reverts. Protocol addresses come from `_protocol("core")`,
+  `_market(name, "controller")`, `_marketId(name)`, or `_artifactAddr("vaults/weth-wsteth.toml", "vault.address")`
+  for the per-resource artifacts; each reverts on a key the run does not define. `FORK_BLOCK` pins a block for
+  replay.
 
 ## Dependency Policy
 
@@ -116,7 +131,7 @@ test/
 ├── unit/         # L0+L1 — one file per contract / pure library, method-by-method
 ├── scenario/     # L2 — end-to-end flows on a freshly deployed stack (local EVM, mock tokens)
 ├── invariant/    # L4 — handler-based stateful properties
-├── fork/         # fork tests using script/config/<NETWORK>.toml; registry optional for deployed addresses
+├── fork/         # fork tests vs the deployed protocol, bound from deployed/<ARTIFACTS_DIR>/
 └── acceptance/   # L3 — mainnet fork vs immutable artifacts under deployed/<run>/
 ```
 
@@ -129,8 +144,10 @@ test/
   actions). Handlers under `invariant/handlers/`.
 - `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
 - `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
-  addresses and expected values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
-  Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`); skips without an artifact. See
+  addresses and deployment values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
+  Activated/readiness runs also require independent reviewed `ACCEPTANCE_PAUSER_COMMITTEE` and
+  `ACCEPTANCE_ENABLE_SETTLEMENT` motion inputs. Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`);
+  skips without an artifact. It audits launch state, not role changes made by later governance. See
   `script/DEPLOYMENT.md`.
 
 ### Setup Infra (`test/setup/`)

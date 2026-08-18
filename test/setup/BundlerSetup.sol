@@ -40,26 +40,16 @@ abstract contract BundlerSetup is LidoLendSetup {
 
         m = _deployProtocol(_defaultConfig(address(weth), address(wsteth), address(0)));
 
-        bundler3 = IBundler3(_deployOut("Bundler3.sol", "Bundler3", ""));
+        // Both bundler contracts pin solc 0.8.28 while this suite is on 0.8.35, so they come from their
+        // `out/` artifacts (see test/setup/Bundler3Anchor.sol) rather than `new`.
+        bundler3 = IBundler3(deployCode("Bundler3.sol:Bundler3"));
         adapter = IGeneralAdapter1(
-            _deployOut(
-                "EthereumGeneralAdapter1.sol",
-                "EthereumGeneralAdapter1",
+            deployCode(
+                "EthereumGeneralAdapter1.sol:EthereumGeneralAdapter1",
                 abi.encode(address(bundler3), address(protocol.core), address(weth), address(wsteth))
             )
         );
         vaultAdapter = new LidoLendVaultAdapter(address(bundler3));
-    }
-
-    /// @dev Deploys a contract from its compiled artifact. The vendored bundler contracts use solc
-    ///      0.8.28, so reading their bytecode directly avoids Foundry's same-version artifact lookup.
-    function _deployOut(string memory file, string memory name, bytes memory args) private returns (address deployed) {
-        string memory json = vm.readFile(string.concat("out/", file, "/", name, ".json"));
-        bytes memory code = bytes.concat(vm.parseJsonBytes(json, ".bytecode.object"), args);
-        assembly ("memory-safe") {
-            deployed := create(0, add(code, 0x20), mload(code))
-        }
-        require(deployed != address(0) && deployed.code.length != 0, "BundlerSetup: deploy failed");
     }
 
     // ---

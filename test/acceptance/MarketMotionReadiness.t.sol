@@ -13,8 +13,10 @@ import {AcceptanceBase, IReadController, IReadDashboard} from "./AcceptanceBase.
 contract MarketMotionReadinessAcceptance is AcceptanceBase {
     function setUp() public override {
         super.setUp();
-        if (core.code.length == 0) return; // base skipped without a registry
+        if (core.code.length == 0) return; // base skipped: no ACCEPTANCE_REGISTRY configured
         if (_isMarketActivated()) vm.skip(true, "acceptance: market is already activated");
+        _loadExpectedSettlementChoice();
+        _loadExpectedPauserCommittee();
     }
 
     function test_deployedInertAndReadyForMotion() external {

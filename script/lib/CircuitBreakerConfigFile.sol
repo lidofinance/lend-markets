@@ -35,13 +35,18 @@ library CircuitBreakerConfigFile {
     }
 
     function deployedPath(string memory name) internal view returns (string memory) {
-        return string.concat(ArtifactMetadataFile.artifactsDir(), "/circuit-breakers/", name, ".toml");
+        return deployedPath(ArtifactMetadataFile.deployment(), name);
     }
 
-    function readDeployed(string memory name) internal view returns (address) {
-        string memory path = deployedPath(name);
+    function deployedPath(string memory deployment, string memory name) internal pure returns (string memory) {
+        return string.concat(ArtifactMetadataFile.artifactsDir(deployment), "/circuit-breakers/", name, ".toml");
+    }
+
+    function readDeployed(string memory name, ArtifactMetadata memory expected) internal view returns (address) {
+        string memory path = deployedPath(expected.deployment, name);
         if (!vm.exists(path)) return address(0);
-        return vm.parseTomlAddress(vm.readFile(path), ".circuit_breaker.address");
+        string memory artifact = ArtifactMetadataFile.requireCompatible(path, expected);
+        return vm.parseTomlAddress(artifact, ".circuit_breaker.address");
     }
 
     function requireUndeployed(string memory name) internal view {
@@ -57,10 +62,9 @@ library CircuitBreakerConfigFile {
         CircuitBreakerConfig memory cfg,
         ArtifactMetadata memory metadata
     ) internal returns (string memory path) {
-        ArtifactMetadataFile.ensureArtifactsDir();
-        string memory dir = string.concat(ArtifactMetadataFile.artifactsDir(), "/circuit-breakers");
-        if (!vm.exists(dir)) vm.createDir(dir, false);
-        path = deployedPath(name);
+        string memory dir = string.concat(ArtifactMetadataFile.artifactsDir(metadata.deployment), "/circuit-breakers");
+        if (!vm.exists(dir)) vm.createDir(dir, true);
+        path = deployedPath(metadata.deployment, name);
         if (vm.exists(path)) revert ArtifactAlreadyExists(path);
 
         string memory artifact = ArtifactMetadataFile.header(metadata, "circuit-breaker");

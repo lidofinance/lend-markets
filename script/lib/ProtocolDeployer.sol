@@ -20,7 +20,6 @@ import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {LidoLendPrimitives} from "./LidoLendPrimitives.sol";
 import {ProtocolConfig, ProtocolDeployment} from "./ProtocolConfigFile.sol";
-import {GuardianSignalsConfig, GuardianSignalsConfigFile} from "./GuardianSignalsConfigFile.sol";
 import {ExitBookConfig} from "./ExitBookConfigFile.sol";
 
 interface ICircuitBreakerConfig {
@@ -38,7 +37,6 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     error MissingCircuitBreaker();
     error CircuitBreakerNotContract(address circuitBreaker);
     error UnexpectedCircuitBreakerAdmin(address expected, address actual);
-    error DuplicateMarketId(string firstMarket, string secondMarket);
     error MissingExitBookPauser();
 
     function _requireChainId(uint256 expected) internal view {
@@ -109,40 +107,11 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         OssifiableProxy(payable(d.irmRouter)).proxy__changeAdmin(cfg.agent);
     }
 
-    /// @dev The facade is the only operational manager.
-    function _deployGuardianSignals(string memory name, address factory) internal returns (address guardianSignals) {
-        GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.read(name);
-
-        guardianSignals = LidoLendMarketFactory(factory)
-            .deployGuardianSignals(
-                LidoLendMarketFactory.GuardianSpec({
-                    guardians: cfg.guardians, quorum: cfg.quorum, suspectWindow: cfg.suspectWindow
-                })
-            );
-    }
-
     function _requireCircuitBreakerPolicy(address circuitBreaker, address executor) internal view {
         if (circuitBreaker == address(0)) revert MissingCircuitBreaker();
         if (circuitBreaker.code.length == 0) revert CircuitBreakerNotContract(circuitBreaker);
         address actualAdmin = ICircuitBreakerConfig(circuitBreaker).ADMIN();
         if (actualAdmin != executor) revert UnexpectedCircuitBreakerAdmin(executor, actualAdmin);
-    }
-
-    /// @dev The shared IRM router makes these four inputs sufficient to detect duplicate market ids.
-    function _requireUniqueMarketIds(string[] memory names, LidoLendMarketFactory.MarketSpec[] memory markets)
-        internal
-        pure
-    {
-        for (uint256 i; i < markets.length; ++i) {
-            bytes32 current = _marketIdInputHash(markets[i]);
-            for (uint256 j; j < i; ++j) {
-                if (current == _marketIdInputHash(markets[j])) revert DuplicateMarketId(names[j], names[i]);
-            }
-        }
-    }
-
-    function _marketIdInputHash(LidoLendMarketFactory.MarketSpec memory market) private pure returns (bytes32) {
-        return keccak256(abi.encode(market.loanToken, market.collateralToken, market.oracle, market.lltv));
     }
 
     function _deployExitBooks(ExitBookConfig memory cfg, address deployer)

@@ -3,7 +3,6 @@ pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 
-import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {ProtocolDeployer} from "../../script/lib/ProtocolDeployer.sol";
 import {ExitBookConfig} from "../../script/lib/ExitBookConfigFile.sol";
@@ -23,13 +22,6 @@ contract ProtocolDeployerHarness is ProtocolDeployer {
 
     function requireCircuitBreakerPolicy(address circuitBreaker, address executor) external view {
         _requireCircuitBreakerPolicy(circuitBreaker, executor);
-    }
-
-    function requireUniqueMarketIds(string[] memory names, LidoLendMarketFactory.MarketSpec[] memory markets)
-        external
-        pure
-    {
-        _requireUniqueMarketIds(names, markets);
     }
 }
 
@@ -97,36 +89,6 @@ contract ProtocolDeployerTest is Test {
 
         vm.expectRevert(ProtocolDeployer.ExitBookPauserCannotBeExecutor.selector);
         deployer.deployExitBooks(cfg);
-    }
-
-    function testRevert_requireUniqueMarketIds_duplicateEconomicInputs() external {
-        string[] memory names = new string[](2);
-        names[0] = "market-a";
-        names[1] = "market-b";
-        LidoLendMarketFactory.MarketSpec[] memory markets = new LidoLendMarketFactory.MarketSpec[](2);
-        markets[0] = _marketSpec(0.8 ether);
-        markets[1] = _marketSpec(0.8 ether);
-
-        vm.expectRevert(abi.encodeWithSelector(ProtocolDeployer.DuplicateMarketId.selector, names[0], names[1]));
-        deployer.requireUniqueMarketIds(names, markets);
-    }
-
-    function test_requireUniqueMarketIds_acceptsDifferentLltv() external view {
-        string[] memory names = new string[](2);
-        names[0] = "market-a";
-        names[1] = "market-b";
-        LidoLendMarketFactory.MarketSpec[] memory markets = new LidoLendMarketFactory.MarketSpec[](2);
-        markets[0] = _marketSpec(0.8 ether);
-        markets[1] = _marketSpec(0.75 ether);
-
-        deployer.requireUniqueMarketIds(names, markets);
-    }
-
-    function _marketSpec(uint256 lltv) private pure returns (LidoLendMarketFactory.MarketSpec memory market) {
-        market.loanToken = address(0x1001);
-        market.collateralToken = address(0x1002);
-        market.oracle = address(0x1003);
-        market.lltv = lltv;
     }
 
     function _exitBookConfig(address pauser) private pure returns (ExitBookConfig memory cfg) {
