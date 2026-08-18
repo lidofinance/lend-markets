@@ -95,6 +95,9 @@ library CollateralActivationLib {
     /// @notice The inflow reference (`maxDelayInflow`) is zero.
     error ZeroMaxDelayInflow();
 
+    /// @notice The minimum deposit exceeds the activation threshold.
+    error InvalidMinDepositAmount();
+
     /// @notice The guardian-quorum fallback delay is nonzero but does not exceed `maxActivationDelay`, leaving the
     ///         quorum gate no window.
     error InvalidMaxGuardiansQuorumDelay();
@@ -107,6 +110,9 @@ library CollateralActivationLib {
 
     /// @notice The per-suspect surcharge exceeds `MAX_DELAY_DURATION`.
     error MaxDelayPerSuspectExceeded();
+
+    /// @notice A non-instant deposit is below the configured minimum.
+    error DepositTooSmall(uint256 assets, uint256 minDepositAmount);
 
     // ---
     // TYPES
@@ -153,6 +159,7 @@ library CollateralActivationLib {
         if (cfg.maxGuardiansQuorumDelay > MAX_DELAY_DURATION) revert MaxGuardiansQuorumDelayExceeded();
         if (cfg.minActivationAmount == 0) revert ZeroMinActivationAmount();
         if (cfg.maxDelayInflow == 0) revert ZeroMaxDelayInflow();
+        if (cfg.minDepositAmount > cfg.minActivationAmount) revert InvalidMinDepositAmount();
         if (cfg.delayPerStrike > MAX_DELAY_DURATION) revert MaxDelayPerStrikeExceeded();
         if (cfg.delayPerSuspect > MAX_DELAY_DURATION) revert MaxDelayPerSuspectExceeded();
 
@@ -179,6 +186,9 @@ library CollateralActivationLib {
             emit CollateralActivated(borrower, assets, position);
             return;
         }
+
+        uint256 minDepositAmount = $.config.minDepositAmount;
+        if (assets < minDepositAmount) revert DepositTooSmall(assets, minDepositAmount);
 
         uint256 dust = position.dust;
         uint256 assetsWithDust = assets + dust;

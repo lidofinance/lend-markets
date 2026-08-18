@@ -110,6 +110,7 @@ contract MarketConfigFileTest is Test {
             "activating_lock_amount = \"0\"\n",
             "activating_lock_duration = 0\n",
             "min_activation_amount = \"10000000000000000000\"\n",
+            "min_deposit_amount = \"0\"\n",
             "max_guardians_quorum_delay = 0\n",
             "delay_per_strike = 7200\n",
             "delay_per_suspect = 0\n",

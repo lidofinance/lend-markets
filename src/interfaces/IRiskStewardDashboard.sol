@@ -27,6 +27,9 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     /// @notice Emitted after an accepted non-decreasing update to a market's activation lock.
     event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 newDuration);
 
+    /// @notice Emitted after an accepted update to a market's minimum deposit.
+    event MinDepositAmountIncreased(Id indexed marketId, uint256 newMinDepositAmount);
+
     /// @notice Emitted when a steward revokes a caller's instant activation on a market.
     event InstantActivationRevoked(Id indexed marketId, address indexed caller);
 
@@ -81,14 +84,17 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     ///         nonzero fallback > cap on write.
     function increaseActivationDelays(
         Id marketId,
-        uint40 newMinActivationDelay,
-        uint40 newMaxActivationDelay,
-        uint40 newMaxGuardiansQuorumDelay
+        uint32 newMinActivationDelay,
+        uint32 newMaxActivationDelay,
+        uint32 newMaxGuardiansQuorumDelay
     ) external;
 
     /// @notice Raise the Sybil lock amount and duration. Reverts unless both rise or hold. The controller still
     ///         bounds the duration on write.
-    function increaseActivatingLock(Id marketId, uint128 newAmount, uint40 newDuration) external;
+    function increaseActivatingLock(Id marketId, uint128 newAmount, uint32 newDuration) external;
+
+    /// @notice Increase the minimum non-instant deposit. It cannot decrease or exceed `minActivationAmount`.
+    function increaseMinDepositAmount(Id marketId, uint128 newMinDepositAmount) external;
 
     /// @notice Set a caller's instant activation permission to false on a market. Risk-reducing, so no direction
     ///         guard; the controller records and emits the requested false value even if it was already false.

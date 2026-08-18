@@ -3,6 +3,7 @@ pragma solidity 0.8.36;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
@@ -177,5 +178,86 @@ contract ActivationTest is LidoLendSetup {
         emit CollateralActivating(borrower, amount, expected);
         vm.prank(borrower);
         m.core.supplyCollateral(m.params, amount, borrower, "");
+    }
+
+    function test_minDeposit_boundsDustFundersBeforeActivation() public {
+        Market storage m = _m();
+        address borrower = _actor("borrower");
+
+        CollateralActivationConfig memory cfg = m.controller.collateralActivationConfig();
+        cfg.minActivationAmount = 10 ether;
+        cfg.minDepositAmount = 2 ether;
+        m.controller.setCollateralActivationConfig(cfg);
+
+        for (uint256 i; i < 8; ++i) {
+            address spammer = address(uint160(0xBAD0 + i));
+            uint256 spamAmount = uint256(cfg.minDepositAmount) - 1;
+            _fund(m.collateralToken, spammer, spamAmount);
+
+            vm.prank(spammer);
+            m.collateralToken.approve(address(m.core), spamAmount);
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    CollateralActivationLib.DepositTooSmall.selector, spamAmount, cfg.minDepositAmount
+                )
+            );
+            vm.prank(spammer);
+            m.core.supplyCollateral(m.params, spamAmount, borrower, "");
+        }
+
+        ILidoLendMarketController.BorrowerPosition memory position = m.controller.positionOf(borrower);
+        assertEq(position.dust, 0, "rejected spam cannot add dust");
+        assertEq(position.activating, 0, "rejected spam cannot start activation");
+        assertEq(m.core.position(m.id, borrower).collateral, 0, "rejected spam cannot add collateral");
+
+        for (uint256 i; i < 5; ++i) {
+            address funder = address(uint160(0xCAFE + i));
+            _fund(m.collateralToken, funder, cfg.minDepositAmount);
+
+            vm.prank(funder);
+            m.collateralToken.approve(address(m.core), cfg.minDepositAmount);
+            vm.prank(funder);
+            m.core.supplyCollateral(m.params, cfg.minDepositAmount, borrower, "");
+        }
+
+        position = m.controller.positionOf(borrower);
+        assertEq(position.dust, 0, "threshold consumes all dust");
+        assertEq(position.activating, cfg.minActivationAmount, "fifth accepted funder starts activation");
+        assertEq(m.core.position(m.id, borrower).collateral, cfg.minActivationAmount, "only accepted deposits land");
+    }
+
+    function test_maxLock_preventsRecyclingActivationCapital() public {
+        Market storage m = _m();
+        address borrower = _actor("borrower");
+
+        CollateralActivationConfig memory cfg = m.controller.collateralActivationConfig();
+        cfg.minActivationAmount = 10 ether;
+        cfg.minDepositAmount = 2 ether;
+        cfg.activatingLockAmount = type(uint128).max;
+        cfg.activatingLockDuration = cfg.maxActivationDelay;
+        m.controller.setCollateralActivationConfig(cfg);
+
+        uint256 fundersPerActivation = cfg.minActivationAmount / cfg.minDepositAmount;
+        for (uint256 batch; batch < 2; ++batch) {
+            for (uint256 i; i < fundersPerActivation; ++i) {
+                address funder = address(uint160(0xD000 + batch * fundersPerActivation + i));
+                _fund(m.collateralToken, funder, cfg.minDepositAmount);
+
+                vm.prank(funder);
+                m.collateralToken.approve(address(m.core), cfg.minDepositAmount);
+                vm.prank(funder);
+                m.core.supplyCollateral(m.params, cfg.minDepositAmount, borrower, "");
+            }
+
+            uint256 expectedLocked = (batch + 1) * uint256(cfg.minActivationAmount);
+            ILidoLendMarketController.BorrowerPosition memory position = m.controller.positionOf(borrower);
+            assertEq(position.dust, 0, "threshold crossing consumes the dust batch");
+            assertEq(position.activating, expectedLocked, "each trigger adds another locked threshold");
+            assertEq(m.core.position(m.id, borrower).collateral, expectedLocked, "trigger capital remains posted");
+
+            vm.expectRevert(ILidoLendMarketController.ActivationLockActive.selector);
+            vm.prank(borrower);
+            m.core.withdrawCollateral(m.params, cfg.minActivationAmount, borrower, address(0xBEEF));
+        }
     }
 }

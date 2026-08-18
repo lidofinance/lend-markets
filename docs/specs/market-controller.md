@@ -91,7 +91,9 @@ The buckets can coexist. All activating collateral for one borrower shares one s
 flowchart LR
     New["New collateral"] --> Instant{"Instant-enabled caller?"}
     Instant -->|"yes"| ActiveNow["New amount active"]
-    Instant -->|"no"| Minimum{"Amount + dust >=<br/>minActivationAmount?"}
+    Instant -->|"no"| Floor{"Amount >=<br/>minDepositAmount?"}
+    Floor -->|"no"| Reject["Revert"]
+    Floor -->|"yes"| Minimum{"Amount + dust >=<br/>minActivationAmount?"}
     Minimum -->|"no"| Dust["Remain dust"]
     Minimum -->|"yes"| Activating["Add amount + dust to<br/>activating lot and inflow"]
     Activating --> Gate{"Later sync<br/>passes the gate?"}
@@ -101,9 +103,11 @@ flowchart LR
 
 ### Classifying a collateral supply
 
-A normal supply first combines the incoming amount with existing dust. A combined amount below `minActivationAmount` remains dust and does not start or change the timer. Once it reaches the threshold, the whole amount moves to `activating` and is added to market inflow.
+A normal supply below `minDepositAmount` reverts. The floor cannot exceed `minActivationAmount`; 0 disables it. Because anyone may supply for a borrower, one threshold crossing can contain up to `ceil(minActivationAmount / minDepositAmount)` funders. Later crossings can add more funders to the same activating lot.
 
-An instant supply bypasses dust, the timer, and the inflow throttle. It does not change dust or activating collateral left after the pre-supply maturation check. A small instant supply is active but still provides no borrow capacity until total active collateral reaches `minActivationAmount`.
+An accepted supply then combines the incoming amount with existing dust. A combined amount below `minActivationAmount` remains dust and does not start or change the timer. Once it reaches the threshold, the whole amount moves to `activating` and is added to market inflow.
+
+An instant supply bypasses the floor, dust, the timer, and the inflow throttle. It does not change dust or activating collateral left after the pre-supply maturation check. A small instant supply is active but still provides no borrow capacity until total active collateral reaches `minActivationAmount`.
 
 Instant activation is keyed by the call's sender, not the collateral owner. The manager can enable any address, and the controller does not verify that the address restricts access. Each enabled caller must therefore enforce the intended routing policy itself; a permissionless helper would let any user bypass activation.
 

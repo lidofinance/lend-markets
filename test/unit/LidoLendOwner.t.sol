@@ -284,6 +284,7 @@ contract LidoLendOwnerTest is Test {
             activatingLockAmount: 4,
             activatingLockDuration: 5,
             minActivationAmount: 6,
+            minDepositAmount: 0,
             maxGuardiansQuorumDelay: 7,
             delayPerStrike: 8,
             delayPerSuspect: 9
@@ -295,6 +296,7 @@ contract LidoLendOwnerTest is Test {
             activatingLockAmount: 14,
             activatingLockDuration: 15,
             minActivationAmount: 16,
+            minDepositAmount: 0,
             maxGuardiansQuorumDelay: 17,
             delayPerStrike: 18,
             delayPerSuspect: 19

@@ -33,11 +33,12 @@ contract ActivationInflowHandler is Test {
         $.setConfig(
             CollateralActivationConfig({
                 minActivationDelay: 1 minutes,
-                maxActivationDelay: uint40(MAX_DELAY),
+                maxActivationDelay: uint32(MAX_DELAY),
                 activatingLockAmount: 0,
                 activatingLockDuration: 0,
                 maxDelayInflow: uint128(CAP),
                 minActivationAmount: uint128(MIN_ACT),
+                minDepositAmount: 0,
                 maxGuardiansQuorumDelay: 0,
                 delayPerStrike: 0,
                 delayPerSuspect: 0

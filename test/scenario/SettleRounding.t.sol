@@ -85,6 +85,7 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
                     activatingLockDuration: 0,
                     maxDelayInflow: 100_000 ether,
                     minActivationAmount: 1e18,
+                    minDepositAmount: 0,
                     maxGuardiansQuorumDelay: 0,
                     delayPerStrike: 0,
                     delayPerSuspect: 0

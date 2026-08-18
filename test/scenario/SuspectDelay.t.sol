@@ -26,7 +26,7 @@ contract SuspectDelayTest is LidoLendSetup {
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
 
     uint40 internal constant SUSPECT_WINDOW = 7 days;
-    uint40 internal constant DELAY_PER_SUSPECT = 1 hours;
+    uint32 internal constant DELAY_PER_SUSPECT = 1 hours;
     uint256 internal constant COLLATERAL = 100 ether;
 
     address internal guardian1;

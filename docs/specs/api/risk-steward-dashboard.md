@@ -32,6 +32,14 @@ event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 ne
 
 Emitted after an accepted non-decreasing update to a market's activation lock.
 
+### `MinDepositAmountIncreased`
+
+```solidity
+event MinDepositAmountIncreased(Id indexed marketId, uint256 newMinDepositAmount);
+```
+
+Emitted after an accepted update to a market's minimum deposit.
+
 ### `InstantActivationRevoked`
 
 ```solidity
@@ -132,9 +140,9 @@ Whether `steward` may pull this dashboard's levers on `marketId`.
 ```solidity
 function increaseActivationDelays(
     Id marketId,
-    uint40 newMinActivationDelay,
-    uint40 newMaxActivationDelay,
-    uint40 newMaxGuardiansQuorumDelay
+    uint32 newMinActivationDelay,
+    uint32 newMaxActivationDelay,
+    uint32 newMaxGuardiansQuorumDelay
 ) external;
 ```
 
@@ -146,11 +154,22 @@ Raise the activation delay floor, cap, and guardian-quorum fallback. Reverts unl
 function increaseActivatingLock(
     Id marketId,
     uint128 newAmount,
-    uint40 newDuration
+    uint32 newDuration
 ) external;
 ```
 
 Raise the Sybil lock amount and duration. Reverts unless both rise or hold. The controller still bounds the duration on write.
+
+### `increaseMinDepositAmount`
+
+```solidity
+function increaseMinDepositAmount(
+    Id marketId,
+    uint128 newMinDepositAmount
+) external;
+```
+
+Increase the minimum non-instant deposit. It cannot decrease or exceed `minActivationAmount`.
 
 ### `revokeInstantActivation`
 

@@ -480,6 +480,7 @@ contract MarketFactoryScenarioTest is Test {
                 activatingLockAmount: 17 ether,
                 activatingLockDuration: 19 minutes,
                 minActivationAmount: 23 ether,
+                minDepositAmount: 0,
                 maxGuardiansQuorumDelay: 3 hours,
                 delayPerStrike: 29 minutes,
                 delayPerSuspect: 31 minutes

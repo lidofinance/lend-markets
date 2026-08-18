@@ -120,7 +120,7 @@ One direct, non-upgradeable dashboard serves the markets of one core. Steward me
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | administer dashboard roles | C1 | Lido DAO Agent |
 | `STEWARD_ADMIN_ROLE` | add or remove a steward for a market | C3 | EVMScriptExecutor |
-| Per-market steward | increase collateral-activation delays or activation lock, revoke instant activation, and freeze the market | C3 | none initially |
+| Per-market steward | increase collateral-activation delays, activation lock, or single-deposit floor, revoke instant activation, and freeze the market | C3 | none initially |
 
 A steward acts only through the dashboard. The dashboard, not the steward, holds the controller roles.
 

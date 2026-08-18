@@ -85,6 +85,7 @@ contract RiskStewardDashboardTest is Test {
             activatingLockAmount: 5 ether,
             activatingLockDuration: 1 hours,
             minActivationAmount: 1,
+            minDepositAmount: 0,
             maxGuardiansQuorumDelay: 1 days,
             delayPerStrike: 1 hours,
             delayPerSuspect: 30 minutes
@@ -297,6 +298,44 @@ contract RiskStewardDashboardTest is Test {
         vm.prank(steward);
         vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
         dashboard.increaseActivatingLock(marketId, 10 ether, 30 minutes);
+    }
+
+    // ---
+    // increaseMinDepositAmount
+    // ---
+
+    function test_increaseMinDepositAmount_raises() public {
+        vm.expectEmit(true, false, false, true);
+        emit IRiskStewardDashboard.MinDepositAmountIncreased(marketId, 2 ether);
+        vm.prank(steward);
+        dashboard.increaseMinDepositAmount(marketId, 2 ether);
+
+        CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
+        assertEq(cfg.minDepositAmount, 2 ether, "deposit floor raised");
+        assertEq(cfg.minActivationAmount, 1, "unrelated fields preserved");
+        assertEq(cfg.activatingLockAmount, 5 ether, "unrelated fields preserved");
+    }
+
+    function test_increaseMinDepositAmount_holdingIsAccepted() public {
+        vm.prank(steward);
+        dashboard.increaseMinDepositAmount(marketId, 2 ether);
+        vm.prank(steward);
+        dashboard.increaseMinDepositAmount(marketId, 2 ether);
+        assertEq(controller.collateralActivationConfig().minDepositAmount, 2 ether, "hold accepted");
+    }
+
+    function testRevert_increaseMinDepositAmount_lowering() public {
+        vm.prank(steward);
+        dashboard.increaseMinDepositAmount(marketId, 2 ether);
+
+        vm.prank(steward);
+        vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
+        dashboard.increaseMinDepositAmount(marketId, 2 ether - 1);
+    }
+
+    function testRevert_increaseMinDepositAmount_notSteward() public {
+        vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
+        dashboard.increaseMinDepositAmount(marketId, 2 ether);
     }
 
     // ---

@@ -23,13 +23,13 @@ contract ActivationHarness {
         $.setConfig(cfg);
     }
 
-    function setMinActivationDelay(uint40 minDelay) external {
+    function setMinActivationDelay(uint32 minDelay) external {
         CollateralActivationConfig memory cfg = $.config;
         cfg.minActivationDelay = minDelay;
         $.setConfig(cfg);
     }
 
-    function setMaxActivationDelay(uint40 maxDelay) external {
+    function setMaxActivationDelay(uint32 maxDelay) external {
         CollateralActivationConfig memory cfg = $.config;
         cfg.maxActivationDelay = maxDelay;
         $.setConfig(cfg);
@@ -41,7 +41,7 @@ contract ActivationHarness {
         $.setConfig(cfg);
     }
 
-    function setMaxGuardiansQuorumDelay(uint40 quorumDelay) external {
+    function setMaxGuardiansQuorumDelay(uint32 quorumDelay) external {
         CollateralActivationConfig memory cfg = $.config;
         cfg.maxGuardiansQuorumDelay = quorumDelay;
         $.setConfig(cfg);
@@ -140,6 +140,7 @@ contract CollateralActivationLibTest is Test {
                 activatingLockDuration: 0,
                 maxDelayInflow: 10_000 ether,
                 minActivationAmount: 1,
+                minDepositAmount: 0,
                 maxGuardiansQuorumDelay: 1 days,
                 delayPerStrike: 1 hours,
                 delayPerSuspect: 30 minutes
@@ -209,6 +210,52 @@ contract CollateralActivationLibTest is Test {
         assertEq(dust, 0, "dust cleared once the threshold is crossed");
         assertEq(activating, 12 ether, "dust joins the crossing deposit in the timed lot");
         assertEq(active, 0, "still timed, not yet matured");
+    }
+
+    function testRevert_credit_belowMinDepositAmount() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.minActivationAmount = 10 ether;
+        cfg.minDepositAmount = 1 ether;
+        h.setConfig(cfg);
+
+        vm.expectRevert(abi.encodeWithSelector(CollateralActivationLib.DepositTooSmall.selector, 1 ether - 1, 1 ether));
+        h.deposit(address(0xB1), 1 ether - 1);
+    }
+
+    function test_credit_atMinDepositAmount_accepted() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.minActivationAmount = 10 ether;
+        cfg.minDepositAmount = 1 ether;
+        h.setConfig(cfg);
+
+        h.deposit(address(0xB1), 1 ether);
+        (, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(dust, 1 ether, "an accepted sub-threshold deposit is dust");
+        assertEq(activating, 0, "it does not enter the timer");
+    }
+
+    function test_credit_zeroMinDepositAmount_disablesFloor() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.minActivationAmount = 10 ether;
+        cfg.minDepositAmount = 0;
+        h.setConfig(cfg);
+
+        h.deposit(address(0xB1), 1);
+        (,, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(dust, 1, "with no floor a one-wei deposit is accepted as dust");
+    }
+
+    function test_instantDeposit_bypassesMinDepositAmount() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.minActivationAmount = 10 ether;
+        cfg.minDepositAmount = 1 ether;
+        h.setConfig(cfg);
+
+        h.depositInstant(address(0xB1), 1);
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(active, 1, "a sub-floor instant deposit is active at once");
+        assertEq(activating, 0, "instant deposit skips the timer");
+        assertEq(dust, 0, "instant deposit never lands in dust");
     }
 
     /// @notice A trusted (instant) deposit crosses straight into `active`, with no timer and no inflow bump.
@@ -391,6 +438,7 @@ contract CollateralActivationLibTest is Test {
                 activatingLockDuration: 1 hours,
                 maxDelayInflow: 10_000 ether,
                 minActivationAmount: 2 ether, // above the lock, so the lock floor is a sub-threshold remainder
+                minDepositAmount: 0,
                 maxGuardiansQuorumDelay: 0,
                 delayPerStrike: 1 hours,
                 delayPerSuspect: 30 minutes
@@ -418,6 +466,7 @@ contract CollateralActivationLibTest is Test {
                 activatingLockDuration: 30 minutes,
                 maxDelayInflow: 10_000 ether,
                 minActivationAmount: 10 ether,
+                minDepositAmount: 0,
                 maxGuardiansQuorumDelay: 0,
                 delayPerStrike: 1 hours,
                 delayPerSuspect: 30 minutes
@@ -508,6 +557,7 @@ contract CollateralActivationLibTest is Test {
                 activatingLockDuration: 1 hours,
                 maxDelayInflow: 10_000 ether,
                 minActivationAmount: 2 ether, // lock floor (1 ether) is a sub-threshold remainder
+                minDepositAmount: 0,
                 maxGuardiansQuorumDelay: 0,
                 delayPerStrike: 1 hours,
                 delayPerSuspect: 30 minutes
@@ -865,6 +915,7 @@ contract CollateralActivationLibTest is Test {
             activatingLockDuration: 0,
             maxDelayInflow: 10_000 ether,
             minActivationAmount: 1,
+            minDepositAmount: 0,
             maxGuardiansQuorumDelay: 1 days,
             delayPerStrike: 1 hours,
             delayPerSuspect: 30 minutes
@@ -874,7 +925,7 @@ contract CollateralActivationLibTest is Test {
     /// @dev A config whose activatingLockDuration exceeds the bound reverts MaxActivatingLockDurationExceeded.
     function testRevert_setConfig_activatingLockDurationAboveBound() public {
         CollateralActivationConfig memory cfg = _baseConfig();
-        cfg.activatingLockDuration = uint40(7 days + 1);
+        cfg.activatingLockDuration = uint32(7 days + 1);
         vm.expectRevert(CollateralActivationLib.MaxActivatingLockDurationExceeded.selector);
         h.setConfig(cfg);
     }
@@ -885,6 +936,26 @@ contract CollateralActivationLibTest is Test {
         cfg.minActivationAmount = 0;
         vm.expectRevert(CollateralActivationLib.ZeroMinActivationAmount.selector);
         h.setConfig(cfg);
+    }
+
+    function testRevert_setConfig_minDepositAmountAboveActivationAmount() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.minActivationAmount = 10 ether;
+        cfg.minDepositAmount = 10 ether + 1;
+        vm.expectRevert(CollateralActivationLib.InvalidMinDepositAmount.selector);
+        h.setConfig(cfg);
+    }
+
+    function test_setConfig_minDepositAmountAtActivationAmount() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.minActivationAmount = 10 ether;
+        cfg.minDepositAmount = 10 ether;
+        h.setConfig(cfg);
+
+        h.deposit(address(0xB1), 10 ether);
+        (, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(activating, 10 ether, "a threshold-sized deposit enters the timer");
+        assertEq(dust, 0, "no dust can form at this setting");
     }
 
     /// @dev A config with a zero maxDelayInflow reverts ZeroMaxDelayInflow.
@@ -898,7 +969,7 @@ contract CollateralActivationLibTest is Test {
     /// @dev A config whose delayPerStrike exceeds the bound reverts MaxDelayPerStrikeExceeded.
     function testRevert_setConfig_delayPerStrikeAboveBound() public {
         CollateralActivationConfig memory cfg = _baseConfig();
-        cfg.delayPerStrike = uint40(7 days + 1);
+        cfg.delayPerStrike = uint32(7 days + 1);
         vm.expectRevert(CollateralActivationLib.MaxDelayPerStrikeExceeded.selector);
         h.setConfig(cfg);
     }
@@ -906,7 +977,7 @@ contract CollateralActivationLibTest is Test {
     /// @dev A config whose delayPerSuspect exceeds the bound reverts MaxDelayPerSuspectExceeded.
     function testRevert_setConfig_delayPerSuspectAboveBound() public {
         CollateralActivationConfig memory cfg = _baseConfig();
-        cfg.delayPerSuspect = uint40(7 days + 1);
+        cfg.delayPerSuspect = uint32(7 days + 1);
         vm.expectRevert(CollateralActivationLib.MaxDelayPerSuspectExceeded.selector);
         h.setConfig(cfg);
     }
@@ -1005,6 +1076,7 @@ contract ActivationInflowCrossTxTest is Test {
                 activatingLockDuration: 0,
                 maxDelayInflow: 10_000 ether,
                 minActivationAmount: 1 ether,
+                minDepositAmount: 0,
                 maxGuardiansQuorumDelay: 0,
                 delayPerStrike: 0,
                 delayPerSuspect: 0

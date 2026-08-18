@@ -695,6 +695,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
                     activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     minActivationAmount: 10 ether,
+                    minDepositAmount: 0,
                     maxGuardiansQuorumDelay: 0,
                     delayPerStrike: 2 hours,
                     delayPerSuspect: 0

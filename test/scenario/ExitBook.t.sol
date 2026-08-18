@@ -123,6 +123,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
                     activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
+                    minDepositAmount: 0,
                     maxGuardiansQuorumDelay: 0,
                     delayPerStrike: 0,
                     delayPerSuspect: 0

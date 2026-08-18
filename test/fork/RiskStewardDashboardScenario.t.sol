@@ -93,8 +93,8 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
 
         // 1) Raise the activation delays through the dashboard by a tighten-only delta; the live controller
         //    stores them. `+1 hours` on a market whose live cap is hours keeps the raise inside MAX_DELAY_DURATION.
-        uint40 newMin = cfg0.minActivationDelay + 10 minutes;
-        uint40 newMax = cfg0.maxActivationDelay + 1 hours;
+        uint32 newMin = cfg0.minActivationDelay + 10 minutes;
+        uint32 newMax = cfg0.maxActivationDelay + 1 hours;
         vm.prank(STEWARD);
         dashboard.increaseActivationDelays(m.id, newMin, newMax, cfg0.maxGuardiansQuorumDelay);
 
@@ -106,7 +106,7 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
 
         // 2) Raise the activating lock through the dashboard by a tighten-only delta.
         uint128 newAmount = cfg0.activatingLockAmount + 5 ether;
-        uint40 newDuration = cfg0.activatingLockDuration + 1 hours;
+        uint32 newDuration = cfg0.activatingLockDuration + 1 hours;
         vm.prank(STEWARD);
         dashboard.increaseActivatingLock(m.id, newAmount, newDuration);
 

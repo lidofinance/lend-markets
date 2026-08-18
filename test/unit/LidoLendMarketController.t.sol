@@ -360,6 +360,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
             activatingLockAmount: 5 ether,
             activatingLockDuration: 1 hours,
             minActivationAmount: 7 ether,
+            minDepositAmount: 0,
             // must be 0 or strictly above maxActivationDelay (the liveness fallback sits past the delay cap)
             maxGuardiansQuorumDelay: 4 hours,
             delayPerStrike: 0,

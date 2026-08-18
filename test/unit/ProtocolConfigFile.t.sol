@@ -269,6 +269,7 @@ contract ProtocolConfigFileTest is Test {
                     activatingLockAmount: 4,
                     activatingLockDuration: 5,
                     minActivationAmount: 6,
+                    minDepositAmount: 0,
                     maxGuardiansQuorumDelay: 7,
                     delayPerStrike: 8,
                     delayPerSuspect: 9

@@ -89,9 +89,9 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     /// @inheritdoc IRiskStewardDashboard
     function increaseActivationDelays(
         Id marketId,
-        uint40 newMinActivationDelay,
-        uint40 newMaxActivationDelay,
-        uint40 newMaxGuardiansQuorumDelay
+        uint32 newMinActivationDelay,
+        uint32 newMaxActivationDelay,
+        uint32 newMaxGuardiansQuorumDelay
     ) external onlyMarketSteward(marketId) {
         ILidoLendMarketController controller = _controller(marketId);
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
@@ -111,7 +111,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     }
 
     /// @inheritdoc IRiskStewardDashboard
-    function increaseActivatingLock(Id marketId, uint128 newAmount, uint40 newDuration)
+    function increaseActivatingLock(Id marketId, uint128 newAmount, uint32 newDuration)
         external
         onlyMarketSteward(marketId)
     {
@@ -124,6 +124,18 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
         controller.setCollateralActivationConfig(cfg);
 
         emit ActivatingLockIncreased(marketId, newAmount, newDuration);
+    }
+
+    /// @inheritdoc IRiskStewardDashboard
+    function increaseMinDepositAmount(Id marketId, uint128 newMinDepositAmount) external onlyMarketSteward(marketId) {
+        ILidoLendMarketController controller = _controller(marketId);
+        CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
+        if (newMinDepositAmount < cfg.minDepositAmount) revert NotTightened();
+
+        cfg.minDepositAmount = newMinDepositAmount;
+        controller.setCollateralActivationConfig(cfg);
+
+        emit MinDepositAmountIncreased(marketId, newMinDepositAmount);
     }
 
     /// @inheritdoc IRiskStewardDashboard

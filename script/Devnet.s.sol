@@ -117,6 +117,7 @@ contract Devnet is Script, LidoLendDeployer {
             activatingLockDuration: 0,
             maxDelayInflow: 10_000 ether,
             minActivationAmount: minActivation,
+            minDepositAmount: 0,
             maxGuardiansQuorumDelay: 0,
             delayPerStrike: 2 hours,
             delayPerSuspect: 0
