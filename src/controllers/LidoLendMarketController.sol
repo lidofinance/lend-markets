@@ -400,8 +400,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         // raw is pre-deposit: this hook runs before core's `collateral += assets`
         PositionView memory position = _positionView(id, borrower);
 
-        // settle anything already matured, then book the deposit. A sub-threshold deposit stays dust, and only
-        // once it crosses the threshold does the lot enter the activation timer. A freeze or ban defers maturation.
+        // settle anything already matured, then book the deposit. A sub-threshold deposit stays dust only while
+        // none is already pending; onto existing dust, this deposit must lift the combined amount to or past the
+        // threshold or the whole supply reverts. A freeze or ban defers maturation.
         _activation.sync(isFrozen, borrower, _guardianSignals.getOpinion(id, borrower));
         _activation.credit(borrower, hookData.assets, _instantActivationCallers[hookData.caller]);
 
@@ -422,25 +423,21 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         bool frozen = isFrozen;
         if (frozen && position.borrowShares != 0) revert MarketIsFrozen();
 
-        // settle activation, then drain the un-matured buckets (dust, then activating above the lock) and reverse
-        // any same-tx flash addition to the inflow (the lib owns the undo); a revert below rolls this back. The
-        // lib returns the post-debit inactive, so active is the post-withdraw raw minus it.
+        // settle activation, then apply the all-or-nothing inactive rule: a withdrawal either leaves the
+        // un-matured buckets untouched (pure-active withdrawal) or clears them entirely; the lib reverts
+        // otherwise, and reverses any same-tx flash addition to the inflow when it clears.
         _activation.sync(frozen, borrower, _guardianSignals.getOpinion(id, borrower));
-        uint256 inactive = _activation.debit(borrower, hookData.assets);
+        _activation.debit(borrower, hookData.assets);
 
         if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
         position.collateral -= hookData.assets;
 
-        if (inactive > position.collateral) revert ActivationLockActive();
-
-        // With open debt, the remaining active collateral must still cover the debt at LLTV. `_getMaxBorrow`
-        // returns 0 for sub-threshold dust, so a debt-bearing position cannot be drained below
-        // `minActivationAmount` — to exit below it, repay the debt to zero first (a zero-debt withdraw is
-        // unconstrained by this health check).
+        // With open debt, the remaining collateral (all active after a successful debit) must still cover the
+        // debt at LLTV. `_getMaxBorrow` returns 0 for a sub-threshold remainder, so a debt-bearing position
+        // cannot be drained below `minActivationAmount` — repay to zero first to exit below it.
         if (position.borrowShares != 0) {
-            uint256 activeCollateral = position.collateral - inactive;
             MarketView memory marketView = _marketView(id);
-            if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, activeCollateral)) {
+            if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, position.collateral)) {
                 revert InsufficientActiveCollateral();
             }
         }
@@ -501,27 +498,27 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         _settlementQueue.sync(hookData.onBehalf, position);
     }
 
-    /// @dev Liquidate hook: drain the seized collateral from the activation buckets and re-key the queue on
-    ///      the post-liquidation position. Liquidation is a forced path.
+    /// @dev Liquidate hook: reclassify the seized collateral (active first, then the un-matured buckets) and
+    ///      re-key the queue on the post-liquidation position. Liquidation is a forced path.
     function _handleLiquidate(Id id, LiquidateHookData memory hookData) internal {
         address borrower = hookData.borrower;
         PositionView memory position = _positionView(id, borrower);
 
-        // drain the seized collateral from the buckets before core decrements raw
-        if (hookData.seizedAssets != 0) _activation.seize(borrower, hookData.seizedAssets);
-
-        // re-key on the post-liquidation position
         if (hookData.repaidShares > position.borrowShares || hookData.seizedAssets > position.collateral) {
             revert PositionAccountingMismatch();
         }
+
+        // reclassify the seized collateral (active first, then the un-matured buckets) before core decrements raw
+        if (hookData.seizedAssets != 0) _activation.seize(borrower, hookData.seizedAssets, position.collateral);
+
         position.borrowShares -= hookData.repaidShares;
         position.collateral -= hookData.seizedAssets;
         _settlementQueue.sync(borrower, position);
     }
 
     /// @dev Settle hook: gates the cut on policy — reverts if the queue root is bad debt, if the target is
-    ///      ineligible, or if the cut exceeds the allowed slice — then drains buckets in lockstep with the
-    ///      raw seizure and re-keys the queue.
+    ///      ineligible, or if the cut exceeds the allowed slice — then reclassifies the seized collateral
+    ///      (active first, then the un-matured buckets) and re-keys the queue.
     function _handleSettle(Id id, SettleHookData memory hookData) internal {
         address borrower = hookData.borrower;
 
@@ -560,7 +557,10 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
             }
         }
 
-        _activation.seize(borrower, hookData.seizedAssets);
+        if (hookData.borrowSharesCanceled > position.borrowShares || hookData.seizedAssets > position.collateral) {
+            revert PositionAccountingMismatch();
+        }
+        if (hookData.seizedAssets != 0) _activation.seize(borrower, hookData.seizedAssets, position.collateral);
 
         position.borrowShares -= cutShares;
         position.collateral -= hookData.seizedAssets;

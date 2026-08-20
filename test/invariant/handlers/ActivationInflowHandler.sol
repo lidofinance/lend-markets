@@ -8,10 +8,10 @@ import {CollateralActivationLib} from "../../../src/libs/CollateralActivationLib
 import {CollateralActivationConfig} from "../../../src/types/CollateralActivationTypes.sol";
 
 /// @notice Library-level handler for the activation-inflow invariant (ACT-04/05/06). Drives the throttle
-///         accounting functions directly — `credit`, voluntary `debit`, forced `seize` (the shared
-///         liquidation/settlement path), demotion (a `debit` that leaves a sub-threshold remainder) — with NO
-///         instant activation, so the inflow accumulator is actually exercised (the protocol-level invariants
-///         short-circuit it via instant activation).
+///         accounting functions directly — `credit`, voluntary `debit` (all-or-nothing over the inactive
+///         balance), forced `seize` (the shared liquidation/settlement path, active collateral first, then
+///         dust, then activating) — with NO instant activation, so the inflow accumulator is actually
+///         exercised (the protocol-level invariants short-circuit it via instant activation).
 /// @dev The per-tx inflow invariant `storedInflow == min(cap, baseline + net)` is TRANSIENT (baseline/net reset
 ///      between txs), so it is asserted INSIDE `step` after each op in one tx, not in an `invariant_` function.
 ///      `net` is derived from the OBSERVED `activating` delta (via `getActivationState`), independently of the
@@ -28,13 +28,13 @@ contract ActivationInflowHandler is Test {
 
     address[4] internal actors;
     mapping(address => uint256) internal _total; // raw collateral per actor (bounds withdraw/seize)
+    bool[4] public activatingWasSeized; // per-actor: an unverified nonzero activating remainder left by a seize
 
     constructor() {
         $.setConfig(
             CollateralActivationConfig({
                 minActivationDelay: 1 minutes,
                 maxActivationDelay: uint32(MAX_DELAY),
-                activatingLockAmount: 0,
                 activatingLockDuration: 0,
                 maxDelayInflow: uint128(CAP),
                 minActivationAmount: uint128(MIN_ACT),
@@ -74,24 +74,52 @@ contract ActivationInflowHandler is Test {
             address a = actors[ai];
             uint256 opKind = (s >> 8) % 3; // 0 credit, 1 voluntary debit, 2 forced seize
 
-            (uint256 actBefore,) = $.getActivationState(a);
+            (uint256 actBefore, uint256 dustBefore) = $.getActivationState(a);
 
             if (opKind == 0) {
-                uint256 amt = bound(uint256(keccak256(abi.encode(s, "amt"))), 1, 2 * CAP);
+                // With dust pending the deposit must promote (a sub-threshold bound here would revert
+                // DustNotResolved). Otherwise, ~1 in 4 deliberately forms fresh dust (bounded below threshold)
+                // so the promote-or-revert rule and `dust < threshold` are actually exercised — a draw from the
+                // full [lo, lo + 2*CAP] range lands sub-threshold only by ~5e-5 chance. The rest promotes.
+                uint256 lo = dustBefore == 0 ? 1 : MIN_ACT - dustBefore;
+                bool formsDust = dustBefore == 0 && (s >> 16) % 4 == 0;
+                uint256 hi = formsDust ? MIN_ACT - 1 : lo + 2 * CAP;
+                uint256 amt = bound(uint256(keccak256(abi.encode(s, "amt"))), lo, hi);
                 _total[a] += amt;
                 $.credit(a, amt, false);
                 (uint256 actAfter,) = $.getActivationState(a);
-                uint256 added = actAfter - actBefore; // dust stays out of activating -> adds 0
+                uint256 added = actAfter - actBefore;
+                // A promoting credit (added != 0) guarantees activating >= MIN_ACT, proving compliance. A
+                // dust-only credit (added == 0) proves nothing about an existing seize remainder — it can still
+                // leave `activating + dust < threshold` — so it must NOT clear the flag below.
+                if (added != 0) activatingWasSeized[ai] = false;
                 net += added;
                 contrib[ai] += added;
+            } else if (opKind == 1) {
+                uint256 inactive = actBefore + dustBefore;
+                if (_total[a] == 0) continue;
+                // all-or-nothing: a valid voluntary withdrawal covers the whole inactive balance
+                uint256 amt = bound(uint256(keccak256(abi.encode(s, "amt"))), inactive == 0 ? 1 : inactive, _total[a]);
+                _total[a] -= amt;
+                $.debit(a, amt);
+                activatingWasSeized[ai] = false; // debit always leaves activating == 0, on success or as a no-op
+                uint256 reversed = Math.min(contrib[ai], actBefore); // clearing removes the whole activating balance
+                if (actBefore != 0) {
+                    net -= reversed;
+                    contrib[ai] -= reversed;
+                }
             } else if (_total[a] != 0) {
                 uint256 amt = bound(uint256(keccak256(abi.encode(s, "amt"))), 1, _total[a]);
+                uint256 totalBefore = _total[a];
                 _total[a] -= amt;
-                if (opKind == 1) $.debit(a, amt);
-                else $.seize(a, amt);
+                $.seize(a, amt, totalBefore);
                 (uint256 actAfter,) = $.getActivationState(a);
-                uint256 removedAct = actBefore - actAfter; // drained + demoted; dust-only withdrawals move 0
-                uint256 reversed = Math.min(contrib[ai], removedAct);
+                // Only a seize that actually touches activating updates the flag — a dust-only seize
+                // (actAfter == actBefore) must leave an existing flag untouched. A full drain (actAfter == 0) is
+                // trivially compliant and clears it; any nonzero remainder is flagged unverified (no demotion —
+                // it can legitimately be sub-threshold) until a promoting credit or a debit proves it compliant.
+                if (actAfter < actBefore) activatingWasSeized[ai] = actAfter != 0;
+                uint256 reversed = Math.min(contrib[ai], actBefore - actAfter);
                 net -= reversed;
                 contrib[ai] -= reversed;
             }

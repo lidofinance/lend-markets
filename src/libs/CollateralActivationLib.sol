@@ -11,20 +11,23 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 /// @notice Collateral activation throttle. Stores a borrower's un-matured collateral (`dust` and `activating`)
 ///         and the timer. The caller owns the raw `total` and derives `active = total - inactive`, where
 ///         `inactive = activating + dust`.
-/// @dev Per-borrower the lib stores two un-matured buckets plus the timer. Maturity and debits move collateral
-///      within or out of these buckets:
+/// @dev Per-borrower the lib stores two un-matured buckets plus the timer. Maturity, voluntary withdrawal, and
+///      forced seizure move collateral within or out of these buckets:
 ///
 ///         dust        below the threshold, untimed, freely withdrawable, not borrowable
 ///         activating  crossed the threshold, timed and lockable, not borrowable yet
 ///         active      derived by the caller as total - activating - dust
 ///
-///      A sub-threshold deposit stays in dust and leaves the activation timer untouched. The deposit that
-///      aggregates dust past the threshold folds the whole lot into the throttle and (re)starts the timer; a
-///      later deposit folds in its own size and can push the unlock out, never pull it in. Maturity empties
-///      `activating`, lowering the borrower's inactive total, so the caller's `total - inactive` counts it as active.
-///      An instant deposit counts as active immediately. Withdrawal and seizure drain dust then activating above
-///      the lock and return the post-op inactive (`activating + dust`). A drain with no lock floor that leaves the
-///      inactive remainder below the threshold folds it back into dust, off the timer and the maturation scan.
+///      Dust is a single pending lot, not an accumulator: a sub-threshold deposit is held as dust only while the
+///      dust bucket is empty, and leaves the activation timer untouched. With dust pending, the next non-instant
+///      deposit must lift the whole lot to or past the threshold or it reverts. The deposit that crosses the
+///      threshold folds the whole lot — dust plus itself — into the throttle and (re)starts the timer; a later
+///      deposit folds in its own size and can push the unlock out, never pull it in. Maturity empties
+///      `activating`, lowering the borrower's inactive total, so the caller's `total - inactive` counts it as
+///      active. An instant deposit counts as active immediately. Voluntary `debit` clears the un-matured buckets
+///      all-or-nothing under the activating lock. Forced `seize` ignores the lock and consumes active collateral
+///      first, then dust, then activating; any activating remainder it leaves — whatever its size — stays on its
+///      existing timer, since maturity alone decides when it activates.
 /// @dev The base delay is frozen at deposit from the market-wide recent inflow, the same for every position
 ///      regardless of the depositing address. The inflow is capped at `maxDelayInflow` and decays at a fixed
 ///      rate, draining from the cap to zero over `maxActivationDelay`.
@@ -65,10 +68,6 @@ library CollateralActivationLib {
 
     /// @notice Collateral is drained from the un-matured buckets. `position` is the resulting state.
     event CollateralDrained(address indexed borrower, uint256 amount, Position position);
-
-    /// @notice A drain with no lock floor folds the activating portion of a sub-threshold inactive remainder into
-    ///         dust. `amount` is the activating portion moved; `position` is the resulting state.
-    event CollateralDemoted(address indexed borrower, uint256 amount, Position position);
 
     /// @notice Emitted when the full activation config is set.
     event CollateralActivationConfigSet(CollateralActivationConfig config);
@@ -113,6 +112,17 @@ library CollateralActivationLib {
 
     /// @notice A non-instant deposit is below the configured minimum.
     error DepositTooSmall(uint256 assets, uint256 minDepositAmount);
+
+    /// @notice A non-instant deposit onto existing dust leaves the combined amount below the activation
+    ///         threshold. While dust is pending, the next deposit must promote the whole lot.
+    error DustNotResolved(uint256 dust, uint256 assets, uint256 minActivationAmount);
+
+    /// @notice A voluntary withdrawal would remove only part of the inactive balance (`dust + activating`).
+    ///         Inactive collateral leaves all-or-nothing.
+    error InactiveCollateralNotCleared(uint256 requested, uint256 inactive);
+
+    /// @notice A voluntary withdrawal cannot clear the activating lot while the activating lock is in force.
+    error ActivatingCollateralLocked(uint256 activating, uint256 lockDeadline);
 
     // ---
     // TYPES
@@ -174,7 +184,9 @@ library CollateralActivationLib {
 
     /// @notice Book a new collateral deposit. It joins dust, and once dust plus this deposit crosses the
     ///         threshold the whole dormant amount enters the activation timer and is added to the market inflow.
-    ///         When `instant` (a trusted caller) the deposited collateral is not held inactive: it joins neither
+    ///         A sub-threshold deposit is accepted only while the dust bucket is empty; onto existing dust it
+    ///         must resolve the whole lot to or past the threshold or it reverts (`DustNotResolved`). When
+    ///         `instant` (a trusted caller) the deposited collateral is not held inactive: it joins neither
     ///         bucket and counts as active immediately, while any existing dust remains dormant.
     /// @dev All activating collateral shares one timer: a top-up that extends the deadline restarts
     ///      `activatingStart` for the whole lot, clearing the suspect surcharge if it restarts past `suspectExpiry`.
@@ -194,6 +206,7 @@ library CollateralActivationLib {
         uint256 assetsWithDust = assets + dust;
 
         if (assetsWithDust < $.config.minActivationAmount) {
+            if (dust != 0) revert DustNotResolved(dust, assets, $.config.minActivationAmount);
             position.dust = assetsWithDust.toUint128();
             emit CollateralDusted(borrower, assets, position);
             return;
@@ -214,23 +227,32 @@ library CollateralActivationLib {
         emit CollateralActivating(borrower, assetsWithDust, position);
     }
 
-    /// @notice Voluntary withdrawal: drain `amount` from the un-matured buckets honoring the lock, then, when no
-    ///         lock floor applies, demote the activating portion if the total inactive remainder is sub-threshold.
-    ///         Reverses this collateral's same-tx inflow over the full activating reduction and returns the
-    ///         post-debit inactive (`activating + dust`).
-    /// @dev Forced seizure uses `seize`, which drains with no lock floor.
-    function debit(State storage $, address borrower, uint256 amount) internal returns (uint256 inactive) {
+    /// @notice Voluntary withdrawal. With no inactive balance this is a no-op — the caller withdraws active
+    ///         collateral only. Otherwise the inactive balance (`dust + activating`) leaves all-or-nothing:
+    ///         the request must cover the whole balance and no activating lock may be in force. Clearing
+    ///         empties both buckets, stops the timer, and reverses this collateral's same-tx inflow.
+    /// @dev Forced seizure uses `seize`, which consumes active first and ignores the lock.
+    function debit(State storage $, address borrower, uint256 amount) internal {
         Position storage position = $.positions[borrower];
 
-        (uint256 activatingBefore, uint256 activatingStart) = (position.activating, position.activatingStart);
-        uint256 activatingLockDeadline = activatingStart + $.config.activatingLockDuration;
-        uint256 activatingLockAmount =
-            activatingStart != 0 && block.timestamp < activatingLockDeadline ? $.config.activatingLockAmount : 0;
+        uint256 dust = position.dust;
+        uint256 activating = position.activating;
+        uint256 inactive = dust + activating;
+        if (inactive == 0) return;
 
-        inactive = _drain($, borrower, amount, activatingLockAmount);
+        if (activating != 0) {
+            uint256 lockDeadline = position.activatingStart + $.config.activatingLockDuration;
+            if (block.timestamp < lockDeadline) revert ActivatingCollateralLocked(activating, lockDeadline);
+        }
 
-        // Reverse the same-tx inflow over the full activating reduction (drained + demoted).
-        _applyInflowDecrement($, borrower, activatingBefore - position.activating);
+        if (amount < inactive) revert InactiveCollateralNotCleared(amount, inactive);
+
+        position.dust = 0;
+        position.activating = 0;
+        _clearTimer(position);
+        emit CollateralDrained(borrower, inactive, position);
+
+        _applyInflowDecrement($, borrower, activating);
     }
 
     /// @notice Mature the borrower's activating lot once its timer has elapsed and the guardian quorum has
@@ -261,16 +283,29 @@ library CollateralActivationLib {
         return position.dust + position.activating;
     }
 
-    /// @notice Forced seizure of `amount` (liquidation, settle): drains the un-matured buckets with no lock floor,
-    ///         demotes a sub-threshold inactive remainder to dust, then reverses the same-tx inflow the removed
-    ///         activating collateral added. Returns the post-seize inactive (`activating + dust`); the caller
-    ///         derives `active = total - inactive`.
-    function seize(State storage $, address borrower, uint256 amount) internal returns (uint256 inactive) {
+    /// @notice Forced seizure of `amount` (liquidation, settle): consumes active collateral first, then dust,
+    ///         then activating, ignoring the voluntary lock. A surviving activating remainder keeps its timer —
+    ///         maturity, not seizure, decides when it activates. Reverses the same-tx inflow of the removed
+    ///         activating collateral. Never resizes the seizure: the caller guarantees `amount <= totalCollateral`.
+    /// @param totalCollateral The borrower's core collateral balance before this seizure is applied.
+    function seize(State storage $, address borrower, uint256 amount, uint256 totalCollateral) internal {
         Position storage position = $.positions[borrower];
-        uint256 activatingBefore = position.activating;
+        uint256 dust = position.dust;
+        uint256 activating = position.activating;
 
-        inactive = _drain($, borrower, amount, 0);
-        _applyInflowDecrement($, borrower, activatingBefore - position.activating);
+        uint256 active = totalCollateral - dust - activating;
+        uint256 uncovered = Math.saturatingSub(amount, active);
+        uint256 fromDust = Math.min(dust, uncovered);
+        uint256 fromActivating = Math.min(uncovered - fromDust, activating);
+
+        position.dust = uint128(dust - fromDust);
+        position.activating = uint128(activating - fromActivating);
+        if (position.activating == 0) _clearTimer(position);
+
+        uint256 drained = fromDust + fromActivating;
+        if (drained != 0) emit CollateralDrained(borrower, drained, position);
+
+        _applyInflowDecrement($, borrower, fromActivating);
     }
 
     // ---
@@ -316,47 +351,6 @@ library CollateralActivationLib {
     // ---
     // PRIVATE HELPERS
     // ---
-
-    /// @dev Drain up to `amount` from the un-matured buckets, waterfall: dust, then activating above `drainFloor`.
-    ///      A zero floor also permits demoting a sub-threshold inactive remainder to dust. Returns the post-drain
-    ///      inactive (`activating + dust`); the caller covers any shortfall from active. `debit` passes its active
-    ///      lock floor; forced paths pass 0, making all un-matured collateral drainable and permitting demotion of
-    ///      a sub-threshold remainder.
-    function _drain(State storage $, address borrower, uint256 amount, uint256 drainFloor)
-        private
-        returns (uint256 inactive)
-    {
-        Position storage position = $.positions[borrower];
-        uint256 dust = position.dust;
-        uint256 activating = position.activating;
-
-        // Waterfall within the un-matured buckets: dust first, then activating above the lock. Whatever it
-        // leaves uncovered the caller takes from active, derived as `total - inactive`.
-        uint256 fromDust = Math.min(dust, amount);
-        uint256 fromActivating = Math.min(amount - fromDust, Math.saturatingSub(activating, drainFloor));
-
-        position.dust = uint128(dust - fromDust);
-        position.activating = uint128(activating - fromActivating);
-
-        if (position.activating == 0) _clearTimer(position);
-
-        uint256 drained = fromDust + fromActivating;
-        if (drained != 0) emit CollateralDrained(borrower, drained, position);
-
-        uint256 activatingAfterDrain = position.activating;
-        uint256 inactiveAfterDrain = position.dust + activatingAfterDrain;
-
-        // Keep locked collateral timed. Otherwise demote only when the whole inactive remainder is dust-sized;
-        // checking `activating` alone could add it to existing dust and push that bucket above the threshold.
-        if (drainFloor == 0 && activatingAfterDrain != 0 && inactiveAfterDrain < $.config.minActivationAmount) {
-            position.dust = inactiveAfterDrain.toUint128();
-            position.activating = 0;
-            _clearTimer(position);
-            emit CollateralDemoted(borrower, activatingAfterDrain, position);
-        }
-
-        return inactiveAfterDrain;
-    }
 
     /// @dev Book `increment` of gross activating into the tx-wide accumulator and the borrower's reversible
     ///      contribution, then recompute the capped persistent inflow. Returns the recomputed persistent inflow.

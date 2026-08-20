@@ -67,7 +67,7 @@ debtAssets + borrowAssets <= borrowCapacity
 
 A borrow also fails when the caller, debt owner, or loan receiver is banned. Guardian flags and the stored suspect snapshot can extend the debt owner's activation delay when their configured surcharge is nonzero; only a ban directly blocks borrowing.
 
-A debt-free borrower bypasses the withdrawal health check, although an activation lock can still hold part of an activating lot.
+A debt-free borrower bypasses the withdrawal health check, although an activation lock can still block a voluntary withdrawal outright while it applies.
 
 ## Collateral activation
 
@@ -75,8 +75,8 @@ The controller divides a borrower's collateral into three balances:
 
 | Balance | Meaning |
 |---|---|
-| `dust` | Inactive collateral without a timer. It may come from a sub-threshold supply or from demotion of a small activating remainder. |
-| `activating` | Inactive collateral in the activation timer. A portion may be locked against voluntary withdrawal. |
+| `dust` | Inactive collateral without a timer. It may come from a sub-threshold supply over an empty dust bucket; at most one unresolved dust lot exists per borrower. |
+| `activating` | Inactive collateral in the activation timer. An activation lock, while it applies, blocks its voluntary withdrawal outright. |
 | `active` | The remainder of the core collateral balance. It contributes to borrow capacity only when the total active amount reaches `minActivationAmount`. |
 
 Only `dust` and `activating` are stored by the activation subsystem:
@@ -94,7 +94,8 @@ flowchart LR
     Instant -->|"no"| Floor{"Amount >=<br/>minDepositAmount?"}
     Floor -->|"no"| Reject["Revert"]
     Floor -->|"yes"| Minimum{"Amount + dust >=<br/>minActivationAmount?"}
-    Minimum -->|"no"| Dust["Remain dust"]
+    Minimum -->|"no, dust empty"| Dust["Remain dust"]
+    Minimum -->|"no, dust already pending"| RejectDust["Revert"]
     Minimum -->|"yes"| Activating["Add amount + dust to<br/>activating lot and inflow"]
     Activating --> Gate{"Later sync<br/>passes the gate?"}
     Gate -->|"no"| Waiting["Remain activating"]
@@ -103,7 +104,10 @@ flowchart LR
 
 ### Classifying a collateral supply
 
-A normal supply below `minDepositAmount` reverts. The floor cannot exceed `minActivationAmount`; 0 disables it. Because anyone may supply for a borrower, one threshold crossing can contain up to `ceil(minActivationAmount / minDepositAmount)` funders. Later crossings can add more funders to the same activating lot.
+A normal supply below `minDepositAmount` reverts. The floor cannot exceed `minActivationAmount`; 0 disables it. With dust pending, a normal supply must lift `dust + amount` to `minActivationAmount` or it reverts, so one threshold crossing contains at most two normal supplies: the dust supply and the resolving supply. Because anyone may supply on behalf of a borrower, a third party's dust supply forces the borrower's next supply to resolve it (or the borrower withdraws the dust in full). Later crossings can add more funders to the same activating lot.
+
+> [!NOTE]
+> **A stranger can front-run a borrower's own supply with unwanted dust.** Because collateral supply has no owner check on the caller, an attacker can donate a sub-threshold amount to a victim ahead of the victim's own deposit. The pending dust then forces the victim's next normal supply to resolve it to the threshold, instead of landing at whatever size the victim intended. The victim is never trapped: the donated dust remains withdrawable in full under the ordinary rules below, so they can clear it before supplying again if they would rather not resolve it — though ejecting the dust requires clearing the whole inactive balance, which an active lock window can block while the victim also holds an activating lot; resizing the next supply to `minActivationAmount - dust` is the unconditional resolution.
 
 An accepted supply then combines the incoming amount with existing dust. A combined amount below `minActivationAmount` remains dust and does not start or change the timer. Once it reaches the threshold, the whole amount moves to `activating` and is added to market inflow.
 
@@ -164,21 +168,18 @@ Setting `maxGuardiansQuorumDelay` to zero removes the frontier wait, not the ful
 
 ### Voluntary withdrawals and forced collateral reductions
 
-A voluntary collateral withdrawal first runs the maturation sync, then consumes:
+A voluntary collateral withdrawal first runs the maturation sync. If the borrower then has no inactive collateral, the withdrawal consumes active collateral only, subject to freeze, health, and core checks. Otherwise the inactive balance (dust plus the activating lot) leaves all-or-nothing:
 
-1. dust;
-2. activating collateral above the current lock floor; and
-3. active collateral.
+1. while the lot is inside `activatingLockDuration` of its start, every such withdrawal reverts (the lock binds only while the position holds a nonzero activating balance — a dust-only position can still clear during the window);
+2. after the lock window (or with the lock disabled), the requested amount must cover the whole inactive balance; the withdrawal clears both buckets, stops the timer, and takes any remainder from active.
 
-For `activatingLockDuration` from the lot's start, up to `activatingLockAmount` remains in `activating` and cannot be withdrawn voluntarily. Active collateral may still be withdrawn while that floor remains intact; the lock itself causes a revert only if the requested amount would cross it. Freeze, active-collateral health, and core checks still apply. Once the lock expires, it no longer restricts withdrawal, even if the lot has not matured.
+A voluntary withdrawal never partially reduces dust or activating collateral, and nothing is ever demoted to dust.
 
-With no lock floor, a withdrawal that leaves a nonzero activating amount but a total inactive remainder below the current `minActivationAmount` moves the activating remainder to dust and clears its timer. Demotion is skipped while a lock applies because dust is freely withdrawable.
-
-Liquidation and settlement are forced reductions. They do not mature the lot first and ignore the voluntary lock. They consume dust, then activating, then active collateral. If the remaining inactive collateral is below `minActivationAmount`, its activating part becomes dust. Freeze and guardian bans do not block these paths.
+Liquidation and settlement are forced reductions. They do not mature the lot first and ignore the voluntary lock. They consume active collateral, then dust, then activating. A surviving activating remainder — of any size — keeps its existing start and base delay; maturity, not seizure, decides when it activates. Activation policy never caps or resizes a forced reduction; the core determines eligibility and amounts, and the controller only reclassifies what remains.
 
 ### Configuration changes
 
-Configuration changes do not move collateral between buckets. A lot keeps its start and base delay, while current values govern the minimum amount, withdrawal lock, guardian surcharges, quorum fallback, and inflow decay. Changes can therefore affect existing positions immediately without rewriting their activation balances.
+Configuration changes do not move collateral between buckets. A lot keeps its start and base delay, while current values govern the minimum amount, withdrawal lock, guardian surcharges, quorum fallback, and inflow decay. Changes can therefore affect existing positions immediately without rewriting their activation balances. Since `activatingLockDuration` alone gates the lock, moving it to or from zero enables or disables the lock outright; changing it between two nonzero values only changes how long an already-locked lot stays locked.
 
 ## Freeze and pause
 
@@ -188,6 +189,8 @@ Configuration changes do not move collateral between buckets. A lot keeps its st
 | Pause | Every core action that invokes the controller, including repayment, liquidation, settlement, and explicit interest accrual. | Core calls without a market hook, including flash loans and authorization changes; ERC-4626 vault-share transfers; controller administration. |
 
 Freeze keeps debt reduction and lender exits available. Use pause when market turbulence or another incident makes liquidation or settlement unsafe. Classification and instant activation continue while frozen, but borrowing and maturation remain blocked.
+
+Because freeze defers maturation, a debt-free borrower whose activation delay has fully elapsed still cannot mature the lot while frozen, so it stays inactive and the all-or-nothing withdrawal rule still governs it: the borrower can exit only by clearing the whole inactive balance, not part of it. This never traps funds — the withdrawal itself is not blocked, only forced to clear everything inactive at once — and an activation lock does not compound it: `activatingLockDuration` is capped at seven days regardless of freeze, so it always expires on its own.
 
 Pause blocks every market action that invokes the controller. It does not stop the interest clock: a later successful accrual covers the time since the market's last update. A finite pause expires automatically; an indefinite pause requires an authorized resume. Authorities and intended holders are listed in [Roles](roles.md).
 

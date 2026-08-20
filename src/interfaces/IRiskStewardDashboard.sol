@@ -24,8 +24,8 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
         uint256 newMaxGuardiansQuorumDelay
     );
 
-    /// @notice Emitted after an accepted non-decreasing update to a market's activation lock.
-    event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 newDuration);
+    /// @notice Emitted after an accepted non-decreasing update to a market's activating-lock duration.
+    event ActivatingLockDurationIncreased(Id indexed marketId, uint256 newDuration);
 
     /// @notice Emitted after an accepted update to a market's minimum deposit.
     event MinDepositAmountIncreased(Id indexed marketId, uint256 newMinDepositAmount);
@@ -89,9 +89,9 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
         uint32 newMaxGuardiansQuorumDelay
     ) external;
 
-    /// @notice Raise the Sybil lock amount and duration. Reverts unless both rise or hold. The controller still
-    ///         bounds the duration on write.
-    function increaseActivatingLock(Id marketId, uint128 newAmount, uint32 newDuration) external;
+    /// @notice Raise the Sybil lock duration. Reverts unless it rises or holds. The controller still bounds the
+    ///         duration on write.
+    function increaseActivatingLockDuration(Id marketId, uint32 newDuration) external;
 
     /// @notice Increase the minimum non-instant deposit. It cannot decrease or exceed `minActivationAmount`.
     function increaseMinDepositAmount(Id marketId, uint128 newMinDepositAmount) external;

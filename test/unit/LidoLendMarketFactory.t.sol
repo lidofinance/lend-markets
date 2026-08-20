@@ -709,7 +709,6 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
             minActivationDelay: 10 minutes,
             maxActivationDelay: 2 hours,
             maxDelayInflow: 10_000 ether,
-            activatingLockAmount: 0,
             activatingLockDuration: 0,
             minActivationAmount: 10 ether,
             minDepositAmount: 0,

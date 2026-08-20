@@ -113,11 +113,10 @@ contract Devnet is Script, LidoLendDeployer {
         CollateralActivationConfig memory activation = CollateralActivationConfig({
             minActivationDelay: 10 minutes,
             maxActivationDelay: 2 hours,
-            activatingLockAmount: 0,
             activatingLockDuration: 0,
             maxDelayInflow: 10_000 ether,
             minActivationAmount: minActivation,
-            minDepositAmount: 0,
+            minDepositAmount: 1 ether,
             maxGuardiansQuorumDelay: 0,
             delayPerStrike: 2 hours,
             delayPerSuspect: 0

@@ -558,7 +558,6 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                 activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     // The benchmark builds sub-floor dust positions directly (borrow, then withdraw to a
