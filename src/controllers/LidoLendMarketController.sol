@@ -421,8 +421,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         bool frozen = isFrozen;
         if (frozen && position.borrowShares != 0) revert MarketIsFrozen();
 
-        // settle activation, then debit the un-matured buckets: the withdrawal leaves them untouched or clears
-        // them entirely; the lib reverts anything in between and reverses the same-tx inflow when it clears.
+        // settle activation, then debit the un-matured buckets: with both buckets empty any amount passes;
+        // otherwise the withdrawal must clear them entirely or the lib reverts. Clearing reverses the
+        // same-tx inflow.
         _activation.sync(frozen, borrower, _guardianSignals.getOpinion(id, borrower));
         _activation.debit(borrower, hookData.assets);
 
