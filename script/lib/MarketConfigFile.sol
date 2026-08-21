@@ -109,15 +109,15 @@ library MarketConfigFile {
 
     function _parseActivation(string memory toml) private pure returns (CollateralActivationConfig memory) {
         return CollateralActivationConfig({
-            minActivationDelay: _uint32(toml, ".activation.min_activation_delay"),
-            maxActivationDelay: _uint32(toml, ".activation.max_activation_delay"),
+            minActivationDelay: _uint40(toml, ".activation.min_activation_delay"),
+            maxActivationDelay: _uint40(toml, ".activation.max_activation_delay"),
             maxDelayInflow: _uint128(toml, ".activation.max_delay_inflow"),
-            activatingLockDuration: _uint32(toml, ".activation.activating_lock_duration"),
+            activatingLockDuration: _uint40(toml, ".activation.activating_lock_duration"),
             minActivationAmount: _uint128(toml, ".activation.min_activation_amount"),
             minDepositAmount: _uint128(toml, ".activation.min_deposit_amount"),
-            maxGuardiansQuorumDelay: _uint32(toml, ".activation.max_guardians_quorum_delay"),
-            delayPerStrike: _uint32(toml, ".activation.delay_per_strike"),
-            delayPerSuspect: _uint32(toml, ".activation.delay_per_suspect")
+            maxGuardiansQuorumDelay: _uint40(toml, ".activation.max_guardians_quorum_delay"),
+            delayPerStrike: _uint40(toml, ".activation.delay_per_strike"),
+            delayPerSuspect: _uint40(toml, ".activation.delay_per_suspect")
         });
     }
 
@@ -135,10 +135,10 @@ library MarketConfigFile {
         });
     }
 
-    function _uint32(string memory toml, string memory key) private pure returns (uint32) {
+    function _uint40(string memory toml, string memory key) private pure returns (uint40) {
         uint256 value = vm.parseTomlUint(toml, key);
-        if (value > type(uint32).max) revert InvalidConfigValue(key);
-        return value.toUint32();
+        if (value > type(uint40).max) revert InvalidConfigValue(key);
+        return value.toUint40();
     }
 
     function _uint96(string memory toml, string memory key) private pure returns (uint96) {

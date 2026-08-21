@@ -140,9 +140,9 @@ Whether `steward` may pull this dashboard's levers on `marketId`.
 ```solidity
 function increaseActivationDelays(
     Id marketId,
-    uint32 newMinActivationDelay,
-    uint32 newMaxActivationDelay,
-    uint32 newMaxGuardiansQuorumDelay
+    uint40 newMinActivationDelay,
+    uint40 newMaxActivationDelay,
+    uint40 newMaxGuardiansQuorumDelay
 ) external;
 ```
 
@@ -153,7 +153,7 @@ Raise the activation delay floor, cap, and guardian-quorum fallback. Reverts unl
 ```solidity
 function increaseActivatingLockDuration(
     Id marketId,
-    uint32 newDuration
+    uint40 newDuration
 ) external;
 ```
 

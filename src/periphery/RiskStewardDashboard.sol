@@ -89,9 +89,9 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     /// @inheritdoc IRiskStewardDashboard
     function increaseActivationDelays(
         Id marketId,
-        uint32 newMinActivationDelay,
-        uint32 newMaxActivationDelay,
-        uint32 newMaxGuardiansQuorumDelay
+        uint40 newMinActivationDelay,
+        uint40 newMaxActivationDelay,
+        uint40 newMaxGuardiansQuorumDelay
     ) external onlyMarketSteward(marketId) {
         ILidoLendMarketController controller = _controller(marketId);
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
@@ -111,7 +111,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     }
 
     /// @inheritdoc IRiskStewardDashboard
-    function increaseActivatingLockDuration(Id marketId, uint32 newDuration) external onlyMarketSteward(marketId) {
+    function increaseActivatingLockDuration(Id marketId, uint40 newDuration) external onlyMarketSteward(marketId) {
         ILidoLendMarketController controller = _controller(marketId);
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
         if (newDuration < cfg.activatingLockDuration) revert NotTightened();

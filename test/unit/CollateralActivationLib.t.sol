@@ -23,13 +23,13 @@ contract ActivationHarness {
         $.setConfig(cfg);
     }
 
-    function setMinActivationDelay(uint32 minDelay) external {
+    function setMinActivationDelay(uint40 minDelay) external {
         CollateralActivationConfig memory cfg = $.config;
         cfg.minActivationDelay = minDelay;
         $.setConfig(cfg);
     }
 
-    function setMaxActivationDelay(uint32 maxDelay) external {
+    function setMaxActivationDelay(uint40 maxDelay) external {
         CollateralActivationConfig memory cfg = $.config;
         cfg.maxActivationDelay = maxDelay;
         $.setConfig(cfg);
@@ -41,7 +41,7 @@ contract ActivationHarness {
         $.setConfig(cfg);
     }
 
-    function setMaxGuardiansQuorumDelay(uint32 quorumDelay) external {
+    function setMaxGuardiansQuorumDelay(uint40 quorumDelay) external {
         CollateralActivationConfig memory cfg = $.config;
         cfg.maxGuardiansQuorumDelay = quorumDelay;
         $.setConfig(cfg);
@@ -910,7 +910,7 @@ contract CollateralActivationLibTest is Test {
     /// @dev A config whose activatingLockDuration exceeds the bound reverts MaxActivatingLockDurationExceeded.
     function testRevert_setConfig_activatingLockDurationAboveBound() public {
         CollateralActivationConfig memory cfg = _baseConfig();
-        cfg.activatingLockDuration = uint32(7 days + 1);
+        cfg.activatingLockDuration = uint40(7 days + 1);
         vm.expectRevert(CollateralActivationLib.MaxActivatingLockDurationExceeded.selector);
         h.setConfig(cfg);
     }
@@ -954,7 +954,7 @@ contract CollateralActivationLibTest is Test {
     /// @dev A config whose delayPerStrike exceeds the bound reverts MaxDelayPerStrikeExceeded.
     function testRevert_setConfig_delayPerStrikeAboveBound() public {
         CollateralActivationConfig memory cfg = _baseConfig();
-        cfg.delayPerStrike = uint32(7 days + 1);
+        cfg.delayPerStrike = uint40(7 days + 1);
         vm.expectRevert(CollateralActivationLib.MaxDelayPerStrikeExceeded.selector);
         h.setConfig(cfg);
     }
@@ -962,7 +962,7 @@ contract CollateralActivationLibTest is Test {
     /// @dev A config whose delayPerSuspect exceeds the bound reverts MaxDelayPerSuspectExceeded.
     function testRevert_setConfig_delayPerSuspectAboveBound() public {
         CollateralActivationConfig memory cfg = _baseConfig();
-        cfg.delayPerSuspect = uint32(7 days + 1);
+        cfg.delayPerSuspect = uint40(7 days + 1);
         vm.expectRevert(CollateralActivationLib.MaxDelayPerSuspectExceeded.selector);
         h.setConfig(cfg);
     }

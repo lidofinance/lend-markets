@@ -84,14 +84,14 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     ///         nonzero fallback > cap on write.
     function increaseActivationDelays(
         Id marketId,
-        uint32 newMinActivationDelay,
-        uint32 newMaxActivationDelay,
-        uint32 newMaxGuardiansQuorumDelay
+        uint40 newMinActivationDelay,
+        uint40 newMaxActivationDelay,
+        uint40 newMaxGuardiansQuorumDelay
     ) external;
 
     /// @notice Raise the activating-lock duration; a decrease reverts. The controller still bounds the duration
     ///         on write.
-    function increaseActivatingLockDuration(Id marketId, uint32 newDuration) external;
+    function increaseActivatingLockDuration(Id marketId, uint40 newDuration) external;
 
     /// @notice Increase the minimum non-instant deposit. It cannot decrease or exceed `minActivationAmount`.
     function increaseMinDepositAmount(Id marketId, uint128 newMinDepositAmount) external;
