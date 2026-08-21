@@ -15,10 +15,9 @@ pragma solidity 0.8.36;
 /// @param minActivationDelay Base delay floor, at zero inflow.
 /// @param maxActivationDelay Base delay cap, reached at inflow >= maxDelayInflow. Also the inflow decay
 ///        horizon: the accumulator drains from `maxDelayInflow` to zero over this duration.
-/// @param activatingLockDuration How long, from `activatingStart`, the whole activating lot stays unwithdrawable,
-///        while it still holds a nonzero `activating` balance; a dust-only position (no `activating` balance)
-///        can clear during this window regardless. Once the window elapses, the lot is withdrawable again,
-///        subject to the ordinary all-or-nothing rule, even if it has not matured. 0 disables the lock.
+/// @param activatingLockDuration How long, from `activatingStart`, the activating balance cannot be withdrawn.
+///        Once it elapses the collateral is withdrawable even if it has not matured; dust is never locked.
+///        0 disables the lock.
 /// @param maxGuardiansQuorumDelay Liveness fallback for the quorum gate, measured from the lot's start. A lot can
 ///        mature only after its full unlock time, including guardian surcharges; after that, it needs either a
 ///        frontier covering the unlock or this fallback timestamp to have elapsed. A nonzero value must exceed the

@@ -30,7 +30,7 @@ Emitted after an accepted non-decreasing update to a market's activation delay f
 event ActivatingLockDurationIncreased(Id indexed marketId, uint256 newDuration);
 ```
 
-Emitted after an accepted non-decreasing update to a market's activating-lock duration.
+Emitted after an accepted update to a market's activating-lock duration.
 
 ### `MinDepositAmountIncreased`
 
@@ -157,7 +157,7 @@ function increaseActivatingLockDuration(
 ) external;
 ```
 
-Raise the Sybil lock duration. Reverts unless it rises or holds. The controller still bounds the duration on write.
+Raise the activating-lock duration; a decrease reverts. The controller still bounds the duration on write.
 
 ### `increaseMinDepositAmount`
 

@@ -11,23 +11,18 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 /// @notice Collateral activation throttle. Stores a borrower's un-matured collateral (`dust` and `activating`)
 ///         and the timer. The caller owns the raw `total` and derives `active = total - inactive`, where
 ///         `inactive = activating + dust`.
-/// @dev Per-borrower the lib stores two un-matured buckets plus the timer. Maturity, voluntary withdrawal, and
-///      forced seizure move collateral within or out of these buckets:
+/// @dev Per-borrower the lib stores two un-matured buckets plus the timer. Deposits, maturity, voluntary
+///      withdrawal, and forced seizure move collateral within or out of these buckets:
 ///
 ///         dust        below the threshold, untimed, freely withdrawable, not borrowable
 ///         activating  crossed the threshold, timed and lockable, not borrowable yet
 ///         active      derived by the caller as total - activating - dust
 ///
-///      Dust is a single pending lot, not an accumulator: a sub-threshold deposit is held as dust only while the
-///      dust bucket is empty, and leaves the activation timer untouched. With dust pending, the next non-instant
-///      deposit must lift the whole lot to or past the threshold or it reverts. The deposit that crosses the
-///      threshold folds the whole lot — dust plus itself — into the throttle and (re)starts the timer; a later
-///      deposit folds in its own size and can push the unlock out, never pull it in. Maturity empties
-///      `activating`, lowering the borrower's inactive total, so the caller's `total - inactive` counts it as
-///      active. An instant deposit counts as active immediately. Voluntary `debit` clears the un-matured buckets
-///      all-or-nothing under the activating lock. Forced `seize` ignores the lock and consumes active collateral
-///      first, then dust, then activating; any activating remainder it leaves — whatever its size — stays on its
-///      existing timer, since maturity alone decides when it activates.
+///      A sub-threshold deposit is held as dust only while the dust bucket is empty; a deposit onto pending
+///      dust must lift the combined amount to the threshold or it reverts. The deposit that reaches the
+///      threshold moves dust plus itself into `activating` and (re)starts the timer; a later deposit folds in
+///      its own size and can push the unlock out, never pull it in. Maturity empties `activating`, so the
+///      caller's `total - inactive` counts it as active. An instant deposit counts as active immediately.
 /// @dev The base delay is frozen at deposit from the market-wide recent inflow, the same for every position
 ///      regardless of the depositing address. The inflow is capped at `maxDelayInflow` and decays at a fixed
 ///      rate, draining from the cap to zero over `maxActivationDelay`.
@@ -113,15 +108,14 @@ library CollateralActivationLib {
     /// @notice A non-instant deposit is below the configured minimum.
     error DepositTooSmall(uint256 assets, uint256 minDepositAmount);
 
-    /// @notice A non-instant deposit onto existing dust leaves the combined amount below the activation
-    ///         threshold. While dust is pending, the next deposit must promote the whole lot.
+    /// @notice A non-instant deposit onto existing dust leaves the combined amount below the activation threshold.
     error DustNotResolved(uint256 dust, uint256 assets, uint256 minActivationAmount);
 
-    /// @notice A voluntary withdrawal would remove only part of the inactive balance (`dust + activating`).
-    ///         Inactive collateral leaves all-or-nothing.
+    /// @notice A voluntary withdrawal would remove only part of the inactive balance (`dust + activating`);
+    ///         it must remove the whole balance or none of it.
     error InactiveCollateralNotCleared(uint256 requested, uint256 inactive);
 
-    /// @notice A voluntary withdrawal cannot clear the activating lot while the activating lock is in force.
+    /// @notice A voluntary withdrawal cannot remove activating collateral before the lock deadline.
     error ActivatingCollateralLocked(uint256 activating, uint256 lockDeadline);
 
     // ---
@@ -182,12 +176,11 @@ library CollateralActivationLib {
     // ACTIONS
     // ---
 
-    /// @notice Book a new collateral deposit. It joins dust, and once dust plus this deposit crosses the
-    ///         threshold the whole dormant amount enters the activation timer and is added to the market inflow.
-    ///         A sub-threshold deposit is accepted only while the dust bucket is empty; onto existing dust it
-    ///         must resolve the whole lot to or past the threshold or it reverts (`DustNotResolved`). When
-    ///         `instant` (a trusted caller) the deposited collateral is not held inactive: it joins neither
-    ///         bucket and counts as active immediately, while any existing dust remains dormant.
+    /// @notice Book a new collateral deposit. A deposit below the threshold is held as dust, and only while the
+    ///         dust bucket is empty; a deposit onto existing dust must lift the combined amount to the threshold
+    ///         or it reverts. A deposit that reaches the threshold moves dust plus itself into the activation
+    ///         timer and adds that amount to the market inflow. When `instant` (a trusted caller) the deposit
+    ///         joins neither bucket and counts as active immediately; existing dust stays untouched.
     /// @dev All activating collateral shares one timer: a top-up that extends the deadline restarts
     ///      `activatingStart` for the whole lot, clearing the suspect surcharge if it restarts past `suspectExpiry`.
     /// @param instant Whether the supplying caller is trusted to skip the activation timer and inflow throttle.
@@ -227,11 +220,11 @@ library CollateralActivationLib {
         emit CollateralActivating(borrower, assetsWithDust, position);
     }
 
-    /// @notice Voluntary withdrawal. With no inactive balance this is a no-op — the caller withdraws active
-    ///         collateral only. Otherwise the inactive balance (`dust + activating`) leaves all-or-nothing:
-    ///         the request must cover the whole balance and no activating lock may be in force. Clearing
-    ///         empties both buckets, stops the timer, and reverses this collateral's same-tx inflow.
-    /// @dev Forced seizure uses `seize`, which consumes active first and ignores the lock.
+    /// @notice Voluntary withdrawal. With no inactive balance it does nothing: the caller is withdrawing active
+    ///         collateral only. Otherwise the request must cover the whole inactive balance (`dust + activating`)
+    ///         and the lock window must be over; the call then empties both buckets, stops the timer, and
+    ///         reverses this collateral's same-tx inflow.
+    /// @dev Forced seizure goes through `seize`, which takes active collateral first and ignores the lock.
     function debit(State storage $, address borrower, uint256 amount) internal {
         Position storage position = $.positions[borrower];
 
@@ -283,10 +276,10 @@ library CollateralActivationLib {
         return position.dust + position.activating;
     }
 
-    /// @notice Forced seizure of `amount` (liquidation, settle): consumes active collateral first, then dust,
-    ///         then activating, ignoring the voluntary lock. A surviving activating remainder keeps its timer —
-    ///         maturity, not seizure, decides when it activates. Reverses the same-tx inflow of the removed
-    ///         activating collateral. Never resizes the seizure: the caller guarantees `amount <= totalCollateral`.
+    /// @notice Forced seizure of `amount` (liquidation, settle): takes active collateral first, then dust, then
+    ///         activating, ignoring the lock. An activating remainder of any size stays on its existing timer.
+    ///         Reverses the same-tx inflow of the removed activating collateral. The amount is not checked here:
+    ///         the caller guarantees `amount <= totalCollateral`.
     /// @param totalCollateral The borrower's core collateral balance before this seizure is applied.
     function seize(State storage $, address borrower, uint256 amount, uint256 totalCollateral) internal {
         Position storage position = $.positions[borrower];
