@@ -15,10 +15,9 @@ import {Market} from "../setup/Types.sol";
 
 /// @notice L2 scenarios for the suspect surcharge on collateral activation, end-to-end through a real guardian
 ///         registry and controller. The controller reads a cached snapshot of the suspect set — a count plus one
-///         expiry taken from the newest report in it — and the registry rebuilds that snapshot only on a report,
-///         a retraction that removes a live report, or a prune that removes a former guardian's report. Between
-///         rebuilds the cached count can therefore exceed the reports actually live. These tests pin where that
-///         stale count reaches a borrower's activation delay and where it cannot.
+///         expiry taken from the newest report in it — and the registry rebuilds that snapshot after report-set
+///         mutations. Between rebuilds the cached count can exceed the reports actually live. These tests pin where
+///         that stale count reaches a borrower's activation delay and where it cannot.
 contract SuspectDelayTest is LidoLendSetup {
     using MarketActions for Market;
 
@@ -315,8 +314,8 @@ contract SuspectDelayTest is LidoLendSetup {
 
     /// @dev Widening the suspect window is retroactive: the expiry is recomputed from the cached
     ///      `suspectReportedAt`, and lapsed reports still sitting in the set count as live again under the wider
-    ///      window. The cached count of 2 becomes correct rather than phantom, which is what separates this from
-    ///      the orphaned case below.
+    ///      window. The cached count of 2 becomes correct rather than phantom; after cleanup there are no stored
+    ///      reports to revive, as the next test shows.
     function test_widenedWindow_revivesStoredLapsedReports_delaysTheLot() public {
         _lapseBothReports();
 
@@ -330,34 +329,28 @@ contract SuspectDelayTest is LidoLendSetup {
         assertEq(unlockTime, baseUnlock + 2 * DELAY_PER_SUSPECT, "the revived reports delay the lot");
     }
 
-    /// @dev The boundary of the harmless case above. A retraction with nothing live to remove drops every lapsed
-    ///      report from the set but returns before rebuilding, so the count is left with no report behind it — and
-    ///      the caller need not be one of the reporters, so no committee member can bring the count back in line
-    ///      this way. Widening the suspect window then recomputes the expiry from the cached `suspectReportedAt`
-    ///      and drags it back into the future, delaying a fresh lot on an orphaned count. Reaching this needs both
-    ///      steps: without the orphaning the wider window revives the stored reports legitimately, as above.
-    function test_staleCount_orphanedThenWidenedWindow_delaysALotWithNoLiveReport() public {
+    /// @dev Expired-report cleanup rebuilds the snapshot even when the caller had no report to retract. Widening the
+    ///      window afterwards cannot revive a count with no stored report behind it.
+    function test_unsuspectPrunesExpiredReports_widenedWindowDoesNotReviveCount() public {
         _lapseBothReports();
 
-        // Each dropped report is logged, so an indexer following events sees the set empty out. Nothing announces
-        // that the count behind it stayed at 2 — the divergence is silent off-chain.
         Market storage m = _m();
         vm.expectEmit(true, true, true, false, address(m.guardianSignals));
         emit SuspectPruned(m.id, borrower, guardian1);
         vm.expectEmit(true, true, true, false, address(m.guardianSignals));
         emit SuspectPruned(m.id, borrower, guardian2);
-        _unsuspect(guardian3); // an uninvolved guardian: prunes the lapsed reports, leaves the count standing
+        _unsuspect(guardian3); // an uninvolved guardian can still prune the lapsed reports
 
         (address[] memory reporters,) = m.guardianSignals.getSuspectedBy(m.id, borrower);
         assertEq(reporters.length, 0, "every report is gone from the stored set");
-        assertEq(_cachedSuspectCount(), 2, "the count outlives the reports behind it");
+        assertEq(_cachedSuspectCount(), 0, "the snapshot is rebuilt from the empty set");
 
         m.guardianSignals.setSuspectWindow(m.guardianSignals.MAX_SUSPECT_WINDOW());
 
-        assertEq(_cachedSuspectCount(), 2, "the orphaned count survives the window change");
-        assertEq(_liveSuspectCount(), 0, "and the wider window has no stored report left to revive");
+        assertEq(_cachedSuspectCount(), 0, "the wider window cannot revive an orphaned count");
+        assertEq(_liveSuspectCount(), 0, "the wider window has no stored report to revive");
 
         (uint256 unlockTime, uint256 baseUnlock) = _supplyCollateral();
-        assertEq(unlockTime, baseUnlock + 2 * DELAY_PER_SUSPECT, "the orphaned count delays the lot");
+        assertEq(unlockTime, baseUnlock, "the cleaned snapshot adds no suspect delay");
     }
 }

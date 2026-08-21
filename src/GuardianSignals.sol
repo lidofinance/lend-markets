@@ -300,7 +300,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         bool suspectPruned;
         for (uint256 i; i < suspects.length; ++i) {
             if (!_guardians.contains(suspects[i])) {
-                _pruneSuspect(marketId, account, signal, suspects[i]);
+                _removeSuspect(signal, suspects[i]);
+                emit SuspectPruned(marketId, account, suspects[i]);
                 suspectPruned = true;
             }
         }
@@ -451,25 +452,23 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         if (account == address(0)) revert ZeroAddress();
 
         GuardiansSignal storage signal = _signals[marketId][account];
-        _pruneExpiredSuspects(marketId, account);
+        _pruneExpiredSuspects(marketId, account, signal);
         signal.suspectedBy.add(guardian);
         signal.suspectedAt[guardian] = block.timestamp.toUint40();
         _snapshotSuspects(signal);
         emit Suspected(marketId, account, guardian, msg.sender, block.timestamp);
     }
 
-    /// @dev Single-account suspect retraction. No-op when the guardian has no live report on the account.
+    /// @dev Single-account suspect retraction. Rebuilds the snapshot if it clears or prunes any report.
     function _unsuspect(address guardian, Id marketId, address account) internal {
-        _pruneExpiredSuspects(marketId, account);
         GuardiansSignal storage signal = _signals[marketId][account];
-        if (!signal.suspectedBy.remove(guardian)) return;
-        signal.suspectedAt[guardian] = 0;
-        _snapshotSuspects(signal);
-        emit SuspectCleared(marketId, account, guardian, msg.sender);
+        bool suspectPruned = _pruneExpiredSuspects(marketId, account, signal);
+        bool suspectCleared = _removeSuspect(signal, guardian);
+        if (suspectPruned || suspectCleared) _snapshotSuspects(signal);
+        if (suspectCleared) emit SuspectCleared(marketId, account, guardian, msg.sender);
     }
 
-    /// @dev Snapshot the active suspect count and latest remaining report so the delay read skips a re-scan. Run on
-    ///      every report/retraction, after pruning expired ones.
+    /// @dev Snapshot the active suspect count and latest remaining report so the delay read skips a re-scan.
     function _snapshotSuspects(GuardiansSignal storage signal) internal {
         uint256 count;
         uint40 latestReportedAt;
@@ -499,23 +498,25 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         suspectExpiryTimestamp = uint256(signal.suspectReportedAt) + _suspectWindow;
     }
 
-    /// @dev Drop suspect reports on `account` whose window has lapsed. A lapsed report already stopped counting,
-    ///      so removing it changes nothing but the set size.
-    function _pruneExpiredSuspects(Id marketId, address account) internal {
-        GuardiansSignal storage signal = _signals[marketId][account];
+    /// @dev Drop suspect reports on `account` whose window has lapsed.
+    function _pruneExpiredSuspects(Id marketId, address account, GuardiansSignal storage signal)
+        internal
+        returns (bool suspectPruned)
+    {
         uint256 window = _suspectWindow;
         address[] memory suspects = signal.suspectedBy.values();
         for (uint256 i; i < suspects.length; ++i) {
             if (uint256(signal.suspectedAt[suspects[i]]) + window < block.timestamp) {
-                _pruneSuspect(marketId, account, signal, suspects[i]);
+                _removeSuspect(signal, suspects[i]);
+                emit SuspectPruned(marketId, account, suspects[i]);
+                suspectPruned = true;
             }
         }
     }
 
-    /// @dev Remove one guardian's suspect report on `account` and log it.
-    function _pruneSuspect(Id marketId, address account, GuardiansSignal storage signal, address guardian) private {
-        signal.suspectedBy.remove(guardian);
-        signal.suspectedAt[guardian] = 0;
-        emit SuspectPruned(marketId, account, guardian);
+    /// @dev Keep the raw reporter set and its timestamp mapping in sync.
+    function _removeSuspect(GuardiansSignal storage signal, address guardian) private returns (bool removed) {
+        removed = signal.suspectedBy.remove(guardian);
+        if (removed) signal.suspectedAt[guardian] = 0;
     }
 }

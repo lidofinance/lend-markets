@@ -607,7 +607,7 @@ function unsuspect(
 ) external;
 ```
 
-Retract guardian `onBehalf`'s suspect reports on `accounts` in `marketId`. Per account a no-op if the guardian has no live report on it.
+Retract guardian `onBehalf`'s live suspect reports on `accounts` in `marketId`, pruning expired reports and rebuilding affected snapshots.
 
 ### `prune`
 

@@ -252,8 +252,8 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @param accounts The accounts to report as suspect.
     function suspect(Id marketId, address onBehalf, address[] calldata accounts) external;
 
-    /// @notice Retract guardian `onBehalf`'s suspect reports on `accounts` in `marketId`. Per account a no-op if the
-    ///         guardian has no live report on it.
+    /// @notice Retract guardian `onBehalf`'s live suspect reports on `accounts` in `marketId`, pruning expired
+    ///         reports and rebuilding affected snapshots.
     function unsuspect(Id marketId, address onBehalf, address[] calldata accounts) external;
 
     /// @notice Permissionless: on `account` in `marketId`, drop the flags and suspect reports left by guardians that
