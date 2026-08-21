@@ -65,18 +65,23 @@ contract ActivationHarness {
         $.credit(borrower, assets, true);
     }
 
-    /// @dev Forced seizure path ($.seize): drains with no lock floor and runs the same-tx inflow undo.
+    /// @dev Forced seizure path ($.seize): consumes active collateral first, then the un-matured buckets,
+    ///      ignoring the lock, and runs the same-tx inflow undo. `totalBefore` mirrors what the controller
+    ///      reads from core as the borrower's pre-seizure collateral.
     function seize(address borrower, uint256 amount) external returns (uint256) {
+        uint256 totalBefore = _total[borrower];
         _total[borrower] -= amount;
-        uint256 inactive = $.seize(borrower, amount);
-        return _total[borrower] - inactive;
+        $.seize(borrower, amount, totalBefore);
+        (uint256 activating, uint256 dust) = $.getActivationState(borrower);
+        return _total[borrower] - activating - dust;
     }
 
     /// @dev Voluntary withdrawal path ($.debit), which honors the lock and runs the same-tx inflow undo.
     function withdraw(address borrower, uint256 amount) external returns (uint256) {
         _total[borrower] -= amount;
-        uint256 inactive = $.debit(borrower, amount);
-        return _total[borrower] - inactive;
+        $.debit(borrower, amount);
+        (uint256 activating, uint256 dust) = $.getActivationState(borrower);
+        return _total[borrower] - activating - dust;
     }
 
     function sync(address borrower, uint256 strikes) external returns (uint256) {
@@ -136,7 +141,6 @@ contract CollateralActivationLibTest is Test {
             CollateralActivationConfig({
                 minActivationDelay: 1 minutes,
                 maxActivationDelay: 1 hours,
-                activatingLockAmount: 0,
                 activatingLockDuration: 0,
                 maxDelayInflow: 10_000 ether,
                 minActivationAmount: 1,
@@ -160,11 +164,10 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.currentInflow(), 10_000 ether, "inflow saturates at maxDelayInflow");
     }
 
-    /// @notice A flash-loaned deposit cannot inflate the throttle. The deposit bumps the inflow, but withdrawing
-    ///         it in the same tx undoes that bump. The withdrawal leaves a sub-threshold remainder, which is
-    ///         demoted to dust; dust is off the throttle, so its inflow is reversed too (ACT-04) and the throttle
-    ///         returns to zero even though the dust collateral stays behind — dust is not borrowable, so it need
-    ///         not be throttled.
+    /// @notice A flash-loaned deposit cannot inflate the throttle. The deposit bumps the inflow, but clearing the
+    ///         whole inactive balance (dust plus activating) in the same tx undoes that bump entirely — the
+    ///         all-or-nothing rule means the flash-loaned amount cannot leave without also taking the dust top-up
+    ///         with it, so nothing is left behind to keep throttled or otherwise.
     function test_flashDepositDustWithdraw_doesNotInflateThrottle() public {
         h.setMinActivationAmount(1 ether); // raise the threshold so a sub-threshold dust deposit is possible
 
@@ -178,17 +181,16 @@ contract CollateralActivationLibTest is Test {
         h.deposit(attacker, 0.5 ether);
         assertEq(h.currentInflow(), 10 ether, "dust does not bump the inflow");
 
-        // repay the flash loan: withdraw the 10 ether in the same tx, so the transient undo applies
-        h.withdraw(attacker, 10 ether);
+        // repay the flash loan: clear the whole inactive balance (dust + activating) in the same tx, so the
+        // transient undo applies to all of it
+        h.withdraw(attacker, 10.5 ether);
 
-        // The drain leaves 0.5 ether activating, which is demoted to dust; demoted collateral leaves the throttle,
-        // so its inflow is reversed alongside the drained amount and the throttle falls to zero.
-        assertEq(h.currentInflow(), 0, "same-tx undo reverses all inflow, including the demoted remainder");
+        assertEq(h.currentInflow(), 0, "same-tx undo reverses all inflow");
 
         (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(attacker);
         assertEq(active, 0, "no matured collateral");
-        assertEq(activating, 0, "remainder demoted out of activating");
-        assertEq(dust, 0.5 ether, "the sub-threshold remainder stays as dust, carrying no throttle inflow");
+        assertEq(activating, 0, "activating cleared");
+        assertEq(dust, 0, "dust cleared too, inactive leaves all-or-nothing");
     }
 
     /// @notice Dust that predates a crossing deposit is released into the timed lot: a sub-threshold deposit parks
@@ -210,6 +212,40 @@ contract CollateralActivationLibTest is Test {
         assertEq(dust, 0, "dust cleared once the threshold is crossed");
         assertEq(activating, 12 ether, "dust joins the crossing deposit in the timed lot");
         assertEq(active, 0, "still timed, not yet matured");
+    }
+
+    /// @notice Only one unresolved dust lot is allowed per borrower: once dust is pending, a second sub-threshold
+    ///         supply reverts instead of accumulating.
+    function testRevert_deposit_ontoDust_belowThreshold() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 1 ether); // one dust lot is allowed
+        vm.expectRevert(
+            abi.encodeWithSelector(CollateralActivationLib.DustNotResolved.selector, 1 ether, 1 ether, 10 ether)
+        );
+        h.deposit(address(0xB1), 1 ether); // a second sub-threshold supply is not
+    }
+
+    /// @notice A deposit onto existing dust that lifts the combined amount to exactly the threshold promotes the
+    ///         whole lot — the boundary between the revert above and the ordinary crossing path.
+    function test_deposit_ontoDust_atThreshold_promotesWholeLot() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 1 ether);
+        h.deposit(address(0xB1), 9 ether); // D + assets == M exactly
+        (, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(activating, 10 ether, "whole lot promotes");
+        assertEq(dust, 0, "dust folded in");
+    }
+
+    /// @notice A sub-threshold deposit is still accepted when the dust bucket is empty, even with an existing
+    ///         activating lot — the "at most one unresolved dust lot" rule tracks the dust bucket, not the position
+    ///         as a whole.
+    function test_deposit_subThreshold_withActivatingLot_createsSingleDustLot() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 10 ether); // activating lot
+        h.deposit(address(0xB1), 1 ether); // allowed: dust bucket was empty
+        (, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(activating, 10 ether);
+        assertEq(dust, 1 ether);
     }
 
     function testRevert_credit_belowMinDepositAmount() public {
@@ -381,213 +417,139 @@ contract CollateralActivationLibTest is Test {
         h.setMaxGuardiansQuorumDelay(7 days + 1);
     }
 
-    /// @notice A withdrawal that drains an activating lot below the threshold folds the remainder into dust: it
-    ///         leaves the timer, so it never matures and stays off the guardian scan, and only a fresh crossing
-    ///         deposit re-throttles it. The inactive total is unchanged, so `active` is too.
-    function test_withdraw_demotesSubThresholdActivatingToDust() public {
-        h.setMinActivationAmount(1 ether);
-        address borrower = address(0xDE);
-
-        h.deposit(borrower, 10 ether);
-        (, uint256 activating0, uint256 dust0) = h.bucketsOf(borrower);
-        assertEq(activating0, 10 ether, "deposit enters activating");
-        assertEq(dust0, 0, "no dust");
-
-        // Drain to 0.5 ether activating (< 1 ether threshold): the remainder is demoted to dust.
-        h.withdraw(borrower, 9.5 ether);
-        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(activating, 0, "sub-threshold remainder no longer activating");
-        assertEq(dust, 0.5 ether, "remainder folded into dust");
-        assertEq(active, 0, "dust is not active");
-
-        // Off the timer: even past the unlock, sync leaves it dust — it never matures.
-        vm.warp(block.timestamp + 2 hours);
-        h.sync(borrower, 0);
-        (uint256 activeAfter,, uint256 dustAfter) = h.bucketsOf(borrower);
-        assertEq(activeAfter, 0, "demoted collateral never matures");
-        assertEq(dustAfter, 0.5 ether, "still dust");
-    }
-
-    /// @notice A withdrawal that leaves the activating lot at or above the threshold keeps it activating — it
-    ///         still matures on its timer.
-    function test_withdraw_atThresholdStaysActivating() public {
-        h.setMinActivationAmount(1 ether);
-        address borrower = address(0xDF);
-
-        h.deposit(borrower, 10 ether);
-        h.withdraw(borrower, 9 ether); // leaves exactly 1 ether == threshold
-        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(activating, 1 ether, "at-threshold remainder stays activating");
-        assertEq(dust, 0, "not demoted");
-
-        vm.warp(block.timestamp + 2 hours);
-        h.sync(borrower, 0);
-        (uint256 active,,) = h.bucketsOf(borrower);
-        assertEq(active, 1 ether, "at-threshold lot matures on its timer");
-    }
-
-    /// @notice With an activating-lock in force, a withdrawal that drains down to the lock floor leaves the locked
-    ///         remainder in `activating` — it is NOT demoted into freely-withdrawable dust, which would bypass the
-    ///         lock. (Without the lock the identical sub-threshold remainder demotes; see the demote test above.)
-    function test_withdraw_doesNotDemoteLockedActivating() public {
-        h.setConfig(
-            CollateralActivationConfig({
-                minActivationDelay: 1 minutes,
-                maxActivationDelay: 1 hours,
-                activatingLockAmount: 1 ether,
-                activatingLockDuration: 1 hours,
-                maxDelayInflow: 10_000 ether,
-                minActivationAmount: 2 ether, // above the lock, so the lock floor is a sub-threshold remainder
-                minDepositAmount: 0,
-                maxGuardiansQuorumDelay: 0,
-                delayPerStrike: 1 hours,
-                delayPerSuspect: 30 minutes
-            })
+    /// @notice Inactive collateral (`dust + activating`) leaves all-or-nothing: a voluntary withdrawal that would
+    ///         remove only part of it reverts instead of draining partially.
+    function testRevert_withdraw_partialInactive() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 10 ether); // A = 10
+        vm.expectRevert(
+            abi.encodeWithSelector(CollateralActivationLib.InactiveCollateralNotCleared.selector, 5 ether, 10 ether)
         );
-        address borrower = address(0x10C);
-
-        h.deposit(borrower, 10 ether);
-        // Drain to the 1 ether lock floor: the 1 ether remainder is sub-threshold (< 2 ether) but LOCKED.
-        h.withdraw(borrower, 9 ether);
-
-        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(activating, 1 ether, "locked remainder stays activating, not demoted");
-        assertEq(dust, 0, "locked remainder not folded into freely-withdrawable dust");
+        h.withdraw(address(0xB1), 5 ether);
     }
 
-    /// @notice Once a lock expires, a sub-threshold activating remainder is not added to existing dust when their
-    ///         sum reaches the threshold. The buckets stay separate instead of forming above-threshold dust.
-    function test_withdraw_expiredLock_doesNotCreateAboveThresholdDust() public {
-        h.setConfig(
-            CollateralActivationConfig({
-                minActivationDelay: 1 minutes,
-                maxActivationDelay: 1 hours,
-                activatingLockAmount: 9 ether,
-                activatingLockDuration: 30 minutes,
-                maxDelayInflow: 10_000 ether,
-                minActivationAmount: 10 ether,
-                minDepositAmount: 0,
-                maxGuardiansQuorumDelay: 0,
-                delayPerStrike: 1 hours,
-                delayPerSuspect: 30 minutes
-            })
+    /// @notice A withdrawal covering the whole inactive balance (`dust + activating`) clears both buckets and the
+    ///         timer, and reverses the activating portion's same-tx inflow contribution.
+    function test_withdraw_fullInactive_clearsBucketsTimerAndInflow() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 10 ether); // A = 10
+        h.deposit(address(0xB1), 1 ether); // D = 1 (allowed from empty dust)
+        uint256 inflowBefore = h.currentInflow();
+
+        vm.expectEmit(address(h));
+        emit CollateralActivationLib.CollateralDrained(
+            address(0xB1),
+            11 ether, // the full inactive balance (dust + activating), not just the activating portion
+            CollateralActivationLib.Position({dust: 0, activating: 0, activatingStart: 0, activatingDelay: 0})
         );
-        address borrower = address(0x10CD);
+        h.withdraw(address(0xB1), 11 ether); // exactly D + A
 
-        h.deposit(borrower, 20 ether);
-        h.withdraw(borrower, 11 ether); // leaves the 9 ether lock floor activating
-        h.deposit(borrower, 9 ether); // remains separate dust while the lock is active
+        (, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(activating + dust, 0, "inactive cleared");
+        assertEq(h.currentInflow(), inflowBefore - 10 ether, "same-tx activating contribution reversed");
 
-        vm.warp(block.timestamp + 30 minutes);
-        h.withdraw(borrower, 1 ether);
-
-        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(activating, 9 ether, "sub-threshold activating remainder stays timed");
-        assertEq(dust, 8 ether, "existing dust remains below the threshold");
+        GuardiansOpinion memory opinion;
+        assertEq(h.getUnlockTime(address(0xB1), opinion), 0, "timer stopped on the full clear");
     }
 
-    // ── ACT-04: withdrawal demotion reverses the same-tx inflow of the demoted remainder ──
-
-    /// @notice The finding's canonical sequence: deposit exactly the threshold, withdraw one raw unit so the drain
-    ///         leaves a sub-threshold remainder, which is demoted to dust. The demoted remainder leaves the
-    ///         throttle, so its same-tx inflow is reversed too — the throttle returns to zero, not to a phantom
-    ///         `~minActivationAmount`. Then withdrawing the dust empties the position, still at zero inflow.
-    function test_debit_demotionReversesSameTxInflow() public {
-        uint128 m = 2 ether;
-        h.setMinActivationAmount(m);
-        address borrower = address(0xAC04);
-
-        h.deposit(borrower, m); // crosses -> activating = m, inflow = m
-        assertEq(h.currentInflow(), m, "deposit bumps inflow to the threshold");
-
-        // Withdraw one raw unit: the drain leaves m - 1 activating (< m), which is demoted to dust.
-        h.withdraw(borrower, 1);
-        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(activating, 0, "sub-threshold remainder demoted out of activating");
-        assertEq(dust, uint256(m) - 1, "remainder folded into dust");
-        // Pre-fix this was m - 1 (phantom); post-fix the demoted remainder's inflow is reversed too.
-        assertEq(h.currentInflow(), 0, "demotion reverses the full same-tx inflow, no phantom left");
-
-        // Withdrawing the dust empties the position; dust is off the throttle, so inflow stays zero.
-        h.withdraw(borrower, uint256(m) - 1);
-        (uint256 active, uint256 activatingEnd, uint256 dustEnd) = h.bucketsOf(borrower);
-        assertEq(active + activatingEnd + dustEnd, 0, "position fully emptied");
-        assertEq(h.currentInflow(), 0, "empty position leaves no phantom inflow");
+    /// @notice With no inactive balance (`dust + activating == 0`), a voluntary withdrawal is unrestricted by
+    ///         activation — it is a plain draw against active collateral.
+    function test_withdraw_activeOnly_isUnrestricted() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 10 ether);
+        vm.warp(block.timestamp + 1 hours + 1);
+        h.sync(address(0xB1), 0); // matured: active = 10, D + A = 0
+        h.withdraw(address(0xB1), 4 ether); // no inactive — nothing to clear
+        (uint256 active,,) = h.bucketsOf(address(0xB1));
+        assertEq(active, 6 ether, "active-only withdrawal draws down active, untouched by activation");
     }
 
-    /// @notice Boundary `minActivationAmount = 1`: a remainder can never be sub-threshold (any nonzero remainder
-    ///         is `>= 1 = threshold`), so demotion never fires; a full drain still reverses the inflow exactly.
-    function test_debit_demotion_minAmountBoundaryOne() public {
-        h.setMinActivationAmount(1);
-        address borrower = address(0xAC01);
+    /// @notice The mixed shape `amount > inactive > 0`: a withdrawal larger than the inactive balance clears
+    ///         dust (there is no activating lot here) in full, then takes the remainder out of active.
+    function test_withdraw_amountAboveInactive_clearsInactiveThenDrawsFromActive() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 10 ether); // A = 10
+        vm.warp(block.timestamp + 1 hours + 1);
+        h.sync(address(0xB1), 0); // matured: active = 10, D + A = 0
+        h.deposit(address(0xB1), 1 ether); // fresh dust: D = 1 (allowed from empty dust)
 
-        h.deposit(borrower, 1); // activating = 1, inflow = 1
-        assertEq(h.currentInflow(), 1, "deposit bumps inflow");
+        h.withdraw(address(0xB1), 5 ether); // covers the 1 dust, remainder 4 comes from active
 
-        h.withdraw(borrower, 1); // fully drains activating; nothing to demote
-        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(active + activating + dust, 0, "position emptied, no demotion");
-        assertEq(h.currentInflow(), 0, "full drain reverses inflow exactly");
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(dust, 0, "dust cleared in full");
+        assertEq(activating, 0, "no activating lot in this shape");
+        assertEq(active, 6 ether, "remainder drawn from active");
     }
 
-    /// @notice Boundary `minActivationAmount = 2`: the smallest threshold that admits a sub-threshold remainder
-    ///         (of 1). Withdrawing one unit demotes the remaining 1 to dust and reverses the full inflow.
-    function test_debit_demotion_minAmountBoundaryTwo() public {
-        h.setMinActivationAmount(2);
-        address borrower = address(0xAC02);
-
-        h.deposit(borrower, 2); // activating = 2, inflow = 2
-        h.withdraw(borrower, 1); // leaves 1 (< 2) -> demoted to dust
-        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(activating, 0, "remainder demoted");
-        assertEq(dust, 1, "1 unit held as dust");
-        assertEq(h.currentInflow(), 0, "demoted remainder's inflow reversed too");
-    }
-
-    /// @notice With an active lock, the sub-threshold remainder is NOT demoted (that would bypass the lock via
-    ///         freely-withdrawable dust). The inflow is still reconciled correctly: the drained amount is reversed
-    ///         and the locked remainder — which stays activating — keeps its matching inflow. No phantom either
-    /// way.
-    function test_debit_demotion_withActiveLock_reconcilesInflow() public {
-        h.setConfig(
-            CollateralActivationConfig({
-                minActivationDelay: 1 minutes,
-                maxActivationDelay: 1 hours,
-                activatingLockAmount: 1 ether,
-                activatingLockDuration: 1 hours,
-                maxDelayInflow: 10_000 ether,
-                minActivationAmount: 2 ether, // lock floor (1 ether) is a sub-threshold remainder
-                minDepositAmount: 0,
-                maxGuardiansQuorumDelay: 0,
-                delayPerStrike: 1 hours,
-                delayPerSuspect: 30 minutes
-            })
+    /// @notice While the activating lock is in force, a voluntary withdrawal reverts outright regardless of the
+    ///         requested amount — the locked lot cannot be cleared, so nothing can be withdrawn.
+    function testRevert_withdraw_lockedActivating_blocksClearing() public {
+        h.setConfig(_lockCfg());
+        h.deposit(address(0xB1), 10 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CollateralActivationLib.ActivatingCollateralLocked.selector, 10 ether, block.timestamp + 1 days
+            )
         );
-        address borrower = address(0x10CC);
-
-        h.deposit(borrower, 10 ether); // activating = 10, inflow = 10
-        h.withdraw(borrower, 9 ether); // drain to the 1 ether lock floor
-
-        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(activating, 1 ether, "locked remainder stays activating (not demoted)");
-        assertEq(dust, 0, "no demotion under a lock");
-        // Drained 9 reversed; the locked 1 stays activating and keeps its 1 ether inflow. No phantom.
-        assertEq(h.currentInflow(), 1 ether, "inflow reconciled: only the locked activating remainder's share left");
+        h.withdraw(address(0xB1), 10 ether);
     }
 
-    /// @notice Repeated demotion cycles in one tx never accumulate phantom inflow. Each cycle deposits the
-    ///         threshold, withdraws one unit (demoting the remainder), then withdraws the dust — returning the
-    ///         position to empty. Pre-fix each cycle stranded `~minActivationAmount` of inflow, accumulating to
-    ///         the `maxDelayInflow` cap; post-fix every cycle fully reverses, so the throttle stays at zero.
-    function test_debit_repeatedDemotionCycles_noInflowAccumulation() public {
+    /// @notice Once the activating lock's own window elapses, the lot can be cleared like any other inactive
+    ///         balance — the lot need not have matured, only the lock's duration must have passed.
+    function test_withdraw_afterLockExpiry_clearsInactive() public {
+        h.setConfig(_lockCfg());
+        h.deposit(address(0xB1), 10 ether);
+        vm.warp(block.timestamp + 1 days); // lock window over (timer need not have matured)
+        h.withdraw(address(0xB1), 10 ether);
+        (, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(activating + dust, 0, "inactive cleared once the lock window has passed");
+    }
+
+    /// @notice A zero `activatingLockDuration` disables the lock outright: its deadline is the lot's own start,
+    ///         so the lock never binds, not even in the same transaction the lot was opened in.
+    function test_withdraw_zeroLockDuration_allowsImmediateSameTxClear() public {
+        CollateralActivationConfig memory cfg = _lockCfg();
+        cfg.activatingLockDuration = 0;
+        h.setConfig(cfg);
+
+        h.deposit(address(0xB1), 10 ether);
+        h.withdraw(address(0xB1), 10 ether); // same transaction as the deposit above; must not revert
+
+        (, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(activating + dust, 0, "lock disabled at zero duration: full clear succeeds immediately");
+    }
+
+    /// @dev Shared config for the activating-lock tests above: the nonzero `activatingLockDuration` blocks
+    ///      clearing the whole lot until it elapses.
+    function _lockCfg() internal pure returns (CollateralActivationConfig memory) {
+        return CollateralActivationConfig({
+            minActivationDelay: 1 minutes,
+            maxActivationDelay: 1 hours,
+            activatingLockDuration: 1 days,
+            maxDelayInflow: 10_000 ether,
+            minActivationAmount: 10 ether,
+            minDepositAmount: 0,
+            maxGuardiansQuorumDelay: 0,
+            delayPerStrike: 0,
+            delayPerSuspect: 0
+        });
+    }
+
+    // ── ACT-04: full-clear withdrawal reverses the same-tx inflow of the cleared activating lot ──
+
+    /// @notice Demotion is gone, but the inflow-reversal guarantee it protected still holds: a borrower can
+    ///         freely cycle deposit(M) -> withdraw(M) many times in one tx — the only voluntary withdrawal an
+    ///         un-matured lot admits — without the throttle accumulating a phantom balance across cycles. Each
+    ///         cycle's same-tx contribution is fully reversed by the all-or-nothing clear, so the accumulator
+    ///         returns to its pre-cycle baseline every time, never climbing toward the cap.
+    function test_debit_repeatedFullClearCycles_noInflowAccumulation() public {
         uint128 m = 1_000 ether; // 11 pre-fix cycles would have reached the 10_000 ether cap
         h.setMinActivationAmount(m);
         address borrower = address(0xC04C);
 
         for (uint256 i = 0; i < 15; ++i) {
             h.deposit(borrower, m);
-            h.withdraw(borrower, 1); // demote m - 1 to dust, reverse the full inflow
-            h.withdraw(borrower, uint256(m) - 1); // drain the dust back to empty
+            h.withdraw(borrower, m); // all-or-nothing: the whole freshly-deposited lot, same tx
             assertEq(h.currentInflow(), 0, "no phantom accumulates across cycles");
         }
 
@@ -597,22 +559,16 @@ contract CollateralActivationLibTest is Test {
     }
 
     /// @notice Invariant: once a position is fully emptied in the same tx it added its inflow, nothing of that
-    ///         contribution remains in the throttle — whether it left via a plain drain or via demotion.
-    function testFuzz_debit_emptyPositionHasNoResidualInflow(
-        uint128 minAmount,
-        uint256 depositAmount,
-        uint256 firstWithdraw
-    ) public {
+    ///         contribution remains in the throttle. All-or-nothing means the only voluntary withdrawal an
+    ///         un-matured lot admits IS the full-emptying one, for any threshold and deposit size.
+    function testFuzz_debit_emptyPositionHasNoResidualInflow(uint128 minAmount, uint256 depositAmount) public {
         minAmount = uint128(bound(minAmount, 1, 1_000 ether));
         depositAmount = bound(depositAmount, minAmount, 100_000 ether); // crosses the threshold
-        firstWithdraw = bound(firstWithdraw, 1, depositAmount); // partial or full first withdrawal
         h.setMinActivationAmount(minAmount);
         address borrower = address(0xF04C);
 
         h.deposit(borrower, depositAmount);
-        h.withdraw(borrower, firstWithdraw);
-        uint256 remaining = depositAmount - firstWithdraw;
-        if (remaining != 0) h.withdraw(borrower, remaining); // drain whatever is left (dust or activating) to empty
+        h.withdraw(borrower, depositAmount); // all-or-nothing: the whole lot, in the same tx it was deposited
 
         (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
         assertEq(active + activating + dust, 0, "position emptied");
@@ -649,56 +605,11 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.currentInflow(), 6 ether, "inflow reversed by exactly the seized activating (10 - 4)");
     }
 
-    /// @notice A forced seizure that leaves less than the activation minimum demotes the remainder to untimed
-    ///         dust, just like an unlocked withdrawal. The demoted amount no longer carries activation inflow and
-    ///         cannot mature on the old timer.
-    function test_seize_demotesSubThresholdActivatingToDust() public {
-        uint256 threshold = 10 ether;
-        uint256 remainder = threshold - 1;
-        address borrower = address(0xAC5E);
-        h.setMinActivationAmount(uint128(threshold));
-
-        h.deposit(borrower, 2 * threshold);
-        h.seize(borrower, threshold + 1);
-
-        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(active, 0, "sub-threshold remainder is not active");
-        assertEq(activating, 0, "sub-threshold remainder leaves the timer");
-        assertEq(dust, remainder, "sub-threshold remainder becomes dust");
-        assertEq(h.currentInflow(), 0, "demoted remainder carries no activation inflow");
-
-        vm.warp(block.timestamp + 2 hours);
-        h.sync(borrower, 0);
-        (active, activating, dust) = h.bucketsOf(borrower);
-        assertEq(active, 0, "demoted remainder does not mature");
-        assertEq(activating, 0, "timer stays empty");
-        assertEq(dust, remainder, "remainder stays dust");
-    }
-
-    /// @notice Regression for the audit sequence: a seizure leaves a sub-threshold remainder, another deposit
-    ///         supplies just below the threshold, then a withdrawal drains one unit. The two remainders must not
-    ///         be combined into an above-threshold dust bucket.
-    function test_seizeRemainder_thenDustTopUpAndDebit_dustStaysBelowThreshold() public {
-        uint256 threshold = 10 ether;
-        uint256 remainder = threshold - 1;
-        address borrower = address(0xAC5F);
-        h.setMinActivationAmount(uint128(threshold));
-
-        h.deposit(borrower, 2 * threshold);
-        h.seize(borrower, threshold + 1);
-        h.deposit(borrower, remainder);
-        h.withdraw(borrower, 1);
-
-        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(active, 0, "collateral remains inactive");
-        assertEq(activating, 2 * remainder - 1, "threshold-crossing top-up stays in activation");
-        assertEq(dust, 0, "no above-threshold dust is formed");
-        assertLt(dust, threshold, "dust remains below the activation threshold");
-    }
-
-    /// @notice A seizure waterfalls dust first, then activating. Only the activating it drains carries throttle
-    ///         inflow, so the reversal counts that alone — the dust it consumes moves no inflow.
-    function test_seize_drainsDustThenActivating_reversesActivatingOnly() public {
+    /// @notice A seizure with no matured active collateral waterfalls dust first, then activating (the
+    ///         active-first order coincides with the old dust-then-activating order here, since active is
+    ///         zero). Only the activating it drains carries throttle inflow, so the reversal counts that
+    ///         alone — the dust it consumes moves no inflow.
+    function test_seize_noActive_drainsDustThenActivating() public {
         h.setMinActivationAmount(1 ether);
         address borrower = address(0xAC5D);
 
@@ -740,6 +651,96 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.currentInflow(), 0, "full same-tx seizure leaves no residual inflow");
     }
 
+    // ── seize: active-first waterfall, no demotion, residual keeps its timer ──
+
+    /// @notice A seizure covered entirely by matured active collateral never touches the un-matured buckets.
+    function test_seize_consumesActiveBeforeBuckets() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 10 ether);
+        vm.warp(block.timestamp + 1 hours + 1);
+        h.sync(address(0xB1), 0); // matured: active = 10
+        h.deposit(address(0xB1), 10 ether); // fresh lot: A = 10
+        h.deposit(address(0xB1), 1 ether); // dust: D = 1
+
+        h.seize(address(0xB1), 10 ether); // covered entirely by active
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(active, 0, "active consumed first");
+        assertEq(activating, 10 ether, "activating untouched");
+        assertEq(dust, 1 ether, "dust untouched");
+    }
+
+    /// @notice Once active is exhausted, a seizure spills into dust before activating.
+    function test_seize_spilloverOrder_dustThenActivating() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 10 ether);
+        vm.warp(block.timestamp + 1 hours + 1);
+        h.sync(address(0xB1), 0); // active = 10
+        h.deposit(address(0xB1), 10 ether); // A = 10
+        h.deposit(address(0xB1), 1 ether); // D = 1
+
+        h.seize(address(0xB1), 13 ether); // 10 active + 1 dust + 2 activating
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(active, 0);
+        assertEq(dust, 0, "dust drained before activating");
+        assertEq(activating, 8 ether, "activating covers the tail");
+    }
+
+    /// @notice A seizure that leaves a sub-threshold activating remainder no longer demotes it to dust: the
+    ///         remainder stays activating and matures on its original timer.
+    function test_seize_residualActivatingKeepsTimer() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 10 ether); // A = 10, timer quoted now
+
+        h.seize(address(0xB1), 9 ether); // residual A = 1 < minActivationAmount
+
+        (, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
+        assertEq(activating, 1 ether, "residual stays activating - no demotion");
+        assertEq(dust, 0);
+
+        vm.warp(block.timestamp + 1 hours + 1);
+        uint256 active = h.sync(address(0xB1), 0);
+        assertEq(active, 1 ether, "residual matures on its original timer");
+    }
+
+    /// @notice A seizure that empties the activating lot entirely clears its timer, so a later deposit starts a
+    ///         fresh one rather than inheriting the cleared lot's stale start.
+    function test_seize_fullActivating_clearsTimer() public {
+        h.setMinActivationAmount(10 ether);
+        h.deposit(address(0xB1), 10 ether);
+        h.seize(address(0xB1), 10 ether);
+        (, uint256 activating,) = h.bucketsOf(address(0xB1));
+        assertEq(activating, 0);
+        // a fresh deposit must start a fresh timer, not inherit a stale one
+        h.deposit(address(0xB1), 10 ether);
+        (, uint256 activatingAfter,) = h.bucketsOf(address(0xB1));
+        assertEq(activatingAfter, 10 ether);
+    }
+
+    /// @notice Fuzzed waterfall model: a seizure of any size consumes active, then dust, then activating, in
+    ///         that order, matching a hand-computed reference split.
+    function testFuzz_seize_matchesWaterfallModel(uint256 activeSeed, uint256 seizeSeed) public {
+        h.setMinActivationAmount(10 ether);
+        uint256 active = bound(activeSeed, 10 ether, 100 ether);
+        h.deposit(address(0xB1), active);
+        vm.warp(block.timestamp + 1 hours + 1);
+        h.sync(address(0xB1), 0);
+        h.deposit(address(0xB1), 20 ether); // A = 20
+        h.deposit(address(0xB1), 3 ether); // D = 3
+
+        uint256 amount = bound(seizeSeed, 1, active + 23 ether);
+        h.seize(address(0xB1), amount);
+
+        uint256 fromActive = Math.min(active, amount);
+        uint256 fromDust = Math.min(3 ether, amount - fromActive);
+        uint256 fromActivating = amount - fromActive - fromDust;
+        (uint256 gotActive, uint256 gotActivating, uint256 gotDust) = h.bucketsOf(address(0xB1));
+        assertEq(gotActive, active - fromActive);
+        assertEq(gotDust, 3 ether - fromDust);
+        assertEq(gotActivating, 20 ether - fromActivating);
+    }
+
     // ── ACT-06: post-cap attribution no longer erases activation inflow ──
 
     /// @notice The two-borrower exploit, temp filling the cap BEFORE the permanent deposit. A temporary borrower
@@ -779,21 +780,6 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.currentInflow(), cap, "perm volume preserved regardless of order");
     }
 
-    /// @notice Single borrower depositing above the cap then withdrawing only the pre-fix "recorded" (post-cap)
-    ///         amount. Pre-fix that erased the accumulator; post-fix the gross net still exceeds the cap, so it
-    ///         stays pinned at the cap.
-    function test_singleDepositAboveCap_partialWithdraw_keepsCappedInflow() public {
-        uint256 cap = 10_000 ether;
-        h.setMinActivationAmount(1 ether);
-        address borrower = address(0xA6E);
-
-        h.deposit(borrower, 2 * cap); // gross 2*cap, stored inflow = cap
-        assertEq(h.currentInflow(), cap, "stored inflow capped");
-
-        h.withdraw(borrower, cap); // withdraw the post-cap amount; gross net still = cap
-        assertEq(h.currentInflow(), cap, "gross net still at the cap, accumulator not erased");
-    }
-
     /// @notice Several borrowers whose combined gross contribution exceeds the cap. As they exit one by one, the
     ///         accumulator tracks the surviving gross, never collapsing to zero while activating volume remains.
     function test_multipleBorrowers_grossExceedsCap_reversalTracksRemainder() public {
@@ -815,9 +801,9 @@ contract CollateralActivationLibTest is Test {
         assertEq(h.currentInflow(), 5_000 ether, "tracks b3's surviving 5_000, not zero");
     }
 
-    /// @notice A single-tx mix of every activation mutation — credit, voluntary debit, demotion, and forced
-    ///         seizure (liquidation / settlement) — keeps the invariant `storedInflow == min(cap, baseline + net)`
-    ///         at every step. Here baseline is 0 (fresh, first mutation), so it reduces to `min(cap, gross net)`.
+    /// @notice A single-tx mix of every activation mutation — credit, voluntary debit, and forced seizure
+    ///         (liquidation / settlement) — keeps the invariant `storedInflow == min(cap, baseline + net)` at
+    ///         every step. Here baseline is 0 (fresh, first mutation), so it reduces to `min(cap, gross net)`.
     function test_mixedOps_maintainInvariant() public {
         uint256 cap = 10_000 ether;
         h.setMinActivationAmount(1 ether);
@@ -840,8 +826,8 @@ contract CollateralActivationLibTest is Test {
         h.seize(c, 3_000 ether); // forced seizure (settlement/liquidation), full: net 6_000
         assertEq(h.currentInflow(), 6_000 ether, "seize C reverses C's gross");
 
-        h.withdraw(b, 5_999.5 ether); // leaves 0.5 (< 1) -> demotion; full 6_000 leaves activating: net 0
-        assertEq(h.currentInflow(), 0, "demotion reverses the whole remainder, accumulator empty");
+        h.withdraw(b, 6_000 ether); // all-or-nothing: B's whole activating lot; net 0
+        assertEq(h.currentInflow(), 0, "full clearance reverses the whole withdrawal, accumulator empty");
     }
 
     /// @notice The per-tx inflow invariant holds across FUZZED configs (cap and threshold), not just the default:
@@ -911,7 +897,6 @@ contract CollateralActivationLibTest is Test {
         return CollateralActivationConfig({
             minActivationDelay: 1 minutes,
             maxActivationDelay: 1 hours,
-            activatingLockAmount: 0,
             activatingLockDuration: 0,
             maxDelayInflow: 10_000 ether,
             minActivationAmount: 1,
@@ -1072,7 +1057,6 @@ contract ActivationInflowCrossTxTest is Test {
             CollateralActivationConfig({
                 minActivationDelay: 1 minutes,
                 maxActivationDelay: 1 hours,
-                activatingLockAmount: 0,
                 activatingLockDuration: 0,
                 maxDelayInflow: 10_000 ether,
                 minActivationAmount: 1 ether,
@@ -1092,9 +1076,11 @@ contract ActivationInflowCrossTxTest is Test {
         h.deposit(B, 50 ether); // this tx: activating 150, contribution[B] = 50
         assertEq(h.currentInflow(), 150 ether, "this-tx deposit raised inflow");
 
-        // Withdraw 120 > this-tx 50: drains 70 of the prior lot too, but only the 50 same-tx contribution
-        // is reversible. The prior 100 stays (decays, never reverses).
-        h.withdraw(B, 120 ether);
+        // All-or-nothing: the withdrawal must clear the whole 150 (prior 100 + this-tx 50) — there is no
+        // matured collateral to draw down instead. It still "over-withdraws" relative to this tx's OWN 50
+        // contribution, draining all 100 of the prior lot too, but only the 50 same-tx contribution is
+        // reversible. The prior 100 stays (decays, never reverses).
+        h.withdraw(B, 150 ether);
         assertEq(h.currentInflow(), priorInflow, "over-withdraw reversed only the same-tx contribution");
     }
 }

@@ -81,7 +81,6 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
                 activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     maxDelayInflow: 100_000 ether,
                     minActivationAmount: 1e18,

@@ -281,7 +281,6 @@ library ProtocolConfigFile {
         s = string.concat(s, _kvQuoted("min_activation_delay", m.activationConfig.minActivationDelay));
         s = string.concat(s, _kvQuoted("max_activation_delay", m.activationConfig.maxActivationDelay));
         s = string.concat(s, _kvQuoted("max_delay_inflow", m.activationConfig.maxDelayInflow));
-        s = string.concat(s, _kvQuoted("activating_lock_amount", m.activationConfig.activatingLockAmount));
         s = string.concat(s, _kvQuoted("activating_lock_duration", m.activationConfig.activatingLockDuration));
         s = string.concat(s, _kvQuoted("min_activation_amount", m.activationConfig.minActivationAmount));
         s = string.concat(s, _kvQuoted("min_deposit_amount", m.activationConfig.minDepositAmount));

@@ -266,7 +266,6 @@ contract ProtocolConfigFileTest is Test {
                     minActivationDelay: 1,
                     maxActivationDelay: 2,
                     maxDelayInflow: 3,
-                    activatingLockAmount: 4,
                     activatingLockDuration: 5,
                     minActivationAmount: 6,
                     minDepositAmount: 0,

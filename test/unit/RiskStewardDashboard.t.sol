@@ -82,7 +82,6 @@ contract RiskStewardDashboardTest is Test {
             minActivationDelay: 1 minutes,
             maxActivationDelay: 1 hours,
             maxDelayInflow: 10_000 ether,
-            activatingLockAmount: 5 ether,
             activatingLockDuration: 1 hours,
             minActivationAmount: 1,
             minDepositAmount: 0,
@@ -199,7 +198,7 @@ contract RiskStewardDashboardTest is Test {
         assertEq(cfg.minActivationDelay, 5 minutes, "floor raised");
         assertEq(cfg.maxActivationDelay, 2 hours, "cap raised");
         assertEq(cfg.maxGuardiansQuorumDelay, 2 days, "quorum fallback raised");
-        assertEq(cfg.activatingLockAmount, 5 ether, "unrelated fields preserved by the read-modify-write");
+        assertEq(cfg.activatingLockDuration, 1 hours, "unrelated fields preserved by the read-modify-write");
     }
 
     /// @dev Boundary: equal values hold rather than loosen, so the `<` guard admits them.
@@ -270,34 +269,26 @@ contract RiskStewardDashboardTest is Test {
     }
 
     // ---
-    // increaseActivatingLock
+    // increaseActivatingLockDuration
     // ---
 
-    /// @dev The lock lever mirrors the delay lever: both fields rise, the event fires, unrelated fields survive.
-    function test_increaseActivatingLock_raisesBoth() public {
+    /// @dev The lock lever mirrors the delay lever: the duration rises, the event fires, unrelated fields survive.
+    function test_increaseActivatingLockDuration_raises() public {
         vm.expectEmit(true, false, false, true);
-        emit IRiskStewardDashboard.ActivatingLockIncreased(marketId, 10 ether, 2 hours);
+        emit IRiskStewardDashboard.ActivatingLockDurationIncreased(marketId, 2 hours);
         vm.prank(steward);
-        dashboard.increaseActivatingLock(marketId, 10 ether, 2 hours);
+        dashboard.increaseActivatingLockDuration(marketId, 2 hours);
 
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
-        assertEq(cfg.activatingLockAmount, 10 ether, "lock amount raised");
         assertEq(cfg.activatingLockDuration, 2 hours, "lock duration raised");
         assertEq(cfg.minActivationDelay, 1 minutes, "unrelated fields preserved");
     }
 
-    /// @dev Lowering the lock amount loosens the Sybil defense: rejected.
-    function testRevert_increaseActivatingLock_loweringAmount() public {
+    /// @dev Lowering the lock duration loosens the Sybil defense: rejected.
+    function testRevert_increaseActivatingLockDuration_lowering() public {
         vm.prank(steward);
         vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
-        dashboard.increaseActivatingLock(marketId, 1 ether, 2 hours);
-    }
-
-    /// @dev The other side of the lock's tighten guard: a raised amount cannot smuggle a shortened duration.
-    function testRevert_increaseActivatingLock_loweringDuration() public {
-        vm.prank(steward);
-        vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
-        dashboard.increaseActivatingLock(marketId, 10 ether, 30 minutes);
+        dashboard.increaseActivatingLockDuration(marketId, 30 minutes);
     }
 
     // ---
@@ -313,7 +304,7 @@ contract RiskStewardDashboardTest is Test {
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
         assertEq(cfg.minDepositAmount, 2 ether, "deposit floor raised");
         assertEq(cfg.minActivationAmount, 1, "unrelated fields preserved");
-        assertEq(cfg.activatingLockAmount, 5 ether, "unrelated fields preserved");
+        assertEq(cfg.activatingLockDuration, 1 hours, "unrelated fields preserved");
     }
 
     function test_increaseMinDepositAmount_holdingIsAccepted() public {

@@ -24,13 +24,13 @@ event ActivationDelaysIncreased(Id indexed marketId, uint256 newMinActivationDel
 
 Emitted after an accepted non-decreasing update to a market's activation delay floor, cap, and guardian-quorum fallback.
 
-### `ActivatingLockIncreased`
+### `ActivatingLockDurationIncreased`
 
 ```solidity
-event ActivatingLockIncreased(Id indexed marketId, uint256 newAmount, uint256 newDuration);
+event ActivatingLockDurationIncreased(Id indexed marketId, uint256 newDuration);
 ```
 
-Emitted after an accepted non-decreasing update to a market's activation lock.
+Emitted after an accepted update to a market's activating-lock duration.
 
 ### `MinDepositAmountIncreased`
 
@@ -148,17 +148,16 @@ function increaseActivationDelays(
 
 Raise the activation delay floor, cap, and guardian-quorum fallback. Reverts unless all values rise or hold. The controller bounds the cap and fallback to 7 days and enforces floor <= cap and a nonzero fallback > cap on write.
 
-### `increaseActivatingLock`
+### `increaseActivatingLockDuration`
 
 ```solidity
-function increaseActivatingLock(
+function increaseActivatingLockDuration(
     Id marketId,
-    uint128 newAmount,
     uint32 newDuration
 ) external;
 ```
 
-Raise the Sybil lock amount and duration. Reverts unless both rise or hold. The controller still bounds the duration on write.
+Raise the activating-lock duration; a decrease reverts. The controller still bounds the duration on write.
 
 ### `increaseMinDepositAmount`
 

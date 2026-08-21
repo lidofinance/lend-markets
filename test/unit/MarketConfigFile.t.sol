@@ -107,7 +107,6 @@ contract MarketConfigFileTest is Test {
             "min_activation_delay = 600\n",
             "max_activation_delay = 7200\n",
             "max_delay_inflow = \"10000000000000000000000\"\n",
-            "activating_lock_amount = \"0\"\n",
             "activating_lock_duration = 0\n",
             "min_activation_amount = \"10000000000000000000\"\n",
             "min_deposit_amount = \"0\"\n",

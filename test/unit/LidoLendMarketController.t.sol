@@ -218,14 +218,16 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.withdrawCollateral(_m().params, 1 ether, borrower, borrower);
     }
 
-    /// @dev Freeze still permits a debt-free borrower to withdraw its collateral.
+    /// @dev Freeze still permits a debt-free borrower to withdraw its collateral. Freeze also defers activation
+    ///      maturation (`sync` skips while frozen), so the matured-looking lot from `_seedBorrower`'s warp is
+    ///      still fully `activating` here — the withdrawal must clear the whole lot, all-or-nothing.
     function test_freeze_allowsDebtFreeWithdraw() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0); // no debt
         c.freeze();
         uint256 before = _m().collateralToken.balanceOf(borrower);
         vm.prank(borrower);
-        _m().core.withdrawCollateral(_m().params, 1 ether, borrower, borrower); // succeeds while frozen
-        assertEq(_m().collateralToken.balanceOf(borrower) - before, 1 ether, "collateral returned while frozen");
+        _m().core.withdrawCollateral(_m().params, 100 ether, borrower, borrower); // succeeds while frozen
+        assertEq(_m().collateralToken.balanceOf(borrower) - before, 100 ether, "collateral returned while frozen");
     }
 
     /// @dev Freeze still permits repaying an open debt.
@@ -290,7 +292,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.setInstantActivation(borrower, true);
         assertTrue(c.hasInstantActivation(borrower), "granted");
         _fund(m.collateralToken, borrower, 100 ether);
-        m.supplyCollateral(borrower, 100 ether); // instant -> straight to active, no warp
+        // instant -> straight to active, no warp; bypasses `supplyCollateral`'s non-instant classification model
+        vm.prank(borrower);
+        m.collateralToken.approve(address(m.core), 100 ether);
+        vm.prank(borrower);
+        m.core.supplyCollateral(m.params, 100 ether, borrower, "");
         vm.prank(borrower);
         m.core.borrow(m.params, 10 ether, 0, borrower, borrower); // succeeds immediately
     }
@@ -357,7 +363,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
             minActivationDelay: 300,
             maxActivationDelay: 3 hours,
             maxDelayInflow: 20_000 ether,
-            activatingLockAmount: 5 ether,
             activatingLockDuration: 1 hours,
             minActivationAmount: 7 ether,
             minDepositAmount: 0,
@@ -372,7 +377,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(stored.minActivationDelay, 300, "minActivationDelay");
         assertEq(stored.maxActivationDelay, 3 hours, "maxActivationDelay");
         assertEq(stored.maxDelayInflow, 20_000 ether, "maxDelayInflow");
-        assertEq(stored.activatingLockAmount, 5 ether, "activatingLockAmount");
         assertEq(stored.activatingLockDuration, 1 hours, "activatingLockDuration");
         assertEq(stored.minActivationAmount, 7 ether, "minActivationAmount");
         assertEq(stored.maxGuardiansQuorumDelay, 4 hours, "maxGuardiansQuorumDelay");
