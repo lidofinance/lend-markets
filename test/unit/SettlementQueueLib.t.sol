@@ -3,6 +3,7 @@ pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 
+import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
 import {MarketView, PositionView, SettlementConfig, SettlementSlice} from "../../src/types/SettlementTypes.sol";
@@ -609,6 +610,104 @@ contract SettlementQueueLibTest is Test {
         assertEq(funded.borrowShares, 0, "no cut");
         assertEq(funded.supplyShares, 0, "no cost");
         assertEq(funded.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+    }
+
+    // ── seizure floor ──
+
+    /// @dev A market where one borrow/supply share is worth exactly one loan asset in both directions, so a slice
+    ///      of `n` loan assets is a cut of `n` borrow shares and the seizure floor is the only rounding left.
+    function _unitShareMarket(uint256 price) internal pure returns (MarketView memory) {
+        return MarketView({
+            totalSupplyAssets: 1e24,
+            totalSupplyShares: 1e24 + 1 - VIRTUAL_SHARES,
+            totalBorrowAssets: 1e24,
+            totalBorrowShares: 1e24 + 1 - VIRTUAL_SHARES,
+            price: price,
+            lltv: 0.86e18
+        });
+    }
+
+    /// @dev The core prices the seizure off the cut's debt rounded down, so above `ORACLE_PRICE_SCALE` a
+    ///      one-loan-asset cut buys no whole collateral unit. That cut is unavailable, not a partial.
+    function test_settlementSlice_cutBelowSeizureFloor_isAllZero() public view {
+        MarketView memory mv = _unitShareMarket(1.5e36);
+        PositionView memory p = _pos(100e18, 500e18);
+
+        SettlementSlice memory funded = q.settlementSlice(mv, p, 1, 0);
+        assertEq(funded.borrowShares, 0, "no cut");
+        assertEq(funded.supplyShares, 0, "no cost");
+        assertEq(funded.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+
+        // ceil(1.5e36 / 1e36) == 2 loan assets is the smallest cut that seizes a whole unit.
+        SettlementSlice memory ok = q.settlementSlice(mv, p, 2, 0);
+        assertEq(ok.borrowShares, 2, "two loan assets clears the floor");
+        assertEq(ok.remainingBorrowShares, p.borrowShares - 2, "and is a partial cut");
+    }
+
+    /// @dev The floor is `ceil(price / ORACLE_PRICE_SCALE)` loan assets: the same one-asset cut is available at or
+    ///      below parity and unavailable above it.
+    function test_settlementSlice_seizureFloorTracksPrice() public view {
+        PositionView memory p = _pos(100e18, 500e18);
+
+        assertEq(q.settlementSlice(_unitShareMarket(0.5e36), p, 1, 0).borrowShares, 1, "below parity: available");
+        assertEq(q.settlementSlice(_unitShareMarket(1e36), p, 1, 0).borrowShares, 1, "at parity: available");
+        assertEq(q.settlementSlice(_unitShareMarket(1e36 + 1), p, 1, 0).borrowShares, 0, "one wei above: unavailable");
+    }
+
+    /// @dev A budget shrink lands on the floor just as a policy amount can. `1` is the sentinel for the unshrunk
+    ///      quote, so budget the exact cost of the sub-floor cut instead.
+    function test_settlementSlice_budgetShrunkOntoFloor_isAllZero() public view {
+        MarketView memory mv = _unitShareMarket(1.5e36);
+        PositionView memory p = _pos(100e18, 500e18);
+
+        SettlementSlice memory oneAssetCut = q.settlementSlice(_unitShareMarket(1e36), p, 1, 0);
+        assertEq(oneAssetCut.borrowShares, 1, "the one-asset cut exists at parity");
+
+        SettlementSlice memory funded = q.settlementSlice(mv, p, 40e18, oneAssetCut.supplyShares);
+        assertEq(funded.borrowShares, 0, "a budget that only funds a sub-floor cut reports no cut");
+        assertEq(funded.supplyShares, 0, "no cost");
+        assertEq(funded.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+    }
+
+    /// @dev A market with no price seizes nothing (and would divide by zero in the core), so no cut is quoted.
+    function test_settlementSlice_zeroPrice_isAllZero() public view {
+        SettlementSlice memory funded = q.settlementSlice(_unitShareMarket(0), _pos(100e18, 500e18), 40e18, 0);
+        assertEq(funded.borrowShares, 0, "no cut without a price");
+        assertEq(funded.supplyShares, 0, "no cost");
+        assertEq(funded.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+    }
+
+    /// @dev The property the core's `settle` requires: every cut the library quotes seizes at least one whole
+    ///      collateral unit, so a quoted handle is never rejected for seizing nothing.
+    /// forge-config: default.fuzz.runs = 20000
+    function testFuzz_settlementSlice_quotedCutSeizesCollateral(
+        uint256 borrowShares,
+        uint256 collateral,
+        uint256 sliceAssets,
+        uint256 budgetSupplyShares,
+        uint256 price,
+        uint256 totalBorrowAssets,
+        uint256 totalBorrowShares,
+        uint256 totalSupplyAssets,
+        uint256 totalSupplyShares
+    ) public view {
+        MarketView memory mv = _fuzzMarket(totalBorrowAssets, totalBorrowShares, totalSupplyAssets, totalSupplyShares);
+        mv.price = bound(price, 0, 1e40);
+        PositionView memory p = _fuzzPosition(mv, borrowShares, collateral);
+        sliceAssets = bound(sliceAssets, 1, 1e30);
+        budgetSupplyShares = bound(budgetSupplyShares, 0, mv.totalSupplyShares + VIRTUAL_SHARES);
+
+        SettlementSlice memory funded = q.settlementSlice(mv, p, sliceAssets, budgetSupplyShares);
+        if (funded.borrowShares == 0) return;
+
+        assertGt(mv.price, 0, "a quoted cut implies a priced market");
+        uint256 cutAssets = Math.mulDiv(
+            funded.borrowShares,
+            mv.totalBorrowAssets + VIRTUAL_ASSETS,
+            mv.totalBorrowShares + VIRTUAL_SHARES,
+            Math.Rounding.Floor
+        );
+        assertGt(Math.mulDiv(cutAssets, ORACLE_PRICE_SCALE, mv.price), 0, "the quoted cut seizes a collateral unit");
     }
 
     /// @dev The contract the vault relies on: whatever budget a caller brings, the supply the core burns for the
