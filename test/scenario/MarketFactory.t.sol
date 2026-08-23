@@ -17,6 +17,7 @@ import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.s
 
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
+import {IGuardianSignalsView} from "../../src/interfaces/IGuardianSignalsView.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
@@ -90,7 +91,7 @@ contract MarketFactoryScenarioTest is Test {
         );
 
         vm.prank(caller);
-        guardianSignals = factory.deployGuardianSignals(_guardianSpec());
+        guardianSignals = factory.deployGuardianSignals(_guardianSpec(), keccak256("primary"));
     }
 
     function test_deployMarketComponents_producesInertWiredComponents() external {
@@ -141,9 +142,8 @@ contract MarketFactoryScenarioTest is Test {
         LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
         LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec = _erc4626WrapperSpec("A");
         Id expectedId = _marketParams(market).id();
-        uint256 factoryNonce = vm.getNonce(address(factory));
-        address expectedController = vm.computeCreateAddress(address(factory), factoryNonce);
-        address expectedWrapper = vm.computeCreateAddress(address(factory), factoryNonce + 1);
+        address expectedController = _predictController(market, caller);
+        address expectedWrapper = _predictWrapper(market, erc4626WrapperSpec, expectedController, caller);
 
         vm.expectEmit(true, true, true, true, address(factory));
         emit LidoLendMarketFactory.MarketControllerDeployed(expectedId, expectedController, guardianSignals);
@@ -155,6 +155,41 @@ contract MarketFactoryScenarioTest is Test {
         );
 
         _deployMarketComponents(market, erc4626WrapperSpec);
+    }
+
+    /// @dev A deploy script records the addresses its simulation returned, so those addresses must not depend on
+    ///      anything a third party controls. Here another caller advances the factory's transaction count and also
+    ///      deploys the very same reviewed specification first, and the components still land where they were
+    ///      predicted, at addresses that caller could not reach.
+    function test_deployMarketComponents_addressesSurviveAnotherCallerDeployingFirst() external {
+        (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
+        LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
+        LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec = _erc4626WrapperSpec("A");
+        address predictedController = _predictController(market, caller);
+        address predictedWrapper = _predictWrapper(market, erc4626WrapperSpec, predictedController, caller);
+
+        vm.prank(makeAddr("frontRunner"));
+        (, address theirController, address theirWrapper) = factory.deployMarketComponents(market, erc4626WrapperSpec);
+
+        (, address controllerAddress, address erc4626Wrapper) = _deployMarketComponents(market, erc4626WrapperSpec);
+
+        assertEq(controllerAddress, predictedController, "controller as predicted");
+        assertEq(erc4626Wrapper, predictedWrapper, "wrapper as predicted");
+        assertTrue(theirController != predictedController, "another caller cannot take the controller address");
+        assertTrue(theirWrapper != predictedWrapper, "another caller cannot take the wrapper address");
+    }
+
+    /// @dev The narrowing that comes with deterministic addresses: an exact duplicate of something the same deployer
+    ///      already created has nowhere to go. Anything that tells two components apart also moves their addresses
+    ///      apart, so only a true duplicate is refused. The address collision carries no revert data of its own.
+    function testRevert_deployMarketComponents_rejectsAnIdenticalRedeploy() external {
+        (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
+        LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
+        _deployMarketComponents(market, _erc4626WrapperSpec("A"));
+
+        vm.prank(caller);
+        vm.expectRevert();
+        factory.deployMarketComponents(market, _erc4626WrapperSpec("A"));
     }
 
     function test_deployMarketComponents_secondMarketReusesImplementations() external {
@@ -354,18 +389,48 @@ contract MarketFactoryScenarioTest is Test {
         assertEq(address(LidoLendERC4626(erc4626Wrapper).controller()), controllerAddress, "controller");
     }
 
+    /// @dev Two committees can be configured identically and still want registries of their own. Nothing in the
+    ///      specification separates them — the suspect window is applied after initialization, so it does not reach
+    ///      the address either — which is what the caller-chosen salt is for.
+    function test_deployGuardianSignals_identicalSpecsSeparatedBySalt() external {
+        LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
+
+        vm.prank(caller);
+        address first = factory.deployGuardianSignals(spec, keccak256("group-a"));
+        vm.prank(caller);
+        address second = factory.deployGuardianSignals(spec, keccak256("group-b"));
+
+        assertTrue(first != second, "one registry per salt");
+        assertEq(first, _predictGuardianSignals(spec, caller, keccak256("group-a")), "first as predicted");
+        assertEq(second, _predictGuardianSignals(spec, caller, keccak256("group-b")), "second as predicted");
+        factory.validateGuardianSignals(first, spec);
+        factory.validateGuardianSignals(second, spec);
+    }
+
+    /// @dev Reusing a salt for the same committee resolves to the registry that already exists. The address
+    ///      collision carries no revert data of its own.
+    function testRevert_deployGuardianSignals_rejectsAReusedSalt() external {
+        LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
+        vm.prank(caller);
+        factory.deployGuardianSignals(spec, keccak256("group-a"));
+
+        vm.prank(caller);
+        vm.expectRevert();
+        factory.deployGuardianSignals(spec, keccak256("group-a"));
+    }
+
     function test_deployGuardianSignals_producesWiredRegistry() external {
         address[] memory guardianSet = new address[](2);
         guardianSet[0] = makeAddr("guardian1");
         guardianSet[1] = makeAddr("guardian2");
         LidoLendMarketFactory.GuardianSpec memory spec =
             LidoLendMarketFactory.GuardianSpec({guardians: guardianSet, quorum: 2, suspectWindow: 3600});
-        address expectedRegistry = vm.computeCreateAddress(address(factory), vm.getNonce(address(factory)));
+        address expectedRegistry = _predictGuardianSignals(spec, caller, keccak256("wired-registry"));
 
         vm.expectEmit(true, true, true, true, address(factory));
         emit LidoLendMarketFactory.GuardianSignalsDeployed(expectedRegistry);
         vm.prank(caller);
-        address deployed = factory.deployGuardianSignals(spec);
+        address deployed = factory.deployGuardianSignals(spec, keccak256("wired-registry"));
 
         assertEq(IOssifiableProxy(deployed).proxy__getImplementation(), guardianSignalsImpl, "implementation");
         assertEq(IOssifiableProxy(deployed).proxy__getAdmin(), marketAdmin, "proxy admin");
@@ -432,6 +497,60 @@ contract MarketFactoryScenarioTest is Test {
             circuitBreaker: breaker,
             riskStewardDashboard: dashboard
         });
+    }
+
+    /// @dev Derives a deployment address from public inputs alone: the factory, the deployer, and the data the
+    ///      component is initialized with. Predicting from outside the factory is the property being exercised.
+    function _predictProxy(address implementation, bytes memory initData, address deployer, bytes32 callerSalt)
+        private
+        view
+        returns (address)
+    {
+        bytes32 initCodeHash = keccak256(
+            abi.encodePacked(type(OssifiableProxy).creationCode, abi.encode(implementation, marketAdmin, initData))
+        );
+        return vm.computeCreate2Address(keccak256(abi.encode(deployer, callerSalt)), initCodeHash, address(factory));
+    }
+
+    function _predictController(LidoLendMarketFactory.MarketSpec memory market, address deployer)
+        private
+        view
+        returns (address)
+    {
+        bytes memory initData = abi.encodeCall(
+            LidoLendMarketController.initialize,
+            (
+                _marketParams(market).id(),
+                address(factory),
+                IGuardianSignalsView(market.guardianSignals),
+                market.activationConfig,
+                market.settlementConfig
+            )
+        );
+        return _predictProxy(controllerImpl, initData, deployer, bytes32(0));
+    }
+
+    function _predictWrapper(
+        LidoLendMarketFactory.MarketSpec memory market,
+        LidoLendMarketFactory.ERC4626WrapperSpec memory wrapperSpec,
+        address controllerAddress,
+        address deployer
+    ) private view returns (address) {
+        bytes memory initData = abi.encodeCall(
+            LidoLendERC4626.initialize, (_marketParams(market), controllerAddress, wrapperSpec.name, wrapperSpec.symbol)
+        );
+        return _predictProxy(erc4626WrapperImpl, initData, deployer, bytes32(0));
+    }
+
+    function _predictGuardianSignals(
+        LidoLendMarketFactory.GuardianSpec memory spec,
+        address deployer,
+        bytes32 callerSalt
+    ) private view returns (address) {
+        bytes memory initData = abi.encodeCall(
+            GuardianSignals.initialize, (address(factory), spec.guardians, spec.quorum)
+        );
+        return _predictProxy(guardianSignalsImpl, initData, deployer, callerSalt);
     }
 
     function _marketParams(LidoLendMarketFactory.MarketSpec memory market) internal view returns (MarketParams memory) {

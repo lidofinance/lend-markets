@@ -49,11 +49,13 @@ contract DeployGuardianSignals is Script {
         uint256 deployedBlock = vm.getBlockNumber();
 
         vm.startBroadcast();
+        // The group name separates registries whose committees are configured identically.
         guardianSignals = LidoLendMarketFactory(factory)
             .deployGuardianSignals(
                 LidoLendMarketFactory.GuardianSpec({
                 guardians: cfg.guardians, quorum: cfg.quorum, suspectWindow: cfg.suspectWindow
-            })
+            }),
+                keccak256(bytes(name))
             );
         vm.stopBroadcast();
 

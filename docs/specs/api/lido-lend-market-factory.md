@@ -572,7 +572,8 @@ The controller must use the same core and market id. If the market exists, it mu
 
 ```solidity
 function deployGuardianSignals(
-    GuardianSpec calldata spec
+    GuardianSpec calldata spec,
+    bytes32 salt
 ) external returns (address guardianSignalsAddress);
 ```
 
@@ -581,6 +582,7 @@ function deployGuardianSignals(
 | Name | Type | Description |
 | --- | --- | --- |
 | `spec` | `GuardianSpec` | Initial guardian membership, quorum, and suspect window. |
+| `salt` | `bytes32` | Caller-chosen label distinguishing registries this caller wants as separate instances. |
 
 **Returns**
 
@@ -589,6 +591,8 @@ function deployGuardianSignals(
 | `guardianSignalsAddress` | `address` | Deployed and role-wired guardian-registry proxy. |
 
 Deploys and fully role-wires a guardian registry that may be shared by multiple markets.
+
+`suspectWindow` is applied after initialization and so does not reach the deployment address. Two committees that differ only by it, or that are identical and still want registries of their own, are separated by `salt`.
 
 ### `validateMarketController`
 
