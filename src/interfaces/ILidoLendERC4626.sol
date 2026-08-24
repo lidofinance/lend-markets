@@ -69,7 +69,9 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @param caller The address that called the exit.
     /// @param owner The account whose shares were burned.
     /// @param receiver The recipient of the liquid-leg loan assets and seized collateral.
-    /// @param sharesBurned Shares burned by the settle leg.
+    /// @param sharesBurned Shares burned by the whole call — the liquid leg and the settle leg together.
+    /// @param sharesSettled Shares burned by the settle leg alone, 0 when the queue funded no cut.
+    /// @param assetsWithdrawn Loan assets the liquid leg paid out, 0 when the market had no free liquidity.
     /// @param collateralSeized Collateral seized from the cut positions.
     /// @param debtCanceled Borrower debt cancelled by the cuts.
     event FallbackExit(
@@ -77,6 +79,8 @@ interface ILidoLendERC4626 is IERC4626 {
         address indexed owner,
         address indexed receiver,
         uint256 sharesBurned,
+        uint256 sharesSettled,
+        uint256 assetsWithdrawn,
         uint256 collateralSeized,
         uint256 debtCanceled
     );

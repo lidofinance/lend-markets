@@ -326,7 +326,9 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         sharesBurned += settledShares;
         if (sharesBurned == 0) revert NothingSettled();
 
-        emit FallbackExit(caller, owner, receiver, settledShares, collateralSeized, debtCanceled);
+        emit FallbackExit(
+            caller, owner, receiver, sharesBurned, settledShares, loanAssets, collateralSeized, debtCanceled
+            );
     }
 
     /// @dev Resolve the current queue root together with its selected max(personal, queue-root) cut, already shrunk

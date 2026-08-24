@@ -13,7 +13,7 @@ Assumes `asset()` and the market's collateral token are standard ERC-20s without
 ### `FallbackExit`
 
 ```solidity
-event FallbackExit(address indexed caller, address indexed owner, address indexed receiver, uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
+event FallbackExit(address indexed caller, address indexed owner, address indexed receiver, uint256 sharesBurned, uint256 sharesSettled, uint256 assetsWithdrawn, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
 **Parameters**
@@ -23,7 +23,9 @@ event FallbackExit(address indexed caller, address indexed owner, address indexe
 | `caller` | `address` | The address that called the exit. |
 | `owner` | `address` | The account whose shares were burned. |
 | `receiver` | `address` | The recipient of the liquid-leg loan assets and seized collateral. |
-| `sharesBurned` | `uint256` | Shares burned by the settle leg. |
+| `sharesBurned` | `uint256` | Shares burned by the whole call — the liquid leg and the settle leg together. |
+| `sharesSettled` | `uint256` | Shares burned by the settle leg alone, 0 when the queue funded no cut. |
+| `assetsWithdrawn` | `uint256` | Loan assets the liquid leg paid out, 0 when the market had no free liquidity. |
 | `collateralSeized` | `uint256` | Collateral seized from the cut positions. |
 | `debtCanceled` | `uint256` | Borrower debt cancelled by the cuts. |
 
