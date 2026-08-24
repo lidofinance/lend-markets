@@ -279,6 +279,100 @@ contract GuardianSignalsTest is Test {
         gs.flag(MARKET, GUARDIAN_1, _one(BOB));
     }
 
+    /// @dev Clearing is not blocked by other guardians' unset (zero) delegate slots: the uniqueness scan skips the
+    ///      zero address.
+    function test_delegate_clear_notBlockedByOtherDelegatelessGuardians() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(address(0)); // GUARDIAN_2 and GUARDIAN_3 also read zero
+        assertEq(gs.getDelegate(GUARDIAN_1), address(0), "delegate cleared");
+    }
+
+    /// @dev A guardian address (another's or the caller's own) cannot be appointed as a delegate.
+    function testRevert_setDelegate_delegateIsGuardian() public {
+        vm.prank(GUARDIAN_1);
+        vm.expectRevert(IGuardianSignals.DelegateIsGuardian.selector);
+        gs.setDelegate(GUARDIAN_2);
+
+        vm.prank(GUARDIAN_1);
+        vm.expectRevert(IGuardianSignals.DelegateIsGuardian.selector);
+        gs.setDelegate(GUARDIAN_1);
+    }
+
+    /// @dev One address cannot be the delegate of two guardians: quorum counts guardian identities, so a shared
+    ///      delegate key would collapse several identities into one signer.
+    function testRevert_setDelegate_takenByAnotherGuardian() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.prank(GUARDIAN_2);
+        vm.expectRevert(IGuardianSignals.DelegateAlreadySet.selector);
+        gs.setDelegate(DELEGATE);
+        assertEq(gs.getDelegate(GUARDIAN_2), address(0), "second guardian gets no delegate");
+    }
+
+    /// @dev The uniqueness check makes no exception for the caller: re-setting one's own current delegate reverts.
+    function testRevert_setDelegate_reSetOwnDelegate() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.prank(GUARDIAN_1);
+        vm.expectRevert(IGuardianSignals.DelegateAlreadySet.selector);
+        gs.setDelegate(DELEGATE);
+        assertEq(gs.getDelegate(GUARDIAN_1), DELEGATE, "delegate unchanged");
+    }
+
+    /// @dev An address freed by clearing, re-pointing, or removing its guardian can be appointed by another
+    ///      guardian.
+    function test_setDelegate_freedDelegateIsReusable() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(address(0)); // clearing frees DELEGATE
+
+        vm.prank(GUARDIAN_2);
+        gs.setDelegate(DELEGATE);
+        assertEq(gs.getDelegate(GUARDIAN_2), DELEGATE, "delegate freed by clearing reusable");
+
+        vm.prank(GUARDIAN_2);
+        gs.setDelegate(address(0x4202)); // re-pointing frees DELEGATE again
+
+        vm.prank(GUARDIAN_3);
+        gs.setDelegate(DELEGATE);
+        assertEq(gs.getDelegate(GUARDIAN_3), DELEGATE, "delegate freed by re-pointing reusable");
+
+        gs.removeGuardian(GUARDIAN_3); // removal frees DELEGATE once more
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        assertEq(gs.getDelegate(GUARDIAN_1), DELEGATE, "delegate freed by guardian removal reusable");
+    }
+
+    /// @dev A current delegate cannot be added as a guardian: membership changes enforce the same uniqueness rule
+    ///      as `setDelegate`.
+    function testRevert_addGuardian_isDelegate() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.expectRevert(IGuardianSignals.DelegateAlreadySet.selector);
+        gs.addGuardian(DELEGATE);
+    }
+
+    /// @dev A replacement cannot bring in another guardian's current delegate either.
+    function testRevert_replaceGuardian_newIsDelegate() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.expectRevert(IGuardianSignals.DelegateAlreadySet.selector);
+        gs.replaceGuardian(GUARDIAN_2, DELEGATE);
+        assertTrue(gs.isGuardian(GUARDIAN_2), "old guardian preserved after revert");
+    }
+
+    /// @dev Replacing a guardian with its *own* delegate works: the removal clears the pairing before the add runs.
+    function test_replaceGuardian_withOwnDelegate_succeeds() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        gs.replaceGuardian(GUARDIAN_1, DELEGATE);
+        assertTrue(gs.isGuardian(DELEGATE), "delegate promoted to the seat");
+        assertEq(gs.getDelegate(DELEGATE), address(0), "promoted guardian starts with no delegate");
+    }
+
     /// @dev `setDelegate` emits `DelegateSet(guardian, old, new)`.
     function test_setDelegate_emitsEvent() public {
         vm.expectEmit(true, true, true, false, address(gs));

@@ -9,11 +9,11 @@ import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
 /// @notice Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address
-///         that may appoint one **delegate** (at most one at a time) to act on its behalf. A guardian (or its
-///         delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of
-///         distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface
-///         the controller depends on (`getOpinion`, `isBanned`) lives in `IGuardianSignalsView`; this interface adds
-///         the rest.
+///         that may appoint one **delegate** (at most one at a time, unique across the committee) to act on its
+///         behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag,
+///         unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was
+///         raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in
+///         `IGuardianSignalsView`; this interface adds the rest.
 interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // ---
     // CONSTANTS
@@ -158,21 +158,33 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @notice Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
     error SuspectWindowTooHigh();
 
+    /// @notice Thrown when the appointed delegate is a guardian.
+    error DelegateIsGuardian();
+
+    /// @notice Thrown when an address that is already a guardian's delegate (the caller's own included) is
+    ///         appointed as a delegate again or added as a guardian.
+    error DelegateAlreadySet();
+
     // ---
     // GUARDIANS & CONFIG (admin)
     // ---
 
-    /// @notice Add `guardian` to the committee. Must be non-zero, not already a guardian, and within the cap.
+    /// @notice Add `guardian` to the committee. Must be non-zero, not already a guardian, not a current guardian's
+    ///         delegate, and within the cap.
     function addGuardian(address guardian) external;
 
-    /// @notice Atomically replace one guardian with another without changing the guardian count or quorum.
+    /// @notice Atomically replace one guardian with another without changing the guardian count or quorum. The new
+    ///         guardian must be non-zero and not a current guardian, checked before the removal; the delegate check
+    ///         runs after it, so a guardian can be replaced with its own delegate.
     function replaceGuardian(address oldGuardian, address newGuardian) external;
 
     /// @notice Remove `guardian` from the committee (reverts if it would drop the set below the quorum).
     function removeGuardian(address guardian) external;
 
-    /// @notice Set the caller-guardian's delegate — a hot key that may act on its behalf. The zero address clears
-    ///         it. Guardian-only; the guardian's signals and heartbeat are untouched.
+    /// @notice Set the caller-guardian's delegate: a hot key that may act on its behalf. The zero address clears
+    ///         it. Guardian-only. A non-zero delegate must not be a guardian or any current delegate, the caller's
+    ///         own included, so one address cannot sign for two committee identities. The guardian's signals and
+    ///         heartbeat are untouched.
     function setDelegate(address newDelegate) external;
 
     /// @notice Set the quorum — the distinct guardians' flags that latch a ban.

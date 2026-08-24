@@ -20,9 +20,11 @@ import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/Guar
 ///         borrower's collateral-activation delay — it never bans. The market controller reads
 ///         `getOpinion(marketId, account)` to scale the delay and hard-block borrowing.
 /// @dev    A guardian is a single committee address. It may appoint one **delegate** — a hot key allowed to act on
-///         its behalf; `setDelegate` replaces it (at most one at a time). Signalling and liveness calls name the
-///         guardian they act for (`onBehalf`) and accept that guardian or its current delegate. All signals and
-///         heartbeats are stored under the guardian, so replacing the delegate keeps the guardian's standing.
+///         its behalf; `setDelegate` replaces it (at most one at a time), and the zero address clears it. A
+///         delegate must not be a guardian or another guardian's current delegate, so one address cannot sign for
+///         two committee identities. Signalling and liveness calls name the guardian they act for (`onBehalf`) and
+///         accept that guardian or its current delegate. All signals and heartbeats are stored under the guardian,
+///         so replacing the delegate keeps the guardian's standing.
 ///         Governance (`MANAGER_ROLE`) adds and removes guardians and sets the quorum and suspect window. Upgradeable
 ///         behind a proxy (`initialize`, not a constructor); ERC-7201 namespaced storage. Events and errors live in
 ///         {IGuardianSignals}.
@@ -132,6 +134,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @inheritdoc IGuardianSignals
     function setDelegate(address newDelegate) external {
         if (!_guardians.contains(msg.sender)) revert Unauthorized();
+        if (_guardians.contains(newDelegate)) revert DelegateIsGuardian();
+        if (newDelegate != address(0)) _requireNotDelegate(newDelegate);
         address oldDelegate = _delegates[msg.sender];
         _delegates[msg.sender] = newDelegate;
         emit DelegateSet(msg.sender, oldDelegate, newDelegate);
@@ -415,8 +419,19 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     function _addGuardian(address guardian) internal {
         if (guardian == address(0)) revert ZeroAddress();
         if (_guardians.length() >= MAX_GUARDIANS_COUNT) revert MaxGuardiansReached();
+        _requireNotDelegate(guardian);
         if (!_guardians.add(guardian)) revert AlreadyGuardian();
         emit GuardianAdded(guardian);
+    }
+
+    /// @dev Reverts when `account` is already some guardian's delegate. Both new delegates and new guardians pass
+    ///      through this check, so one address cannot serve two committee identities. `account` must be non-zero:
+    ///      zero matches every guardian without a delegate.
+    function _requireNotDelegate(address account) internal view {
+        address[] memory guardians = _guardians.values();
+        for (uint256 i; i < guardians.length; ++i) {
+            if (_delegates[guardians[i]] == account) revert DelegateAlreadySet();
+        }
     }
 
     function _flag(address guardian, Id marketId, address account) internal {

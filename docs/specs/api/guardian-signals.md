@@ -4,7 +4,7 @@
 
 Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
 
-Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address that may appoint one **delegate** (at most one at a time) to act on its behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in `IGuardianSignalsView`; this interface adds the rest.
+Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address that may appoint one **delegate** (at most one at a time, unique across the committee) to act on its behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in `IGuardianSignalsView`; this interface adds the rest.
 
 ## Structs
 
@@ -335,6 +335,22 @@ error SuspectWindowTooHigh();
 
 Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
 
+### `DelegateIsGuardian`
+
+```solidity
+error DelegateIsGuardian();
+```
+
+Thrown when the appointed delegate is a guardian.
+
+### `DelegateAlreadySet`
+
+```solidity
+error DelegateAlreadySet();
+```
+
+Thrown when an address that is already a guardian's delegate (the caller's own included) is appointed as a delegate again or added as a guardian.
+
 ## Functions
 
 ### `MAX_GUARDIANS_COUNT`
@@ -383,7 +399,7 @@ Role allowed to lift account bans.
 function addGuardian(address guardian) external;
 ```
 
-Add `guardian` to the committee. Must be non-zero, not already a guardian, and within the cap.
+Add `guardian` to the committee. Must be non-zero, not already a guardian, not a current guardian's delegate, and within the cap.
 
 ### `replaceGuardian`
 
@@ -391,7 +407,7 @@ Add `guardian` to the committee. Must be non-zero, not already a guardian, and w
 function replaceGuardian(address oldGuardian, address newGuardian) external;
 ```
 
-Atomically replace one guardian with another without changing the guardian count or quorum.
+Atomically replace one guardian with another without changing the guardian count or quorum. The new guardian must be non-zero and not a current guardian, checked before the removal; the delegate check runs after it, so a guardian can be replaced with its own delegate.
 
 ### `removeGuardian`
 
@@ -407,7 +423,7 @@ Remove `guardian` from the committee (reverts if it would drop the set below the
 function setDelegate(address newDelegate) external;
 ```
 
-Set the caller-guardian's delegate — a hot key that may act on its behalf. The zero address clears it. Guardian-only; the guardian's signals and heartbeat are untouched.
+Set the caller-guardian's delegate: a hot key that may act on its behalf. The zero address clears it. Guardian-only. A non-zero delegate must not be a guardian or any current delegate, the caller's own included, so one address cannot sign for two committee identities. The guardian's signals and heartbeat are untouched.
 
 ### `setQuorum`
 
