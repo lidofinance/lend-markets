@@ -157,6 +157,32 @@ contract MarketFactoryScenarioTest is Test {
         _deployMarketComponents(market, erc4626WrapperSpec);
     }
 
+    /// @dev The audit trail for a deployment: every proxy the factory creates logs its implementation and the exact
+    ///      constructor arguments it was created with, so a log reader can check a component against them without
+    ///      decoding the transaction that created it.
+    function test_deployMarketComponents_emitsProxyDeployedPerComponent() external {
+        (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
+        LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
+        LidoLendMarketFactory.ERC4626WrapperSpec memory erc4626WrapperSpec = _erc4626WrapperSpec("A");
+        address expectedController = _predictController(market, caller);
+        address expectedWrapper = _predictWrapper(market, erc4626WrapperSpec, expectedController, caller);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit LidoLendMarketFactory.ProxyDeployed(
+            expectedController, controllerImpl, marketAdmin, _controllerInitData(market), _proxySalt(caller, bytes32(0))
+        );
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit LidoLendMarketFactory.ProxyDeployed(
+            expectedWrapper,
+            erc4626WrapperImpl,
+            marketAdmin,
+            _wrapperInitData(market, erc4626WrapperSpec, expectedController),
+            _proxySalt(caller, bytes32(0))
+        );
+
+        _deployMarketComponents(market, erc4626WrapperSpec);
+    }
+
     /// @dev A deploy script records the addresses its simulation returned, so those addresses must not depend on
     ///      anything a third party controls. Here another caller advances the factory's transaction count and also
     ///      deploys the very same reviewed specification first, and the components still land where they were
@@ -419,6 +445,23 @@ contract MarketFactoryScenarioTest is Test {
         factory.deployGuardianSignals(spec, keccak256("group-a"));
     }
 
+    function test_deployGuardianSignals_emitsProxyDeployed() external {
+        LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
+        bytes32 callerSalt = keccak256("logged-registry");
+        address expectedRegistry = _predictGuardianSignals(spec, caller, callerSalt);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit LidoLendMarketFactory.ProxyDeployed(
+            expectedRegistry,
+            guardianSignalsImpl,
+            marketAdmin,
+            _guardianSignalsInitData(spec),
+            _proxySalt(caller, callerSalt)
+        );
+        vm.prank(caller);
+        factory.deployGuardianSignals(spec, callerSalt);
+    }
+
     function test_deployGuardianSignals_producesWiredRegistry() external {
         address[] memory guardianSet = new address[](2);
         guardianSet[0] = makeAddr("guardian1");
@@ -499,6 +542,17 @@ contract MarketFactoryScenarioTest is Test {
         });
     }
 
+    /// @dev The proxy constructor arguments the factory must have used, recomposed from the same public inputs the
+    ///      deployment address is derived from.
+    function _proxyConstructorArgs(address implementation, bytes memory initData) private view returns (bytes memory) {
+        return abi.encode(implementation, marketAdmin, initData);
+    }
+
+    /// @dev The `CREATE2` salt a deployment must have used: the caller, narrowed by the salt that caller passed.
+    function _proxySalt(address deployer, bytes32 callerSalt) private pure returns (bytes32) {
+        return keccak256(abi.encode(deployer, callerSalt));
+    }
+
     /// @dev Derives a deployment address from public inputs alone: the factory, the deployer, and the data the
     ///      component is initialized with. Predicting from outside the factory is the property being exercised.
     function _predictProxy(address implementation, bytes memory initData, address deployer, bytes32 callerSalt)
@@ -507,17 +561,13 @@ contract MarketFactoryScenarioTest is Test {
         returns (address)
     {
         bytes32 initCodeHash = keccak256(
-            abi.encodePacked(type(OssifiableProxy).creationCode, abi.encode(implementation, marketAdmin, initData))
+            abi.encodePacked(type(OssifiableProxy).creationCode, _proxyConstructorArgs(implementation, initData))
         );
-        return vm.computeCreate2Address(keccak256(abi.encode(deployer, callerSalt)), initCodeHash, address(factory));
+        return vm.computeCreate2Address(_proxySalt(deployer, callerSalt), initCodeHash, address(factory));
     }
 
-    function _predictController(LidoLendMarketFactory.MarketSpec memory market, address deployer)
-        private
-        view
-        returns (address)
-    {
-        bytes memory initData = abi.encodeCall(
+    function _controllerInitData(LidoLendMarketFactory.MarketSpec memory market) private view returns (bytes memory) {
+        return abi.encodeCall(
             LidoLendMarketController.initialize,
             (
                 _marketParams(market).id(),
@@ -527,7 +577,32 @@ contract MarketFactoryScenarioTest is Test {
                 market.settlementConfig
             )
         );
-        return _predictProxy(controllerImpl, initData, deployer, bytes32(0));
+    }
+
+    function _wrapperInitData(
+        LidoLendMarketFactory.MarketSpec memory market,
+        LidoLendMarketFactory.ERC4626WrapperSpec memory wrapperSpec,
+        address controllerAddress
+    ) private view returns (bytes memory) {
+        return abi.encodeCall(
+            LidoLendERC4626.initialize, (_marketParams(market), controllerAddress, wrapperSpec.name, wrapperSpec.symbol)
+        );
+    }
+
+    function _guardianSignalsInitData(LidoLendMarketFactory.GuardianSpec memory spec)
+        private
+        view
+        returns (bytes memory)
+    {
+        return abi.encodeCall(GuardianSignals.initialize, (address(factory), spec.guardians, spec.quorum));
+    }
+
+    function _predictController(LidoLendMarketFactory.MarketSpec memory market, address deployer)
+        private
+        view
+        returns (address)
+    {
+        return _predictProxy(controllerImpl, _controllerInitData(market), deployer, bytes32(0));
     }
 
     function _predictWrapper(
@@ -536,10 +611,9 @@ contract MarketFactoryScenarioTest is Test {
         address controllerAddress,
         address deployer
     ) private view returns (address) {
-        bytes memory initData = abi.encodeCall(
-            LidoLendERC4626.initialize, (_marketParams(market), controllerAddress, wrapperSpec.name, wrapperSpec.symbol)
+        return _predictProxy(
+            erc4626WrapperImpl, _wrapperInitData(market, wrapperSpec, controllerAddress), deployer, bytes32(0)
         );
-        return _predictProxy(erc4626WrapperImpl, initData, deployer, bytes32(0));
     }
 
     function _predictGuardianSignals(
@@ -547,10 +621,7 @@ contract MarketFactoryScenarioTest is Test {
         address deployer,
         bytes32 callerSalt
     ) private view returns (address) {
-        bytes memory initData = abi.encodeCall(
-            GuardianSignals.initialize, (address(factory), spec.guardians, spec.quorum)
-        );
-        return _predictProxy(guardianSignalsImpl, initData, deployer, callerSalt);
+        return _predictProxy(guardianSignalsImpl, _guardianSignalsInitData(spec), deployer, callerSalt);
     }
 
     function _marketParams(LidoLendMarketFactory.MarketSpec memory market) internal view returns (MarketParams memory) {

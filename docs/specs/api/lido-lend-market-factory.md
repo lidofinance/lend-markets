@@ -133,6 +133,24 @@ Initial membership and timing configuration for a guardian registry.
 
 ## Events
 
+### `ProxyDeployed`
+
+```solidity
+event ProxyDeployed(address indexed proxy, address indexed implementation, address admin, bytes initData, bytes32 salt);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `proxy` | `address` | Deployed proxy. |
+| `implementation` | `address` | Implementation the proxy delegates to. |
+| `admin` | `address` | Proxy admin the proxy is constructed with. |
+| `initData` | `bytes` | Initialization call the proxy delegates to the implementation on construction. |
+| `salt` | `bytes32` | `CREATE2` salt the proxy was deployed under. |
+
+Emitted for every proxy the factory deploys, before the component behind it is configured or validated.
+
 ### `MarketControllerDeployed`
 
 ```solidity

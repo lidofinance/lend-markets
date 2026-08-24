@@ -215,6 +215,17 @@ contract LidoLendMarketFactory {
     // EVENTS
     // ---
 
+    /// @notice Emitted for every proxy the factory deploys, before the component behind it is configured or
+    ///         validated.
+    /// @param proxy Deployed proxy.
+    /// @param implementation Implementation the proxy delegates to.
+    /// @param admin Proxy admin the proxy is constructed with.
+    /// @param initData Initialization call the proxy delegates to the implementation on construction.
+    /// @param salt `CREATE2` salt the proxy was deployed under.
+    event ProxyDeployed(
+        address indexed proxy, address indexed implementation, address admin, bytes initData, bytes32 salt
+    );
+
     /// @notice Emitted after a controller has been deployed, role-wired, and validated.
     /// @param marketId Market id bound to the controller.
     /// @param controller Deployed controller proxy.
@@ -716,5 +727,6 @@ contract LidoLendMarketFactory {
     {
         bytes32 salt = keccak256(abi.encode(msg.sender, callerSalt));
         proxy = address(new OssifiableProxy{salt: salt}(implementation, ADMIN, initData));
+        emit ProxyDeployed(proxy, implementation, ADMIN, initData, salt);
     }
 }
