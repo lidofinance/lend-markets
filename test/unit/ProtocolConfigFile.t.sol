@@ -91,6 +91,7 @@ contract ProtocolConfigFileTest is Test {
         assertEq(vm.parseTomlAddress(artifact, ".market.oracle"), market.market.oracle);
         assertEq(vm.parseTomlAddress(artifact, ".market.controller"), market.controller);
         assertEq(vm.parseTomlAddress(artifact, ".market.factory"), market.factory);
+        assertEq(vm.parseTomlUint(artifact, ".market.supply_cap"), market.market.supplyCap);
         assertFalse(vm.keyExistsToml(artifact, ".roles"), "derived roles are not deployment inputs");
         assertFalse(vm.keyExistsToml(artifact, ".market.circuit_breaker"), "CircuitBreaker is protocol-wide");
         assertEq(
@@ -262,6 +263,7 @@ contract ProtocolConfigFileTest is Test {
                 oracle: address(0x30),
                 lltv: 0.8 ether,
                 guardianSignals: address(0x40),
+                supplyCap: 1_000 ether,
                 activationConfig: CollateralActivationConfig({
                     minActivationDelay: 1,
                     maxActivationDelay: 2,

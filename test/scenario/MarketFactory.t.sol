@@ -112,6 +112,7 @@ contract MarketFactoryScenarioTest is Test {
         LidoLendMarketController controller = LidoLendMarketController(controllerAddress);
         assertEq(Id.unwrap(controller.marketId()), Id.unwrap(marketId), "controller market id");
         assertEq(controller.guardianSignals(), guardianSignals, "controller guardian signals");
+        assertEq(controller.supplyCap(), market.supplyCap, "controller supply cap");
         _assertActivationConfigEq(controller.collateralActivationConfig(), market.activationConfig);
         _assertSettlementConfigEq(controller.settlementConfig(), market.settlementConfig);
         assertTrue(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), marketAdmin), "admin");
@@ -473,6 +474,7 @@ contract MarketFactoryScenarioTest is Test {
             oracle: oracle,
             lltv: 0.8e18,
             guardianSignals: guardianSignals,
+            supplyCap: 1_000 ether,
             activationConfig: CollateralActivationConfig({
                 minActivationDelay: 11 minutes,
                 maxActivationDelay: 123 minutes,

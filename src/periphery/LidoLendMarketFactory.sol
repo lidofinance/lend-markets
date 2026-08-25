@@ -81,6 +81,7 @@ contract LidoLendMarketFactory {
     /// @param lltv Liquidation loan-to-value ratio, in WAD and strictly below 1e18.
     /// @param guardianSignals Guardian registry read by the controller. Deployment checks only that the address has
     ///                        code; registry configuration is validated through `validateGuardianSignals`.
+    /// @param supplyCap Initial lender supply cap. Zero disables it.
     /// @param activationConfig Initial collateral-activation configuration.
     /// @param settlementConfig Initial settlement configuration.
     struct MarketSpec {
@@ -89,6 +90,7 @@ contract LidoLendMarketFactory {
         address oracle;
         uint256 lltv;
         address guardianSignals;
+        uint256 supplyCap;
         CollateralActivationConfig activationConfig;
         SettlementConfig settlementConfig;
     }
@@ -479,6 +481,7 @@ contract LidoLendMarketFactory {
                 (
                     marketId,
                     address(this),
+                    market.supplyCap,
                     IGuardianSignalsView(market.guardianSignals),
                     market.activationConfig,
                     market.settlementConfig

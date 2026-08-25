@@ -43,8 +43,8 @@ Roles are shared across networks while market names are not, so a consumer names
 a network's market. `test/fork/` binds by role and skips a role the deployment has no market for.
 
 The protocol artifact records the shared permissionless `IrmConfigFactory` and the single CircuitBreaker bound
-to the core's market factory. Each market artifact contains its resolved addresses, market ID, immutable
-Adaptive Curve config, activation, settlement, and curve parameters. Current role holders are read directly
+to the core's market factory. Each market artifact contains its resolved addresses, market ID, initial supply cap,
+immutable Adaptive Curve config, activation, settlement, and curve parameters. Current role holders are read directly
 from the deployed enumerable AccessControl contracts; they are not copied into artifacts. Separate
 CircuitBreaker, oracle, and GuardianSignals artifacts contain their resolved configuration.
 

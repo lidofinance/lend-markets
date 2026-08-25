@@ -266,6 +266,7 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("irm", d.irm));
         s = string.concat(s, _kv("irm_config", d.irmConfig));
         s = string.concat(s, _kvQuoted("lltv", d.market.lltv));
+        s = string.concat(s, _kvQuoted("supply_cap", d.market.supplyCap));
         s = string.concat(s, _kv("guardian_signals", d.market.guardianSignals));
         s = string.concat(s, _kv("guardian_group", d.guardianGroup));
         s = string.concat(s, _kv("factory", d.factory));

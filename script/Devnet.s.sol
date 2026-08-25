@@ -53,11 +53,13 @@ contract Devnet is Script, LidoLendDeployer {
         address collateral,
         uint256 oraclePrice,
         uint256 lltv,
+        uint256 supplyCap,
         uint128 minActivation
     ) external {
         address admin = msg.sender;
         vm.startBroadcast();
-        Mkt memory m = _createMarket(core, guardianSignals, loan, collateral, oraclePrice, lltv, minActivation, admin);
+        Mkt memory m =
+            _createMarket(core, guardianSignals, loan, collateral, oraclePrice, lltv, supplyCap, minActivation, admin);
         vm.stopBroadcast();
 
         console2.log("oracle             :", m.oracle);
@@ -76,6 +78,7 @@ contract Devnet is Script, LidoLendDeployer {
         address collateral,
         uint256 oraclePrice,
         uint256 lltv,
+        uint256 supplyCap,
         uint128 minActivation,
         address admin
     ) private returns (Mkt memory m) {
@@ -91,7 +94,7 @@ contract Devnet is Script, LidoLendDeployer {
 
         m.adaptive = _configureAdaptiveIrm(m.irm, params, admin);
         m.guardianSignals = guardianSignals;
-        m.controller = _deployDevnetController(core, params.id(), guardianSignals, admin, minActivation);
+        m.controller = _deployDevnetController(core, params.id(), guardianSignals, admin, supplyCap, minActivation);
         ILidoLend(core).createMarket(params, m.controller, true);
         m.vault = _deployERC4626Wrapper(core, params, m.controller, admin, "Lido Devnet Vault", "devVAULT");
     }
@@ -106,10 +109,14 @@ contract Devnet is Script, LidoLendDeployer {
         gs.setSuspectWindow(0);
     }
 
-    function _deployDevnetController(address core, Id id, address guardianSignals, address admin, uint128 minActivation)
-        private
-        returns (address controller)
-    {
+    function _deployDevnetController(
+        address core,
+        Id id,
+        address guardianSignals,
+        address admin,
+        uint256 supplyCap,
+        uint128 minActivation
+    ) private returns (address controller) {
         CollateralActivationConfig memory activation = CollateralActivationConfig({
             minActivationDelay: 10 minutes,
             maxActivationDelay: 2 hours,
@@ -124,7 +131,7 @@ contract Devnet is Script, LidoLendDeployer {
         SettlementConfig memory settlement = SettlementConfig({
             sliceFloorBps: 100, sliceFloorAssets: 10 ether, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
         });
-        (controller,) = _deployController(core, id, guardianSignals, admin, activation, settlement);
+        (controller,) = _deployController(core, id, guardianSignals, admin, supplyCap, activation, settlement);
 
         LidoLendMarketController c = LidoLendMarketController(controller);
         c.grantRole(c.MANAGER_ROLE(), admin);

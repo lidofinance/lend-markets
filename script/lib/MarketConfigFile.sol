@@ -102,6 +102,7 @@ library MarketConfigFile {
             oracle: vm.parseTomlAddress(toml, ".market.oracle"),
             lltv: vm.parseTomlUint(toml, ".market.lltv"),
             guardianSignals: vm.parseTomlAddress(toml, ".market.guardian_signals"),
+            supplyCap: vm.parseTomlUint(toml, ".market.supply_cap"),
             activationConfig: _parseActivation(toml),
             settlementConfig: _parseSettlement(toml)
         });

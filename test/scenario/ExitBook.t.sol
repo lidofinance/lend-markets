@@ -115,6 +115,7 @@ contract ExitBookTest is Test, LidoLendDeployer {
                 collateralToken: address(collateral),
                 oracleSource: address(collateral), // ignored — _deployOracle is overridden
                 lltv: LLTV,
+                supplyCap: 0,
                 enableSettlement: true,
                 activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,

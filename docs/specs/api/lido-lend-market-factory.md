@@ -72,6 +72,7 @@ struct MarketSpec {
     address oracle;
     uint256 lltv;
     address guardianSignals;
+    uint256 supplyCap;
     CollateralActivationConfig activationConfig;
     SettlementConfig settlementConfig;
 }
@@ -90,6 +91,7 @@ The market IRM is always `IRM_ROUTER` and therefore is not caller-supplied.
 | `oracle` | `address` | Market oracle contract. Deployment checks only that the address has code. |
 | `lltv` | `uint256` | Liquidation loan-to-value ratio, in WAD and strictly below 1e18. |
 | `guardianSignals` | `address` | Guardian registry read by the controller. Deployment checks only that the address has code; registry configuration is validated through `validateGuardianSignals`. |
+| `supplyCap` | `uint256` | Initial lender supply cap. Zero disables it. |
 | `activationConfig` | `CollateralActivationConfig` | Initial collateral-activation configuration. |
 | `settlementConfig` | `SettlementConfig` | Initial settlement configuration. |
 

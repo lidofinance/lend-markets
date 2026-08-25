@@ -688,6 +688,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
             oracle: address(oracle),
             lltv: 0.8e18,
             guardianSignals: registry,
+            supplyCap: 1_000 ether,
             activationConfig: _activationConfig(),
             settlementConfig: _settlementConfig()
         });

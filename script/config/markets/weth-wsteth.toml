@@ -9,6 +9,7 @@ collateral_token = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"  # wstETH
 oracle = "0x0000000000000000000000000000000000000000"
 oracle_artifact = "weth-wsteth"
 lltv = "800000000000000000"  # 0.8 WAD
+supply_cap = "0"
 # Zero resolves the already-deployed registry identified by guardian_group.
 guardian_signals = "0x0000000000000000000000000000000000000000"
 guardian_group = "weth-wsteth"

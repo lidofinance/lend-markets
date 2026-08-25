@@ -77,11 +77,12 @@ The standard `IrmConfigFactory` permissionlessly deploys immutable configs and h
 ### `LidoLendOwner` and core authority
 
 The direct, non-upgradeable `LidoLendOwner` facade is the core's initial `owner`. It gates core-owner calls and dispatches controller and guardian-registry calls through separate capability roles.
+The standard deployment sets the core-wide fee recipient to the Lido DAO Agent before transferring ownership to the facade.
 
 | Role | Powers | Class | Initial onchain holder |
 |---|---|---|---|
 | `MARKET_CREATOR_ROLE` | create controller-less or controlled markets; fix the controller and settlement enablement at creation | C4 / C1 | EVMScriptExecutor |
-| `FEE_MANAGER_ROLE` | set a market fee up to the core's 25% cap; set the core-wide fee recipient | C3 / C4 | Lido DAO Agent |
+| `FEE_MANAGER_ROLE` | set a market fee up to the core's 25% cap; set the core-wide fee recipient | C3 / C4 | EVMScriptExecutor |
 | `MARKET_MANAGER_ROLE` | set supply cap, collateral-activation config, settlement config, and instant-activation callers; unfreeze a market | C3 / C4 | EVMScriptExecutor |
 | `GUARDIAN_MANAGER_ROLE` | change a registry's guardians, quorum, and suspect window; clear a ban for selected market ids | C1 / C3 / C4 | EVMScriptExecutor |
 | `DEFAULT_ADMIN_ROLE` | administer the facade roles; transfer core ownership while the facade is the core owner | C1 | Lido DAO Agent |
@@ -148,7 +149,7 @@ Each Exit Book is a direct, non-upgradeable `AccessControlEnumerable` contract. 
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke Exit Book roles | C1 | Lido DAO Agent |
 | `ALLOWLIST_MANAGER_ROLE` | allow or deny new requests for a Morpho market or ERC-4626 vault | C3 / C4 | Lido DAO Agent and EVMScriptExecutor, independently |
-| `FEE_MANAGER_ROLE` | set the fee recipient and service share of the priority fee, capped at 25% | C4 | Lido DAO Agent |
+| `FEE_MANAGER_ROLE` | set the fee recipient and service share of the priority fee, capped at 25% | C4 | EVMScriptExecutor |
 | `RECOVERER_ROLE` | recover Ether, ERC-20, ERC-721, or ERC-1155 tokens held by the book | C4 | Lido DAO Agent |
 | `PAUSER_ROLE` | pause placement and fills across the whole book | C3 | configured Risk Steward Committee, sole initial holder |
 | `RESUMER_ROLE` | resume placement and fills | C4 | no initial holder |

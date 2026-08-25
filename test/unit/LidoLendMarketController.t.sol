@@ -78,6 +78,15 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertGe(found, 1, "GuardianSignalsSet emitted at initialization");
     }
 
+    function test_deployConfig_initializesSupplyCap() public {
+        DeployConfig memory cfg = _defaultConfig(address(loan), address(collateral), address(collateral));
+        cfg.supplyCap = 500 ether;
+
+        Market storage market = _addMarket(cfg);
+
+        assertEq(market.controller.supplyCap(), cfg.supplyCap, "configured supply cap");
+    }
+
     function test_constructor_zeroCoreReverts() public {
         vm.expectRevert(ILidoLendMarketController.ZeroAddress.selector);
         new LidoLendMarketController(IMorpho(address(0)));

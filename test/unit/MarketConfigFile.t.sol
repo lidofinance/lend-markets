@@ -39,6 +39,7 @@ contract MarketConfigFileTest is Test {
         ) = harness.parse(toml);
 
         assertEq(market.lltv, 0.8e18, "lltv");
+        assertEq(market.supplyCap, 1_000 ether, "supply cap");
         assertEq(erc4626WrapperSpec.name, "Test Vault", "ERC-4626 wrapper name");
         assertEq(erc4626WrapperSpec.symbol, "TEST", "ERC-4626 wrapper symbol");
         assertEq(curve.curveSteepness, 4e18, "curve steepness");
@@ -101,6 +102,7 @@ contract MarketConfigFileTest is Test {
             "oracle = \"0x0000000000000000000000000000000000000003\"\n",
             "lltv = \"800000000000000000\"\n",
             "guardian_signals = \"0x0000000000000000000000000000000000000004\"\n",
+            "supply_cap = \"1000000000000000000000\"\n",
             "vault_name = \"Test Vault\"\n",
             "vault_symbol = \"TEST\"\n",
             "[activation]\n",
