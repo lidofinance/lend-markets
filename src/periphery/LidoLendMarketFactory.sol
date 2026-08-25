@@ -116,7 +116,13 @@ contract LidoLendMarketFactory {
     // ERRORS
     // ---
 
-    /// @notice A required market oracle or guardian-registry address has no code.
+    /// @notice The proxy admin supplied to the constructor was the zero address.
+    error AdminZeroAddress();
+
+    /// @notice The circuit breaker supplied to the constructor was the zero address.
+    error CircuitBreakerZeroAddress();
+
+    /// @notice A required market token, oracle, or guardian-registry address has no code.
     /// @param account Address without runtime code.
     error NotContract(address account);
 
@@ -278,13 +284,16 @@ contract LidoLendMarketFactory {
 
     /// @notice Fixes the implementations, protocol dependencies, and final administrator used by every deployment.
     /// @dev The factory deployer must validate all constructor addresses before deployment. The constructor verifies
-    ///      only the core bindings exposed by the controller and wrapper implementations, owner facade, risk
-    ///      dashboard, and IRM router.
+    ///      only that `admin` and the circuit breaker are nonzero and the core bindings exposed by the controller and
+    ///      wrapper implementations, owner facade, risk dashboard, and IRM router.
     /// @param implementations Implementations used behind newly deployed proxies.
     /// @param dependencies Core and protocol-wide role recipients embedded in newly deployed components.
     /// @param admin Proxy admin for every deployment and sole initial `DEFAULT_ADMIN_ROLE` holder on controllers and
     ///              guardian registries.
     constructor(Implementations memory implementations, Dependencies memory dependencies, address admin) {
+        if (admin == address(0)) revert AdminZeroAddress();
+        if (dependencies.circuitBreaker == address(0)) revert CircuitBreakerZeroAddress();
+
         _requireLidoLendBinding(implementations.erc4626Wrapper, dependencies.lidoLend);
         _requireLidoLendBinding(implementations.controller, dependencies.lidoLend);
 
@@ -443,6 +452,8 @@ contract LidoLendMarketFactory {
         marketId = marketParams.id();
         if (ILidoLend(LIDO_LEND).market(marketId).lastUpdate != 0) revert MarketAlreadyExists(marketId);
 
+        if (market.loanToken.code.length == 0) revert NotContract(market.loanToken);
+        if (market.collateralToken.code.length == 0) revert NotContract(market.collateralToken);
         if (market.oracle.code.length == 0) revert NotContract(market.oracle);
         if (market.guardianSignals.code.length == 0) revert NotContract(market.guardianSignals);
     }
