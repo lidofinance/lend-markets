@@ -504,17 +504,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     function _handleLiquidate(Id id, LiquidateHookData memory hookData) internal {
         address borrower = hookData.borrower;
         PositionView memory position = _positionView(id, borrower);
-
-        if (hookData.repaidShares > position.borrowShares || hookData.seizedAssets > position.collateral) {
-            revert PositionAccountingMismatch();
-        }
-
-        // runs before core decrements raw collateral, so `position.collateral` is the pre-seizure total
-        if (hookData.seizedAssets != 0) _activation.seize(borrower, hookData.seizedAssets, position.collateral);
-
-        position.borrowShares -= hookData.repaidShares;
-        position.collateral -= hookData.seizedAssets;
-        _settlementQueue.sync(borrower, position);
+        _reducePosition(borrower, position, hookData.repaidShares, hookData.seizedAssets);
     }
 
     /// @dev Settle hook: gates the cut on policy (queue-root bad debt, eligibility, the allowed slice), then
@@ -558,14 +548,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
             }
         }
 
-        if (hookData.borrowSharesCanceled > position.borrowShares || hookData.seizedAssets > position.collateral) {
-            revert PositionAccountingMismatch();
-        }
-        if (hookData.seizedAssets != 0) _activation.seize(borrower, hookData.seizedAssets, position.collateral);
-
-        position.borrowShares -= cutShares;
-        position.collateral -= hookData.seizedAssets;
-        _settlementQueue.sync(borrower, position);
+        _reducePosition(borrower, position, cutShares, hookData.seizedAssets);
     }
 
     // ---
@@ -663,5 +646,24 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     function _positionView(Id id, address borrower) internal view returns (PositionView memory) {
         Position memory p = LIDO_LEND.position(id, borrower);
         return PositionView({borrowShares: p.borrowShares, collateral: p.collateral});
+    }
+
+    /// @dev Removes the canceled debt shares and the seized collateral from the borrower's position, updates
+    ///      the activation buckets for the seizure, and re-keys the settlement queue. Reverts when the
+    ///      reduction exceeds the position.
+    function _reducePosition(
+        address borrower,
+        PositionView memory position,
+        uint256 canceledShares,
+        uint256 seizedAssets
+    ) internal {
+        if (canceledShares > position.borrowShares || seizedAssets > position.collateral) {
+            revert PositionAccountingMismatch();
+        }
+        if (seizedAssets != 0) _activation.seize(borrower, seizedAssets, position.collateral);
+
+        position.borrowShares -= canceledShares;
+        position.collateral -= seizedAssets;
+        _settlementQueue.sync(borrower, position);
     }
 }
