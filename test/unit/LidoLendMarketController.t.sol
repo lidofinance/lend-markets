@@ -1444,7 +1444,10 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         MockERC20 collateral6 = new MockERC20("Collateral 6", "COLL6", 6);
         LidoLendDeployer.DeployConfig memory config =
             _defaultConfig(address(loan), address(collateral6), address(collateral6));
-        config.activation.minActivationAmount = 1;
+        // Both are raw collateral units, so the 18-decimal defaults would be absurd here: one 6-decimal token
+        // for each keeps the floor at its threshold ceiling while staying far below the 10e6 deposits.
+        config.activation.minActivationAmount = 1e6;
+        config.activation.minDepositAmount = 1e6;
         Market storage m = _addMarket(config);
         LidoLendMarketController controller = LidoLendMarketController(address(m.controller));
         MockPriceOracle(address(m.oracle)).setPrice(1e48);

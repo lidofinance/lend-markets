@@ -80,7 +80,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
                 maxDelayInflow: 10_000 ether,
                 activatingLockDuration: 0,
                 minActivationAmount: 10 ether,
-                minDepositAmount: 0,
+                minDepositAmount: 1 ether,
                 maxGuardiansQuorumDelay: 0,
                 delayPerStrike: 2 hours,
                 delayPerSuspect: 0
