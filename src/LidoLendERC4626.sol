@@ -279,56 +279,70 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
             if (liquidAssets != 0) {
                 uint256 redeemAssets = previewRedeem(shares);
                 if (redeemAssets <= liquidAssets) {
+                    // full liquid exit, no settle leg
                     sharesBurned = shares;
                     loanAssets = redeemAssets;
-                    _withdraw(_msgSender(), receiver, owner, loanAssets, sharesBurned);
                 } else {
+                    // partial liquid exit, settle leg for the remainder
+                    sharesBurned = previewWithdraw(liquidAssets);
                     loanAssets = liquidAssets;
-                    sharesBurned = withdraw(liquidAssets, receiver, owner);
                 }
+                _withdraw(_msgSender(), receiver, owner, loanAssets, sharesBurned);
             }
         }
-        uint256 remaining = shares - sharesBurned;
-        if (remaining == 0) return (sharesBurned, loanAssets, 0, 0);
+
+        // `shares` is reused for the remainder to keep this frame under the stack limit (via_ir = false).
+        shares = shares - sharesBurned;
 
         // 2. Settle the remainder against the risk queue, head first (collateral to receiver), up to the owner's
         //    pro-rata managed core supply-share budget for it.
-        uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, remaining, totalSupply());
-        if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
+        if (shares != 0) {
+            uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply());
+            if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
 
-        if (maxIterations == 0) maxIterations = DEFAULT_MAX_SETTLEMENT_ITERATIONS;
-        uint256 remainingSupplyShares = settlingSupplyShares;
+            if (maxIterations == 0) maxIterations = DEFAULT_MAX_SETTLEMENT_ITERATIONS;
+            uint256 remainingSupplyShares = settlingSupplyShares;
 
-        for (uint256 i = 0; i < maxIterations && remainingSupplyShares != 0; ++i) {
-            (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) =
-                _settleNextAllowedBorrower(remainingSupplyShares, receiver);
-            if (cutShares == 0) break;
+            for (uint256 i = 0; i < maxIterations && remainingSupplyShares != 0; ++i) {
+                (uint256 cutShares, uint256 cutCollateral, uint256 cutDebt) =
+                    _settleNextAllowedBorrower(remainingSupplyShares, receiver);
+                if (cutShares == 0) break;
 
-            debtCanceled += cutDebt;
-            collateralSeized += cutCollateral;
-            remainingSupplyShares -= cutShares;
+                debtCanceled += cutDebt;
+                collateralSeized += cutCollateral;
+                remainingSupplyShares -= cutShares;
+            }
+
+            uint256 settledSupplyShares = settlingSupplyShares - remainingSupplyShares;
+            _managedSupplyShares -= settledSupplyShares;
+
+            // Burn the settled remainder (pro-rata, rounded up so remaining holders aren't diluted) and spend
+            // allowance for it; the redeem leg burned its own.
+            if (remainingSupplyShares != 0) {
+                shares = Math.mulDiv(shares, settledSupplyShares, settlingSupplyShares, Math.Rounding.Ceil);
+            }
+
+            if (shares != 0) {
+                address caller = _msgSender();
+                if (caller != owner) _spendAllowance(owner, caller, shares);
+                _burn(owner, shares);
+            }
+
+            sharesBurned += shares;
         }
 
-        uint256 settledSupplyShares = settlingSupplyShares - remainingSupplyShares;
-        _managedSupplyShares -= settledSupplyShares;
-
-        // Burn the settled remainder (pro-rata, rounded up so remaining holders aren't diluted) and spend
-        // allowance for it; the redeem leg burned its own.
-        uint256 settledShares = remainingSupplyShares == 0
-            ? remaining
-            : Math.mulDiv(remaining, settledSupplyShares, settlingSupplyShares, Math.Rounding.Ceil);
-        address caller = _msgSender();
-
-        if (settledShares != 0) {
-            if (caller != owner) _spendAllowance(owner, caller, settledShares);
-            _burn(owner, settledShares);
-        }
-        sharesBurned += settledShares;
         if (sharesBurned == 0) revert NothingSettled();
 
-        emit FallbackExit(
-            caller, owner, receiver, sharesBurned, settledShares, loanAssets, collateralSeized, debtCanceled
-            );
+        emit FallbackExit({
+            caller: _msgSender(),
+            owner: owner,
+            receiver: receiver,
+            sharesBurned: sharesBurned,
+            sharesSettled: shares,
+            assetsWithdrawn: loanAssets,
+            collateralSeized: collateralSeized,
+            debtCanceled: debtCanceled
+        });
     }
 
     /// @dev Resolve the current queue root together with its selected max(personal, queue-root) cut, already shrunk
