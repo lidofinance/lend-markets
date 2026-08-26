@@ -48,7 +48,9 @@ A guardian is one address in the committee. It may appoint one delegate. Only th
 
 Reports and heartbeats are stored under the guardian identity. Replacing a delegate therefore preserves the guardian's existing state. Each guardian identity contributes at most one flag and one suspect report per `(marketId, account)`.
 
-Delegate addresses need not be unique. One signing address may represent several guardian identities and submit one report or heartbeat for each. Quorum counts guardian identities, not independent callers or keys, so the committee relies on its members using independent signing keys.
+Active delegate addresses are unique. `setDelegate` rejects a non-zero delegate that is a guardian or that any guardian currently uses, including the caller's own current delegate, so one signing address cannot represent two committee identities.
+
+Membership changes enforce the same rule: `addGuardian` and `replaceGuardian` reject a new guardian that is currently some guardian's delegate. Replacing a guardian with its own delegate is allowed, because the removal clears the pairing before the new seat is added.
 
 The committee manager changes membership, quorum, and the suspect window. Separate authorities can directly latch a ban or clear a ban and its flags. Exact role holders and governance paths are listed in [Privileged Roles](roles.md#guardiansignals).
 
@@ -187,7 +189,7 @@ A heartbeat contains a block hash, block number, and guardian-supplied scan time
 The EVM returns zero for the current block and for blocks outside the `blockhash` lookback window, so neither can provide an accepted proof. Number and hash authenticate the referenced block within that window; they do not authenticate the supplied timestamp. Only the timestamp is stored, while the block number remains in the event.
 
 > [!WARNING]
-> **Accepted guardian-timestamp trust.** The frontier uses the guardian-supplied timestamp without checking it against the block header. A caller controlling the configured quorum of guardian identities can therefore advance the frontier without having scanned through that time. Quorum may be one, and several identities may share one delegate key.
+> **Accepted guardian-timestamp trust.** The frontier uses the guardian-supplied timestamp without checking it against the block header. A party controlling the configured quorum of guardian identities can therefore advance the frontier without having scanned through that time. Quorum may be one, and delegate uniqueness separates only addresses: one operator may still hold the keys behind several identities.
 
 ## Related references
 
