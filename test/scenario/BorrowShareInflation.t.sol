@@ -268,7 +268,7 @@ contract BorrowShareInflationTest is LidoLendSetup {
         address[] memory bs = new address[](1);
         bs[0] = borrower;
         uint256 lenderShares = m.vault.balanceOf(lender);
-        (uint256 burned,,, uint256 debtCanceled) = m.settle(lender, lenderShares / 2, bs, lender);
+        (uint256 burned,, uint256 debtCanceled) = m.settle(lender, lenderShares / 2, bs, lender);
         assertGt(burned, 0, "settle stayed live with the ceiling active");
         assertGt(debtCanceled, 0, "settle cancelled debt");
 

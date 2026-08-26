@@ -164,12 +164,11 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @param receiver Recipient of the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
     /// @return sharesBurned Shares burned for the settled slice.
-    /// @return loanAssets Always 0 — a targeted settle pays only seized collateral and withdraws no liquidity.
     /// @return collateralSeized Collateral seized from the cut positions and sent to `receiver`.
     /// @return debtCanceled Borrower debt cancelled by the cuts.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
-        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
+        returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
 
     /// @notice Queue-driven fallback exit. The liquid leg burns as many requested shares as current market liquidity
     ///         can service and pays loan assets; the settlement leg applies the remaining share claim to risk-queue

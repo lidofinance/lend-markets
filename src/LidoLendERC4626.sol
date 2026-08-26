@@ -205,7 +205,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     ///      `fallbackExit` instead consumes available liquidity first and selects risk-queue roots for the remainder.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
-        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
+        returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled)
     {
         if (borrowers.length == 0) revert EmptyBorrowers();
         if (shares == 0) revert ZeroShares();
@@ -233,8 +233,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         uint256 settledSupplyShares = settlingSupplyShares - remainingSupplyShares;
         _managedSupplyShares -= settledSupplyShares;
 
-        // Burn only the shares actually settled (pro-rata if the cuts fell short). loanAssets stays 0 — settle
-        // pays the receiver collateral, not loan assets.
+        // Burn only the shares actually settled (pro-rata if the cuts fell short); settle pays the receiver
+        // collateral, not loan assets.
         sharesBurned = remainingSupplyShares == 0
             ? shares
             : Math.mulDiv(shares, settledSupplyShares, settlingSupplyShares, Math.Rounding.Ceil);

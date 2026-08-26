@@ -316,12 +316,9 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
 
         vm.recordLogs();
         vm.prank(caller);
-        uint256 loanAssets;
-        (sharesBurned, loanAssets, c.collateralSeized, c.debtCanceled) =
-            _m().vault.settle(shares, borrowers, caller, owner);
+        (sharesBurned, c.collateralSeized, c.debtCanceled) = _m().vault.settle(shares, borrowers, caller, owner);
         c.burned = sharesBurned;
 
-        assertEq(loanAssets, 0, "settle pays collateral, not loan");
         _assertExitEffects(c);
     }
 }

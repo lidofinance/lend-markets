@@ -256,11 +256,10 @@ contract SettlementTest is LidoLendSetup {
             quote.personal.borrowShares.toAssetsUp(marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
         state.freeBefore = _freeLiquidity(m);
 
-        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             m.settle(state.lender, state.shares, _singleton(state.borrower), state.lender);
 
         assertGt(sharesBurned, 0, "positive settlement burns vault shares");
-        assertEq(loanAssets, 0, "targeted settlement does not withdraw liquidity");
         assertEq(debtCanceled, state.expectedDebt, "core consumes the controller's personal quote");
         assertLe(debtCanceled, state.personalSlice + 1, "borrow-share rounding adds at most one asset wei");
         assertGt(collateralSeized, 0, "personal settlement seizes collateral");
@@ -301,10 +300,8 @@ contract SettlementTest is LidoLendSetup {
             quote.queueRoot.borrowShares.toAssetsUp(marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
         assertGt(rootDebt, expectedPersonalDebt, "root candidate cancels more debt");
 
-        (, uint256 loanAssets,, uint256 debtCanceled) =
-            m.settle(state.lender, state.shares, _singleton(state.borrower), state.lender);
+        (,, uint256 debtCanceled) = m.settle(state.lender, state.shares, _singleton(state.borrower), state.lender);
 
-        assertEq(loanAssets, 0, "targeted settlement does not withdraw liquidity");
         assertEq(debtCanceled, expectedPersonalDebt, "targeted settlement uses only personal candidate");
         assertLt(debtCanceled, rootDebt, "targeted settlement excludes larger root candidate");
     }

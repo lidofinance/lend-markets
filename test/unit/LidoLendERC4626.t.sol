@@ -162,7 +162,7 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
         address[] memory borrowers = new address[](1);
         borrowers[0] = borrower;
-        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             m.settle(lender, shares, borrowers, lender);
 
         assertLt(expected[0], availableLiquidity, "request is fully covered by current free liquidity");
@@ -457,8 +457,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
         bs[0] = borrower;
         uint256 expectedDebtCanceled = _settlementForDebtAssets(m, borrower);
         uint128 colBefore = m.core.position(m.id, borrower).collateral;
-        // The helper asserts loanAssets == 0 (no liquid leg) and the receiver/share deltas.
-        (,, uint256 collateralSeized, uint256 debtCanceled) = m.settle(lender, m.vault.balanceOf(lender), bs, lender);
+        // The helper asserts liquidity-neutrality (no liquid leg) and the receiver/share deltas.
+        (, uint256 collateralSeized, uint256 debtCanceled) = m.settle(lender, m.vault.balanceOf(lender), bs, lender);
         assertEq(debtCanceled, expectedDebtCanceled, "settle cut == settlementFor prediction (exact)");
         assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");
     }
@@ -592,7 +592,7 @@ contract LidoLendERC4626Test is LidoLendSetup {
         address[] memory bs = new address[](1);
         bs[0] = borrower;
         // Helper asserts owner share burn, receiver collateral, and owner!=receiver routing.
-        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             m.settle(lender, m.vault.balanceOf(lender), bs, receiver);
         assertEq(debtCanceled, expectedDebtCanceled, "cancelled == settlementFor prediction");
         assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");

@@ -112,23 +112,23 @@ library MarketActions {
 
     /// @notice Lender (`owner`) targeted-settles `shares` against `borrowers`, collateral to `receiver`.
     ///         Best-effort within the batch but reverts when no borrower is settled. On success, asserts
-    ///         `sharesBurned <= shares`, `loanAssets == 0`, the owner's share burn, the collateral received by
-    ///         `receiver`, and — when `owner != receiver` — that the owner's own collateral is untouched (all of it
-    ///         routed to `receiver`).
+    ///         `sharesBurned <= shares`, that no loan assets reached `receiver`, the owner's share burn, the
+    ///         collateral received by `receiver`, and — when `owner != receiver` — that the owner's own collateral
+    ///         is untouched (all of it routed to `receiver`).
     function settle(Market storage self, address owner, uint256 shares, address[] memory borrowers, address receiver)
         internal
-        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
+        returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled)
     {
         uint256 ownerSharesBefore = self.vault.balanceOf(owner);
         uint256 recvColBefore = self.collateralToken.balanceOf(receiver);
         uint256 ownerColBefore = self.collateralToken.balanceOf(owner);
+        uint256 recvLoanBefore = self.loanToken.balanceOf(receiver);
 
         vm.prank(owner);
-        (sharesBurned, loanAssets, collateralSeized, debtCanceled) =
-            self.vault.settle(shares, borrowers, receiver, owner);
+        (sharesBurned, collateralSeized, debtCanceled) = self.vault.settle(shares, borrowers, receiver, owner);
 
         vm.assertLe(sharesBurned, shares, "settle: burned > requested");
-        vm.assertEq(loanAssets, 0, "settle: not liquidity-neutral");
+        vm.assertEq(self.loanToken.balanceOf(receiver), recvLoanBefore, "settle: not liquidity-neutral");
         vm.assertEq(self.vault.balanceOf(owner), ownerSharesBefore - sharesBurned, "settle: owner shares burned");
         vm.assertEq(
             self.collateralToken.balanceOf(receiver), recvColBefore + collateralSeized, "settle: receiver collateral"

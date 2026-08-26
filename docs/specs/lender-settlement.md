@@ -245,7 +245,7 @@ Targeted settlement does not withdraw or reserve existing loan-token liquidity. 
 
 Borrowers with no positive personal settlement consume nothing — including one whose remaining budget only funds a cut under the [seizure floor](#seizure-floor). Iteration stops when the budget is exhausted or the list ends. If no core supply share is consumed across the entire list, the call reverts instead of silently burning nothing.
 
-The receiver gets only seized collateral; the returned loan-asset amount is zero. If settlement consumes the full core budget, the vault burns all requested vault shares. If it consumes only part, the vault burns the same proportion of the request, rounded up so remaining holders are not diluted:
+The receiver gets only seized collateral; no loan assets are paid. If settlement consumes the full core budget, the vault burns all requested vault shares. If it consumes only part, the vault burns the same proportion of the request, rounded up so remaining holders are not diluted:
 
 ```text
 vaultSharesBurned =

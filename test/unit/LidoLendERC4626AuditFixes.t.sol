@@ -337,9 +337,7 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         // the debt it cancels, in loan terms — is bounded by the attacker's own share value (or it reverts on
         // a too-small slice, extracting nothing).
         vm.prank(attacker);
-        try m.vault.settle(attackerShares, bs, attacker, attacker) returns (
-            uint256, uint256, uint256, uint256 debtCanceled
-        ) {
+        try m.vault.settle(attackerShares, bs, attacker, attacker) returns (uint256, uint256, uint256 debtCanceled) {
             assertLe(debtCanceled, attackerShareValue + 2, "settle extracts no more than the attacker's own share");
         } catch {
             // Reverted (zero budget / slice too small) -> nothing extracted.
@@ -393,7 +391,7 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         bs[0] = borrower;
         uint256 lenderShares = m.vault.balanceOf(lender);
         vm.prank(lender);
-        (uint256 sharesBurned,,,) = m.vault.settle(lenderShares, bs, lender, lender);
+        (uint256 sharesBurned,,) = m.vault.settle(lenderShares, bs, lender, lender);
         assertGt(sharesBurned, 0, "settle burned vault shares");
 
         assertEq(

@@ -255,7 +255,7 @@ function settle(
     address[] calldata borrowers,
     address receiver,
     address owner
-) external returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
+) external returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
 A targeted, liquidity-neutral cut of borrowers that expose a positive personal settlement-LTV slice. Current free liquidity is not redeemed or reserved against the request. Budget exhaustion partial-fills; a call that consumes no core supply shares reverts. Collateral goes from the core straight to `receiver`. `fallbackExit` instead consumes available liquidity first and selects risk-queue roots for the remainder.
