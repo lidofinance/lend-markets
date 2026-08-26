@@ -430,7 +430,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     function _requireNotDelegate(address account) internal view {
         address[] memory guardians = _guardians.values();
         for (uint256 i; i < guardians.length; ++i) {
-            if (_delegates[guardians[i]] == account) revert DelegateAlreadySet();
+            if (_delegates[guardians[i]] == account) revert AccountIsDelegate();
         }
     }
 

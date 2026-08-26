@@ -161,9 +161,9 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @notice Thrown when the appointed delegate is a guardian.
     error DelegateIsGuardian();
 
-    /// @notice Thrown when an address that is already a guardian's delegate (the caller's own included) is
-    ///         appointed as a delegate again or added as a guardian.
-    error DelegateAlreadySet();
+    /// @notice Thrown when an address that is a guardian's delegate (the caller's own included) is
+    ///         appointed as a delegate or added as a guardian.
+    error AccountIsDelegate();
 
     // ---
     // GUARDIANS & CONFIG (admin)

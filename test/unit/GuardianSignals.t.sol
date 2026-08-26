@@ -306,7 +306,7 @@ contract GuardianSignalsTest is Test {
         vm.prank(GUARDIAN_1);
         gs.setDelegate(DELEGATE);
         vm.prank(GUARDIAN_2);
-        vm.expectRevert(IGuardianSignals.DelegateAlreadySet.selector);
+        vm.expectRevert(IGuardianSignals.AccountIsDelegate.selector);
         gs.setDelegate(DELEGATE);
         assertEq(gs.getDelegate(GUARDIAN_2), address(0), "second guardian gets no delegate");
     }
@@ -316,7 +316,7 @@ contract GuardianSignalsTest is Test {
         vm.prank(GUARDIAN_1);
         gs.setDelegate(DELEGATE);
         vm.prank(GUARDIAN_1);
-        vm.expectRevert(IGuardianSignals.DelegateAlreadySet.selector);
+        vm.expectRevert(IGuardianSignals.AccountIsDelegate.selector);
         gs.setDelegate(DELEGATE);
         assertEq(gs.getDelegate(GUARDIAN_1), DELEGATE, "delegate unchanged");
     }
@@ -351,7 +351,7 @@ contract GuardianSignalsTest is Test {
     function testRevert_addGuardian_isDelegate() public {
         vm.prank(GUARDIAN_1);
         gs.setDelegate(DELEGATE);
-        vm.expectRevert(IGuardianSignals.DelegateAlreadySet.selector);
+        vm.expectRevert(IGuardianSignals.AccountIsDelegate.selector);
         gs.addGuardian(DELEGATE);
     }
 
@@ -359,7 +359,7 @@ contract GuardianSignalsTest is Test {
     function testRevert_replaceGuardian_newIsDelegate() public {
         vm.prank(GUARDIAN_1);
         gs.setDelegate(DELEGATE);
-        vm.expectRevert(IGuardianSignals.DelegateAlreadySet.selector);
+        vm.expectRevert(IGuardianSignals.AccountIsDelegate.selector);
         gs.replaceGuardian(GUARDIAN_2, DELEGATE);
         assertTrue(gs.isGuardian(GUARDIAN_2), "old guardian preserved after revert");
     }

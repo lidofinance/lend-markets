@@ -343,13 +343,13 @@ error DelegateIsGuardian();
 
 Thrown when the appointed delegate is a guardian.
 
-### `DelegateAlreadySet`
+### `AccountIsDelegate`
 
 ```solidity
-error DelegateAlreadySet();
+error AccountIsDelegate();
 ```
 
-Thrown when an address that is already a guardian's delegate (the caller's own included) is appointed as a delegate again or added as a guardian.
+Thrown when an address that is a guardian's delegate (the caller's own included) is appointed as a delegate or added as a guardian.
 
 ## Functions
 
