@@ -151,7 +151,7 @@ Each quote candidate contains:
 - the exact borrow shares to pass to the core; and
 - the borrow shares remaining after settlement.
 
-For a candidate with positive borrow shares, zero remaining borrow shares marks a full close. If the policy candidate would close the debt but the supply-share budget cannot fund that result, the quote returns a smaller partial settlement. An unavailable candidate has all three values set to zero.
+For a candidate with positive borrow shares, zero remaining borrow shares marks a full close. If the policy candidate would close the debt but the supply-share budget cannot fund that result, the quote returns a smaller partial settlement. An unavailable candidate — one with no loan-asset allowance, an unfunded budget, or a cut under the seizure floor — quotes zero borrow shares and zero supply-share burn but still reports the borrower's untouched debt as remaining; only a candidate with no debt is all-zero.
 
 At the market snapshot used for the quote, the opposing rounding directions guarantee that the core's derived supply burn does not exceed the supplied budget. If the budget funds no borrow share, the quote is empty.
 
