@@ -85,8 +85,8 @@ The market IRM is always `IRM_ROUTER` and therefore is not caller-supplied.
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `loanToken` | `address` | Market loan asset. |
-| `collateralToken` | `address` | Market collateral asset. |
+| `loanToken` | `address` | Market loan asset. Deployment checks only that the address has code. |
+| `collateralToken` | `address` | Market collateral asset. Deployment checks only that the address has code. |
 | `oracle` | `address` | Market oracle contract. Deployment checks only that the address has code. |
 | `lltv` | `uint256` | Liquidation loan-to-value ratio, in WAD and strictly below 1e18. |
 | `guardianSignals` | `address` | Guardian registry read by the controller. Deployment checks only that the address has code; registry configuration is validated through `validateGuardianSignals`. |
@@ -198,6 +198,22 @@ Emitted after a guardian registry has been deployed, configured, role-wired, and
 
 ## Errors
 
+### `AdminZeroAddress`
+
+```solidity
+error AdminZeroAddress();
+```
+
+The proxy admin supplied to the constructor was the zero address.
+
+### `CircuitBreakerZeroAddress`
+
+```solidity
+error CircuitBreakerZeroAddress();
+```
+
+The circuit breaker supplied to the constructor was the zero address.
+
 ### `NotContract`
 
 ```solidity
@@ -210,7 +226,7 @@ error NotContract(address account);
 | --- | --- | --- |
 | `account` | `address` | Address without runtime code. |
 
-A required market oracle or guardian-registry address has no code.
+A required market token, oracle, or guardian-registry address has no code.
 
 ### `LidoLendMismatch`
 
@@ -485,7 +501,7 @@ constructor(
 
 Fixes the implementations, protocol dependencies, and final administrator used by every deployment.
 
-The factory deployer must validate all constructor addresses before deployment. The constructor verifies only the core bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router.
+The factory deployer must validate all constructor addresses before deployment. The constructor verifies only that `admin` and the circuit breaker are nonzero and the core bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router.
 
 ### `deployMarketComponents`
 

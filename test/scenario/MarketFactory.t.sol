@@ -13,8 +13,6 @@ import {Id as IrmId} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.s
 import {IIrmRouter} from "@lido-lend-irm/src/irm-router/interfaces/IIrmRouter.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
 
-import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
-
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
@@ -326,13 +324,9 @@ contract MarketFactoryScenarioTest is Test {
         new LidoLendMarketFactory(_implementations(controllerImpl, erc4626WrapperImpl), dependencies, marketAdmin);
     }
 
-    function testRevert_deployMarketComponents_zeroAdmin() external {
-        LidoLendMarketFactory deployed = _newFactory(riskStewardDashboard, circuitBreaker, address(0));
-        assertEq(deployed.ADMIN(), address(0), "admin");
-
-        (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
-        vm.expectRevert(abi.encodeWithSelector(ERC1967Utils.ERC1967InvalidAdmin.selector, address(0)));
-        deployed.deployMarketComponents(_marketSpec(loan, collateral, oracle), _erc4626WrapperSpec("zero-admin"));
+    function testRevert_constructor_zeroAdmin() external {
+        vm.expectRevert(LidoLendMarketFactory.AdminZeroAddress.selector);
+        _newFactory(riskStewardDashboard, circuitBreaker, address(0));
     }
 
     function test_constructor_doesNotValidateCircuitBreakerCode() external {

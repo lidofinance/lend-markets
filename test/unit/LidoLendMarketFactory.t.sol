@@ -139,6 +139,38 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         vault = factory.deployERC4626Wrapper(controller, marketParams, _erc4626WrapperSpec());
     }
 
+    function testRevert_constructor_rejectsZeroAdmin() external {
+        LidoLendMarketFactory.Implementations memory implementations = _implementations();
+        LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(circuitBreaker);
+
+        vm.expectRevert(LidoLendMarketFactory.AdminZeroAddress.selector);
+        new LidoLendMarketFactory(implementations, dependencies, address(0));
+    }
+
+    function testRevert_constructor_rejectsZeroCircuitBreaker() external {
+        LidoLendMarketFactory.Implementations memory implementations = _implementations();
+        LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(address(0));
+
+        vm.expectRevert(LidoLendMarketFactory.CircuitBreakerZeroAddress.selector);
+        new LidoLendMarketFactory(implementations, dependencies, controllerAdmin);
+    }
+
+    function testRevert_deployMarketController_rejectsCodelessLoanToken() external {
+        LidoLendMarketFactory.MarketSpec memory spec = marketSpec;
+        spec.loanToken = makeAddr("codelessLoanToken");
+
+        vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.NotContract.selector, spec.loanToken));
+        factory.deployMarketController(spec);
+    }
+
+    function testRevert_deployMarketController_rejectsCodelessCollateralToken() external {
+        LidoLendMarketFactory.MarketSpec memory spec = marketSpec;
+        spec.collateralToken = makeAddr("codelessCollateralToken");
+
+        vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.NotContract.selector, spec.collateralToken));
+        factory.deployMarketController(spec);
+    }
+
     function test_validateMarketController_acceptsExactRoleSets() external view {
         factory.validateMarketController(controller, marketId, guardianSignals);
     }
@@ -690,6 +722,24 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
             guardianSignals: registry,
             activationConfig: _activationConfig(),
             settlementConfig: _settlementConfig()
+        });
+    }
+
+    function _implementations() private view returns (LidoLendMarketFactory.Implementations memory) {
+        return LidoLendMarketFactory.Implementations({
+            controller: factory.CONTROLLER_IMPL(),
+            erc4626Wrapper: factory.ERC4626_WRAPPER_IMPL(),
+            guardianSignals: factory.GUARDIAN_SIGNALS_IMPL()
+        });
+    }
+
+    function _dependencies(address circuitBreaker_) private view returns (LidoLendMarketFactory.Dependencies memory) {
+        return LidoLendMarketFactory.Dependencies({
+            lidoLend: address(core),
+            irmRouter: address(router),
+            lidoLendOwner: address(lidoLendOwner),
+            circuitBreaker: circuitBreaker_,
+            riskStewardDashboard: riskStewardDashboard
         });
     }
 
