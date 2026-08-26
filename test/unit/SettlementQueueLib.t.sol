@@ -603,13 +603,13 @@ contract SettlementQueueLibTest is Test {
 
     /// @dev A positive budget that funds no borrow share at all is reported as an unavailable cut, not a
     ///      partial one. (0 is the sentinel for "no budget cap" and is covered above.)
-    function test_settlementSlice_unaffordable_isAllZero() public view {
+    function test_settlementSlice_unaffordable_isUnavailable() public view {
         MarketView memory mv = _market(1.5e36);
         SettlementSlice memory funded = q.settlementSlice(mv, _pos(100e18, 500e18), 40e18, 1);
 
         assertEq(funded.borrowShares, 0, "no cut");
         assertEq(funded.supplyShares, 0, "no cost");
-        assertEq(funded.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+        assertEq(funded.remainingBorrowShares, 100e18, "an unavailable cut reports the untouched debt");
     }
 
     // ── seizure floor ──
@@ -629,14 +629,14 @@ contract SettlementQueueLibTest is Test {
 
     /// @dev The core prices the seizure off the cut's debt rounded down, so above `ORACLE_PRICE_SCALE` a
     ///      one-loan-asset cut buys no whole collateral unit. That cut is unavailable, not a partial.
-    function test_settlementSlice_cutBelowSeizureFloor_isAllZero() public view {
+    function test_settlementSlice_cutBelowSeizureFloor_isUnavailable() public view {
         MarketView memory mv = _unitShareMarket(1.5e36);
         PositionView memory p = _pos(100e18, 500e18);
 
         SettlementSlice memory funded = q.settlementSlice(mv, p, 1, 0);
         assertEq(funded.borrowShares, 0, "no cut");
         assertEq(funded.supplyShares, 0, "no cost");
-        assertEq(funded.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+        assertEq(funded.remainingBorrowShares, p.borrowShares, "an unavailable cut reports the untouched debt");
 
         // ceil(1.5e36 / 1e36) == 2 loan assets is the smallest cut that seizes a whole unit.
         SettlementSlice memory ok = q.settlementSlice(mv, p, 2, 0);
@@ -656,7 +656,7 @@ contract SettlementQueueLibTest is Test {
 
     /// @dev A budget shrink lands on the floor just as a policy amount can. `1` is the sentinel for the unshrunk
     ///      quote, so budget the exact cost of the sub-floor cut instead.
-    function test_settlementSlice_budgetShrunkOntoFloor_isAllZero() public view {
+    function test_settlementSlice_budgetShrunkOntoFloor_isUnavailable() public view {
         MarketView memory mv = _unitShareMarket(1.5e36);
         PositionView memory p = _pos(100e18, 500e18);
 
@@ -666,15 +666,15 @@ contract SettlementQueueLibTest is Test {
         SettlementSlice memory funded = q.settlementSlice(mv, p, 40e18, oneAssetCut.supplyShares);
         assertEq(funded.borrowShares, 0, "a budget that only funds a sub-floor cut reports no cut");
         assertEq(funded.supplyShares, 0, "no cost");
-        assertEq(funded.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+        assertEq(funded.remainingBorrowShares, p.borrowShares, "an unavailable cut reports the untouched debt");
     }
 
     /// @dev A market with no price seizes nothing (and would divide by zero in the core), so no cut is quoted.
-    function test_settlementSlice_zeroPrice_isAllZero() public view {
+    function test_settlementSlice_zeroPrice_isUnavailable() public view {
         SettlementSlice memory funded = q.settlementSlice(_unitShareMarket(0), _pos(100e18, 500e18), 40e18, 0);
         assertEq(funded.borrowShares, 0, "no cut without a price");
         assertEq(funded.supplyShares, 0, "no cost");
-        assertEq(funded.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+        assertEq(funded.remainingBorrowShares, 100e18, "an unavailable cut reports the untouched debt");
     }
 
     /// @dev The property the core's `settle` requires: every cut the library quotes seizes at least one whole

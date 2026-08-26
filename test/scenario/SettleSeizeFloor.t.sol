@@ -107,7 +107,7 @@ contract SettleSeizeFloorTest is LidoLendSetup {
     // ---
 
     /// @dev A budget worth two loan assets funds a one-loan-asset cut (budget -> supply assets -> borrow shares
-    ///      floors twice), which seizes nothing at this price. The library reports it as an all-zero slice rather
+    ///      floors twice), which seizes nothing at this price. The library reports it as unavailable rather
     ///      than a nonzero cut the core would reject.
     function test_settlementSlice_budgetShrunkCutBelowSeizureFloor_isUnavailable() public view {
         Market storage m = protocol.markets[0];
@@ -129,7 +129,11 @@ contract SettleSeizeFloorTest is LidoLendSetup {
         SettlementQuote memory quote = m.controller.settlementFor(borrower, budget);
         assertEq(quote.personal.borrowShares, 0, "so the personal candidate is unavailable");
         assertEq(quote.personal.supplyShares, 0, "with no supply charged");
-        assertEq(quote.personal.remainingBorrowShares, 0, "and an all-zero slice");
+        assertEq(
+            quote.personal.remainingBorrowShares,
+            m.core.position(m.id, borrower).borrowShares,
+            "with the untouched debt reported"
+        );
         assertEq(quote.queueRoot.borrowShares, 0, "the root candidate is unavailable on the same budget");
 
         (, SettlementSlice memory next) = m.controller.nextSettlementBorrower(budget);

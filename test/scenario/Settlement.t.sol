@@ -320,7 +320,11 @@ contract SettlementTest is LidoLendSetup {
         SettlementQuote memory quote = m.controller.settlementFor(borrower, 0);
         assertEq(quote.personal.supplyShares, 0, "no personal supply quote");
         assertEq(quote.personal.borrowShares, 0, "no personal borrow quote");
-        assertEq(quote.personal.remainingBorrowShares, 0, "zero quote has zero remainder field");
+        assertEq(
+            quote.personal.remainingBorrowShares,
+            m.core.position(m.id, borrower).borrowShares,
+            "zero quote reports the untouched debt"
+        );
 
         vm.prank(lender);
         vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);

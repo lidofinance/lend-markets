@@ -165,23 +165,28 @@ library SettlementQueueLib {
 
     /// @notice Converts a loan-asset slice into the borrow-share handle the core accepts, shrunk to what the
     ///         caller's supply funds, plus the supply cost that handle burns. `remainingBorrowShares` is the debt
-    ///         left after the cut, 0 for a full close. A budget that funds nothing, and a cut too small to seize a
-    ///         whole collateral unit, both come back as an all-zero slice.
+    ///         left after the cut, 0 for a full close. A zero `sliceAssets`, a budget that funds nothing, and a cut
+    ///         too small to seize a whole collateral unit all come back with no cut and no cost, only the borrower's
+    ///         untouched debt in `remainingBorrowShares`.
     /// @dev `supplyShares` is derived from the resulting handle the core's way, so budgeting it always funds the
     ///      cut. The budget conversions round against the caller, so the supply the core burns for `borrowShares`
     ///      never exceeds `budgetSupplyShares`. The seizure the core derives from the handle is checked the core's
     ///      way too, so a handle that would be rejected there is reported as unavailable instead.
     /// @param position The borrower's position to cut.
     /// @param sliceAssets Policy-bounded debt to cancel, in loan assets.
-    /// @param budgetSupplyShares Core supply shares the caller can spend, or 0 for the policy cut itself,
-    ///        unshrunk.
+    /// @param budgetSupplyShares Core supply shares the caller can spend, or 0 if there is no limit.
+    /// @return slice The borrow-share handle the core accepts, the supply it burns, and the borrower's untouched debt
+    ///      after the cut.
     function settlementSlice(
         MarketView memory marketView,
         PositionView memory position,
         uint256 sliceAssets,
         uint256 budgetSupplyShares
     ) internal pure returns (SettlementSlice memory slice) {
-        if (sliceAssets == 0 || position.borrowShares == 0) return slice;
+        if (position.borrowShares == 0) return slice;
+        slice.remainingBorrowShares = position.borrowShares;
+
+        if (sliceAssets == 0) return slice;
 
         (uint256 debtAssets,) = _positionValues(marketView, position);
         uint256 canceledShares = sliceAssets.toSharesUp(marketView.totalBorrowAssets, marketView.totalBorrowShares);
@@ -197,14 +202,13 @@ library SettlementQueueLib {
                 ).toSharesDown(marketView.totalBorrowAssets, marketView.totalBorrowShares);
             if (affordableShares < canceledShares) canceledShares = affordableShares;
         }
-        if (canceledShares == 0) return slice;
 
         // The core prices the seizure off the cut's debt rounded down, so a handle that buys less than one whole
         // collateral unit is rejected there. Report it as unavailable rather than hand back a reverting cut.
         if (_seizedCollateral(marketView, canceledShares) == 0) return slice;
 
         slice.borrowShares = canceledShares;
-        slice.remainingBorrowShares = uint256(position.borrowShares) - canceledShares;
+        slice.remainingBorrowShares -= canceledShares;
         // The core's own derivation of the burn: the cut's debt priced up, then converted to supply shares up.
         slice.supplyShares = canceledShares.toAssetsUp(marketView.totalBorrowAssets, marketView.totalBorrowShares)
             .toSharesUp(marketView.totalSupplyAssets, marketView.totalSupplyShares);

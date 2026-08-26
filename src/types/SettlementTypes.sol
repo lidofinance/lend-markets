@@ -37,12 +37,14 @@ struct PositionView {
 }
 
 /// @notice One settlement cut expressed as the executable borrow-share handle plus the supply it burns. For a
-///         nonzero cut, `remainingBorrowShares == 0` identifies a full close; an unavailable cut is represented by
-///         an all-zero struct. Every field describes the same cut, so a budgeted quote stays self-consistent.
+///         nonzero cut, `remainingBorrowShares == 0` identifies a full close; an unavailable cut has zero
+///         `borrowShares` and `supplyShares`. Every field describes the same cut, so a budgeted quote stays
+///         self-consistent.
 /// @param supplyShares Core supply shares the cut burns, derived from `borrowShares` the way the core derives it.
 ///        Exact for the market state it was read at — interest accrued before execution raises it.
 /// @param borrowShares Borrow shares canceled by the cut.
-/// @param remainingBorrowShares Borrow shares left after a nonzero cut, 0 for a full close.
+/// @param remainingBorrowShares Borrow shares left after the cut: 0 for a full close or a debtless position,
+///        the borrower's untouched debt for an unavailable cut.
 struct SettlementSlice {
     uint256 supplyShares;
     uint256 borrowShares;
