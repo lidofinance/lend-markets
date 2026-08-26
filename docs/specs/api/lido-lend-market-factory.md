@@ -133,6 +133,24 @@ Initial membership and timing configuration for a guardian registry.
 
 ## Events
 
+### `ProxyDeployed`
+
+```solidity
+event ProxyDeployed(address indexed proxy, address indexed implementation, address admin, bytes initData, bytes32 salt);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `proxy` | `address` | Deployed proxy. |
+| `implementation` | `address` | Implementation the proxy delegates to. |
+| `admin` | `address` | Proxy admin the proxy is constructed with. |
+| `initData` | `bytes` | Initialization call the proxy delegates to the implementation on construction. |
+| `salt` | `bytes32` | `CREATE2` salt the proxy was deployed under. |
+
+Emitted for every proxy the factory deploys, before the component behind it is configured or validated.
+
 ### `MarketControllerDeployed`
 
 ```solidity
@@ -588,7 +606,8 @@ The controller must use the same core and market id. If the market exists, it mu
 
 ```solidity
 function deployGuardianSignals(
-    GuardianSpec calldata spec
+    GuardianSpec calldata spec,
+    bytes32 salt
 ) external returns (address guardianSignalsAddress);
 ```
 
@@ -597,6 +616,7 @@ function deployGuardianSignals(
 | Name | Type | Description |
 | --- | --- | --- |
 | `spec` | `GuardianSpec` | Initial guardian membership, quorum, and suspect window. |
+| `salt` | `bytes32` | Caller-chosen label distinguishing registries this caller wants as separate instances. |
 
 **Returns**
 
@@ -605,6 +625,8 @@ function deployGuardianSignals(
 | `guardianSignalsAddress` | `address` | Deployed and role-wired guardian-registry proxy. |
 
 Deploys and fully role-wires a guardian registry that may be shared by multiple markets.
+
+`suspectWindow` is applied after initialization and so does not reach the deployment address. Two committees that differ only by it, or that are identical and still want registries of their own, are separated by `salt`.
 
 ### `validateMarketController`
 
