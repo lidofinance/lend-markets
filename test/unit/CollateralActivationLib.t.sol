@@ -77,9 +77,11 @@ contract ActivationHarness {
     }
 
     /// @dev Voluntary withdrawal path ($.debit), which honors the lock and runs the same-tx inflow undo.
+    ///      `debit` takes the pre-withdrawal total, mirroring what the controller reads from core.
     function withdraw(address borrower, uint256 amount) external returns (uint256) {
+        uint256 totalBefore = _total[borrower];
         _total[borrower] -= amount;
-        $.debit(borrower, amount);
+        $.debit(borrower, amount, totalBefore);
         (uint256 activating, uint256 dust) = $.getActivationState(borrower);
         return _total[borrower] - activating - dust;
     }
@@ -465,7 +467,9 @@ contract CollateralActivationLibTest is Test {
     }
 
     /// @notice The mixed shape `amount > inactive > 0`: a withdrawal larger than the inactive balance clears
-    ///         dust (there is no activating lot here) in full, then takes the remainder out of active.
+    ///         dust (there is no activating lot here) in full, then takes the remainder out of active. The
+    ///         clearing path takes precedence over the active-only one, so a request covering the inactive
+    ///         balance ejects it even when it would also fit within active.
     function test_withdraw_amountAboveInactive_clearsInactiveThenDrawsFromActive() public {
         h.setMinActivationAmount(10 ether);
         h.deposit(address(0xB1), 10 ether); // A = 10
@@ -481,8 +485,8 @@ contract CollateralActivationLibTest is Test {
         assertEq(active, 6 ether, "remainder drawn from active");
     }
 
-    /// @notice While the activating lock is in force, a voluntary withdrawal reverts outright regardless of the
-    ///         requested amount — the locked lot cannot be cleared, so nothing can be withdrawn.
+    /// @notice While the activating lock is in force, a voluntary withdrawal beyond the active balance reverts —
+    ///         and with no matured active collateral, that is any withdrawal at all.
     function testRevert_withdraw_lockedActivating_blocksClearing() public {
         h.setConfig(_lockCfg());
         h.deposit(address(0xB1), 10 ether);
@@ -492,6 +496,89 @@ contract CollateralActivationLibTest is Test {
             )
         );
         h.withdraw(address(0xB1), 10 ether);
+    }
+
+    /// @notice The lock binds only the inactive buckets: a withdrawal within the matured active balance passes
+    ///         while the lock is in force, leaving the buckets, the timer, and the lot's same-tx inflow untouched.
+    function test_withdraw_activeWithinLock_ignoresLock() public {
+        h.setConfig(_lockCfg());
+        address borrower = address(0xB1);
+
+        h.deposit(borrower, 10 ether);
+        vm.warp(block.timestamp + 1 days); // past the 1-hour delay cap and the 1-day lock
+        h.sync(borrower, 0); // matured: active = 10
+
+        h.deposit(borrower, 10 ether); // fresh lot, locked for 1 day from now
+        uint256 inflowBefore = h.currentInflow();
+        assertGt(inflowBefore, 0, "fresh lot bumps the inflow");
+
+        h.withdraw(borrower, 4 ether); // within active, during the lock
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active, 6 ether, "drawn from active only");
+        assertEq(activating, 10 ether, "locked lot untouched");
+        assertEq(dust, 0, "no dust in this shape");
+        assertEq(h.currentInflow(), inflowBefore, "active-only withdrawal reverses no inflow");
+
+        GuardiansOpinion memory opinion;
+        assertGt(h.getUnlockTime(borrower, opinion), 0, "timer keeps running");
+    }
+
+    /// @notice The boundary of the active-only path during the lock: exactly the active balance passes, one wei
+    ///         beyond it dips into the locked lot and reverts.
+    function testRevert_withdraw_lockedBeyondActive() public {
+        h.setConfig(_lockCfg());
+        address borrower = address(0xB1);
+
+        h.deposit(borrower, 10 ether);
+        vm.warp(block.timestamp + 1 days);
+        h.sync(borrower, 0); // matured: active = 10
+        h.deposit(borrower, 10 ether); // fresh lot, locked
+
+        h.withdraw(borrower, 10 ether); // exactly the active balance: passes
+        (uint256 active, uint256 activating,) = h.bucketsOf(borrower);
+        assertEq(active, 0, "active fully drawn");
+        assertEq(activating, 10 ether, "locked lot untouched");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CollateralActivationLib.ActivatingCollateralLocked.selector, 10 ether, block.timestamp + 1 days
+            )
+        );
+        h.withdraw(borrower, 1); // one wei into the locked lot
+    }
+
+    /// @notice Unlocked but below the inactive balance: a withdrawal that fits within active passes and leaves
+    ///         the maturing lot untouched — the shape that reverted `InactiveCollateralNotCleared` before the
+    ///         lock was narrowed to the inactive buckets.
+    function test_withdraw_belowInactiveWithinActive_leavesBucketsUntouched() public {
+        h.setMinActivationAmount(10 ether); // default config: lock disabled
+        address borrower = address(0xB1);
+
+        h.deposit(borrower, 10 ether);
+        vm.warp(block.timestamp + 1 hours + 1);
+        h.sync(borrower, 0); // matured: active = 10
+        h.deposit(borrower, 20 ether); // fresh maturing lot: inactive = 20 > active
+
+        h.withdraw(borrower, 5 ether); // < inactive, but within active
+
+        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(active, 5 ether, "drawn from active only");
+        assertEq(activating, 20 ether, "maturing lot untouched");
+        assertEq(dust, 0);
+    }
+
+    /// @notice The lock binds only while an activating lot exists: a dust-only position clears in full even
+    ///         inside what would be the lock window, since dust never starts the timer.
+    function test_withdraw_dustOnly_unaffectedByLockWindow() public {
+        h.setConfig(_lockCfg());
+        address borrower = address(0xB1);
+
+        h.deposit(borrower, 1 ether); // sub-threshold: dust, no timer, nothing to lock
+        h.withdraw(borrower, 1 ether); // same tx: clears
+
+        (, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
+        assertEq(activating + dust, 0, "dust cleared with no lock in the way");
     }
 
     /// @notice Once the activating lock's own window elapses, the lot can be cleared like any other inactive

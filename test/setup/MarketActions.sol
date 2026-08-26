@@ -257,8 +257,9 @@ library MarketActions {
     }
 
     /// @notice Borrower withdraws `amount` collateral to `receiver`. Asserts the `WithdrawCollateral`
-    ///         event, the position's collateral delta, the collateral received, and that any inactive
-    ///         balance (dust + activating) clears all-or-nothing rather than being partially drained.
+    ///         event, the position's collateral delta, the collateral received, and the bucket outcome
+    ///         recomputed from the rule: a request within the active balance leaves the inactive buckets
+    ///         (dust + activating) untouched; anything larger clears them all-or-nothing.
     /// @dev Assumes no lot matures inside this call — mature explicitly (warp + a syncing action) before
     ///      withdrawing when a test needs that.
     function withdrawCollateral(Market storage self, address borrower, uint256 amount, address receiver) internal {
@@ -277,10 +278,12 @@ library MarketActions {
         vm.assertEq(self.collateralToken.balanceOf(receiver), recvBefore + amount, "withdrawCollateral: received");
 
         ILidoLendMarketController.BorrowerPosition memory post = self.controller.positionOf(borrower);
-        if (pre.dust + pre.activating > 0) {
-            vm.assertEq(post.dust + post.activating, 0, "withdrawCollateral: inactive must clear all-or-nothing");
+        uint256 preInactive = pre.dust + pre.activating;
+        if (amount <= colBefore - preInactive) {
+            vm.assertEq(post.dust, pre.dust, "withdrawCollateral: active-only draw leaves dust untouched");
+            vm.assertEq(post.activating, pre.activating, "withdrawCollateral: active-only draw leaves lot untouched");
         } else {
-            vm.assertEq(post.dust + post.activating, 0, "withdrawCollateral: no inactive appears");
+            vm.assertEq(post.dust + post.activating, 0, "withdrawCollateral: inactive must clear all-or-nothing");
         }
     }
 

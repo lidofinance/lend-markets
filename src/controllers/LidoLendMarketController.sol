@@ -409,7 +409,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     /// @dev Withdraw hook: with open debt a freeze blocks it, and the remaining active must still cover the debt
-    ///      at LLTV. Debt-free exits bypass those two gates but remain subject to activation accounting and locks.
+    ///      at LLTV. Debt-free exits bypass those two gates but remain subject to activation accounting; the
+    ///      activation lock binds only the inactive buckets, never the active collateral.
     function _handleWithdrawCollateral(Id id, WithdrawCollateralHookData memory hookData) internal {
         address borrower = hookData.onBehalf;
 
@@ -417,25 +418,27 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         PositionView memory position = _positionView(id, borrower);
 
         // Freeze blocks withdraw only while there is open debt. It adds no gate to a zero-debt non-custody exit,
-        // although the existing activation lock below still applies; a banned address may pull its own collateral.
+        // although the activation lock below still binds any inactive buckets; a banned address may pull its own
+        // collateral.
         bool frozen = isFrozen;
         if (frozen && position.borrowShares != 0) revert MarketIsFrozen();
 
-        // settle activation, then debit the un-matured buckets: with both buckets empty any amount passes;
-        // otherwise the withdrawal must clear them entirely or the lib reverts. Clearing reverses the
-        // same-tx inflow.
-        _activation.sync(frozen, borrower, _guardianSignals.getOpinion(id, borrower));
-        _activation.debit(borrower, hookData.assets);
-
         if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
+
+        // settle activation, then debit: a withdrawal within the active balance leaves the un-matured buckets
+        // untouched; anything larger must clear them entirely, lock permitting, or the lib reverts. Clearing
+        // reverses the same-tx inflow.
+        _activation.sync(frozen, borrower, _guardianSignals.getOpinion(id, borrower));
+        uint256 inactive = _activation.debit(borrower, hookData.assets, position.collateral);
+
         position.collateral -= hookData.assets;
 
-        // With open debt, the remaining collateral (all active after a successful debit) must still cover the
-        // debt at LLTV. Capacity is zero below `minActivationAmount`, so a debt-bearing position cannot be
-        // drained under the threshold; repay to zero first to exit below it.
+        // With open debt, the remaining active collateral must still cover the debt at LLTV. Capacity is zero
+        // below `minActivationAmount`, so a debt-bearing position cannot be drained under the threshold; repay
+        // to zero first to exit below it.
         if (position.borrowShares != 0) {
             MarketView memory marketView = _marketView(id);
-            if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, position.collateral)) {
+            if (_debtAssets(marketView, position) > _getMaxBorrow(marketView, position.collateral - inactive)) {
                 revert InsufficientActiveCollateral();
             }
         }

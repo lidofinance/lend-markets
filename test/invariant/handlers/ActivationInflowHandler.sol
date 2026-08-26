@@ -8,10 +8,11 @@ import {CollateralActivationLib} from "../../../src/libs/CollateralActivationLib
 import {CollateralActivationConfig} from "../../../src/types/CollateralActivationTypes.sol";
 
 /// @notice Library-level handler for the activation-inflow invariant (ACT-04/05/06). Drives the throttle
-///         accounting functions directly — `credit`, voluntary `debit` (all-or-nothing over the inactive
-///         balance), forced `seize` (the shared liquidation/settlement path, active collateral first, then
-///         dust, then activating) — with NO instant activation, so the inflow accumulator is actually
-///         exercised (the protocol-level invariants short-circuit it via instant activation).
+///         accounting functions directly — `credit`, voluntary `debit` (active-only within the matured
+///         balance, all-or-nothing over the inactive one), forced `seize` (the shared liquidation/settlement
+///         path, active collateral first, then dust, then activating) — with NO instant activation, so the
+///         inflow accumulator is actually exercised (the protocol-level invariants short-circuit it via
+///         instant activation).
 /// @dev The per-tx inflow invariant `storedInflow == min(cap, baseline + net)` is TRANSIENT (baseline/net reset
 ///      between txs), so it is asserted INSIDE `step` after each op in one tx, not in an `invariant_` function.
 ///      `net` is derived from the OBSERVED `activating` delta (via `getActivationState`), independently of the
@@ -98,16 +99,21 @@ contract ActivationInflowHandler is Test {
             } else if (opKind == 1) {
                 uint256 inactive = actBefore + dustBefore;
                 if (_total[a] == 0) continue;
-                // all-or-nothing: a valid voluntary withdrawal covers the whole inactive balance
-                uint256 amt = bound(uint256(keccak256(abi.encode(s, "amt"))), inactive == 0 ? 1 : inactive, _total[a]);
+                // Valid voluntary amounts: within the active balance (buckets untouched) or covering the whole
+                // inactive balance (all-or-nothing clear). Draw from the full range, then snap the invalid
+                // middle (active, inactive) up to the clearing bound.
+                uint256 amt = bound(uint256(keccak256(abi.encode(s, "amt"))), 1, _total[a]);
+                if (amt > _total[a] - inactive && amt < inactive) amt = inactive;
+                uint256 totalBefore = _total[a];
                 _total[a] -= amt;
-                $.debit(a, amt);
-                activatingWasSeized[ai] = false; // debit always leaves activating == 0, on success or as a no-op
-                uint256 reversed = Math.min(contrib[ai], actBefore); // clearing removes the whole activating balance
-                if (actBefore != 0) {
-                    net -= reversed;
-                    contrib[ai] -= reversed;
-                }
+                $.debit(a, amt, totalBefore);
+                (uint256 actAfter,) = $.getActivationState(a);
+                // A clearing debit leaves activating == 0 and is trivially compliant; an active-only debit
+                // leaves the buckets untouched, so an existing seize-remainder flag must survive it.
+                if (actAfter == 0) activatingWasSeized[ai] = false;
+                uint256 reversed = Math.min(contrib[ai], actBefore - actAfter);
+                net -= reversed;
+                contrib[ai] -= reversed;
             } else if (_total[a] != 0) {
                 uint256 amt = bound(uint256(keccak256(abi.encode(s, "amt"))), 1, _total[a]);
                 uint256 totalBefore = _total[a];

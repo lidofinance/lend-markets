@@ -329,8 +329,8 @@ contract ActivationTest is LidoLendSetup {
             assertEq(position.activating, expectedLocked, "each trigger adds another locked threshold");
             assertEq(m.core.position(m.id, borrower).collateral, expectedLocked, "trigger capital remains posted");
 
-            // The lib reverts directly whenever the lot is still inside activatingLockDuration, blocking the
-            // withdrawal outright regardless of the requested amount.
+            // The lib reverts directly whenever the request dips into a lot still inside activatingLockDuration —
+            // and with no matured active collateral here, that is any requested amount.
             vm.expectRevert(
                 abi.encodeWithSelector(
                     CollateralActivationLib.ActivatingCollateralLocked.selector,

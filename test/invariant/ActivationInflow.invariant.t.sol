@@ -16,7 +16,8 @@ import {ActivationInflowHandler} from "./handlers/ActivationInflowHandler.sol";
 ///             forced seizure (liquidation/settlement) is a FORCED path that may legitimately leave a
 ///             sub-threshold nonzero activating remainder (no demotion; maturity alone decides when it
 ///             activates), so a position is excluded from that half of the check only until a later promoting
-///             credit or debit proves it compliant again.
+///             credit or clearing debit proves it compliant again (an active-only debit leaves the buckets,
+///             and thus the exclusion, untouched).
 ///         The handler drives the library WITHOUT instant activation, so the inflow path is genuinely exercised
 ///         — unlike the protocol-level invariants, which short-circuit activation.
 /// @dev Revert-bounded (`fail-on-revert = true`): every handler op self-bounds, so a run fails only on an accounting,
@@ -39,7 +40,8 @@ contract ActivationInflowInvariant is Test {
     ///         forced-seizure remainder keeps a total inactive amount (`activating + dust`) at or above the
     ///         threshold — forced seizure is a FORCED path that may legitimately leave a sub-threshold nonzero
     ///         activating remainder (maturity, not size, decides when it activates), so a position is excluded
-    ///         from that half of the check only until a later promoting credit or debit proves it compliant.
+    ///         from that half of the check only until a later promoting credit or clearing debit proves it
+    ///         compliant.
     function invariant_noLockActivationBucketsRespectThreshold() public view {
         uint256 threshold = handler.MIN_ACT();
         for (uint256 i; i < 4; ++i) {

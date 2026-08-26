@@ -40,7 +40,7 @@ For one `(marketId, account)`, `getOpinion` returns the fields below. An **activ
 
 A borrow checks the caller, debt owner, and receiver for a ban. The debt owner's other opinion fields affect only collateral activation.
 
-A ban does not directly gate repayment, liquidation, settlement, or a debt-free collateral withdrawal. It does prevent maturation. If an activation lock is still live, the unmatured collateral can therefore delay a debt-free withdrawal until the lock expires.
+A ban does not directly gate repayment, liquidation, settlement, or a debt-free collateral withdrawal. It does prevent maturation. If an activation lock is still live, the unmatured collateral can therefore delay a debt-free withdrawal of the inactive balance until the lock expires; the active balance stays withdrawable.
 
 ## Guardian identities and authority
 

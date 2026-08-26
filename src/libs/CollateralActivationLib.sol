@@ -220,25 +220,38 @@ library CollateralActivationLib {
         emit CollateralActivating(borrower, assetsWithDust, position);
     }
 
-    /// @notice Voluntary withdrawal. With no inactive balance it does nothing: the caller is withdrawing active
-    ///         collateral only. Otherwise the request must cover the whole inactive balance (`dust + activating`)
-    ///         and the lock window must be over; the call then empties both buckets, stops the timer, and
-    ///         reverses this collateral's same-tx inflow.
+    /// @notice Voluntary withdrawal of `amount` out of `totalCollateral`. The lock and the all-or-nothing rule
+    ///         bind only the inactive balance (`dust + activating`), never the active one. A request covering
+    ///         the whole inactive balance empties both buckets, stops the timer, and reverses this collateral's
+    ///         same-tx inflow — but only once the lock window is over. Any other request must fit within the
+    ///         active balance and leaves the buckets untouched. Returns the inactive balance left after the call.
     /// @dev Forced seizure goes through `seize`, which takes active collateral first and ignores the lock.
-    function debit(State storage $, address borrower, uint256 amount) internal {
+    /// @param totalCollateral The borrower's core collateral balance before this withdrawal is applied.
+    function debit(State storage $, address borrower, uint256 amount, uint256 totalCollateral)
+        internal
+        returns (uint256 inactive)
+    {
         Position storage position = $.positions[borrower];
 
         uint256 dust = position.dust;
         uint256 activating = position.activating;
-        uint256 inactive = dust + activating;
-        if (inactive == 0) return;
+        inactive = dust + activating;
+        if (inactive == 0) return 0;
+
+        uint256 active = totalCollateral - inactive;
 
         if (activating != 0) {
             uint256 lockDeadline = position.activatingStart + $.config.activatingLockDuration;
-            if (block.timestamp < lockDeadline) revert ActivatingCollateralLocked(activating, lockDeadline);
+            if (block.timestamp < lockDeadline) {
+                if (amount > active) revert ActivatingCollateralLocked(activating, lockDeadline);
+                return inactive;
+            }
         }
 
-        if (amount < inactive) revert InactiveCollateralNotCleared(amount, inactive);
+        if (amount < inactive) {
+            if (amount > active) revert InactiveCollateralNotCleared(amount, inactive);
+            return inactive;
+        }
 
         position.dust = 0;
         position.activating = 0;
@@ -246,6 +259,7 @@ library CollateralActivationLib {
         emit CollateralDrained(borrower, inactive, position);
 
         _applyInflowDecrement($, borrower, activating);
+        return 0;
     }
 
     /// @notice Mature the borrower's activating lot once its timer has elapsed and the guardian quorum has
