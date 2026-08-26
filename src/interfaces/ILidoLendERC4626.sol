@@ -45,7 +45,8 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @param assets The deposited assets that mapped to zero core supply shares.
     error ZeroCoreSupplySharesMinted(uint256 assets);
 
-    /// @notice Thrown when a targeted settlement consumes no core supply shares across all requested borrowers.
+    /// @notice Thrown when a targeted settlement consumes no core supply shares across all requested borrowers,
+    ///         or when a fallback exit burns no shares in either leg.
     error NothingSettled();
 
     /// @notice Thrown when the requested exit shares exceed the owner's balance.
@@ -65,13 +66,16 @@ interface ILidoLendERC4626 is IERC4626 {
     // EVENTS
     // ---
 
-    /// @notice A `fallbackExit` reached its queue-driven settlement leg, possibly with a zero or partial fill.
+    /// @notice A `fallbackExit` call completed with a positive, possibly partial fill — serviced from market
+    ///         liquidity, queue settlement, or both.
     /// @param caller The address that called the exit.
     /// @param owner The account whose shares were burned.
     /// @param receiver The recipient of the liquid-leg loan assets and seized collateral.
     /// @param sharesBurned Shares burned by the whole call — the liquid leg and the settle leg together.
-    /// @param sharesSettled Shares burned by the settle leg alone, 0 when the queue funded no cut.
-    /// @param assetsWithdrawn Loan assets the liquid leg paid out, 0 when the market had no free liquidity.
+    /// @param sharesSettled Shares burned by the settle leg alone, 0 when liquidity serviced the whole request
+    ///        or the queue funded no cut.
+    /// @param assetsWithdrawn Loan assets the liquid leg paid out, 0 when the market had no free liquidity or
+    ///        the requested shares' floor-rounded value was zero.
     /// @param collateralSeized Collateral seized from the cut positions.
     /// @param debtCanceled Borrower debt cancelled by the cuts.
     event FallbackExit(
