@@ -258,8 +258,9 @@ library MarketActions {
 
     /// @notice Borrower withdraws `amount` collateral to `receiver`. Asserts the `WithdrawCollateral`
     ///         event, the position's collateral delta, the collateral received, and the bucket outcome
-    ///         recomputed from the rule: a request within the active balance leaves the inactive buckets
-    ///         (dust + activating) untouched; anything larger clears them all-or-nothing.
+    ///         against the rule: the inactive buckets (dust + activating) either clear all-or-nothing
+    ///         (the request must have covered them) or stay untouched (a locked active-only draw, which
+    ///         must have fit within the active balance).
     /// @dev Assumes no lot matures inside this call — mature explicitly (warp + a syncing action) before
     ///      withdrawing when a test needs that.
     function withdrawCollateral(Market storage self, address borrower, uint256 amount, address receiver) internal {
@@ -279,11 +280,14 @@ library MarketActions {
 
         ILidoLendMarketController.BorrowerPosition memory post = self.controller.positionOf(borrower);
         uint256 preInactive = pre.dust + pre.activating;
-        if (amount <= colBefore - preInactive) {
-            vm.assertEq(post.dust, pre.dust, "withdrawCollateral: active-only draw leaves dust untouched");
-            vm.assertEq(post.activating, pre.activating, "withdrawCollateral: active-only draw leaves lot untouched");
+        if (post.dust + post.activating == 0) {
+            vm.assertTrue(
+                preInactive == 0 || amount >= preInactive, "withdrawCollateral: cleared without covering inactive"
+            );
         } else {
-            vm.assertEq(post.dust + post.activating, 0, "withdrawCollateral: inactive must clear all-or-nothing");
+            vm.assertEq(post.dust, pre.dust, "withdrawCollateral: dust partially drained");
+            vm.assertEq(post.activating, pre.activating, "withdrawCollateral: lot partially drained");
+            vm.assertLe(amount, colBefore - preInactive, "withdrawCollateral: active-only draw exceeds active");
         }
     }
 

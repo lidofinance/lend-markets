@@ -425,9 +425,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         if (hookData.assets > position.collateral) revert PositionAccountingMismatch();
 
-        // settle activation, then debit: a withdrawal within the active balance leaves the un-matured buckets
-        // untouched; anything larger must clear them entirely, lock permitting, or the lib reverts. Clearing
-        // reverses the same-tx inflow.
+        // settle activation, then debit: while the activating lock is in force only a withdrawal within the
+        // active balance passes, leaving the un-matured buckets untouched; once the lock is over the
+        // withdrawal must clear them entirely or the lib reverts. Clearing reverses the same-tx inflow.
         _activation.sync(frozen, borrower, _guardianSignals.getOpinion(id, borrower));
         uint256 inactive = _activation.debit(borrower, hookData.assets, position.collateral);
 

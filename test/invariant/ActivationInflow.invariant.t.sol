@@ -16,8 +16,7 @@ import {ActivationInflowHandler} from "./handlers/ActivationInflowHandler.sol";
 ///             forced seizure (liquidation/settlement) is a FORCED path that may legitimately leave a
 ///             sub-threshold nonzero activating remainder (no demotion; maturity alone decides when it
 ///             activates), so a position is excluded from that half of the check only until a later promoting
-///             credit or clearing debit proves it compliant again (an active-only debit leaves the buckets,
-///             and thus the exclusion, untouched).
+///             credit or clearing debit proves it compliant again.
 ///         The handler drives the library WITHOUT instant activation, so the inflow path is genuinely exercised
 ///         — unlike the protocol-level invariants, which short-circuit activation.
 /// @dev Revert-bounded (`fail-on-revert = true`): every handler op self-bounds, so a run fails only on an accounting,

@@ -67,7 +67,7 @@ debtAssets + borrowAssets <= borrowCapacity
 
 A borrow also fails when the caller, debt owner, or loan receiver is banned. Guardian flags and the stored suspect snapshot can extend the debt owner's activation delay when their configured surcharge is nonzero; only a ban directly blocks borrowing.
 
-A debt-free borrower bypasses the withdrawal health check; an activation lock, while it applies, still blocks the part of a voluntary withdrawal that reaches into the inactive balance, though never a request within the active balance.
+A debt-free borrower bypasses the withdrawal health check. Activation still constrains the withdrawal itself: while a lock applies, only a draw within the active balance passes; otherwise any inactive balance must leave in full.
 
 ## Collateral activation
 
@@ -107,7 +107,7 @@ flowchart LR
 A normal supply below `minDepositAmount` reverts. The floor cannot exceed `minActivationAmount`; 0 disables it. With dust pending, a normal supply must lift `dust + amount` to `minActivationAmount` or it reverts, so one threshold crossing contains at most two normal supplies: the dust supply and the resolving supply. Because anyone may supply on behalf of a borrower, a third party's dust supply forces the borrower's next supply to resolve it (or the borrower withdraws the dust in full). Later crossings can add more funders to the same activating lot.
 
 > [!NOTE]
-> **A stranger can front-run a borrower's own supply with unwanted dust.** Because collateral supply has no owner check on the caller, an attacker can donate a sub-threshold amount to a victim ahead of the victim's own deposit. The pending dust then forces the victim's next normal supply to resolve it to the threshold, instead of landing at whatever size the victim intended. The victim is never trapped: the donated dust remains withdrawable in full under the ordinary rules below, so they can clear it before supplying again if they would rather not resolve it — though ejecting the dust requires clearing the whole inactive balance, which an active lock window can block while the victim also holds an activating lot (the victim's active collateral stays withdrawable throughout); resizing the next supply to `minActivationAmount - dust` is the unconditional resolution.
+> **A stranger can front-run a borrower's own supply with unwanted dust.** Because collateral supply has no owner check on the caller, an attacker can donate a sub-threshold amount to a victim ahead of the victim's own deposit. The pending dust then forces the victim's next normal supply to resolve it to the threshold, instead of landing at whatever size the victim intended. The victim is never trapped: the donated dust remains withdrawable in full under the ordinary rules below, so they can clear it before supplying again if they would rather not resolve it — though ejecting the dust requires clearing the whole inactive balance, which an active lock window can block while the victim also holds an activating lot (draws within the active balance still pass during that window); resizing the next supply to `minActivationAmount - dust` is the unconditional resolution.
 
 An accepted supply then combines the incoming amount with existing dust. A combined amount below `minActivationAmount` remains dust and does not start or change the timer. Once it reaches the threshold, the whole amount moves to `activating` and is added to market inflow.
 
@@ -168,11 +168,10 @@ Setting `maxGuardiansQuorumDelay` to zero removes the frontier wait, not the ful
 
 ### Voluntary withdrawals and forced collateral reductions
 
-A voluntary collateral withdrawal first runs the maturation sync. If the borrower then has no inactive collateral, the withdrawal consumes active collateral only, subject to freeze, health, and core checks. A request within the active balance likewise passes at any time and leaves the buckets untouched: the activation lock and the all-or-nothing rule bind only the inactive balance (dust plus the activating lot), which leaves as follows:
+A voluntary collateral withdrawal first runs the maturation sync. If the borrower then has no inactive collateral, the withdrawal consumes active collateral only, subject to freeze, health, and core checks. Otherwise the inactive balance (dust plus the activating lot) leaves all-or-nothing, and only the lock window admits a draw that leaves it untouched:
 
-1. while the lot is inside `activatingLockDuration` of its start, a withdrawal reaching beyond the active balance reverts (the lock binds only while the position holds a nonzero activating balance — a dust-only position can still clear during the window);
-2. after the lock window (or with the lock disabled), a request covering the whole inactive balance clears both buckets, stops the timer, and takes any remainder from active — the clearing path applies even when the request would also fit within active, so the inactive balance can always be ejected without a full exit;
-3. a request that reaches beyond the active balance without covering the whole inactive balance reverts.
+1. while the lot is inside `activatingLockDuration` of its start, a request within the active balance passes and leaves the buckets untouched; anything larger reverts (the lock binds only while the position holds a nonzero activating balance — a dust-only position can still clear during the window);
+2. after the lock window (or with the lock disabled), the requested amount must cover the whole inactive balance; the withdrawal clears both buckets, stops the timer, and takes any remainder from active.
 
 A voluntary withdrawal never partially reduces dust or activating collateral, and nothing is ever demoted to dust. With open debt, the post-withdraw health check counts the remaining active balance only (see the borrow-capacity formula above), so a still-inactive top-up is no debt cover for an exit.
 
@@ -191,7 +190,7 @@ Configuration changes do not move collateral between buckets. A lot keeps its st
 
 Freeze keeps debt reduction and lender exits available. Use pause when market turbulence or another incident makes liquidation or settlement unsafe. Classification and instant activation continue while frozen, but borrowing and maturation remain blocked.
 
-Because freeze defers maturation, a debt-free borrower whose activation delay has fully elapsed still cannot mature the lot while frozen, so it stays inactive and the all-or-nothing withdrawal rule still governs it: the borrower can withdraw within the active balance freely, but can shed the inactive part only by clearing the whole inactive balance at once. This never traps funds — the withdrawal itself is not blocked, only forced to clear everything inactive at once — and an activation lock does not compound it: `activatingLockDuration` is capped at seven days regardless of freeze, so it always expires on its own.
+Because freeze defers maturation, a debt-free borrower whose activation delay has fully elapsed still cannot mature the lot while frozen, so it stays inactive and the all-or-nothing withdrawal rule still governs it: the borrower can exit only by clearing the whole inactive balance, not part of it. This never traps funds — the withdrawal itself is not blocked, only forced to clear everything inactive at once — and an activation lock does not compound it: `activatingLockDuration` is capped at seven days regardless of freeze, so it always expires on its own.
 
 Pause blocks every market action that invokes the controller. It does not stop the interest clock: a later successful accrual covers the time since the market's last update. A finite pause expires automatically; an indefinite pause requires an authorized resume. Authorities and intended holders are listed in [Roles](roles.md).
 

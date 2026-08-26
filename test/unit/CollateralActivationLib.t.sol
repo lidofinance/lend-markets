@@ -467,9 +467,7 @@ contract CollateralActivationLibTest is Test {
     }
 
     /// @notice The mixed shape `amount > inactive > 0`: a withdrawal larger than the inactive balance clears
-    ///         dust (there is no activating lot here) in full, then takes the remainder out of active. The
-    ///         clearing path takes precedence over the active-only one, so a request covering the inactive
-    ///         balance ejects it even when it would also fit within active.
+    ///         dust (there is no activating lot here) in full, then takes the remainder out of active.
     function test_withdraw_amountAboveInactive_clearsInactiveThenDrawsFromActive() public {
         h.setMinActivationAmount(10 ether);
         h.deposit(address(0xB1), 10 ether); // A = 10
@@ -548,24 +546,40 @@ contract CollateralActivationLibTest is Test {
         h.withdraw(borrower, 1); // one wei into the locked lot
     }
 
-    /// @notice Unlocked but below the inactive balance: a withdrawal that fits within active passes and leaves
-    ///         the maturing lot untouched — the shape that reverted `InactiveCollateralNotCleared` before the
-    ///         lock was narrowed to the inactive buckets.
-    function test_withdraw_belowInactiveWithinActive_leavesBucketsUntouched() public {
+    /// @notice Unlocked, a request below the inactive balance reverts even when it would fit within active:
+    ///         the all-or-nothing rule governs any position holding inactive collateral, and only the lock
+    ///         window admits active-only draws.
+    function testRevert_withdraw_belowInactive_evenWithinActive() public {
         h.setMinActivationAmount(10 ether); // default config: lock disabled
         address borrower = address(0xB1);
 
-        h.deposit(borrower, 10 ether);
+        h.deposit(borrower, 30 ether);
         vm.warp(block.timestamp + 1 hours + 1);
-        h.sync(borrower, 0); // matured: active = 10
-        h.deposit(borrower, 20 ether); // fresh maturing lot: inactive = 20 > active
+        h.sync(borrower, 0); // matured: active = 30
+        h.deposit(borrower, 20 ether); // fresh maturing lot: inactive = 20, active = 30
 
-        h.withdraw(borrower, 5 ether); // < inactive, but within active
+        vm.expectRevert(
+            abi.encodeWithSelector(CollateralActivationLib.InactiveCollateralNotCleared.selector, 5 ether, 20 ether)
+        );
+        h.withdraw(borrower, 5 ether); // fits within active, but does not cover the inactive balance
+    }
 
-        (uint256 active, uint256 activating, uint256 dust) = h.bucketsOf(borrower);
-        assertEq(active, 5 ether, "drawn from active only");
-        assertEq(activating, 20 ether, "maturing lot untouched");
-        assertEq(dust, 0);
+    /// @notice While the lock is in force even a request covering the whole inactive balance cannot clear it:
+    ///         it passes as an active-only draw when it fits within active, leaving the lot and timer intact.
+    function test_withdraw_lockedCoveringInactive_staysActiveOnly() public {
+        h.setConfig(_lockCfg());
+        address borrower = address(0xB1);
+
+        h.deposit(borrower, 30 ether);
+        vm.warp(block.timestamp + 1 days);
+        h.sync(borrower, 0); // matured: active = 30
+        h.deposit(borrower, 10 ether); // fresh lot, locked: inactive = 10
+
+        h.withdraw(borrower, 10 ether); // covers the inactive balance, but the lock forbids clearing it
+
+        (uint256 active, uint256 activating,) = h.bucketsOf(borrower);
+        assertEq(active, 20 ether, "drawn from active only");
+        assertEq(activating, 10 ether, "locked lot untouched");
     }
 
     /// @notice The lock binds only while an activating lot exists: a dust-only position clears in full even

@@ -56,7 +56,10 @@ contract WithdrawCollateralLockTest is LidoLendSetup {
         _fund(market.collateralToken, borrower, 150 ether);
         market.supplyCollateral(borrower, 100 ether);
         market.activateCollateral(); // warp past the max activation delay (and the first lot's lock)
-        market.withdrawCollateral(borrower, 1 ether, borrower); // syncing action: matures the lot, active = 99
+        // Syncing action, raw call: the withdraw hook matures the lot mid-call, which the helper's
+        // assertions assume never happens. Active is 99 ether afterwards.
+        vm.prank(borrower);
+        market.core.withdrawCollateral(market.params, 1 ether, borrower, borrower);
 
         market.supplyCollateral(borrower, 50 ether); // fresh lot, locked for 1 hour from now
 

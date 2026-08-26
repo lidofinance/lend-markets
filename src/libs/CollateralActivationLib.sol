@@ -220,11 +220,11 @@ library CollateralActivationLib {
         emit CollateralActivating(borrower, assetsWithDust, position);
     }
 
-    /// @notice Voluntary withdrawal of `amount` out of `totalCollateral`. The lock and the all-or-nothing rule
-    ///         bind only the inactive balance (`dust + activating`), never the active one. A request covering
-    ///         the whole inactive balance empties both buckets, stops the timer, and reverses this collateral's
-    ///         same-tx inflow — but only once the lock window is over. Any other request must fit within the
-    ///         active balance and leaves the buckets untouched. Returns the inactive balance left after the call.
+    /// @notice Voluntary withdrawal of `amount` out of `totalCollateral`. While the activating lock is in
+    ///         force, only a draw that fits within the active balance passes; `dust` and `activating` stay
+    ///         untouched. Once the lock is over, the request must cover the whole inactive balance
+    ///         (`dust + activating`); the call then empties both, clears the maturation timer, and reverses
+    ///         this collateral's same-tx inflow. Returns the inactive balance left after the call.
     /// @dev Forced seizure goes through `seize`, which takes active collateral first and ignores the lock.
     /// @param totalCollateral The borrower's core collateral balance before this withdrawal is applied.
     function debit(State storage $, address borrower, uint256 amount, uint256 totalCollateral)
@@ -243,15 +243,14 @@ library CollateralActivationLib {
         if (activating != 0) {
             uint256 lockDeadline = position.activatingStart + $.config.activatingLockDuration;
             if (block.timestamp < lockDeadline) {
+                // While locked: only draws from active are allowed.
                 if (amount > active) revert ActivatingCollateralLocked(activating, lockDeadline);
                 return inactive;
             }
         }
 
-        if (amount < inactive) {
-            if (amount > active) revert InactiveCollateralNotCleared(amount, inactive);
-            return inactive;
-        }
+        // While unlocked: the request must cover the whole inactive balance.
+        if (amount < inactive) revert InactiveCollateralNotCleared(amount, inactive);
 
         position.dust = 0;
         position.activating = 0;
