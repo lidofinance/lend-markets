@@ -302,6 +302,8 @@ library CollateralActivationLib {
 
         uint256 active = totalCollateral - dust - activating;
         uint256 uncovered = Math.saturatingSub(amount, active);
+        if (uncovered == 0) return;
+
         uint256 fromDust = Math.min(dust, uncovered);
         uint256 fromActivating = Math.min(uncovered - fromDust, activating);
 
