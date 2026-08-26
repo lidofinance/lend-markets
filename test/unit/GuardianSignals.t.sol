@@ -29,6 +29,8 @@ contract GuardianSignalsTest is Test {
 
     /// @dev The market all signals in this suite are keyed under.
     Id internal constant MARKET = Id.wrap(bytes32(uint256(0xA11CE)));
+    uint40 internal constant OVERLAP_SUSPECT_WINDOW = 10 minutes;
+    uint40 internal constant OVERLAP_REPORT_GAP = 5 minutes;
 
     // ── events (mirrored for expectEmit) ──
     event GuardianAdded(address indexed guardian);
@@ -896,6 +898,137 @@ contract GuardianSignalsTest is Test {
         GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
         assertEq(opinion.suspectCount, 2, "retraction removes one suspect");
         assertEq(opinion.suspectExpiryTimestamp, remainingExpiry, "retraction restores the remaining reports' expiry");
+    }
+
+    function test_unsuspectFirst_bothReportsLive_leavesSecondReport() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+
+        vm.prank(GUARDIAN_1);
+        gs.unsuspect(MARKET, GUARDIAN_1, _one(BOB));
+
+        (address[] memory reporters, uint40[] memory reportedAt) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 1, "one stored report remains");
+        assertEq(reporters[0], GUARDIAN_2, "the second guardian remains");
+        assertEq(reportedAt[0], firstReportedAt + OVERLAP_REPORT_GAP, "the second report timestamp remains");
+        assertGe(uint256(reportedAt[0]) + OVERLAP_SUSPECT_WINDOW, block.timestamp, "the report is live");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 1, "the snapshot counts the second report");
+        assertEq(
+            opinion.suspectExpiryTimestamp,
+            firstReportedAt + OVERLAP_REPORT_GAP + OVERLAP_SUSPECT_WINDOW,
+            "expiry follows the second report"
+        );
+    }
+
+    function test_unsuspectSecond_bothReportsLive_leavesFirstReport() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+
+        vm.prank(GUARDIAN_2);
+        gs.unsuspect(MARKET, GUARDIAN_2, _one(BOB));
+
+        (address[] memory reporters, uint40[] memory reportedAt) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 1, "one stored report remains");
+        assertEq(reporters[0], GUARDIAN_1, "the first guardian remains");
+        assertEq(reportedAt[0], firstReportedAt, "the first report timestamp remains");
+        assertGe(uint256(reportedAt[0]) + OVERLAP_SUSPECT_WINDOW, block.timestamp, "the report is live");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 1, "the snapshot counts the first report");
+        assertEq(
+            opinion.suspectExpiryTimestamp, firstReportedAt + OVERLAP_SUSPECT_WINDOW, "expiry follows the first report"
+        );
+    }
+
+    function test_unsuspectFirst_firstReportStale_rebuildsSnapshotFromSecondReport() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+        vm.warp(firstReportedAt + OVERLAP_SUSPECT_WINDOW + 1);
+
+        vm.prank(GUARDIAN_1);
+        gs.unsuspect(MARKET, GUARDIAN_1, _one(BOB));
+
+        (address[] memory reporters, uint40[] memory reportedAt) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 1, "the stale first report is pruned");
+        assertEq(reporters[0], GUARDIAN_2, "the live second report remains");
+        assertEq(reportedAt[0], firstReportedAt + OVERLAP_REPORT_GAP, "the second report timestamp remains");
+        assertGe(uint256(reportedAt[0]) + OVERLAP_SUSPECT_WINDOW, block.timestamp, "the second report is live");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 1, "the snapshot drops the stale first report");
+        assertEq(
+            opinion.suspectExpiryTimestamp,
+            firstReportedAt + OVERLAP_REPORT_GAP + OVERLAP_SUSPECT_WINDOW,
+            "expiry follows the live second report"
+        );
+    }
+
+    function test_unsuspectSecond_firstReportStale_clearsSnapshot() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+        vm.warp(firstReportedAt + OVERLAP_SUSPECT_WINDOW + 1);
+
+        vm.prank(GUARDIAN_2);
+        gs.unsuspect(MARKET, GUARDIAN_2, _one(BOB));
+
+        (address[] memory reporters,) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 0, "the stale first report is pruned and the second is cleared");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 0, "the snapshot is empty");
+        assertEq(opinion.suspectExpiryTimestamp, OVERLAP_SUSPECT_WINDOW, "the snapshot has no report timestamp");
+    }
+
+    function test_unsuspectFirst_bothReportsStale_clearsSnapshot() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP + OVERLAP_SUSPECT_WINDOW + 1);
+
+        vm.prank(GUARDIAN_1);
+        gs.unsuspect(MARKET, GUARDIAN_1, _one(BOB));
+
+        (address[] memory reporters,) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 0, "both stale reports are pruned");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 0, "the snapshot is empty");
+        assertEq(opinion.suspectExpiryTimestamp, OVERLAP_SUSPECT_WINDOW, "the snapshot has no report timestamp");
+    }
+
+    function test_unsuspectSecond_bothReportsStale_clearsSnapshot() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP + OVERLAP_SUSPECT_WINDOW + 1);
+
+        vm.prank(GUARDIAN_2);
+        gs.unsuspect(MARKET, GUARDIAN_2, _one(BOB));
+
+        (address[] memory reporters,) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 0, "both stale reports are pruned");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 0, "the snapshot is empty");
+        assertEq(opinion.suspectExpiryTimestamp, OVERLAP_SUSPECT_WINDOW, "the snapshot has no report timestamp");
     }
 
     /// @dev `getSuspectedBy` pairs the reporter set with each reporter's timestamp.

@@ -116,16 +116,13 @@ A zero suspect window does not disable reports: a report at time `t` can still a
 | Action | What changes |
 |---|---|
 | `suspect` | Removes expired reports, adds or refreshes one report, and rebuilds the snapshot |
-| `unsuspect` removes a live report | Removes expired reports and the named report, then rebuilds from the survivors |
+| `unsuspect` | Removes expired reports and the named live report, if any, then rebuilds from the survivors when anything was removed |
 | `prune` removes a former guardian's report | Rebuilds from the remaining current guardians |
 | `getOpinion` | Performs no cleanup; returns the cached count with an expiry calculated from the current window |
 
 Refreshing one report can extend the snapshot expiry for every report counted with it. Removing the newest report can move the expiry back to the next-newest report; surviving reports keep their original timestamps.
 
 Changing `suspectWindow` immediately changes the expiry returned from the cached `suspectReportedAt`, but does not recount the cached `suspectCount`. The next snapshot rebuild uses the new window.
-
-> [!WARNING]
-> **A cached snapshot can outlive its reports.** If `unsuspect` finds no live report for the named guardian, it may remove expired reports and return without rebuilding the snapshot. The report set can then be empty while the cached count remains nonzero. Increasing the suspect window can extend that old snapshot to later-started lots. A new report, removal of a live report, or a `prune` that removes a former guardian's report rebuilds it.
 
 ### Example
 
