@@ -1641,7 +1641,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(root, borrower, "the root is still reported");
         assertEq(slice.borrowShares, 0, "no cut");
         assertEq(slice.supplyShares, 0, "no cost");
-        assertEq(slice.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+        assertEq(
+            slice.remainingBorrowShares,
+            _m().core.position(_m().id, borrower).borrowShares,
+            "an unavailable cut reports the untouched debt"
+        );
 
         SettlementQuote memory quote = c.settlementFor(borrower, 1);
         assertEq(quote.personal.borrowShares, 0, "personal candidate unavailable");

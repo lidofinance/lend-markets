@@ -618,7 +618,7 @@ function nextSettlementBorrower(
 ) external view returns (address borrower, SettlementSlice memory slice);
 ```
 
-The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance or the borrower's own settlement-LTV allowance — shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 for the policy cut itself, unshrunk. A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
+The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance or the borrower's own settlement-LTV allowance — shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 for the policy cut itself, unshrunk. A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty, and the slice quotes zero `borrowShares` when no executable cut is available.
 
 ### `settlementFor`
 
@@ -629,7 +629,7 @@ function settlementFor(
 ) external view returns (SettlementQuote memory quote);
 ```
 
-The borrower's personal cut and its prospective queue-root cut, each shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 for the policy cuts themselves, unshrunk. The queue-root quote does not assert that the borrower is currently the root. A candidate that grants no cut is represented by an all-zero slice.
+The borrower's personal cut and its prospective queue-root cut, each shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 for the policy cuts themselves, unshrunk. The queue-root quote does not assert that the borrower is currently the root. A candidate that grants no cut quotes zero `borrowShares` — including one whose cut would be too small to seize a whole collateral unit, which the core rejects.
 
 ### `settlementBorrowers`
 
