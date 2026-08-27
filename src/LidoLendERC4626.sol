@@ -296,6 +296,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
         // 2. Settle the remainder against the risk queue, head first (collateral to receiver), up to the owner's
         //    pro-rata managed core supply-share budget for it.
+        uint256 settledShares;
         if (shares != 0) {
             uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply());
             if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
@@ -319,16 +320,16 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
             // Burn the settled remainder (pro-rata, rounded up so remaining holders aren't diluted) and spend
             // allowance for it; the redeem leg burned its own.
             if (remainingSupplyShares != 0) {
-                shares = Math.mulDiv(shares, settledSupplyShares, settlingSupplyShares, Math.Rounding.Ceil);
+                settledShares = Math.mulDiv(shares, settledSupplyShares, settlingSupplyShares, Math.Rounding.Ceil);
             }
 
-            if (shares != 0) {
+            if (settledShares != 0) {
                 address caller = _msgSender();
-                if (caller != owner) _spendAllowance(owner, caller, shares);
-                _burn(owner, shares);
+                if (caller != owner) _spendAllowance(owner, caller, settledShares);
+                _burn(owner, settledShares);
             }
 
-            sharesBurned += shares;
+            sharesBurned += settledShares;
         }
 
         if (sharesBurned == 0) revert NothingSettled();
@@ -338,7 +339,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
             owner: owner,
             receiver: receiver,
             sharesBurned: sharesBurned,
-            sharesSettled: shares,
+            sharesSettled: settledShares,
             assetsWithdrawn: loanAssets,
             collateralSeized: collateralSeized,
             debtCanceled: debtCanceled
