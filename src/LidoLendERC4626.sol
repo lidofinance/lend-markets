@@ -319,12 +319,9 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
             // Burn the settled remainder (pro-rata, rounded up so remaining holders aren't diluted) and spend
             // allowance for it; the redeem leg burned its own.
-
-            if (remainingSupplyShares != 0) {
-                settledShares = Math.mulDiv(shares, settledSupplyShares, settlingSupplyShares, Math.Rounding.Ceil);
-            } else {
-                settledShares = shares;
-            }
+            settledShares = remainingSupplyShares == 0
+                ? shares
+                : Math.mulDiv(shares, settledSupplyShares, settlingSupplyShares, Math.Rounding.Ceil);
 
             if (settledShares != 0) {
                 address caller = _msgSender();
