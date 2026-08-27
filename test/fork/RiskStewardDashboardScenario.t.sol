@@ -104,14 +104,12 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         assertEq(cfg1.minActivationAmount, cfg0.minActivationAmount, "unrelated field preserved by the RMW");
         assertEq(cfg1.maxDelayInflow, cfg0.maxDelayInflow, "unrelated field preserved by the RMW");
 
-        // 2) Raise the activating lock through the dashboard by a tighten-only delta.
-        uint128 newAmount = cfg0.activatingLockAmount + 5 ether;
+        // 2) Raise the activating-lock duration through the dashboard by a tighten-only delta.
         uint40 newDuration = cfg0.activatingLockDuration + 1 hours;
         vm.prank(STEWARD);
-        dashboard.increaseActivatingLock(m.id, newAmount, newDuration);
+        dashboard.increaseActivatingLockDuration(m.id, newDuration);
 
         CollateralActivationConfig memory cfg2 = m.controller.collateralActivationConfig();
-        assertEq(cfg2.activatingLockAmount, newAmount, "lock amount raised on the live controller");
         assertEq(cfg2.activatingLockDuration, newDuration, "lock duration raised on the live controller");
         assertEq(cfg2.minActivationDelay, newMin, "delays from step 1 preserved");
 

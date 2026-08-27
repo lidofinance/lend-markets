@@ -112,9 +112,9 @@ library MarketConfigFile {
             minActivationDelay: _uint40(toml, ".activation.min_activation_delay"),
             maxActivationDelay: _uint40(toml, ".activation.max_activation_delay"),
             maxDelayInflow: _uint128(toml, ".activation.max_delay_inflow"),
-            activatingLockAmount: _uint128(toml, ".activation.activating_lock_amount"),
             activatingLockDuration: _uint40(toml, ".activation.activating_lock_duration"),
             minActivationAmount: _uint128(toml, ".activation.min_activation_amount"),
+            minDepositAmount: _uint128(toml, ".activation.min_deposit_amount"),
             maxGuardiansQuorumDelay: _uint40(toml, ".activation.max_guardians_quorum_delay"),
             delayPerStrike: _uint40(toml, ".activation.delay_per_strike"),
             delayPerSuspect: _uint40(toml, ".activation.delay_per_suspect")

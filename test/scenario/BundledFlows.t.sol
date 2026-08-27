@@ -291,10 +291,13 @@ contract BundledFlowsTest is BundlerSetup {
     ///      for stETH, wrap it into wstETH, supply it, and finally return any stETH crumbs to the
     ///      user (on mainnet, Lido transfers can come up 1-2 wei short).
     function testFuzz_bundle_supplyCollateralFromNativeEth(uint256 amount) public {
-        // From 2 wei up: a 1 wei stake mints zero stETH shares, and the general adapter's share-price
-        // check then divides by zero and reverts.
-        amount = bound(amount, 2, 1_000_000 ether);
         Market storage m = _m();
+        // Lower bound: the wrapped wstETH must clear the market's single-deposit floor, rounded up so the
+        // floored wrap cannot land one wei short. Never below 2 wei either way: a 1 wei stake mints zero
+        // stETH shares, and the general adapter's share-price check then divides by zero and reverts.
+        uint256 minDeposit = m.controller.collateralActivationConfig().minDepositAmount;
+        uint256 minEth = (minDeposit * wsteth.stEthPerToken() + 1e18 - 1) / 1e18;
+        amount = bound(amount, minEth > 2 ? minEth : 2, 1_000_000 ether);
         address user = _actor("ethStaker");
         vm.deal(user, amount);
 

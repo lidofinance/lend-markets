@@ -275,7 +275,7 @@ struct CollateralActivationConfig {
     uint40 minActivationDelay;
     uint40 maxActivationDelay;
     uint128 maxDelayInflow;
-    uint128 activatingLockAmount;
+    uint128 minDepositAmount;
     uint40 activatingLockDuration;
     uint128 minActivationAmount;
     uint40 maxGuardiansQuorumDelay;
@@ -293,8 +293,8 @@ Governance-tunable activation parameters, validated by `CollateralActivationLib.
 | `minActivationDelay` | `uint40` | Base delay floor, at zero inflow. |
 | `maxActivationDelay` | `uint40` | Base delay cap, reached at inflow >= maxDelayInflow. Also the inflow decay horizon: the accumulator drains from `maxDelayInflow` to zero over this duration. |
 | `maxDelayInflow` | `uint128` | Inflow reference at which the base delay reaches the cap, and the ceiling the inflow accumulator saturates at. |
-| `activatingLockAmount` | `uint128` | Lock on activating collateral, honored by `withdraw`. 0 disables it. Forced paths pass floor 0. |
-| `activatingLockDuration` | `uint40` | How long, from `activatingStart`, the `activatingLockAmount` portion stays unwithdrawable. Once it elapses the locked collateral becomes withdrawable even if the lot has not matured. 0 disables the lock. |
+| `minDepositAmount` | `uint128` | Minimum non-instant deposit. Cannot exceed `minActivationAmount`; 0 disables the floor. |
+| `activatingLockDuration` | `uint40` | How long, from `activatingStart`, the activating balance cannot be withdrawn. Once it elapses the collateral is withdrawable even if it has not matured; dust is never locked. 0 disables the lock. |
 | `minActivationAmount` | `uint128` | Dust threshold. Collateral below it does not enter activation. |
 | `maxGuardiansQuorumDelay` | `uint40` | Liveness fallback for the quorum gate, measured from the lot's start. A lot can mature only after its full unlock time, including guardian surcharges; after that, it needs either a frontier covering the unlock or this fallback timestamp to have elapsed. A nonzero value must exceed the base-delay cap (`maxActivationDelay`) and cannot exceed 7 days. 0 removes the additional quorum wait after the full unlock. |
 | `delayPerStrike` | `uint40` | Activation-delay surcharge added per guardian strike. 0 disables it, so strikes do not slow activation and only the ban gates a flagged borrower. |
@@ -399,14 +399,6 @@ error InsufficientActiveCollateral();
 ```
 
 Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
-
-### `ActivationLockActive`
-
-```solidity
-error ActivationLockActive();
-```
-
-Thrown when a withdrawal would leave raw collateral below the amount still held in the un-matured buckets (a locked activating lot plus dust).
 
 ### `ZeroBorrowAssets`
 
@@ -548,7 +540,7 @@ function currentActivationDelay(
 ) external view returns (uint256);
 ```
 
-Base inflow-throttle delay for a hypothetical `inflowIncrement` at the current decayed inflow. Excludes instant activation, dust aggregation, the minimum amount, and guardian surcharges; it is not a complete quote for a specific collateral supply.
+Base inflow-throttle delay for a hypothetical `inflowIncrement` at the current decayed inflow. Excludes instant activation, any existing dust, the minimum amount, and guardian surcharges; it is not a complete quote for a specific collateral supply.
 
 ### `hasInstantActivation`
 

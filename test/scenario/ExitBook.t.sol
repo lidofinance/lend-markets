@@ -119,10 +119,10 @@ contract ExitBookTest is Test, LidoLendDeployer {
                 activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     maxDelayInflow: 10_000 ether,
                     minActivationAmount: 10 ether,
+                    minDepositAmount: 0,
                     maxGuardiansQuorumDelay: 0,
                     delayPerStrike: 0,
                     delayPerSuspect: 0

@@ -661,9 +661,9 @@ contract MarketFactoryScenarioTest is Test {
                 minActivationDelay: 11 minutes,
                 maxActivationDelay: 123 minutes,
                 maxDelayInflow: 10_003 ether,
-                activatingLockAmount: 17 ether,
                 activatingLockDuration: 19 minutes,
                 minActivationAmount: 23 ether,
+                minDepositAmount: 0,
                 maxGuardiansQuorumDelay: 3 hours,
                 delayPerStrike: 29 minutes,
                 delayPerSuspect: 31 minutes
@@ -698,7 +698,6 @@ contract MarketFactoryScenarioTest is Test {
         assertEq(actual.minActivationDelay, expected.minActivationDelay, "min activation delay");
         assertEq(actual.maxActivationDelay, expected.maxActivationDelay, "max activation delay");
         assertEq(actual.maxDelayInflow, expected.maxDelayInflow, "max delay inflow");
-        assertEq(actual.activatingLockAmount, expected.activatingLockAmount, "activating lock amount");
         assertEq(actual.activatingLockDuration, expected.activatingLockDuration, "activating lock duration");
         assertEq(actual.minActivationAmount, expected.minActivationAmount, "min activation amount");
         assertEq(actual.maxGuardiansQuorumDelay, expected.maxGuardiansQuorumDelay, "max guardians quorum delay");

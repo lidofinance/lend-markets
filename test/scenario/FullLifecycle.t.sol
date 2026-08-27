@@ -130,10 +130,16 @@ contract FullLifecycleTest is LidoLendSetup {
     function _phaseOpenPositions() private {
         Market storage m = _m();
 
-        // Instant-activated borrower: grant, supply, borrow with no warp.
+        // Instant-activated borrower: grant, supply, borrow with no warp. `supplyCollateral` models the
+        // non-instant classification only, so bypass the helper and call core directly (the lot lands
+        // straight in active, not dust/activating).
         m.controller.setInstantActivation(borrowerHealthy, true);
-        _fund(m.collateralToken, borrowerHealthy, _collatFor(P_SMALL, 200, 100));
-        m.supplyCollateral(borrowerHealthy, _collatFor(P_SMALL, 200, 100));
+        uint256 healthyCollat = _collatFor(P_SMALL, 200, 100);
+        _fund(m.collateralToken, borrowerHealthy, healthyCollat);
+        vm.prank(borrowerHealthy);
+        m.collateralToken.approve(address(m.core), healthyCollat);
+        vm.prank(borrowerHealthy);
+        m.core.supplyCollateral(m.params, healthyCollat, borrowerHealthy, "");
         m.borrow(borrowerHealthy, P_SMALL);
 
         // Timer-activated borrowers: supply now, mature via the delay, then borrow.

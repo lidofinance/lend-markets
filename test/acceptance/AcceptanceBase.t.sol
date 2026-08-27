@@ -563,12 +563,10 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(uint256(c.maxActivationDelay), vm.parseTomlUint(toml, ".activation.max_activation_delay"), "maxDelay");
         assertEq(uint256(c.maxDelayInflow), vm.parseTomlUint(toml, ".activation.max_delay_inflow"), "maxDelayInflow");
         assertEq(
-            uint256(c.activatingLockAmount), vm.parseTomlUint(toml, ".activation.activating_lock_amount"), "lockAmt"
-        );
-        assertEq(
             uint256(c.activatingLockDuration), vm.parseTomlUint(toml, ".activation.activating_lock_duration"), "lockDur"
         );
         assertEq(uint256(c.minActivationAmount), vm.parseTomlUint(toml, ".activation.min_activation_amount"), "minAmt");
+        assertEq(uint256(c.minDepositAmount), vm.parseTomlUint(toml, ".activation.min_deposit_amount"), "minDeposit");
         assertEq(
             uint256(c.maxGuardiansQuorumDelay),
             vm.parseTomlUint(toml, ".activation.max_guardians_quorum_delay"),
