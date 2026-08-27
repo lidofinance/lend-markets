@@ -276,7 +276,7 @@ contract FullLifecycleTest is LidoLendSetup {
             uint256 settleShares = m.vault.balanceOf(lenderA);
             (, uint256 personalSlice) = m.controller.settlementLtv(borrowerSettle);
             assertGt(personalSlice, 0, "personal settlement LTV is active after the price shock");
-            (,, uint256 seizedA, uint256 canceledA) = m.settle(lenderA, settleShares, targets, lenderA);
+            (, uint256 seizedA, uint256 canceledA) = m.settle(lenderA, settleShares, targets, lenderA);
             assertGt(seizedA, 0, "targeted settle pays collateral");
             assertGt(canceledA, 0, "targeted settle cancels debt");
             collat1 = m.core.position(m.id, borrowerSettle).collateral;

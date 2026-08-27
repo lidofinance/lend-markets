@@ -69,10 +69,11 @@ struct SettlementQuote {
 ///         enough to match — the policy weakens but nothing reverts or loses accounting.
 /// @param sliceFloorBps Debt-fraction term of the root cut: one allowance is `debt * sliceFloorBps / BPS`.
 /// @param sliceFloorAssets Absolute term of the root cut: one allowance is this many loan assets.
-/// @param fullCutBelowCollateral Queue-root sweep floor in collateral units: when the root-policy cut would leave
-///        the borrower's remaining collateral below this, the policy requests a full-debt slice. The vault closes
-///        the position in one cut only when the exiting lender's settleable budget covers it; otherwise it applies
-///        a budgeted partial. The personal settlement-LTV asset cut is never swept, though its borrow-share
+/// @param fullCutBelowCollateral Queue-root sweep floor in collateral units: when a positive root-policy cut
+///        would leave the borrower's remaining collateral below this, the policy requests a full-debt slice.
+///        The vault closes the position in one cut only when the exiting lender's settleable budget covers it;
+///        otherwise it applies a budgeted partial — or quotes nothing when the shrunk cut would seize no whole
+///        collateral unit. The personal settlement-LTV asset cut is never swept, though its borrow-share
 ///        conversion may still round to a full close. 0 disables the sweep.
 /// @param ltvStepBps LTV-step term of the root cut: one allowance is the cut that lowers the root's LTV by
 ///        `ltvStepBps / BPS`. The root cut is the largest of the three terms (debt-fraction, absolute, LTV-step).

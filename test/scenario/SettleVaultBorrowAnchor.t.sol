@@ -53,7 +53,7 @@ interface IVault {
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
-        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
+        returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
 }
 
 /// @notice ERC4626 settlement and fallback exits against borrow-anchored core settlement.
@@ -302,7 +302,7 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
         }
 
         vm.prank(LENDER);
-        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             IVault(vault).settle(shares, borrowers, RECEIVER, LENDER);
 
         uint256 debtSharesAfter = core.position(id, BORROWER).borrowShares;
@@ -381,7 +381,7 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
 
         uint256 shares = IVault(vault).balanceOf(LENDER);
         vm.prank(LENDER);
-        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             IVault(vault).settle(shares, borrowers, RECEIVER, LENDER);
 
         uint256 remainingVaultSupplyShares = core.position(id, vault).supplyShares;
@@ -425,7 +425,7 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
         uint256 shares = IVault(vault).balanceOf(LENDER);
 
         vm.prank(LENDER);
-        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             IVault(vault).settle(shares, borrowers, RECEIVER, LENDER);
 
         assertGt(sharesBurned, 0, "vault shares burned");

@@ -535,14 +535,12 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         shares = bound(shares, 1, bal);
         vm.prank(owner);
         uint256 sharesBurned;
-        uint256 loanAssets;
         uint256 collateralSeized;
         uint256 debtCanceled;
         try VAULT.settle(shares, borrowers, receiver, owner) returns (
-            uint256 sharesBurned_, uint256 loanAssets_, uint256 collateralSeized_, uint256 debtCanceled_
+            uint256 sharesBurned_, uint256 collateralSeized_, uint256 debtCanceled_
         ) {
             sharesBurned = sharesBurned_;
-            loanAssets = loanAssets_;
             collateralSeized = collateralSeized_;
             debtCanceled = debtCanceled_;
         } catch Panic(uint256 code) {
@@ -568,10 +566,10 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         );
         _observeCollateralPayout(collateralSeized, receiver, before);
         // Liquidity-neutral: settle pays no loan and cancels debt + supply by the same amount, so idle is unchanged.
-        if (loanAssets != 0 || _idle() != before.idle) settleMovedLiquidity = true;
+        if (_idle() != before.idle) settleMovedLiquidity = true;
         if (_seizedValueExceedsDebt(collateralSeized, debtCanceled)) parViolated = true;
         _observeSettleValueBounds(before, borrower, collateralSeized, debtCanceled);
-        _observeCoreConservation(before, loanAssets, debtCanceled);
+        _observeCoreConservation(before, 0, debtCanceled);
         settles++;
     }
 

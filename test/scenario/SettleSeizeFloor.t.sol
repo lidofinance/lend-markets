@@ -172,7 +172,7 @@ contract SettleSeizeFloorTest is LidoLendSetup {
         vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
         m.vault.settle(boundaryShares, borrowers, receiver, lender);
 
-        (,, uint256 collateralSeized,) = m.settle(lender, settleableShares, borrowers, receiver);
+        (, uint256 collateralSeized,) = m.settle(lender, settleableShares, borrowers, receiver);
         assertEq(collateralSeized, 1, "the smallest settleable budget seizes one collateral unit");
     }
 
@@ -186,7 +186,7 @@ contract SettleSeizeFloorTest is LidoLendSetup {
         borrowers[0] = borrower;
 
         uint256 boundaryShares = _vaultSharesForBudget(_budgetWorthAssets(2));
-        (,, uint256 collateralSeized,) = m.settle(lender, boundaryShares, borrowers, receiver);
+        (, uint256 collateralSeized,) = m.settle(lender, boundaryShares, borrowers, receiver);
         assertEq(collateralSeized, 1, "at parity a one-loan-asset cut seizes one collateral unit");
     }
 
