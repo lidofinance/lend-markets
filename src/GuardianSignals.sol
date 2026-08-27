@@ -75,7 +75,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     mapping(address guardian => uint40 timestamp) private _heartbeats;
     /// @dev Per (market, account) signal. `flaggedBy`/`suspectedBy` hold guardian addresses — a delegate's
     ///      signal is recorded under its guardian, not the raw caller.
-    mapping(Id marketId => mapping(address account => GuardiansSignal)) private _signals;
+    mapping(Id marketId => mapping(address account => GuardiansSignal signal)) private _signals;
 
     // ---
     // INITIALIZATION

@@ -36,7 +36,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     // ---
 
     /// @dev Stewards appointed per market id.
-    mapping(Id marketId => EnumerableSet.AddressSet) private _stewards;
+    mapping(Id marketId => EnumerableSet.AddressSet stewards) private _stewards;
 
     // ---
     // MODIFIERS

@@ -62,7 +62,7 @@ library SettlementQueueLib {
     struct State {
         MaxHeapLib.Heap heap;
         SettlementConfig config;
-        mapping(address borrower => uint256) settlementLtv;
+        mapping(address borrower => uint256 ltv) settlementLtv;
     }
 
     // ---

@@ -90,7 +90,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     /// @dev Trusted caller contracts whose supplies skip the activation timer/throttle (instant-active).
     ///      Keyed on the supply `caller`, not the position owner, so a trusted router activating on behalf of
     ///      users qualifies. Must only ever hold access-gated contracts, never a permissionless helper.
-    mapping(address caller => bool) private _instantActivationCallers;
+    mapping(address caller => bool isEnabled) private _instantActivationCallers;
 
     // ---
     // MODIFIERS
