@@ -58,6 +58,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
 
         d.core = _deployCore(deployer);
         d.ownerFacade = _deployOwnerFacade(d.core, deployer, address(0), address(0));
+        ILidoLend(d.core).setFeeRecipient(cfg.agent);
         ILidoLend(d.core).setOwner(d.ownerFacade);
         d.irmRouter = _deployIrm(d.core, deployer);
 
@@ -99,7 +100,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         facade.grantRole(facade.GUARDIAN_MANAGER_ROLE(), cfg.evmScriptExecutor);
         IrmRouter(d.irmRouter).setManager(cfg.evmScriptExecutor);
 
-        facade.grantRole(facade.FEE_MANAGER_ROLE(), cfg.agent);
+        facade.grantRole(facade.FEE_MANAGER_ROLE(), cfg.evmScriptExecutor);
         facade.grantRole(facade.DEFAULT_ADMIN_ROLE(), cfg.agent);
         facade.revokeRole(facade.DEFAULT_ADMIN_ROLE(), deployer);
         IrmRouter(d.irmRouter).transferOwnership(cfg.agent);
@@ -139,7 +140,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         // EasyTrack and the Agent both need independent allow-list control.
         book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.evmScriptExecutor);
         book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.agent);
-        book.grantRole(book.FEE_MANAGER_ROLE(), cfg.agent);
+        book.grantRole(book.FEE_MANAGER_ROLE(), cfg.evmScriptExecutor);
         book.grantRole(book.RECOVERER_ROLE(), cfg.agent);
         book.grantRole(book.PAUSER_ROLE(), cfg.pauser);
         // RESUMER_ROLE deliberately starts empty. Governance grants it only when it needs to resume the book.

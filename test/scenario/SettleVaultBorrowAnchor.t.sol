@@ -112,6 +112,7 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
                 collateralToken: address(collateral),
                 oracleSource: address(collateral),
                 lltv: LLTV,
+                supplyCap: 0,
                 enableSettlement: true,
                 activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,

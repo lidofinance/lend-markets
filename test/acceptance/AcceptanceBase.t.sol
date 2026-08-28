@@ -136,6 +136,7 @@ interface IReadDecimals {
 
 interface IReadCore {
     function owner() external view returns (address);
+    function feeRecipient() external view returns (address);
     function marketController(bytes32 id) external view returns (address);
     function isSettlementEnabled(bytes32 id) external view returns (bool);
     function market(bytes32 id)
@@ -437,6 +438,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         // backbone cross-links
         assertEq(IReadFacade(facade).LIDO_LEND(), core, "facade.LIDO_LEND");
         assertEq(IReadCore(core).owner(), facade, "core.owner");
+        assertEq(IReadCore(core).feeRecipient(), agent, "core.feeRecipient");
         assertEq(IReadRouter(router).MORPHO(), core, "router.MORPHO");
         assertEq(IReadDashboard(dashboard).LIDO_LEND(), core, "dashboard.LIDO_LEND");
         if (morphoBook != address(0)) assertEq(IReadMorphoBook(morphoBook).MORPHO(), core, "morphoBook.MORPHO");
@@ -558,6 +560,8 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     function _assertConfig() internal view {
+        assertEq(IReadController(controller).supplyCap(), vm.parseTomlUint(toml, ".market.supply_cap"), "supplyCap");
+
         CollateralActivationConfig memory c = IReadController(controller).collateralActivationConfig();
         assertEq(uint256(c.minActivationDelay), vm.parseTomlUint(toml, ".activation.min_activation_delay"), "minDelay");
         assertEq(uint256(c.maxActivationDelay), vm.parseTomlUint(toml, ".activation.max_activation_delay"), "maxDelay");
@@ -911,7 +915,7 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
             address[][] memory holders = new address[][](5);
             holders[0] = _arr1(agent);
             holders[1] = _arr1(executor);
-            holders[2] = _arr1(agent);
+            holders[2] = _arr1(executor);
             holders[3] = _arr1(executor);
             holders[4] = _arr1(executor);
             _assertExactEnumerableRoleHolders(facade, roles, holders);
@@ -967,7 +971,7 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
         address[][] memory holders = new address[][](6);
         holders[0] = _arr1(agent);
         holders[1] = _arr2(executor, agent);
-        holders[2] = _arr1(agent);
+        holders[2] = _arr1(executor);
         holders[3] = _arr1(agent);
         holders[4] = _arr1(exitBookPauser);
         holders[5] = new address[](0);

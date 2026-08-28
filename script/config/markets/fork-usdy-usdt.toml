@@ -10,6 +10,7 @@ collateral_token = "0x96F6eF951840721AdBF46Ac996b59E0235CB985C"  # USDY (18 dec,
 oracle = "0x0000000000000000000000000000000000000000"
 oracle_artifact = "fork-usdy-usdt"
 lltv = "860000000000000000"  # 0.86 WAD
+supply_cap = "0"
 # Zero resolves the already-deployed registry identified by guardian_group.
 guardian_signals = "0x0000000000000000000000000000000000000000"
 guardian_group = "fork-usdy-usdt"

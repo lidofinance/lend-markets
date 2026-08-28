@@ -116,10 +116,11 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     /// @notice One-shot initializer: binds the market, grants roles, wires the guardian-signals registry, and
-    ///         sets the activation and settlement configs.
+    ///         sets the initial supply cap, activation config, and settlement config.
     function initialize(
         Id marketId_,
         address admin,
+        uint256 supplyCap_,
         IGuardianSignalsView guardianSignals,
         CollateralActivationConfig calldata activationConfig,
         SettlementConfig calldata settlementConfig
@@ -132,6 +133,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         marketId = marketId_;
         _guardianSignals = guardianSignals;
         emit GuardianSignalsSet(address(guardianSignals));
+        supplyCap = supplyCap_;
+        emit SupplyCapSet(supplyCap_, msg.sender);
         _settlementQueue.init();
         _settlementQueue.setSettlementConfig(settlementConfig);
         _activation.setConfig(activationConfig);

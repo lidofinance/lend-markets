@@ -554,6 +554,7 @@ contract HeapSettlementBenchmark is Test, LidoLendDeployer {
                 collateralToken: address(WSTETH),
                 oracleSource: address(0), // unused — `_deployOracle` is overridden below
                 lltv: LLTV,
+                supplyCap: 0,
                 enableSettlement: true,
                 activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,

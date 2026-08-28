@@ -73,6 +73,7 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
             collateralToken: collateral,
             oracleSource: oracleSource,
             lltv: 0.8e18,
+            supplyCap: 0,
             enableSettlement: true,
             activation: CollateralActivationConfig({
                 minActivationDelay: 10 minutes,
@@ -209,8 +210,9 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
         private
         returns (address controller, address controllerImpl)
     {
-        (controller, controllerImpl) =
-            _deployController(core, id, guardianSignals, cfg.admin, cfg.activation, cfg.settlementConfig);
+        (controller, controllerImpl) = _deployController(
+            core, id, guardianSignals, cfg.admin, cfg.supplyCap, cfg.activation, cfg.settlementConfig
+        );
     }
 
     function _deployMarketVault(DeployConfig memory cfg, address core, MarketParams memory params, address controller)
