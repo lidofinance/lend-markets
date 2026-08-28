@@ -66,7 +66,8 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @param guardian    The guardian the scan is recorded for.
     /// @param blockNumber The block number reported as scanned past (carried for off-chain tooling).
     /// @param timestamp   Guardian-reported scan timestamp; the quorum-scan frontier orders guardians by this value.
-    event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp);
+    /// @param data        Guardian-supplied payload the registry does not read (carried for off-chain tooling).
+    event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp, bytes data);
 
     /// @notice Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
     /// @param caller    The account whose call advanced the frontier.
@@ -224,7 +225,9 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     ///         quorum frontier, it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
     /// @param onBehalf         The guardian the scan is recorded for.
     /// @param lastScannedBlock The block reported as scanned past.
-    function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock) external;
+    /// @param data             Payload the registry does not read, validate, or store; emitted in `Heartbeat` for
+    ///                         off-chain tooling. May be empty.
+    function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock, bytes calldata data) external;
 
     /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and
     ///         monotonic.
