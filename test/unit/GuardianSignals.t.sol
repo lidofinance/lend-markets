@@ -44,6 +44,7 @@ contract GuardianSignalsTest is Test {
     event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint256 strikes);
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
     event Banned(Id indexed marketId, address indexed account);
+    event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp, bytes data);
     event QuorumFrontierAdvanced(address indexed caller, uint256 timestamp);
 
     function setUp() public {
@@ -105,10 +106,10 @@ contract GuardianSignalsTest is Test {
         gs.suspect(MARKET, guardian, _one(account));
     }
 
-    /// @dev Records a heartbeat for `guardian` at block/timestamp `at`.
+    /// @dev Records a heartbeat for `guardian` at block/timestamp `at`, with an empty payload.
     function _heartbeat(address guardian, uint40 at) internal {
         vm.prank(guardian);
-        gs.heartbeat(guardian, _block(at));
+        gs.heartbeat(guardian, _block(at), "");
     }
 
     function _flagCount(address account) internal view returns (uint256) {
@@ -454,7 +455,7 @@ contract GuardianSignalsTest is Test {
     function testRevert_heartbeat_unauthorizedCaller() public {
         vm.prank(BOB);
         vm.expectRevert(IGuardianSignals.Unauthorized.selector);
-        gs.heartbeat(GUARDIAN_1, _validBlock());
+        gs.heartbeat(GUARDIAN_1, _validBlock(), "");
     }
 
     // ── events / batch ──
@@ -604,7 +605,7 @@ contract GuardianSignalsTest is Test {
         info.number = uint40(block.number + 1);
         vm.prank(GUARDIAN_1);
         vm.expectRevert(IGuardianSignals.BlockInTheFuture.selector);
-        gs.heartbeat(GUARDIAN_1, info);
+        gs.heartbeat(GUARDIAN_1, info, "");
     }
 
     function testRevert_heartbeat_timestampInTheFuture() public {
@@ -612,7 +613,7 @@ contract GuardianSignalsTest is Test {
         info.timestamp = uint40(block.timestamp + 1);
         vm.prank(GUARDIAN_1);
         vm.expectRevert(IGuardianSignals.TimestampInTheFuture.selector);
-        gs.heartbeat(GUARDIAN_1, info);
+        gs.heartbeat(GUARDIAN_1, info, "");
     }
 
     function testRevert_heartbeat_regressesBelowPrevious() public {
@@ -620,7 +621,7 @@ contract GuardianSignalsTest is Test {
         BlockInfoWithHash memory info = _block(998);
         vm.prank(GUARDIAN_1);
         vm.expectRevert(IGuardianSignals.HeartbeatTimestampRegressed.selector);
-        gs.heartbeat(GUARDIAN_1, info);
+        gs.heartbeat(GUARDIAN_1, info, "");
         assertEq(gs.getHeartbeat(GUARDIAN_1), 999, "recorded timestamp unchanged after the revert");
     }
 
@@ -629,7 +630,7 @@ contract GuardianSignalsTest is Test {
         info.hash = bytes32(uint256(0xdead));
         vm.prank(GUARDIAN_1);
         vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
-        gs.heartbeat(GUARDIAN_1, info);
+        gs.heartbeat(GUARDIAN_1, info, "");
     }
 
     /// @dev Boundary: a re-report at the same timestamp and one at exactly `now` both pass.
@@ -638,8 +639,51 @@ contract GuardianSignalsTest is Test {
         BlockInfoWithHash memory info = _block(998);
         info.timestamp = 999;
         vm.prank(GUARDIAN_1);
-        gs.heartbeat(GUARDIAN_1, info);
+        gs.heartbeat(GUARDIAN_1, info, "");
         assertEq(gs.getHeartbeat(GUARDIAN_1), 999, "equal re-report accepted");
+    }
+
+    // ── heartbeat payload ──
+
+    /// @dev The payload reaches the `Heartbeat` event unchanged, alongside the block number and timestamp.
+    function test_heartbeat_emitsDataVerbatim() public {
+        bytes memory data = hex"cafebabe0123456789";
+        BlockInfoWithHash memory info = _block(999);
+        vm.expectEmit(true, false, false, true, address(gs));
+        emit Heartbeat(GUARDIAN_1, info.number, info.timestamp, data);
+        vm.prank(GUARDIAN_1);
+        gs.heartbeat(GUARDIAN_1, info, data);
+    }
+
+    /// @dev An empty payload is accepted and emitted as empty bytes.
+    function test_heartbeat_emptyData_accepted() public {
+        BlockInfoWithHash memory info = _block(999);
+        vm.expectEmit(true, false, false, true, address(gs));
+        emit Heartbeat(GUARDIAN_1, info.number, info.timestamp, "");
+        vm.prank(GUARDIAN_1);
+        gs.heartbeat(GUARDIAN_1, info, "");
+        assertEq(gs.getHeartbeat(GUARDIAN_1), 999, "an empty payload still records the scan");
+    }
+
+    /// @dev Any payload is emitted unchanged and leaves the recorded timestamp and the frontier untouched.
+    function testFuzz_heartbeat_dataIsPassThrough(bytes calldata data) public {
+        vm.assume(data.length <= 4096);
+        BlockInfoWithHash memory info = _block(999);
+        vm.expectEmit(true, false, false, true, address(gs));
+        emit Heartbeat(GUARDIAN_1, info.number, info.timestamp, data);
+        vm.prank(GUARDIAN_1);
+        gs.heartbeat(GUARDIAN_1, info, data);
+        assertEq(gs.getHeartbeat(GUARDIAN_1), 999, "the payload does not affect the recorded timestamp");
+        assertEq(gs.getQuorumFrontier(), 0, "one sub-quorum heartbeat leaves the frontier at 0 whatever it carries");
+    }
+
+    /// @dev The payload is not part of validation: a wrong block hash still reverts.
+    function testRevert_heartbeat_dataDoesNotBypassValidation() public {
+        BlockInfoWithHash memory info = _block(999);
+        info.hash = bytes32(uint256(0xdead));
+        vm.prank(GUARDIAN_1);
+        vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
+        gs.heartbeat(GUARDIAN_1, info, hex"cafebabe");
     }
 
     /// @dev `getHeartbeats` pairs the guardian set with each guardian's last-scanned timestamp.

@@ -193,7 +193,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock) external {
+    function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock, bytes calldata data) external {
         if (!_isSenderAuthorized(onBehalf)) revert Unauthorized();
 
         uint40 previousTimestamp = _heartbeats[onBehalf];
@@ -209,7 +209,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) revert InvalidBlockHash();
 
         _heartbeats[onBehalf] = lastScannedBlock.timestamp;
-        emit Heartbeat(onBehalf, lastScannedBlock.number, lastScannedBlock.timestamp);
+        emit Heartbeat(onBehalf, lastScannedBlock.number, lastScannedBlock.timestamp, data);
 
         // The frontier is the quorum-th largest heartbeat, so this one can only raise it by crossing from at or below
         // it to above it. The guard skips the O(n log n) resort otherwise; `syncQuorumFrontier` is the fallback for

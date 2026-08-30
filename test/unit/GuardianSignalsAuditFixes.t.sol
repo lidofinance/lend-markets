@@ -45,7 +45,7 @@ contract GuardianSignalsAuditFixesTest is Test {
             BlockInfoWithHash({hash: bytes32(0), number: uint40(block.number), timestamp: uint40(block.timestamp)});
         vm.prank(G1);
         vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
-        gs.heartbeat(G1, forged);
+        gs.heartbeat(G1, forged, "");
     }
 
     /// W1: a zero-hash proof for a block outside the 256-block window (also `blockhash` zero) is rejected.
@@ -56,13 +56,13 @@ contract GuardianSignalsAuditFixesTest is Test {
             BlockInfoWithHash({hash: bytes32(0), number: stale, timestamp: uint40(block.timestamp)});
         vm.prank(G1);
         vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
-        gs.heartbeat(G1, forged);
+        gs.heartbeat(G1, forged, "");
     }
 
     /// W1: a canonical in-window past block still records the heartbeat.
     function test_W1_heartbeatAcceptsCanonicalBlock() public {
         vm.prank(G1);
-        gs.heartbeat(G1, _validBlock());
+        gs.heartbeat(G1, _validBlock(), "");
         assertEq(gs.getHeartbeat(G1), uint40(block.timestamp), "canonical heartbeat recorded");
     }
 }

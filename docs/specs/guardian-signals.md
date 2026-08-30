@@ -185,6 +185,12 @@ A heartbeat contains a block hash, block number, and guardian-supplied scan time
 
 The EVM returns zero for the current block and for blocks outside the `blockhash` lookback window, so neither can provide an accepted proof. Number and hash authenticate the referenced block within that window; they do not authenticate the supplied timestamp. Only the timestamp is stored, while the block number remains in the event.
 
+### Monitoring payload
+
+A heartbeat also carries a `bytes` payload that the registry does not read, validate, or store. It is emitted unchanged in the `Heartbeat` event, so guardians can publish scan metadata alongside the timestamp: a report digest, a tooling version, a scanned range. It may be empty, and its contents cannot change whether the heartbeat is accepted.
+
+Consumers must treat it as unauthenticated guardian-supplied data. The registry checks only that the caller may act for `onBehalf`, so the payload carries the same trust as the supplied timestamp and no more.
+
 > [!WARNING]
 > **Accepted guardian-timestamp trust.** The frontier uses the guardian-supplied timestamp without checking it against the block header. A party controlling the configured quorum of guardian identities can therefore advance the frontier without having scanned through that time. Quorum may be one, and delegate uniqueness separates only addresses: one operator may still hold the keys behind several identities.
 

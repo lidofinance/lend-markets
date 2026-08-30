@@ -117,7 +117,7 @@ Emitted when the suspect window is set.
 ### `Heartbeat`
 
 ```solidity
-event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp);
+event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp, bytes data);
 ```
 
 **Parameters**
@@ -127,6 +127,7 @@ event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp
 | `guardian` | `address` | The guardian the scan is recorded for. |
 | `blockNumber` | `uint256` | The block number reported as scanned past (carried for off-chain tooling). |
 | `timestamp` | `uint256` | Guardian-reported scan timestamp; the quorum-scan frontier orders guardians by this value. |
+| `data` | `bytes` | Guardian-supplied payload the registry does not read (carried for off-chain tooling). |
 
 Emitted when a guardian's liveness is recorded.
 
@@ -501,7 +502,8 @@ The guardian set paired with each guardian's current delegate (zero if none), al
 ```solidity
 function heartbeat(
     address onBehalf,
-    BlockInfoWithHash calldata lastScannedBlock
+    BlockInfoWithHash calldata lastScannedBlock,
+    bytes calldata data
 ) external;
 ```
 
@@ -511,6 +513,7 @@ function heartbeat(
 | --- | --- | --- |
 | `onBehalf` | `address` | The guardian the scan is recorded for. |
 | `lastScannedBlock` | `BlockInfoWithHash` | The block reported as scanned past. |
+| `data` | `bytes` | Payload the registry does not read, validate, or store; emitted in `Heartbeat` for off-chain tooling. May be empty. |
 
 Record `onBehalf`'s last-scanned block identity and scan timestamp. The block hash is validated; the guardian-reported timestamp is independently required not to regress or exceed `block.timestamp`. Callable by the guardian or its delegate and keyed by the guardian. If the heartbeat raises the quorum frontier, it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
 
