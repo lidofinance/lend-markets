@@ -133,8 +133,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         marketId = marketId_;
         _guardianSignals = guardianSignals;
         emit GuardianSignalsSet(address(guardianSignals));
-        supplyCap = supplyCap_;
-        emit SupplyCapSet(supplyCap_, msg.sender);
+        _setSupplyCap(supplyCap_);
         _settlementQueue.init();
         _settlementQueue.setSettlementConfig(settlementConfig);
         _activation.setConfig(activationConfig);
@@ -215,8 +214,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
     /// @inheritdoc ILidoLendMarketConfigurator
     function setSupplyCap(uint256 cap) external onlyRole(MANAGER_ROLE) {
-        supplyCap = cap;
-        emit SupplyCapSet(cap, msg.sender);
+        _setSupplyCap(cap);
     }
 
     // ---
@@ -334,14 +332,12 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
     /// @inheritdoc ILidoLendMarketController
     function freeze() external onlyRole(FREEZER_ROLE) {
-        isFrozen = true;
-        emit FrozenSet(true, msg.sender);
+        _setFrozen(true);
     }
 
     /// @inheritdoc ILidoLendMarketController
     function unfreeze() external onlyRole(UNFREEZER_ROLE) {
-        isFrozen = false;
-        emit FrozenSet(false, msg.sender);
+        _setFrozen(false);
     }
 
     /// @inheritdoc ILidoLendMarketController
@@ -434,7 +430,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         _activation.sync(frozen, borrower, _guardianSignals.getOpinion(id, borrower));
         uint256 inactive = _activation.debit(borrower, hookData.assets, position.collateral);
 
-        position.collateral -= hookData.assets;
+        unchecked {
+            position.collateral -= hookData.assets;
+        }
 
         // With open debt, the remaining active collateral must still cover the debt at LLTV. Capacity is zero
         // below `minActivationAmount`, so a debt-bearing position cannot be drained under the threshold; repay
@@ -498,7 +496,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
         PositionView memory position = _positionView(id, hookData.onBehalf);
         if (hookData.shares > position.borrowShares) revert PositionAccountingMismatch();
-        position.borrowShares -= hookData.shares;
+        unchecked {
+            position.borrowShares -= hookData.shares;
+        }
         _settlementQueue.sync(hookData.onBehalf, position);
     }
 
@@ -665,8 +665,20 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         }
         if (seizedAssets != 0) _activation.seize(borrower, seizedAssets, position.collateral);
 
-        position.borrowShares -= canceledShares;
-        position.collateral -= seizedAssets;
+        unchecked {
+            position.borrowShares -= canceledShares;
+            position.collateral -= seizedAssets;
+        }
         _settlementQueue.sync(borrower, position);
+    }
+
+    function _setSupplyCap(uint256 cap) private {
+        supplyCap = cap;
+        emit SupplyCapSet(cap, msg.sender);
+    }
+
+    function _setFrozen(bool frozen) private {
+        isFrozen = frozen;
+        emit FrozenSet(frozen, msg.sender);
     }
 }
