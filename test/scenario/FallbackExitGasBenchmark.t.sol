@@ -431,4 +431,161 @@ contract FallbackExitGasBenchmark is BundlerSetup {
         console2.log("    over the bare vault call      ", bundledThreeCalls - direct);
         console2.log("    its calldata gas              ", threeCallCalldata);
     }
+
+    // ---
+    // 500-BORROWER SIZING (target market size)
+    // ---
+
+    /// @dev Sweep over the bounds that matter for sizing the default near the gas cap.
+    function _sweepFine(string memory label, uint256 shares) internal {
+        console2.log(label);
+        uint256[8] memory bounds = [uint256(100), 120, 140, 145, 148, 150, 155, 160];
+        for (uint256 j; j < bounds.length; ++j) {
+            uint256 snap = vm.snapshotState();
+            (uint256 g, uint256 burned, uint256 debt) = _measure(bounds[j], shares);
+            console2.log("  maxIterations", bounds[j], "gas", g);
+            console2.log("      sharesBurned", burned, "debtCanceled", debt);
+            vm.revertToState(snap);
+        }
+    }
+
+    /// @dev Worst per-cut shape at the target queue depth: every cut closes the root and pops it.
+    function test_gas_fullCloseEachIteration_queue500() public {
+        uint256 shares = _seedBorrowers(500);
+        _setSlice(10_000, 0);
+        _sweepFine("=== gas: a cut closes the root, queue of 500 ===", shares);
+    }
+
+    function test_storageFootprint_fullClose_queue500() public {
+        uint256 shares = _seedBorrowers(500);
+        _setSlice(10_000, 0);
+        _reportFootprint("=== storage: closes-root, queue of 500 ===", shares);
+    }
+
+    function test_slotGrowth_fullClose_queue500() public {
+        uint256 shares = _seedBorrowers(500);
+        _setSlice(10_000, 0);
+        _reportSlots("=== slot growth: closes-root, queue of 500 ===", shares);
+    }
+
+    /// @dev Adversarial 500-borrower book under the deployed slice policy: 20 whales that need a
+    ///      long LTV walk plus a 480-position dust tail padding the queue, all at 90% LTV with tied
+    ///      risk keys after a price drop. The pool is fully drawn, so an exit settles from the
+    ///      first cut.
+    function _seedAdversarialMix() internal returns (uint256 shares) {
+        Market storage m = _loopMarket();
+        uint256 total = 20 * 450 ether + 480 * 9 ether;
+        _fund(m.loanToken, lender, total);
+        shares = m.vaultDeposit(lender, total);
+
+        for (uint256 i; i < 20; ++i) {
+            address b = address(uint160(0x400000 + i));
+            _fund(m.collateralToken, b, 500 ether);
+            vm.startPrank(b);
+            m.collateralToken.approve(address(m.core), 500 ether);
+            m.core.supplyCollateral(m.params, 500 ether, b, "");
+            vm.stopPrank();
+        }
+        for (uint256 i; i < 480; ++i) {
+            address b = address(uint160(0x500000 + i));
+            _fund(m.collateralToken, b, 10 ether);
+            vm.startPrank(b);
+            m.collateralToken.approve(address(m.core), 10 ether);
+            m.core.supplyCollateral(m.params, 10 ether, b, "");
+            vm.stopPrank();
+        }
+        m.activateCollateral();
+        for (uint256 i; i < 20; ++i) {
+            address b = address(uint160(0x400000 + i));
+            vm.prank(b);
+            m.core.borrow(m.params, 450 ether, 0, b, b);
+        }
+        for (uint256 i; i < 480; ++i) {
+            address b = address(uint160(0x500000 + i));
+            vm.prank(b);
+            m.core.borrow(m.params, 9 ether, 0, b, b);
+        }
+        // 1.2 -> 1.0 raises every LTV from 75% to 90%; positions stay solvent (value > debt).
+        MockPriceOracle(address(m.oracle)).setPrice(1e36);
+    }
+
+    function test_gas_adversarialMix500() public {
+        uint256 shares = _seedAdversarialMix();
+        _sweepFine("=== gas: adversarial mix, queue of 500, deployed policy ===", shares);
+    }
+
+    function test_slotGrowth_adversarialMix500() public {
+        uint256 shares = _seedAdversarialMix();
+        _reportSlots("=== slot growth: adversarial mix, queue of 500 ===", shares);
+    }
+
+    /// @dev Every bound in [50, 150] on one seeded book, one line per bound. Verifies the cost is
+    ///      linear in the bound (no drift as the queue shrinks) and locates cap crossings exactly.
+    function _denseSweep(string memory label, uint256 shares) internal {
+        console2.log(label);
+        for (uint256 k = 50; k <= 150; ++k) {
+            uint256 snap = vm.snapshotState();
+            (uint256 g,,) = _measure(k, shares);
+            console2.log(k, g);
+            vm.revertToState(snap);
+        }
+    }
+
+    function test_gas_denseSweep_adversarialMix500() public {
+        uint256 shares = _seedAdversarialMix();
+        _denseSweep("=== dense 50..150: adversarial mix, queue of 500 ===", shares);
+    }
+
+    function test_gas_denseSweep_fullClose_queue500() public {
+        uint256 shares = _seedBorrowers(500);
+        _setSlice(10_000, 0);
+        _denseSweep("=== dense 50..150: closes-root, queue of 500 ===", shares);
+    }
+
+    /// @dev Executes the exit under the exact budget a capped transaction has — 16,777,216 minus
+    ///      intrinsic and calldata — so the EVM, not arithmetic, decides whether it fits today. The
+    ///      4M control proves the budget is enforced: 150 cuts cannot run on 4M and must fail.
+    function test_capEnforcedExecution_adversarialMix500() public {
+        uint256 shares = _seedAdversarialMix();
+        Market storage m = _loopMarket();
+        vm.prank(lender);
+        m.vault.approve(address(vaultAdapter), type(uint256).max);
+
+        console2.log("=== executed under the EIP-7825 budget, current EVM ===");
+        uint256[4] memory bounds = [uint256(100), 140, 148, 150];
+        for (uint256 j; j < bounds.length; ++j) {
+            uint256 snap = vm.snapshotState();
+            (bool ok, uint256 budget, uint256 used) = _runCapped(m, shares, bounds[j], 16_777_216);
+            assertTrue(ok, "must fit the cap on the current EVM");
+            console2.log("  maxIterations", bounds[j], "ok", ok);
+            console2.log("      execBudget", budget, "used", used);
+            vm.revertToState(snap);
+        }
+
+        uint256 snap2 = vm.snapshotState();
+        (bool okControl,, uint256 usedControl) = _runCapped(m, shares, 150, 4_000_000 + 21_000);
+        assertFalse(okControl, "control: 150 cuts cannot run on a 4M budget");
+        console2.log("  control 4M budget at 150: ok", okControl, "used", usedControl);
+        vm.revertToState(snap2);
+    }
+
+    /// @dev One bundled exit through the dispatcher with the execution budget of a transaction whose
+    ///      gas limit is `txGasLimit`: the limit minus 21,000 intrinsic minus its calldata cost.
+    function _runCapped(Market storage m, uint256 shares, uint256 maxIterations, uint256 txGasLimit)
+        internal
+        returns (bool ok, uint256 budget, uint256 used)
+    {
+        Call[] memory one = new Call[](1);
+        one[0] = _call(
+            address(vaultAdapter),
+            abi.encodeCall(vaultAdapter.fallbackExit, (address(m.vault), shares, maxIterations, lender, 0, 1))
+        );
+        bytes memory cd = abi.encodeCall(bundler3.multicall, (one));
+        budget = txGasLimit - 21_000 - _calldataGas(cd);
+
+        vm.prank(lender);
+        uint256 g0 = gasleft();
+        (ok,) = address(bundler3).call{gas: budget}(cd);
+        used = g0 - gasleft();
+    }
 }
