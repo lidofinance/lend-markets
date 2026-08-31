@@ -9,7 +9,7 @@ The contract is permissionless and has no mutable storage. Role wiring:
 - A new `LidoLendMarketController` or `GuardianSignals` instance grants the factory temporary `DEFAULT_ADMIN_ROLE`.
 - `LIDO_LEND_OWNER` receives `MANAGER_ROLE` and `UNFREEZER_ROLE` on `LidoLendMarketController`.
 - `RISK_STEWARD_DASHBOARD` receives `MANAGER_ROLE` and `FREEZER_ROLE` on `LidoLendMarketController`.
-- `CIRCUIT_BREAKER` receives `PAUSER_ROLE` on `LidoLendMarketController`; `RESUMER_ROLE` has no initial holder.
+- `CIRCUIT_BREAKER` and `RESEAL_MANAGER` receive `PAUSER_ROLE` on `LidoLendMarketController`; `RESEAL_MANAGER` also receives `RESUMER_ROLE`.
 - `LIDO_LEND_OWNER` receives `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` on `GuardianSignals`.
 - `ADMIN` administers every deployed proxy and receives `DEFAULT_ADMIN_ROLE` on both role-bearing contracts.
 - `ACCESS_LIMITER_ROLE` on `GuardianSignals` has no initial holder.
@@ -47,6 +47,7 @@ struct Dependencies {
     address irmRouter;
     address lidoLendOwner;
     address circuitBreaker;
+    address resealManager;
     address riskStewardDashboard;
 }
 ```
@@ -61,6 +62,7 @@ Protocol-wide dependencies used when wiring deployed components.
 | `irmRouter` | `address` | Router fixed as the IRM in every market id produced by the factory. |
 | `lidoLendOwner` | `address` | Governance facade granted controller and guardian-management roles. |
 | `circuitBreaker` | `address` | Sole initial controller pauser. |
+| `resealManager` | `address` | Pause-extension authority granted controller pause and resume roles. |
 | `riskStewardDashboard` | `address` | Bounded dashboard granted controller manager and freezer roles. |
 
 ### `MarketSpec`
@@ -86,8 +88,8 @@ The market IRM is always `IRM_ROUTER` and therefore is not caller-supplied.
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `loanToken` | `address` | Market loan asset. Deployment checks only that the address has code. |
-| `collateralToken` | `address` | Market collateral asset. Deployment checks only that the address has code. |
+| `loanToken` | `address` | Market loan asset. |
+| `collateralToken` | `address` | Market collateral asset. |
 | `oracle` | `address` | Market oracle contract. Deployment checks only that the address has code. |
 | `lltv` | `uint256` | Liquidation loan-to-value ratio, in WAD and strictly below 1e18. |
 | `guardianSignals` | `address` | Guardian registry read by the controller. Deployment checks only that the address has code; registry configuration is validated through `validateGuardianSignals`. |
@@ -233,6 +235,22 @@ error CircuitBreakerZeroAddress();
 ```
 
 The circuit breaker supplied to the constructor was the zero address.
+
+### `ResealManagerZeroAddress`
+
+```solidity
+error ResealManagerZeroAddress();
+```
+
+The reseal manager supplied to the constructor was the zero address.
+
+### `DuplicateEmergencyRoleRecipient`
+
+```solidity
+error DuplicateEmergencyRoleRecipient();
+```
+
+The circuit breaker and reseal manager resolve to the same address.
 
 ### `NotContract`
 
@@ -521,7 +539,7 @@ constructor(
 
 Fixes the implementations, protocol dependencies, and final administrator used by every deployment.
 
-The factory deployer must validate all constructor addresses before deployment. The constructor verifies only that `admin` and the circuit breaker are nonzero and the core bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router.
+The factory deployer must validate all constructor addresses before deployment. The constructor verifies only that `admin`, the circuit breaker, and the reseal manager are nonzero, the emergency role recipients are distinct, and the core bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router.
 
 ### `deployMarketComponents`
 
@@ -703,7 +721,8 @@ Role topology covers exact holders and holder counts, and requires every known r
 | `GUARDIAN_SIGNALS_IMPL` | `address` (immutable) | GuardianSignals implementation used by every guardian proxy deployed by the factory. |
 | `LIDO_LEND` | `address` (immutable) | Core expected by controller and wrapper implementations and core-bound dependencies. |
 | `IRM_ROUTER` | `address` (immutable) | IRM router embedded in every market id produced from a `MarketSpec`. |
-| `CIRCUIT_BREAKER` | `address` (immutable) | Sole initial holder of every deployed controller's `PAUSER_ROLE`. |
+| `CIRCUIT_BREAKER` | `address` (immutable) | Initial finite-pause authority for every deployed controller. |
+| `RESEAL_MANAGER` | `address` (immutable) | Initial pause-extension and resume authority for every deployed controller. |
 | `LIDO_LEND_OWNER` | `address` (immutable) | Governance facade wired into every deployed controller and guardian registry. |
 | `RISK_STEWARD_DASHBOARD` | `address` (immutable) | Bounded steward dashboard wired into every deployed controller. |
 | `ADMIN` | `address` (immutable) | Admin of every deployed proxy and sole initial `DEFAULT_ADMIN_ROLE` holder on controllers and guardian registries. |

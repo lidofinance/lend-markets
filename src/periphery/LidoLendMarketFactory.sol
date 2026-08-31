@@ -34,7 +34,8 @@ interface ILidoLendBound {
 ///        `DEFAULT_ADMIN_ROLE`.
 ///      - `LIDO_LEND_OWNER` receives `MANAGER_ROLE` and `UNFREEZER_ROLE` on `LidoLendMarketController`.
 ///      - `RISK_STEWARD_DASHBOARD` receives `MANAGER_ROLE` and `FREEZER_ROLE` on `LidoLendMarketController`.
-///      - `CIRCUIT_BREAKER` receives `PAUSER_ROLE` on `LidoLendMarketController`; `RESUMER_ROLE` has no initial holder.
+///      - `CIRCUIT_BREAKER` and `RESEAL_MANAGER` receive `PAUSER_ROLE` on `LidoLendMarketController`;
+///        `RESEAL_MANAGER` also receives `RESUMER_ROLE`.
 ///      - `LIDO_LEND_OWNER` receives `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` on `GuardianSignals`.
 ///      - `ADMIN` administers every deployed proxy and receives `DEFAULT_ADMIN_ROLE` on both role-bearing contracts.
 ///      - `ACCESS_LIMITER_ROLE` on `GuardianSignals` has no initial holder.
@@ -64,12 +65,14 @@ contract LidoLendMarketFactory {
     /// @param irmRouter Router fixed as the IRM in every market id produced by the factory.
     /// @param lidoLendOwner Governance facade granted controller and guardian-management roles.
     /// @param circuitBreaker Sole initial controller pauser.
+    /// @param resealManager Pause-extension authority granted controller pause and resume roles.
     /// @param riskStewardDashboard Bounded dashboard granted controller manager and freezer roles.
     struct Dependencies {
         address lidoLend;
         address irmRouter;
         address lidoLendOwner;
         address circuitBreaker;
+        address resealManager;
         address riskStewardDashboard;
     }
 
@@ -123,6 +126,12 @@ contract LidoLendMarketFactory {
 
     /// @notice The circuit breaker supplied to the constructor was the zero address.
     error CircuitBreakerZeroAddress();
+
+    /// @notice The reseal manager supplied to the constructor was the zero address.
+    error ResealManagerZeroAddress();
+
+    /// @notice The circuit breaker and reseal manager resolve to the same address.
+    error DuplicateEmergencyRoleRecipient();
 
     /// @notice A required market token, oracle, or guardian-registry address has no code.
     /// @param account Address without runtime code.
@@ -284,8 +293,10 @@ contract LidoLendMarketFactory {
     address public immutable LIDO_LEND;
     /// @notice IRM router embedded in every market id produced from a `MarketSpec`.
     address public immutable IRM_ROUTER;
-    /// @notice Sole initial holder of every deployed controller's `PAUSER_ROLE`.
+    /// @notice Initial finite-pause authority for every deployed controller.
     address public immutable CIRCUIT_BREAKER;
+    /// @notice Initial pause-extension and resume authority for every deployed controller.
+    address public immutable RESEAL_MANAGER;
     /// @notice Governance facade wired into every deployed controller and guardian registry.
     address public immutable LIDO_LEND_OWNER;
     /// @notice Bounded steward dashboard wired into every deployed controller.
@@ -301,8 +312,9 @@ contract LidoLendMarketFactory {
 
     /// @notice Fixes the implementations, protocol dependencies, and final administrator used by every deployment.
     /// @dev The factory deployer must validate all constructor addresses before deployment. The constructor verifies
-    ///      only that `admin` and the circuit breaker are nonzero and the core bindings exposed by the controller and
-    ///      wrapper implementations, owner facade, risk dashboard, and IRM router.
+    ///      only that `admin`, the circuit breaker, and the reseal manager are nonzero, the emergency role recipients
+    ///      are distinct, and the core bindings exposed by the controller and wrapper implementations, owner facade,
+    ///      risk dashboard, and IRM router.
     /// @param implementations Implementations used behind newly deployed proxies.
     /// @param dependencies Core and protocol-wide role recipients embedded in newly deployed components.
     /// @param admin Proxy admin for every deployment and sole initial `DEFAULT_ADMIN_ROLE` holder on controllers and
@@ -310,6 +322,8 @@ contract LidoLendMarketFactory {
     constructor(Implementations memory implementations, Dependencies memory dependencies, address admin) {
         if (admin == address(0)) revert AdminZeroAddress();
         if (dependencies.circuitBreaker == address(0)) revert CircuitBreakerZeroAddress();
+        if (dependencies.resealManager == address(0)) revert ResealManagerZeroAddress();
+        if (dependencies.resealManager == dependencies.circuitBreaker) revert DuplicateEmergencyRoleRecipient();
 
         _requireLidoLendBinding(implementations.erc4626Wrapper, dependencies.lidoLend);
         _requireLidoLendBinding(implementations.controller, dependencies.lidoLend);
@@ -321,6 +335,7 @@ contract LidoLendMarketFactory {
         LIDO_LEND = dependencies.lidoLend;
         IRM_ROUTER = dependencies.irmRouter;
         CIRCUIT_BREAKER = dependencies.circuitBreaker;
+        RESEAL_MANAGER = dependencies.resealManager;
         LIDO_LEND_OWNER = dependencies.lidoLendOwner;
         RISK_STEWARD_DASHBOARD = dependencies.riskStewardDashboard;
 
@@ -528,6 +543,8 @@ contract LidoLendMarketFactory {
         controller.grantRole(controller.MANAGER_ROLE(), LIDO_LEND_OWNER);
         controller.grantRole(controller.MANAGER_ROLE(), RISK_STEWARD_DASHBOARD);
         controller.grantRole(controller.PAUSER_ROLE(), CIRCUIT_BREAKER);
+        controller.grantRole(controller.PAUSER_ROLE(), RESEAL_MANAGER);
+        controller.grantRole(controller.RESUMER_ROLE(), RESEAL_MANAGER);
         controller.grantRole(controller.FREEZER_ROLE(), RISK_STEWARD_DASHBOARD);
         controller.grantRole(controller.UNFREEZER_ROLE(), LIDO_LEND_OWNER);
 
@@ -587,11 +604,13 @@ contract LidoLendMarketFactory {
         _requireRoleMember(controllerAddress, managerRole, LIDO_LEND_OWNER);
         _requireRoleMember(controllerAddress, managerRole, RISK_STEWARD_DASHBOARD);
 
-        // Fast controls have one fixed path each; finite pauses have no early resumer by default.
-        _requireSoleRoleMember(controllerAddress, pauserRole, CIRCUIT_BREAKER);
+        // Fast controls have fixed protocol-wide paths.
+        _requireRoleMemberCount(controllerAddress, pauserRole, 2);
+        _requireRoleMember(controllerAddress, pauserRole, CIRCUIT_BREAKER);
+        _requireRoleMember(controllerAddress, pauserRole, RESEAL_MANAGER);
         _requireSoleRoleMember(controllerAddress, freezerRole, RISK_STEWARD_DASHBOARD);
         _requireSoleRoleMember(controllerAddress, unfreezerRole, LIDO_LEND_OWNER);
-        _requireRoleMemberCount(controllerAddress, resumerRole, 0);
+        _requireSoleRoleMember(controllerAddress, resumerRole, RESEAL_MANAGER);
 
         // Only the default admin may change the validated role topology.
         _requireDefaultRoleAdmin(controllerAddress, DEFAULT_ADMIN_ROLE);

@@ -44,6 +44,7 @@ contract MarketFactoryScenarioTest is Test {
     IIrmRouter internal router;
     address internal riskStewardDashboard;
     address internal circuitBreaker;
+    address internal resealManager;
     address internal controllerImpl;
     address internal erc4626WrapperImpl;
     address internal guardianSignalsImpl;
@@ -76,6 +77,7 @@ contract MarketFactoryScenarioTest is Test {
         );
         riskStewardDashboard = address(new RiskStewardDashboard(GOVERNANCE, core));
         circuitBreaker = address(new CircuitBreakerStub());
+        resealManager = makeAddr("resealManager");
 
         controllerImpl = address(new LidoLendMarketController(IMorpho(address(core))));
         erc4626WrapperImpl = address(new LidoLendERC4626(address(core)));
@@ -119,9 +121,10 @@ contract MarketFactoryScenarioTest is Test {
         assertTrue(controller.hasRole(controller.MANAGER_ROLE(), address(facade)), "facade manager");
         assertTrue(controller.hasRole(controller.MANAGER_ROLE(), riskStewardDashboard), "dashboard manager");
         assertTrue(controller.hasRole(controller.PAUSER_ROLE(), circuitBreaker), "circuit breaker pauser");
+        assertTrue(controller.hasRole(controller.PAUSER_ROLE(), resealManager), "reseal manager pauser");
         assertTrue(controller.hasRole(controller.FREEZER_ROLE(), riskStewardDashboard), "dashboard freezer");
         assertTrue(controller.hasRole(controller.UNFREEZER_ROLE(), address(facade)), "facade unfreezer");
-        assertEq(controller.getRoleMemberCount(controller.RESUMER_ROLE()), 0, "no initial resumer");
+        assertTrue(controller.hasRole(controller.RESUMER_ROLE(), resealManager), "reseal manager resumer");
 
         assertEq(IOssifiableProxy(controllerAddress).proxy__getAdmin(), marketAdmin, "controller proxy admin");
         assertEq(IOssifiableProxy(erc4626Wrapper).proxy__getAdmin(), marketAdmin, "wrapper proxy admin");
@@ -241,12 +244,12 @@ contract MarketFactoryScenarioTest is Test {
 
         LidoLendMarketController firstController = LidoLendMarketController(firstControllerAddress);
         LidoLendMarketController secondController = LidoLendMarketController(secondControllerAddress);
-        assertEq(firstController.getRoleMemberCount(firstController.PAUSER_ROLE()), 1, "first pauser count");
-        assertEq(secondController.getRoleMemberCount(secondController.PAUSER_ROLE()), 1, "second pauser count");
+        assertEq(firstController.getRoleMemberCount(firstController.PAUSER_ROLE()), 2, "first pauser count");
+        assertEq(secondController.getRoleMemberCount(secondController.PAUSER_ROLE()), 2, "second pauser count");
         assertTrue(firstController.hasRole(firstController.PAUSER_ROLE(), circuitBreaker), "first shared pauser");
         assertTrue(secondController.hasRole(secondController.PAUSER_ROLE(), circuitBreaker), "second shared pauser");
-        assertEq(firstController.getRoleMemberCount(firstController.RESUMER_ROLE()), 0, "first resumer count");
-        assertEq(secondController.getRoleMemberCount(secondController.RESUMER_ROLE()), 0, "second resumer count");
+        assertTrue(firstController.hasRole(firstController.RESUMER_ROLE(), resealManager), "first resumer");
+        assertTrue(secondController.hasRole(secondController.RESUMER_ROLE(), resealManager), "second resumer");
     }
 
     function testRevert_deployMarketComponents_marketAlreadyExists() external {
@@ -533,6 +536,7 @@ contract MarketFactoryScenarioTest is Test {
             irmRouter: address(router_),
             lidoLendOwner: address(facade),
             circuitBreaker: breaker,
+            resealManager: resealManager,
             riskStewardDashboard: dashboard
         });
     }

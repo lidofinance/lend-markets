@@ -13,6 +13,7 @@ struct DeployConfig {
     bytes32 compatibilityHash;
     address agent;
     address evmScriptExecutor;
+    address resealManager;
     string circuitBreakerArtifact; // one fixed CircuitBreaker per deployed core/factory
     bool exitBooks; // deploy the protocol's two exit books
     address exitBookPauser; // Risk Steward Committee for integrated or standalone Exit Book deployment
@@ -23,6 +24,8 @@ interface ILidoLendMarketFactoryBindings {
     function LIDO_LEND() external view returns (address);
 
     function IRM_ROUTER() external view returns (address);
+
+    function RESEAL_MANAGER() external view returns (address);
 }
 
 library DeployConfigFile {
@@ -45,7 +48,9 @@ library DeployConfigFile {
     error RegistryFactoryCoreMismatch(address expected, address actual);
     error RegistryFactoryNotContract(address factory);
     error RegistryFactoryIrmRouterMismatch(address expected, address actual);
+    error RegistryFactoryResealManagerMismatch(address expected, address actual);
     error RegistryNetworkMismatch(string expected, string actual);
+    error RegistryResealManagerMismatch(address expected, address actual);
     error UnexpectedChainId(uint256 expected, uint256 actual);
 
     function read(string memory name) internal view returns (DeployConfig memory cfg) {
@@ -59,9 +64,10 @@ library DeployConfigFile {
         cfg.chainId = ConfigToml.requireUint(toml, ".chain_id");
         cfg.agent = ConfigToml.requireAddress(toml, ".agent");
         cfg.evmScriptExecutor = ConfigToml.requireAddress(toml, ".evm_script_executor");
+        cfg.resealManager = ConfigToml.requireAddress(toml, ".reseal_manager");
         cfg.circuitBreakerArtifact = ConfigToml.requireString(toml, ".circuit_breaker_artifact");
         cfg.compatibilityHash = canonicalCompatibilityHash(
-            cfg.network, cfg.chainId, cfg.agent, cfg.evmScriptExecutor, cfg.circuitBreakerArtifact
+            cfg.network, cfg.chainId, cfg.agent, cfg.evmScriptExecutor, cfg.resealManager, cfg.circuitBreakerArtifact
         );
         cfg.exitBooks = vm.parseTomlBool(toml, ".exit_books");
         if (vm.keyExistsToml(toml, ".exit_book_pauser")) {
@@ -105,9 +111,10 @@ library DeployConfigFile {
         uint256 chainId,
         address agent,
         address evmScriptExecutor,
+        address resealManager,
         string memory circuitBreakerArtifact
     ) internal pure returns (bytes32) {
-        return keccak256(abi.encode(network, chainId, agent, evmScriptExecutor, circuitBreakerArtifact));
+        return keccak256(abi.encode(network, chainId, agent, evmScriptExecutor, resealManager, circuitBreakerArtifact));
     }
 
     function requireProtocolArtifactCompatibility(string memory registry) internal view {
@@ -116,6 +123,7 @@ library DeployConfigFile {
             vm.parseTomlUint(registry, ".protocol.chain_id"),
             vm.parseTomlAddress(registry, ".protocol.agent"),
             vm.parseTomlAddress(registry, ".protocol.evm_script_executor"),
+            vm.parseTomlAddress(registry, ".protocol.reseal_manager"),
             vm.parseTomlString(registry, ".protocol.circuit_breaker_artifact")
         );
         bytes32 actual = vm.parseTomlBytes32(registry, ".artifact.compatibility_hash");
@@ -147,6 +155,12 @@ library DeployConfigFile {
         address irmRouter = vm.parseTomlAddress(registry, ".protocol.irm_router");
         address factoryIrmRouter = ILidoLendMarketFactoryBindings(factory).IRM_ROUTER();
         if (factoryIrmRouter != irmRouter) revert RegistryFactoryIrmRouterMismatch(irmRouter, factoryIrmRouter);
+
+        address resealManager = vm.parseTomlAddress(registry, ".protocol.reseal_manager");
+        address factoryResealManager = ILidoLendMarketFactoryBindings(factory).RESEAL_MANAGER();
+        if (factoryResealManager != resealManager) {
+            revert RegistryFactoryResealManagerMismatch(resealManager, factoryResealManager);
+        }
     }
 
     function requireRegistryGovernance(DeployConfig memory cfg, string memory registry) internal view {
@@ -164,6 +178,11 @@ library DeployConfigFile {
         address registryExecutor = vm.parseTomlAddress(registry, ".protocol.evm_script_executor");
         if (registryExecutor != cfg.evmScriptExecutor) {
             revert RegistryExecutorMismatch(cfg.evmScriptExecutor, registryExecutor);
+        }
+
+        address registryResealManager = vm.parseTomlAddress(registry, ".protocol.reseal_manager");
+        if (registryResealManager != cfg.resealManager) {
+            revert RegistryResealManagerMismatch(cfg.resealManager, registryResealManager);
         }
 
         uint256 artifactChainId = vm.parseTomlUint(registry, ".artifact.chain_id");

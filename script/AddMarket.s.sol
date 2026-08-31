@@ -33,6 +33,7 @@ contract AddMarket is Script, ProtocolDeployer {
     error FactoryDashboardMismatch(address artifactDashboard, address factoryDashboard);
     error FactoryAdminMismatch(address expected, address actual);
     error FactoryCircuitBreakerMismatch(address expected, address actual);
+    error FactoryResealManagerMismatch(address expected, address actual);
 
     struct RunContext {
         ArtifactMetadata artifacts;
@@ -171,6 +172,12 @@ contract AddMarket is Script, ProtocolDeployer {
                 revert FactoryCircuitBreakerMismatch(artifactCircuitBreaker, input.circuitBreaker);
             }
             _requireCircuitBreakerPolicy(input.circuitBreaker, deployConfig.evmScriptExecutor);
+
+            address artifactResealManager = vm.parseTomlAddress(protocolArtifact, ".protocol.reseal_manager");
+            address factoryResealManager = deployedFactory.RESEAL_MANAGER();
+            if (factoryResealManager != artifactResealManager) {
+                revert FactoryResealManagerMismatch(artifactResealManager, factoryResealManager);
+            }
 
             input.irmConfigFactory = vm.parseTomlAddress(protocolArtifact, ".protocol.irm_config_factory");
             if (input.irmConfigFactory == address(0)) {

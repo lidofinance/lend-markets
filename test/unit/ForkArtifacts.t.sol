@@ -59,6 +59,7 @@ contract ForkArtifactsTest is Test {
     address internal constant ORACLE = address(0x3001);
     address internal constant AGENT = address(0xA11);
     address internal constant EXECUTOR = address(0xE11);
+    address internal constant RESEAL_MANAGER = address(0x5EA1);
 
     ForkArtifactsHarness internal h;
     ForkStackRoleHarness internal roles;
@@ -413,6 +414,8 @@ contract ForkArtifactsTest is Test {
                 vm.toString(AGENT),
                 "\"\nevm_script_executor = \"",
                 vm.toString(EXECUTOR),
+                "\"\nreseal_manager = \"",
+                vm.toString(RESEAL_MANAGER),
                 "\"\ncircuit_breaker_artifact = \"",
                 CIRCUIT_BREAKER_ARTIFACT,
                 "\"\ncore = \"",
@@ -450,7 +453,9 @@ contract ForkArtifactsTest is Test {
     }
 
     function _compatibilityHash(string memory network, uint256 chainId) internal pure returns (bytes32) {
-        return DeployConfigFile.canonicalCompatibilityHash(network, chainId, AGENT, EXECUTOR, CIRCUIT_BREAKER_ARTIFACT);
+        return DeployConfigFile.canonicalCompatibilityHash(
+            network, chainId, AGENT, EXECUTOR, RESEAL_MANAGER, CIRCUIT_BREAKER_ARTIFACT
+        );
     }
 
     function _runName(string memory tag) internal pure returns (string memory) {

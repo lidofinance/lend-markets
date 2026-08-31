@@ -39,6 +39,10 @@ contract DeployConfigFileHarness {
     function IRM_ROUTER() external view returns (address) {
         return address(this);
     }
+
+    function RESEAL_MANAGER() external view returns (address) {
+        return address(this);
+    }
 }
 
 contract DeployConfigFileTest is Test {
@@ -47,6 +51,7 @@ contract DeployConfigFileTest is Test {
         uint256 protocolChainId;
         address agent;
         address executor;
+        address resealManager;
         string artifactDeployment;
         string protocolDeployment;
         bytes32 artifactConfigHash;
@@ -72,6 +77,7 @@ contract DeployConfigFileTest is Test {
         assertEq(cfg.network, "mainnet");
         assertEq(cfg.chainId, 1);
         assertEq(cfg.circuitBreakerArtifact, "lido-lend");
+        assertEq(cfg.resealManager, 0x7914b5a1539b97Bd0bbd155757F25FD79A522d24);
         assertTrue(cfg.exitBooks);
         assertEq(cfg.exitBookPauser, 0x70997970C51812dc3A010C7d01b50e0d17dc79C8);
         assertEq(cfg.exitBookMaxRequestLifetime, 365 days);
@@ -223,6 +229,21 @@ contract DeployConfigFileTest is Test {
         harness.requireRegistryGovernance(_config(agent, executor), _registry(1, agent, registryExecutor));
     }
 
+    function testRevert_requireRegistryGovernance_resealManagerMismatch() external {
+        address agent = makeAddr("agent");
+        address executor = makeAddr("executor");
+        DeployConfig memory cfg = _config(agent, executor);
+        RegistryFixture memory fixture = _fixture(1, agent, executor);
+        address actual = makeAddr("otherResealManager");
+        fixture.resealManager = actual;
+        fixture.compatibilityHash = _compatibilityHash("unit", 1, agent, executor, actual);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployConfigFile.RegistryResealManagerMismatch.selector, cfg.resealManager, actual)
+        );
+        harness.requireRegistryGovernance(cfg, _registryRaw(fixture));
+    }
+
     function testRevert_requireRegistryGovernance_rejectsIncompatibleRunResource() external {
         address agent = makeAddr("agent");
         address executor = makeAddr("executor");
@@ -275,18 +296,31 @@ contract DeployConfigFileTest is Test {
         address core = makeAddr("missingCore");
 
         vm.expectRevert(abi.encodeWithSelector(DeployConfigFile.RegistryCoreNotContract.selector, core));
-        harness.requireProtocolBackboneLive(_backboneRegistry(core, address(harness)));
+        harness.requireProtocolBackboneLive(_backboneRegistry(core, address(harness), address(harness)));
     }
 
     function testRevert_requireProtocolBackboneLive_factoryNotContract() external {
         address factory = makeAddr("missingFactory");
 
         vm.expectRevert(abi.encodeWithSelector(DeployConfigFile.RegistryFactoryNotContract.selector, factory));
-        harness.requireProtocolBackboneLive(_backboneRegistry(address(harness), factory));
+        harness.requireProtocolBackboneLive(_backboneRegistry(address(harness), factory, address(harness)));
     }
 
     function test_requireProtocolBackboneLive_acceptsContracts() external view {
-        harness.requireProtocolBackboneLive(_backboneRegistry(address(harness), address(harness)));
+        harness.requireProtocolBackboneLive(_backboneRegistry(address(harness), address(harness), address(harness)));
+    }
+
+    function testRevert_requireProtocolBackboneLive_resealManagerMismatch() external {
+        address artifactResealManager = makeAddr("artifactResealManager");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployConfigFile.RegistryFactoryResealManagerMismatch.selector, artifactResealManager, address(harness)
+            )
+        );
+        harness.requireProtocolBackboneLive(
+            _backboneRegistry(address(harness), address(harness), artifactResealManager)
+        );
     }
 
     function testRevert_requireRegistryGovernance_internalConfigHashMismatch() external {
@@ -330,6 +364,7 @@ contract DeployConfigFileTest is Test {
         cfg.configHash = CONFIG_HASH;
         cfg.agent = agent;
         cfg.evmScriptExecutor = executor;
+        cfg.resealManager = address(0x5EA1);
         cfg.circuitBreakerArtifact = "lido-lend";
         cfg.compatibilityHash = _compatibilityHash("unit", 1, agent, executor);
     }
@@ -386,6 +421,7 @@ contract DeployConfigFileTest is Test {
             protocolChainId: chainId,
             agent: agent,
             executor: executor,
+            resealManager: address(0x5EA1),
             artifactDeployment: RUN,
             protocolDeployment: RUN,
             artifactConfigHash: CONFIG_HASH,
@@ -421,13 +457,19 @@ contract DeployConfigFileTest is Test {
             vm.toString(fixture.agent),
             "\"\nevm_script_executor = \"",
             vm.toString(fixture.executor),
+            "\"\nreseal_manager = \"",
+            vm.toString(fixture.resealManager),
             "\"\ncircuit_breaker_artifact = \"lido-lend\"\nconfig_hash = \"",
             vm.toString(fixture.protocolConfigHash),
             "\"\n"
         );
     }
 
-    function _backboneRegistry(address core, address factory) private view returns (string memory) {
+    function _backboneRegistry(address core, address factory, address resealManager)
+        private
+        view
+        returns (string memory)
+    {
         return string.concat(
             "[protocol]\ncore = \"",
             vm.toString(core),
@@ -435,6 +477,8 @@ contract DeployConfigFileTest is Test {
             vm.toString(factory),
             "\"\nirm_router = \"",
             vm.toString(address(harness)),
+            "\"\nreseal_manager = \"",
+            vm.toString(resealManager),
             "\"\n"
         );
     }
@@ -444,7 +488,17 @@ contract DeployConfigFileTest is Test {
         pure
         returns (bytes32)
     {
-        return keccak256(abi.encode(network, chainId, agent, executor, "lido-lend"));
+        return keccak256(abi.encode(network, chainId, agent, executor, address(0x5EA1), "lido-lend"));
+    }
+
+    function _compatibilityHash(
+        string memory network,
+        uint256 chainId,
+        address agent,
+        address executor,
+        address resealManager
+    ) private pure returns (bytes32) {
+        return keccak256(abi.encode(network, chainId, agent, executor, resealManager, "lido-lend"));
     }
 
     function _configToml(bool exitBooks, string memory exitBookFields) private pure returns (string memory) {
@@ -453,6 +507,7 @@ contract DeployConfigFileTest is Test {
             "chain_id = 1\n",
             "agent = \"0x0000000000000000000000000000000000000001\"\n",
             "evm_script_executor = \"0x0000000000000000000000000000000000000002\"\n",
+            "reseal_manager = \"0x0000000000000000000000000000000000005EA1\"\n",
             "circuit_breaker_artifact = \"lido-lend\"\n",
             "exit_books = ",
             exitBooks ? "true\n" : "false\n",

@@ -13,6 +13,7 @@ struct ProtocolConfig {
     address agent;
     address evmScriptExecutor;
     address circuitBreaker;
+    address resealManager;
 }
 
 struct ProtocolDeployment {
@@ -29,6 +30,7 @@ struct ProtocolDeployment {
     address factory;
     address riskStewardDashboard;
     address circuitBreaker;
+    address resealManager;
     address guardianSignalsImpl;
     uint256 deployedBlock;
     address deployer;
@@ -97,6 +99,7 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("factory", d.factory));
         s = string.concat(s, _kv("risk_steward_dashboard", d.riskStewardDashboard));
         s = string.concat(s, _kv("circuit_breaker", d.circuitBreaker));
+        s = string.concat(s, _kv("reseal_manager", d.resealManager));
         s = string.concat(s, _kv("guardian_signals_impl", d.guardianSignalsImpl));
         s = string.concat(s, _kv("deployed_block", d.deployedBlock));
         s = string.concat(s, _kv("agent", d.agent));

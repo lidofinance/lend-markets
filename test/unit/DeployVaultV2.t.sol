@@ -75,7 +75,9 @@ contract DeployVaultV2Test is Test {
         vm.createDir(string.concat(dir, "/adapters"), true);
 
         bytes32 configHash = bytes32(uint256(0xCAFE));
-        bytes32 compatibilityHash = DeployConfigFile.canonicalCompatibilityHash("unit", 1, AGENT, EXECUTOR, "lido-lend");
+        address resealManager = address(0x5EA1);
+        bytes32 compatibilityHash =
+            DeployConfigFile.canonicalCompatibilityHash("unit", 1, AGENT, EXECUTOR, resealManager, "lido-lend");
         ArtifactMetadata memory metadata = ArtifactMetadata({
             deployment: run, chainId: 1, configHash: configHash, compatibilityHash: compatibilityHash
         });
@@ -92,6 +94,8 @@ contract DeployVaultV2Test is Test {
                 vm.toString(AGENT),
                 "\"\nevm_script_executor = \"",
                 vm.toString(EXECUTOR),
+                "\"\nreseal_manager = \"",
+                vm.toString(resealManager),
                 "\"\ncircuit_breaker_artifact = \"lido-lend\"\ncore = \"",
                 vm.toString(CORE),
                 "\"\nirm_router = \"",
