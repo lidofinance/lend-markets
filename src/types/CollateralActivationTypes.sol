@@ -15,11 +15,10 @@ pragma solidity 0.8.36;
 ///        horizon: the accumulator drains from `maxDelayInflow` to zero over this duration.
 /// @param maxDelayInflow Inflow reference at which the base delay reaches the cap, and the ceiling the
 ///        inflow accumulator saturates at.
-/// @param activatingLockAmount Lock on activating collateral, honored by `withdraw`. 0 disables it. Forced
-///        paths pass floor 0.
-/// @param activatingLockDuration How long, from `activatingStart`, the `activatingLockAmount` portion stays
-///        unwithdrawable. Once it elapses the locked collateral becomes withdrawable even if the lot has not
-///        matured. 0 disables the lock.
+/// @param minDepositAmount Minimum non-instant deposit. Cannot exceed `minActivationAmount`; 0 disables the floor.
+/// @param activatingLockDuration How long, from `activatingStart`, the activating balance cannot be withdrawn.
+///        Once it elapses the collateral is withdrawable even if it has not matured; dust is never locked.
+///        0 disables the lock.
 /// @param minActivationAmount Dust threshold. Collateral below it does not enter activation.
 /// @param maxGuardiansQuorumDelay Liveness fallback for the quorum gate, measured from the lot's start. A lot can
 ///        mature only after its full unlock time, including guardian surcharges; after that, it needs either a
@@ -34,7 +33,7 @@ struct CollateralActivationConfig {
     uint40 minActivationDelay;
     uint40 maxActivationDelay;
     uint128 maxDelayInflow;
-    uint128 activatingLockAmount;
+    uint128 minDepositAmount;
     uint40 activatingLockDuration;
     uint128 minActivationAmount;
     uint40 maxGuardiansQuorumDelay;

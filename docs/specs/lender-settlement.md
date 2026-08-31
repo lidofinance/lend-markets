@@ -151,9 +151,22 @@ Each quote candidate contains:
 - the exact borrow shares to pass to the core; and
 - the borrow shares remaining after settlement.
 
-For a candidate with positive borrow shares, zero remaining borrow shares marks a full close. If the policy candidate would close the debt but the supply-share budget cannot fund that result, the quote returns a smaller partial settlement. An unavailable candidate has all three values set to zero.
+For a candidate with positive borrow shares, zero remaining borrow shares marks a full close. If the policy candidate would close the debt but the supply-share budget cannot fund that result, the quote returns a smaller partial settlement. An unavailable candidate — one with no loan-asset allowance, an unfunded budget, or a cut under the seizure floor — quotes zero borrow shares and zero supply-share burn but still reports the borrower's untouched debt as remaining; only a candidate with no debt is all-zero.
 
 At the market snapshot used for the quote, the opposing rounding directions guarantee that the core's derived supply burn does not exceed the supplied budget. If the budget funds no borrow share, the quote is empty.
+
+### Seizure floor
+
+The core prices the collateral seizure off the canceled debt rounded **down**, then divides by the oracle price and rounds down again:
+
+```text
+cutAssets        = assets represented by quotedBorrowShares, rounded down
+seizedCollateral = floor(cutAssets * 1e36 / oraclePrice)
+```
+
+`LidoLend.settle()` rejects a cut whose `seizedCollateral` is zero, so above parity — `oraclePrice > 1e36`, as for wstETH collateral against WETH — the smallest executable cut is `ceil(oraclePrice / 1e36)` loan assets rather than one. The controller applies the same calculation to the quoted borrow shares and reports a cut that buys no whole collateral unit as an unavailable candidate, so a quote handed to the core is never rejected for seizing nothing. A market whose oracle reports a zero price quotes nothing as well.
+
+The floor binds on whichever input drives the amount down: a policy allowance of a few loan-asset units, or a supply-share budget shrunk onto that range. Because it is reported as budget exhaustion rather than an error, an executor sees the documented stop condition — `settle` reverts `NothingSettled` when the whole list yields nothing, and `fallbackExit` partial-fills on its liquid leg.
 
 Passing a zero budget asks for the policy quote without budget reduction and is useful for inspection. An executor should quote against its live supply-share budget and revalidate a quote that is not consumed immediately. Zero is a sentinel only at the controller view: a vault request whose pro-rata supply budget rounds to zero reverts before requesting a quote.
 
@@ -230,9 +243,9 @@ Both vault exits require nonzero requested shares, a nonzero receiver, and a req
 
 Targeted settlement does not withdraw or reserve existing loan-token liquidity. The caller supplies an ordered borrower list. For each borrower, the vault asks the controller for the **personal** settlement budgeted to the remaining supply shares and sends the resulting borrow-share amount unchanged to the core. Root policy is reserved for the queue-driven fallback path and cannot be invoked through the caller's list.
 
-Borrowers with no positive personal settlement consume nothing. Iteration stops when the budget is exhausted or the list ends. If no core supply share is consumed across the entire list, the call reverts instead of silently burning nothing.
+Borrowers with no positive personal settlement consume nothing — including one whose remaining budget only funds a cut under the [seizure floor](#seizure-floor). Iteration stops when the budget is exhausted or the list ends. If no core supply share is consumed across the entire list, the call reverts instead of silently burning nothing.
 
-The receiver gets only seized collateral; the returned loan-asset amount is zero. If settlement consumes the full core budget, the vault burns all requested vault shares. If it consumes only part, the vault burns the same proportion of the request, rounded up so remaining holders are not diluted:
+The receiver gets only seized collateral; no loan assets are paid. If settlement consumes the full core budget, the vault burns all requested vault shares. If it consumes only part, the vault burns the same proportion of the request, rounded up so remaining holders are not diluted:
 
 ```text
 vaultSharesBurned =
@@ -258,19 +271,19 @@ For the remaining vault shares, the vault computes the pro-rata managed supply b
 The loop stops when:
 
 - the remaining budget is exhausted;
-- the queue produces no executable positive settlement; or
+- the queue produces no executable positive settlement, including a root cut under the [seizure floor](#seizure-floor); or
 - the caller's iteration bound is reached.
 
-A zero iteration input selects the contract's default bound of 150 settlement attempts. Each root quote consumes one iteration, including a zero candidate that stops the loop. The bound counts attempts, not distinct borrowers: a partial settlement can leave the same borrower at the root for another attempt. Queue or iteration exhaustion returns a partial result when the call has made progress, so a large exit may need repeated calls. A positive root candidate that fails in the core is not skipped; it reverts the call.
+A zero iteration input selects the contract's default bound of 150 settlement attempts. Each root quote consumes one iteration, including a zero candidate that stops the loop. The bound counts attempts, not distinct borrowers: a partial settlement can leave the same borrower at the root for another attempt. Queue or iteration exhaustion returns a partial result when the call has made progress, so a large exit may need repeated calls. A root candidate the controller still quotes but the core rejects is not skipped; it reverts the call.
 
 > [!NOTE]
-> **Accepted head-of-line rounding boundary.** A positive root quote can still produce zero collateral: canceled debt rounds up, while the collateral seizure is calculated separately and rounds down. `LidoLend.settle()` then reverts before the controller hook, so `fallbackExit` cannot advance to later borrowers.
+> **Head-of-line rounding boundary.** A root whose executable cut falls under the [seizure floor](#seizure-floor) quotes nothing, so the loop stops on it rather than advancing to later borrowers. This depends on the settlement amount, not the borrower's collateral balance: tiny debt, a partial-repayment remainder, or a supply budget shrunk onto the floor can all produce it, and above parity the floor is more than one loan-asset unit.
 >
-> This failure depends on the settlement amount, not the borrower's collateral balance. Tiny debt or a partial-repayment remainder can make the calculated collateral payout round to zero. The operational mitigation is to repay the root's exact remaining borrow shares on its behalf. Once that succeeds, `fallbackExit` can be retried.
+> A call that has already made progress — a liquid leg, or earlier successful cuts — keeps that progress and returns a partial result. The operational mitigation is to repay the root's exact remaining borrow shares on its behalf; once that succeeds, `fallbackExit` advances past it.
 
 The vault burns shares for the liquid withdrawal plus the pro-rata shares covered by settlement. If neither step burns any share, the call reverts.
 
-The return value `sharesBurned` covers both steps. The `FallbackExit` event is emitted only when the call reaches queue settlement, and its `sharesBurned` field covers that step alone. The standard ERC-4626 `Withdraw` event describes the liquid withdrawal. Each core settlement emits a borrower-specific `Settle` event, which is required to attribute an aggregate multi-borrower exit.
+The return value `sharesBurned` covers both steps. Every successful call emits one `FallbackExit` event, and it reports each step separately: `sharesBurned` is the whole call's burn, `sharesSettled` the settlement step's share of it, and `assetsWithdrawn` the loan assets the liquid step paid out. The liquid step also emits the standard ERC-4626 `Withdraw` event for the same transfer. Each core settlement emits a borrower-specific `Settle` event, which is required to attribute an aggregate multi-borrower exit.
 
 > [!NOTE]
 > **Final virtual-share boundary.** At the specific final boundary where the vault is the only supplier, `totalSupplyAssets == totalBorrowAssets`, and fallback exit consumes the vault's full managed supply budget, Morpho's virtual shares can leave zero-value core supply shares and residual total borrow assets. The lender can still burn all vault shares and exit because the residual does not represent a remaining lender claim. Its raw size depends on the live share price; there is no universal one-raw-unit bound.

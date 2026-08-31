@@ -68,10 +68,11 @@ contract ForcedSeizureActivationInflowTest is LidoLendSetup {
     }
 }
 
-/// @notice Settlement variant of the ACT-05/06 end-to-end: the forced seizure comes from `vault.settle`
-///         (`_handleSettle` -> `_activation.seize`) rather than liquidation. The borrower is primed
-///         solvent-but-unhealthy in `setUp` (a separate tx), so its own supply inflow has decayed and only the
-///         fresh, seized collateral's inflow is in play in the test tx.
+/// @notice Settlement variant of the ACT-05/06 end-to-end, exercising the active-first seizure order: the
+///         forced seizure comes from `vault.settle` (`_handleSettle` -> `_activation.seize`) rather than
+///         liquidation. The borrower is primed solvent-but-unhealthy in `setUp` (a separate tx) with its
+///         collateral matured into `active`, so the settlement's small LTV-driven cut below is absorbed
+///         entirely by that matured balance and never reaches the fresh, still-activating top-up.
 contract SettlementActivationInflowTest is LidoLendSetup {
     using MarketActions for Market;
 
@@ -105,7 +106,7 @@ contract SettlementActivationInflowTest is LidoLendSetup {
         return protocol.markets[0];
     }
 
-    function test_settlement_reversesSameTxActivationInflow() public {
+    function test_settlement_seizureCoveredByActive_leavesFreshActivatingInflowUntouched() public {
         Market storage m = _m();
 
         uint256 delayPre = m.controller.currentActivationDelay(0);
@@ -118,15 +119,19 @@ contract SettlementActivationInflowTest is LidoLendSetup {
         uint256 delayAfterSupply = m.controller.currentActivationDelay(0);
         assertGt(delayAfterSupply, delayPre, "fresh non-instant collateral raised the activation throttle");
 
-        // A settlement in the SAME tx cuts the borrower, seizing collateral through `_handleSettle` -> `seize`,
-        // which drains the fresh activating collateral and reverses (at least part of) the inflow it added.
+        // A settlement in the SAME tx cuts the borrower through `_handleSettle` -> `seize`. Seizure now consumes
+        // active collateral first, and the borrower's matured 100 ether from setUp comfortably covers this small
+        // LTV-driven cut, so the fresh activating top-up is never touched and its inflow contribution survives.
         address[] memory bs = new address[](1);
         bs[0] = borrower;
         uint256 shares = m.vault.balanceOf(lender);
         m.settle(lender, shares, bs, lender);
 
         uint256 delayAfterSettle = m.controller.currentActivationDelay(0);
-        assertLt(delayAfterSettle, delayAfterSupply, "settlement's seize reversed the throttle bump");
-        assertGe(delayAfterSettle, delayPre, "cannot reverse more than the fresh collateral's own inflow");
+        assertEq(
+            delayAfterSettle,
+            delayAfterSupply,
+            "a seizure covered by active collateral leaves the fresh activating inflow untouched"
+        );
     }
 }

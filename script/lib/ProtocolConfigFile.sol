@@ -266,6 +266,7 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("irm", d.irm));
         s = string.concat(s, _kv("irm_config", d.irmConfig));
         s = string.concat(s, _kvQuoted("lltv", d.market.lltv));
+        s = string.concat(s, _kvQuoted("supply_cap", d.market.supplyCap));
         s = string.concat(s, _kv("guardian_signals", d.market.guardianSignals));
         s = string.concat(s, _kv("guardian_group", d.guardianGroup));
         s = string.concat(s, _kv("factory", d.factory));
@@ -281,9 +282,9 @@ library ProtocolConfigFile {
         s = string.concat(s, _kvQuoted("min_activation_delay", m.activationConfig.minActivationDelay));
         s = string.concat(s, _kvQuoted("max_activation_delay", m.activationConfig.maxActivationDelay));
         s = string.concat(s, _kvQuoted("max_delay_inflow", m.activationConfig.maxDelayInflow));
-        s = string.concat(s, _kvQuoted("activating_lock_amount", m.activationConfig.activatingLockAmount));
         s = string.concat(s, _kvQuoted("activating_lock_duration", m.activationConfig.activatingLockDuration));
         s = string.concat(s, _kvQuoted("min_activation_amount", m.activationConfig.minActivationAmount));
+        s = string.concat(s, _kvQuoted("min_deposit_amount", m.activationConfig.minDepositAmount));
         s = string.concat(s, _kvQuoted("max_guardians_quorum_delay", m.activationConfig.maxGuardiansQuorumDelay));
         s = string.concat(s, _kvQuoted("delay_per_strike", m.activationConfig.delayPerStrike));
         s = string.concat(s, _kvQuoted("delay_per_suspect", m.activationConfig.delayPerSuspect));

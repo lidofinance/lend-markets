@@ -47,6 +47,7 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         address collateralToken;
         address oracleSource;
         uint256 lltv;
+        uint256 supplyCap;
         bool enableSettlement;
         CollateralActivationConfig activation;
         SettlementConfig settlementConfig;
@@ -76,8 +77,9 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
 
         _configureAdaptiveIrm(d.irm, d.params, cfg.admin);
 
-        (d.controllerProxy, d.controllerImpl) =
-            _deployController(d.core, d.marketId, d.guardianSignals, cfg.admin, cfg.activation, cfg.settlementConfig);
+        (d.controllerProxy, d.controllerImpl) = _deployController(
+            d.core, d.marketId, d.guardianSignals, cfg.admin, cfg.supplyCap, cfg.activation, cfg.settlementConfig
+        );
 
         LidoLendOwner(d.ownerFacade).createMarket(d.params, d.controllerProxy, cfg.enableSettlement);
 
@@ -138,13 +140,14 @@ abstract contract LidoLendDeployer is LidoLendPrimitives {
         Id marketId,
         address guardianSignals,
         address admin,
+        uint256 supplyCap,
         CollateralActivationConfig memory activation,
         SettlementConfig memory settlement
     ) internal virtual returns (address proxy, address impl) {
         impl = address(new LidoLendMarketController(IMorpho(core)));
         bytes memory initData = abi.encodeCall(
             LidoLendMarketController.initialize,
-            (marketId, admin, IGuardianSignalsView(guardianSignals), activation, settlement)
+            (marketId, admin, supplyCap, IGuardianSignalsView(guardianSignals), activation, settlement)
         );
         proxy = _behindProxy(impl, admin, initData);
     }

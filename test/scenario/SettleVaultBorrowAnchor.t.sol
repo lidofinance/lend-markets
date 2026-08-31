@@ -53,7 +53,7 @@ interface IVault {
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
-        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
+        returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
 }
 
 /// @notice ERC4626 settlement and fallback exits against borrow-anchored core settlement.
@@ -112,14 +112,15 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
                 collateralToken: address(collateral),
                 oracleSource: address(collateral),
                 lltv: LLTV,
+                supplyCap: 0,
                 enableSettlement: true,
                 activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
-                    activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     maxDelayInflow: 100_000 ether,
                     minActivationAmount: 1e18,
+                    minDepositAmount: 0,
                     maxGuardiansQuorumDelay: 0,
                     delayPerStrike: 0,
                     delayPerSuspect: 0
@@ -302,7 +303,7 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
         }
 
         vm.prank(LENDER);
-        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             IVault(vault).settle(shares, borrowers, RECEIVER, LENDER);
 
         uint256 debtSharesAfter = core.position(id, BORROWER).borrowShares;
@@ -381,7 +382,7 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
 
         uint256 shares = IVault(vault).balanceOf(LENDER);
         vm.prank(LENDER);
-        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             IVault(vault).settle(shares, borrowers, RECEIVER, LENDER);
 
         uint256 remainingVaultSupplyShares = core.position(id, vault).supplyShares;
@@ -425,7 +426,7 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
         uint256 shares = IVault(vault).balanceOf(LENDER);
 
         vm.prank(LENDER);
-        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             IVault(vault).settle(shares, borrowers, RECEIVER, LENDER);
 
         assertGt(sharesBurned, 0, "vault shares burned");
@@ -613,9 +614,11 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
         assertLe(thirdSupplyBurn, quote.quotedSettlementBudget - fillerSupplyBurn, "second burn stays within budget");
     }
 
-    /// @dev Queue-driven `fallbackExit` hits the same core guard when the root is only dust. Repaying the dust root
-    ///      removes it from the queue, and the same fallback exit can then complete through the ordinary redeem leg.
-    function test_fallbackExit_dustRootRevertsUntilDustIsRepaid() public {
+    /// @dev A dust root cannot be settled: the cut would seize no collateral, which the core rejects, so the
+    ///      controller quotes no cut at all and the queue leg stops on it. The exit partial-fills on its liquid leg
+    ///      instead of reverting. Repaying the dust root removes it from the queue, and the leftover shares then
+    ///      complete through the ordinary redeem leg.
+    function test_fallbackExit_dustRootPartialFillsUntilDustIsRepaid() public {
         _repayAll(FILLER);
         _repayAll(THIRD);
         uint256 dustDebtAssets = _repayAllButOneDebtAsset(BORROWER);
@@ -623,23 +626,33 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
 
         _setWholeDebtSlice();
 
-        (address root,) = controller.nextSettlementBorrower(0);
+        (address root, SettlementSlice memory slice) = controller.nextSettlementBorrower(0);
         assertEq(root, BORROWER, "dust borrower is the queue root");
+        assertEq(slice.borrowShares, 0, "its cut would seize nothing, so no cut is quoted");
 
         uint256 shares = IVault(vault).balanceOf(LENDER);
-        vm.prank(LENDER);
-        vm.expectRevert(bytes("settlement slice too small"));
-        IVault(vault).fallbackExit(shares, RECEIVER, LENDER, 0);
-
-        _repayAll(BORROWER);
-        assertEq(controller.settlementBorrowersCount(), 0, "dust borrower removed from queue");
+        uint256 liquidAssets = controller.maxWithdrawableAssets(vault);
+        assertLt(liquidAssets, IVault(vault).previewRedeem(shares), "the request outruns free liquidity");
 
         vm.prank(LENDER);
         (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
             IVault(vault).fallbackExit(shares, RECEIVER, LENDER, 0);
 
-        assertEq(sharesBurned, shares, "all shares redeemed after dust cleanup");
-        assertGt(loanAssets, 0, "ordinary liquidity paid out");
+        assertEq(loanAssets, liquidAssets, "the liquid leg pays out in full");
+        assertGt(sharesBurned, 0, "and burns its own shares");
+        assertLt(sharesBurned, shares, "the unsettleable dust root leaves the request partially filled");
+        assertEq(collateralSeized, 0, "the queue leg seized nothing");
+        assertEq(debtCanceled, 0, "and canceled no debt");
+
+        _repayAll(BORROWER);
+        assertEq(controller.settlementBorrowersCount(), 0, "dust borrower removed from queue");
+
+        uint256 remaining = IVault(vault).balanceOf(LENDER);
+        vm.prank(LENDER);
+        (sharesBurned,, collateralSeized, debtCanceled) = IVault(vault).fallbackExit(remaining, RECEIVER, LENDER, 0);
+
+        assertEq(sharesBurned, remaining, "the leftover shares redeem after dust cleanup");
+        assertEq(IVault(vault).balanceOf(LENDER), 0, "lender fully exited");
         assertEq(collateralSeized, 0, "no settlement after dust cleanup");
         assertEq(debtCanceled, 0, "no debt canceled after dust cleanup");
     }

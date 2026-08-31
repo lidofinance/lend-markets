@@ -40,7 +40,7 @@ For one `(marketId, account)`, `getOpinion` returns the fields below. An **activ
 
 A borrow checks the caller, debt owner, and receiver for a ban. The debt owner's other opinion fields affect only collateral activation.
 
-A ban does not directly gate repayment, liquidation, settlement, or a debt-free collateral withdrawal. It does prevent maturation. If an activation lock is still live, the unmatured collateral can therefore delay a debt-free withdrawal until the lock expires.
+A ban does not directly gate repayment, liquidation, settlement, or a debt-free collateral withdrawal. It does prevent maturation. If an activation lock is still live, the unmatured collateral can therefore delay a debt-free withdrawal of the inactive balance until the lock expires; the active balance stays withdrawable.
 
 ## Guardian identities and authority
 
@@ -48,7 +48,9 @@ A guardian is one address in the committee. It may appoint one delegate. Only th
 
 Reports and heartbeats are stored under the guardian identity. Replacing a delegate therefore preserves the guardian's existing state. Each guardian identity contributes at most one flag and one suspect report per `(marketId, account)`.
 
-Delegate addresses need not be unique. One signing address may represent several guardian identities and submit one report or heartbeat for each. Quorum counts guardian identities, not independent callers or keys, so the committee relies on its members using independent signing keys.
+Active delegate addresses are unique. `setDelegate` rejects a non-zero delegate that is a guardian or that any guardian currently uses, including the caller's own current delegate, so one signing address cannot represent two committee identities.
+
+Membership changes enforce the same rule: `addGuardian` and `replaceGuardian` reject a new guardian that is currently some guardian's delegate. Replacing a guardian with its own delegate is allowed, because the removal clears the pairing before the new seat is added.
 
 The committee manager changes membership, quorum, and the suspect window. Separate authorities can directly latch a ban or clear a ban and its flags. Exact role holders and governance paths are listed in [Privileged Roles](roles.md#guardiansignals).
 
@@ -114,16 +116,13 @@ A zero suspect window does not disable reports: a report at time `t` can still a
 | Action | What changes |
 |---|---|
 | `suspect` | Removes expired reports, adds or refreshes one report, and rebuilds the snapshot |
-| `unsuspect` removes a live report | Removes expired reports and the named report, then rebuilds from the survivors |
+| `unsuspect` | Removes expired reports and the named live report, if any, then rebuilds from the survivors when anything was removed |
 | `prune` removes a former guardian's report | Rebuilds from the remaining current guardians |
 | `getOpinion` | Performs no cleanup; returns the cached count with an expiry calculated from the current window |
 
 Refreshing one report can extend the snapshot expiry for every report counted with it. Removing the newest report can move the expiry back to the next-newest report; surviving reports keep their original timestamps.
 
 Changing `suspectWindow` immediately changes the expiry returned from the cached `suspectReportedAt`, but does not recount the cached `suspectCount`. The next snapshot rebuild uses the new window.
-
-> [!WARNING]
-> **A cached snapshot can outlive its reports.** If `unsuspect` finds no live report for the named guardian, it may remove expired reports and return without rebuilding the snapshot. The report set can then be empty while the cached count remains nonzero. Increasing the suspect window can extend that old snapshot to later-started lots. A new report, removal of a live report, or a `prune` that removes a former guardian's report rebuilds it.
 
 ### Example
 
@@ -186,8 +185,14 @@ A heartbeat contains a block hash, block number, and guardian-supplied scan time
 
 The EVM returns zero for the current block and for blocks outside the `blockhash` lookback window, so neither can provide an accepted proof. Number and hash authenticate the referenced block within that window; they do not authenticate the supplied timestamp. Only the timestamp is stored, while the block number remains in the event.
 
+### Monitoring payload
+
+A heartbeat also carries a `bytes` payload that the registry does not read, validate, or store. It is emitted unchanged in the `Heartbeat` event, so guardians can publish scan metadata alongside the timestamp: a report digest, a tooling version, a scanned range. It may be empty, and its contents cannot change whether the heartbeat is accepted.
+
+Consumers must treat it as unauthenticated guardian-supplied data. The registry checks only that the caller may act for `onBehalf`, so the payload carries the same trust as the supplied timestamp and no more.
+
 > [!WARNING]
-> **Accepted guardian-timestamp trust.** The frontier uses the guardian-supplied timestamp without checking it against the block header. A caller controlling the configured quorum of guardian identities can therefore advance the frontier without having scanned through that time. Quorum may be one, and several identities may share one delegate key.
+> **Accepted guardian-timestamp trust.** The frontier uses the guardian-supplied timestamp without checking it against the block header. A party controlling the configured quorum of guardian identities can therefore advance the frontier without having scanned through that time. Quorum may be one, and delegate uniqueness separates only addresses: one operator may still hold the keys behind several identities.
 
 ## Related references
 

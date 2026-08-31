@@ -126,7 +126,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         guardianA = makeAddr("guardianA");
         guardianB = makeAddr("guardianB");
 
-        guardianSignals = factory.deployGuardianSignals(_guardianSpec());
+        guardianSignals = factory.deployGuardianSignals(_guardianSpec(), keccak256("primary"));
         marketSpec = _marketSpec(guardianSignals);
         marketParams = MarketParams({
             loanToken: marketSpec.loanToken,
@@ -137,6 +137,38 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         });
         (marketId, controller) = factory.deployMarketController(marketSpec);
         vault = factory.deployERC4626Wrapper(controller, marketParams, _erc4626WrapperSpec());
+    }
+
+    function testRevert_constructor_rejectsZeroAdmin() external {
+        LidoLendMarketFactory.Implementations memory implementations = _implementations();
+        LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(circuitBreaker);
+
+        vm.expectRevert(LidoLendMarketFactory.AdminZeroAddress.selector);
+        new LidoLendMarketFactory(implementations, dependencies, address(0));
+    }
+
+    function testRevert_constructor_rejectsZeroCircuitBreaker() external {
+        LidoLendMarketFactory.Implementations memory implementations = _implementations();
+        LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(address(0));
+
+        vm.expectRevert(LidoLendMarketFactory.CircuitBreakerZeroAddress.selector);
+        new LidoLendMarketFactory(implementations, dependencies, controllerAdmin);
+    }
+
+    function testRevert_deployMarketController_rejectsCodelessLoanToken() external {
+        LidoLendMarketFactory.MarketSpec memory spec = marketSpec;
+        spec.loanToken = makeAddr("codelessLoanToken");
+
+        vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.NotContract.selector, spec.loanToken));
+        factory.deployMarketController(spec);
+    }
+
+    function testRevert_deployMarketController_rejectsCodelessCollateralToken() external {
+        LidoLendMarketFactory.MarketSpec memory spec = marketSpec;
+        spec.collateralToken = makeAddr("codelessCollateralToken");
+
+        vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.NotContract.selector, spec.collateralToken));
+        factory.deployMarketController(spec);
     }
 
     function test_validateMarketController_acceptsExactRoleSets() external view {
@@ -162,7 +194,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
     }
 
     function testRevert_validateMarketController_rejectsNonCanonicalControllerForCreatedMarket() external {
-        (, address otherController) = factory.deployMarketController(marketSpec);
+        address otherController = _otherControllerForSameMarket();
         _createMarket(controller);
 
         vm.expectRevert(
@@ -198,7 +230,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
     }
 
     function testRevert_validateMarketController_rejectsGuardianMismatch() external {
-        address wrongGuardianSignals = factory.deployGuardianSignals(_guardianSpec());
+        address wrongGuardianSignals = factory.deployGuardianSignals(_otherGuardianSpec(), keccak256("other"));
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -510,7 +542,8 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
     }
 
     function testRevert_validateGuardianSignals_unexpectedAccessLimiter() external {
-        address registryAddress = factory.deployGuardianSignals(_guardianSpec());
+        LidoLendMarketFactory.GuardianSpec memory spec = _otherGuardianSpec();
+        address registryAddress = factory.deployGuardianSignals(spec, keccak256("other"));
         GuardianSignals registry = GuardianSignals(registryAddress);
         address unexpectedHolder = makeAddr("unexpectedAccessLimiter");
         bytes32 limiterRole = registry.ACCESS_LIMITER_ROLE();
@@ -523,7 +556,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
                 LidoLendMarketFactory.RoleMemberCountMismatch.selector, registryAddress, limiterRole, 0, 1
             )
         );
-        factory.validateGuardianSignals(registryAddress, _guardianSpec());
+        factory.validateGuardianSignals(registryAddress, spec);
     }
 
     function testRevert_validateGuardianSignals_unexpectedAdminOfEveryKnownRole() external {
@@ -626,7 +659,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
     }
 
     function testRevert_validateERC4626Wrapper_rejectsControllerMismatch() external {
-        (, address otherController) = factory.deployMarketController(marketSpec);
+        address otherController = _otherControllerForSameMarket();
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -649,7 +682,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
     }
 
     function testRevert_deployERC4626Wrapper_rejectsNonCanonicalControllerForCreatedMarket() external {
-        (, address otherController) = factory.deployMarketController(marketSpec);
+        address otherController = _otherControllerForSameMarket();
         _createMarket(controller);
 
         vm.expectRevert(
@@ -660,10 +693,16 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.deployERC4626Wrapper(otherController, marketParams, _erc4626WrapperSpec());
     }
 
+    /// @dev A second wrapper over a live market is allowed, and carries its own share metadata: the metadata is
+    ///      part of the deployment address, so an exact duplicate of an existing wrapper has nowhere to go.
     function test_deployERC4626Wrapper_acceptsCanonicalControllerForCreatedMarket() external {
         _createMarket(controller);
 
-        address secondVault = factory.deployERC4626Wrapper(controller, marketParams, _erc4626WrapperSpec());
+        address secondVault = factory.deployERC4626Wrapper(
+            controller,
+            marketParams,
+            LidoLendMarketFactory.ERC4626WrapperSpec({name: "Second Loan Vault", symbol: "lidoLOAN2"})
+        );
 
         assertEq(address(LidoLendERC4626(secondVault).controller()), controller, "controller");
         assertEq(Id.unwrap(LidoLendERC4626(secondVault).marketId()), Id.unwrap(marketId), "market id");
@@ -674,6 +713,16 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         vm.prank(GOVERNANCE);
         lidoLendOwner.grantRole(marketCreatorRole, address(this));
         lidoLendOwner.createMarket(marketParams, marketController, true);
+    }
+
+    /// @dev Another controller for the same market. The activation config sits outside the market id, so varying it
+    ///      leaves the id alone while giving the controller a deployment address of its own.
+    function _otherControllerForSameMarket() private returns (address otherController) {
+        LidoLendMarketFactory.MarketSpec memory spec = marketSpec;
+        spec.activationConfig.minActivationDelay += 1;
+        Id otherMarketId;
+        (otherMarketId, otherController) = factory.deployMarketController(spec);
+        assertEq(Id.unwrap(otherMarketId), Id.unwrap(marketId), "same market");
     }
 
     function _marketSpec(address registry) private returns (LidoLendMarketFactory.MarketSpec memory spec) {
@@ -688,8 +737,27 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
             oracle: address(oracle),
             lltv: 0.8e18,
             guardianSignals: registry,
+            supplyCap: 1_000 ether,
             activationConfig: _activationConfig(),
             settlementConfig: _settlementConfig()
+        });
+    }
+
+    function _implementations() private view returns (LidoLendMarketFactory.Implementations memory) {
+        return LidoLendMarketFactory.Implementations({
+            controller: factory.CONTROLLER_IMPL(),
+            erc4626Wrapper: factory.ERC4626_WRAPPER_IMPL(),
+            guardianSignals: factory.GUARDIAN_SIGNALS_IMPL()
+        });
+    }
+
+    function _dependencies(address circuitBreaker_) private view returns (LidoLendMarketFactory.Dependencies memory) {
+        return LidoLendMarketFactory.Dependencies({
+            lidoLend: address(core),
+            irmRouter: address(router),
+            lidoLendOwner: address(lidoLendOwner),
+            circuitBreaker: circuitBreaker_,
+            riskStewardDashboard: riskStewardDashboard
         });
     }
 
@@ -697,6 +765,14 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         address[] memory guardians = new address[](2);
         guardians[0] = guardianA;
         guardians[1] = guardianB;
+        spec = LidoLendMarketFactory.GuardianSpec({guardians: guardians, quorum: 1, suspectWindow: 2 hours});
+    }
+
+    /// @dev A registry that is its own instance rather than a second copy of `guardianSignals`.
+    function _otherGuardianSpec() private returns (LidoLendMarketFactory.GuardianSpec memory spec) {
+        address[] memory guardians = new address[](2);
+        guardians[0] = guardianA;
+        guardians[1] = makeAddr("guardianC");
         spec = LidoLendMarketFactory.GuardianSpec({guardians: guardians, quorum: 1, suspectWindow: 2 hours});
     }
 
@@ -709,9 +785,9 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
             minActivationDelay: 10 minutes,
             maxActivationDelay: 2 hours,
             maxDelayInflow: 10_000 ether,
-            activatingLockAmount: 0,
             activatingLockDuration: 0,
             minActivationAmount: 10 ether,
+            minDepositAmount: 0,
             maxGuardiansQuorumDelay: 0,
             delayPerStrike: 2 hours,
             delayPerSuspect: 0

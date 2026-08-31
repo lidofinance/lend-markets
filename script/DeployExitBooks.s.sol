@@ -89,7 +89,8 @@ contract DeployExitBooks is Script, ProtocolDeployer {
         _requireRole(b, b.DEFAULT_ADMIN_ROLE(), agent);
         _requireRole(b, b.ALLOWLIST_MANAGER_ROLE(), agent);
         _requireRole(b, b.ALLOWLIST_MANAGER_ROLE(), executor);
-        _requireRole(b, b.FEE_MANAGER_ROLE(), agent);
+        _requireRole(b, b.FEE_MANAGER_ROLE(), executor);
+        _requireRoleMemberCount(b, b.FEE_MANAGER_ROLE(), 1);
         _requireRole(b, b.RECOVERER_ROLE(), agent);
         _requireRole(b, b.PAUSER_ROLE(), pauser);
         _requireRoleMemberCount(b, b.PAUSER_ROLE(), 1);

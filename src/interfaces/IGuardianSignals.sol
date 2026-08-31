@@ -9,11 +9,11 @@ import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
 /// @notice Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address
-///         that may appoint one **delegate** (at most one at a time) to act on its behalf. A guardian (or its
-///         delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of
-///         distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface
-///         the controller depends on (`getOpinion`, `isBanned`) lives in `IGuardianSignalsView`; this interface adds
-///         the rest.
+///         that may appoint one **delegate** (at most one at a time, unique across the committee) to act on its
+///         behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag,
+///         unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was
+///         raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in
+///         `IGuardianSignalsView`; this interface adds the rest.
 interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // ---
     // CONSTANTS
@@ -66,7 +66,8 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @param guardian    The guardian the scan is recorded for.
     /// @param blockNumber The block number reported as scanned past (carried for off-chain tooling).
     /// @param timestamp   Guardian-reported scan timestamp; the quorum-scan frontier orders guardians by this value.
-    event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp);
+    /// @param data        Guardian-supplied payload the registry does not read (carried for off-chain tooling).
+    event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp, bytes data);
 
     /// @notice Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
     /// @param caller    The account whose call advanced the frontier.
@@ -158,21 +159,33 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @notice Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
     error SuspectWindowTooHigh();
 
+    /// @notice Thrown when the appointed delegate is a guardian.
+    error DelegateIsGuardian();
+
+    /// @notice Thrown when an address that is a guardian's delegate (the caller's own included) is
+    ///         appointed as a delegate or added as a guardian.
+    error AccountIsDelegate();
+
     // ---
     // GUARDIANS & CONFIG (admin)
     // ---
 
-    /// @notice Add `guardian` to the committee. Must be non-zero, not already a guardian, and within the cap.
+    /// @notice Add `guardian` to the committee. Must be non-zero, not already a guardian, not a current guardian's
+    ///         delegate, and within the cap.
     function addGuardian(address guardian) external;
 
-    /// @notice Atomically replace one guardian with another without changing the guardian count or quorum.
+    /// @notice Atomically replace one guardian with another without changing the guardian count or quorum. The new
+    ///         guardian must be non-zero and not a current guardian, checked before the removal; the delegate check
+    ///         runs after it, so a guardian can be replaced with its own delegate.
     function replaceGuardian(address oldGuardian, address newGuardian) external;
 
     /// @notice Remove `guardian` from the committee (reverts if it would drop the set below the quorum).
     function removeGuardian(address guardian) external;
 
-    /// @notice Set the caller-guardian's delegate — a hot key that may act on its behalf. The zero address clears
-    ///         it. Guardian-only; the guardian's signals and heartbeat are untouched.
+    /// @notice Set the caller-guardian's delegate: a hot key that may act on its behalf. The zero address clears
+    ///         it. Guardian-only. A non-zero delegate must not be a guardian or any current delegate, the caller's
+    ///         own included, so one address cannot sign for two committee identities. The guardian's signals and
+    ///         heartbeat are untouched.
     function setDelegate(address newDelegate) external;
 
     /// @notice Set the quorum — the distinct guardians' flags that latch a ban.
@@ -212,7 +225,9 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     ///         quorum frontier, it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
     /// @param onBehalf         The guardian the scan is recorded for.
     /// @param lastScannedBlock The block reported as scanned past.
-    function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock) external;
+    /// @param data             Payload the registry does not read, validate, or store; emitted in `Heartbeat` for
+    ///                         off-chain tooling. May be empty.
+    function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock, bytes calldata data) external;
 
     /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and
     ///         monotonic.
@@ -252,8 +267,8 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @param accounts The accounts to report as suspect.
     function suspect(Id marketId, address onBehalf, address[] calldata accounts) external;
 
-    /// @notice Retract guardian `onBehalf`'s suspect reports on `accounts` in `marketId`. Per account a no-op if the
-    ///         guardian has no live report on it.
+    /// @notice Retract guardian `onBehalf`'s live suspect reports on `accounts` in `marketId`, pruning expired
+    ///         reports and rebuilding affected snapshots.
     function unsuspect(Id marketId, address onBehalf, address[] calldata accounts) external;
 
     /// @notice Permissionless: on `account` in `marketId`, drop the flags and suspect reports left by guardians that

@@ -205,14 +205,13 @@ contract VaultFallbackExitTest is ForkStack {
 
         uint256 shares = vault.balanceOf(LENDER) / 2;
         vm.prank(LENDER);
-        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             vault.settle(shares, borrowers, LENDER, LENDER);
 
         // Pure settle: the cut seizes collateral to the receiver and burns the matching shares, but the
         // ordinary liquidity is left untouched — no redeem leg, so no loan assets are paid out.
         assertGt(collateralSeized, 0, "settle seized collateral for the cut");
         assertGt(sharesBurned, 0, "shares burned for the settled slice");
-        assertEq(loanAssets, 0, "settle withdrew no ordinary liquidity");
         _assertSettlementAccounting(marketBefore, borrowerBorrowSharesBefore, collateralSeized, debtCanceled);
         assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
@@ -231,12 +230,11 @@ contract VaultFallbackExitTest is ForkStack {
         uint256 borrowerBorrowSharesBefore = core.position(marketId, BORROWER).borrowShares;
         uint256 shares = vault.balanceOf(LENDER) / 40; // ~0.5 WETH worth, well below the idle liquidity
         vm.prank(LENDER);
-        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             vault.settle(shares, borrowers, LENDER, LENDER);
 
         assertGt(collateralSeized, 0, "sub-liquidity settle seized collateral under the new gate");
         assertGt(sharesBurned, 0, "shares burned for the slice");
-        assertEq(loanAssets, 0, "settle withdrew no ordinary liquidity");
         _assertSettlementAccounting(marketBefore, borrowerBorrowSharesBefore, collateralSeized, debtCanceled);
         assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");

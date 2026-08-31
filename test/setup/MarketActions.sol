@@ -7,6 +7,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Id, Position, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+
 import {Market} from "./Types.sol";
 
 /// @notice DG-style action helpers over a deployed `Market` (`using MarketActions for Market` →
@@ -112,23 +114,23 @@ library MarketActions {
 
     /// @notice Lender (`owner`) targeted-settles `shares` against `borrowers`, collateral to `receiver`.
     ///         Best-effort within the batch but reverts when no borrower is settled. On success, asserts
-    ///         `sharesBurned <= shares`, `loanAssets == 0`, the owner's share burn, the collateral received by
-    ///         `receiver`, and — when `owner != receiver` — that the owner's own collateral is untouched (all of it
-    ///         routed to `receiver`).
+    ///         `sharesBurned <= shares`, that no loan assets reached `receiver`, the owner's share burn, the
+    ///         collateral received by `receiver`, and — when `owner != receiver` — that the owner's own collateral
+    ///         is untouched (all of it routed to `receiver`).
     function settle(Market storage self, address owner, uint256 shares, address[] memory borrowers, address receiver)
         internal
-        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
+        returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled)
     {
         uint256 ownerSharesBefore = self.vault.balanceOf(owner);
         uint256 recvColBefore = self.collateralToken.balanceOf(receiver);
         uint256 ownerColBefore = self.collateralToken.balanceOf(owner);
+        uint256 recvLoanBefore = self.loanToken.balanceOf(receiver);
 
         vm.prank(owner);
-        (sharesBurned, loanAssets, collateralSeized, debtCanceled) =
-            self.vault.settle(shares, borrowers, receiver, owner);
+        (sharesBurned, collateralSeized, debtCanceled) = self.vault.settle(shares, borrowers, receiver, owner);
 
         vm.assertLe(sharesBurned, shares, "settle: burned > requested");
-        vm.assertEq(loanAssets, 0, "settle: not liquidity-neutral");
+        vm.assertEq(self.loanToken.balanceOf(receiver), recvLoanBefore, "settle: not liquidity-neutral");
         vm.assertEq(self.vault.balanceOf(owner), ownerSharesBefore - sharesBurned, "settle: owner shares burned");
         vm.assertEq(
             self.collateralToken.balanceOf(receiver), recvColBefore + collateralSeized, "settle: receiver collateral"
@@ -175,24 +177,39 @@ library MarketActions {
 
     // ── Borrower ──
 
-    /// @notice Borrower posts `amount` collateral. Approves it, then asserts the `SupplyCollateral` event,
-    ///         the position's collateral delta, and the token moving to the core.
+    /// @notice Borrower supplies `amount` collateral (normal, non-instant path). Asserts the core event and
+    ///         balances, then recomputes the activation classification from the pre-state: a sub-threshold
+    ///         amount over empty dust stays dust; otherwise the whole dust+amount lot enters activating.
+    /// @dev Assumes no lot matures inside this call — mature explicitly (warp + a syncing action) before
+    ///      supplying when a test needs that.
     function supplyCollateral(Market storage self, address borrower, uint256 amount) internal {
         vm.prank(borrower);
         self.collateralToken.approve(address(self.core), amount);
 
+        ILidoLendMarketController.BorrowerPosition memory pre = self.controller.positionOf(borrower);
         uint128 colBefore = self.core.position(self.id, borrower).collateral;
         uint256 coreBefore = self.collateralToken.balanceOf(address(self.core));
+        uint256 minActivation = self.controller.collateralActivationConfig().minActivationAmount;
 
         vm.expectEmit(true, true, true, true, address(self.core));
         emit SupplyCollateral(self.id, borrower, borrower, amount);
         vm.prank(borrower);
         self.core.supplyCollateral(self.params, amount, borrower, "");
 
+        ILidoLendMarketController.BorrowerPosition memory post = self.controller.positionOf(borrower);
         vm.assertEq(self.core.position(self.id, borrower).collateral, colBefore + amount, "supplyCollateral: position");
         vm.assertEq(
             self.collateralToken.balanceOf(address(self.core)), coreBefore + amount, "supplyCollateral: to core"
         );
+
+        if (pre.dust + amount < minActivation) {
+            vm.assertEq(pre.dust, 0, "supplyCollateral: sub-threshold over dust should have reverted");
+            vm.assertEq(post.dust, amount, "supplyCollateral: dust lot");
+            vm.assertEq(post.activating, pre.activating, "supplyCollateral: activating unchanged");
+        } else {
+            vm.assertEq(post.dust, 0, "supplyCollateral: dust promoted");
+            vm.assertEq(post.activating, pre.activating + pre.dust + amount, "supplyCollateral: activating lot");
+        }
     }
 
     /// @notice Warps past the market's max activation delay so freshly supplied collateral matures and can
@@ -240,8 +257,14 @@ library MarketActions {
     }
 
     /// @notice Borrower withdraws `amount` collateral to `receiver`. Asserts the `WithdrawCollateral`
-    ///         event, the position's collateral delta, and the collateral received.
+    ///         event, the position's collateral delta, the collateral received, and the bucket outcome
+    ///         against the rule: the inactive buckets (dust + activating) either clear all-or-nothing
+    ///         (the request must have covered them) or stay untouched (a locked active-only draw, which
+    ///         must have fit within the active balance).
+    /// @dev Assumes no lot matures inside this call — mature explicitly (warp + a syncing action) before
+    ///      withdrawing when a test needs that.
     function withdrawCollateral(Market storage self, address borrower, uint256 amount, address receiver) internal {
+        ILidoLendMarketController.BorrowerPosition memory pre = self.controller.positionOf(borrower);
         uint128 colBefore = self.core.position(self.id, borrower).collateral;
         uint256 recvBefore = self.collateralToken.balanceOf(receiver);
 
@@ -254,6 +277,18 @@ library MarketActions {
             self.core.position(self.id, borrower).collateral, colBefore - amount, "withdrawCollateral: position"
         );
         vm.assertEq(self.collateralToken.balanceOf(receiver), recvBefore + amount, "withdrawCollateral: received");
+
+        ILidoLendMarketController.BorrowerPosition memory post = self.controller.positionOf(borrower);
+        uint256 preInactive = pre.dust + pre.activating;
+        if (post.dust + post.activating == 0) {
+            vm.assertTrue(
+                preInactive == 0 || amount >= preInactive, "withdrawCollateral: cleared without covering inactive"
+            );
+        } else {
+            vm.assertEq(post.dust, pre.dust, "withdrawCollateral: dust partially drained");
+            vm.assertEq(post.activating, pre.activating, "withdrawCollateral: lot partially drained");
+            vm.assertLe(amount, colBefore - preInactive, "withdrawCollateral: active-only draw exceeds active");
+        }
     }
 
     /// @notice Borrower opts into a personal settlement LTV. Asserts the stored value.

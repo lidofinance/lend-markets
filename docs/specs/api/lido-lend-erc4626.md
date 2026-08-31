@@ -13,7 +13,7 @@ Assumes `asset()` and the market's collateral token are standard ERC-20s without
 ### `FallbackExit`
 
 ```solidity
-event FallbackExit(address indexed caller, address indexed owner, address indexed receiver, uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
+event FallbackExit(address indexed caller, address indexed owner, address indexed receiver, uint256 sharesBurned, uint256 sharesSettled, uint256 assetsWithdrawn, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
 **Parameters**
@@ -23,11 +23,13 @@ event FallbackExit(address indexed caller, address indexed owner, address indexe
 | `caller` | `address` | The address that called the exit. |
 | `owner` | `address` | The account whose shares were burned. |
 | `receiver` | `address` | The recipient of the liquid-leg loan assets and seized collateral. |
-| `sharesBurned` | `uint256` | Shares burned by the settle leg. |
+| `sharesBurned` | `uint256` | Shares burned by the whole call — the liquid leg and the settle leg together. |
+| `sharesSettled` | `uint256` | Shares burned by the settle leg alone, 0 when liquidity serviced the whole request or the queue funded no cut. |
+| `assetsWithdrawn` | `uint256` | Loan assets the liquid leg paid out, 0 when the market had no free liquidity or the requested shares' floor-rounded value was zero. |
 | `collateralSeized` | `uint256` | Collateral seized from the cut positions. |
 | `debtCanceled` | `uint256` | Borrower debt cancelled by the cuts. |
 
-A `fallbackExit` reached its queue-driven settlement leg, possibly with a zero or partial fill.
+A `fallbackExit` call completed with a positive, possibly partial fill — serviced from market liquidity, queue settlement, or both.
 
 ### `Settled`
 
@@ -134,7 +136,7 @@ Thrown when a nonzero deposit receives zero core supply shares.
 error NothingSettled();
 ```
 
-Thrown when a targeted settlement consumes no core supply shares across all requested borrowers.
+Thrown when a targeted settlement consumes no core supply shares across all requested borrowers, or when a fallback exit burns no shares in either leg.
 
 ### `ExceededBalance`
 
@@ -253,7 +255,7 @@ function settle(
     address[] calldata borrowers,
     address receiver,
     address owner
-) external returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
+) external returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
 A targeted, liquidity-neutral cut of borrowers that expose a positive personal settlement-LTV slice. Current free liquidity is not redeemed or reserved against the request. Budget exhaustion partial-fills; a call that consumes no core supply shares reverts. Collateral goes from the core straight to `receiver`. `fallbackExit` instead consumes available liquidity first and selects risk-queue roots for the remainder.

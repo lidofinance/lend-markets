@@ -81,6 +81,7 @@ contract LidoLendMarketFactory {
     /// @param lltv Liquidation loan-to-value ratio, in WAD and strictly below 1e18.
     /// @param guardianSignals Guardian registry read by the controller. Deployment checks only that the address has
     ///                        code; registry configuration is validated through `validateGuardianSignals`.
+    /// @param supplyCap Initial lender supply cap. Zero disables it.
     /// @param activationConfig Initial collateral-activation configuration.
     /// @param settlementConfig Initial settlement configuration.
     struct MarketSpec {
@@ -89,6 +90,7 @@ contract LidoLendMarketFactory {
         address oracle;
         uint256 lltv;
         address guardianSignals;
+        uint256 supplyCap;
         CollateralActivationConfig activationConfig;
         SettlementConfig settlementConfig;
     }
@@ -116,7 +118,13 @@ contract LidoLendMarketFactory {
     // ERRORS
     // ---
 
-    /// @notice A required market oracle or guardian-registry address has no code.
+    /// @notice The proxy admin supplied to the constructor was the zero address.
+    error AdminZeroAddress();
+
+    /// @notice The circuit breaker supplied to the constructor was the zero address.
+    error CircuitBreakerZeroAddress();
+
+    /// @notice A required market token, oracle, or guardian-registry address has no code.
     /// @param account Address without runtime code.
     error NotContract(address account);
 
@@ -215,6 +223,17 @@ contract LidoLendMarketFactory {
     // EVENTS
     // ---
 
+    /// @notice Emitted for every proxy the factory deploys, before the component behind it is configured or
+    ///         validated.
+    /// @param proxy Deployed proxy.
+    /// @param implementation Implementation the proxy delegates to.
+    /// @param admin Proxy admin the proxy is constructed with.
+    /// @param initData Initialization call the proxy delegates to the implementation on construction.
+    /// @param salt `CREATE2` salt the proxy was deployed under.
+    event ProxyDeployed(
+        address indexed proxy, address indexed implementation, address admin, bytes initData, bytes32 salt
+    );
+
     /// @notice Emitted after a controller has been deployed, role-wired, and validated.
     /// @param marketId Market id bound to the controller.
     /// @param controller Deployed controller proxy.
@@ -245,6 +264,10 @@ contract LidoLendMarketFactory {
     // ---
 
     bytes32 private constant DEFAULT_ADMIN_ROLE = 0x00;
+
+    /// @dev For a component whose every distinguishing field already reaches its initialization data, and which is
+    ///      therefore never wanted twice over identical inputs.
+    bytes32 private constant NO_CALLER_SALT = bytes32(0);
 
     // ---
     // IMMUTABLES
@@ -278,13 +301,16 @@ contract LidoLendMarketFactory {
 
     /// @notice Fixes the implementations, protocol dependencies, and final administrator used by every deployment.
     /// @dev The factory deployer must validate all constructor addresses before deployment. The constructor verifies
-    ///      only the core bindings exposed by the controller and wrapper implementations, owner facade, risk
-    ///      dashboard, and IRM router.
+    ///      only that `admin` and the circuit breaker are nonzero and the core bindings exposed by the controller and
+    ///      wrapper implementations, owner facade, risk dashboard, and IRM router.
     /// @param implementations Implementations used behind newly deployed proxies.
     /// @param dependencies Core and protocol-wide role recipients embedded in newly deployed components.
     /// @param admin Proxy admin for every deployment and sole initial `DEFAULT_ADMIN_ROLE` holder on controllers and
     ///              guardian registries.
     constructor(Implementations memory implementations, Dependencies memory dependencies, address admin) {
+        if (admin == address(0)) revert AdminZeroAddress();
+        if (dependencies.circuitBreaker == address(0)) revert CircuitBreakerZeroAddress();
+
         _requireLidoLendBinding(implementations.erc4626Wrapper, dependencies.lidoLend);
         _requireLidoLendBinding(implementations.controller, dependencies.lidoLend);
 
@@ -353,12 +379,20 @@ contract LidoLendMarketFactory {
     }
 
     /// @notice Deploys and fully role-wires a guardian registry that may be shared by multiple markets.
+    /// @dev `suspectWindow` is applied after initialization and so does not reach the deployment address. Two
+    ///      committees that differ only by it, or that are identical and still want registries of their own, are
+    ///      separated by `salt`.
     /// @param spec Initial guardian membership, quorum, and suspect window.
+    /// @param salt Caller-chosen label distinguishing registries this caller wants as separate instances.
     /// @return guardianSignalsAddress Deployed and role-wired guardian-registry proxy.
-    function deployGuardianSignals(GuardianSpec calldata spec) external returns (address guardianSignalsAddress) {
+    function deployGuardianSignals(GuardianSpec calldata spec, bytes32 salt)
+        external
+        returns (address guardianSignalsAddress)
+    {
         guardianSignalsAddress = _deployProxy(
             GUARDIAN_SIGNALS_IMPL,
-            abi.encodeCall(GuardianSignals.initialize, (address(this), spec.guardians, spec.quorum))
+            abi.encodeCall(GuardianSignals.initialize, (address(this), spec.guardians, spec.quorum)),
+            salt
         );
 
         IGuardianSignals guardianSignals = IGuardianSignals(guardianSignalsAddress);
@@ -443,6 +477,8 @@ contract LidoLendMarketFactory {
         marketId = marketParams.id();
         if (ILidoLend(LIDO_LEND).market(marketId).lastUpdate != 0) revert MarketAlreadyExists(marketId);
 
+        if (market.loanToken.code.length == 0) revert NotContract(market.loanToken);
+        if (market.collateralToken.code.length == 0) revert NotContract(market.collateralToken);
         if (market.oracle.code.length == 0) revert NotContract(market.oracle);
         if (market.guardianSignals.code.length == 0) revert NotContract(market.guardianSignals);
     }
@@ -479,11 +515,13 @@ contract LidoLendMarketFactory {
                 (
                     marketId,
                     address(this),
+                    market.supplyCap,
                     IGuardianSignalsView(market.guardianSignals),
                     market.activationConfig,
                     market.settlementConfig
                 )
-            )
+            ),
+            NO_CALLER_SALT
         );
 
         ILidoLendMarketController controller = ILidoLendMarketController(controllerAddress);
@@ -511,7 +549,8 @@ contract LidoLendMarketFactory {
 
         erc4626Wrapper = _deployProxy(
             ERC4626_WRAPPER_IMPL,
-            abi.encodeCall(LidoLendERC4626.initialize, (marketParams, controller, spec.name, spec.symbol))
+            abi.encodeCall(LidoLendERC4626.initialize, (marketParams, controller, spec.name, spec.symbol)),
+            NO_CALLER_SALT
         );
 
         _validateERC4626Wrapper(erc4626Wrapper, controller, marketParams);
@@ -689,7 +728,19 @@ contract LidoLendMarketFactory {
     // PROXY DEPLOYMENT
     // ---
 
-    function _deployProxy(address implementation, bytes memory initData) private returns (address proxy) {
-        proxy = address(new OssifiableProxy(implementation, ADMIN, initData));
+    /// @dev `CREATE2` under a salt scoped to the caller, so a component's address is a pure function of this
+    ///      factory, the deployer, and the data the component is initialized with. The deployer therefore knows the
+    ///      address before sending the transaction and still finds the component there once mined, and no other
+    ///      caller can occupy it. Plain `CREATE` would give neither: the address would follow the factory's
+    ///      transaction count, which anyone can advance. `callerSalt` separates instances that initialize
+    ///      identically; anything that already tells two components apart is part of `initData`, so it moves the
+    ///      address on its own and needs no salt of its own.
+    function _deployProxy(address implementation, bytes memory initData, bytes32 callerSalt)
+        private
+        returns (address proxy)
+    {
+        bytes32 salt = keccak256(abi.encode(msg.sender, callerSalt));
+        proxy = address(new OssifiableProxy{salt: salt}(implementation, ADMIN, initData));
+        emit ProxyDeployed(proxy, implementation, ADMIN, initData, salt);
     }
 }

@@ -3,11 +3,12 @@ pragma solidity 0.8.36;
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
-import {MockERC20} from "../setup/Mocks.sol";
+import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 
 /// @notice L2 collateral-activation scenarios end-to-end through the controller hooks: fresh collateral is
 ///         locked in a maturation timer before it can back a loan; maturing it unlocks borrowing; a guardian
@@ -141,8 +142,22 @@ contract ActivationTest is LidoLendSetup {
     ///      with no warp past the timer.
     function test_instantActivation_bypassesTheTimer() public {
         Market storage m = _m();
-        m.controller.setInstantActivation(_actor("borrower"), true);
-        address borrower = _seedLenderAndCollateral(100 ether);
+        address borrower = _actor("borrower");
+        m.controller.setInstantActivation(borrower, true);
+
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        m.vaultDeposit(lender, 1000 ether);
+
+        // `supplyCollateral` helper models the non-instant path only (a sub-threshold amount stays dust,
+        // otherwise the lot enters activating); an instant supply lands straight in active, so bypass the
+        // helper and call core directly.
+        uint256 collat = 100 ether;
+        _fund(m.collateralToken, borrower, collat);
+        vm.prank(borrower);
+        m.collateralToken.approve(address(m.core), collat);
+        vm.prank(borrower);
+        m.core.supplyCollateral(m.params, collat, borrower, "");
 
         // No warp: instant activation routes the lot straight to active, so the borrow works immediately.
         uint256 borrowAmt = _safeBorrow(100 ether);
@@ -175,6 +190,175 @@ contract ActivationTest is LidoLendSetup {
         m.collateralToken.approve(address(m.core), amount);
         vm.expectEmit(true, false, false, true, address(m.controller));
         emit CollateralActivating(borrower, amount, expected);
+        vm.prank(borrower);
+        m.core.supplyCollateral(m.params, amount, borrower, "");
+    }
+
+    /// @notice One CollateralActivating transition admits at most two normal supplies: one dust supply
+    ///         (allowed only over an empty dust bucket) and one resolving supply that promotes the lot.
+    function test_twoSupplyBound_perActivationTransition() public {
+        Market storage m = _m();
+        address borrower = _actor("borrower");
+        address funder = _actor("funder");
+
+        uint256 minActivation = m.controller.collateralActivationConfig().minActivationAmount;
+        uint256 dustAmount = 1 ether; // sub-threshold under the default 10 ether minActivationAmount
+
+        _fund(m.collateralToken, borrower, minActivation); // covers both of the borrower's own supplies below
+        _fund(m.collateralToken, funder, dustAmount);
+
+        m.supplyCollateral(borrower, dustAmount); // dust supply #1
+
+        // A second sub-threshold supply onto existing dust reverts instead of stacking a second dust lot —
+        // the rule tracks the borrower's position, not the caller, so a distinct funder trips it too.
+        vm.prank(funder);
+        m.collateralToken.approve(address(m.core), dustAmount);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CollateralActivationLib.DustNotResolved.selector, dustAmount, dustAmount, minActivation
+            )
+        );
+        vm.prank(funder);
+        m.core.supplyCollateral(m.params, dustAmount, borrower, "");
+
+        // the resolving supply promotes the whole lot in one CollateralActivating transition
+        m.supplyCollateral(borrower, minActivation - dustAmount);
+
+        ILidoLendMarketController.BorrowerPosition memory position = m.controller.positionOf(borrower);
+        assertEq(position.dust, 0, "dust cleared by the resolving supply");
+        assertEq(position.activating, minActivation, "resolving supply promotes the whole lot");
+    }
+
+    /// @notice Documents the dust-donation front-run: a stranger's sub-threshold supply on the victim's behalf
+    ///         forces the victim's next supply to resolve the donated dust — by resizing to the threshold or
+    ///         ejecting the dust in full. Funds are never stuck.
+    function test_dustDonation_victimResolvesByResizeOrEject() public {
+        Market storage m = _m();
+        address attacker = _actor("attacker");
+        address victim = _actor("victim");
+        uint256 minActivation = m.controller.collateralActivationConfig().minActivationAmount;
+
+        _fund(m.collateralToken, attacker, 1 ether);
+        _fund(m.collateralToken, victim, 2 ether);
+
+        // attacker donates dust to victim (onBehalf supply, so the helper is bypassed on purpose)
+        vm.prank(attacker);
+        m.collateralToken.approve(address(m.core), 1 ether);
+        vm.prank(attacker);
+        m.core.supplyCollateral(m.params, 1 ether, victim, "");
+
+        // victim's planned sub-threshold supply now reverts
+        vm.prank(victim);
+        m.collateralToken.approve(address(m.core), 2 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(CollateralActivationLib.DustNotResolved.selector, 1 ether, 2 ether, minActivation)
+        );
+        vm.prank(victim);
+        m.core.supplyCollateral(m.params, 2 ether, victim, "");
+
+        // resolution 1: eject the donated dust in full
+        m.withdrawCollateral(victim, 1 ether, victim);
+        assertEq(m.controller.positionOf(victim).dust, 0, "donated dust ejected in full");
+    }
+
+    /// @notice Forced seizure consumes matured collateral first and leaves the fresh lot on its timer.
+    function test_liquidation_activeFirst_freshLotSurvivesOnTimer() public {
+        Market storage m = _m();
+
+        // arrange: borrower has matured active collateral backing debt, plus a fresh activating top-up.
+        address borrower = _seedLenderAndCollateral(100 ether); // 100 ether enters activating
+        m.activateCollateral(); // warp past the max activation delay
+        uint256 borrowAmt = _safeBorrow(100 ether); // half of LLTV-max on the original 100 ether, seed-safe
+        m.borrow(borrower, borrowAmt); // matures the 100 ether into active (sync fires inside the borrow hook)
+
+        uint256 freshTopUp = 20 ether; // >= minActivationAmount (10 ether default) -> activating, not dust
+        _fund(m.collateralToken, borrower, freshTopUp);
+        m.supplyCollateral(borrower, freshTopUp); // fresh lot, own new timer; the matured 100 ether stays active
+
+        ILidoLendMarketController.BorrowerPosition memory pre = m.controller.positionOf(borrower);
+        assertEq(pre.active, 100 ether, "matured lot is active before the crash");
+        assertEq(pre.activating, freshTopUp, "fresh top-up is activating before the crash");
+
+        // drop the oracle price to make him liquidatable: the core's own health check sums ALL raw collateral
+        // (active + activating), so at 38% of the seed price the full 120 ether no longer covers the debt at
+        // LLTV (unhealthy) while still exceeding the debt outright (solvent, not bad debt).
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 38 / 100);
+
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1000 ether);
+        uint256 seizeAmt = 10 ether; // well under the 100 ether active balance
+        m.liquidate(keeper, borrower, seizeAmt, 0); // helper asserts no bad debt
+
+        // assert the bucket split before/after: activating and unlockTime unchanged, active reduced by
+        // exactly the seized amount — the forced seizure consumed matured collateral first.
+        ILidoLendMarketController.BorrowerPosition memory post = m.controller.positionOf(borrower);
+        assertEq(post.activating, pre.activating, "fresh lot untouched by the seizure");
+        assertEq(post.unlockTime, pre.unlockTime, "fresh lot keeps its original timer");
+        assertEq(post.active, pre.active - seizeAmt, "active reduced by exactly the seized amount");
+    }
+
+    function test_maxLock_preventsRecyclingActivationCapital() public {
+        Market storage m = _m();
+        address borrower = _actor("borrower");
+
+        CollateralActivationConfig memory cfg = m.controller.collateralActivationConfig();
+        cfg.minActivationAmount = 10 ether;
+        cfg.minDepositAmount = 2 ether;
+        cfg.activatingLockDuration = cfg.maxActivationDelay;
+        m.controller.setCollateralActivationConfig(cfg);
+
+        // At most one unresolved dust lot is allowed per borrower: a single dust supply, then a resolving
+        // supply that lifts the combined amount to the threshold.
+        uint256[2] memory supplies =
+            [uint256(cfg.minDepositAmount), uint256(cfg.minActivationAmount) - cfg.minDepositAmount];
+        for (uint256 batch; batch < 2; ++batch) {
+            for (uint256 i; i < supplies.length; ++i) {
+                address funder = address(uint160(0xD000 + batch * supplies.length + i));
+                uint256 supplyAmount = supplies[i];
+                _fund(m.collateralToken, funder, supplyAmount);
+
+                vm.prank(funder);
+                m.collateralToken.approve(address(m.core), supplyAmount);
+                vm.prank(funder);
+                m.core.supplyCollateral(m.params, supplyAmount, borrower, "");
+            }
+
+            uint256 expectedLocked = (batch + 1) * uint256(cfg.minActivationAmount);
+            ILidoLendMarketController.BorrowerPosition memory position = m.controller.positionOf(borrower);
+            assertEq(position.dust, 0, "threshold crossing consumes the dust batch");
+            assertEq(position.activating, expectedLocked, "each trigger adds another locked threshold");
+            assertEq(m.core.position(m.id, borrower).collateral, expectedLocked, "trigger capital remains posted");
+
+            // The lib reverts directly whenever the request dips into a lot still inside activatingLockDuration —
+            // and with no matured active collateral here, that is any requested amount.
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    CollateralActivationLib.ActivatingCollateralLocked.selector,
+                    expectedLocked,
+                    block.timestamp + cfg.activatingLockDuration
+                )
+            );
+            vm.prank(borrower);
+            m.core.withdrawCollateral(m.params, cfg.minActivationAmount, borrower, address(0xBEEF));
+        }
+    }
+
+    /// @notice A non-instant supply below the configured `minDepositAmount` floor reverts `DepositTooSmall`.
+    function test_supplyCollateral_revertsBelowMinDepositAmount() public {
+        Market storage m = _m();
+        address borrower = _actor("borrower");
+
+        CollateralActivationConfig memory cfg = m.controller.collateralActivationConfig();
+        cfg.minDepositAmount = 2 ether;
+        m.controller.setCollateralActivationConfig(cfg);
+
+        uint256 amount = 1 ether; // below minDepositAmount
+        _fund(m.collateralToken, borrower, amount);
+        vm.prank(borrower);
+        m.collateralToken.approve(address(m.core), amount);
+        vm.expectRevert(
+            abi.encodeWithSelector(CollateralActivationLib.DepositTooSmall.selector, amount, cfg.minDepositAmount)
+        );
         vm.prank(borrower);
         m.core.supplyCollateral(m.params, amount, borrower, "");
     }
