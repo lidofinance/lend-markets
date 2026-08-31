@@ -130,6 +130,9 @@ contract LidoLendMarketFactory {
     /// @notice The reseal manager supplied to the constructor was the zero address.
     error ResealManagerZeroAddress();
 
+    /// @notice The circuit breaker and reseal manager resolve to the same address.
+    error DuplicateEmergencyRoleRecipient();
+
     /// @notice A required market token, oracle, or guardian-registry address has no code.
     /// @param account Address without runtime code.
     error NotContract(address account);
@@ -309,8 +312,9 @@ contract LidoLendMarketFactory {
 
     /// @notice Fixes the implementations, protocol dependencies, and final administrator used by every deployment.
     /// @dev The factory deployer must validate all constructor addresses before deployment. The constructor verifies
-    ///      only that `admin`, the circuit breaker, and the reseal manager are nonzero and the core bindings exposed
-    ///      by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router.
+    ///      only that `admin`, the circuit breaker, and the reseal manager are nonzero, the emergency role recipients
+    ///      are distinct, and the core bindings exposed by the controller and wrapper implementations, owner facade,
+    ///      risk dashboard, and IRM router.
     /// @param implementations Implementations used behind newly deployed proxies.
     /// @param dependencies Core and protocol-wide role recipients embedded in newly deployed components.
     /// @param admin Proxy admin for every deployment and sole initial `DEFAULT_ADMIN_ROLE` holder on controllers and
@@ -319,6 +323,7 @@ contract LidoLendMarketFactory {
         if (admin == address(0)) revert AdminZeroAddress();
         if (dependencies.circuitBreaker == address(0)) revert CircuitBreakerZeroAddress();
         if (dependencies.resealManager == address(0)) revert ResealManagerZeroAddress();
+        if (dependencies.resealManager == dependencies.circuitBreaker) revert DuplicateEmergencyRoleRecipient();
 
         _requireLidoLendBinding(implementations.erc4626Wrapper, dependencies.lidoLend);
         _requireLidoLendBinding(implementations.controller, dependencies.lidoLend);

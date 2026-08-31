@@ -167,6 +167,15 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         new LidoLendMarketFactory(implementations, dependencies, controllerAdmin);
     }
 
+    function testRevert_constructor_rejectsDuplicateEmergencyRoleRecipient() external {
+        LidoLendMarketFactory.Implementations memory implementations = _implementations();
+        LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(circuitBreaker);
+        dependencies.resealManager = circuitBreaker;
+
+        vm.expectRevert(LidoLendMarketFactory.DuplicateEmergencyRoleRecipient.selector);
+        new LidoLendMarketFactory(implementations, dependencies, controllerAdmin);
+    }
+
     function testRevert_deployMarketController_rejectsCodelessLoanToken() external {
         LidoLendMarketFactory.MarketSpec memory spec = marketSpec;
         spec.loanToken = makeAddr("codelessLoanToken");

@@ -244,6 +244,14 @@ error ResealManagerZeroAddress();
 
 The reseal manager supplied to the constructor was the zero address.
 
+### `DuplicateEmergencyRoleRecipient`
+
+```solidity
+error DuplicateEmergencyRoleRecipient();
+```
+
+The circuit breaker and reseal manager resolve to the same address.
+
 ### `NotContract`
 
 ```solidity
@@ -531,7 +539,7 @@ constructor(
 
 Fixes the implementations, protocol dependencies, and final administrator used by every deployment.
 
-The factory deployer must validate all constructor addresses before deployment. The constructor verifies only that `admin`, the circuit breaker, and the reseal manager are nonzero and the core bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router.
+The factory deployer must validate all constructor addresses before deployment. The constructor verifies only that `admin`, the circuit breaker, and the reseal manager are nonzero, the emergency role recipients are distinct, and the core bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router.
 
 ### `deployMarketComponents`
 
