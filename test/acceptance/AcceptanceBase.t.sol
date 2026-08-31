@@ -84,6 +84,7 @@ interface IReadFactory {
     function LIDO_LEND() external view returns (address);
     function RISK_STEWARD_DASHBOARD() external view returns (address);
     function CIRCUIT_BREAKER() external view returns (address);
+    function RESEAL_MANAGER() external view returns (address);
     function ADMIN() external view returns (address);
 }
 
@@ -224,6 +225,7 @@ abstract contract AcceptanceContext is Test {
     address internal morphoBook;
     address internal erc4626Book;
     address internal circuitBreaker;
+    address internal resealManager;
 
     // market
     address internal loanToken;
@@ -353,6 +355,7 @@ abstract contract AcceptanceContext is Test {
         rAdmin = IReadFactory(factory).ADMIN();
         rProxyAdmin = rAdmin;
         circuitBreaker = _reg(".protocol.circuit_breaker");
+        resealManager = _reg(".protocol.reseal_manager");
         assertEq(
             vm.parseTomlAddress(circuitBreakerCfg, ".circuit_breaker.address"),
             circuitBreaker,
@@ -657,6 +660,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(actualFactory.ADMIN(), rAdmin, "factory controller admin");
         assertEq(rProxyAdmin, rAdmin, "controller proxy admin differs from factory admin");
         assertEq(actualFactory.CIRCUIT_BREAKER(), circuitBreaker, "factory CircuitBreaker");
+        assertEq(actualFactory.RESEAL_MANAGER(), resealManager, "factory reseal manager");
 
         _assertCodehash(
             facade, address(new LidoLendOwner(ILidoLend(core), address(this), address(0), address(0))), "facade"
@@ -673,6 +677,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
                         irmRouter: router,
                         lidoLendOwner: facade,
                         circuitBreaker: circuitBreaker,
+                        resealManager: resealManager,
                         riskStewardDashboard: dashboard
                     }),
                     rAdmin
@@ -886,10 +891,10 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
             address[][] memory holders = new address[][](6);
             holders[0] = _arr1(rAdmin);
             holders[1] = _arr2(facade, dashboard);
-            holders[2] = _arr1(circuitBreaker);
+            holders[2] = _arr2(circuitBreaker, resealManager);
             holders[3] = _arr1(dashboard);
             holders[4] = _arr1(facade);
-            holders[5] = new address[](0);
+            holders[5] = _arr1(resealManager);
             _assertExactEnumerableRoleHolders(controller, roles, holders);
         }
         {

@@ -196,6 +196,7 @@ contract ProtocolConfigFileTest is Test {
             factory: address(0x15),
             riskStewardDashboard: address(0x17),
             circuitBreaker: address(0xCB),
+            resealManager: address(0x5EA1),
             guardianSignalsImpl: address(0x18),
             deployedBlock: 100,
             deployer: address(0x19),
@@ -211,6 +212,7 @@ contract ProtocolConfigFileTest is Test {
             "IRM config factory"
         );
         assertEq(vm.parseTomlAddress(protocolArtifact, ".protocol.circuit_breaker"), protocol.circuitBreaker);
+        assertEq(vm.parseTomlAddress(protocolArtifact, ".protocol.reseal_manager"), protocol.resealManager);
         assertEq(
             vm.parseTomlString(protocolArtifact, ".protocol.circuit_breaker_artifact"), protocol.circuitBreakerArtifact
         );

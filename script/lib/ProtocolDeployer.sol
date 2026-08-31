@@ -55,6 +55,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         d.agent = cfg.agent;
         d.evmScriptExecutor = cfg.evmScriptExecutor;
         d.circuitBreaker = cfg.circuitBreaker;
+        d.resealManager = cfg.resealManager;
 
         d.core = _deployCore(deployer);
         d.ownerFacade = _deployOwnerFacade(d.core, deployer, address(0), address(0));
@@ -88,6 +89,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
                     irmRouter: d.irmRouter,
                     lidoLendOwner: d.ownerFacade,
                     circuitBreaker: cfg.circuitBreaker,
+                    resealManager: cfg.resealManager,
                     riskStewardDashboard: d.riskStewardDashboard
                 }),
                 cfg.agent

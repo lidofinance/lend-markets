@@ -81,12 +81,14 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
     LidoLendMarketFactory.MarketSpec internal marketSpec;
 
     address internal controllerAdmin;
+    address internal resealManager;
 
     address internal guardianA;
     address internal guardianB;
 
     function setUp() external {
         controllerAdmin = makeAddr("controllerAdmin");
+        resealManager = makeAddr("resealManager");
 
         core = ILidoLend(
             address(
@@ -118,6 +120,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
                 irmRouter: address(router),
                 lidoLendOwner: address(lidoLendOwner),
                 circuitBreaker: circuitBreaker,
+                resealManager: resealManager,
                 riskStewardDashboard: riskStewardDashboard
             }),
             controllerAdmin
@@ -155,12 +158,31 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         new LidoLendMarketFactory(implementations, dependencies, controllerAdmin);
     }
 
+    function testRevert_constructor_rejectsZeroResealManager() external {
+        LidoLendMarketFactory.Implementations memory implementations = _implementations();
+        LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(circuitBreaker);
+        dependencies.resealManager = address(0);
+
+        vm.expectRevert(LidoLendMarketFactory.ResealManagerZeroAddress.selector);
+        new LidoLendMarketFactory(implementations, dependencies, controllerAdmin);
+    }
+
     function testRevert_deployMarketController_rejectsCodelessLoanToken() external {
         LidoLendMarketFactory.MarketSpec memory spec = marketSpec;
         spec.loanToken = makeAddr("codelessLoanToken");
 
         vm.expectRevert(abi.encodeWithSelector(LidoLendMarketFactory.NotContract.selector, spec.loanToken));
         factory.deployMarketController(spec);
+    }
+
+    function test_deployMarketController_assignsResealManagerEmergencyRoles() external view {
+        LidoLendMarketController c = LidoLendMarketController(controller);
+
+        assertEq(c.getRoleMemberCount(c.PAUSER_ROLE()), 2);
+        assertTrue(c.hasRole(c.PAUSER_ROLE(), circuitBreaker));
+        assertTrue(c.hasRole(c.PAUSER_ROLE(), resealManager));
+        assertEq(c.getRoleMemberCount(c.RESUMER_ROLE()), 1);
+        assertTrue(c.hasRole(c.RESUMER_ROLE(), resealManager));
     }
 
     function testRevert_deployMarketController_rejectsCodelessCollateralToken() external {
@@ -249,13 +271,13 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         roles[1] = c.MANAGER_ROLE();
         expectedCounts[1] = 2;
         roles[2] = c.PAUSER_ROLE();
-        expectedCounts[2] = 1;
+        expectedCounts[2] = 2;
         roles[3] = c.FREEZER_ROLE();
         expectedCounts[3] = 1;
         roles[4] = c.UNFREEZER_ROLE();
         expectedCounts[4] = 1;
         roles[5] = c.RESUMER_ROLE();
-        expectedCounts[5] = 0;
+        expectedCounts[5] = 1;
 
         for (uint256 i; i < roles.length; ++i) {
             address unexpectedHolder = address(uint160(0xBAD0 + i));
@@ -757,6 +779,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
             irmRouter: address(router),
             lidoLendOwner: address(lidoLendOwner),
             circuitBreaker: circuitBreaker_,
+            resealManager: resealManager,
             riskStewardDashboard: riskStewardDashboard
         });
     }

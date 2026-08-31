@@ -6,7 +6,7 @@ Scripts deploy inert markets. Activation is a separate EasyTrack motion. Role ow
 
 Configuration lives under `script/config/`:
 
-- `<config>.toml`: network, governance, the CircuitBreaker artifact selector, and optional exit books;
+- `<config>.toml`: network, governance including the Reseal Manager, the CircuitBreaker artifact selector, and optional exit books;
 - `markets/<market>.toml`: market parameters, vault metadata, role, and artifact references;
 - `circuit-breakers/<name>.toml`: immutable bounds and initial pause/heartbeat settings;
 - `oracles/<name>.toml`: oracle inputs; standalone deployment uses the configured DAO Agent as proxy admin;
@@ -18,7 +18,7 @@ Set `RPC_URL`, `DEPLOYER_PRIVATE_KEY`, and `ETHERSCAN_API_KEY` in `.env`. Deploy
 
 Each artifact header records two deploy-config hashes. `config_hash` is the exact hash of the complete TOML and
 is retained as provenance. `compatibility_hash` is canonical over the protocol identity that existing-protocol
-steps depend on: network, chain id, Agent, EVMScriptExecutor, and CircuitBreaker artifact selector. Exit-book fields and the
+steps depend on: network, chain id, Agent, EVMScriptExecutor, Reseal Manager, and CircuitBreaker artifact selector. Exit-book fields and the
 test-only `[provision]` plan are excluded from compatibility. Consumers still require the same run name, chain,
 compatibility hash, and governance actors, and `protocol.toml` must agree internally between its artifact header
 and protocol section. Exact hashes may therefore differ between compatible sibling artifacts created before and
@@ -42,7 +42,7 @@ A market declares `market.role` — the part it plays, e.g. `weth-wsteth` — wh
 Roles are shared across networks while market names are not, so a consumer names the role it needs rather than
 a network's market. `test/fork/` binds by role and skips a role the deployment has no market for.
 
-The protocol artifact records the shared permissionless `IrmConfigFactory` and the single CircuitBreaker bound
+The protocol artifact records the shared permissionless `IrmConfigFactory`, the Reseal Manager, and the single CircuitBreaker bound
 to the core's market factory. Each market artifact contains its resolved addresses, market ID, initial supply cap,
 immutable Adaptive Curve config, activation, settlement, and curve parameters. Current role holders are read directly
 from the deployed enumerable AccessControl contracts; they are not copied into artifacts. Separate
@@ -51,8 +51,9 @@ CircuitBreaker, oracle, and GuardianSignals artifacts contain their resolved con
 Deploy the protocol's single CircuitBreaker before the protocol. The script
 fixes the CircuitBreaker's `ADMIN = evm_script_executor`; the remaining immutable bounds and initial settings
 come from the named `script/config/circuit-breakers/<circuit_breaker_artifact>.toml`. The resolved address is fixed in the market factory and receives
-`PAUSER_ROLE` on every controller it deploys. There are no per-market controller-role arrays or additional
-direct pausers: one CircuitBreaker serves the core/factory and all of its markets.
+`PAUSER_ROLE` on every controller it deploys. The protocol-wide `reseal_manager` receives both `PAUSER_ROLE` and
+`RESUMER_ROLE` on those controllers. There are no per-market controller-role arrays: one CircuitBreaker and one
+Reseal Manager serve the core/factory and all of its markets.
 
 Zero `market.oracle` resolves `oracle_artifact`. A zero `market.guardian_signals` resolves the already-recorded
 `guardian_group`; run `deploy-guardian` first. Guardian registries are separate resources, so several markets

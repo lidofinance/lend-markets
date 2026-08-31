@@ -13,6 +13,7 @@ The tables cover the integrated production deployment and its production prerequ
 | Market steward | An address appointed for one market in `RiskStewardDashboard`; it is not an AccessControl role holder. |
 | Risk Steward Committee | The configured emergency address that initially holds `PAUSER_ROLE` on both Exit Books. |
 | Registered controller pauser | An address registered for one target through CircuitBreaker; the registration is distinct from CircuitBreaker's immutable admin authority. |
+| Reseal Manager | The protocol-wide pause-extension authority that initially holds `PAUSER_ROLE` and `RESUMER_ROLE` on every controller. |
 
 The contracts see these addresses, not the governance process that controls them. Lido DAO Voting, Dual Governance, and EasyTrack are intended execution routes; their ownership, motion factories, delays, and objection rules are outside this repository's deployment and acceptance checks. An EasyTrack motion may execute through EVMScriptExecutor, but possession of an executor role does not prove that a bounded motion factory exists for that action.
 
@@ -51,7 +52,7 @@ Proxy administration is independent of implementation roles and can change their
 
 ## CircuitBreaker
 
-The production deployment uses one CircuitBreaker instance for its controllers. EVMScriptExecutor is its immutable `ADMIN`, and CircuitBreaker is each controller's sole initial `PAUSER_ROLE` holder.
+The production deployment uses one CircuitBreaker instance for its controllers. EVMScriptExecutor is its immutable `ADMIN`. CircuitBreaker and the protocol-wide Reseal Manager are each controller's initial `PAUSER_ROLE` holders; the Reseal Manager is also the initial `RESUMER_ROLE` holder.
 
 | Authority | Powers | Production assignment |
 |---|---|---|
@@ -103,15 +104,15 @@ Neither the facade nor the core requires factory-produced components or the stan
 | `MANAGER_ROLE` | set collateral-activation config, settlement config, supply cap, and instant-activation callers | C3 / C4 | `LidoLendOwner` and `RiskStewardDashboard` |
 | `FREEZER_ROLE` | freeze the market | C3 | `RiskStewardDashboard` |
 | `UNFREEZER_ROLE` | unfreeze the market | C4 | `LidoLendOwner` |
-| `PAUSER_ROLE` | pause all controller hooks for a selected duration, including indefinitely | C2 / C3 | CircuitBreaker |
-| `RESUMER_ROLE` | end a controller pause early | C4 | no initial holder |
+| `PAUSER_ROLE` | pause all controller hooks for a selected duration, including indefinitely | C2 / C3 | CircuitBreaker and Reseal Manager |
+| `RESUMER_ROLE` | end a controller pause early | C4 | Reseal Manager |
 | Instant-activation caller | make new collateral supplied through that caller active immediately, bypassing dust, the activation delay, and inflow throttling | C4 | none initially |
 
 `LidoLendOwner` exposes the full manager surface to its capability holder. `RiskStewardDashboard` holds the same broad controller role, but its direct, non-upgradeable code exposes only bounded tightening, instant-activation revocation, and freeze.
 
 These roles are granted before market creation, but the facade and dashboard cannot resolve this controller until market activation binds it in the core. Market activation does not change the role sets. No caller is enabled for instant collateral activation initially.
 
-The initial topology has one unfreeze path through `LidoLendOwner`. A CircuitBreaker pause normally ends when its duration expires. An earlier resume is impossible until the Lido DAO Agent grants `RESUMER_ROLE` to a caller. As controller admin, the Agent can later change any of these role assignments, including granting `PAUSER_ROLE` to an address that may request an indefinite pause.
+The initial topology has one unfreeze path through `LidoLendOwner`. A CircuitBreaker pause normally ends when its duration expires. The Reseal Manager can extend the pause or end it early. As controller admin, the Agent can later change any of these role assignments.
 
 ### `RiskStewardDashboard`
 

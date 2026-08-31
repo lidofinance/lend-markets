@@ -36,7 +36,10 @@ contract DeployProtocol is Script, ProtocolDeployer {
 
         protocol = _deployBackbone(
             ProtocolConfig({
-                agent: cfg.agent, evmScriptExecutor: cfg.evmScriptExecutor, circuitBreaker: circuitBreaker
+                agent: cfg.agent,
+                evmScriptExecutor: cfg.evmScriptExecutor,
+                circuitBreaker: circuitBreaker,
+                resealManager: cfg.resealManager
             }),
             deployer
         );
@@ -85,6 +88,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
         console2.log("factory         :", protocol.factory);
         console2.log("riskStewardDash :", protocol.riskStewardDashboard);
         console2.log("circuitBreaker  :", protocol.circuitBreaker);
+        console2.log("resealManager   :", protocol.resealManager);
         console2.log("protocol        :", protocolPath);
     }
 }

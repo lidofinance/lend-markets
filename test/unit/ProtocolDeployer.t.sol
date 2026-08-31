@@ -68,7 +68,10 @@ contract ProtocolDeployerTest is Test {
     function test_deployBackbone_setsCoreFeeRecipientToAgent() external {
         address agent = makeAddr("agent");
         ProtocolConfig memory cfg = ProtocolConfig({
-            agent: agent, evmScriptExecutor: executor, circuitBreaker: address(new CircuitBreakerConfigStub(executor))
+            agent: agent,
+            evmScriptExecutor: executor,
+            circuitBreaker: address(new CircuitBreakerConfigStub(executor)),
+            resealManager: makeAddr("resealManager")
         });
 
         ProtocolDeployment memory deployment = deployer.deployBackbone(cfg);
@@ -79,7 +82,10 @@ contract ProtocolDeployerTest is Test {
     function test_deployBackbone_assignsFeeManagerToExecutorOnly() external {
         address agent = makeAddr("agent");
         ProtocolConfig memory cfg = ProtocolConfig({
-            agent: agent, evmScriptExecutor: executor, circuitBreaker: address(new CircuitBreakerConfigStub(executor))
+            agent: agent,
+            evmScriptExecutor: executor,
+            circuitBreaker: address(new CircuitBreakerConfigStub(executor)),
+            resealManager: makeAddr("resealManager")
         });
 
         ProtocolDeployment memory deployment = deployer.deployBackbone(cfg);
