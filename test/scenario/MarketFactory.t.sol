@@ -567,6 +567,7 @@ contract MarketFactoryScenarioTest is Test {
             (
                 _marketParams(market).id(),
                 address(factory),
+                market.supplyCap,
                 IGuardianSignalsView(market.guardianSignals),
                 market.activationConfig,
                 market.settlementConfig
