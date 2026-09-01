@@ -168,19 +168,33 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
         c.supplyBefore = m.vault.totalSupply();
         c.receiverCollatBefore = m.collateralToken.balanceOf(caller);
 
-        vm.recordLogs();
-        vm.prank(caller);
-        uint256 loanAssets;
-        (c.burned, loanAssets, c.collateralSeized, c.debtCanceled) = m.vault.fallbackExit(shares, caller, owner, 0);
+        // The gas-sized default (0) stops before this book drains; each resumed call must spend
+        // allowance for exactly what it settles, checked call by call against core deltas.
+        uint256 totalBurned;
+        // terminates: a call that burns nothing reverts NothingSettled
+        while (m.vault.balanceOf(owner) != 0) {
+            c.borrowBefore = m.core.market(m.id).totalBorrowAssets;
+            c.collatBefore = m.core.position(m.id, borrower).collateral;
+            c.supplyBefore = m.vault.totalSupply();
+            c.receiverCollatBefore = m.collateralToken.balanceOf(caller);
 
-        // Idle is zero, so the redeem leg pays nothing and the whole exit is the settle leg.
-        c.assetsWithdrawn = loanAssets;
-        c.sharesSettled = c.burned; // no liquid leg here, so the settle leg burned everything
-        assertEq(loanAssets, 0, "no idle: the redeem leg paid nothing");
-        assertEq(c.burned, shares, "the whole position exited via the settle leg");
+            uint256 remaining = m.vault.balanceOf(owner); // read before prank: the prank binds to the next call
+            vm.recordLogs();
+            vm.prank(caller);
+            uint256 loanAssets;
+            (c.burned, loanAssets, c.collateralSeized, c.debtCanceled) =
+                m.vault.fallbackExit(remaining, caller, owner, 0);
+
+            // Idle is zero, so the redeem leg pays nothing and the whole call is the settle leg.
+            c.assetsWithdrawn = loanAssets;
+            c.sharesSettled = c.burned;
+            assertEq(loanAssets, 0, "no idle: the redeem leg paid nothing");
+            _assertExitEffects(c); // full state + the FallbackExit event, amounts recomputed from core deltas
+            totalBurned += c.burned;
+        }
+        assertEq(totalBurned, shares, "the whole position exited via the settle leg");
         assertEq(m.vault.balanceOf(owner), 0, "owner's shares burned");
         assertEq(m.vault.allowance(owner, caller), 1, "settle-leg spent exactly the settled shares");
-        _assertExitEffects(c); // full state + the FallbackExit event, amounts recomputed from core deltas
     }
 
     /// @dev With idle liquidity present both legs run, so the event's three amounts are three different numbers:
@@ -268,11 +282,20 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
         vm.prank(owner);
         m.vault.approve(caller, shares - 1); // one short of the settled shares
 
+        // The gas-sized default (0) partial-fills within the allowance; the resumed call settles
+        // the full remainder, which exceeds what is left of the one-short allowance.
+        vm.prank(caller);
+        (uint256 firstBurn,,,) = m.vault.fallbackExit(shares, caller, owner, 0);
+        assertLt(firstBurn, shares - 1, "first call stays within the allowance");
+
+        uint256 remainder = shares - firstBurn;
         vm.prank(caller);
         vm.expectRevert(
-            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, caller, shares - 1, shares)
+            abi.encodeWithSelector(
+                IERC20Errors.ERC20InsufficientAllowance.selector, caller, shares - 1 - firstBurn, remainder
+            )
         );
-        m.vault.fallbackExit(shares, caller, owner, 0);
+        m.vault.fallbackExit(remainder, caller, owner, 0);
     }
 
     /// @dev Targeted `settle` on behalf of the owner spends the caller's allowance by exactly the shares burned.

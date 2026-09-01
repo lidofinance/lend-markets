@@ -109,8 +109,7 @@ interface ILidoLendERC4626 is IERC4626 {
     // CONSTANTS / IMMUTABLES
     // ---
 
-    /// @notice Default per-call cut bound for the fallback-exit loop (gas safety); `fallbackExit` callers may
-    ///         override it, and passing 0 falls back to this.
+    /// @notice Number of settlement cuts a fallback exit makes when the caller does not choose one.
     function DEFAULT_MAX_SETTLEMENT_ITERATIONS() external view returns (uint256);
 
     /// @notice The LidoLend core (Morpho Blue fork) this vault supplies into and settles against.
