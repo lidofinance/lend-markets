@@ -36,7 +36,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     // ---
 
     /// @inheritdoc ILidoLendERC4626
-    uint256 public constant DEFAULT_MAX_SETTLEMENT_ITERATIONS = 100;
+    uint256 public constant DEFAULT_MAX_SETTLEMENT_ITERATIONS = 50;
 
     /// @dev Decimals the vault's shares normalize to, like every Morpho vault — independent of the loan
     ///      token's own decimals. The virtual-share offset is `SHARE_DECIMALS - loanTokenDecimals` (floored at 0).

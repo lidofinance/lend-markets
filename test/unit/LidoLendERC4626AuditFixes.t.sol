@@ -433,9 +433,17 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         uint256 managedBefore = m.vault.managedSupplyShares();
         uint256 coreBefore = _coreSupplyShares(m);
 
-        uint256 lenderShares = m.vault.balanceOf(lender);
-        vm.prank(lender);
-        (uint256 sharesBurned, uint256 loanAssets,,) = m.vault.fallbackExit(lenderShares, lender, lender, 0);
+        // The gas-sized default (0) stops before this book drains, so the exit resumes over calls.
+        uint256 sharesBurned;
+        uint256 loanAssets;
+        // terminates: a call that burns nothing reverts NothingSettled
+        while (m.vault.balanceOf(lender) != 0) {
+            uint256 remaining = m.vault.balanceOf(lender); // read before prank: the prank binds to the next call
+            vm.prank(lender);
+            (uint256 burned, uint256 loan,,) = m.vault.fallbackExit(remaining, lender, lender, 0);
+            sharesBurned += burned;
+            loanAssets += loan;
+        }
         assertGt(loanAssets, 0, "redeem leg paid idle liquidity");
         assertGt(sharesBurned, 0, "settle leg cut the remainder");
 
