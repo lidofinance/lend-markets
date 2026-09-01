@@ -9,7 +9,7 @@ import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
 /// @notice Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address
-///         that may appoint one **delegate** (at most one at a time, unique across the committee) to act on its
+///         that may appoint one delegate (at most one at a time, unique across the committee) to act on its
 ///         behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag,
 ///         unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was
 ///         raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in
@@ -187,10 +187,10 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     ///         heartbeat are untouched.
     function setDelegate(address newDelegate) external;
 
-    /// @notice Set the quorum — the distinct guardians' flags that latch a ban.
+    /// @notice Set the quorum: the distinct guardians' flags that latch a ban.
     function setQuorum(uint256 newQuorum) external;
 
-    /// @notice Set the suspect window — how long a suspect report keeps counting. The per-flag and per-suspect
+    /// @notice Set the suspect window: how long a suspect report keeps counting. The per-flag and per-suspect
     ///         delays live in the market's activation config.
     function setSuspectWindow(uint256 suspectWindow) external;
 
@@ -241,7 +241,8 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @return timestamps Each guardian's last reported scan timestamp, aligned by index with `guardians`.
     function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory timestamps);
 
-    /// @notice Highest guardian-reported scan timestamp ever accepted from a quorum calculation. Monotonic.
+    /// @notice The stored quorum frontier: the highest timestamp a quorum of guardians has reported reviewing
+    ///         past. It only moves forward; membership and quorum changes never pull it back.
     function getQuorumFrontier() external view returns (uint40);
 
     // ---

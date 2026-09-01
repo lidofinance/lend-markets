@@ -31,8 +31,11 @@ import {PausableUntil} from "../utils/PausableUntil.sol";
 
 /// @title LidoLendMarketController
 /// @author Lido
-/// @notice Lido-policy controller for a Lido Lend market: collateral activation, freeze and pause,
-///         address gating, and the settlement queue. All hook policy enters through `on`.
+/// @notice Lido-policy layer for one Lido Lend market. The core calls `on` before applying each market action;
+///         the controller then allows the action or reverts it, and never changes the amounts the core
+///         resolved. It enforces the lender supply cap, delays fresh collateral before it can back a borrow,
+///         blocks banned borrowers, orders borrowers for lender settlement, and carries the freeze and pause
+///         levers.
 contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendMarketController")
     is
     AccessControlEnumerableUpgradeable,
@@ -489,7 +492,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         uint256 activeCollateral = position.collateral - inactive;
 
         // Capacity check: active collateral must cover the post-borrow debt at LLTV. `_getMaxBorrow` returns 0
-        // when active collateral is sub-threshold dust, so a sub-floor position cannot open or grow debt — the
+        // when active collateral is sub-threshold dust, so a sub-floor position cannot open or grow debt; the
         // position floor is folded in here rather than a separate raw-collateral revert.
         if (_debtAssets(marketView, position) + hookData.assets > _getMaxBorrow(marketView, activeCollateral)) {
             revert InsufficientActiveCollateral();
@@ -607,7 +610,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         return Math.mulDiv(_collateralValue(marketView, collateral), marketView.lltv, WAD);
     }
 
-    /// @dev Bad debt over a position+market snapshot: debt value exceeds collateral value. Pure.
+    /// @dev Bad debt over a position and market snapshot: debt value exceeds collateral value.
     function _isBadDebt(MarketView memory marketView, PositionView memory position) internal pure returns (bool) {
         if (position.borrowShares == 0) return false;
         return _debtAssets(marketView, position) > _collateralValue(marketView, position.collateral);
@@ -644,7 +647,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
             MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
     }
 
-    /// @dev Part of `supplier`'s supply value left after withdrawing all current market liquidity.
+    /// @dev Part of `supplier`'s supply value left after withdrawing all current market liquidity. Root-policy
+    ///      settlement may convert only this part: a lender must take the liquid exit as far as it goes before
+    ///      force-settling the queue root.
     function _settleableSupplyAssets(Id id, MarketView memory marketView, address supplier)
         private
         view

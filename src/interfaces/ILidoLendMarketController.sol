@@ -14,8 +14,8 @@ import {IPausableUntil} from "./IPausableUntil.sol";
 /// @title ILidoLendMarketController
 /// @notice Contract-specific external surface of `LidoLendMarketController`: the inherited core hook interface,
 ///         Lido policy, freeze/pause, settlement-queue views, and borrower dashboard. Standard role membership and
-///         administration use the inherited `IAccessControlEnumerable` surface. The controller implements this
-///         interface, so it is the source for its dashboard struct, events, errors, and policy-function docs.
+///         administration use the inherited `IAccessControlEnumerable` surface. The controller's dashboard struct,
+///         events, and errors are declared here.
 interface ILidoLendMarketController is
     ILidoLendBaseMarketController,
     IAccessControlEnumerable,
@@ -143,7 +143,8 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice Ceiling on the market's borrow-share rate; borrow/repay/settle may not push past it (liquidation
-    ///         exempt). Bounds rounding-driven borrow-share inflation.
+    ///         exempt). Near an empty debt book, borrow-and-near-full-repay cycles would otherwise inflate the
+    ///         share total toward overflow.
     function MAX_BORROW_SHARE_RATE() external view returns (uint256);
 
     // ---
@@ -165,7 +166,7 @@ interface ILidoLendMarketController is
     // COLLATERAL ACTIVATION
     // ---
 
-    /// @notice Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
+    /// @notice Current decayed activation inflow: the throttle accumulator.
     function currentInflow() external view returns (uint256);
 
     /// @notice Base inflow-throttle delay for a hypothetical `inflowIncrement` at the current decayed inflow.
@@ -200,26 +201,28 @@ interface ILidoLendMarketController is
     function settlementBorrowersCount() external view returns (uint256);
 
     /// @notice Whether the current settlement-queue root has bad debt: its debt value exceeds its collateral value.
+    ///         While true, every settlement path is blocked, so a lender cannot exit at full value and leave the
+    ///         unrealized loss to the remaining lenders.
     /// @dev O(1): checks only the root selected by the rounded borrow-share/raw-collateral key. It does not scan all
     ///      tracked borrowers. Equal keys and separate debt/collateral valuation rounding mean that a solvent root
     ///      does not prove every other tracked position is solvent.
     function hasBadDebt() external view returns (bool);
 
-    /// @notice The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance
-    ///         or the borrower's own settlement-LTV allowance — shrunk to what `budgetSupplyShares` of core supply
-    ///         funds. Pass 0 for the policy cut itself, unshrunk. A concrete lender may execute the root-policy
-    ///         part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty, and
-    ///         the slice quotes zero `borrowShares` when no executable cut is available.
+    /// @notice The queue root and the cut it is eligible for: the larger of the root policy's allowance and the
+    ///         borrower's own settlement-LTV allowance, shrunk to what `budgetSupplyShares` of core supply funds.
+    ///         Pass 0 to get the policy cut unshrunk. A lender may execute the root-policy part only against its
+    ///         illiquid supply tail. `borrower` is address(0) when the queue is empty, and the slice quotes zero
+    ///         `borrowShares` when no executable cut is available.
     function nextSettlementBorrower(uint256 budgetSupplyShares)
         external
         view
         returns (address borrower, SettlementSlice memory slice);
 
     /// @notice The borrower's personal cut and its prospective queue-root cut, each shrunk to what
-    ///         `budgetSupplyShares` of core supply funds. Pass 0 for the policy cuts themselves, unshrunk. The
-    ///         queue-root quote does not assert that the borrower is currently the root. A candidate that grants
-    ///         no cut quotes zero `borrowShares` — including one whose cut would be too small to seize a
-    ///         whole collateral unit, which the core rejects.
+    ///         `budgetSupplyShares` of core supply funds. Pass 0 to get the policy cuts unshrunk. The queue-root
+    ///         quote does not assert that the borrower is currently the root. A candidate that grants no cut
+    ///         quotes zero `borrowShares`, including one whose cut would be too small to seize a whole collateral
+    ///         unit, which the core rejects.
     function settlementFor(address borrower, uint256 budgetSupplyShares)
         external
         view
@@ -237,14 +240,17 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation
-    ///         maturation is deferred. Freeze adds no debt gate to debt-free withdrawals, but existing activation
-    ///         locks still apply.
+    ///         maturation is deferred. Freeze stops risk from growing while repay, liquidation, settlement, and
+    ///         lender exits all stay available; it adds no debt gate to debt-free withdrawals, though existing
+    ///         activation locks still apply.
     function freeze() external;
 
     /// @notice Lift the freeze.
     function unfreeze() external;
 
-    /// @notice Pause every hook for `duration` seconds. Pass PAUSE_INFINITELY for an indefinite pause.
+    /// @notice Pause every hook for `duration` seconds: unlike a freeze, this stops every market action,
+    ///         including repay, liquidation, and settlement. For incidents where even those are unsafe. Pass
+    ///         PAUSE_INFINITELY for an indefinite pause.
     function pauseFor(uint256 duration) external;
 
     /// @notice Lift the pause.

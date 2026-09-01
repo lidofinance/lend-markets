@@ -16,18 +16,19 @@ import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/Guar
 /// @title GuardianSignals
 /// @author Lido
 /// @notice One guardian committee serving many markets. Guardians flag accounts they suspect; once a quorum of
-///         flags is reached, a ban latches for the market it was raised in. A softer suspect report only raises a
-///         borrower's collateral-activation delay — it never bans. The market controller reads
-///         `getOpinion(marketId, account)` to scale the delay and hard-block borrowing.
-/// @dev    A guardian is a single committee address. It may appoint one **delegate** — a hot key allowed to act on
-///         its behalf; `setDelegate` replaces it (at most one at a time), and the zero address clears it. A
-///         delegate must not be a guardian or another guardian's current delegate, so one address cannot sign for
-///         two committee identities. Signalling and liveness calls name the guardian they act for (`onBehalf`) and
-///         accept that guardian or its current delegate. All signals and heartbeats are stored under the guardian,
-///         so replacing the delegate keeps the guardian's standing.
-///         Governance (`MANAGER_ROLE`) adds and removes guardians and sets the quorum and suspect window. Upgradeable
-///         behind a proxy (`initialize`, not a constructor); ERC-7201 namespaced storage. Events and errors live in
-///         {IGuardianSignals}.
+///         flags is reached, a ban latches for the market it was raised in. A softer suspect report only raises
+///         a borrower's collateral-activation delay; it never bans. Guardians also submit heartbeats reporting
+///         how far they have reviewed chain activity, and the registry keeps the timestamp a quorum has
+///         reviewed past (the quorum frontier). The market controller reads `getOpinion(marketId, account)` to
+///         scale the delay and hard-block borrowing, and lets fresh collateral activate only once the frontier
+///         covers its unlock time, so collateral guardians have not yet reviewed cannot back a borrow.
+/// @dev    A guardian is a single committee address. It may appoint one delegate: a hot key allowed to act in its
+///         place. Signalling and liveness calls name the guardian they act for (`onBehalf`) and accept that
+///         guardian or its current delegate. All signals and heartbeats are stored under the guardian, so
+///         replacing the delegate keeps the guardian's standing.
+///         Governance (`MANAGER_ROLE`) adds and removes guardians and sets the quorum and suspect window.
+///         Upgradeable behind a proxy (`initialize`, not a constructor); ERC-7201 namespaced storage. Events and
+///         errors live in {IGuardianSignals}.
 contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     is
     AccessControlEnumerableUpgradeable,
@@ -200,11 +201,12 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         // a guardian cannot have scanned a block that does not exist yet
         if (lastScannedBlock.number > block.number) revert BlockInTheFuture();
         // The frontier trusts the reported timestamp (the chain can't attest it by number), so bound it to the past
-        // and force it non-decreasing per guardian — no backdating or fast-forwarding the frontier it feeds.
+        // and force it non-decreasing per guardian: no backdating or fast-forwarding the frontier it feeds.
         if (lastScannedBlock.timestamp > block.timestamp) revert TimestampInTheFuture();
         if (lastScannedBlock.timestamp < previousTimestamp) revert HeartbeatTimestampRegressed();
-        // number + hash only prove the block is real and un-reorged; the frontier orders by timestamp. Reject a zero
-        // hash — `blockhash` returns zero for the current or out-of-window block, which it would spuriously match.
+        // number + hash only prove the block is real and was not reorged away; the frontier orders by timestamp.
+        // Reject a zero hash: `blockhash` returns zero for the current or out-of-window block, which it would
+        // spuriously match.
         if (lastScannedBlock.hash == bytes32(0)) revert InvalidBlockHash();
         if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) revert InvalidBlockHash();
 

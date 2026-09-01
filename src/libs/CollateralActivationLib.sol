@@ -8,13 +8,15 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 
 /// @title CollateralActivationLib
 /// @author Lido
-/// @notice Collateral activation throttle. Stores a borrower's un-matured collateral (`dust` and `activating`)
-///         and the timer. The caller owns the raw `total` and derives `active = total - inactive`, where
-///         `inactive = activating + dust`.
+/// @notice Collateral activation throttle. Fresh collateral protects its position immediately but cannot back
+///         a borrow until it matures; the delay scales with market-wide inflow and gives guardians time to
+///         review a deposit and flag its owner before it becomes borrowable. Stores a borrower's un-matured
+///         collateral (`dust` and `activating`) and the timer. The caller owns the raw `total` and derives
+///         `active = total - inactive`, where `inactive = activating + dust`.
 /// @dev Per-borrower the lib stores two un-matured buckets plus the timer. Deposits, maturity, voluntary
 ///      withdrawal, and forced seizure move collateral within or out of these buckets:
 ///
-///         dust        below the threshold, untimed, freely withdrawable, not borrowable
+///         dust        below the threshold, untimed, not borrowable
 ///         activating  crossed the threshold, timed and lockable, not borrowable yet
 ///         active      derived by the caller as total - activating - dust
 ///
@@ -182,7 +184,8 @@ library CollateralActivationLib {
     ///         timer and adds that amount to the market inflow. When `instant` (a trusted caller) the deposit
     ///         joins neither bucket and counts as active immediately; existing dust stays untouched.
     /// @dev All activating collateral shares one timer: a top-up that extends the deadline restarts
-    ///      `activatingStart` for the whole lot, clearing the suspect surcharge if it restarts past `suspectExpiry`.
+    ///      `activatingStart` for the whole lot. A restart past the suspect snapshot's expiry also ends the
+    ///      suspect surcharge, which applies only to lots started before that expiry.
     /// @param instant Whether the supplying caller is trusted to skip the activation timer and inflow throttle.
     function credit(State storage $, address borrower, uint256 assets, bool instant) internal {
         Position storage position = $.positions[borrower];
@@ -421,8 +424,8 @@ library CollateralActivationLib {
         return position.activatingStart + position.activatingDelay + surcharge;
     }
 
-    /// @dev Base delay scales linearly with the inflow, clamped at both ends. The dormant lot's size is folded
-    ///      into `effectiveInflow` before the call, so a lot's own size lengthens its delay.
+    /// @dev Base delay scales linearly with the inflow, clamped between the delay floor and cap. Callers fold
+    ///      the deposit's own size into `effectiveInflow`, so a deposit lengthens its own delay.
     function _computeDelay(State storage $, uint256 effectiveInflow) private view returns (uint256) {
         uint256 maxDelayInflow = $.config.maxDelayInflow;
         uint256 maxActivationDelay = $.config.maxActivationDelay;
