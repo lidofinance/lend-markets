@@ -144,7 +144,7 @@ library CollateralActivationLib {
         uint128 inflow;
         uint40 inflowUpdatedAt;
         CollateralActivationConfig config;
-        mapping(address borrower => Position) positions;
+        mapping(address borrower => Position position) positions;
     }
 
     // ---

@@ -32,8 +32,8 @@ library ExitBookLib {
     /// @param ownerRequestIds Per-owner index of the ids that owner opened, in creation order.
     struct State {
         uint256 nextId;
-        mapping(uint256 id => Request) requests;
-        mapping(address owner => uint256[]) ownerRequestIds;
+        mapping(uint256 id => Request request) requests;
+        mapping(address owner => uint256[] ids) ownerRequestIds;
     }
 
     // ---
