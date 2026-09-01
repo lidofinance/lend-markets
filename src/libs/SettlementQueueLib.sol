@@ -2,11 +2,13 @@
 pragma solidity 0.8.36;
 
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {MaxHeapLib} from "./MaxHeapLib.sol";
-import {WAD, BPS} from "./Constants.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import {MarketView, PositionView, SettlementConfig, SettlementSlice} from "../types/SettlementTypes.sol";
+import {WAD, BPS} from "./Constants.sol";
+import {MaxHeapLib} from "./MaxHeapLib.sol";
 
 /// @title SettlementQueueLib
 /// @author Lido Lending contributors.

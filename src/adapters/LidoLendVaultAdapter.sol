@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
 import {CoreAdapter} from "@bundler3/src/adapters/CoreAdapter.sol";
 import {ErrorsLib} from "@bundler3/src/libraries/ErrorsLib.sol";
+
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {ILidoLendERC4626} from "../interfaces/ILidoLendERC4626.sol";
 

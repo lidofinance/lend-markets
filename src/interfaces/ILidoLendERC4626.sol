@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
-
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
+import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 import {ILidoLendMarketController} from "./ILidoLendMarketController.sol";
 

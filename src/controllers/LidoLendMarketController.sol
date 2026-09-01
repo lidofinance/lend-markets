@@ -2,23 +2,24 @@
 pragma solidity 0.8.36;
 
 import {Id, IMorpho, MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
-import {WAD} from "../libs/Constants.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import {
     AccessControlEnumerableUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
-import {PausableUntil} from "../utils/PausableUntil.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import {IGuardianSignalsView} from "../interfaces/IGuardianSignalsView.sol";
-import {GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
-import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 import {ILidoLendMarketConfigurator} from "../interfaces/ILidoLendMarketConfigurator.sol";
+import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
+import {WAD} from "../libs/Constants.sol";
 import {SettlementQueueLib} from "../libs/SettlementQueueLib.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
-import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
 import {
     MarketView,
     PositionView,
@@ -26,6 +27,7 @@ import {
     SettlementQuote,
     SettlementSlice
 } from "../types/SettlementTypes.sol";
+import {PausableUntil} from "../utils/PausableUntil.sol";
 
 /// @notice Lido-policy controller for a Lido Lend market: collateral activation, freeze and pause,
 ///         address gating, and the settlement queue. All hook policy enters through `on`.

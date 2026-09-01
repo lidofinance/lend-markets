@@ -3,8 +3,9 @@
 
 pragma solidity 0.8.36;
 
-import {IPausableUntil} from "../interfaces/IPausableUntil.sol";
 import {StorageSlot} from "@openzeppelin/contracts/utils/StorageSlot.sol";
+
+import {IPausableUntil} from "../interfaces/IPausableUntil.sol";
 
 /// @title PausableUntil
 /// @notice Pauses the contract for a duration or indefinitely.
