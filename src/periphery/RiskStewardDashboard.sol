@@ -44,7 +44,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     // MODIFIERS
     // ---
 
-    /// @dev Restricts a lever to the stewards appointed for `marketId`.
+    /// @dev Restricts a call to the stewards appointed for `marketId`.
     modifier onlyMarketSteward(Id marketId) {
         if (!_stewards[marketId].contains(msg.sender)) revert NotMarketSteward();
         _;

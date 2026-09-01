@@ -54,15 +54,16 @@ struct SettlementSlice {
 /// @param personal Cut allowed by the borrower's personal settlement-LTV target, independent of queue membership,
 ///        market liquidity, and the settling lender's illiquid supply tail.
 /// @param queueRoot Cut allowed by the queue-root policy. Execution requires the borrower to be the live queue
-///        root; any executed amount above `personal` must fit the settling lender's illiquid supply tail.
+///        root, and a cut above `personal` must fit the settling lender's illiquid supply tail in full, not
+///        just the excess.
 struct SettlementQuote {
     SettlementSlice personal;
     SettlementSlice queueRoot;
 }
 
 /// @notice Sizing policy for the queue-root settlement cut, set together via `setSettlementConfig`. The queue
-///         root did not opt into settlement, so this policy decides how much of its debt one lender exit may
-///         settle: the largest of the three allowances below, capped at the debt. The uint96 amounts are policy
+///         root did not opt into settlement, so this policy decides how much of its debt one cut may settle:
+///         the largest of the three allowances below, capped at the debt. The uint96 amounts are policy
 ///         bounds, not accounting: for a loan or collateral token whose plausible amounts exceed uint96
 ///         (~7.9e28 base units) the configurable floors cannot be set high enough to match; the policy weakens
 ///         but nothing reverts or loses accounting.

@@ -20,9 +20,8 @@ import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/Guar
 ///         borrower's collateral-activation delay; it never bans. Guardians also submit heartbeats reporting
 ///         how far they have reviewed chain activity, and the registry keeps the timestamp a quorum has
 ///         reviewed past (the quorum frontier). The market controller reads `getOpinion(marketId, account)` to
-///         scale the delay and hard-block borrowing, and lets fresh collateral activate only once the frontier
-///         covers its unlock time, so collateral cannot back a borrow before guardians have reviewed up to its
-///         activation.
+///         scale the delay and hard-block borrowing, and holds fresh collateral inactive past its unlock time
+///         until the frontier covers that time or the market's guardian-quorum fallback delay elapses.
 /// @dev    A guardian is a single committee address. It may appoint one delegate: a hot key allowed to act in its
 ///         place. Signalling and liveness calls name the guardian they act for (`onBehalf`) and accept that
 ///         guardian or its current delegate. All signals and heartbeats are stored under the guardian, so
@@ -77,7 +76,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     mapping(address guardian => address delegate) private _delegates;
     /// @dev Each guardian's last-scanned block timestamp (a Unix timestamp, not a block number).
     mapping(address guardian => uint40 timestamp) private _heartbeats;
-    /// @dev Per (market, account) signal. `flaggedBy`/`suspectedBy` hold guardian addresses — a delegate's
+    /// @dev Per (market, account) signal. `flaggedBy`/`suspectedBy` hold guardian addresses: a delegate's
     ///      signal is recorded under its guardian, not the raw caller.
     mapping(Id marketId => mapping(address account => GuardiansSignal signal)) private _signals;
 
@@ -454,8 +453,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         emit Flagged(marketId, account, guardian, msg.sender, strikes);
     }
 
-    /// @dev Never lifts a ban. Before dropping the count, latch any currently-effective ban — including a
-    ///      quorum-derived one never written — so a retraction below quorum can't lift a ban that is in effect.
+    /// @dev Never lifts a ban. Before dropping the count, latch any currently-effective ban, including a
+    ///      quorum-derived one never written, so a retraction below quorum can't lift a ban that is in effect.
     function _unflag(address guardian, Id marketId, address account) internal {
         GuardiansSignal storage signal = _signals[marketId][account];
         if (!signal.banned && signal.flaggedBy.length() >= _quorum) {

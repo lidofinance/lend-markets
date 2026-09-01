@@ -212,9 +212,10 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
     /// @inheritdoc ILidoLendERC4626
     /// @dev Cuts only borrowers with a positive personal settlement-LTV slice, in the caller's order. Market
-    ///      liquidity is neither withdrawn nor reserved. When the budget is exhausted before the list ends, the
-    ///      call settles what the budget covers and burns shares for that part only. A call that settles nothing
-    ///      reverts. Seized collateral moves from the core directly to `receiver`.
+    ///      liquidity is neither withdrawn nor reserved. Shares burn pro rata to the budget the cuts consumed:
+    ///      a budget exhausted before the list ends burns all requested shares, and a list whose cuts fall
+    ///      short of the budget burns only the settled fraction. A call that settles nothing reverts. Seized
+    ///      collateral moves from the core directly to `receiver`.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
         returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled)
@@ -224,7 +225,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         if (receiver == address(0)) revert ZeroAddress();
         if (shares > balanceOf(owner)) revert ExceededBalance(owner, shares, balanceOf(owner));
 
-        // The owner's pro-rata managed core supply shares — the budget the cuts consume.
+        // The owner's pro-rata managed core supply shares: the budget the cuts consume.
         uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply());
         if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
 
@@ -271,13 +272,13 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     }
 
     /// @inheritdoc ILidoLendERC4626
-    /// @dev Pays out available market liquidity first, then settles the remainder. When the requested shares'
-    ///      floor-rounded value fits the available liquidity, the vault burns exactly those shares. Otherwise it
-    ///      withdraws the exact liquid amount, so share rounding cannot strand liquidity, and settles the rest
-    ///      against the risk queue, riskiest borrower first. Seized collateral moves from the core directly to the
-    ///      same `receiver`. When the queue or the iteration cap ends the loop early, the call burns shares only
-    ///      for what was serviced; controller and core errors revert the whole call. A call that burns no shares
-    ///      in either leg reverts.
+    /// @dev Pays out available market liquidity first, then settles the remainder. When nonzero available
+    ///      liquidity covers the requested shares' floor-rounded value, the vault burns exactly those shares.
+    ///      Otherwise it withdraws the exact liquid amount, so share rounding cannot strand liquidity, and
+    ///      settles the rest against the risk queue, riskiest borrower first. Seized collateral moves from the
+    ///      core directly to the same `receiver`. When the queue or the iteration cap ends the loop early, the
+    ///      call burns shares only for what was serviced; controller and core errors revert the whole call. A
+    ///      call that burns no shares in either leg reverts.
     function fallbackExit(uint256 shares, address receiver, address owner, uint256 maxIterations)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)

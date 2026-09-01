@@ -24,7 +24,7 @@ interface IWstETH {
 ///
 ///         This matches Morpho's IOracle convention:
 ///         "price of 1 collateral asset (wstETH, 18 dec) quoted in 1 loan asset (ETH, 18 dec),
-///          scaled by 1e36" — i.e. 36 + 18 - 18 = 36 decimals of precision.
+///          scaled by 1e36", i.e. 36 + 18 - 18 = 36 decimals of precision.
 contract WstEthRateOracle is IOracle {
     // ---
     // IMMUTABLES

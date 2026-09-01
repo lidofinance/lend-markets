@@ -77,7 +77,7 @@ library ExitBookLib {
     function recordFill(State storage self, uint256 id, uint256 filledAssets) internal {
         Request storage request = self.requests[id];
 
-        // Only an open request can be filled — guards against re-closing a cancelled/filled request (a
+        // Only an open request can be filled: guards against re-closing a cancelled/filled request (a
         // zero-asset call would otherwise corrupt its status to `Filled`).
         if (request.status != ExitStatus.Open) revert RequestClosed();
 

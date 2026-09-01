@@ -87,7 +87,7 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @notice Emitted when a guardian's suspect report on an account is retracted.
     event SuspectCleared(Id indexed marketId, address indexed account, address indexed guardian, address actor);
 
-    /// @notice Emitted when a suspect report is pruned — its guardian was removed from the committee, or its suspect
+    /// @notice Emitted when a suspect report is pruned: its guardian was removed from the committee, or its suspect
     ///         window lapsed.
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
 
@@ -134,7 +134,8 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @notice The added guardian is already in the set.
     error AlreadyGuardian();
 
-    /// @notice The caller is neither `onBehalf` nor its delegate, or a non-guardian appointed a delegate.
+    /// @notice `onBehalf` is not a guardian, the caller is neither `onBehalf` nor its delegate, or a
+    ///         non-guardian appointed a delegate.
     error Unauthorized();
 
     /// @notice The target of a guardian-only management action is not a guardian.

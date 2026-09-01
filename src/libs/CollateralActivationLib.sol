@@ -125,7 +125,7 @@ library CollateralActivationLib {
     // ---
 
     /// @notice Per-borrower un-matured collateral. The caller derives `active` as `total - activating - dust`.
-    /// @param dust            Free collateral below the activation threshold, withdrawable, never timed.
+    /// @param dust            Collateral below the activation threshold, untimed, not borrowable.
     /// @param activating      Collateral inside the activation timer, not yet borrowable.
     /// @param activatingStart Activation timer start, 0 when there is no active timer.
     /// @param activatingDelay Base inflow-scaled delay, frozen at deposit.

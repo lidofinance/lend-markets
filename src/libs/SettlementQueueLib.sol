@@ -13,9 +13,9 @@ import {MaxHeapLib} from "./MaxHeapLib.sol";
 /// @title SettlementQueueLib
 /// @author Lido
 /// @notice Risk-ordered queue of borrowers for lender settlement, with per-borrower settlement-LTV targets
-///         and the slice-sizing policy. The queue selects the borrower that a forced settlement cuts: an
-///         exiting lender always settles the riskiest tracked borrower (the heap root), and the policy bounds
-///         how much of its debt one exit may settle. Wraps a max-heap keyed by
+///         and the slice-sizing policy. The queue selects the borrower that a queue-driven settlement cuts:
+///         always the riskiest tracked borrower (the heap root). The policy bounds each cut, not an exit's
+///         total: an exit may cut the root again while it remains the root. Wraps a max-heap keyed by
 ///         borrowShares * KEY_SCALE / rawCollateral, so the root has the highest stored rounded risk key.
 ///         The controller uses it for an O(1) bad-debt gate, but equal keys and later valuation rounding mean a
 ///         solvent root does not prove that every tracked position is solvent.
@@ -277,9 +277,9 @@ library SettlementQueueLib {
         return remainingCollateral < $.config.fullCutBelowCollateral;
     }
 
-    /// @dev Root slice: the largest of the three slice rules — `sliceFloorBps` of the debt, `sliceFloorAssets`,
-    ///      and the slice that lowers the LTV by `ltvStepBps`. Caller guarantees `debtAssets > 0` and
-    ///      `collateralValue > 0` (the `slice` entry gate), so the LTV division here is safe.
+    /// @dev Root slice: the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the slice that
+    ///      lowers the LTV by `ltvStepBps`. Caller guarantees `debtAssets > 0` and `collateralValue > 0`
+    ///      (the `slice` entry gate), so the LTV division here is safe.
     function _policySlice(SettlementConfig storage config, uint256 debtAssets, uint256 collateralValue)
         private
         view

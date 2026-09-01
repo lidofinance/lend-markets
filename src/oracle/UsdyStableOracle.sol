@@ -42,7 +42,7 @@ contract UsdyStableOracle layout at erc7201("lido.lend.storage.UsdyStableOracle"
     // CONSTANTS
     // ---
 
-    /// @dev USDY collateral decimals — the only collateral this oracle prices.
+    /// @dev Decimals of USDY, the only collateral this oracle prices.
     uint256 internal constant USDY_DECIMALS = 18;
 
     /// @dev Decimals of Ondo's USDY NAV `getPrice()` output.

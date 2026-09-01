@@ -12,7 +12,7 @@ import {ILidoLendMarketController} from "./ILidoLendMarketController.sol";
 /// @notice ERC-4626 vault over one `LidoLend` (Morpho Blue fork) market. Withdrawals are limited by free
 ///         market liquidity, so the vault adds settlement exits: burning shares cancels borrower debt against
 ///         the vault's market supply and pays out that borrower's collateral of the same oracle value, subject
-///         to rounding and with no liquidation incentive. `settle` settles caller-chosen borrowers down to the
+///         to rounding and with no liquidation incentive. `settle` settles caller-chosen borrowers toward the
 ///         personal targets those borrowers set; `fallbackExit` pays available liquidity first and settles the
 ///         remainder against the riskiest tracked borrowers.
 interface ILidoLendERC4626 is IERC4626 {
@@ -69,12 +69,12 @@ interface ILidoLendERC4626 is IERC4626 {
     // EVENTS
     // ---
 
-    /// @notice A `fallbackExit` call completed with a positive, possibly partial fill — serviced from market
+    /// @notice A `fallbackExit` call completed with a positive, possibly partial fill: serviced from market
     ///         liquidity, queue settlement, or both.
     /// @param caller The address that called the exit.
     /// @param owner The account whose shares were burned.
     /// @param receiver The recipient of the liquid-leg loan assets and seized collateral.
-    /// @param sharesBurned Shares burned by the whole call — the liquid leg and the settle leg together.
+    /// @param sharesBurned Shares burned by the whole call: the liquid leg and the settle leg together.
     /// @param sharesSettled Shares burned by the settle leg alone, 0 when liquidity serviced the whole request
     ///        or the queue funded no cut.
     /// @param assetsWithdrawn Loan assets the liquid leg paid out, 0 when the market had no free liquidity or
@@ -150,7 +150,7 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @notice The wrapped market's params (loan/collateral/oracle/irm/lltv), as cached at init.
     function marketParams() external view returns (MarketParams memory);
 
-    /// @notice Core supply shares the vault acquired through its own operations — the backing that counts for
+    /// @notice Core supply shares the vault acquired through its own operations: the backing that counts for
     ///         `totalAssets` and the settlement budgets. Excludes permissionless core `supply` credits made
     ///         directly to the vault address, and is always `<=` the vault's live core supply-share position.
     function managedSupplyShares() external view returns (uint256);

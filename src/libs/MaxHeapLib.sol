@@ -59,7 +59,7 @@ library MaxHeapLib {
         return self.nodes.length - 1;
     }
 
-    /// @notice Account and key at the root — the highest-key entry. Reverts on an empty heap.
+    /// @notice Account and key at the root: the highest-key entry. Reverts on an empty heap.
     function peek(Heap storage self) internal view returns (address account, uint256 key) {
         if (self.nodes.length <= 1) revert EmptyHeap();
         Node storage root = self.nodes[1];

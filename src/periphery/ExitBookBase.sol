@@ -334,7 +334,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     }
 
     // ---
-    // INTERNAL — orchestration
+    // INTERNAL: orchestration
     // ---
 
     /// @dev Validate and append a request (called by a concrete book's `placeExitRequest`).
@@ -384,7 +384,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     }
 
     // ---
-    // SOURCE OPERATIONS — abstract, implemented by a concrete book
+    // SOURCE OPERATIONS: abstract, implemented by a concrete book
     // ---
 
     /// @dev Withdraw exactly `assets` from `account`'s position to this contract and return the source shares

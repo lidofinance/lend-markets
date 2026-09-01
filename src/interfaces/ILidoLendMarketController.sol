@@ -76,7 +76,7 @@ interface ILidoLendMarketController is
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
     error PositionAccountingMismatch();
 
-    /// @notice A tracked borrower is bad debt, blocking settlement.
+    /// @notice The settlement queue's root is bad debt, blocking settlement.
     error SettlementBadDebt();
 
     /// @notice The requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
@@ -95,7 +95,7 @@ interface ILidoLendMarketController is
     ///        activated amounts. It supports borrowing only when the total meets the current activation threshold.
     /// @param activating Collateral inside the activation timer, not yet borrowable.
     /// @param dust Stored untimed collateral classified as dust. Configuration changes do not reclassify it, so it
-    ///        need not remain below the current activation threshold. It is withdrawable and not borrowable.
+    ///        need not remain below the current activation threshold. It is not borrowable.
     /// @param unlockTime Activation unlock timestamp, 0 when there is no timer.
     /// @param flagCount Raw guardian flags on the account, regardless of status.
     /// @param banned Effective guardian ban: either the stored latch or a flag count at or above the current quorum.
@@ -210,9 +210,9 @@ interface ILidoLendMarketController is
 
     /// @notice The queue root and the cut it is eligible for: the larger of the root policy's allowance and the
     ///         borrower's own settlement-LTV allowance, shrunk to what `budgetSupplyShares` of core supply funds.
-    ///         Pass 0 to get the policy cut unshrunk. A lender may execute the root-policy part only against its
-    ///         illiquid supply tail. `borrower` is address(0) when the queue is empty, and the slice quotes zero
-    ///         `borrowShares` when no executable cut is available.
+    ///         Pass 0 to get the policy cut unshrunk. A cut above the settlement-LTV allowance must fit the
+    ///         settling lender's illiquid supply tail in full. `borrower` is address(0) when the queue is empty,
+    ///         and the slice quotes zero `borrowShares` when no executable cut is available.
     function nextSettlementBorrower(uint256 budgetSupplyShares)
         external
         view
