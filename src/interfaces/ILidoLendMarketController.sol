@@ -156,7 +156,7 @@ interface ILidoLendMarketController is
     function maxDeposit() external view returns (uint256);
 
     /// @notice Loan assets `supplier` can withdraw from its market supply right now: its position capped by
-    ///         the idle liquidity, 0 while paused.
+    ///         the market's free liquidity, 0 while paused.
     function maxWithdrawableAssets(address supplier) external view returns (uint256);
 
     /// @notice The guardian-signals registry this controller reads for the borrow gate and activation scaling.
@@ -240,17 +240,17 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation
-    ///         maturation is deferred. Freeze stops risk from growing while repay, liquidation, settlement, and
-    ///         lender exits all stay available; it adds no debt gate to debt-free withdrawals, though existing
-    ///         activation locks still apply.
+    ///         maturation is deferred. Freeze blocks risk-increasing actions while repay, liquidation,
+    ///         settlement, and lender exits remain available; it adds no debt gate to debt-free withdrawals,
+    ///         though existing activation locks still apply.
     function freeze() external;
 
     /// @notice Lift the freeze.
     function unfreeze() external;
 
     /// @notice Pause every hook for `duration` seconds: unlike a freeze, this stops every market action,
-    ///         including repay, liquidation, and settlement. For incidents where even those are unsafe. Pass
-    ///         PAUSE_INFINITELY for an indefinite pause.
+    ///         including repay, liquidation, and settlement, for incidents in which even those are unsafe.
+    ///         Pass PAUSE_INFINITELY for an indefinite pause.
     function pauseFor(uint256 duration) external;
 
     /// @notice Lift the pause.

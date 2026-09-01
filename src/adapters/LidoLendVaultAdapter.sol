@@ -33,8 +33,8 @@ contract LidoLendVaultAdapter is CoreAdapter {
     /// @param  receiver Receives both payout tokens. When it is an adapter, later calls in the bundle
     ///         must transfer both out of it.
     /// @param  minExitAssets Minimum total payout, in loan tokens: the loan tokens paid plus the debt
-    ///         the settlement cancelled. One minimum for both parts together, so it does not matter
-    ///         how the payout splits between them.
+    ///         the settlement cancelled. One minimum covers both parts together, independent of how
+    ///         the payout splits between them.
     /// @param  minSharesBurned Minimum shares the exit must burn. The exit may burn fewer than
     ///         requested; pass `shares` to require all or nothing.
     function fallbackExit(

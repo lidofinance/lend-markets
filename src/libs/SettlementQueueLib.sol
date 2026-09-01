@@ -13,9 +13,9 @@ import {MaxHeapLib} from "./MaxHeapLib.sol";
 /// @title SettlementQueueLib
 /// @author Lido
 /// @notice Risk-ordered queue of borrowers for lender settlement, with per-borrower settlement-LTV targets
-///         and the slice-sizing policy. The queue decides who a forced settlement cuts: an exiting lender
-///         always settles the riskiest tracked borrower (the heap root), and the policy bounds how much of
-///         that borrower one exit may take. Wraps a max-heap keyed by
+///         and the slice-sizing policy. The queue selects the borrower that a forced settlement cuts: an
+///         exiting lender always settles the riskiest tracked borrower (the heap root), and the policy bounds
+///         how much of its debt one exit may settle. Wraps a max-heap keyed by
 ///         borrowShares * KEY_SCALE / rawCollateral, so the root has the highest stored rounded risk key.
 ///         The controller uses it for an O(1) bad-debt gate, but equal keys and later valuation rounding mean a
 ///         solvent root does not prove that every tracked position is solvent.

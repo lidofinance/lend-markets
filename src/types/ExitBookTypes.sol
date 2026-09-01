@@ -15,10 +15,10 @@ enum ExitStatus {
     Cancelled
 }
 
-/// @notice Lender-set priority-fee schedule — a Dutch auction on the fee carved out of each fill. The rate
-///         holds at `startRate` for `rampStart` seconds from creation, then climbs linearly to `endRate` by
-///         `rampEnd`, then holds at `endRate` until the deadline. Rates are WAD fractions, each capped at
-///         `MAX_PRIORITY_FEE`.
+/// @notice Lender-set priority-fee schedule: the fee rate offered to fillers rises over time until the request
+///         is filled. The rate holds at `startRate` for `rampStart` seconds from creation, then rises linearly
+///         to `endRate` by `rampEnd`, then holds at `endRate` until the deadline. Rates are WAD fractions, each
+///         capped at `MAX_PRIORITY_FEE`.
 /// @param startRate Priority-fee rate (WAD) charged from creation through the `rampStart` hold.
 /// @param endRate Priority-fee rate (WAD) reached after the ramp and held to the deadline; `>= startRate`.
 /// @param rampStart Seconds from creation the rate holds at `startRate` before the climb begins (0 climbs

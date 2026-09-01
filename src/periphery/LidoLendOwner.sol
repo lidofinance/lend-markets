@@ -45,8 +45,10 @@ contract LidoLendOwner is AccessControlEnumerable, ILidoLendOwner {
     ///                      to this facade after construction; the facade cannot do it itself.
     /// @param admin         Holder of `DEFAULT_ADMIN_ROLE`, which manages the capability roles and core
     ///                      ownership. Required.
-    /// @param marketCreator Initial `MARKET_CREATOR_ROLE` holder; `address(0)` grants none (admin can later).
-    /// @param feeManager    Initial `FEE_MANAGER_ROLE` holder; `address(0)` grants none (admin can later).
+    /// @param marketCreator Initial `MARKET_CREATOR_ROLE` holder; `address(0)` grants none, and the admin can
+    ///                      grant the role later.
+    /// @param feeManager    Initial `FEE_MANAGER_ROLE` holder; `address(0)` grants none, and the admin can
+    ///                      grant the role later.
     constructor(ILidoLend core, address admin, address marketCreator, address feeManager) {
         if (address(core) == address(0) || admin == address(0)) revert ZeroAddress();
         LIDO_LEND = core;

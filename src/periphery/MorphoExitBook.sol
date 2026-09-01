@@ -61,7 +61,7 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     mapping(Id marketId => bool isAllowed) public isMarketAllowed;
 
     /// @dev Registered params per market id, kept permanently so existing requests still resolve after the market
-    ///      is disallowed. The id is the params' hash, so canonical.
+    ///      is disallowed. The id is the hash of the params, so one id maps to one parameter set.
     mapping(Id marketId => MarketParams marketParams) internal _marketParams;
 
     /// @dev The market a request was placed against (params via `_marketParams`).

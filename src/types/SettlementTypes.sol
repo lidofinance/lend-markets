@@ -62,7 +62,7 @@ struct SettlementQuote {
 
 /// @notice Sizing policy for the queue-root settlement cut, set together via `setSettlementConfig`. The queue
 ///         root did not opt into settlement, so this policy decides how much of its debt one lender exit may
-///         take: the largest of the three rules below, capped at the debt. The uint96 amounts are policy
+///         settle: the largest of the three allowances below, capped at the debt. The uint96 amounts are policy
 ///         bounds, not accounting: for a loan or collateral token whose plausible amounts exceed uint96
 ///         (~7.9e28 base units) the configurable floors cannot be set high enough to match; the policy weakens
 ///         but nothing reverts or loses accounting.

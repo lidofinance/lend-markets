@@ -34,8 +34,8 @@ import {PausableUntil} from "../utils/PausableUntil.sol";
 /// @notice Lido-policy layer for one Lido Lend market. The core calls `on` before applying each market action;
 ///         the controller then allows the action or reverts it, and never changes the amounts the core
 ///         resolved. It enforces the lender supply cap, delays fresh collateral before it can back a borrow,
-///         blocks banned borrowers, orders borrowers for lender settlement, and carries the freeze and pause
-///         levers.
+///         blocks banned borrowers, orders borrowers for lender settlement, and provides the freeze and pause
+///         controls.
 contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendMarketController")
     is
     AccessControlEnumerableUpgradeable,
@@ -431,8 +431,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         PositionView memory position = _positionView(id, borrower);
 
         // Freeze blocks withdraw only while there is open debt. It adds no gate to a zero-debt non-custody exit,
-        // although the activation lock below still binds any inactive buckets; a banned address may pull its own
-        // collateral.
+        // although the activation lock below still binds any inactive buckets; a banned address may withdraw its
+        // own collateral.
         bool frozen = isFrozen;
         if (frozen && position.borrowShares != 0) revert MarketIsFrozen();
 
@@ -648,8 +648,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     /// @dev Part of `supplier`'s supply value left after withdrawing all current market liquidity. Root-policy
-    ///      settlement may convert only this part: a lender must take the liquid exit as far as it goes before
-    ///      force-settling the queue root.
+    ///      settlement may convert only this part: the supply that a full withdrawal of current market liquidity
+    ///      could not pay out.
     function _settleableSupplyAssets(Id id, MarketView memory marketView, address supplier)
         private
         view

@@ -11,10 +11,10 @@ import {ILidoLendMarketController} from "./ILidoLendMarketController.sol";
 /// @title ILidoLendERC4626
 /// @notice ERC-4626 vault over one `LidoLend` (Morpho Blue fork) market. Withdrawals are limited by free
 ///         market liquidity, so the vault adds settlement exits: burning shares cancels borrower debt against
-///         the vault's market supply and pays out that borrower's collateral of equal oracle value. `settle`
-///         cuts caller-chosen borrowers within the settlement targets those borrowers set for themselves;
-///         `fallbackExit` pays available liquidity first and settles the remainder against the riskiest
-///         tracked borrowers.
+///         the vault's market supply and pays out that borrower's collateral of the same oracle value, subject
+///         to rounding and with no liquidation incentive. `settle` settles caller-chosen borrowers down to the
+///         personal targets those borrowers set; `fallbackExit` pays available liquidity first and settles the
+///         remainder against the riskiest tracked borrowers.
 interface ILidoLendERC4626 is IERC4626 {
     // ---
     // ERRORS
@@ -161,9 +161,9 @@ interface ILidoLendERC4626 is IERC4626 {
 
     /// @notice Settles the given borrowers, in order, against the owner's share of the vault's market supply.
     ///         Each cut lowers its borrower toward the settlement LTV that borrower set for itself; a borrower
-    ///         who set no target, or already sits at or under it, consumes nothing. Being the queue root is not
-    ///         required, and market liquidity is untouched. When the budget is exhausted early, the call settles
-    ///         what it covers; a call that settles no borrower reverts.
+    ///         with no target, or whose LTV is already at or below its target, consumes nothing. Being the queue
+    ///         root is not required, and market liquidity is untouched. When the budget is exhausted early, the
+    ///         call settles what it covers; a call that settles no borrower reverts.
     /// @param shares Vault shares whose pro-rata core-supply claim bounds the cuts.
     /// @param borrowers Positions to cut in order, each sized by its personal settlement-LTV target.
     /// @param receiver Recipient of the seized collateral.
@@ -175,7 +175,7 @@ interface ILidoLendERC4626 is IERC4626 {
         external
         returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
 
-    /// @notice Exit that does not depend on free market liquidity. Available liquidity is paid out first in
+    /// @notice An exit that does not require free market liquidity. Available liquidity is paid out first in
     ///         loan tokens; the rest of the request is settled against the risk queue, riskiest borrower first,
     ///         and paid in that borrower's collateral. When the queue or the iteration cap ends the loop early,
     ///         only the serviced part burns shares; controller and core errors still revert.

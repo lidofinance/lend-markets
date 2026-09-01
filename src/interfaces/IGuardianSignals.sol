@@ -242,7 +242,7 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory timestamps);
 
     /// @notice The stored quorum frontier: the highest timestamp a quorum of guardians has reported reviewing
-    ///         past. It only moves forward; membership and quorum changes never pull it back.
+    ///         past. It never decreases; membership and quorum changes do not lower it.
     function getQuorumFrontier() external view returns (uint40);
 
     // ---

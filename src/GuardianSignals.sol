@@ -16,12 +16,13 @@ import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/Guar
 /// @title GuardianSignals
 /// @author Lido
 /// @notice One guardian committee serving many markets. Guardians flag accounts they suspect; once a quorum of
-///         flags is reached, a ban latches for the market it was raised in. A softer suspect report only raises
-///         a borrower's collateral-activation delay; it never bans. Guardians also submit heartbeats reporting
+///         flags is reached, a ban latches for the market it was raised in. A suspect report only raises a
+///         borrower's collateral-activation delay; it never bans. Guardians also submit heartbeats reporting
 ///         how far they have reviewed chain activity, and the registry keeps the timestamp a quorum has
 ///         reviewed past (the quorum frontier). The market controller reads `getOpinion(marketId, account)` to
 ///         scale the delay and hard-block borrowing, and lets fresh collateral activate only once the frontier
-///         covers its unlock time, so collateral guardians have not yet reviewed cannot back a borrow.
+///         covers its unlock time, so collateral cannot back a borrow before guardians have reviewed up to its
+///         activation.
 /// @dev    A guardian is a single committee address. It may appoint one delegate: a hot key allowed to act in its
 ///         place. Signalling and liveness calls name the guardian they act for (`onBehalf`) and accept that
 ///         guardian or its current delegate. All signals and heartbeats are stored under the guardian, so
@@ -126,7 +127,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
     /// @inheritdoc IGuardianSignals
     /// @dev Reverts if removal would drop the set below `quorum`. Clears the guardian's delegate and heartbeat, so
-    ///      re-adding it starts fresh. Its existing signals linger (still counted) until a permissionless `prune`.
+    ///      re-adding it starts fresh. Its existing signals remain stored and counted until a permissionless
+    ///      `prune`.
     function removeGuardian(address guardian) external onlyRole(MANAGER_ROLE) {
         _removeGuardian(guardian);
         if (_guardians.length() < _quorum) revert WouldBreakQuorum();
@@ -385,8 +387,9 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         return msg.sender == onBehalf || msg.sender == _delegates[onBehalf];
     }
 
-    /// @dev Recompute the quorum frontier (the quorum-th largest heartbeat timestamp) and ratchet it up.
-    ///      Monotonic: adding fresh zero-heartbeat guardians cannot pull it back.
+    /// @dev Recompute the quorum frontier (the quorum-th largest heartbeat timestamp) and raise the stored
+    ///      value when the recomputed one is higher. The stored frontier never decreases: adding guardians with
+    ///      zero heartbeats lowers only the recomputed candidate, never the stored value.
     function _syncQuorumFrontier() internal {
         uint256 quorum = _quorum;
         uint256 n = _guardians.length();

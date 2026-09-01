@@ -132,10 +132,10 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     /// @inheritdoc IExitBook
     bytes32 public constant RESUMER_ROLE = keccak256("RESUMER_ROLE");
 
-    /// @notice Cap on a request's priority-fee rate (WAD), checked at `place` — 10%.
+    /// @notice Cap on a request's priority-fee rate (WAD), enforced when the request is placed: 10%.
     uint256 public constant MAX_PRIORITY_FEE = 0.1e18;
 
-    /// @notice Hard cap on the service fee — a cut of the priority fee (WAD) — 25%.
+    /// @notice Hard cap on the service fee, a cut of the priority fee (WAD): 25%.
     uint256 public constant MAX_SERVICE_FEE = 0.25e18;
 
     // ---
@@ -367,7 +367,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     }
 
     /// @dev The priority-fee rate (WAD) in force now: `startRate` while within the `rampStart` hold, then
-    ///      climbing linearly to `endRate` by `rampEnd`, then held at `endRate` until the deadline.
+    ///      rising linearly to `endRate` by `rampEnd`, then held at `endRate` until the deadline.
     function _priorityFeeRate(Request storage request) internal view returns (uint256) {
         uint256 startRate = request.startRate;
         uint256 rampStart = request.rampStart;

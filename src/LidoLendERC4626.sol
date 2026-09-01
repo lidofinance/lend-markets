@@ -22,9 +22,10 @@ import {SettlementQuote, SettlementSlice} from "./types/SettlementTypes.sol";
 /// @author Lido
 /// @notice ERC-4626 vault over one LidoLend (Morpho Blue fork) market. Lenders deposit the loan token; the
 ///         vault supplies it to the market, and shares grow with the market's interest. A normal withdrawal
-///         needs free market liquidity, which a heavily borrowed market may not have. Settlement is the exit
-///         for that case: the vault cancels borrower debt against its market supply and pays the exiting
-///         lender that borrower's collateral of equal oracle value, so the exit needs no loan-token liquidity.
+///         requires free market liquidity, which a heavily borrowed market may not have. Settlement is the exit
+///         for that case: the vault cancels borrower debt against its market supply and pays the exiting lender
+///         that borrower's collateral of the same oracle value, subject to rounding, so the exit requires no
+///         loan-token liquidity.
 /// @dev    Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer
 ///         callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
 contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
@@ -155,8 +156,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     /// @inheritdoc IERC4626
     /// @dev Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in nonzero free liquidity
     ///      it returns the exact share balance. Otherwise the floor conversion is a conservative ERC-4626 gate;
-    ///      shares it leaves out can still exit through `fallbackExit`. Zero when the controller reports no
-    ///      withdrawable assets, including while paused.
+    ///      shares excluded by that rounding can still exit through `fallbackExit`. Zero when the controller
+    ///      reports no withdrawable assets, including while paused.
     function maxRedeem(address owner) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         uint256 liquidAssets = _morphoWithdrawableAssets();
         if (liquidAssets == 0) return 0;
@@ -235,7 +236,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
             debtCanceled += cutDebt;
             collateralSeized += cutCollateral;
-            // The quote was sized against this budget, so the burn the core derives from it fits.
+            // The quote was sized against this budget, so the supply burn the core derives from it stays
+            // within the remainder.
             remainingSupplyShares -= cutShares;
         }
 

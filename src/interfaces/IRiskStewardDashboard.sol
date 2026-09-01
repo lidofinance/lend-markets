@@ -5,8 +5,9 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 
 /// @title IRiskStewardDashboard
-/// @notice Dashboard-specific external surface: per-market steward management and bounded risk-reduction levers.
-///         Access-control membership and administration use the inherited `IAccessControlEnumerable` surface.
+/// @notice Dashboard-specific external surface: per-market steward management and bounded risk-reduction
+///         controls. Access-control membership and administration use the inherited `IAccessControlEnumerable`
+///         surface.
 interface IRiskStewardDashboard is IAccessControlEnumerable {
     // ---
     // EVENTS
@@ -72,7 +73,7 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     /// @notice The stewards currently appointed for a market.
     function marketStewards(Id marketId) external view returns (address[] memory);
 
-    /// @notice Whether `steward` may pull this dashboard's levers on `marketId`.
+    /// @notice Whether `steward` may operate this dashboard's risk controls for `marketId`.
     function isMarketSteward(Id marketId, address steward) external view returns (bool);
 
     // ---

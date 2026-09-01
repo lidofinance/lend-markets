@@ -8,7 +8,7 @@ import {ExitStatus, Request, PriorityRamp} from "../types/ExitBookTypes.sol";
 /// @title ExitBookLib
 /// @author Lido
 /// @notice Append-only request registry. Source-agnostic and storage-only: a book holds one `State` and
-///         drives it via `using ExitBookLib for State`. Requests are never deleted — a fill marks `Filled`,
+///         drives it via `using ExitBookLib for State`. Requests are never deleted: a fill marks `Filled`,
 ///         a cancel `Cancelled`. Lookups go by id (the `requests` mapping) or by owner (the `ownerRequestIds`
 ///         index); callers filter closed entries by status.
 library ExitBookLib {
@@ -28,7 +28,8 @@ library ExitBookLib {
     // ---
 
     /// @param nextId Monotonic id counter; the last id issued (ids start at 1).
-    /// @param requests Every request ever created, keyed by id; closed ones linger as stable handles.
+    /// @param requests Every request ever created, keyed by id; closed ones remain stored, so an id stays
+    ///        resolvable after its request is filled or cancelled.
     /// @param ownerRequestIds Per-owner index of the ids that owner opened, in creation order.
     struct State {
         uint256 nextId;
