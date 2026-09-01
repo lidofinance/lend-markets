@@ -21,11 +21,12 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 interface ILidoLendBound {
+    /// @notice The LidoLend core the component is bound to.
     function LIDO_LEND() external view returns (address);
 }
 
 /// @title LidoLendMarketFactory
-/// @author Lido Lending contributors.
+/// @author Lido
 /// @notice Deploys controllers, ERC-4626 wrappers, and guardian registries at fixed implementations, assigns their
 ///         final roles, and validates the resulting bindings. Market creation on the core remains a separate
 ///         governance action.

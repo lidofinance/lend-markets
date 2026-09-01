@@ -24,16 +24,26 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     // ERRORS
     // ---
 
+    /// @notice The market is not allowed for new requests.
     error MarketNotAllowed();
+
+    /// @notice The market params do not name a live Morpho market.
     error MarketNotCreated();
+
+    /// @notice The caller has not authorized this book on Morpho.
     error NotAuthorizedOnMorpho();
+
+    /// @notice The caller's supply position cannot back the request.
     error InsufficientBacking();
+
+    /// @notice The Morpho address passed to the constructor is the zero address.
     error ZeroMorpho();
 
     // ---
     // EVENTS
     // ---
 
+    /// @notice Emitted when a market is allowed or disallowed for new requests.
     event MarketAllowedSet(Id indexed marketId, bool allowed);
 
     // ---

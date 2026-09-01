@@ -2,6 +2,7 @@
 pragma solidity 0.8.36;
 
 /// @title MaxHeapLib
+/// @author Lido
 /// @notice Generic binary max-heap over a storage struct, keyed by `(account, key)`.
 /// @dev Risk-agnostic: it only orders accounts by an externally supplied `key`. Callers in this
 ///      repo derive the key as `borrowShares × 1e18 / rawCollateral` — this NatSpec is the single

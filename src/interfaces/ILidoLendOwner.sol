@@ -44,7 +44,7 @@ interface ILidoLendOwner is IAccessControlEnumerable {
     // ERRORS
     // ---
 
-    /// @notice Thrown when the core, required admin, or an ownership target is the zero address.
+    /// @notice The core, required admin, or an ownership target is the zero address.
     error ZeroAddress();
 
     /// @notice The market id has no controller on the core (unknown or controller-less).

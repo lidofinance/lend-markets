@@ -17,48 +17,48 @@ interface ILidoLendERC4626 is IERC4626 {
     // ERRORS
     // ---
 
-    /// @notice Thrown when an exit is requested for zero shares.
+    /// @notice The exit requests zero shares.
     error ZeroShares();
 
-    /// @notice Thrown when the seized-collateral receiver is the zero address.
+    /// @notice The seized-collateral receiver is the zero address.
     error ZeroAddress();
 
-    /// @notice Thrown when the LidoLend core address is zero at construction.
+    /// @notice The LidoLend core address is zero at construction.
     error ZeroLidoLend();
 
-    /// @notice Thrown when the controller address is zero at initialization.
+    /// @notice The controller address is zero at initialization.
     error ZeroController();
 
-    /// @notice Thrown when the bound controller governs a different market than the vault's.
+    /// @notice The bound controller governs a different market than the vault's.
     error ControllerMarketMismatch();
 
-    /// @notice Thrown when the market's loan token is the zero address at initialization.
+    /// @notice The market's loan token is the zero address at initialization.
     error ZeroLoanToken();
 
-    /// @notice Thrown when the market's collateral token is the zero address at initialization.
+    /// @notice The market's collateral token is the zero address at initialization.
     error ZeroCollateralToken();
 
-    /// @notice Thrown when an exit maps to a zero core supply-share budget.
+    /// @notice The exit maps to a zero core supply-share budget.
     error ZeroMorphoSupplyShares();
 
-    /// @notice Thrown when a nonzero deposit receives zero core supply shares.
+    /// @notice A nonzero deposit received zero core supply shares.
     /// @param assets The deposited assets that mapped to zero core supply shares.
     error ZeroCoreSupplySharesMinted(uint256 assets);
 
-    /// @notice Thrown when a targeted settlement consumes no core supply shares across all requested borrowers,
-    ///         or when a fallback exit burns no shares in either leg.
+    /// @notice A targeted settlement consumed no core supply shares across all requested borrowers, or a
+    ///         fallback exit burned no shares in either leg.
     error NothingSettled();
 
-    /// @notice Thrown when the requested exit shares exceed the owner's balance.
+    /// @notice The requested exit shares exceed the owner's balance.
     /// @param owner The account whose balance was checked.
     /// @param shares The requested shares.
     /// @param balance The owner's actual balance.
     error ExceededBalance(address owner, uint256 shares, uint256 balance);
 
-    /// @notice Thrown when `settle` is called with an empty borrowers list.
+    /// @notice `settle` was called with an empty borrowers list.
     error EmptyBorrowers();
 
-    /// @notice Thrown when a nonzero-asset deposit would mint zero vault shares.
+    /// @notice A nonzero-asset deposit would mint zero vault shares.
     /// @param assets The deposited assets that mapped to zero shares.
     error ZeroSharesMinted(uint256 assets);
 
@@ -113,7 +113,7 @@ interface ILidoLendERC4626 is IERC4626 {
     ///         override it, and passing 0 falls back to this.
     function DEFAULT_MAX_SETTLEMENT_ITERATIONS() external view returns (uint256);
 
-    /// @notice The LidoLend core (Morpho Blue fork) this vault supplies into and settles against.
+    /// @notice The LidoLend core (Morpho Blue fork).
     function LIDO_LEND() external view returns (ILidoLend);
 
     /// @notice Id of the market this vault wraps.

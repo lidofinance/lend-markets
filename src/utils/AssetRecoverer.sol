@@ -7,6 +7,7 @@ import {IERC1155} from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /// @title AssetRecoverer
+/// @author Lido
 /// @notice Recovers ETH, ERC-20, ERC-721, and ERC-1155 tokens held by the contract, to a caller-specified
 ///         recipient. Gated by `_checkRecoverer`, implemented by the inheriting contract.
 abstract contract AssetRecoverer {
@@ -16,9 +17,16 @@ abstract contract AssetRecoverer {
     // EVENTS
     // ---
 
+    /// @notice Emitted when the contract's Ether balance is recovered.
     event EtherRecovered(address indexed recipient, uint256 amount);
+
+    /// @notice Emitted when an ERC-20 amount is recovered.
     event ERC20Recovered(address indexed token, address indexed recipient, uint256 amount);
+
+    /// @notice Emitted when an ERC-721 token is recovered.
     event ERC721Recovered(address indexed token, uint256 tokenId, address indexed recipient);
+
+    /// @notice Emitted when an ERC-1155 balance is recovered.
     event ERC1155Recovered(address indexed token, uint256 tokenId, address indexed recipient, uint256 amount);
 
     // ---

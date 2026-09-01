@@ -29,6 +29,8 @@ import {
 } from "../types/SettlementTypes.sol";
 import {PausableUntil} from "../utils/PausableUntil.sol";
 
+/// @title LidoLendMarketController
+/// @author Lido
 /// @notice Lido-policy controller for a Lido Lend market: collateral activation, freeze and pause,
 ///         address gating, and the settlement queue. All hook policy enters through `on`.
 contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendMarketController")
@@ -110,6 +112,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     // INITIALIZATION
     // ---
 
+    /// @param lidoLend The Morpho-fork core.
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
     constructor(IMorpho lidoLend) {
         if (address(lidoLend) == address(0)) revert ZeroAddress();
@@ -119,6 +122,12 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
     /// @notice One-shot initializer: binds the market, grants roles, wires the guardian-signals registry, and
     ///         sets the initial supply cap, activation config, and settlement config.
+    /// @param marketId_        The market this controller is bound to; hooks for any other id revert.
+    /// @param admin            Holder of `DEFAULT_ADMIN_ROLE`, the admin of every controller role.
+    /// @param supplyCap_       Initial ceiling on total supplied loan assets; 0 means no cap.
+    /// @param guardianSignals  Guardian-signal registry read on every hook.
+    /// @param activationConfig Initial collateral-activation config.
+    /// @param settlementConfig Initial settlement config.
     function initialize(
         Id marketId_,
         address admin,

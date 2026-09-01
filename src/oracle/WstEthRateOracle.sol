@@ -11,6 +11,7 @@ interface IWstETH {
 }
 
 /// @title WstEthRateOracle
+/// @author Lido
 /// @notice Morpho oracle for wstETH quoted in ETH using Lido's accounting rate.
 /// @dev    Returns ETH per 1 wstETH scaled by 1e36, assuming stETH/ETH par for protocol accounting.
 ///         No market-price dependency.

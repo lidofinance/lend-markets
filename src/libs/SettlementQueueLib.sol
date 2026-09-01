@@ -11,7 +11,7 @@ import {WAD, BPS} from "./Constants.sol";
 import {MaxHeapLib} from "./MaxHeapLib.sol";
 
 /// @title SettlementQueueLib
-/// @author Lido Lending contributors.
+/// @author Lido
 /// @notice Risk-ordered queue of borrowers for the settle waterfall, with per-borrower settlement-LTV
 ///         targets and the slice-sizing policy. Wraps a max-heap keyed by
 ///         borrowShares * KEY_SCALE / rawCollateral, so the root has the highest stored rounded risk key.

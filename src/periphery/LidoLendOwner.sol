@@ -12,7 +12,7 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 /// @title LidoLendOwner
-/// @author Lido Lending contributors.
+/// @author Lido
 /// @notice Stable role-gated governance facade over a `LidoLend` core and all its markets. Core-owner calls and
 ///         per-market controller and guardian-registry calls sit behind independent capability roles.
 contract LidoLendOwner is AccessControlEnumerable, ILidoLendOwner {

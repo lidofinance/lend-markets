@@ -25,28 +25,62 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     // ERRORS
     // ---
 
+    /// @notice A required address argument is zero.
     error ZeroAddress();
+
+    /// @notice The requested or filled asset amount is zero.
     error ZeroAssets();
+
+    /// @notice The maximum request lifetime passed to the constructor is zero.
     error ZeroMaxLifetime();
+
+    /// @notice The service fee exceeds `MAX_SERVICE_FEE`.
     error FeeTooHigh();
+
+    /// @notice A nonzero service fee was set with a zero recipient.
     error FeeRecipientRequired();
+
+    /// @notice The request's end priority-fee rate exceeds `MAX_PRIORITY_FEE`.
     error PriorityFeeTooHigh();
+
+    /// @notice The request's start priority-fee rate exceeds its end rate.
     error StartFeeAboveEnd();
+
+    /// @notice The request's fee ramp starts after it ends.
     error RampStartAfterEnd();
+
+    /// @notice The request's fee ramp would end after its deadline.
     error RampPastDeadline();
+
+    /// @notice The fill requests more assets than the request has remaining.
     error FillExceedsRemaining(uint256 requested, uint256 remaining);
+
+    /// @notice A non-final fill is below the request's minimum fill.
     error FillBelowMinimum(uint256 requested, uint256 minimum);
+
+    /// @notice The request's share-burn budget cannot cover the placement share quote.
     error MaxShareBurnBelowQuote(uint256 maximum, uint256 quote);
+
+    /// @notice The fill burns more source shares than its pro-rata share-burn limit.
     error ShareBurnExceedsMaximum(uint256 actual, uint256 maximum);
+
+    /// @notice The source withdrawal delivered a different asset amount than the fill debited.
     error AssetsOutMismatch(uint256 expected, uint256 actual);
+
+    /// @notice The request's deadline is not in the future.
     error DeadlineInPast();
+
+    /// @notice The request's deadline is more than `MAX_REQUEST_LIFETIME` away.
     error DeadlineTooFar();
+
+    /// @notice The book is paused.
     error EnforcedPause();
 
     // ---
     // EVENTS
     // ---
 
+    /// @notice Emitted when an exit request is placed.
     event ExitRequested(
         uint256 indexed id,
         address indexed owner,
@@ -59,6 +93,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         uint256 deadline
     );
 
+    /// @notice Emitted when a fill pays out: the receiver's assets, the filler's reward, and the service cut.
     event ExitProcessed(
         uint256 indexed id,
         address indexed executor,
@@ -70,12 +105,16 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         uint256 serviceCut
     );
 
+    /// @notice Emitted when a request is cancelled by its owner.
     event ExitCancelled(uint256 indexed id);
 
+    /// @notice Emitted when the service fee and its recipient are set.
     event ServiceFeeSet(address indexed feeRecipient, uint256 serviceFee);
 
+    /// @notice Emitted when request placement and fills are paused.
     event Paused(address account);
 
+    /// @notice Emitted when request placement and fills are resumed.
     event Unpaused(address account);
 
     // ---

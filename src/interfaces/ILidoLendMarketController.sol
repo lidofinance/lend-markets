@@ -42,47 +42,47 @@ interface ILidoLendMarketController is
     // ERRORS
     // ---
 
-    /// @notice Thrown when the hook caller is not the core.
+    /// @notice The hook caller is not the core.
     error Unauthorized();
 
-    /// @notice Thrown when a required address argument is zero.
+    /// @notice A required address argument is zero.
     error ZeroAddress();
 
-    /// @notice Thrown when the hook id is not this controller's market.
+    /// @notice The hook id is not this controller's market.
     error InvalidMarketId();
 
-    /// @notice Thrown when the hook event is unrecognized.
+    /// @notice The hook event is unrecognized.
     error UnknownHookEvent();
 
-    /// @notice Thrown when a freeze blocks the action.
+    /// @notice A freeze blocks the action.
     error MarketIsFrozen();
 
-    /// @notice Thrown when a banned address borrows, receives a borrow, or initiates one.
+    /// @notice The borrow's caller, receiver, or borrower is banned.
     error AddressBanned();
 
-    /// @notice Thrown when a supply would push the market's total supplied loan assets above the cap.
+    /// @notice The supply would push the market's total supplied loan assets above the cap.
     error SupplyCapExceeded(uint256 cap, uint256 attempted);
 
-    /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
+    /// @notice Active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
 
-    /// @notice Thrown when a borrow would mint borrow shares while transferring zero loan assets.
+    /// @notice The borrow would mint borrow shares while transferring zero loan assets.
     error ZeroBorrowAssets();
 
-    /// @notice Thrown when a borrow, repay, or settle would push the market's borrow-share rate over the ceiling.
+    /// @notice The borrow, repay, or settle would push the market's borrow-share rate over the ceiling.
     error BorrowShareRateExceeded();
 
-    /// @notice Thrown when a core-applied position delta exceeds the controller's read of that position.
+    /// @notice A core-applied position delta exceeds the controller's read of that position.
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
     error PositionAccountingMismatch();
 
-    /// @notice Thrown when a tracked borrower is bad debt, blocking settlement.
+    /// @notice A tracked borrower is bad debt, blocking settlement.
     error SettlementBadDebt();
 
-    /// @notice Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
+    /// @notice The requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
     error SettlementExceedsAllowed();
 
-    /// @notice Thrown when a root-policy cut exceeds the lender's illiquid supply tail.
+    /// @notice The root-policy cut exceeds the lender's illiquid supply tail.
     error SettlementExceedsSettleableSupply();
 
     // ---

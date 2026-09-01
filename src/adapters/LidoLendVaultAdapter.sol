@@ -9,14 +9,14 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ILidoLendERC4626} from "../interfaces/ILidoLendERC4626.sol";
 
 /// @title  LidoLendVaultAdapter
-/// @author Lido Lending contributors.
+/// @author Lido
 /// @notice Bundler3 adapter for the Lido Lend vault's fallback exit. Users approve their vault shares
 ///         to this adapter; a bundle can then only ever exit the position of the user who started it.
 contract LidoLendVaultAdapter is CoreAdapter {
-    /// @notice Thrown when an exit pays out less total value than the caller's minimum.
+    /// @notice The exit pays out less total value than the caller's minimum.
     error ExitBelowMinimum(uint256 exitAssets, uint256 minExitAssets);
 
-    /// @notice Thrown when an exit burns fewer shares than the caller's minimum.
+    /// @notice The exit burns fewer shares than the caller's minimum.
     error BurnBelowMinimum(uint256 sharesBurned, uint256 minSharesBurned);
 
     /// @param bundler3 The address of the Bundler3 contract.

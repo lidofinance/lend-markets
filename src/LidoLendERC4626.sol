@@ -19,6 +19,7 @@ import {ILidoLendMarketController} from "./interfaces/ILidoLendMarketController.
 import {SettlementQuote, SettlementSlice} from "./types/SettlementTypes.sol";
 
 /// @title LidoLendERC4626
+/// @author Lido
 /// @notice Single-market ERC-4626 wrapper for a Morpho Blue fork market with settle exit support.
 /// @dev    Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer
 ///         callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
@@ -74,6 +75,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     // INITIALIZATION
     // ---
 
+    /// @param lidoLend The LidoLend core.
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
     constructor(address lidoLend) {
         if (lidoLend == address(0)) revert ZeroLidoLend();
@@ -128,6 +130,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     // OVERRIDES
     // ---
 
+    /// @inheritdoc IERC4626
     /// @dev Only vault-originated supply shares back shares — direct loan-token donations and permissionless
     ///      core `supply` credits to the vault address are uncounted and cannot move the share price.
     function totalAssets() public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
@@ -137,6 +140,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         return supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
     }
 
+    /// @inheritdoc IERC4626
     /// @dev Capped by the market's free liquidity, not just the owner's position: supplied tokens may be borrowed
     ///      out, so withdrawing past liquidity reverts in the core. The illiquid remainder exits via `fallbackExit`.
     ///      Zero while the controller is paused, since a real withdraw would revert then too.
@@ -144,6 +148,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         return Math.min(previewRedeem(balanceOf(owner)), _morphoWithdrawableAssets());
     }
 
+    /// @inheritdoc IERC4626
     /// @dev Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in nonzero free liquidity
     ///      it returns the exact share balance. Otherwise the floor conversion is a conservative ERC-4626 gate;
     ///      `fallbackExit` can also service the remaining shares on the same redeem rounding plateau. Zero when the
@@ -156,11 +161,13 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         return previewRedeem(ownerShares) <= liquidAssets ? ownerShares : convertToShares(liquidAssets);
     }
 
+    /// @inheritdoc IERC4626
     /// @dev Deferred to the controller, which decides how much the market accepts.
     function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         return controller.maxDeposit();
     }
 
+    /// @inheritdoc IERC4626
     /// @dev `maxDeposit` in shares, floored; the unlimited sentinel passes through unconverted.
     function maxMint(address receiver) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         uint256 maxAssets = maxDeposit(receiver);

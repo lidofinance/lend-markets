@@ -122,48 +122,47 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // ERRORS
     // ---
 
-    /// @notice Thrown when a zero address is passed where an account or guardian is required.
+    /// @notice A zero address was passed where an account or guardian is required.
     error ZeroAddress();
 
-    /// @notice Thrown when the quorum is zero or exceeds the guardian count.
+    /// @notice The quorum is zero or exceeds the guardian count.
     error BadQuorum();
 
-    /// @notice Thrown when removing a guardian would drop the set below the quorum.
+    /// @notice Removing the guardian would drop the set below the quorum.
     error WouldBreakQuorum();
 
-    /// @notice Thrown when adding a guardian that is already in the set.
+    /// @notice The added guardian is already in the set.
     error AlreadyGuardian();
 
-    /// @notice Thrown when the caller is neither `onBehalf` nor its delegate, or when a non-guardian appoints a
-    /// delegate.
+    /// @notice The caller is neither `onBehalf` nor its delegate, or a non-guardian appointed a delegate.
     error Unauthorized();
 
-    /// @notice Thrown when the target of a guardian-only management action is not a guardian.
+    /// @notice The target of a guardian-only management action is not a guardian.
     error NotGuardian();
 
-    /// @notice Thrown when the guardian set is already at `MAX_GUARDIANS_COUNT`.
+    /// @notice The guardian set is already at `MAX_GUARDIANS_COUNT`.
     error MaxGuardiansReached();
 
-    /// @notice Thrown when a heartbeat reports a block number ahead of the current block.
+    /// @notice The heartbeat reports a block number ahead of the current block.
     error BlockInTheFuture();
 
-    /// @notice Thrown when a heartbeat reports a timestamp ahead of the current block.
+    /// @notice The heartbeat reports a timestamp ahead of the current block.
     error TimestampInTheFuture();
 
-    /// @notice Thrown when a heartbeat reports a timestamp below the guardian's previous heartbeat.
+    /// @notice The heartbeat reports a timestamp below the guardian's previous heartbeat.
     error HeartbeatTimestampRegressed();
 
-    /// @notice Thrown when a heartbeat's reported hash does not match the block's hash.
+    /// @notice The heartbeat's reported hash does not match the block's hash.
     error InvalidBlockHash();
 
-    /// @notice Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
+    /// @notice The suspect window exceeds `MAX_SUSPECT_WINDOW`.
     error SuspectWindowTooHigh();
 
-    /// @notice Thrown when the appointed delegate is a guardian.
+    /// @notice The appointed delegate is a guardian.
     error DelegateIsGuardian();
 
-    /// @notice Thrown when an address that is a guardian's delegate (the caller's own included) is
-    ///         appointed as a delegate or added as a guardian.
+    /// @notice An address that is a guardian's delegate (the caller's own included) was appointed as a
+    ///         delegate or added as a guardian.
     error AccountIsDelegate();
 
     // ---
