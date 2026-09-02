@@ -44,6 +44,8 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     // ---
 
     /// @notice Emitted when a market is allowed or disallowed for new requests.
+    /// @param marketId The market whose allowance was set.
+    /// @param allowed Whether new requests may name the market.
     event MarketAllowedSet(Id indexed marketId, bool allowed);
 
     // ---

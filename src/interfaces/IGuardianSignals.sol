@@ -43,9 +43,11 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // ---
 
     /// @notice Emitted when a guardian is added.
+    /// @param guardian The added guardian.
     event GuardianAdded(address indexed guardian);
 
     /// @notice Emitted when a guardian is removed.
+    /// @param guardian The removed guardian.
     event GuardianRemoved(address indexed guardian);
 
     /// @notice Emitted when a guardian sets or clears its delegate.
@@ -85,10 +87,17 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     );
 
     /// @notice Emitted when a guardian's suspect report on an account is retracted.
+    /// @param marketId The market the report was scoped to.
+    /// @param account  The account the report was on.
+    /// @param guardian The guardian whose report was retracted.
+    /// @param actor    The caller that made the call (the guardian or its delegate).
     event SuspectCleared(Id indexed marketId, address indexed account, address indexed guardian, address actor);
 
     /// @notice Emitted when a suspect report is pruned: its guardian was removed from the committee, or its suspect
     ///         window lapsed.
+    /// @param marketId The market the report was scoped to.
+    /// @param account  The account the report was on.
+    /// @param guardian The guardian whose report was pruned.
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
 
     /// @notice Emitted when a guardian flags an account.
@@ -102,14 +111,25 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     );
 
     /// @notice Emitted when a guardian's flag is retracted.
+    /// @param marketId The market id.
+    /// @param account  The unflagged account.
+    /// @param guardian The guardian whose flag was retracted.
+    /// @param actor    The caller that made the call (the guardian or its delegate).
+    /// @param strikes  The account's flag count after the retraction.
     event Unflagged(
         Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 strikes
     );
 
     /// @notice Emitted when a flag cast by a removed guardian is pruned.
+    /// @param marketId The market id.
+    /// @param account  The account the flag was on.
+    /// @param guardian The removed guardian whose flag was pruned.
+    /// @param strikes  The account's flag count after the prune.
     event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint256 strikes);
 
     /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
+    /// @param marketId The market the ban is scoped to.
+    /// @param account  The banned account.
     event Banned(Id indexed marketId, address indexed account);
 
     /// @notice Emitted when an account's ban is lifted.

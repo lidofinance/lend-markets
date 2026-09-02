@@ -18,15 +18,27 @@ abstract contract AssetRecoverer {
     // ---
 
     /// @notice Emitted when the contract's Ether balance is recovered.
+    /// @param recipient Recipient of the Ether.
+    /// @param amount Ether sent, in wei.
     event EtherRecovered(address indexed recipient, uint256 amount);
 
     /// @notice Emitted when an ERC-20 amount is recovered.
+    /// @param token The recovered token.
+    /// @param recipient Recipient of the tokens.
+    /// @param amount Token amount sent.
     event ERC20Recovered(address indexed token, address indexed recipient, uint256 amount);
 
     /// @notice Emitted when an ERC-721 token is recovered.
+    /// @param token The recovered token's contract.
+    /// @param tokenId Id of the recovered token.
+    /// @param recipient Recipient of the token.
     event ERC721Recovered(address indexed token, uint256 tokenId, address indexed recipient);
 
     /// @notice Emitted when an ERC-1155 balance is recovered.
+    /// @param token The recovered token's contract.
+    /// @param tokenId Id of the recovered token.
+    /// @param recipient Recipient of the balance.
+    /// @param amount Balance amount sent.
     event ERC1155Recovered(address indexed token, uint256 tokenId, address indexed recipient, uint256 amount);
 
     // ---

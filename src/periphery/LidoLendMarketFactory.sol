@@ -136,9 +136,11 @@ contract LidoLendMarketFactory {
     error LidoLendMismatch(address component, address expected, address actual);
 
     /// @notice A market LLTV is not strictly below WAD.
+    /// @param lltv The rejected LLTV (WAD).
     error InvalidLltv(uint256 lltv);
 
     /// @notice The market described by the deployment input already exists on the core.
+    /// @param marketId Id of the existing market.
     error MarketAlreadyExists(Id marketId);
 
     /// @notice An existing market is registered with a controller other than the one being validated.
@@ -189,9 +191,11 @@ contract LidoLendMarketFactory {
     error GuardianCountMismatch(uint256 expected, uint256 actual);
 
     /// @notice The expected guardian list contains the same guardian more than once.
+    /// @param guardian The guardian listed more than once.
     error DuplicateGuardian(address guardian);
 
     /// @notice An expected guardian is absent from the registry.
+    /// @param guardian The expected guardian absent from the registry.
     error MissingGuardian(address guardian);
 
     /// @notice An expected role holder is absent.

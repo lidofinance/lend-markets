@@ -31,6 +31,8 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
     // ---
 
     /// @notice Emitted when a vault is allowed or disallowed for new requests.
+    /// @param vault The vault whose allowance was set.
+    /// @param allowed Whether new requests may name the vault.
     event VaultAllowedSet(address indexed vault, bool allowed);
 
     // ---

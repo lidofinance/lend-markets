@@ -27,15 +27,22 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice Emitted when the market is frozen or unfrozen.
+    /// @param frozen The new freeze state.
+    /// @param account Caller that set it.
     event FrozenSet(bool frozen, address indexed account);
 
     /// @notice Emitted when a trusted caller's instant-activation status is set.
+    /// @param caller The supply caller whose trusted status was set.
+    /// @param enabled Whether that caller's supplies activate instantly.
     event InstantActivationSet(address indexed caller, bool enabled);
 
     /// @notice Emitted when the supply cap is set.
+    /// @param cap The new supply cap.
+    /// @param account Caller that set the cap.
     event SupplyCapSet(uint256 cap, address indexed account);
 
     /// @notice Emitted once when the market binds its guardian-signals registry at initialization.
+    /// @param guardianSignals The bound guardian-signals registry.
     event GuardianSignalsSet(address indexed guardianSignals);
 
     // ---
@@ -61,6 +68,8 @@ interface ILidoLendMarketController is
     error AddressBanned();
 
     /// @notice The supply would push the market's total supplied loan assets above the cap.
+    /// @param cap The supply cap.
+    /// @param attempted Total supplied loan assets the deposit would reach.
     error SupplyCapExceeded(uint256 cap, uint256 attempted);
 
     /// @notice Active (matured) collateral cannot cover the debt at the market LLTV.

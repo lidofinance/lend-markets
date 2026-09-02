@@ -48,9 +48,12 @@ library SettlementQueueLib {
     // ---
 
     /// @notice Emitted when a borrower sets their personal settlement LTV.
+    /// @param borrower The borrower that set its target.
+    /// @param ltv The target post-cut LTV (WAD); 0 clears it.
     event SettlementLtvSet(address indexed borrower, uint256 ltv);
 
     /// @notice Emitted when the settlement config is set.
+    /// @param config The stored policy.
     event SettlementConfigSet(SettlementConfig config);
 
     // ---

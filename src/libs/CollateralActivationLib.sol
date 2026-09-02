@@ -54,19 +54,32 @@ library CollateralActivationLib {
     // EVENTS
     // ---
 
-    /// @notice A deposit enters or extends the activation timer. `position` is the resulting state.
+    /// @notice A deposit enters or extends the activation timer.
+    /// @param borrower The borrower whose collateral is activating.
+    /// @param amount   Collateral that entered the timer: the deposit plus any promoted dust.
+    /// @param position The borrower's resulting un-matured state.
     event CollateralActivating(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice An activating lot matures, or an instant deposit lands active. `position` is the resulting state.
+    /// @notice An activating lot matures, or an instant deposit lands active.
+    /// @param borrower The borrower whose collateral activated.
+    /// @param amount   The matured lot, or the instant deposit.
+    /// @param position The borrower's resulting un-matured state.
     event CollateralActivated(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice A sub-threshold deposit is held as untimed dust. `position` is the resulting state.
+    /// @notice A sub-threshold deposit is held as untimed dust.
+    /// @param borrower The borrower holding the dust.
+    /// @param amount   The deposit held as dust.
+    /// @param position The borrower's resulting un-matured state.
     event CollateralDusted(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice Collateral is drained from the un-matured buckets. `position` is the resulting state.
+    /// @notice Collateral is drained from the un-matured buckets.
+    /// @param borrower The borrower whose buckets were drained.
+    /// @param amount   Collateral removed from the dust and activating buckets.
+    /// @param position The borrower's resulting un-matured state.
     event CollateralDrained(address indexed borrower, uint256 amount, Position position);
 
     /// @notice Emitted when the full activation config is set.
+    /// @param config The stored config.
     event CollateralActivationConfigSet(CollateralActivationConfig config);
 
     // ---
@@ -108,16 +121,25 @@ library CollateralActivationLib {
     error MaxDelayPerSuspectExceeded();
 
     /// @notice A non-instant deposit is below the configured minimum.
+    /// @param assets           The deposit.
+    /// @param minDepositAmount The configured minimum deposit.
     error DepositTooSmall(uint256 assets, uint256 minDepositAmount);
 
     /// @notice A non-instant deposit onto existing dust leaves the combined amount below the activation threshold.
+    /// @param dust                The pending dust balance.
+    /// @param assets              The deposit.
+    /// @param minActivationAmount The activation threshold the combined amount must reach.
     error DustNotResolved(uint256 dust, uint256 assets, uint256 minActivationAmount);
 
     /// @notice A voluntary withdrawal would remove only part of the inactive balance (`dust + activating`);
     ///         it must remove the whole balance or none of it.
+    /// @param requested The withdrawal amount.
+    /// @param inactive  The inactive balance the withdrawal must cover.
     error InactiveCollateralNotCleared(uint256 requested, uint256 inactive);
 
     /// @notice A voluntary withdrawal cannot remove activating collateral before the lock deadline.
+    /// @param activating   The locked activating balance.
+    /// @param lockDeadline Timestamp the lock ends.
     error ActivatingCollateralLocked(uint256 activating, uint256 lockDeadline);
 
     // ---

@@ -14,9 +14,13 @@ import {ILidoLendERC4626} from "../interfaces/ILidoLendERC4626.sol";
 ///         to this adapter; a bundle can then only ever exit the position of the user who started it.
 contract LidoLendVaultAdapter is CoreAdapter {
     /// @notice The exit pays out less total value than the caller's minimum.
+    /// @param exitAssets The exit's total payout in loan tokens: loan tokens paid plus debt cancelled.
+    /// @param minExitAssets The caller's minimum total payout.
     error ExitBelowMinimum(uint256 exitAssets, uint256 minExitAssets);
 
     /// @notice The exit burns fewer shares than the caller's minimum.
+    /// @param sharesBurned Shares the exit burned.
+    /// @param minSharesBurned The caller's minimum burn.
     error BurnBelowMinimum(uint256 sharesBurned, uint256 minSharesBurned);
 
     /// @param bundler3 The address of the Bundler3 contract.

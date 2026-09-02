@@ -49,6 +49,7 @@ interface ILidoLendOwner is IAccessControlEnumerable {
     error ZeroAddress();
 
     /// @notice The market id has no controller on the core (unknown or controller-less).
+    /// @param marketId The market id without a controller.
     error UnknownMarket(Id marketId);
 
     // ---

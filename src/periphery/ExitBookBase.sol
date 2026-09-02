@@ -53,18 +53,28 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     error RampPastDeadline();
 
     /// @notice The fill requests more assets than the request has remaining.
+    /// @param requested Asset amount the fill requested.
+    /// @param remaining The request's remaining unfilled assets.
     error FillExceedsRemaining(uint256 requested, uint256 remaining);
 
     /// @notice A non-final fill is below the request's minimum fill.
+    /// @param requested Asset amount the fill requested.
+    /// @param minimum The request's minimum fill.
     error FillBelowMinimum(uint256 requested, uint256 minimum);
 
     /// @notice The request's share-burn budget cannot cover the placement share quote.
+    /// @param maximum The share-burn budget passed with the request.
+    /// @param quote Source shares quoted for the full request at placement.
     error MaxShareBurnBelowQuote(uint256 maximum, uint256 quote);
 
     /// @notice The fill burns more source shares than its pro-rata share-burn limit.
+    /// @param actual Source shares the withdrawal burned.
+    /// @param maximum The fill's pro-rata share-burn limit.
     error ShareBurnExceedsMaximum(uint256 actual, uint256 maximum);
 
     /// @notice The source withdrawal delivered a different asset amount than the fill debited.
+    /// @param expected Asset amount the fill debited.
+    /// @param actual Asset amount received from the source withdrawal.
     error AssetsOutMismatch(uint256 expected, uint256 actual);
 
     /// @notice The request's deadline is not in the future.
@@ -81,6 +91,15 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     // ---
 
     /// @notice Emitted when an exit request is placed.
+    /// @param id Id of the new request.
+    /// @param owner The exiting lender the fills withdraw from.
+    /// @param receiver Recipient of fill payouts, net of priority fees.
+    /// @param asset Loan token the request is denominated in.
+    /// @param assets Total assets requested.
+    /// @param minFillAssets Minimum non-final fill, capped at the total.
+    /// @param maxShareBurn Full-request share-burn budget; 0 disables the per-fill limit.
+    /// @param ramp The priority-fee schedule.
+    /// @param deadline Last timestamp the request may be filled.
     event ExitRequested(
         uint256 indexed id,
         address indexed owner,
@@ -94,6 +113,14 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     );
 
     /// @notice Emitted when a fill pays out: the receiver's assets, the filler's reward, and the service cut.
+    /// @param id Id of the filled request.
+    /// @param executor Caller that executed the fill.
+    /// @param rewardRecipient Address the filler chose for its reward.
+    /// @param asset Loan token paid out.
+    /// @param filledAssets Asset amount this fill debited from the request.
+    /// @param sharesBurned Source shares burned to withdraw the fill.
+    /// @param fillerReward Priority fee paid to `rewardRecipient`, net of the service cut.
+    /// @param serviceCut Service-fee part of the priority fee, paid to the fee recipient.
     event ExitProcessed(
         uint256 indexed id,
         address indexed executor,
@@ -106,15 +133,20 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     );
 
     /// @notice Emitted when a request is cancelled by its owner.
+    /// @param id Id of the cancelled request.
     event ExitCancelled(uint256 indexed id);
 
     /// @notice Emitted when the service fee and its recipient are set.
+    /// @param feeRecipient Recipient of the service cut.
+    /// @param serviceFee The service fee (WAD), a cut of each fill's priority fee.
     event ServiceFeeSet(address indexed feeRecipient, uint256 serviceFee);
 
     /// @notice Emitted when request placement and fills are paused.
+    /// @param account Caller that paused.
     event Paused(address account);
 
     /// @notice Emitted when request placement and fills are resumed.
+    /// @param account Caller that resumed.
     event Unpaused(address account);
 
     // ---
