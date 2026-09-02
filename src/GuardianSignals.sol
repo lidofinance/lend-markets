@@ -22,13 +22,13 @@ import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/Guar
 ///         reviewed past (the quorum frontier). The market controller reads `getOpinion(marketId, account)` to
 ///         scale the delay and hard-block borrowing, and holds fresh collateral inactive past its unlock time
 ///         until the frontier covers that time or the market's guardian-quorum fallback delay elapses.
-/// @dev    A guardian is a single committee address. It may appoint one delegate: a hot key allowed to act in its
-///         place. Signalling and liveness calls name the guardian they act for (`onBehalf`) and accept that
-///         guardian or its current delegate. All signals and heartbeats are stored under the guardian, so
-///         replacing the delegate keeps the guardian's standing.
-///         Governance (`MANAGER_ROLE`) adds and removes guardians and sets the quorum and suspect window.
-///         Upgradeable behind a proxy (`initialize`, not a constructor); ERC-7201 namespaced storage. Events and
-///         errors live in {IGuardianSignals}.
+/// @dev A guardian is a single committee address. It may appoint one delegate: a hot key allowed to act in its
+///      place. Signalling and liveness calls name the guardian they act for (`onBehalf`) and accept that
+///      guardian or its current delegate. All signals and heartbeats are stored under the guardian, so
+///      replacing the delegate keeps the guardian's standing.
+///      Governance (`MANAGER_ROLE`) adds and removes guardians and sets the quorum and suspect window.
+///      Upgradeable behind a proxy (`initialize`, not a constructor); ERC-7201 namespaced storage. Events and
+///      errors live in {IGuardianSignals}.
 contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     is
     AccessControlEnumerableUpgradeable,
@@ -91,9 +91,9 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
     /// @notice Set the admin and seed the guardian set and quorum. The suspect window is set afterwards via
     ///         `setSuspectWindow`; guardians appoint their delegates separately via `setDelegate`.
-    /// @param admin     Holder of `DEFAULT_ADMIN_ROLE`, the default admin of the guardian and override roles.
+    /// @param admin Holder of `DEFAULT_ADMIN_ROLE`, the default admin of the guardian and override roles.
     /// @param guardians The initial guardian set. Each must be non-zero, unique, and within `MAX_GUARDIANS_COUNT`.
-    /// @param quorum    The initial quorum. Must satisfy `1 <= quorum <= guardians.length`.
+    /// @param quorum The initial quorum. Must satisfy `1 <= quorum <= guardians.length`.
     function initialize(address admin, address[] calldata guardians, uint256 quorum) external initializer {
         if (admin == address(0)) revert ZeroAddress();
 

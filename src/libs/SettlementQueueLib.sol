@@ -238,7 +238,7 @@ library SettlementQueueLib {
     /// @notice Loan-asset slice that brings a position's LTV down to `targetLtv` (WAD), using oracle-value math
     ///         before the core rounds collateral to token units. Backs both the settlement-LTV slice and the root
     ///         LTV-step rule.
-    /// @param debtAssets      Borrower debt in loan-asset units.
+    /// @param debtAssets Borrower debt in loan-asset units.
     /// @param collateralValue Borrower collateral value in loan-asset units (rawCollateral × price / SCALE).
     /// @dev c = (debtAssets × WAD − targetLtv × collateralValue) / (WAD − targetLtv); 0 when already at or below
     ///      the target, or when `targetLtv >= WAD`.

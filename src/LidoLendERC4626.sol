@@ -26,8 +26,8 @@ import {SettlementQuote, SettlementSlice} from "./types/SettlementTypes.sol";
 ///         for that case: the vault cancels borrower debt against its market supply and pays the exiting lender
 ///         that borrower's collateral of the same oracle value, subject to rounding, so the exit requires no
 ///         loan-token liquidity.
-/// @dev    Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer
-///         callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
+/// @dev Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer
+///      callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
 contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     is
     ERC4626Upgradeable,

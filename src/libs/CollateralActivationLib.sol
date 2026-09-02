@@ -56,25 +56,25 @@ library CollateralActivationLib {
 
     /// @notice A deposit enters or extends the activation timer.
     /// @param borrower The borrower whose collateral is activating.
-    /// @param amount   Collateral that entered the timer: the deposit plus any promoted dust.
+    /// @param amount Collateral that entered the timer: the deposit plus any promoted dust.
     /// @param position The borrower's resulting un-matured state.
     event CollateralActivating(address indexed borrower, uint256 amount, Position position);
 
     /// @notice An activating lot matures, or an instant deposit lands active.
     /// @param borrower The borrower whose collateral activated.
-    /// @param amount   The matured lot, or the instant deposit.
+    /// @param amount The matured lot, or the instant deposit.
     /// @param position The borrower's resulting un-matured state.
     event CollateralActivated(address indexed borrower, uint256 amount, Position position);
 
     /// @notice A sub-threshold deposit is held as untimed dust.
     /// @param borrower The borrower holding the dust.
-    /// @param amount   The deposit held as dust.
+    /// @param amount The deposit held as dust.
     /// @param position The borrower's resulting un-matured state.
     event CollateralDusted(address indexed borrower, uint256 amount, Position position);
 
     /// @notice Collateral is drained from the un-matured buckets.
     /// @param borrower The borrower whose buckets were drained.
-    /// @param amount   Collateral removed from the dust and activating buckets.
+    /// @param amount Collateral removed from the dust and activating buckets.
     /// @param position The borrower's resulting un-matured state.
     event CollateralDrained(address indexed borrower, uint256 amount, Position position);
 
@@ -121,24 +121,24 @@ library CollateralActivationLib {
     error MaxDelayPerSuspectExceeded();
 
     /// @notice A non-instant deposit is below the configured minimum.
-    /// @param assets           The deposit.
+    /// @param assets The deposit.
     /// @param minDepositAmount The configured minimum deposit.
     error DepositTooSmall(uint256 assets, uint256 minDepositAmount);
 
     /// @notice A non-instant deposit onto existing dust leaves the combined amount below the activation threshold.
-    /// @param dust                The pending dust balance.
-    /// @param assets              The deposit.
+    /// @param dust The pending dust balance.
+    /// @param assets The deposit.
     /// @param minActivationAmount The activation threshold the combined amount must reach.
     error DustNotResolved(uint256 dust, uint256 assets, uint256 minActivationAmount);
 
     /// @notice A voluntary withdrawal would remove only part of the inactive balance (`dust + activating`);
     ///         it must remove the whole balance or none of it.
     /// @param requested The withdrawal amount.
-    /// @param inactive  The inactive balance the withdrawal must cover.
+    /// @param inactive The inactive balance the withdrawal must cover.
     error InactiveCollateralNotCleared(uint256 requested, uint256 inactive);
 
     /// @notice A voluntary withdrawal cannot remove activating collateral before the lock deadline.
-    /// @param activating   The locked activating balance.
+    /// @param activating The locked activating balance.
     /// @param lockDeadline Timestamp the lock ends.
     error ActivatingCollateralLocked(uint256 activating, uint256 lockDeadline);
 
@@ -147,8 +147,8 @@ library CollateralActivationLib {
     // ---
 
     /// @notice Per-borrower un-matured collateral. The caller derives `active` as `total - activating - dust`.
-    /// @param dust            Collateral below the activation threshold, untimed, not borrowable.
-    /// @param activating      Collateral inside the activation timer, not yet borrowable.
+    /// @param dust Collateral below the activation threshold, untimed, not borrowable.
+    /// @param activating Collateral inside the activation timer, not yet borrowable.
     /// @param activatingStart Activation timer start, 0 when there is no active timer.
     /// @param activatingDelay Base inflow-scaled delay, frozen at deposit.
     struct Position {
@@ -160,10 +160,10 @@ library CollateralActivationLib {
 
     /// @notice Market-wide activation state. Per-borrower the lib stores the un-matured buckets, and the caller
     ///         derives `active` from the core `total`.
-    /// @param inflow          Recent collateral inflow, time-decayed. The throttle accumulator snapshot.
+    /// @param inflow Recent collateral inflow, time-decayed. The throttle accumulator snapshot.
     /// @param inflowUpdatedAt Timestamp `inflow` was snapshotted at. The decay clock starts here.
-    /// @param config          Governance-tunable parameters.
-    /// @param positions       Per-borrower un-matured collateral.
+    /// @param config Governance-tunable parameters.
+    /// @param positions Per-borrower un-matured collateral.
     struct State {
         uint128 inflow;
         uint40 inflowUpdatedAt;

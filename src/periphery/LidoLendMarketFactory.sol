@@ -81,7 +81,7 @@ contract LidoLendMarketFactory {
     /// @param oracle Market oracle contract. Deployment checks only that the address has code.
     /// @param lltv Liquidation loan-to-value ratio, in WAD and strictly below 1e18.
     /// @param guardianSignals Guardian registry read by the controller. Deployment checks only that the address has
-    ///                        code; registry configuration is validated through `validateGuardianSignals`.
+    ///        code; registry configuration is validated through `validateGuardianSignals`.
     /// @param supplyCap Initial lender supply cap. Zero disables it.
     /// @param activationConfig Initial collateral-activation configuration.
     /// @param settlementConfig Initial settlement configuration.
@@ -108,7 +108,7 @@ contract LidoLendMarketFactory {
     /// @param guardians Exact initial guardian set; addresses must be nonzero and unique.
     /// @param quorum Number of distinct guardian flags required to latch a ban; between one and the guardian count.
     /// @param suspectWindow Duration for which a suspect report remains active, in seconds, bounded by the registry's
-    ///                      maximum.
+    ///        maximum.
     struct GuardianSpec {
         address[] guardians;
         uint256 quorum;
@@ -311,7 +311,7 @@ contract LidoLendMarketFactory {
     /// @param implementations Implementations used behind newly deployed proxies.
     /// @param dependencies Core and protocol-wide role recipients embedded in newly deployed components.
     /// @param admin Proxy admin for every deployment and sole initial `DEFAULT_ADMIN_ROLE` holder on controllers and
-    ///              guardian registries.
+    ///        guardian registries.
     constructor(Implementations memory implementations, Dependencies memory dependencies, address admin) {
         if (admin == address(0)) revert AdminZeroAddress();
         if (dependencies.circuitBreaker == address(0)) revert CircuitBreakerZeroAddress();

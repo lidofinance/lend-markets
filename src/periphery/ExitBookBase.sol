@@ -197,7 +197,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     // CONSTRUCTOR
     // ---
 
-    /// @param admin        Holder of `DEFAULT_ADMIN_ROLE`.
+    /// @param admin Holder of `DEFAULT_ADMIN_ROLE`.
     /// @param maxLifetime_ Cap on a request's lifetime; must be non-zero.
     constructor(address admin, uint256 maxLifetime_) {
         if (admin == address(0)) revert ZeroAddress();

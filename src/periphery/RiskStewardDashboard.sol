@@ -54,7 +54,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     // CONSTRUCTOR
     // ---
 
-    /// @param admin    Holder of `DEFAULT_ADMIN_ROLE`, which administers `STEWARD_ADMIN_ROLE`.
+    /// @param admin Holder of `DEFAULT_ADMIN_ROLE`, which administers `STEWARD_ADMIN_ROLE`.
     /// @param lidoLend Core whose markets this dashboard configures.
     constructor(address admin, ILidoLend lidoLend) {
         if (admin == address(0) || address(lidoLend) == address(0)) revert ZeroAddress();

@@ -26,17 +26,17 @@ interface IChainlinkAggregator {
 /// @title UsdyStableOracle
 /// @author Lido
 /// @notice Morpho oracle for USDY collateral quoted in any USD-stablecoin loan asset with a Chainlink feed.
-/// @dev    Values USDY by its NAV (Ondo dynamic-rate oracle), not a market price; the stablecoin leg divides
-///         by its Chainlink USD feed, so a stablecoin depeg flows into the collateral valuation. No
-///         staleness/bounds guards, matching Morpho's stock oracle.
+/// @dev Values USDY by its NAV (Ondo dynamic-rate oracle), not a market price; the stablecoin leg divides
+///      by its Chainlink USD feed, so a stablecoin depeg flows into the collateral valuation. No
+///      staleness/bounds guards, matching Morpho's stock oracle.
 ///
-///         price() = getPrice() * scale / stableUsdPrice
-///         scale   = 10^(36 + loanDecimals + feedDecimals - USDY_DECIMALS - NAV_DECIMALS)
+///      price() = getPrice() * scale / stableUsdPrice
+///      scale   = 10^(36 + loanDecimals + feedDecimals - USDY_DECIMALS - NAV_DECIMALS)
 ///
-///         The USDY NAV oracle is shared across markets, so it stays immutable; the per-market stablecoin feed
-///         and decimal-derived `scale` are set in `initialize`, so one implementation behind per-market proxies
-///         serves any Chainlink-priced stablecoin. Matches Morpho's IOracle convention: price of 1 collateral
-///         asset quoted in 1 loan asset, scaled by 1e36.
+///      The USDY NAV oracle is shared across markets, so it stays immutable; the per-market stablecoin feed
+///      and decimal-derived `scale` are set in `initialize`, so one implementation behind per-market proxies
+///      serves any Chainlink-priced stablecoin. Matches Morpho's IOracle convention: price of 1 collateral
+///      asset quoted in 1 loan asset, scaled by 1e36.
 contract UsdyStableOracle layout at erc7201("lido.lend.storage.UsdyStableOracle") is Initializable, IOracle {
     // ---
     // CONSTANTS

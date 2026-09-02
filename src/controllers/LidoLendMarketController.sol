@@ -126,10 +126,10 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
     /// @notice One-shot initializer: binds the market, grants roles, wires the guardian-signals registry, and
     ///         sets the initial supply cap, activation config, and settlement config.
-    /// @param marketId_        The market this controller is bound to; hooks for any other id revert.
-    /// @param admin            Holder of `DEFAULT_ADMIN_ROLE`, the admin of every controller role.
-    /// @param supplyCap_       Initial ceiling on total supplied loan assets; 0 means no cap.
-    /// @param guardianSignals  Guardian-signal registry read for the borrow gate and activation scaling.
+    /// @param marketId_ The market this controller is bound to; hooks for any other id revert.
+    /// @param admin Holder of `DEFAULT_ADMIN_ROLE`, the admin of every controller role.
+    /// @param supplyCap_ Initial ceiling on total supplied loan assets; 0 means no cap.
+    /// @param guardianSignals Guardian-signal registry read for the borrow gate and activation scaling.
     /// @param activationConfig Initial collateral-activation config.
     /// @param settlementConfig Initial settlement config.
     function initialize(
