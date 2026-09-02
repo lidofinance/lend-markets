@@ -275,10 +275,10 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     /// @dev Pays out available market liquidity first, then settles the remainder. When nonzero available
     ///      liquidity covers the requested shares' floor-rounded value, the vault burns exactly those shares.
     ///      Otherwise it withdraws the exact liquid amount, so share rounding cannot strand liquidity, and
-    ///      settles the rest against the risk queue, riskiest borrower first. Seized collateral moves from the
-    ///      core directly to the same `receiver`. When the queue or the iteration cap ends the loop early, the
-    ///      call burns shares only for what was serviced; controller and core errors revert the whole call. A
-    ///      call that burns no shares in either leg reverts.
+    ///      settles the rest against borrowers the controller selects. Seized collateral moves from the core
+    ///      directly to the same `receiver`. When no executable cut remains or the iteration cap ends the loop
+    ///      early, the call burns shares only for what was serviced; controller and core errors revert the
+    ///      whole call. A call that burns no shares in either leg reverts.
     function fallbackExit(uint256 shares, address receiver, address owner, uint256 maxIterations)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
@@ -309,8 +309,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         // `shares` is reused for the remainder to keep this frame under the stack limit (via_ir = false).
         shares = shares - sharesBurned;
 
-        // 2. Settle the remainder against the risk queue, head first (collateral to receiver), up to the owner's
-        //    pro-rata managed core supply-share budget for it.
+        // 2. Settle the remainder against controller-selected borrowers (collateral to receiver), up to the
+        //    owner's pro-rata managed core supply-share budget for it.
         uint256 settledShares;
         if (shares != 0) {
             uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply());
@@ -361,8 +361,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         });
     }
 
-    /// @dev Resolve the current queue root together with its selected max(personal, queue-root) cut, already shrunk
-    ///      to `budgetSupplyShares`, and settle it.
+    /// @dev Resolve the controller's next settlement borrower and its allowed cut, already shrunk to
+    ///      `budgetSupplyShares`, and settle it.
     function _settleNextAllowedBorrower(uint256 budgetSupplyShares, address receiver)
         internal
         returns (uint256 cutShares, uint256 collateralSeized, uint256 debtCanceled)

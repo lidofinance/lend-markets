@@ -14,7 +14,7 @@ import {ILidoLendMarketController} from "./ILidoLendMarketController.sol";
 ///         the vault's market supply and pays out that borrower's collateral of the same oracle value, subject
 ///         to rounding and with no liquidation incentive. `settle` settles caller-chosen borrowers toward the
 ///         personal targets those borrowers set; `fallbackExit` pays available liquidity first and settles the
-///         remainder against the riskiest tracked borrowers.
+///         remainder against borrowers the controller selects.
 interface ILidoLendERC4626 is IERC4626 {
     // ---
     // ERRORS
@@ -70,13 +70,13 @@ interface ILidoLendERC4626 is IERC4626 {
     // ---
 
     /// @notice Emitted when a `fallbackExit` call completes with a positive, possibly partial fill: serviced
-    ///         from market liquidity, queue settlement, or both.
+    ///         from market liquidity, settlement, or both.
     /// @param caller The address that called the exit.
     /// @param owner The account whose shares were burned.
     /// @param receiver The recipient of the liquid-leg loan assets and seized collateral.
     /// @param sharesBurned Shares burned by the whole call: the liquid leg and the settle leg together.
     /// @param sharesSettled Shares burned by the settle leg alone, 0 when liquidity serviced the whole request
-    ///        or the queue funded no cut.
+    ///        or no cut was executable.
     /// @param assetsWithdrawn Loan assets the liquid leg paid out, 0 when the market had no free liquidity or
     ///        the requested shares' floor-rounded value was zero.
     /// @param collateralSeized Collateral seized from the cut positions.
@@ -176,9 +176,9 @@ interface ILidoLendERC4626 is IERC4626 {
         returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
 
     /// @notice An exit that does not require free market liquidity. Available liquidity is paid out first in
-    ///         loan tokens; the rest of the request is settled against the risk queue, riskiest borrower first,
-    ///         and paid in that borrower's collateral. When the queue or the iteration cap ends the loop early,
-    ///         only the serviced part burns shares; controller and core errors still revert.
+    ///         loan tokens; the rest of the request is settled against borrowers the controller selects, and
+    ///         paid in their seized collateral. When no executable cut remains or the iteration cap ends the
+    ///         loop early, only the serviced part burns shares; controller and core errors still revert.
     /// @param shares Vault shares to exit through the liquid leg first and settlement second.
     /// @param receiver Recipient of both the redeemed loan assets and the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
