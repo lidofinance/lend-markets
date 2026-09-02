@@ -6,8 +6,7 @@ import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extension
 
 /// @title IRiskStewardDashboard
 /// @notice Dashboard-specific external surface: per-market steward management and bounded risk-reduction
-///         controls. Access-control membership and administration use the inherited `IAccessControlEnumerable`
-///         surface.
+///         controls.
 interface IRiskStewardDashboard is IAccessControlEnumerable {
     // ---
     // EVENTS

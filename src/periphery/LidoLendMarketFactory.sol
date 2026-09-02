@@ -80,7 +80,7 @@ contract LidoLendMarketFactory {
     /// @param collateralToken Market collateral asset.
     /// @param oracle Market oracle contract. Deployment checks only that the address has code.
     /// @param lltv Liquidation loan-to-value ratio, in WAD and strictly below 1e18.
-    /// @param guardianSignals Guardian registry read by the controller. Deployment checks only that the address has
+    /// @param guardianSignals Guardian registry bound to the controller. Deployment checks only that the address has
     ///        code; registry configuration is validated through `validateGuardianSignals`.
     /// @param supplyCap Initial lender supply cap. Zero disables it.
     /// @param activationConfig Initial collateral-activation configuration.

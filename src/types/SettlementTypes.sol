@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-/// @notice Shared value types of the settlement subsystem. Defined at file scope (not in a library) so the
-///         controller and `SettlementQueueLib` can use them as bare `MarketView` / `PositionView` /
-///         `SettlementConfig` without depending on each other.
+/// @notice Shared value types of the settlement subsystem, defined at file scope (not in a library) so they
+///         import as bare types.
 
 // ---
 // TYPES
 // ---
 
-/// @notice Live core/oracle snapshot of the market, built by the controller from core reads and consumed by
-///         the slice, bad-debt, and active-health math alongside a borrower `PositionView`. Not carried in any
-///         hook payload.
+/// @notice Live core/oracle market snapshot. Not carried in any hook payload.
 /// @param totalSupplyAssets Market total supply assets, pending interest simulated.
 /// @param totalSupplyShares Market total supply shares.
 /// @param totalBorrowAssets Market total borrow assets, pending interest simulated.
@@ -27,8 +24,8 @@ struct MarketView {
     uint256 lltv;
 }
 
-/// @notice Live core snapshot of a borrower position for the slice, bad-debt, and active-health math, widened
-///         to uint256. Built by the controller from the core `Position` (which packs these as uint128).
+/// @notice Live core snapshot of a borrower position, widened to uint256 from the core `Position` (which
+///         packs these as uint128).
 /// @param borrowShares Borrow shares of the position.
 /// @param collateral Raw collateral of the position, in collateral units.
 struct PositionView {

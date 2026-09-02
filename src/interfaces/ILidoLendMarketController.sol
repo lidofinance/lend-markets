@@ -13,9 +13,8 @@ import {IPausableUntil} from "./IPausableUntil.sol";
 
 /// @title ILidoLendMarketController
 /// @notice Contract-specific external surface of `LidoLendMarketController`: the inherited core hook interface,
-///         Lido policy, freeze/pause, settlement-queue views, and borrower dashboard. Standard role membership and
-///         administration use the inherited `IAccessControlEnumerable` surface. The controller's dashboard struct,
-///         events, and errors are declared here.
+///         Lido policy, freeze/pause, settlement-queue views, and the borrower position view. The controller's
+///         `BorrowerPosition` struct, events, and errors are declared here.
 interface ILidoLendMarketController is
     ILidoLendBaseMarketController,
     IAccessControlEnumerable,
@@ -98,8 +97,8 @@ interface ILidoLendMarketController is
     // TYPES
     // ---
 
-    /// @notice One-read borrower snapshot for off-chain dashboards: collateral split, activation timer,
-    ///         guardian signal, debt, personal settlement target, current queue status, and policy quotes.
+    /// @notice One-read borrower snapshot: collateral split, activation timer, guardian signal, debt,
+    ///         personal settlement target, current queue status, and policy quotes.
     /// @param active Derived collateral outside the stored inactive buckets, including matured and instantly
     ///        activated amounts. It supports borrowing only when the total meets the current activation threshold.
     /// @param activating Collateral inside the activation timer, not yet borrowable.
@@ -168,7 +167,7 @@ interface ILidoLendMarketController is
     ///         the market's free liquidity, 0 while paused.
     function maxWithdrawableAssets(address supplier) external view returns (uint256);
 
-    /// @notice The guardian-signals registry this controller reads for the borrow gate and activation scaling.
+    /// @notice The guardian-signals registry.
     function guardianSignals() external view returns (address);
 
     // ---
@@ -272,7 +271,7 @@ interface ILidoLendMarketController is
     // POSITION VIEW
     // ---
 
-    /// @notice One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt,
+    /// @notice One-call borrower snapshot: collateral split, activation unlock, guardian signal, debt,
     ///         personal settlement target, current queue status, and policy quotes.
     function positionOf(address borrower) external view returns (BorrowerPosition memory);
 }

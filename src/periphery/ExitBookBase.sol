@@ -190,7 +190,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     /// @notice Service fee: a cut of each fill's priority fee, as a WAD rate.
     uint256 public serviceFee;
 
-    /// @notice The append-only request registry (see `ExitBookLib`).
+    /// @notice The append-only request registry.
     ExitBookLib.State internal _book;
 
     // ---

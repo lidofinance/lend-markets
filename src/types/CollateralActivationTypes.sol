@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-/// @notice Value types of the collateral-activation subsystem, kept at file scope so the controller and its
-///         interface can import `CollateralActivationConfig` without pulling in the logic library
-///         `CollateralActivationLib`.
+/// @notice Value types of the collateral-activation subsystem, defined at file scope (not in a library) so
+///         they import as bare types.
 
 // ---
 // TYPES
 // ---
 
-/// @notice Governance-tunable activation parameters, validated by `CollateralActivationLib.setConfig`.
+/// @notice Governance-tunable activation parameters.
 /// @param minActivationDelay Base delay floor, at zero inflow.
 /// @param maxActivationDelay Base delay cap, reached at inflow >= maxDelayInflow. Also the inflow decay
 ///        horizon: the accumulator drains from `maxDelayInflow` to zero over this duration.

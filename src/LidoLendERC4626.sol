@@ -65,7 +65,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     /// @inheritdoc ILidoLendERC4626
     ILidoLendMarketController public controller;
 
-    /// @dev Cached market params (loan/collateral/oracle/irm/lltv) for the core supply, withdraw and settle calls.
+    /// @dev Cached market params (loan/collateral/oracle/irm/lltv); the core takes full params rather than the id.
     MarketParams internal _marketParams;
 
     /// @dev Virtual-share decimals offset, `SHARE_DECIMALS - loanTokenDecimals`, frozen at init (see

@@ -12,8 +12,7 @@ import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 ///         that may appoint one delegate (at most one at a time, unique across the committee) to act on its
 ///         behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag,
 ///         unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was
-///         raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in
-///         `IGuardianSignalsView`; this interface adds the rest.
+///         raised in.
 interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // ---
     // CONSTANTS
@@ -66,9 +65,9 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
 
     /// @notice Emitted when a guardian's liveness is recorded.
     /// @param guardian The guardian the scan is recorded for.
-    /// @param blockNumber The block number reported as scanned past (carried for off-chain tooling).
+    /// @param blockNumber The block number reported as scanned past.
     /// @param timestamp Guardian-reported scan timestamp; the quorum-scan frontier orders guardians by this value.
-    /// @param data Guardian-supplied payload the registry does not read (carried for off-chain tooling).
+    /// @param data Guardian-supplied payload the registry does not read.
     event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp, bytes data);
 
     /// @notice Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
@@ -211,8 +210,7 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     /// @notice Set the quorum: the distinct guardians' flags that latch a ban.
     function setQuorum(uint256 newQuorum) external;
 
-    /// @notice Set the suspect window: how long a suspect report keeps counting. The per-flag and per-suspect
-    ///         delays live in the market's activation config.
+    /// @notice Set the suspect window: how long a suspect report keeps counting.
     function setSuspectWindow(uint256 suspectWindow) external;
 
     /// @notice The quorum: distinct guardians' flags that latch a ban.
@@ -245,8 +243,8 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     ///         quorum frontier, it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
     /// @param onBehalf The guardian the scan is recorded for.
     /// @param lastScannedBlock The block reported as scanned past.
-    /// @param data Payload the registry does not read, validate, or store; emitted in `Heartbeat` for
-    ///        off-chain tooling. May be empty.
+    /// @param data Payload the registry does not read, validate, or store; only emitted in `Heartbeat`. May
+    ///        be empty.
     function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock, bytes calldata data) external;
 
     /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and
@@ -319,7 +317,7 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
 
     /// @notice The raw stored suspect-report set for `account` in `marketId`, paired with report timestamps. It may
     ///         include a removed guardian until `prune`, or an expired report until a later report/retraction cleans
-    ///         it up. Use `getOpinion` for the active snapshotted count consumed by the controller.
+    ///         it up. Use `getOpinion` for the active snapshotted count.
     /// @param marketId The market to read the signal in.
     /// @param account The account to read.
     /// @return guardians The guardians still present in the raw stored suspect set.

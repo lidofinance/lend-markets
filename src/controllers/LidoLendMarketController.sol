@@ -74,7 +74,6 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     // ---
 
     /// @notice The LidoLend core.
-    /// @dev The only authorized hook caller, and the source of position and market reads.
     IMorpho public immutable LIDO_LEND;
 
     // ---
@@ -92,8 +91,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     /// @dev When set, new borrows and debt-bearing collateral withdrawals revert and activation maturation
     ///      defers. Freeze adds no gate to debt-free withdrawals, but activation locks still apply.
     bool public isFrozen;
-    /// @dev Guardian-signal registry read on the collateral and borrow hooks to gate borrowing (ban) and scale
-    ///      activation (strikes).
+    /// @dev The guardian-signals registry.
     IGuardianSignalsView private _guardianSignals;
     /// @dev Config + inflow accumulator + per-borrower activation pipeline.
     CollateralActivationLib.State private _activation;
@@ -133,7 +131,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     /// @param marketId_ The market this controller is bound to; hooks for any other id revert.
     /// @param admin Holder of `DEFAULT_ADMIN_ROLE`, the admin of every controller role.
     /// @param supplyCap_ Initial ceiling on total supplied loan assets; 0 means no cap.
-    /// @param guardianSignals Guardian-signal registry read for the borrow gate and activation scaling.
+    /// @param guardianSignals The guardian-signals registry.
     /// @param activationConfig Initial collateral-activation config.
     /// @param settlementConfig Initial settlement config.
     function initialize(

@@ -19,16 +19,13 @@ import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/Guar
 ///         flags is reached, a ban latches for the market it was raised in. A suspect report only raises a
 ///         borrower's collateral-activation delay; it never bans. Guardians also submit heartbeats reporting
 ///         how far they have reviewed chain activity, and the registry keeps the timestamp a quorum has
-///         reviewed past (the quorum frontier). The market controller reads `getOpinion(marketId, account)` to
-///         scale the delay and hard-block borrowing, and holds fresh collateral inactive past its unlock time
-///         until the frontier covers that time or the market's guardian-quorum fallback delay elapses.
+///         reviewed past (the quorum frontier).
 /// @dev A guardian is a single committee address. It may appoint one delegate: a hot key allowed to act in its
 ///      place. Signalling and liveness calls name the guardian they act for (`onBehalf`) and accept that
 ///      guardian or its current delegate. All signals and heartbeats are stored under the guardian, so
 ///      replacing the delegate keeps the guardian's standing.
 ///      Governance (`MANAGER_ROLE`) adds and removes guardians and sets the quorum and suspect window.
-///      Upgradeable behind a proxy (`initialize`, not a constructor); ERC-7201 namespaced storage. Events and
-///      errors live in {IGuardianSignals}.
+///      Upgradeable behind a proxy (`initialize`, not a constructor); ERC-7201 namespaced storage.
 contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     is
     AccessControlEnumerableUpgradeable,
@@ -507,8 +504,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         signal.suspectCount = count.toUint16();
     }
 
-    /// @dev The raw counters the activation lib turns into a delay: flag count, snapshotted active-suspect count,
-    ///      and the snapshot's expiry (`suspectReportedAt + suspectWindow`). Reads the stored snapshot, no scan.
+    /// @dev The raw signal counters: flag count, snapshotted active-suspect count, and the snapshot's expiry
+    ///      (`suspectReportedAt + suspectWindow`). Reads the stored snapshot, no scan.
     function _signalCounters(Id marketId, address account)
         internal
         view

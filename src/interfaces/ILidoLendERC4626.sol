@@ -122,7 +122,7 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @notice Id of the market this vault wraps.
     function marketId() external view returns (Id);
 
-    /// @notice The market's policy controller, read for settlement-queue sizing.
+    /// @notice The market's policy controller.
     function controller() external view returns (ILidoLendMarketController);
 
     // ---
@@ -133,7 +133,7 @@ interface ILidoLendERC4626 is IERC4626 {
     ///         virtual-share decimals offset, and grant the core an unbounded loan-token allowance so deposits
     ///         can supply without a per-call approval.
     /// @param marketParams_ The market this vault wraps; its loan token becomes the ERC-4626 asset.
-    /// @param controller_ The market's policy controller, read for settlement-queue sizing.
+    /// @param controller_ The market's policy controller.
     /// @param name_ ERC-20 name of the share token.
     /// @param symbol_ ERC-20 symbol of the share token.
     function initialize(
@@ -161,9 +161,9 @@ interface ILidoLendERC4626 is IERC4626 {
 
     /// @notice Settles the given borrowers, in order, against the owner's share of the vault's market supply.
     ///         Each cut lowers its borrower toward the settlement LTV that borrower set for itself; a borrower
-    ///         with no target, or whose LTV is already at or below its target, consumes nothing. Being the queue
-    ///         root is not required, and market liquidity is untouched. When the budget is exhausted early, the
-    ///         call settles what it covers; a call that settles no borrower reverts.
+    ///         whose personal policy grants no cut consumes nothing. Market liquidity is untouched. When the
+    ///         budget is exhausted early, the call settles what it covers; a call that settles no borrower
+    ///         reverts.
     /// @param shares Vault shares whose pro-rata core-supply claim bounds the cuts.
     /// @param borrowers Positions to cut in order, each sized by its personal settlement-LTV target.
     /// @param receiver Recipient of the seized collateral.

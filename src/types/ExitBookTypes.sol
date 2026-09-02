@@ -3,8 +3,8 @@ pragma solidity 0.8.36;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// @notice Shared value types of the exit book. File-scope so `ExitBookBase`, its concrete books, and
-///         `IExitBook` use them as bare `Request` / `ExitStatus`.
+/// @notice Shared value types of the exit book, defined at file scope (not in a library) so they import as
+///         bare types.
 
 // ---
 // TYPES
