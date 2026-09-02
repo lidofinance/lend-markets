@@ -6,6 +6,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 /// @notice Shared value types of the exit book. File-scope so `ExitBookBase`, its concrete books, and
 ///         `IExitBook` use them as bare `Request` / `ExitStatus`.
 
+// ---
+// TYPES
+// ---
+
 /// @notice Lifecycle marker. `NotCreated` is the zero-value sentinel for unknown ids, not a stored request state.
 ///         `Expired` is not stored: it is derived from `block.timestamp > deadline`.
 enum ExitStatus {

@@ -54,17 +54,20 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ROLES
     // ---
 
+    /// @inheritdoc IGuardianSignals
     /// @dev `ban` (fast, risk-reducing).
     bytes32 public constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
+    /// @inheritdoc IGuardianSignals
     /// @dev `unban` (slow, risk-increasing).
     bytes32 public constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
-    /// @dev Manages the guardian set, quorum, and suspect window.
+    /// @inheritdoc IGuardianSignals
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
     // ---
     // STORAGE
     // ---
 
+    /// @dev The number of distinct guardians' flags that latches a ban.
     uint8 private _quorum;
     /// @dev Freshness horizon for a suspect snapshot: `suspectReportedAt + suspectWindow` is when it lapses.
     uint40 private _suspectWindow;
@@ -454,7 +457,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @dev Never lifts a ban. Before dropping the count, latch any currently-effective ban, including a
-    ///      quorum-derived one never written, so a retraction below quorum can't lift a ban that is in effect.
+    ///      quorum-derived one never written, so a retraction below quorum cannot lift a ban that is in effect.
     function _unflag(address guardian, Id marketId, address account) internal {
         GuardiansSignal storage signal = _signals[marketId][account];
         if (!signal.banned && signal.flaggedBy.length() >= _quorum) {
@@ -466,7 +469,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @dev Single-account suspect report. Records (or refreshes) the guardian's timestamp, then snapshots
-    ///      `(now, activeSuspectCount)` so the delay read needn't re-scan the suspect set. Never bans.
+    ///      `(now, activeSuspectCount)` so the delay read need not re-scan the suspect set. Never bans.
     function _suspect(address guardian, Id marketId, address account) internal {
         if (account == address(0)) revert ZeroAddress();
 

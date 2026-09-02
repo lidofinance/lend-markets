@@ -54,25 +54,25 @@ library CollateralActivationLib {
     // EVENTS
     // ---
 
-    /// @notice A deposit enters or extends the activation timer.
+    /// @notice Emitted when a deposit enters or extends the activation timer.
     /// @param borrower The borrower whose collateral is activating.
     /// @param amount Collateral that entered the timer: the deposit plus any promoted dust.
     /// @param position The borrower's resulting un-matured state.
     event CollateralActivating(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice An activating lot matures, or an instant deposit lands active.
+    /// @notice Emitted when an activating lot matures or an instant deposit lands active.
     /// @param borrower The borrower whose collateral activated.
     /// @param amount The matured lot, or the instant deposit.
     /// @param position The borrower's resulting un-matured state.
     event CollateralActivated(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice A sub-threshold deposit is held as untimed dust.
+    /// @notice Emitted when a sub-threshold deposit is held as untimed dust.
     /// @param borrower The borrower holding the dust.
     /// @param amount The deposit held as dust.
     /// @param position The borrower's resulting un-matured state.
     event CollateralDusted(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice Collateral is drained from the un-matured buckets.
+    /// @notice Emitted when collateral is drained from the un-matured buckets.
     /// @param borrower The borrower whose buckets were drained.
     /// @param amount Collateral removed from the dust and activating buckets.
     /// @param position The borrower's resulting un-matured state.

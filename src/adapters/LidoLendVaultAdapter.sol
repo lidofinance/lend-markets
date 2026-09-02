@@ -10,11 +10,11 @@ import {ILidoLendERC4626} from "../interfaces/ILidoLendERC4626.sol";
 
 /// @title LidoLendVaultAdapter
 /// @author Lido
-/// @notice Bundler3 adapter for the Lido Lend vault's fallback exit. Users approve their vault shares
+/// @notice Bundler3 adapter for the LidoLend vault's fallback exit. Users approve their vault shares
 ///         to this adapter; a bundle can then only ever exit the position of the user who started it.
 contract LidoLendVaultAdapter is CoreAdapter {
     /// @notice The exit pays out less total value than the caller's minimum.
-    /// @param exitAssets The exit's total payout in loan tokens: loan tokens paid plus debt cancelled.
+    /// @param exitAssets The exit's total payout in loan tokens: loan tokens paid plus debt canceled.
     /// @param minExitAssets The caller's minimum total payout.
     error ExitBelowMinimum(uint256 exitAssets, uint256 minExitAssets);
 
@@ -31,13 +31,13 @@ contract LidoLendVaultAdapter is CoreAdapter {
     ///         collateral.
     /// @dev The owner of the burned shares is always the bundle initiator, so a share approval given
     ///      to this adapter can only be spent by a bundle its own owner started.
-    /// @param vault The Lido Lend vault to exit.
+    /// @param vault The LidoLend vault to exit.
     /// @param shares Vault shares to burn. Pass `type(uint256).max` for the initiator's full balance.
     /// @param maxIterations Cap on settlement-loop iterations; 0 uses the vault default.
     /// @param receiver Receives both payout tokens. When it is an adapter, later calls in the bundle
     ///        must transfer both out of it.
     /// @param minExitAssets Minimum total payout, in loan tokens: the loan tokens paid plus the debt
-    ///        the settlement cancelled. One minimum covers both parts together, independent of how
+    ///        the settlement canceled. One minimum covers both parts together, independent of how
     ///        the payout splits between them.
     /// @param minSharesBurned Minimum shares the exit must burn. The exit may burn fewer than
     ///        requested; pass `shares` to require all or nothing.

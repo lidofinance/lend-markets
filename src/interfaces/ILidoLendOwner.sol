@@ -59,6 +59,7 @@ interface ILidoLendOwner is IAccessControlEnumerable {
     /// @notice Create a controller-less market on the core.
     /// @dev Requires `MARKET_CREATOR_ROLE`.
     function createMarket(MarketParams calldata marketParams) external;
+
     /// @notice Create a controlled market on the core, binding `controller` and the `settle` opt-in.
     /// @dev Requires `MARKET_CREATOR_ROLE`.
     function createMarket(MarketParams calldata marketParams, address controller, bool enableSettlement) external;
@@ -70,6 +71,7 @@ interface ILidoLendOwner is IAccessControlEnumerable {
     /// @notice Set the fee of an existing market.
     /// @dev Requires `FEE_MANAGER_ROLE`.
     function setFee(MarketParams calldata marketParams, uint256 newFee) external;
+
     /// @notice Set the global fee recipient.
     /// @dev Requires `FEE_MANAGER_ROLE`.
     function setFeeRecipient(address newFeeRecipient) external;

@@ -271,14 +271,14 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // ---
 
     /// @notice Flag `accounts` in `marketId` on behalf of guardian `onBehalf`. Per account a no-op if the guardian
-    ///         already flags it, so a batch won't revert on a repeat.
+    ///         already flags it, so a batch will not revert on a repeat.
     /// @param marketId The market to flag in.
     /// @param onBehalf The guardian the flags are recorded for.
     /// @param accounts The accounts to flag.
     function flag(Id marketId, address onBehalf, address[] calldata accounts) external;
 
     /// @notice Retract guardian `onBehalf`'s flags on `accounts` in `marketId`. Per account a no-op if the guardian
-    ///         doesn't flag it. Never lifts a ban already in effect (including a quorum-derived one).
+    ///         does not flag it. Never lifts a ban already in effect (including a quorum-derived one).
     function unflag(Id marketId, address onBehalf, address[] calldata accounts) external;
 
     /// @notice Report `accounts` as suspect in `marketId` on behalf of guardian `onBehalf`. A suspect report never

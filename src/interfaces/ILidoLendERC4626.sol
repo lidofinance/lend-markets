@@ -69,8 +69,8 @@ interface ILidoLendERC4626 is IERC4626 {
     // EVENTS
     // ---
 
-    /// @notice A `fallbackExit` call completed with a positive, possibly partial fill: serviced from market
-    ///         liquidity, queue settlement, or both.
+    /// @notice Emitted when a `fallbackExit` call completes with a positive, possibly partial fill: serviced
+    ///         from market liquidity, queue settlement, or both.
     /// @param caller The address that called the exit.
     /// @param owner The account whose shares were burned.
     /// @param receiver The recipient of the liquid-leg loan assets and seized collateral.
@@ -80,7 +80,7 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @param assetsWithdrawn Loan assets the liquid leg paid out, 0 when the market had no free liquidity or
     ///        the requested shares' floor-rounded value was zero.
     /// @param collateralSeized Collateral seized from the cut positions.
-    /// @param debtCanceled Borrower debt cancelled by the cuts.
+    /// @param debtCanceled Borrower debt canceled by the cuts.
     event FallbackExit(
         address indexed caller,
         address indexed owner,
@@ -92,13 +92,13 @@ interface ILidoLendERC4626 is IERC4626 {
         uint256 debtCanceled
     );
 
-    /// @notice A targeted `settle` call completed with a positive, possibly partial fill.
+    /// @notice Emitted when a targeted `settle` call completes with a positive, possibly partial fill.
     /// @param caller The address that called the settle.
     /// @param owner The account whose shares were burned.
     /// @param receiver The recipient of the seized collateral.
     /// @param sharesBurned Shares burned for the settled slice.
     /// @param collateralSeized Collateral seized from the cut positions.
-    /// @param debtCanceled Borrower debt cancelled by the cuts.
+    /// @param debtCanceled Borrower debt canceled by the cuts.
     event Settled(
         address indexed caller,
         address indexed owner,
@@ -170,7 +170,7 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
     /// @return sharesBurned Shares burned for the settled slice.
     /// @return collateralSeized Collateral seized from the cut positions and sent to `receiver`.
-    /// @return debtCanceled Borrower debt cancelled by the cuts.
+    /// @return debtCanceled Borrower debt canceled by the cuts.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
         returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
@@ -186,7 +186,7 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @return sharesBurned Total shares burned across the liquid and settle legs.
     /// @return loanAssets Loan assets paid to `receiver` by the liquid leg (the settle leg pays only collateral).
     /// @return collateralSeized Collateral seized from settled positions and sent to `receiver`.
-    /// @return debtCanceled Borrower debt cancelled by the settle leg.
+    /// @return debtCanceled Borrower debt canceled by the settle leg.
     function fallbackExit(uint256 shares, address receiver, address owner, uint256 maxIterations)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);

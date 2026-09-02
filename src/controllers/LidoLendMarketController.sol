@@ -31,7 +31,7 @@ import {PausableUntil} from "../utils/PausableUntil.sol";
 
 /// @title LidoLendMarketController
 /// @author Lido
-/// @notice Lido-policy layer for one Lido Lend market. The core calls `on` before applying each market action;
+/// @notice Lido-policy layer for one LidoLend market. The core calls `on` before applying each market action;
 ///         the controller then allows the action or reverts it, and never changes the amounts the core
 ///         resolved. It enforces the lender supply cap, delays fresh collateral before it can back a borrow,
 ///         blocks banned borrowers, orders borrowers for lender settlement, and provides the freeze and pause
@@ -73,18 +73,22 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     // IMMUTABLES
     // ---
 
-    /// @dev The LidoLend core. The only authorized hook caller, and the source of position and market reads.
+    /// @notice The LidoLend core.
+    /// @dev The only authorized hook caller, and the source of position and market reads.
     IMorpho public immutable LIDO_LEND;
 
     // ---
     // STORAGE
     // ---
 
-    /// @dev The single market this controller is bound to. Hooks for any other id revert.
+    /// @notice The id of the single market this controller is bound to.
+    /// @dev Hooks for any other id revert.
     Id public marketId;
+    /// @inheritdoc ILidoLendMarketConfigurator
     /// @dev Ceiling on total supplied loan assets (principal plus accrued interest), enforced on the Supply
     ///      hook against the market total. 0 means no cap.
     uint256 public supplyCap;
+    /// @inheritdoc ILidoLendMarketController
     /// @dev When set, new borrows and debt-bearing collateral withdrawals revert and activation maturation
     ///      defers. Freeze adds no gate to debt-free withdrawals, but activation locks still apply.
     bool public isFrozen;
