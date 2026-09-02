@@ -20,9 +20,11 @@ import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/Guar
 ///         borrower's collateral-activation delay — it never bans. The market controller reads
 ///         `getOpinion(marketId, account)` to scale the delay and hard-block borrowing.
 /// @dev    A guardian is a single committee address. It may appoint one **delegate** — a hot key allowed to act on
-///         its behalf; `setDelegate` replaces it (at most one at a time). Signalling and liveness calls name the
-///         guardian they act for (`onBehalf`) and accept that guardian or its current delegate. All signals and
-///         heartbeats are stored under the guardian, so replacing the delegate keeps the guardian's standing.
+///         its behalf; `setDelegate` replaces it (at most one at a time), and the zero address clears it. A
+///         delegate must not be a guardian or another guardian's current delegate, so one address cannot sign for
+///         two committee identities. Signalling and liveness calls name the guardian they act for (`onBehalf`) and
+///         accept that guardian or its current delegate. All signals and heartbeats are stored under the guardian,
+///         so replacing the delegate keeps the guardian's standing.
 ///         Governance (`MANAGER_ROLE`) adds and removes guardians and sets the quorum and suspect window. Upgradeable
 ///         behind a proxy (`initialize`, not a constructor); ERC-7201 namespaced storage. Events and errors live in
 ///         {IGuardianSignals}.
@@ -75,7 +77,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     mapping(address guardian => uint40 timestamp) private _heartbeats;
     /// @dev Per (market, account) signal. `flaggedBy`/`suspectedBy` hold guardian addresses — a delegate's
     ///      signal is recorded under its guardian, not the raw caller.
-    mapping(Id marketId => mapping(address account => GuardiansSignal)) private _signals;
+    mapping(Id marketId => mapping(address account => GuardiansSignal signal)) private _signals;
 
     // ---
     // INITIALIZATION
@@ -132,6 +134,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     /// @inheritdoc IGuardianSignals
     function setDelegate(address newDelegate) external {
         if (!_guardians.contains(msg.sender)) revert Unauthorized();
+        if (_guardians.contains(newDelegate)) revert DelegateIsGuardian();
+        if (newDelegate != address(0)) _requireNotDelegate(newDelegate);
         address oldDelegate = _delegates[msg.sender];
         _delegates[msg.sender] = newDelegate;
         emit DelegateSet(msg.sender, oldDelegate, newDelegate);
@@ -189,7 +193,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ---
 
     /// @inheritdoc IGuardianSignals
-    function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock) external {
+    function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock, bytes calldata data) external {
         if (!_isSenderAuthorized(onBehalf)) revert Unauthorized();
 
         uint40 previousTimestamp = _heartbeats[onBehalf];
@@ -205,7 +209,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) revert InvalidBlockHash();
 
         _heartbeats[onBehalf] = lastScannedBlock.timestamp;
-        emit Heartbeat(onBehalf, lastScannedBlock.number, lastScannedBlock.timestamp);
+        emit Heartbeat(onBehalf, lastScannedBlock.number, lastScannedBlock.timestamp, data);
 
         // The frontier is the quorum-th largest heartbeat, so this one can only raise it by crossing from at or below
         // it to above it. The guard skips the O(n log n) resort otherwise; `syncQuorumFrontier` is the fallback for
@@ -300,7 +304,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         bool suspectPruned;
         for (uint256 i; i < suspects.length; ++i) {
             if (!_guardians.contains(suspects[i])) {
-                _pruneSuspect(marketId, account, signal, suspects[i]);
+                _removeSuspect(signal, suspects[i]);
+                emit SuspectPruned(marketId, account, suspects[i]);
                 suspectPruned = true;
             }
         }
@@ -415,8 +420,19 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     function _addGuardian(address guardian) internal {
         if (guardian == address(0)) revert ZeroAddress();
         if (_guardians.length() >= MAX_GUARDIANS_COUNT) revert MaxGuardiansReached();
+        _requireNotDelegate(guardian);
         if (!_guardians.add(guardian)) revert AlreadyGuardian();
         emit GuardianAdded(guardian);
+    }
+
+    /// @dev Reverts when `account` is already some guardian's delegate. Both new delegates and new guardians pass
+    ///      through this check, so one address cannot serve two committee identities. `account` must be non-zero:
+    ///      zero matches every guardian without a delegate.
+    function _requireNotDelegate(address account) internal view {
+        address[] memory guardians = _guardians.values();
+        for (uint256 i; i < guardians.length; ++i) {
+            if (_delegates[guardians[i]] == account) revert AccountIsDelegate();
+        }
     }
 
     function _flag(address guardian, Id marketId, address account) internal {
@@ -451,25 +467,23 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         if (account == address(0)) revert ZeroAddress();
 
         GuardiansSignal storage signal = _signals[marketId][account];
-        _pruneExpiredSuspects(marketId, account);
+        _pruneExpiredSuspects(marketId, account, signal);
         signal.suspectedBy.add(guardian);
         signal.suspectedAt[guardian] = block.timestamp.toUint40();
         _snapshotSuspects(signal);
         emit Suspected(marketId, account, guardian, msg.sender, block.timestamp);
     }
 
-    /// @dev Single-account suspect retraction. No-op when the guardian has no live report on the account.
+    /// @dev Single-account suspect retraction. Rebuilds the snapshot if it clears or prunes any report.
     function _unsuspect(address guardian, Id marketId, address account) internal {
-        _pruneExpiredSuspects(marketId, account);
         GuardiansSignal storage signal = _signals[marketId][account];
-        if (!signal.suspectedBy.remove(guardian)) return;
-        signal.suspectedAt[guardian] = 0;
-        _snapshotSuspects(signal);
-        emit SuspectCleared(marketId, account, guardian, msg.sender);
+        bool suspectPruned = _pruneExpiredSuspects(marketId, account, signal);
+        bool suspectCleared = _removeSuspect(signal, guardian);
+        if (suspectPruned || suspectCleared) _snapshotSuspects(signal);
+        if (suspectCleared) emit SuspectCleared(marketId, account, guardian, msg.sender);
     }
 
-    /// @dev Snapshot the active suspect count and latest remaining report so the delay read skips a re-scan. Run on
-    ///      every report/retraction, after pruning expired ones.
+    /// @dev Snapshot the active suspect count and latest remaining report so the delay read skips a re-scan.
     function _snapshotSuspects(GuardiansSignal storage signal) internal {
         uint256 count;
         uint40 latestReportedAt;
@@ -499,23 +513,25 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         suspectExpiryTimestamp = uint256(signal.suspectReportedAt) + _suspectWindow;
     }
 
-    /// @dev Drop suspect reports on `account` whose window has lapsed. A lapsed report already stopped counting,
-    ///      so removing it changes nothing but the set size.
-    function _pruneExpiredSuspects(Id marketId, address account) internal {
-        GuardiansSignal storage signal = _signals[marketId][account];
+    /// @dev Drop suspect reports on `account` whose window has lapsed.
+    function _pruneExpiredSuspects(Id marketId, address account, GuardiansSignal storage signal)
+        internal
+        returns (bool suspectPruned)
+    {
         uint256 window = _suspectWindow;
         address[] memory suspects = signal.suspectedBy.values();
         for (uint256 i; i < suspects.length; ++i) {
             if (uint256(signal.suspectedAt[suspects[i]]) + window < block.timestamp) {
-                _pruneSuspect(marketId, account, signal, suspects[i]);
+                _removeSuspect(signal, suspects[i]);
+                emit SuspectPruned(marketId, account, suspects[i]);
+                suspectPruned = true;
             }
         }
     }
 
-    /// @dev Remove one guardian's suspect report on `account` and log it.
-    function _pruneSuspect(Id marketId, address account, GuardiansSignal storage signal, address guardian) private {
-        signal.suspectedBy.remove(guardian);
-        signal.suspectedAt[guardian] = 0;
-        emit SuspectPruned(marketId, account, guardian);
+    /// @dev Keep the raw reporter set and its timestamp mapping in sync.
+    function _removeSuspect(GuardiansSignal storage signal, address guardian) private returns (bool removed) {
+        removed = signal.suspectedBy.remove(guardian);
+        if (removed) signal.suspectedAt[guardian] = 0;
     }
 }

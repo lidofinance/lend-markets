@@ -32,10 +32,10 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
     // ---
 
     /// @inheritdoc IErc4626ExitBook
-    mapping(IERC4626 vault => bool) public isVaultAllowed;
+    mapping(IERC4626 vault => bool isAllowed) public isVaultAllowed;
 
     /// @inheritdoc IErc4626ExitBook
-    mapping(uint256 id => IERC4626) public vaultOf;
+    mapping(uint256 id => IERC4626 vault) public vaultOf;
 
     // ---
     // CONSTRUCTOR

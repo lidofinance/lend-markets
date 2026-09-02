@@ -162,7 +162,7 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
         address[] memory borrowers = new address[](1);
         borrowers[0] = borrower;
-        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             m.settle(lender, shares, borrowers, lender);
 
         assertLt(expected[0], availableLiquidity, "request is fully covered by current free liquidity");
@@ -410,7 +410,15 @@ contract LidoLendERC4626Test is LidoLendSetup {
         (address lender, address borrower) = _distress(m, 100 ether, 20 ether, 0.22e36); // 80 idle, 20 settles
         uint256 idle = m.core.market(m.id).totalSupplyAssets - m.core.market(m.id).totalBorrowAssets;
         uint128 colBefore = m.core.position(m.id, borrower).collateral;
-        (, uint256 loanAssets, uint256 collateralSeized,) = m.fallbackExit(lender, m.vault.balanceOf(lender), lender, 0);
+        // The gas-sized default (0) stops before this book drains, so the exit resumes over calls.
+        uint256 loanAssets;
+        uint256 collateralSeized;
+        // terminates: a call that burns nothing reverts NothingSettled
+        while (m.vault.balanceOf(lender) != 0) {
+            (, uint256 loan, uint256 seized,) = m.fallbackExit(lender, m.vault.balanceOf(lender), lender, 0);
+            loanAssets += loan;
+            collateralSeized += seized;
+        }
         assertEq(loanAssets, idle, "liquid leg == idle liquidity (exact)");
         assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");
         assertEq(m.vault.balanceOf(lender), 0, "fully exited: redeem covered idle, settle covered the rest");
@@ -457,8 +465,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
         bs[0] = borrower;
         uint256 expectedDebtCanceled = _settlementForDebtAssets(m, borrower);
         uint128 colBefore = m.core.position(m.id, borrower).collateral;
-        // The helper asserts loanAssets == 0 (no liquid leg) and the receiver/share deltas.
-        (,, uint256 collateralSeized, uint256 debtCanceled) = m.settle(lender, m.vault.balanceOf(lender), bs, lender);
+        // The helper asserts liquidity-neutrality (no liquid leg) and the receiver/share deltas.
+        (, uint256 collateralSeized, uint256 debtCanceled) = m.settle(lender, m.vault.balanceOf(lender), bs, lender);
         assertEq(debtCanceled, expectedDebtCanceled, "settle cut == settlementFor prediction (exact)");
         assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");
     }
@@ -467,7 +475,18 @@ contract LidoLendERC4626Test is LidoLendSetup {
         Market storage m = _market();
         (address lender, address borrower) = _distressFull(m, 100 ether); // idle == 0
         uint128 colBefore = m.core.position(m.id, borrower).collateral;
-        (, uint256 loanAssets, uint256 collateralSeized,) = m.fallbackExit(lender, m.vault.balanceOf(lender), lender, 0);
+        // The gas-sized default (0) stops before this book drains, so the exit resumes over calls.
+        uint256 loanAssets;
+        uint256 collateralSeized;
+        uint256 calls;
+        // terminates: a call that burns nothing reverts NothingSettled
+        while (m.vault.balanceOf(lender) != 0) {
+            ++calls;
+            (, uint256 loan, uint256 seized,) = m.fallbackExit(lender, m.vault.balanceOf(lender), lender, 0);
+            loanAssets += loan;
+            collateralSeized += seized;
+        }
+        assertGt(calls, 1, "the default bound spreads this drain over calls");
         assertEq(loanAssets, 0, "no liquid leg when there is no idle liquidity");
         assertEq(
             collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "settle seized == position delta"
@@ -592,7 +611,7 @@ contract LidoLendERC4626Test is LidoLendSetup {
         address[] memory bs = new address[](1);
         bs[0] = borrower;
         // Helper asserts owner share burn, receiver collateral, and owner!=receiver routing.
-        (uint256 sharesBurned,, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             m.settle(lender, m.vault.balanceOf(lender), bs, receiver);
         assertEq(debtCanceled, expectedDebtCanceled, "cancelled == settlementFor prediction");
         assertEq(collateralSeized, colBefore - m.core.position(m.id, borrower).collateral, "seized == position delta");

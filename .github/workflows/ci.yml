@@ -39,10 +39,12 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      - name: fork tests (mainnet)
+      - name: provision a fork deployment
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
-          NETWORK: mainnet
         run: |
           test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for the fork job"; exit 1; }
-          make test-fork
+          make provision-fork
+
+      - name: fork tests (against the provisioned deployment)
+        run: make test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork

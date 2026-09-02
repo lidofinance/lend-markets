@@ -4,7 +4,7 @@
 
 Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
 
-Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address that may appoint one **delegate** (at most one at a time) to act on its behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in `IGuardianSignalsView`; this interface adds the rest.
+Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address that may appoint one **delegate** (at most one at a time, unique across the committee) to act on its behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in `IGuardianSignalsView`; this interface adds the rest.
 
 ## Structs
 
@@ -117,7 +117,7 @@ Emitted when the suspect window is set.
 ### `Heartbeat`
 
 ```solidity
-event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp);
+event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp, bytes data);
 ```
 
 **Parameters**
@@ -127,6 +127,7 @@ event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp
 | `guardian` | `address` | The guardian the scan is recorded for. |
 | `blockNumber` | `uint256` | The block number reported as scanned past (carried for off-chain tooling). |
 | `timestamp` | `uint256` | Guardian-reported scan timestamp; the quorum-scan frontier orders guardians by this value. |
+| `data` | `bytes` | Guardian-supplied payload the registry does not read (carried for off-chain tooling). |
 
 Emitted when a guardian's liveness is recorded.
 
@@ -335,6 +336,22 @@ error SuspectWindowTooHigh();
 
 Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
 
+### `DelegateIsGuardian`
+
+```solidity
+error DelegateIsGuardian();
+```
+
+Thrown when the appointed delegate is a guardian.
+
+### `AccountIsDelegate`
+
+```solidity
+error AccountIsDelegate();
+```
+
+Thrown when an address that is a guardian's delegate (the caller's own included) is appointed as a delegate or added as a guardian.
+
 ## Functions
 
 ### `MAX_GUARDIANS_COUNT`
@@ -383,7 +400,7 @@ Role allowed to lift account bans.
 function addGuardian(address guardian) external;
 ```
 
-Add `guardian` to the committee. Must be non-zero, not already a guardian, and within the cap.
+Add `guardian` to the committee. Must be non-zero, not already a guardian, not a current guardian's delegate, and within the cap.
 
 ### `replaceGuardian`
 
@@ -391,7 +408,7 @@ Add `guardian` to the committee. Must be non-zero, not already a guardian, and w
 function replaceGuardian(address oldGuardian, address newGuardian) external;
 ```
 
-Atomically replace one guardian with another without changing the guardian count or quorum.
+Atomically replace one guardian with another without changing the guardian count or quorum. The new guardian must be non-zero and not a current guardian, checked before the removal; the delegate check runs after it, so a guardian can be replaced with its own delegate.
 
 ### `removeGuardian`
 
@@ -407,7 +424,7 @@ Remove `guardian` from the committee (reverts if it would drop the set below the
 function setDelegate(address newDelegate) external;
 ```
 
-Set the caller-guardian's delegate — a hot key that may act on its behalf. The zero address clears it. Guardian-only; the guardian's signals and heartbeat are untouched.
+Set the caller-guardian's delegate: a hot key that may act on its behalf. The zero address clears it. Guardian-only. A non-zero delegate must not be a guardian or any current delegate, the caller's own included, so one address cannot sign for two committee identities. The guardian's signals and heartbeat are untouched.
 
 ### `setQuorum`
 
@@ -485,7 +502,8 @@ The guardian set paired with each guardian's current delegate (zero if none), al
 ```solidity
 function heartbeat(
     address onBehalf,
-    BlockInfoWithHash calldata lastScannedBlock
+    BlockInfoWithHash calldata lastScannedBlock,
+    bytes calldata data
 ) external;
 ```
 
@@ -495,6 +513,7 @@ function heartbeat(
 | --- | --- | --- |
 | `onBehalf` | `address` | The guardian the scan is recorded for. |
 | `lastScannedBlock` | `BlockInfoWithHash` | The block reported as scanned past. |
+| `data` | `bytes` | Payload the registry does not read, validate, or store; emitted in `Heartbeat` for off-chain tooling. May be empty. |
 
 Record `onBehalf`'s last-scanned block identity and scan timestamp. The block hash is validated; the guardian-reported timestamp is independently required not to regress or exceed `block.timestamp`. Callable by the guardian or its delegate and keyed by the guardian. If the heartbeat raises the quorum frontier, it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
 
@@ -607,7 +626,7 @@ function unsuspect(
 ) external;
 ```
 
-Retract guardian `onBehalf`'s suspect reports on `accounts` in `marketId`. Per account a no-op if the guardian has no live report on it.
+Retract guardian `onBehalf`'s live suspect reports on `accounts` in `marketId`, pruning expired reports and rebuilding affected snapshots.
 
 ### `prune`
 

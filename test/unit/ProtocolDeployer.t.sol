@@ -2,11 +2,13 @@
 pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 
-import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
+import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {ProtocolDeployer} from "../../script/lib/ProtocolDeployer.sol";
 import {ExitBookConfig} from "../../script/lib/ExitBookConfigFile.sol";
+import {ProtocolConfig, ProtocolDeployment} from "../../script/lib/ProtocolConfigFile.sol";
 
 contract CircuitBreakerConfigStub {
     address public immutable ADMIN;
@@ -17,19 +19,16 @@ contract CircuitBreakerConfigStub {
 }
 
 contract ProtocolDeployerHarness is ProtocolDeployer {
+    function deployBackbone(ProtocolConfig memory cfg) external returns (ProtocolDeployment memory) {
+        return _deployBackbone(cfg, address(this));
+    }
+
     function deployExitBooks(ExitBookConfig memory cfg) external returns (address morpho, address erc4626) {
         return _deployExitBooks(cfg, address(this));
     }
 
     function requireCircuitBreakerPolicy(address circuitBreaker, address executor) external view {
         _requireCircuitBreakerPolicy(circuitBreaker, executor);
-    }
-
-    function requireUniqueMarketIds(string[] memory names, LidoLendMarketFactory.MarketSpec[] memory markets)
-        external
-        pure
-    {
-        _requireUniqueMarketIds(names, markets);
     }
 }
 
@@ -66,6 +65,39 @@ contract ProtocolDeployerTest is Test {
         deployer.requireCircuitBreakerPolicy(address(new CircuitBreakerConfigStub(executor)), executor);
     }
 
+    function test_deployBackbone_setsCoreFeeRecipientToAgent() external {
+        address agent = makeAddr("agent");
+        ProtocolConfig memory cfg = ProtocolConfig({
+            agent: agent,
+            evmScriptExecutor: executor,
+            circuitBreaker: address(new CircuitBreakerConfigStub(executor)),
+            resealManager: makeAddr("resealManager")
+        });
+
+        ProtocolDeployment memory deployment = deployer.deployBackbone(cfg);
+
+        assertEq(ILidoLend(deployment.core).feeRecipient(), agent);
+    }
+
+    function test_deployBackbone_assignsFeeManagerToExecutorOnly() external {
+        address agent = makeAddr("agent");
+        ProtocolConfig memory cfg = ProtocolConfig({
+            agent: agent,
+            evmScriptExecutor: executor,
+            circuitBreaker: address(new CircuitBreakerConfigStub(executor)),
+            resealManager: makeAddr("resealManager")
+        });
+
+        ProtocolDeployment memory deployment = deployer.deployBackbone(cfg);
+        LidoLendOwner facade = LidoLendOwner(deployment.ownerFacade);
+        bytes32 role = facade.FEE_MANAGER_ROLE();
+
+        assertEq(facade.getRoleMemberCount(role), 1);
+        assertTrue(facade.hasRole(role, executor));
+        assertFalse(facade.hasRole(role, agent));
+        assertFalse(facade.hasRole(role, address(deployer)));
+    }
+
     function test_deployExitBooks_assignsPauserAndLeavesResumerEmpty() external {
         address pauser = makeAddr("exitBookPauser");
 
@@ -73,6 +105,15 @@ contract ProtocolDeployerTest is Test {
 
         _assertExitBookPauseRoles(ExitBookBase(morpho), pauser);
         _assertExitBookPauseRoles(ExitBookBase(erc4626), pauser);
+    }
+
+    function test_deployExitBooks_assignsFeeManagerToExecutorOnly() external {
+        ExitBookConfig memory cfg = _exitBookConfig(makeAddr("exitBookPauser"));
+
+        (address morpho, address erc4626) = deployer.deployExitBooks(cfg);
+
+        _assertExitBookFeeManager(ExitBookBase(morpho), cfg);
+        _assertExitBookFeeManager(ExitBookBase(erc4626), cfg);
     }
 
     function testRevert_deployExitBooks_missingPauser() external {
@@ -99,36 +140,6 @@ contract ProtocolDeployerTest is Test {
         deployer.deployExitBooks(cfg);
     }
 
-    function testRevert_requireUniqueMarketIds_duplicateEconomicInputs() external {
-        string[] memory names = new string[](2);
-        names[0] = "market-a";
-        names[1] = "market-b";
-        LidoLendMarketFactory.MarketSpec[] memory markets = new LidoLendMarketFactory.MarketSpec[](2);
-        markets[0] = _marketSpec(0.8 ether);
-        markets[1] = _marketSpec(0.8 ether);
-
-        vm.expectRevert(abi.encodeWithSelector(ProtocolDeployer.DuplicateMarketId.selector, names[0], names[1]));
-        deployer.requireUniqueMarketIds(names, markets);
-    }
-
-    function test_requireUniqueMarketIds_acceptsDifferentLltv() external view {
-        string[] memory names = new string[](2);
-        names[0] = "market-a";
-        names[1] = "market-b";
-        LidoLendMarketFactory.MarketSpec[] memory markets = new LidoLendMarketFactory.MarketSpec[](2);
-        markets[0] = _marketSpec(0.8 ether);
-        markets[1] = _marketSpec(0.75 ether);
-
-        deployer.requireUniqueMarketIds(names, markets);
-    }
-
-    function _marketSpec(uint256 lltv) private pure returns (LidoLendMarketFactory.MarketSpec memory market) {
-        market.loanToken = address(0x1001);
-        market.collateralToken = address(0x1002);
-        market.oracle = address(0x1003);
-        market.lltv = lltv;
-    }
-
     function _exitBookConfig(address pauser) private pure returns (ExitBookConfig memory cfg) {
         cfg = ExitBookConfig({
             agent: address(0xA11CE),
@@ -143,5 +154,12 @@ contract ProtocolDeployerTest is Test {
         assertEq(book.getRoleMemberCount(book.PAUSER_ROLE()), 1);
         assertTrue(book.hasRole(book.PAUSER_ROLE(), pauser));
         assertEq(book.getRoleMemberCount(book.RESUMER_ROLE()), 0);
+    }
+
+    function _assertExitBookFeeManager(ExitBookBase book, ExitBookConfig memory cfg) private view {
+        assertEq(book.getRoleMemberCount(book.FEE_MANAGER_ROLE()), 1);
+        assertTrue(book.hasRole(book.FEE_MANAGER_ROLE(), cfg.evmScriptExecutor));
+        assertFalse(book.hasRole(book.FEE_MANAGER_ROLE(), cfg.agent));
+        assertFalse(book.hasRole(book.FEE_MANAGER_ROLE(), address(deployer)));
     }
 }

@@ -25,7 +25,9 @@ contract DeployExitBooks is Script, ProtocolDeployer {
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
         DeployConfigFile.requireChainId(deployConfig);
         DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
-        string memory protocolArtifact = vm.readFile(ProtocolConfigFile.protocolPath());
+        ArtifactMetadata memory metadata = DeployConfigFile.artifactMetadata(deployConfig);
+        string memory protocolArtifact =
+            ArtifactMetadataFile.requireCompatible(ProtocolConfigFile.protocolPath(), metadata);
         DeployConfigFile.requireRegistryGovernance(deployConfig, protocolArtifact);
         ProtocolConfigFile.requireExitBooksUndeployed();
 
@@ -60,17 +62,10 @@ contract DeployExitBooks is Script, ProtocolDeployer {
                 morpho: morpho,
                 erc4626: erc4626,
                 deployedBlock: deployedBlock,
-                deployer: deployer,
-                agent: agent,
-                evmScriptExecutor: executor,
                 pauser: pauser,
                 maxRequestLifetime: maxRequestLifetime
             }),
-            ArtifactMetadata({
-                deployment: ArtifactMetadataFile.deployment(),
-                chainId: deployConfig.chainId,
-                configHash: deployConfig.configHash
-            })
+            metadata
         );
 
         console2.log("morphoExitBook  :", morpho);
@@ -94,7 +89,8 @@ contract DeployExitBooks is Script, ProtocolDeployer {
         _requireRole(b, b.DEFAULT_ADMIN_ROLE(), agent);
         _requireRole(b, b.ALLOWLIST_MANAGER_ROLE(), agent);
         _requireRole(b, b.ALLOWLIST_MANAGER_ROLE(), executor);
-        _requireRole(b, b.FEE_MANAGER_ROLE(), agent);
+        _requireRole(b, b.FEE_MANAGER_ROLE(), executor);
+        _requireRoleMemberCount(b, b.FEE_MANAGER_ROLE(), 1);
         _requireRole(b, b.RECOVERER_ROLE(), agent);
         _requireRole(b, b.PAUSER_ROLE(), pauser);
         _requireRoleMemberCount(b, b.PAUSER_ROLE(), 1);

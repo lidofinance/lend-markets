@@ -47,7 +47,7 @@ struct SettlementSlice {
 }
 ```
 
-One settlement cut expressed as the executable borrow-share handle plus the supply it burns. For a nonzero cut, `remainingBorrowShares == 0` identifies a full close; an unavailable cut is represented by an all-zero struct. Every field describes the same cut, so a budgeted quote stays self-consistent.
+One settlement cut expressed as the executable borrow-share handle plus the supply it burns. For a nonzero cut, `remainingBorrowShares == 0` identifies a full close; an unavailable cut has zero `borrowShares` and `supplyShares`. Every field describes the same cut, so a budgeted quote stays self-consistent.
 
 **Fields**
 
@@ -55,7 +55,7 @@ One settlement cut expressed as the executable borrow-share handle plus the supp
 | --- | --- | --- |
 | `supplyShares` | `uint256` | Core supply shares the cut burns, derived from `borrowShares` the way the core derives it. Exact for the market state it was read at — interest accrued before execution raises it. |
 | `borrowShares` | `uint256` | Borrow shares canceled by the cut. |
-| `remainingBorrowShares` | `uint256` | Borrow shares left after a nonzero cut, 0 for a full close. |
+| `remainingBorrowShares` | `uint256` | Borrow shares left after the cut: 0 for a full close or a debtless position, the borrower's untouched debt for an unavailable cut. |
 
 ## `SettlementQuote`
 
@@ -94,5 +94,5 @@ Settlement slice policy, set together via `setSettlementConfig`. The knobs tune 
 | --- | --- | --- |
 | `sliceFloorBps` | `uint16` | Debt-fraction term of the root cut: one allowance is `debt * sliceFloorBps / BPS`. |
 | `sliceFloorAssets` | `uint96` | Absolute term of the root cut: one allowance is this many loan assets. |
-| `fullCutBelowCollateral` | `uint96` | Queue-root sweep floor in collateral units: when the root-policy cut would leave the borrower's remaining collateral below this, the policy requests a full-debt slice. The vault closes the position in one cut only when the exiting lender's settleable budget covers it; otherwise it applies a budgeted partial. The personal settlement-LTV asset cut is never swept, though its borrow-share conversion may still round to a full close. 0 disables the sweep. |
+| `fullCutBelowCollateral` | `uint96` | Queue-root sweep floor in collateral units: when a positive root-policy cut would leave the borrower's remaining collateral below this, the policy requests a full-debt slice. The vault closes the position in one cut only when the exiting lender's settleable budget covers it; otherwise it applies a budgeted partial — or quotes nothing when the shrunk cut would seize no whole collateral unit. The personal settlement-LTV asset cut is never swept, though its borrow-share conversion may still round to a full close. 0 disables the sweep. |
 | `ltvStepBps` | `uint16` | LTV-step term of the root cut: one allowance is the cut that lowers the root's LTV by `ltvStepBps / BPS`. The root cut is the largest of the three terms (debt-fraction, absolute, LTV-step). |

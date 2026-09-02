@@ -8,6 +8,7 @@ contract MultiMarketActivationSimulation is AcceptanceBase {
     function test_twoMarketsActivateWithoutCrossMarketStateCollision() external {
         string memory marketA = vm.envString("MARKET_A");
         string memory marketB = vm.envString("MARKET_B");
+        _loadExpectedSettlementChoice();
 
         _loadMarket(marketA);
         bytes32 marketIdA = marketId;

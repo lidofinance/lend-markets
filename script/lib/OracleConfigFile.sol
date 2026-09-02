@@ -106,6 +106,13 @@ library OracleConfigFile {
         return vm.parseTomlAddress(vm.readFile(path), ".oracle.address");
     }
 
+    function readDeployed(string memory name, ArtifactMetadata memory expected) internal view returns (address) {
+        string memory path = deployedPath(name);
+        if (!vm.exists(path)) return address(0);
+        string memory artifact = ArtifactMetadataFile.requireCompatible(path, expected);
+        return vm.parseTomlAddress(artifact, ".oracle.address");
+    }
+
     function deployedPath(string memory name) internal view returns (string memory) {
         return string.concat(ArtifactMetadataFile.artifactsDir(), "/oracles/", name, ".toml");
     }

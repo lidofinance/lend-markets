@@ -130,10 +130,16 @@ contract FullLifecycleTest is LidoLendSetup {
     function _phaseOpenPositions() private {
         Market storage m = _m();
 
-        // Instant-activated borrower: grant, supply, borrow with no warp.
+        // Instant-activated borrower: grant, supply, borrow with no warp. `supplyCollateral` models the
+        // non-instant classification only, so bypass the helper and call core directly (the lot lands
+        // straight in active, not dust/activating).
         m.controller.setInstantActivation(borrowerHealthy, true);
-        _fund(m.collateralToken, borrowerHealthy, _collatFor(P_SMALL, 200, 100));
-        m.supplyCollateral(borrowerHealthy, _collatFor(P_SMALL, 200, 100));
+        uint256 healthyCollat = _collatFor(P_SMALL, 200, 100);
+        _fund(m.collateralToken, borrowerHealthy, healthyCollat);
+        vm.prank(borrowerHealthy);
+        m.collateralToken.approve(address(m.core), healthyCollat);
+        vm.prank(borrowerHealthy);
+        m.core.supplyCollateral(m.params, healthyCollat, borrowerHealthy, "");
         m.borrow(borrowerHealthy, P_SMALL);
 
         // Timer-activated borrowers: supply now, mature via the delay, then borrow.
@@ -270,7 +276,7 @@ contract FullLifecycleTest is LidoLendSetup {
             uint256 settleShares = m.vault.balanceOf(lenderA);
             (, uint256 personalSlice) = m.controller.settlementLtv(borrowerSettle);
             assertGt(personalSlice, 0, "personal settlement LTV is active after the price shock");
-            (,, uint256 seizedA, uint256 canceledA) = m.settle(lenderA, settleShares, targets, lenderA);
+            (, uint256 seizedA, uint256 canceledA) = m.settle(lenderA, settleShares, targets, lenderA);
             assertGt(seizedA, 0, "targeted settle pays collateral");
             assertGt(canceledA, 0, "targeted settle cancels debt");
             collat1 = m.core.position(m.id, borrowerSettle).collateral;

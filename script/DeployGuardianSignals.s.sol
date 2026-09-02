@@ -22,9 +22,11 @@ contract DeployGuardianSignals is Script {
         DeployConfigFile.requireChainId(deployConfig);
         DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
         string memory toml = vm.readFile(GuardianSignalsConfigFile.configPath(name));
+        ArtifactMetadata memory metadata = DeployConfigFile.artifactMetadata(deployConfig);
         address factory;
         {
-            string memory protocolArtifact = vm.readFile(ProtocolConfigFile.protocolPath());
+            string memory protocolArtifact =
+                ArtifactMetadataFile.requireCompatible(ProtocolConfigFile.protocolPath(), metadata);
             DeployConfigFile.requireRegistryGovernance(deployConfig, protocolArtifact);
             factory = vm.parseTomlAddress(protocolArtifact, ".protocol.factory");
             if (factory == address(0)) revert ConfigToml.MissingConfigValue(".protocol.factory");
@@ -43,20 +45,17 @@ contract DeployGuardianSignals is Script {
         }
 
         GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.parse(toml);
-        ArtifactMetadata memory metadata = ArtifactMetadata({
-            deployment: ArtifactMetadataFile.deployment(),
-            chainId: deployConfig.chainId,
-            configHash: deployConfig.configHash
-        });
         GuardianSignalsConfigFile.requireUndeployed(name);
         uint256 deployedBlock = vm.getBlockNumber();
 
         vm.startBroadcast();
+        // The group name separates registries whose committees are configured identically.
         guardianSignals = LidoLendMarketFactory(factory)
             .deployGuardianSignals(
                 LidoLendMarketFactory.GuardianSpec({
-                    guardians: cfg.guardians, quorum: cfg.quorum, suspectWindow: cfg.suspectWindow
-                })
+                guardians: cfg.guardians, quorum: cfg.quorum, suspectWindow: cfg.suspectWindow
+            }),
+                keccak256(bytes(name))
             );
         vm.stopBroadcast();
 

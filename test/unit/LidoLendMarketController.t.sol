@@ -78,6 +78,15 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertGe(found, 1, "GuardianSignalsSet emitted at initialization");
     }
 
+    function test_deployConfig_initializesSupplyCap() public {
+        DeployConfig memory cfg = _defaultConfig(address(loan), address(collateral), address(collateral));
+        cfg.supplyCap = 500 ether;
+
+        Market storage market = _addMarket(cfg);
+
+        assertEq(market.controller.supplyCap(), cfg.supplyCap, "configured supply cap");
+    }
+
     function test_constructor_zeroCoreReverts() public {
         vm.expectRevert(ILidoLendMarketController.ZeroAddress.selector);
         new LidoLendMarketController(IMorpho(address(0)));
@@ -218,14 +227,16 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         _m().core.withdrawCollateral(_m().params, 1 ether, borrower, borrower);
     }
 
-    /// @dev Freeze still permits a debt-free borrower to withdraw its collateral.
+    /// @dev Freeze still permits a debt-free borrower to withdraw its collateral. Freeze also defers activation
+    ///      maturation (`sync` skips while frozen), so the matured-looking lot from `_seedBorrower`'s warp is
+    ///      still fully `activating` here — the withdrawal must clear the whole lot, all-or-nothing.
     function test_freeze_allowsDebtFreeWithdraw() public {
         (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0); // no debt
         c.freeze();
         uint256 before = _m().collateralToken.balanceOf(borrower);
         vm.prank(borrower);
-        _m().core.withdrawCollateral(_m().params, 1 ether, borrower, borrower); // succeeds while frozen
-        assertEq(_m().collateralToken.balanceOf(borrower) - before, 1 ether, "collateral returned while frozen");
+        _m().core.withdrawCollateral(_m().params, 100 ether, borrower, borrower); // succeeds while frozen
+        assertEq(_m().collateralToken.balanceOf(borrower) - before, 100 ether, "collateral returned while frozen");
     }
 
     /// @dev Freeze still permits repaying an open debt.
@@ -290,7 +301,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         c.setInstantActivation(borrower, true);
         assertTrue(c.hasInstantActivation(borrower), "granted");
         _fund(m.collateralToken, borrower, 100 ether);
-        m.supplyCollateral(borrower, 100 ether); // instant -> straight to active, no warp
+        // instant -> straight to active, no warp; bypasses `supplyCollateral`'s non-instant classification model
+        vm.prank(borrower);
+        m.collateralToken.approve(address(m.core), 100 ether);
+        vm.prank(borrower);
+        m.core.supplyCollateral(m.params, 100 ether, borrower, "");
         vm.prank(borrower);
         m.core.borrow(m.params, 10 ether, 0, borrower, borrower); // succeeds immediately
     }
@@ -357,9 +372,9 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
             minActivationDelay: 300,
             maxActivationDelay: 3 hours,
             maxDelayInflow: 20_000 ether,
-            activatingLockAmount: 5 ether,
             activatingLockDuration: 1 hours,
             minActivationAmount: 7 ether,
+            minDepositAmount: 0,
             // must be 0 or strictly above maxActivationDelay (the liveness fallback sits past the delay cap)
             maxGuardiansQuorumDelay: 4 hours,
             delayPerStrike: 0,
@@ -371,7 +386,6 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(stored.minActivationDelay, 300, "minActivationDelay");
         assertEq(stored.maxActivationDelay, 3 hours, "maxActivationDelay");
         assertEq(stored.maxDelayInflow, 20_000 ether, "maxDelayInflow");
-        assertEq(stored.activatingLockAmount, 5 ether, "activatingLockAmount");
         assertEq(stored.activatingLockDuration, 1 hours, "activatingLockDuration");
         assertEq(stored.minActivationAmount, 7 ether, "minActivationAmount");
         assertEq(stored.maxGuardiansQuorumDelay, 4 hours, "maxGuardiansQuorumDelay");
@@ -1439,7 +1453,10 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         MockERC20 collateral6 = new MockERC20("Collateral 6", "COLL6", 6);
         LidoLendDeployer.DeployConfig memory config =
             _defaultConfig(address(loan), address(collateral6), address(collateral6));
-        config.activation.minActivationAmount = 1;
+        // Both are raw collateral units, so the 18-decimal defaults would be absurd here: one 6-decimal token
+        // for each keeps the floor at its threshold ceiling while staying far below the 10e6 deposits.
+        config.activation.minActivationAmount = 1e6;
+        config.activation.minDepositAmount = 1e6;
         Market storage m = _addMarket(config);
         LidoLendMarketController controller = LidoLendMarketController(address(m.controller));
         MockPriceOracle(address(m.oracle)).setPrice(1e48);
@@ -1641,7 +1658,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(root, borrower, "the root is still reported");
         assertEq(slice.borrowShares, 0, "no cut");
         assertEq(slice.supplyShares, 0, "no cost");
-        assertEq(slice.remainingBorrowShares, 0, "all-zero marks an unavailable cut");
+        assertEq(
+            slice.remainingBorrowShares,
+            _m().core.position(_m().id, borrower).borrowShares,
+            "an unavailable cut reports the untouched debt"
+        );
 
         SettlementQuote memory quote = c.settlementFor(borrower, 1);
         assertEq(quote.personal.borrowShares, 0, "personal candidate unavailable");

@@ -15,6 +15,7 @@ library GuardianSignalsConfigFile {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
     error ArtifactAlreadyExists(string path);
+    error InvalidQuorum(uint256 quorum, uint256 guardiansCount);
 
     function read(string memory name) internal view returns (GuardianSignalsConfig memory) {
         return parse(vm.readFile(configPath(name)));
@@ -24,6 +25,9 @@ library GuardianSignalsConfigFile {
         cfg.quorum = vm.parseTomlUint(toml, ".quorum");
         cfg.suspectWindow = vm.parseTomlUint(toml, ".suspect_window");
         cfg.guardians = vm.parseTomlAddressArray(toml, ".guardians");
+        if (cfg.quorum == 0 || cfg.quorum > cfg.guardians.length) {
+            revert InvalidQuorum(cfg.quorum, cfg.guardians.length);
+        }
     }
 
     function configPath(string memory name) internal pure returns (string memory) {
@@ -83,6 +87,13 @@ library GuardianSignalsConfigFile {
         string memory path = deployedPath(name);
         if (!vm.exists(path)) return address(0);
         return vm.parseTomlAddress(vm.readFile(path), ".guardian_signals.address");
+    }
+
+    function readDeployed(string memory name, ArtifactMetadata memory expected) internal view returns (address) {
+        string memory path = deployedPath(name);
+        if (!vm.exists(path)) return address(0);
+        string memory artifact = ArtifactMetadataFile.requireCompatible(path, expected);
+        return vm.parseTomlAddress(artifact, ".guardian_signals.address");
     }
 
     function deployedPath(string memory name) internal view returns (string memory) {

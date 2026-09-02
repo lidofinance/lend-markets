@@ -36,7 +36,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     // ---
 
     /// @dev Stewards appointed per market id.
-    mapping(Id marketId => EnumerableSet.AddressSet) private _stewards;
+    mapping(Id marketId => EnumerableSet.AddressSet stewards) private _stewards;
 
     // ---
     // MODIFIERS
@@ -111,19 +111,27 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     }
 
     /// @inheritdoc IRiskStewardDashboard
-    function increaseActivatingLock(Id marketId, uint128 newAmount, uint40 newDuration)
-        external
-        onlyMarketSteward(marketId)
-    {
+    function increaseActivatingLockDuration(Id marketId, uint40 newDuration) external onlyMarketSteward(marketId) {
         ILidoLendMarketController controller = _controller(marketId);
         CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
-        if (newAmount < cfg.activatingLockAmount || newDuration < cfg.activatingLockDuration) revert NotTightened();
+        if (newDuration < cfg.activatingLockDuration) revert NotTightened();
 
-        cfg.activatingLockAmount = newAmount;
         cfg.activatingLockDuration = newDuration;
         controller.setCollateralActivationConfig(cfg);
 
-        emit ActivatingLockIncreased(marketId, newAmount, newDuration);
+        emit ActivatingLockDurationIncreased(marketId, newDuration);
+    }
+
+    /// @inheritdoc IRiskStewardDashboard
+    function increaseMinDepositAmount(Id marketId, uint128 newMinDepositAmount) external onlyMarketSteward(marketId) {
+        ILidoLendMarketController controller = _controller(marketId);
+        CollateralActivationConfig memory cfg = controller.collateralActivationConfig();
+        if (newMinDepositAmount < cfg.minDepositAmount) revert NotTightened();
+
+        cfg.minDepositAmount = newMinDepositAmount;
+        controller.setCollateralActivationConfig(cfg);
+
+        emit MinDepositAmountIncreased(marketId, newMinDepositAmount);
     }
 
     /// @inheritdoc IRiskStewardDashboard

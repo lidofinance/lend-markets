@@ -29,6 +29,8 @@ contract GuardianSignalsTest is Test {
 
     /// @dev The market all signals in this suite are keyed under.
     Id internal constant MARKET = Id.wrap(bytes32(uint256(0xA11CE)));
+    uint40 internal constant OVERLAP_SUSPECT_WINDOW = 10 minutes;
+    uint40 internal constant OVERLAP_REPORT_GAP = 5 minutes;
 
     // ── events (mirrored for expectEmit) ──
     event GuardianAdded(address indexed guardian);
@@ -42,6 +44,7 @@ contract GuardianSignalsTest is Test {
     event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint256 strikes);
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
     event Banned(Id indexed marketId, address indexed account);
+    event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp, bytes data);
     event QuorumFrontierAdvanced(address indexed caller, uint256 timestamp);
 
     function setUp() public {
@@ -103,10 +106,10 @@ contract GuardianSignalsTest is Test {
         gs.suspect(MARKET, guardian, _one(account));
     }
 
-    /// @dev Records a heartbeat for `guardian` at block/timestamp `at`.
+    /// @dev Records a heartbeat for `guardian` at block/timestamp `at`, with an empty payload.
     function _heartbeat(address guardian, uint40 at) internal {
         vm.prank(guardian);
-        gs.heartbeat(guardian, _block(at));
+        gs.heartbeat(guardian, _block(at), "");
     }
 
     function _flagCount(address account) internal view returns (uint256) {
@@ -279,6 +282,100 @@ contract GuardianSignalsTest is Test {
         gs.flag(MARKET, GUARDIAN_1, _one(BOB));
     }
 
+    /// @dev Clearing is not blocked by other guardians' unset (zero) delegate slots: the uniqueness scan skips the
+    ///      zero address.
+    function test_delegate_clear_notBlockedByOtherDelegatelessGuardians() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(address(0)); // GUARDIAN_2 and GUARDIAN_3 also read zero
+        assertEq(gs.getDelegate(GUARDIAN_1), address(0), "delegate cleared");
+    }
+
+    /// @dev A guardian address (another's or the caller's own) cannot be appointed as a delegate.
+    function testRevert_setDelegate_delegateIsGuardian() public {
+        vm.prank(GUARDIAN_1);
+        vm.expectRevert(IGuardianSignals.DelegateIsGuardian.selector);
+        gs.setDelegate(GUARDIAN_2);
+
+        vm.prank(GUARDIAN_1);
+        vm.expectRevert(IGuardianSignals.DelegateIsGuardian.selector);
+        gs.setDelegate(GUARDIAN_1);
+    }
+
+    /// @dev One address cannot be the delegate of two guardians: quorum counts guardian identities, so a shared
+    ///      delegate key would collapse several identities into one signer.
+    function testRevert_setDelegate_takenByAnotherGuardian() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.prank(GUARDIAN_2);
+        vm.expectRevert(IGuardianSignals.AccountIsDelegate.selector);
+        gs.setDelegate(DELEGATE);
+        assertEq(gs.getDelegate(GUARDIAN_2), address(0), "second guardian gets no delegate");
+    }
+
+    /// @dev The uniqueness check makes no exception for the caller: re-setting one's own current delegate reverts.
+    function testRevert_setDelegate_reSetOwnDelegate() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.prank(GUARDIAN_1);
+        vm.expectRevert(IGuardianSignals.AccountIsDelegate.selector);
+        gs.setDelegate(DELEGATE);
+        assertEq(gs.getDelegate(GUARDIAN_1), DELEGATE, "delegate unchanged");
+    }
+
+    /// @dev An address freed by clearing, re-pointing, or removing its guardian can be appointed by another
+    ///      guardian.
+    function test_setDelegate_freedDelegateIsReusable() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(address(0)); // clearing frees DELEGATE
+
+        vm.prank(GUARDIAN_2);
+        gs.setDelegate(DELEGATE);
+        assertEq(gs.getDelegate(GUARDIAN_2), DELEGATE, "delegate freed by clearing reusable");
+
+        vm.prank(GUARDIAN_2);
+        gs.setDelegate(address(0x4202)); // re-pointing frees DELEGATE again
+
+        vm.prank(GUARDIAN_3);
+        gs.setDelegate(DELEGATE);
+        assertEq(gs.getDelegate(GUARDIAN_3), DELEGATE, "delegate freed by re-pointing reusable");
+
+        gs.removeGuardian(GUARDIAN_3); // removal frees DELEGATE once more
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        assertEq(gs.getDelegate(GUARDIAN_1), DELEGATE, "delegate freed by guardian removal reusable");
+    }
+
+    /// @dev A current delegate cannot be added as a guardian: membership changes enforce the same uniqueness rule
+    ///      as `setDelegate`.
+    function testRevert_addGuardian_isDelegate() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.expectRevert(IGuardianSignals.AccountIsDelegate.selector);
+        gs.addGuardian(DELEGATE);
+    }
+
+    /// @dev A replacement cannot bring in another guardian's current delegate either.
+    function testRevert_replaceGuardian_newIsDelegate() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.expectRevert(IGuardianSignals.AccountIsDelegate.selector);
+        gs.replaceGuardian(GUARDIAN_2, DELEGATE);
+        assertTrue(gs.isGuardian(GUARDIAN_2), "old guardian preserved after revert");
+    }
+
+    /// @dev Replacing a guardian with its *own* delegate works: the removal clears the pairing before the add runs.
+    function test_replaceGuardian_withOwnDelegate_succeeds() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        gs.replaceGuardian(GUARDIAN_1, DELEGATE);
+        assertTrue(gs.isGuardian(DELEGATE), "delegate promoted to the seat");
+        assertEq(gs.getDelegate(DELEGATE), address(0), "promoted guardian starts with no delegate");
+    }
+
     /// @dev `setDelegate` emits `DelegateSet(guardian, old, new)`.
     function test_setDelegate_emitsEvent() public {
         vm.expectEmit(true, true, true, false, address(gs));
@@ -358,7 +455,7 @@ contract GuardianSignalsTest is Test {
     function testRevert_heartbeat_unauthorizedCaller() public {
         vm.prank(BOB);
         vm.expectRevert(IGuardianSignals.Unauthorized.selector);
-        gs.heartbeat(GUARDIAN_1, _validBlock());
+        gs.heartbeat(GUARDIAN_1, _validBlock(), "");
     }
 
     // ── events / batch ──
@@ -508,7 +605,7 @@ contract GuardianSignalsTest is Test {
         info.number = uint40(block.number + 1);
         vm.prank(GUARDIAN_1);
         vm.expectRevert(IGuardianSignals.BlockInTheFuture.selector);
-        gs.heartbeat(GUARDIAN_1, info);
+        gs.heartbeat(GUARDIAN_1, info, "");
     }
 
     function testRevert_heartbeat_timestampInTheFuture() public {
@@ -516,7 +613,7 @@ contract GuardianSignalsTest is Test {
         info.timestamp = uint40(block.timestamp + 1);
         vm.prank(GUARDIAN_1);
         vm.expectRevert(IGuardianSignals.TimestampInTheFuture.selector);
-        gs.heartbeat(GUARDIAN_1, info);
+        gs.heartbeat(GUARDIAN_1, info, "");
     }
 
     function testRevert_heartbeat_regressesBelowPrevious() public {
@@ -524,7 +621,7 @@ contract GuardianSignalsTest is Test {
         BlockInfoWithHash memory info = _block(998);
         vm.prank(GUARDIAN_1);
         vm.expectRevert(IGuardianSignals.HeartbeatTimestampRegressed.selector);
-        gs.heartbeat(GUARDIAN_1, info);
+        gs.heartbeat(GUARDIAN_1, info, "");
         assertEq(gs.getHeartbeat(GUARDIAN_1), 999, "recorded timestamp unchanged after the revert");
     }
 
@@ -533,7 +630,7 @@ contract GuardianSignalsTest is Test {
         info.hash = bytes32(uint256(0xdead));
         vm.prank(GUARDIAN_1);
         vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
-        gs.heartbeat(GUARDIAN_1, info);
+        gs.heartbeat(GUARDIAN_1, info, "");
     }
 
     /// @dev Boundary: a re-report at the same timestamp and one at exactly `now` both pass.
@@ -542,8 +639,51 @@ contract GuardianSignalsTest is Test {
         BlockInfoWithHash memory info = _block(998);
         info.timestamp = 999;
         vm.prank(GUARDIAN_1);
-        gs.heartbeat(GUARDIAN_1, info);
+        gs.heartbeat(GUARDIAN_1, info, "");
         assertEq(gs.getHeartbeat(GUARDIAN_1), 999, "equal re-report accepted");
+    }
+
+    // ── heartbeat payload ──
+
+    /// @dev The payload reaches the `Heartbeat` event unchanged, alongside the block number and timestamp.
+    function test_heartbeat_emitsDataVerbatim() public {
+        bytes memory data = hex"cafebabe0123456789";
+        BlockInfoWithHash memory info = _block(999);
+        vm.expectEmit(true, false, false, true, address(gs));
+        emit Heartbeat(GUARDIAN_1, info.number, info.timestamp, data);
+        vm.prank(GUARDIAN_1);
+        gs.heartbeat(GUARDIAN_1, info, data);
+    }
+
+    /// @dev An empty payload is accepted and emitted as empty bytes.
+    function test_heartbeat_emptyData_accepted() public {
+        BlockInfoWithHash memory info = _block(999);
+        vm.expectEmit(true, false, false, true, address(gs));
+        emit Heartbeat(GUARDIAN_1, info.number, info.timestamp, "");
+        vm.prank(GUARDIAN_1);
+        gs.heartbeat(GUARDIAN_1, info, "");
+        assertEq(gs.getHeartbeat(GUARDIAN_1), 999, "an empty payload still records the scan");
+    }
+
+    /// @dev Any payload is emitted unchanged and leaves the recorded timestamp and the frontier untouched.
+    function testFuzz_heartbeat_dataIsPassThrough(bytes calldata data) public {
+        vm.assume(data.length <= 4096);
+        BlockInfoWithHash memory info = _block(999);
+        vm.expectEmit(true, false, false, true, address(gs));
+        emit Heartbeat(GUARDIAN_1, info.number, info.timestamp, data);
+        vm.prank(GUARDIAN_1);
+        gs.heartbeat(GUARDIAN_1, info, data);
+        assertEq(gs.getHeartbeat(GUARDIAN_1), 999, "the payload does not affect the recorded timestamp");
+        assertEq(gs.getQuorumFrontier(), 0, "one sub-quorum heartbeat leaves the frontier at 0 whatever it carries");
+    }
+
+    /// @dev The payload is not part of validation: a wrong block hash still reverts.
+    function testRevert_heartbeat_dataDoesNotBypassValidation() public {
+        BlockInfoWithHash memory info = _block(999);
+        info.hash = bytes32(uint256(0xdead));
+        vm.prank(GUARDIAN_1);
+        vm.expectRevert(IGuardianSignals.InvalidBlockHash.selector);
+        gs.heartbeat(GUARDIAN_1, info, hex"cafebabe");
     }
 
     /// @dev `getHeartbeats` pairs the guardian set with each guardian's last-scanned timestamp.
@@ -804,6 +944,137 @@ contract GuardianSignalsTest is Test {
         assertEq(opinion.suspectExpiryTimestamp, remainingExpiry, "retraction restores the remaining reports' expiry");
     }
 
+    function test_unsuspectFirst_bothReportsLive_leavesSecondReport() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+
+        vm.prank(GUARDIAN_1);
+        gs.unsuspect(MARKET, GUARDIAN_1, _one(BOB));
+
+        (address[] memory reporters, uint40[] memory reportedAt) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 1, "one stored report remains");
+        assertEq(reporters[0], GUARDIAN_2, "the second guardian remains");
+        assertEq(reportedAt[0], firstReportedAt + OVERLAP_REPORT_GAP, "the second report timestamp remains");
+        assertGe(uint256(reportedAt[0]) + OVERLAP_SUSPECT_WINDOW, block.timestamp, "the report is live");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 1, "the snapshot counts the second report");
+        assertEq(
+            opinion.suspectExpiryTimestamp,
+            firstReportedAt + OVERLAP_REPORT_GAP + OVERLAP_SUSPECT_WINDOW,
+            "expiry follows the second report"
+        );
+    }
+
+    function test_unsuspectSecond_bothReportsLive_leavesFirstReport() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+
+        vm.prank(GUARDIAN_2);
+        gs.unsuspect(MARKET, GUARDIAN_2, _one(BOB));
+
+        (address[] memory reporters, uint40[] memory reportedAt) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 1, "one stored report remains");
+        assertEq(reporters[0], GUARDIAN_1, "the first guardian remains");
+        assertEq(reportedAt[0], firstReportedAt, "the first report timestamp remains");
+        assertGe(uint256(reportedAt[0]) + OVERLAP_SUSPECT_WINDOW, block.timestamp, "the report is live");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 1, "the snapshot counts the first report");
+        assertEq(
+            opinion.suspectExpiryTimestamp, firstReportedAt + OVERLAP_SUSPECT_WINDOW, "expiry follows the first report"
+        );
+    }
+
+    function test_unsuspectFirst_firstReportStale_rebuildsSnapshotFromSecondReport() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+        vm.warp(firstReportedAt + OVERLAP_SUSPECT_WINDOW + 1);
+
+        vm.prank(GUARDIAN_1);
+        gs.unsuspect(MARKET, GUARDIAN_1, _one(BOB));
+
+        (address[] memory reporters, uint40[] memory reportedAt) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 1, "the stale first report is pruned");
+        assertEq(reporters[0], GUARDIAN_2, "the live second report remains");
+        assertEq(reportedAt[0], firstReportedAt + OVERLAP_REPORT_GAP, "the second report timestamp remains");
+        assertGe(uint256(reportedAt[0]) + OVERLAP_SUSPECT_WINDOW, block.timestamp, "the second report is live");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 1, "the snapshot drops the stale first report");
+        assertEq(
+            opinion.suspectExpiryTimestamp,
+            firstReportedAt + OVERLAP_REPORT_GAP + OVERLAP_SUSPECT_WINDOW,
+            "expiry follows the live second report"
+        );
+    }
+
+    function test_unsuspectSecond_firstReportStale_clearsSnapshot() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+        vm.warp(firstReportedAt + OVERLAP_SUSPECT_WINDOW + 1);
+
+        vm.prank(GUARDIAN_2);
+        gs.unsuspect(MARKET, GUARDIAN_2, _one(BOB));
+
+        (address[] memory reporters,) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 0, "the stale first report is pruned and the second is cleared");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 0, "the snapshot is empty");
+        assertEq(opinion.suspectExpiryTimestamp, OVERLAP_SUSPECT_WINDOW, "the snapshot has no report timestamp");
+    }
+
+    function test_unsuspectFirst_bothReportsStale_clearsSnapshot() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP + OVERLAP_SUSPECT_WINDOW + 1);
+
+        vm.prank(GUARDIAN_1);
+        gs.unsuspect(MARKET, GUARDIAN_1, _one(BOB));
+
+        (address[] memory reporters,) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 0, "both stale reports are pruned");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 0, "the snapshot is empty");
+        assertEq(opinion.suspectExpiryTimestamp, OVERLAP_SUSPECT_WINDOW, "the snapshot has no report timestamp");
+    }
+
+    function test_unsuspectSecond_bothReportsStale_clearsSnapshot() public {
+        gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
+        uint256 firstReportedAt = block.timestamp;
+        _suspect(GUARDIAN_1, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP);
+        _suspect(GUARDIAN_2, BOB);
+        vm.warp(firstReportedAt + OVERLAP_REPORT_GAP + OVERLAP_SUSPECT_WINDOW + 1);
+
+        vm.prank(GUARDIAN_2);
+        gs.unsuspect(MARKET, GUARDIAN_2, _one(BOB));
+
+        (address[] memory reporters,) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(reporters.length, 0, "both stale reports are pruned");
+
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 0, "the snapshot is empty");
+        assertEq(opinion.suspectExpiryTimestamp, OVERLAP_SUSPECT_WINDOW, "the snapshot has no report timestamp");
+    }
+
     /// @dev `getSuspectedBy` pairs the reporter set with each reporter's timestamp.
     function test_getSuspectedBy_pairsSetWithTimestamps() public {
         gs.setSuspectWindow(1 days);
@@ -813,6 +1084,20 @@ contract GuardianSignalsTest is Test {
         assertEq(suspecters.length, 1, "one reporter");
         assertEq(suspecters[0], GUARDIAN_1, "reporter is the guardian");
         assertEq(reportedAt[0], t1, "reporter timestamp");
+    }
+
+    /// @dev A report is live through `reportedAt + suspectWindow` inclusive. On that exact second a rebuild
+    ///      neither prunes it nor drops it from the count; the following second does both (test below).
+    function test_suspect_reportOnItsLastSecond_countsAndIsNotPruned() public {
+        gs.setSuspectWindow(1 days);
+        _suspect(GUARDIAN_1, BOB); // reported at t0
+        vm.warp(block.timestamp + 1 days); // exactly t0 + window
+
+        _suspect(GUARDIAN_2, BOB); // prunes expired reports, then rebuilds
+
+        assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 2, "the report still counts on its last second");
+        (address[] memory suspecters,) = gs.getSuspectedBy(MARKET, BOB);
+        assertEq(suspecters.length, 2, "and it is not pruned from the set");
     }
 
     /// @dev An expired report is pruned and stops counting on the next report.

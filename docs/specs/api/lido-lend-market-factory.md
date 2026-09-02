@@ -9,7 +9,7 @@ The contract is permissionless and has no mutable storage. Role wiring:
 - A new `LidoLendMarketController` or `GuardianSignals` instance grants the factory temporary `DEFAULT_ADMIN_ROLE`.
 - `LIDO_LEND_OWNER` receives `MANAGER_ROLE` and `UNFREEZER_ROLE` on `LidoLendMarketController`.
 - `RISK_STEWARD_DASHBOARD` receives `MANAGER_ROLE` and `FREEZER_ROLE` on `LidoLendMarketController`.
-- `CIRCUIT_BREAKER` receives `PAUSER_ROLE` on `LidoLendMarketController`; `RESUMER_ROLE` has no initial holder.
+- `CIRCUIT_BREAKER` and `RESEAL_MANAGER` receive `PAUSER_ROLE` on `LidoLendMarketController`; `RESEAL_MANAGER` also receives `RESUMER_ROLE`.
 - `LIDO_LEND_OWNER` receives `MANAGER_ROLE` and `ACCESS_RESTORER_ROLE` on `GuardianSignals`.
 - `ADMIN` administers every deployed proxy and receives `DEFAULT_ADMIN_ROLE` on both role-bearing contracts.
 - `ACCESS_LIMITER_ROLE` on `GuardianSignals` has no initial holder.
@@ -47,6 +47,7 @@ struct Dependencies {
     address irmRouter;
     address lidoLendOwner;
     address circuitBreaker;
+    address resealManager;
     address riskStewardDashboard;
 }
 ```
@@ -61,6 +62,7 @@ Protocol-wide dependencies used when wiring deployed components.
 | `irmRouter` | `address` | Router fixed as the IRM in every market id produced by the factory. |
 | `lidoLendOwner` | `address` | Governance facade granted controller and guardian-management roles. |
 | `circuitBreaker` | `address` | Sole initial controller pauser. |
+| `resealManager` | `address` | Pause-extension authority granted controller pause and resume roles. |
 | `riskStewardDashboard` | `address` | Bounded dashboard granted controller manager and freezer roles. |
 
 ### `MarketSpec`
@@ -72,6 +74,7 @@ struct MarketSpec {
     address oracle;
     uint256 lltv;
     address guardianSignals;
+    uint256 supplyCap;
     CollateralActivationConfig activationConfig;
     SettlementConfig settlementConfig;
 }
@@ -90,6 +93,7 @@ The market IRM is always `IRM_ROUTER` and therefore is not caller-supplied.
 | `oracle` | `address` | Market oracle contract. Deployment checks only that the address has code. |
 | `lltv` | `uint256` | Liquidation loan-to-value ratio, in WAD and strictly below 1e18. |
 | `guardianSignals` | `address` | Guardian registry read by the controller. Deployment checks only that the address has code; registry configuration is validated through `validateGuardianSignals`. |
+| `supplyCap` | `uint256` | Initial lender supply cap. Zero disables it. |
 | `activationConfig` | `CollateralActivationConfig` | Initial collateral-activation configuration. |
 | `settlementConfig` | `SettlementConfig` | Initial settlement configuration. |
 
@@ -132,6 +136,24 @@ Initial membership and timing configuration for a guardian registry.
 | `suspectWindow` | `uint256` | Duration for which a suspect report remains active, in seconds, bounded by the registry's maximum. |
 
 ## Events
+
+### `ProxyDeployed`
+
+```solidity
+event ProxyDeployed(address indexed proxy, address indexed implementation, address admin, bytes initData, bytes32 salt);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `proxy` | `address` | Deployed proxy. |
+| `implementation` | `address` | Implementation the proxy delegates to. |
+| `admin` | `address` | Proxy admin the proxy is constructed with. |
+| `initData` | `bytes` | Initialization call the proxy delegates to the implementation on construction. |
+| `salt` | `bytes32` | `CREATE2` salt the proxy was deployed under. |
+
+Emitted for every proxy the factory deploys, before the component behind it is configured or validated.
 
 ### `MarketControllerDeployed`
 
@@ -198,6 +220,38 @@ Emitted after a guardian registry has been deployed, configured, role-wired, and
 
 ## Errors
 
+### `AdminZeroAddress`
+
+```solidity
+error AdminZeroAddress();
+```
+
+The proxy admin supplied to the constructor was the zero address.
+
+### `CircuitBreakerZeroAddress`
+
+```solidity
+error CircuitBreakerZeroAddress();
+```
+
+The circuit breaker supplied to the constructor was the zero address.
+
+### `ResealManagerZeroAddress`
+
+```solidity
+error ResealManagerZeroAddress();
+```
+
+The reseal manager supplied to the constructor was the zero address.
+
+### `DuplicateEmergencyRoleRecipient`
+
+```solidity
+error DuplicateEmergencyRoleRecipient();
+```
+
+The circuit breaker and reseal manager resolve to the same address.
+
 ### `NotContract`
 
 ```solidity
@@ -210,7 +264,7 @@ error NotContract(address account);
 | --- | --- | --- |
 | `account` | `address` | Address without runtime code. |
 
-A required market oracle or guardian-registry address has no code.
+A required market token, oracle, or guardian-registry address has no code.
 
 ### `LidoLendMismatch`
 
@@ -485,7 +539,7 @@ constructor(
 
 Fixes the implementations, protocol dependencies, and final administrator used by every deployment.
 
-The factory deployer must validate all constructor addresses before deployment. The constructor verifies only the core bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router.
+The factory deployer must validate all constructor addresses before deployment. The constructor verifies only that `admin`, the circuit breaker, and the reseal manager are nonzero, the emergency role recipients are distinct, and the core bindings exposed by the controller and wrapper implementations, owner facade, risk dashboard, and IRM router.
 
 ### `deployMarketComponents`
 
@@ -572,7 +626,8 @@ The controller must use the same core and market id. If the market exists, it mu
 
 ```solidity
 function deployGuardianSignals(
-    GuardianSpec calldata spec
+    GuardianSpec calldata spec,
+    bytes32 salt
 ) external returns (address guardianSignalsAddress);
 ```
 
@@ -581,6 +636,7 @@ function deployGuardianSignals(
 | Name | Type | Description |
 | --- | --- | --- |
 | `spec` | `GuardianSpec` | Initial guardian membership, quorum, and suspect window. |
+| `salt` | `bytes32` | Caller-chosen label distinguishing registries this caller wants as separate instances. |
 
 **Returns**
 
@@ -589,6 +645,8 @@ function deployGuardianSignals(
 | `guardianSignalsAddress` | `address` | Deployed and role-wired guardian-registry proxy. |
 
 Deploys and fully role-wires a guardian registry that may be shared by multiple markets.
+
+`suspectWindow` is applied after initialization and so does not reach the deployment address. Two committees that differ only by it, or that are identical and still want registries of their own, are separated by `salt`.
 
 ### `validateMarketController`
 
@@ -663,7 +721,8 @@ Role topology covers exact holders and holder counts, and requires every known r
 | `GUARDIAN_SIGNALS_IMPL` | `address` (immutable) | GuardianSignals implementation used by every guardian proxy deployed by the factory. |
 | `LIDO_LEND` | `address` (immutable) | Core expected by controller and wrapper implementations and core-bound dependencies. |
 | `IRM_ROUTER` | `address` (immutable) | IRM router embedded in every market id produced from a `MarketSpec`. |
-| `CIRCUIT_BREAKER` | `address` (immutable) | Sole initial holder of every deployed controller's `PAUSER_ROLE`. |
+| `CIRCUIT_BREAKER` | `address` (immutable) | Initial finite-pause authority for every deployed controller. |
+| `RESEAL_MANAGER` | `address` (immutable) | Initial pause-extension and resume authority for every deployed controller. |
 | `LIDO_LEND_OWNER` | `address` (immutable) | Governance facade wired into every deployed controller and guardian registry. |
 | `RISK_STEWARD_DASHBOARD` | `address` (immutable) | Bounded steward dashboard wired into every deployed controller. |
 | `ADMIN` | `address` (immutable) | Admin of every deployed proxy and sole initial `DEFAULT_ADMIN_ROLE` holder on controllers and guardian registries. |

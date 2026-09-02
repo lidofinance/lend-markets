@@ -53,6 +53,7 @@ contract DeployVaultScenarioTest is LidoLendSetup {
                 irmRouter: m.params.irm,
                 lidoLendOwner: address(owner),
                 circuitBreaker: address(new DeployVaultCircuitBreakerStub()),
+                resealManager: address(this),
                 riskStewardDashboard: address(new RiskStewardDashboard(address(this), m.core))
             }),
             address(this)

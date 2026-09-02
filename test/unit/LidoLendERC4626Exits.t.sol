@@ -18,7 +18,7 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
 
     bytes32 private constant SETTLED_SIG = keccak256("Settled(address,address,address,uint256,uint256,uint256)");
     bytes32 private constant FALLBACK_EXIT_SIG =
-        keccak256("FallbackExit(address,address,address,uint256,uint256,uint256)");
+        keccak256("FallbackExit(address,address,address,uint256,uint256,uint256,uint256,uint256)");
 
     /// @dev Everything one settle/fallbackExit call touches, so `_assertExitEffects` can check the full state and
     ///      the event in one place. Pre-op snapshots + the returned amounts.
@@ -32,7 +32,9 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
         uint256 collatBefore; // borrower collateral before
         uint256 supplyBefore; // vault totalSupply before
         uint256 receiverCollatBefore;
-        uint256 burned; // shares burned by the settle leg (== the event's field, == totalSupply drop here)
+        uint256 burned; // shares the call burned (both legs for fallbackExit) == the event's field == supply drop
+        uint256 sharesSettled; // fallbackExit only: the settle leg's own share burn
+        uint256 assetsWithdrawn; // fallbackExit only: loan assets the liquid leg paid out
         uint256 collateralSeized;
         uint256 debtCanceled;
     }
@@ -73,22 +75,33 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
     }
 
     /// @dev Find the vault's settle/fallbackExit event in the recorded logs and check its topics and every data
-    ///      field against the independently-derived amounts.
+    ///      field against the independently-derived amounts. Exactly one must be emitted per call.
     function _assertExitEvent(ExitCheck memory c) private {
         Vm.Log[] memory logs = vm.getRecordedLogs();
-        bool found;
+        uint256 matches;
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].topics[0] != c.sig || logs[i].emitter != address(_m().vault)) continue;
             assertEq(address(uint160(uint256(logs[i].topics[1]))), c.caller, "event caller");
             assertEq(address(uint160(uint256(logs[i].topics[2]))), c.owner, "event owner");
             assertEq(address(uint160(uint256(logs[i].topics[3]))), c.receiver, "event receiver");
-            (uint256 sb, uint256 cs, uint256 dc) = abi.decode(logs[i].data, (uint256, uint256, uint256));
-            assertEq(sb, c.burned, "event sharesBurned");
-            assertEq(cs, c.collateralSeized, "event collateralSeized");
-            assertEq(dc, c.debtCanceled, "event debtCanceled");
-            found = true;
+            // `FallbackExit` splits the burn per leg and adds the liquid payout before the seizure; `Settled` does not.
+            if (c.sig == FALLBACK_EXIT_SIG) {
+                (uint256 sb, uint256 ss, uint256 aw, uint256 cs, uint256 dc) =
+                    abi.decode(logs[i].data, (uint256, uint256, uint256, uint256, uint256));
+                assertEq(sb, c.burned, "event sharesBurned");
+                assertEq(ss, c.sharesSettled, "event sharesSettled");
+                assertEq(aw, c.assetsWithdrawn, "event assetsWithdrawn");
+                assertEq(cs, c.collateralSeized, "event collateralSeized");
+                assertEq(dc, c.debtCanceled, "event debtCanceled");
+            } else {
+                (uint256 sb, uint256 cs, uint256 dc) = abi.decode(logs[i].data, (uint256, uint256, uint256));
+                assertEq(sb, c.burned, "event sharesBurned");
+                assertEq(cs, c.collateralSeized, "event collateralSeized");
+                assertEq(dc, c.debtCanceled, "event debtCanceled");
+            }
+            ++matches;
         }
-        assertTrue(found, "exit event emitted");
+        assertEq(matches, 1, "exactly one exit event emitted");
     }
 
     /// @dev A vault lender plus a borrower who has borrowed the whole supply, accrued interest for 120 days (so the
@@ -155,17 +168,108 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
         c.supplyBefore = m.vault.totalSupply();
         c.receiverCollatBefore = m.collateralToken.balanceOf(caller);
 
-        vm.recordLogs();
-        vm.prank(caller);
-        uint256 loanAssets;
-        (c.burned, loanAssets, c.collateralSeized, c.debtCanceled) = m.vault.fallbackExit(shares, caller, owner, 0);
+        // The gas-sized default (0) stops before this book drains; each resumed call must spend
+        // allowance for exactly what it settles, checked call by call against core deltas.
+        uint256 totalBurned;
+        // terminates: a call that burns nothing reverts NothingSettled
+        while (m.vault.balanceOf(owner) != 0) {
+            c.borrowBefore = m.core.market(m.id).totalBorrowAssets;
+            c.collatBefore = m.core.position(m.id, borrower).collateral;
+            c.supplyBefore = m.vault.totalSupply();
+            c.receiverCollatBefore = m.collateralToken.balanceOf(caller);
 
-        // Idle is zero, so the redeem leg pays nothing and the whole exit is the settle leg.
-        assertEq(loanAssets, 0, "no idle: the redeem leg paid nothing");
-        assertEq(c.burned, shares, "the whole position exited via the settle leg");
+            uint256 remaining = m.vault.balanceOf(owner); // read before prank: the prank binds to the next call
+            vm.recordLogs();
+            vm.prank(caller);
+            uint256 loanAssets;
+            (c.burned, loanAssets, c.collateralSeized, c.debtCanceled) =
+                m.vault.fallbackExit(remaining, caller, owner, 0);
+
+            // Idle is zero, so the redeem leg pays nothing and the whole call is the settle leg.
+            c.assetsWithdrawn = loanAssets;
+            c.sharesSettled = c.burned;
+            assertEq(loanAssets, 0, "no idle: the redeem leg paid nothing");
+            _assertExitEffects(c); // full state + the FallbackExit event, amounts recomputed from core deltas
+            totalBurned += c.burned;
+        }
+        assertEq(totalBurned, shares, "the whole position exited via the settle leg");
         assertEq(m.vault.balanceOf(owner), 0, "owner's shares burned");
         assertEq(m.vault.allowance(owner, caller), 1, "settle-leg spent exactly the settled shares");
-        _assertExitEffects(c); // full state + the FallbackExit event, amounts recomputed from core deltas
+    }
+
+    /// @dev With idle liquidity present both legs run, so the event's three amounts are three different numbers:
+    ///      `sharesBurned` (whole call), `sharesSettled` (settle leg alone) and `assetsWithdrawn` (liquid leg alone).
+    ///      The settle-leg-only test above cannot tell them apart, since there they coincide.
+    function test_fallbackExit_bothLegs_eventSplitsTheLegs() public {
+        (address owner, address borrower) = _distressFull();
+        Market storage m = _m();
+
+        // A second lender's deposit is idle liquidity the first lender's exit can redeem. It leaves the borrower's
+        // health untouched, so the settle leg still finds an eligible root.
+        address other = _actor("other");
+        _fund(m.loanToken, other, 10 ether);
+        m.vaultDeposit(other, 10 ether);
+
+        uint256 shares = m.vault.balanceOf(owner);
+        uint256 liquid = m.controller.maxWithdrawableAssets(address(m.vault));
+        assertGt(liquid, 0, "there is idle liquidity for the liquid leg");
+        assertGt(m.vault.previewRedeem(shares), liquid, "and the request outruns it, so the settle leg runs too");
+        uint256 liquidBurn = m.vault.previewWithdraw(liquid);
+
+        ExitCheck memory c;
+        c.sig = FALLBACK_EXIT_SIG;
+        (c.caller, c.owner, c.receiver, c.borrower) = (owner, owner, owner, borrower);
+        c.borrowBefore = m.core.market(m.id).totalBorrowAssets;
+        c.collatBefore = m.core.position(m.id, borrower).collateral;
+        c.supplyBefore = m.vault.totalSupply();
+        c.receiverCollatBefore = m.collateralToken.balanceOf(owner);
+
+        vm.recordLogs();
+        vm.prank(owner);
+        (c.burned, c.assetsWithdrawn, c.collateralSeized, c.debtCanceled) =
+            m.vault.fallbackExit(shares, owner, owner, 0);
+        c.sharesSettled = c.burned - liquidBurn; // recomputed independently, not read back off the event
+
+        assertEq(c.assetsWithdrawn, liquid, "the liquid leg paid out the whole idle amount");
+        assertGt(c.sharesSettled, 0, "the settle leg burned shares of its own");
+        assertLt(c.sharesSettled, c.burned, "so the settle-leg burn is strictly under the whole-call burn");
+        assertGt(c.collateralSeized, 0, "the settle leg cut a position");
+        _assertExitEffects(c);
+    }
+
+    /// @dev A request serviced entirely from liquidity never reaches the settle leg but still emits `FallbackExit`,
+    ///      with both settle-leg amounts zero — one event per successful call regardless of the path taken.
+    function test_fallbackExit_fullyLiquid_emitsEventWithZeroSettleLeg() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 100 ether);
+        m.vaultDeposit(lender, 100 ether);
+
+        uint256 shares = m.vault.balanceOf(lender);
+        uint256 expectedAssets = m.vault.previewRedeem(shares);
+        assertLe(expectedAssets, m.controller.maxWithdrawableAssets(address(m.vault)), "the whole request is liquid");
+        uint256 recvLoanBefore = m.loanToken.balanceOf(lender);
+
+        // `c.borrower` stays address(0) — the zero position never moves, matching the zero seizure — and
+        // `c.sharesSettled` stays 0: the settle leg must not run.
+        ExitCheck memory c;
+        c.sig = FALLBACK_EXIT_SIG;
+        (c.caller, c.owner, c.receiver) = (lender, lender, lender);
+        c.borrowBefore = m.core.market(m.id).totalBorrowAssets;
+        c.supplyBefore = m.vault.totalSupply();
+        c.receiverCollatBefore = m.collateralToken.balanceOf(lender);
+
+        vm.recordLogs();
+        vm.prank(lender);
+        (c.burned, c.assetsWithdrawn, c.collateralSeized, c.debtCanceled) =
+            m.vault.fallbackExit(shares, lender, lender, 0);
+
+        assertEq(c.burned, shares, "the liquid leg serviced the whole request");
+        assertEq(c.assetsWithdrawn, expectedAssets, "paid the request's floor-rounded value");
+        assertEq(m.loanToken.balanceOf(lender), recvLoanBefore + expectedAssets, "receiver got the loan assets");
+        assertEq(c.collateralSeized, 0, "no settle leg, nothing seized");
+        assertEq(c.debtCanceled, 0, "no settle leg, no debt canceled");
+        _assertExitEffects(c);
     }
 
     /// @dev The same leg reverts when the caller's allowance is short of the settled shares.
@@ -178,11 +282,20 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
         vm.prank(owner);
         m.vault.approve(caller, shares - 1); // one short of the settled shares
 
+        // The gas-sized default (0) partial-fills within the allowance; the resumed call settles
+        // the full remainder, which exceeds what is left of the one-short allowance.
+        vm.prank(caller);
+        (uint256 firstBurn,,,) = m.vault.fallbackExit(shares, caller, owner, 0);
+        assertLt(firstBurn, shares - 1, "first call stays within the allowance");
+
+        uint256 remainder = shares - firstBurn;
         vm.prank(caller);
         vm.expectRevert(
-            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, caller, shares - 1, shares)
+            abi.encodeWithSelector(
+                IERC20Errors.ERC20InsufficientAllowance.selector, caller, shares - 1 - firstBurn, remainder
+            )
         );
-        m.vault.fallbackExit(shares, caller, owner, 0);
+        m.vault.fallbackExit(remainder, caller, owner, 0);
     }
 
     /// @dev Targeted `settle` on behalf of the owner spends the caller's allowance by exactly the shares burned.
@@ -226,12 +339,9 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
 
         vm.recordLogs();
         vm.prank(caller);
-        uint256 loanAssets;
-        (sharesBurned, loanAssets, c.collateralSeized, c.debtCanceled) =
-            _m().vault.settle(shares, borrowers, caller, owner);
+        (sharesBurned, c.collateralSeized, c.debtCanceled) = _m().vault.settle(shares, borrowers, caller, owner);
         c.burned = sharesBurned;
 
-        assertEq(loanAssets, 0, "settle pays collateral, not loan");
         _assertExitEffects(c);
     }
 }

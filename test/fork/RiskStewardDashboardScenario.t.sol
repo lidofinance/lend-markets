@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {Test} from "forge-std/Test.sol";
-import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
-import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {IRiskStewardDashboard} from "../../src/interfaces/IRiskStewardDashboard.sol";
 import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
-import {ForkTest} from "./helpers/ForkTest.sol";
+import {ForkStack} from "./helpers/ForkStack.sol";
 
 interface IStETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -25,214 +21,199 @@ interface IWstETH {
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-/// @notice End-to-end scenario for `RiskStewardDashboard` over a freshly deployed real core + controller on a
-///         mainnet fork. Unlike `RiskStewardDashboard.t.sol` (mock controller, isolating the tighten-only
-///         guard), this drives the levers against the live controller: the dashboard holds `MANAGER_ROLE`,
-///         resolves the controller from the core by market id, and its writes land in the controller's real
-///         config and instant-activation state, still gated by the controller's own bound validation.
-contract RiskStewardDashboardScenarioTest is Test, LidoLendDeployer, ForkTest {
-    // Populated in setUp from script/config/<NETWORK>.toml.
-    address internal WETH_ADDRESS;
-    address internal STETH_ADDRESS;
-    address internal WSTETH_ADDRESS;
+/// @notice End-to-end scenario for the ALREADY-DEPLOYED `RiskStewardDashboard` driving the live `weth-wsteth`
+///         controller (bound via {ForkStack}, never re-deployed). The suite drives the tighten-only levers
+///         against the production controller: raising activation delays and the activating lock, revoking
+///         instant activation, and the controller's own bound validation still gating every write.
+///
+///         Production wiring is ASSERTED, not arranged: the deploy already grants the dashboard the
+///         controller's `MANAGER_ROLE` (so its levers can write config) and grants the EasyTrack executor the
+///         dashboard's `STEWARD_ADMIN_ROLE` (so it can appoint stewards). `setUp` cross-checks both against the
+///         live stack and fails loudly on a mismatch — a wiring miss is a real deployment bug, not something
+///         the test papers over with a fresh grant.
+///
+///         State-robustness contract: the deployed market may already carry supply/borrow and its activation
+///         config is read live (never assumed to equal the deploy defaults). Delay/lock levers drive
+///         tighten-only DELTAS off the captured live config; collateral is a fresh, market-clean borrower sized
+///         from the live dust threshold, so its per-borrower activation buckets are asserted in isolation.
+contract RiskStewardDashboardScenarioTest is ForkStack {
+    BoundMarket internal m;
+
+    RiskStewardDashboard internal dashboard;
 
     IStETH internal STETH;
     IWstETH internal WSTETH;
 
-    uint256 internal constant LLTV = 0.8e18;
-
-    address internal constant STEWARD = address(0x57E);
-    address internal constant BORROWER = address(0x2000);
-
-    struct Ctx {
-        RiskStewardDashboard dashboard;
-        ILidoLendMarketController controller;
-        ILidoLend core;
-        Id id;
-        MarketParams marketParams;
-    }
+    // The EasyTrack executor: the live holder of the dashboard's STEWARD_ADMIN_ROLE (deploy-wired).
+    address internal executor;
+    // A steward appointed through the real executor path in `setUp`.
+    address internal STEWARD;
 
     function setUp() public {
         _fork();
-        WETH_ADDRESS = _ext("weth");
-        STETH_ADDRESS = _ext("stEth");
-        WSTETH_ADDRESS = _ext("wstEth");
-        STETH = IStETH(STETH_ADDRESS);
-        WSTETH = IWstETH(WSTETH_ADDRESS);
+        string memory market_ = _marketForRole("weth-wsteth");
+        if (bytes(market_).length == 0) return; // not applicable to this deployment
+        m = _bindMarket(market_);
+        _pokeAccrue(m); // fold in pending interest so live-config reads and per-borrower asserts are exact
+        _grantSelfManager(m); // lets this contract call the manager-gated `grantInstantActivation` directly
+
+        dashboard = RiskStewardDashboard(_protocol("risk_steward_dashboard"));
+
+        STETH = IStETH(_ext("stEth"));
+        WSTETH = IWstETH(address(m.collateralToken));
+
+        // Production wiring, asserted not arranged: the deploy grants the dashboard the controller's
+        // MANAGER_ROLE so its tighten-only levers can write config. A miss is a real deploy-wiring bug.
+        require(
+            m.controller.hasRole(m.controller.MANAGER_ROLE(), address(dashboard)),
+            "RiskStewardDashboardScenario: deployed dashboard is not the controller MANAGER_ROLE holder (deploy wiring bug)"
+        );
+
+        // The deploy grants the EasyTrack executor the dashboard's STEWARD_ADMIN_ROLE. Cross-check it holds
+        // that role before pranking it, then appoint the test steward through it — the real appointment path,
+        // not a test-minted self-grant. `_executor(m)` resolves the executor as the IRM router's manager,
+        // which the deploy assigns to the same EVMScriptExecutor.
+        executor = _executor(m);
+        require(
+            dashboard.hasRole(dashboard.STEWARD_ADMIN_ROLE(), executor),
+            "RiskStewardDashboardScenario: EasyTrack executor does not hold the dashboard STEWARD_ADMIN_ROLE (deploy wiring bug)"
+        );
+
+        STEWARD = makeAddr("riskStewardDashboard.steward");
+        vm.prank(executor);
+        dashboard.addMarketSteward(m.id, STEWARD);
     }
 
     /// @notice The dashboard drives every important lever against the live controller: it raises the activation
-    ///         delays and the activating lock (read back from the controller's real config), then revokes
-    ///         instant activation and shows a fresh deposit re-enters the timer instead of going straight active.
+    ///         delays and the activating lock by a tighten-only delta over the LIVE config (read back from the
+    ///         controller), then revokes instant activation and shows a fresh deposit re-enters the timer
+    ///         instead of going straight active.
     function test_dashboard_drivesRealController_endToEnd() public {
-        Ctx memory c = _deployWithDashboard();
+        CollateralActivationConfig memory cfg0 = m.controller.collateralActivationConfig();
 
-        CollateralActivationConfig memory cfg0 = c.controller.collateralActivationConfig();
-        assertEq(cfg0.minActivationDelay, 10 minutes, "deploy floor");
-        assertEq(cfg0.maxActivationDelay, 2 hours, "deploy cap");
-        assertEq(cfg0.activatingLockAmount, 0, "deploy lock amount");
-
-        // 1) Raise the activation delays through the dashboard; the live controller stores them.
+        // 1) Raise the activation delays through the dashboard by a tighten-only delta; the live controller
+        //    stores them. `+1 hours` on a market whose live cap is hours keeps the raise inside MAX_DELAY_DURATION.
+        uint40 newMin = cfg0.minActivationDelay + 10 minutes;
+        uint40 newMax = cfg0.maxActivationDelay + 1 hours;
         vm.prank(STEWARD);
-        c.dashboard.increaseActivationDelays(c.id, 20 minutes, 3 hours, 0);
+        dashboard.increaseActivationDelays(m.id, newMin, newMax, cfg0.maxGuardiansQuorumDelay);
 
-        CollateralActivationConfig memory cfg1 = c.controller.collateralActivationConfig();
-        assertEq(cfg1.minActivationDelay, 20 minutes, "floor raised on the live controller");
-        assertEq(cfg1.maxActivationDelay, 3 hours, "cap raised on the live controller");
+        CollateralActivationConfig memory cfg1 = m.controller.collateralActivationConfig();
+        assertEq(cfg1.minActivationDelay, newMin, "floor raised on the live controller");
+        assertEq(cfg1.maxActivationDelay, newMax, "cap raised on the live controller");
         assertEq(cfg1.minActivationAmount, cfg0.minActivationAmount, "unrelated field preserved by the RMW");
         assertEq(cfg1.maxDelayInflow, cfg0.maxDelayInflow, "unrelated field preserved by the RMW");
 
-        // 2) Raise the activating lock through the dashboard.
+        // 2) Raise the activating-lock duration through the dashboard by a tighten-only delta.
+        uint40 newDuration = cfg0.activatingLockDuration + 1 hours;
         vm.prank(STEWARD);
-        c.dashboard.increaseActivatingLock(c.id, 5 ether, 1 hours);
+        dashboard.increaseActivatingLockDuration(m.id, newDuration);
 
-        CollateralActivationConfig memory cfg2 = c.controller.collateralActivationConfig();
-        assertEq(cfg2.activatingLockAmount, 5 ether, "lock amount raised on the live controller");
-        assertEq(cfg2.activatingLockDuration, 1 hours, "lock duration raised on the live controller");
-        assertEq(cfg2.minActivationDelay, 20 minutes, "delays from step 1 preserved");
+        CollateralActivationConfig memory cfg2 = m.controller.collateralActivationConfig();
+        assertEq(cfg2.activatingLockDuration, newDuration, "lock duration raised on the live controller");
+        assertEq(cfg2.minActivationDelay, newMin, "delays from step 1 preserved");
 
-        // 3) Revoke instant activation through the dashboard; the live controller's behavior flips.
-        c.controller.setInstantActivation(BORROWER, true);
-        uint256 col = _mintWstETH(c.core, BORROWER, 18 ether);
-        vm.prank(BORROWER);
-        c.core.supplyCollateral(c.marketParams, col, BORROWER, "");
-        _assertCollateralState(c.controller, BORROWER, col, 0, 0); // instant: straight to active
+        // 3) Revoke instant activation through the dashboard; the live controller's behavior flips. The borrower
+        //    is fresh and market-clean, so its per-borrower activation buckets are asserted in isolation. Size
+        //    collateral from the LIVE dust threshold (wstETH < ETH across the wrap, so mint 3x the threshold in
+        //    ETH to clear it with margin).
+        address borrower = _freshActor(m, "riskStewardDashboard.borrower");
+        uint256 ethIn = 3 * uint256(cfg0.minActivationAmount);
+
+        m.controller.setInstantActivation(borrower, true);
+        uint256 col = _mintWstETH(borrower, ethIn);
+        require(col >= uint256(cfg0.minActivationAmount), "collateral must clear the live dust threshold");
+        vm.prank(borrower);
+        m.core.supplyCollateral(m.params, col, borrower, "");
+        _assertCollateralState(borrower, col, 0, 0); // instant: straight to active
 
         vm.prank(STEWARD);
-        c.dashboard.revokeInstantActivation(c.id, BORROWER);
-        assertFalse(c.controller.hasInstantActivation(BORROWER), "instant revoked on the live controller");
+        dashboard.revokeInstantActivation(m.id, borrower);
+        assertFalse(m.controller.hasInstantActivation(borrower), "instant revoked on the live controller");
 
-        uint256 more = _mintWstETH(c.core, BORROWER, 15 ether);
-        vm.prank(BORROWER);
-        c.core.supplyCollateral(c.marketParams, more, BORROWER, "");
-        _assertCollateralState(c.controller, BORROWER, col, more, 0); // fresh deposit now enters the timer
+        uint256 more = _mintWstETH(borrower, ethIn);
+        require(more >= uint256(cfg0.minActivationAmount), "top-up must clear the live dust threshold");
+        vm.prank(borrower);
+        m.core.supplyCollateral(m.params, more, borrower, "");
+        _assertCollateralState(borrower, col, more, 0); // fresh deposit now enters the timer
     }
 
     /// @notice The dashboard's tighten-only guard blocks lowering a delay below the controller's current value.
     function testRevert_dashboard_tightenOnlyBlocksLowering() public {
-        Ctx memory c = _deployWithDashboard();
+        CollateralActivationConfig memory cfg0 = m.controller.collateralActivationConfig();
+        // Need a positive live floor to have something to lower below.
+        require(cfg0.minActivationDelay > 0, "RiskStewardDashboardScenario: live min activation delay must be positive");
 
         vm.prank(STEWARD);
         vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
-        c.dashboard.increaseActivationDelays(c.id, 5 minutes, 3 hours, 0); // 5 min < deploy floor 10 min
+        // Hold the cap, drop the floor by one second: a lowering, so the tighten-only guard rejects it.
+        dashboard.increaseActivationDelays(
+            m.id, cfg0.minActivationDelay - 1, cfg0.maxActivationDelay, cfg0.maxGuardiansQuorumDelay
+        );
     }
 
     /// @notice The dashboard only adds the direction guard: a raise that is in-direction but past the
     ///         controller's own bound is still rejected by the controller's validator, not the dashboard.
     function testRevert_dashboard_controllerStillBoundsTheRaise() public {
-        Ctx memory c = _deployWithDashboard();
+        CollateralActivationConfig memory cfg0 = m.controller.collateralActivationConfig();
 
         vm.prank(STEWARD);
         vm.expectRevert(CollateralActivationLib.MaxActivationDelayExceeded.selector);
-        c.dashboard.increaseActivationDelays(c.id, 20 minutes, 8 days, 0); // raise, but above MAX_DELAY_DURATION
+        // In-direction (hold the floor, raise the cap) but above MAX_DELAY_DURATION (7 days): passes the
+        // tighten-only guard, then the controller's bound validation rejects it.
+        dashboard.increaseActivationDelays(m.id, cfg0.minActivationDelay, 8 days, cfg0.maxGuardiansQuorumDelay);
     }
 
     /// @notice A non-steward cannot pull a lever.
     function testRevert_dashboard_nonStewardBlocked() public {
-        Ctx memory c = _deployWithDashboard();
+        address stranger = makeAddr("riskStewardDashboard.stranger");
 
-        vm.prank(address(0xBAD));
+        vm.prank(stranger);
         vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
-        c.dashboard.increaseActivationDelays(c.id, 20 minutes, 3 hours, 0);
+        dashboard.increaseActivationDelays(m.id, 20 minutes, 3 hours, 0);
     }
 
     /// @notice A market id the core has no controller for is rejected, even for an appointed steward.
     function testRevert_dashboard_unknownMarket() public {
-        Ctx memory c = _deployWithDashboard();
-
         Id bogus = Id.wrap(bytes32(uint256(0xDEAD)));
-        c.dashboard.addMarketSteward(bogus, STEWARD); // appointed, but the core has no controller for `bogus`
+        vm.prank(executor);
+        dashboard.addMarketSteward(bogus, STEWARD); // appointed, but the core has no controller for `bogus`
 
         vm.prank(STEWARD);
         vm.expectRevert(abi.encodeWithSelector(IRiskStewardDashboard.UnknownMarket.selector, bogus));
-        c.dashboard.increaseActivationDelays(bogus, 20 minutes, 3 hours, 0);
+        dashboard.increaseActivationDelays(bogus, 20 minutes, 3 hours, 0);
     }
 
+    /// @notice An appointed steward freezes the already-deployed controller through the live dashboard wiring.
     function test_dashboard_freezesRealController() public {
-        Ctx memory c = _deployWithDashboard();
-
         vm.prank(STEWARD);
-        c.dashboard.freezeMarket(c.id);
+        dashboard.freezeMarket(m.id);
 
-        assertTrue(c.controller.isFrozen(), "dashboard froze the live controller");
+        assertTrue(m.controller.isFrozen(), "dashboard froze the live controller");
     }
 
     // ---
-    // HARNESS
+    // HELPERS
     // ---
 
-    function _deployWithDashboard() internal returns (Ctx memory c) {
-        address[] memory guardians = new address[](1);
-        guardians[0] = address(this);
-
-        Deployed memory d = _deployForkStack(
-            DeployConfig({
-                admin: address(this),
-                loanToken: WETH_ADDRESS,
-                collateralToken: WSTETH_ADDRESS,
-                oracleSource: WSTETH_ADDRESS,
-                lltv: LLTV,
-                enableSettlement: false,
-                activation: CollateralActivationConfig({
-                    minActivationDelay: 10 minutes,
-                    maxActivationDelay: 2 hours,
-                    activatingLockAmount: 0,
-                    activatingLockDuration: 0,
-                    maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 10 ether,
-                    maxGuardiansQuorumDelay: 0,
-                    delayPerStrike: 0,
-                    delayPerSuspect: 0
-                }),
-                settlementConfig: SettlementConfig({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
-                }),
-                guardians: guardians,
-                quorum: 1,
-                suspectWindow: 0,
-                vaultName: "Lido wstETH/WETH Vault",
-                vaultSymbol: "lidoWSTETH-WETH"
-            })
-        );
-
-        c.core = ILidoLend(d.core);
-        c.controller = ILidoLendMarketController(d.controllerProxy);
-        c.id = d.marketId;
-        c.marketParams = d.params;
-
-        // The test admin can grant the dashboard the controller roles its levers use and administers the dashboard
-        // long enough to grant `STEWARD_ADMIN_ROLE` and appoint the steward.
-        c.dashboard = new RiskStewardDashboard(address(this), c.core);
-        c.controller.grantRole(c.controller.MANAGER_ROLE(), address(c.dashboard));
-        c.controller.grantRole(c.controller.FREEZER_ROLE(), address(c.dashboard));
-        c.dashboard.grantRole(c.dashboard.STEWARD_ADMIN_ROLE(), address(this));
-        c.dashboard.addMarketSteward(c.id, STEWARD);
-    }
-
-    function _mintWstETH(ILidoLend market, address user, uint256 ethAmount) internal returns (uint256) {
+    function _mintWstETH(address user, uint256 ethAmount) internal returns (uint256) {
         vm.deal(user, ethAmount);
         vm.prank(user);
         STETH.submit{value: ethAmount}(address(0));
 
         uint256 stETHAmount = STETH.balanceOf(user);
         vm.prank(user);
-        STETH.approve(WSTETH_ADDRESS, stETHAmount);
+        STETH.approve(address(WSTETH), stETHAmount);
         vm.prank(user);
         uint256 wstETHAmount = WSTETH.wrap(stETHAmount);
         vm.prank(user);
-        WSTETH.approve(address(market), type(uint256).max);
+        WSTETH.approve(address(m.core), type(uint256).max);
         return wstETHAmount;
     }
 
-    function _assertCollateralState(
-        ILidoLendMarketController controller,
-        address borrower,
-        uint256 matured,
-        uint256 activating,
-        uint256 dust
-    ) internal view {
-        ILidoLendMarketController.BorrowerPosition memory pv = controller.positionOf(borrower);
-        assertEq(pv.active, matured, "matured (active) collateral");
+    function _assertCollateralState(address borrower, uint256 active, uint256 activating, uint256 dust) internal view {
+        ILidoLendMarketController.BorrowerPosition memory pv = m.controller.positionOf(borrower);
+        assertEq(pv.active, active, "matured (active) collateral");
         assertEq(pv.activating, activating, "maturing (activating) collateral");
         assertEq(pv.dust, dust, "dust collateral");
     }

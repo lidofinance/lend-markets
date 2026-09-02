@@ -40,7 +40,7 @@ library MaxHeapLib {
     /// @param slot 1-indexed slot per account; 0 means the account is not in the heap.
     struct Heap {
         Node[] nodes;
-        mapping(address => uint256) slot;
+        mapping(address account => uint256 slotIndex) slot;
     }
 
     // ---

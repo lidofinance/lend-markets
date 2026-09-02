@@ -3,8 +3,6 @@ pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
-
 import {Id, IMorpho, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
@@ -28,6 +26,8 @@ import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
+import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
+import {DeployConfigFile} from "../../script/lib/DeployConfigFile.sol";
 // --- Minimal read/write surfaces (UDVT `Id` is ABI-identical to bytes32, so bytes32 params match) ---
 
 interface IReadController {
@@ -84,6 +84,7 @@ interface IReadFactory {
     function LIDO_LEND() external view returns (address);
     function RISK_STEWARD_DASHBOARD() external view returns (address);
     function CIRCUIT_BREAKER() external view returns (address);
+    function RESEAL_MANAGER() external view returns (address);
     function ADMIN() external view returns (address);
 }
 
@@ -136,6 +137,7 @@ interface IReadDecimals {
 
 interface IReadCore {
     function owner() external view returns (address);
+    function feeRecipient() external view returns (address);
     function marketController(bytes32 id) external view returns (address);
     function isSettlementEnabled(bytes32 id) external view returns (bool);
     function market(bytes32 id)
@@ -172,18 +174,23 @@ interface IReadCircuitBreaker {
 
 /// @notice Base for market acceptance tests. Forks the node the protocol is deployed on
 ///         (`ACCEPTANCE_RPC_URL` or `--fork-url`) and exposes the shared assertion + activation helpers.
-///         Expected values and deployed addresses come from immutable run artifacts.
+///         Expected values and deployed addresses come from immutable run artifacts; activation-time choices come
+///         from explicit runtime inputs.
 ///         Skips only when no protocol artifact is provided; a wrong RPC or network fails.
 ///
 /// @dev This is the repo's verify tool. It independently binds deployed runtime code to the local sources,
 ///      checks backbone wiring and operational state, calls the factory's detailed instance validators, and
-///      audits complete privilege sets through enumeration or event scans.
+///      audits the initial launch privilege sets through enumeration, using logs only for non-enumerable mappings.
+///      It deliberately does not model a governance-evolved role topology.
 // ============================================================================
 // CONTEXT — fork selection and run-artifact loading
 // ============================================================================
 
 abstract contract AcceptanceContext is Test {
     using MarketParamsLib for MarketParams;
+
+    error ProtocolDeploymentMismatch(string expected, string actual);
+    error RegistryPathMismatch(string expected, string actual);
 
     // role ids
     bytes32 internal constant DEFAULT_ADMIN_ROLE = 0x00;
@@ -202,8 +209,6 @@ abstract contract AcceptanceContext is Test {
     bytes32 internal constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
     bytes32 internal constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
 
-    bytes32 internal constant ROLE_GRANTED_SIG = keccak256("RoleGranted(bytes32,address,address)");
-    bytes32 internal constant ROLE_REVOKED_SIG = keccak256("RoleRevoked(bytes32,address,address)");
     bytes32 internal constant INSTANT_ACTIVATION_SET_SIG = keccak256("InstantActivationSet(address,bool)");
 
     // governance holders
@@ -220,6 +225,7 @@ abstract contract AcceptanceContext is Test {
     address internal morphoBook;
     address internal erc4626Book;
     address internal circuitBreaker;
+    address internal resealManager;
 
     // market
     address internal loanToken;
@@ -233,23 +239,16 @@ abstract contract AcceptanceContext is Test {
     bytes32 internal marketId;
     address internal pauserCommittee;
     bool internal enableSettlement;
+    bool internal forkProvision;
 
-    // event-scan starting points (see `ProtocolDeployment.deployedBlock` / `MarketDeployment.deployedBlock`)
-    uint256 internal protocolDeployedBlock;
+    // Event-scan starting point for the non-enumerable instant-activation mapping.
     uint256 internal marketDeployedBlock;
-    uint256 internal exitBooksDeployedBlock;
     uint256 internal expectedExitBookMaxRequestLifetime;
-    address[] internal expectedExitBookPausers;
-    address[] internal expectedExitBookResumers;
+    address internal exitBookPauser;
 
-    // Expected controller holders, materialized in the artifact from the factory's fixed role topology.
+    // Factory-derived controller and proxy admin.
     address internal rAdmin;
     address internal rProxyAdmin;
-    address[] internal rManagers;
-    address[] internal rPausers;
-    address[] internal rFreezers;
-    address[] internal rUnfreezers;
-    address[] internal rResumers;
 
     address[] internal expectedGuardians;
     uint256 internal expectedQuorum;
@@ -261,34 +260,59 @@ abstract contract AcceptanceContext is Test {
     string internal circuitBreakerCfg;
     string internal exitBooksArtifact;
     string internal registry;
+    string internal artifactsDir;
+    ArtifactMetadata internal artifactMetadata;
 
     function setUp() public virtual {
         string memory regPath = vm.envOr("ACCEPTANCE_REGISTRY", string(""));
-        if (bytes(regPath).length == 0 || !vm.exists(regPath)) {
+        // Unset means "not verifying a deployment". A configured but missing artifact is an error.
+        if (bytes(regPath).length == 0) {
             vm.skip(true, "acceptance: set ACCEPTANCE_REGISTRY to protocol.toml");
             return;
         }
+        require(vm.exists(regPath), string.concat("acceptance: ACCEPTANCE_REGISTRY not found: ", regPath));
         registry = vm.readFile(regPath);
+
+        string memory deployment = vm.parseTomlString(registry, ".artifact.deployment");
+        string memory recordedDeployment = vm.parseTomlString(registry, ".protocol.deployment");
+        if (keccak256(bytes(recordedDeployment)) != keccak256(bytes(deployment))) {
+            revert ProtocolDeploymentMismatch(deployment, recordedDeployment);
+        }
+        DeployConfigFile.requireProtocolArtifactCompatibility(registry);
+
+        artifactsDir = string.concat(ArtifactMetadataFile.artifactsDir(deployment), "/");
+        string memory expectedRegistryPath = string.concat(artifactsDir, "protocol.toml");
+        string memory absoluteRegistryPath = string.concat(vm.projectRoot(), "/", expectedRegistryPath);
+        if (
+            keccak256(bytes(regPath)) != keccak256(bytes(expectedRegistryPath))
+                && keccak256(bytes(regPath)) != keccak256(bytes(absoluteRegistryPath))
+        ) revert RegistryPathMismatch(expectedRegistryPath, regPath);
+
+        artifactMetadata = ArtifactMetadata({
+            deployment: deployment,
+            chainId: vm.parseTomlUint(registry, ".protocol.chain_id"),
+            configHash: vm.parseTomlBytes32(registry, ".protocol.config_hash"),
+            compatibilityHash: vm.parseTomlBytes32(registry, ".artifact.compatibility_hash")
+        });
+        registry = ArtifactMetadataFile.requireExact(regPath, artifactMetadata);
+        forkProvision = keccak256(bytes(deployment)) == keccak256("fork");
 
         string memory rpc = vm.envOr("ACCEPTANCE_RPC_URL", string(""));
         if (bytes(rpc).length != 0) vm.createSelectFork(rpc);
-        assertEq(block.chainid, vm.parseTomlUint(registry, ".protocol.chain_id"), "protocol artifact chain ID");
+        assertEq(block.chainid, artifactMetadata.chainId, "protocol artifact chain ID");
         _loadMarket(vm.envString("MARKET"));
         assertGt(core.code.length, 0, "core missing code on acceptance RPC");
         assertGt(controller.code.length, 0, "controller missing code on acceptance RPC");
     }
 
     function _loadMarket(string memory market) internal {
-        string memory deployment = vm.parseTomlString(registry, ".artifact.deployment");
-        string memory artifactsDir = string.concat("deployed/", deployment, "/");
-        toml = vm.readFile(string.concat(artifactsDir, "markets/", market, ".toml"));
+        toml = _readSibling(string.concat("markets/", market, ".toml"));
         string memory guardianGroup = vm.parseTomlString(toml, ".market.guardian_group");
-        guardiansCfg = vm.readFile(string.concat(artifactsDir, "guardians/", guardianGroup, ".toml"));
+        guardiansCfg = _readSibling(string.concat("guardians/", guardianGroup, ".toml"));
         string memory oracleArtifact = vm.parseTomlString(toml, ".market.oracle_artifact");
-        oracleCfg = vm.readFile(string.concat(artifactsDir, "oracles/", oracleArtifact, ".toml"));
-        string memory circuitBreakerArtifact = vm.parseTomlString(toml, ".market.circuit_breaker_artifact");
-        circuitBreakerCfg =
-            vm.readFile(string.concat(artifactsDir, "circuit-breakers/", circuitBreakerArtifact, ".toml"));
+        oracleCfg = _readSibling(string.concat("oracles/", oracleArtifact, ".toml"));
+        string memory circuitBreakerArtifact = vm.parseTomlString(registry, ".protocol.circuit_breaker_artifact");
+        circuitBreakerCfg = _readSibling(string.concat("circuit-breakers/", circuitBreakerArtifact, ".toml"));
 
         agent = _reg(".protocol.agent");
         executor = _reg(".protocol.evm_script_executor");
@@ -302,15 +326,11 @@ abstract contract AcceptanceContext is Test {
         dashboard = _reg(".protocol.risk_steward_dashboard");
         string memory exitBooksPath = string.concat(artifactsDir, "exit-books.toml");
         if (vm.exists(exitBooksPath)) {
-            exitBooksArtifact = vm.readFile(exitBooksPath);
+            exitBooksArtifact = ArtifactMetadataFile.requireCompatible(exitBooksPath, artifactMetadata);
             morphoBook = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.morpho");
             erc4626Book = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.erc4626");
             expectedExitBookMaxRequestLifetime = vm.parseTomlUint(exitBooksArtifact, ".exit_books.max_request_lifetime");
-            exitBooksDeployedBlock = vm.parseTomlUint(exitBooksArtifact, ".exit_books.deployed_block");
-            expectedExitBookPausers = vm.parseTomlAddressArray(exitBooksArtifact, ".roles.pausers");
-            expectedExitBookResumers = vm.parseTomlAddressArray(exitBooksArtifact, ".roles.resumers");
-            assertEq(expectedExitBookPausers.length, 1, "exit-book artifact must have one pauser");
-            assertEq(expectedExitBookResumers.length, 0, "exit-book artifact must have no resumer");
+            exitBookPauser = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.pauser");
         }
         oracle = _addr(".market.oracle");
         guardianSignals = _addr(".market.guardian_signals");
@@ -326,38 +346,29 @@ abstract contract AcceptanceContext is Test {
             "GuardianSignals artifact address"
         );
 
-        protocolDeployedBlock = vm.parseTomlUint(registry, ".protocol.deployed_block");
         marketDeployedBlock = vm.parseTomlUint(toml, ".market.deployed_block");
 
         loanToken = _addr(".market.loan_token");
         collateralToken = _addr(".market.collateral_token");
         lltv = vm.parseTomlUint(toml, ".market.lltv");
 
-        rAdmin = _addr(".roles.admin");
-        rProxyAdmin = _addr(".roles.proxy_admin");
-        rManagers = vm.parseTomlAddressArray(toml, ".roles.managers");
-        rPausers = vm.parseTomlAddressArray(toml, ".roles.pausers");
-        rFreezers = vm.parseTomlAddressArray(toml, ".roles.freezers");
-        rUnfreezers = vm.parseTomlAddressArray(toml, ".roles.unfreezers");
-        rResumers = vm.parseTomlAddressArray(toml, ".roles.resumers");
-
-        assertGt(rPausers.length, 0, "market artifact has no CircuitBreaker");
-        circuitBreaker = _addr(".market.circuit_breaker");
-        assertEq(circuitBreaker, rPausers[0], "CircuitBreaker must be the first pauser");
-        assertEq(circuitBreaker, _reg(".protocol.circuit_breaker"), "market CircuitBreaker != protocol CircuitBreaker");
+        rAdmin = IReadFactory(factory).ADMIN();
+        rProxyAdmin = rAdmin;
+        circuitBreaker = _reg(".protocol.circuit_breaker");
+        resealManager = _reg(".protocol.reseal_manager");
         assertEq(
             vm.parseTomlAddress(circuitBreakerCfg, ".circuit_breaker.address"),
             circuitBreaker,
             "CircuitBreaker artifact address"
         );
 
-        // Test-only settlement choice for the simulated activation path.
-        // Production motion inputs are maintained manually in EasyTrack.
-        enableSettlement = true;
-
         expectedGuardians = vm.parseTomlAddressArray(guardiansCfg, ".guardian_signals.guardians");
         expectedQuorum = vm.parseTomlUint(guardiansCfg, ".guardian_signals.quorum");
         expectedSuspectWindow = vm.parseTomlUint(guardiansCfg, ".guardian_signals.suspect_window");
+    }
+
+    function _readSibling(string memory relPath) internal view returns (string memory) {
+        return ArtifactMetadataFile.requireCompatible(string.concat(artifactsDir, relPath), artifactMetadata);
     }
 
     function _addr(string memory key) internal view returns (address) {
@@ -370,6 +381,22 @@ abstract contract AcceptanceContext is Test {
 
     function _reg(string memory key) internal view returns (address) {
         return vm.parseTomlAddress(registry, key);
+    }
+
+    /// @dev Production acceptance requires the reviewed motion value explicitly. The conventional `fork` run may
+    ///      use the local replay's fixed `true` default so provision-fork remains self-contained.
+    function _loadExpectedSettlementChoice() internal {
+        enableSettlement =
+            forkProvision ? vm.envOr("ACCEPTANCE_ENABLE_SETTLEMENT", true) : vm.envBool("ACCEPTANCE_ENABLE_SETTLEMENT");
+    }
+
+    /// @dev Production acceptance requires the reviewed committee explicitly instead of trusting the live
+    ///      registration. The conventional `fork` run defaults to the Agent used by ActivateMarkets.s.sol.
+    function _loadExpectedPauserCommittee() internal {
+        pauserCommittee = forkProvision
+            ? vm.envOr("ACCEPTANCE_PAUSER_COMMITTEE", agent)
+            : vm.envAddress("ACCEPTANCE_PAUSER_COMMITTEE");
+        require(pauserCommittee != address(0), "acceptance: CircuitBreaker pauser committee is zero");
     }
 }
 
@@ -414,6 +441,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         // backbone cross-links
         assertEq(IReadFacade(facade).LIDO_LEND(), core, "facade.LIDO_LEND");
         assertEq(IReadCore(core).owner(), facade, "core.owner");
+        assertEq(IReadCore(core).feeRecipient(), agent, "core.feeRecipient");
         assertEq(IReadRouter(router).MORPHO(), core, "router.MORPHO");
         assertEq(IReadDashboard(dashboard).LIDO_LEND(), core, "dashboard.LIDO_LEND");
         if (morphoBook != address(0)) assertEq(IReadMorphoBook(morphoBook).MORPHO(), core, "morphoBook.MORPHO");
@@ -535,17 +563,17 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     function _assertConfig() internal view {
+        assertEq(IReadController(controller).supplyCap(), vm.parseTomlUint(toml, ".market.supply_cap"), "supplyCap");
+
         CollateralActivationConfig memory c = IReadController(controller).collateralActivationConfig();
         assertEq(uint256(c.minActivationDelay), vm.parseTomlUint(toml, ".activation.min_activation_delay"), "minDelay");
         assertEq(uint256(c.maxActivationDelay), vm.parseTomlUint(toml, ".activation.max_activation_delay"), "maxDelay");
         assertEq(uint256(c.maxDelayInflow), vm.parseTomlUint(toml, ".activation.max_delay_inflow"), "maxDelayInflow");
         assertEq(
-            uint256(c.activatingLockAmount), vm.parseTomlUint(toml, ".activation.activating_lock_amount"), "lockAmt"
-        );
-        assertEq(
             uint256(c.activatingLockDuration), vm.parseTomlUint(toml, ".activation.activating_lock_duration"), "lockDur"
         );
         assertEq(uint256(c.minActivationAmount), vm.parseTomlUint(toml, ".activation.min_activation_amount"), "minAmt");
+        assertEq(uint256(c.minDepositAmount), vm.parseTomlUint(toml, ".activation.min_deposit_amount"), "minDeposit");
         assertEq(
             uint256(c.maxGuardiansQuorumDelay),
             vm.parseTomlUint(toml, ".activation.max_guardians_quorum_delay"),
@@ -566,6 +594,11 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
         address irmConfig = _expectedIrmConfig();
         _assertCurveParams(ICurveConfig(irmConfig).getCurveParams());
+        assertEq(
+            IIrmConfigFactory(irmConfigFactory).getAdaptiveCurveConfig(_expectedCurveParams()),
+            irmConfig,
+            "IRM config factory entry"
+        );
     }
 
     /// @dev The per-market curve params used by the activation simulation.
@@ -592,7 +625,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(cp.maxBorrowRate, e.maxBorrowRate, "maxBorrowRate");
     }
 
-    /// @notice Everything left in the role matrix that is NOT a `LidoLendMarketFactory`-checked
+    /// @notice Everything left in the initial launch role matrix that is NOT a `LidoLendMarketFactory`-checked
     ///         `AccessControl` role: the router/curve `Ownable`-style owner/manager (no `RoleGranted` events,
     ///         so outside `_assertRoleHolderCompleteness` too).
     function _assertRoles() internal view {
@@ -627,6 +660,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(actualFactory.ADMIN(), rAdmin, "factory controller admin");
         assertEq(rProxyAdmin, rAdmin, "controller proxy admin differs from factory admin");
         assertEq(actualFactory.CIRCUIT_BREAKER(), circuitBreaker, "factory CircuitBreaker");
+        assertEq(actualFactory.RESEAL_MANAGER(), resealManager, "factory reseal manager");
 
         _assertCodehash(
             facade, address(new LidoLendOwner(ILidoLend(core), address(this), address(0), address(0))), "facade"
@@ -643,6 +677,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
                         irmRouter: router,
                         lidoLendOwner: facade,
                         circuitBreaker: circuitBreaker,
+                        resealManager: resealManager,
                         riskStewardDashboard: dashboard
                     }),
                     rAdmin
@@ -727,7 +762,6 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
     /// @dev The activation motion is run by the executor, so it must hold the CircuitBreaker admin (registerPauser).
     function _assertCircuitBreakerReadyAsPauser() internal view {
-        assertGt(rPausers.length, 0, "market must configure a CircuitBreaker");
         assertEq(IReadCircuitBreaker(circuitBreaker).ADMIN(), executor, "cb.ADMIN=executor");
     }
 
@@ -758,8 +792,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertGt(uint256(lastUpdate), 0, "market not created on core");
         assertEq(IReadCore(core).marketController(marketId), controller, "controller not bound");
         assertEq(IReadCore(core).isSettlementEnabled(marketId), enableSettlement, "settlement flag");
-        assertEq(IReadRouter(router).marketIrm(marketId), curve, "curve not routed");
-        // The motion applied this market's curve config to the singleton.
+        assertEq(IReadRouter(router).marketIrm(marketId), curve, "IRM not routed");
         address cfg = IReadCurve(curve).marketCurveConfig(marketId);
         assertEq(cfg, _expectedIrmConfig(), "unexpected curve config");
         _assertCurveParams(ICurveConfig(cfg).getCurveParams());
@@ -789,8 +822,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
             return;
         }
 
-        address pauser = expectedExitBookPausers[0];
-        vm.startPrank(pauser);
+        vm.startPrank(exitBookPauser);
         IReadMorphoBook(morphoBook).pause();
         IReadErc4626Book(erc4626Book).pause();
         vm.stopPrank();
@@ -814,8 +846,8 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     function _expectedIrmConfig() private view returns (address irmConfig) {
-        irmConfig = IIrmConfigFactory(irmConfigFactory).getAdaptiveCurveConfig(_expectedCurveParams());
-        assertNotEq(irmConfig, address(0), "IRM config factory entry missing");
+        irmConfig = vm.parseTomlAddress(toml, ".market.irm_config");
+        assertNotEq(irmConfig, address(0), "IRM config missing from artifact");
     }
 
     /// @dev Mirror of the exit-book allow-list governance action, when exit books are deployed.
@@ -842,17 +874,10 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 // ============================================================================
 
 abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
-    //
-    // Inside a `deployMarketComponents` / `deployGuardianSignals` call, the full role-holder set is guaranteed by
-    // construction: the controller or registry is created in that same transaction, and the only account that could
-    // have granted anything on it is the factory itself (through the `DEFAULT_ADMIN_ROLE` it holds
-    // transiently) — so the set is exactly what that deployment call granted, nothing more, nothing missing. That
-    // guarantee does not survive time: once the deployment call returns, any `DEFAULT_ADMIN_ROLE` holder can grant
-    // or revoke roles. For the surfaces checked through role events below, the scan collects every account touched
-    // since the recorded deployment block and checks its current `hasRole` state against the exact expected set.
-    // GuardianSignals is checked directly through its enumerable role-member surface.
-
-    /// @notice Validates every AccessControl contract against its exact expected role holders.
+    /// @notice Reads every enumerable AccessControl surface directly from the deployed contracts and validates the
+    ///         exact initial launch holder set. Only the controller's non-enumerable instant-activation mapping needs
+    ///         logs. Deployments changed by later governance actions need a separate expected-role input and are out
+    ///         of scope for this launch acceptance suite.
     function _assertRoleHolderCompleteness() internal {
         _assertNoInstantActivationCallers();
         {
@@ -865,12 +890,12 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
             roles[5] = RESUMER_ROLE;
             address[][] memory holders = new address[][](6);
             holders[0] = _arr1(rAdmin);
-            holders[1] = rManagers;
-            holders[2] = rPausers;
-            holders[3] = rFreezers;
-            holders[4] = rUnfreezers;
-            holders[5] = rResumers;
-            _assertExactRoleHolders(controller, marketDeployedBlock, roles, holders);
+            holders[1] = _arr2(facade, dashboard);
+            holders[2] = _arr2(circuitBreaker, resealManager);
+            holders[3] = _arr1(dashboard);
+            holders[4] = _arr1(facade);
+            holders[5] = _arr1(resealManager);
+            _assertExactEnumerableRoleHolders(controller, roles, holders);
         }
         {
             bytes32[] memory roles = new bytes32[](4);
@@ -895,10 +920,10 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
             address[][] memory holders = new address[][](5);
             holders[0] = _arr1(agent);
             holders[1] = _arr1(executor);
-            holders[2] = _arr1(agent);
+            holders[2] = _arr1(executor);
             holders[3] = _arr1(executor);
             holders[4] = _arr1(executor);
-            _assertExactRoleHolders(facade, protocolDeployedBlock, roles, holders);
+            _assertExactEnumerableRoleHolders(facade, roles, holders);
         }
         {
             bytes32[] memory roles = new bytes32[](2);
@@ -907,7 +932,7 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
             address[][] memory holders = new address[][](2);
             holders[0] = _arr1(agent);
             holders[1] = _arr1(executor);
-            _assertExactRoleHolders(dashboard, protocolDeployedBlock, roles, holders);
+            _assertExactEnumerableRoleHolders(dashboard, roles, holders);
         }
         if (morphoBook != address(0)) {
             _assertExitBookRoleHolderCompleteness(morphoBook);
@@ -940,7 +965,7 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
         _assertAddressSetEq(actual, expected, "instant-activation caller");
     }
 
-    function _assertExitBookRoleHolderCompleteness(address book) internal {
+    function _assertExitBookRoleHolderCompleteness(address book) internal view {
         bytes32[] memory roles = new bytes32[](6);
         roles[0] = DEFAULT_ADMIN_ROLE;
         roles[1] = ALLOWLIST_MANAGER_ROLE;
@@ -951,27 +976,11 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
         address[][] memory holders = new address[][](6);
         holders[0] = _arr1(agent);
         holders[1] = _arr2(executor, agent);
-        holders[2] = _arr1(agent);
+        holders[2] = _arr1(executor);
         holders[3] = _arr1(agent);
-        holders[4] = expectedExitBookPausers;
-        holders[5] = expectedExitBookResumers;
-        _assertExactRoleHolders(book, exitBooksDeployedBlock, roles, holders);
-    }
-
-    /// @dev For each `roles[i]`, reconstructs `target`'s current holder set from `RoleGranted` / `RoleRevoked`
-    ///      logs emitted from `fromBlock` to the current block and asserts it equals `expectedHolders[i]`
-    ///      exactly — no extra holder (the deployer included — its absence is a consequence of exact equality,
-    ///      not a separate check), no missing one, and an empty expectation means zero holders. Requires a
-    ///      real fork: `vm.eth_getLogs` has no in-memory-EVM equivalent.
-    function _assertExactRoleHolders(
-        address target,
-        uint256 fromBlock,
-        bytes32[] memory roles,
-        address[][] memory expectedHolders
-    ) internal {
-        for (uint256 i; i < roles.length; ++i) {
-            _assertExactHolders(target, fromBlock, roles[i], expectedHolders[i]);
-        }
+        holders[4] = _arr1(exitBookPauser);
+        holders[5] = new address[](0);
+        _assertExactEnumerableRoleHolders(book, roles, holders);
     }
 
     function _assertExactEnumerableRoleHolders(
@@ -990,97 +999,6 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
                 );
             }
         }
-    }
-
-    function _assertExactHolders(address target, uint256 fromBlock, bytes32 role, address[] memory expected) internal {
-        address[] memory candidates = _roleTouchedAccounts(target, fromBlock, role);
-        address[] memory actual = _currentHolders(target, role, candidates);
-
-        for (uint256 i; i < expected.length; ++i) {
-            assertTrue(
-                _containsAddr(actual, expected[i]),
-                string.concat(
-                    "missing role holder on ", vm.toString(target), " ", _roleName(role), ": ", vm.toString(expected[i])
-                )
-            );
-        }
-        for (uint256 i; i < actual.length; ++i) {
-            assertTrue(
-                _containsAddr(expected, actual[i]),
-                string.concat(
-                    "unexpected role holder on ",
-                    vm.toString(target),
-                    " ",
-                    _roleName(role),
-                    ": ",
-                    vm.toString(actual[i])
-                )
-            );
-        }
-    }
-
-    /// @dev Every address that ever appeared as the `account` topic of a `RoleGranted` or `RoleRevoked` log
-    ///      for `role` on `target`, deduplicated. Not the current holder set — `_currentHolders` re-checks
-    ///      `hasRole` live, so log ordering never matters.
-    function _roleTouchedAccounts(address target, uint256 fromBlock, bytes32 role) internal returns (address[] memory) {
-        uint256 toBlock = vm.getBlockNumber();
-
-        bytes32[] memory grantedTopics = new bytes32[](2);
-        grantedTopics[0] = ROLE_GRANTED_SIG;
-        grantedTopics[1] = role;
-        Vm.EthGetLogs[] memory granted = vm.eth_getLogs(fromBlock, toBlock, target, grantedTopics);
-
-        bytes32[] memory revokedTopics = new bytes32[](2);
-        revokedTopics[0] = ROLE_REVOKED_SIG;
-        revokedTopics[1] = role;
-        Vm.EthGetLogs[] memory revoked = vm.eth_getLogs(fromBlock, toBlock, target, revokedTopics);
-
-        address[] memory raw = new address[](granted.length + revoked.length);
-        uint256 n;
-        for (uint256 i; i < granted.length; ++i) {
-            raw[n++] = address(uint160(uint256(granted[i].topics[2])));
-        }
-        for (uint256 i; i < revoked.length; ++i) {
-            raw[n++] = address(uint160(uint256(revoked[i].topics[2])));
-        }
-        return _dedupAddr(raw);
-    }
-
-    function _currentHolders(address target, bytes32 role, address[] memory candidates)
-        internal
-        view
-        returns (address[] memory holders)
-    {
-        bool[] memory keep = new bool[](candidates.length);
-        uint256 n;
-        for (uint256 i; i < candidates.length; ++i) {
-            keep[i] = IAccessControl(target).hasRole(role, candidates[i]);
-            if (keep[i]) ++n;
-        }
-        holders = new address[](n);
-        uint256 j;
-        for (uint256 i; i < candidates.length; ++i) {
-            if (keep[i]) holders[j++] = candidates[i];
-        }
-    }
-
-    function _roleName(bytes32 role) internal pure returns (string memory) {
-        if (role == DEFAULT_ADMIN_ROLE) return "DEFAULT_ADMIN_ROLE";
-        if (role == MANAGER_ROLE) return "MANAGER_ROLE";
-        if (role == FREEZER_ROLE) return "FREEZER_ROLE";
-        if (role == UNFREEZER_ROLE) return "UNFREEZER_ROLE";
-        if (role == PAUSER_ROLE) return "PAUSER_ROLE";
-        if (role == RESUMER_ROLE) return "RESUMER_ROLE";
-        if (role == MARKET_CREATOR_ROLE) return "MARKET_CREATOR_ROLE";
-        if (role == MARKET_MANAGER_ROLE) return "MARKET_MANAGER_ROLE";
-        if (role == GUARDIAN_MANAGER_ROLE) return "GUARDIAN_MANAGER_ROLE";
-        if (role == STEWARD_ADMIN_ROLE) return "STEWARD_ADMIN_ROLE";
-        if (role == ALLOWLIST_MANAGER_ROLE) return "ALLOWLIST_MANAGER_ROLE";
-        if (role == FEE_MANAGER_ROLE) return "FEE_MANAGER_ROLE";
-        if (role == RECOVERER_ROLE) return "RECOVERER_ROLE";
-        if (role == ACCESS_RESTORER_ROLE) return "ACCESS_RESTORER_ROLE";
-        if (role == ACCESS_LIMITER_ROLE) return "ACCESS_LIMITER_ROLE";
-        return vm.toString(role);
     }
 
     function _dedupAddr(address[] memory raw) internal pure returns (address[] memory out) {

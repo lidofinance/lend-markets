@@ -282,7 +282,7 @@ contract SettlementSafetyTest is LidoLendSetup {
         mixed[0] = _actor("empty-settlement-target");
         mixed[1] = nonRoot;
         vm.prank(lender);
-        (,,, uint256 cancelledAfter) = m.vault.settle(shares, mixed, lender, lender);
+        (,, uint256 cancelledAfter) = m.vault.settle(shares, mixed, lender, lender);
         assertEq(
             cancelledAfter,
             sliceAssets,

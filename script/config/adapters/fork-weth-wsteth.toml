@@ -1,0 +1,3 @@
+# Morpho adapter for fork provisioning's vault-v2 vault. Only input is the parent vault; the other immutables
+# come from the run's protocol.toml.
+vault_artifact = "fork-weth-wsteth"

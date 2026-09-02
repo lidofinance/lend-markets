@@ -9,7 +9,7 @@ import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.s
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
-import {ArtifactMetadata} from "../../script/lib/ArtifactMetadata.sol";
+import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
 import {
     ProtocolConfigFile,
     ProtocolDeployment,
@@ -46,6 +46,14 @@ contract ProtocolConfigFileHarness {
     function requireMarketIdUndeployed(bytes32 id, string memory deployment) external view {
         ProtocolConfigFile.requireMarketIdUndeployed(id, deployment);
     }
+
+    function requireMarketRoleUndeployed(string memory role, string memory deployment) external view {
+        ProtocolConfigFile.requireMarketRoleUndeployed(role, deployment);
+    }
+
+    function requireMarketsCompatible(ArtifactMetadata memory expected) external view {
+        ProtocolConfigFile.requireMarketsCompatible(expected);
+    }
 }
 
 contract ProtocolConfigFileTest is Test {
@@ -75,7 +83,7 @@ contract ProtocolConfigFileTest is Test {
 
     function test_writeMarket_recordsCompleteSeparateImmutableArtifacts() external {
         string memory run = _prepareRun("protocol-config-file-unit");
-        MarketDeployment memory market = _market("first", bytes32(uint256(0x1234)), address(0xCB));
+        MarketDeployment memory market = _market("first", bytes32(uint256(0x1234)));
         string memory path = harness.writeMarket(market, _metadata(run), run);
         string memory artifact = vm.readFile(path);
 
@@ -83,18 +91,9 @@ contract ProtocolConfigFileTest is Test {
         assertEq(vm.parseTomlAddress(artifact, ".market.oracle"), market.market.oracle);
         assertEq(vm.parseTomlAddress(artifact, ".market.controller"), market.controller);
         assertEq(vm.parseTomlAddress(artifact, ".market.factory"), market.factory);
-        assertEq(vm.parseTomlAddress(artifact, ".market.circuit_breaker"), address(0xCB));
-        assertEq(vm.parseTomlString(artifact, ".market.circuit_breaker_artifact"), "breaker");
-        assertEq(vm.parseTomlAddress(artifact, ".roles.admin"), market.controllerAdmin);
-        assertEq(vm.parseTomlAddress(artifact, ".roles.proxy_admin"), market.controllerAdmin);
-        assertEq(vm.parseTomlAddressArray(artifact, ".roles.pausers")[0], address(0xCB));
-        address[] memory managers = vm.parseTomlAddressArray(artifact, ".roles.managers");
-        assertEq(managers.length, 2);
-        assertEq(managers[0], market.ownerFacade);
-        assertEq(managers[1], market.riskStewardDashboard);
-        address[] memory unfreezers = vm.parseTomlAddressArray(artifact, ".roles.unfreezers");
-        assertEq(unfreezers.length, 1);
-        assertEq(unfreezers[0], market.ownerFacade);
+        assertEq(vm.parseTomlUint(artifact, ".market.supply_cap"), market.market.supplyCap);
+        assertFalse(vm.keyExistsToml(artifact, ".roles"), "derived roles are not deployment inputs");
+        assertFalse(vm.keyExistsToml(artifact, ".market.circuit_breaker"), "CircuitBreaker is protocol-wide");
         assertEq(
             vm.parseTomlUint(artifact, ".activation.min_activation_delay"),
             market.market.activationConfig.minActivationDelay
@@ -103,9 +102,10 @@ contract ProtocolConfigFileTest is Test {
             vm.parseTomlUint(artifact, ".settlement.full_cut_below_collateral"),
             market.market.settlementConfig.fullCutBelowCollateral
         );
+        assertEq(vm.parseTomlString(artifact, ".market.role"), "wsteth-weth");
+        assertEq(vm.parseTomlAddress(artifact, ".market.irm_config"), market.irmConfig);
         assertEq(vm.parseTomlInt(artifact, ".curve.curve_steepness"), market.curveParams.curveSteepness);
-        string memory second =
-            harness.writeMarket(_market("second", bytes32(uint256(2)), address(0xCB)), _metadata(run), run);
+        string memory second = harness.writeMarket(_market("second", bytes32(uint256(2))), _metadata(run), run);
 
         assertNotEq(path, second);
         assertTrue(vm.exists(path));
@@ -118,6 +118,67 @@ contract ProtocolConfigFileTest is Test {
         vm.removeDir(string.concat("deployed/", run), true);
     }
 
+    function testRevert_requireMarketRoleUndeployed_duplicateRole() external {
+        string memory run = _prepareRun("protocol-config-role-unit");
+        harness.writeMarket(_market("first", bytes32(uint256(1))), _metadata(run), run);
+
+        vm.expectRevert(abi.encodeWithSelector(ProtocolConfigFile.MarketRoleAlreadyRecorded.selector, "wsteth-weth"));
+        harness.requireMarketRoleUndeployed("wsteth-weth", run);
+        vm.removeDir(string.concat("deployed/", run), true);
+    }
+
+    function test_requireMarketRoleUndeployed_acceptsUnrecordedRole() external {
+        string memory run = _prepareRun("protocol-config-new-role-unit");
+        harness.writeMarket(_market("first", bytes32(uint256(1))), _metadata(run), run);
+
+        harness.requireMarketRoleUndeployed("usdy-usdt", run);
+        vm.removeDir(string.concat("deployed/", run), true);
+    }
+
+    function test_requireMarketsCompatible_acceptsDifferentExactConfig() external {
+        string memory run = _prepareRun("protocol-config-compatible-markets-unit");
+        harness.writeMarket(_market("first", bytes32(uint256(1))), _metadata(run), run);
+        ArtifactMetadata memory expected = _metadata(run);
+        expected.configHash = bytes32(uint256(0xBAD));
+
+        harness.requireMarketsCompatible(expected);
+        vm.removeDir(string.concat("deployed/", run), true);
+    }
+
+    function testRevert_requireMarketsCompatible_rejectsDifferentCompatibilityHash() external {
+        string memory run = _prepareRun("protocol-config-incompatible-markets-unit");
+        string memory path = harness.writeMarket(_market("first", bytes32(uint256(1))), _metadata(run), run);
+        ArtifactMetadata memory expected = _metadata(run);
+        expected.compatibilityHash = bytes32(uint256(0xBAD));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ArtifactMetadataFile.ArtifactCompatibilityHashMismatch.selector,
+                string.concat(vm.projectRoot(), "/", path),
+                expected.compatibilityHash,
+                bytes32(uint256(0xBEEF))
+            )
+        );
+        harness.requireMarketsCompatible(expected);
+        vm.removeDir(string.concat("deployed/", run), true);
+    }
+
+    function testRevert_requireMarketRoleUndeployed_missingRole() external {
+        string memory run = _prepareRun("protocol-config-missing-role-unit");
+        string memory markets = string.concat("deployed/", run, "/markets");
+        vm.createDir(markets, true);
+        string memory path = string.concat(markets, "/legacy.toml");
+        vm.writeFile(path, "[market]\nname = \"legacy\"\n");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ProtocolConfigFile.MarketRoleMissing.selector, string.concat(vm.projectRoot(), "/", path)
+            )
+        );
+        harness.requireMarketRoleUndeployed("wsteth-weth", run);
+        vm.removeDir(string.concat("deployed/", run), true);
+    }
+
     function test_writeProtocolAndExitBooks_recordsGovernanceConfiguration() external {
         string memory run = _prepareRun("protocol-config-factory-unit");
         vm.setEnv("ARTIFACTS_DIR", run);
@@ -126,6 +187,7 @@ contract ProtocolConfigFileTest is Test {
             network: "unit",
             chainId: 1,
             configHash: bytes32(uint256(0xCAFE)),
+            circuitBreakerArtifact: "lido-lend",
             core: address(0x10),
             ownerFacade: address(0x11),
             irmRouter: address(0x12),
@@ -133,8 +195,8 @@ contract ProtocolConfigFileTest is Test {
             irmConfigFactory: address(0x14),
             factory: address(0x15),
             riskStewardDashboard: address(0x17),
-            circuitBreakerArtifact: "breaker",
             circuitBreaker: address(0xCB),
+            resealManager: address(0x5EA1),
             guardianSignalsImpl: address(0x18),
             deployedBlock: 100,
             deployer: address(0x19),
@@ -150,25 +212,24 @@ contract ProtocolConfigFileTest is Test {
             "IRM config factory"
         );
         assertEq(vm.parseTomlAddress(protocolArtifact, ".protocol.circuit_breaker"), protocol.circuitBreaker);
+        assertEq(vm.parseTomlAddress(protocolArtifact, ".protocol.reseal_manager"), protocol.resealManager);
+        assertEq(
+            vm.parseTomlString(protocolArtifact, ".protocol.circuit_breaker_artifact"), protocol.circuitBreakerArtifact
+        );
+        assertFalse(vm.keyExistsToml(protocolArtifact, ".roles"), "derived roles are not deployment inputs");
         address pauser = makeAddr("exitBookPauser");
         ExitBooksDeployment memory exitBooks = ExitBooksDeployment({
             morpho: address(0x10),
             erc4626: address(0x11),
             deployedBlock: 100,
-            deployer: address(0x12),
-            agent: address(0x13),
-            evmScriptExecutor: address(0x14),
             pauser: pauser,
             maxRequestLifetime: 365 days
         });
 
         string memory exitBooksArtifact = vm.readFile(harness.writeExitBooks(exitBooks, _metadata(run)));
 
-        address[] memory pausers = vm.parseTomlAddressArray(exitBooksArtifact, ".roles.pausers");
-        address[] memory resumers = vm.parseTomlAddressArray(exitBooksArtifact, ".roles.resumers");
-        assertEq(pausers.length, 1);
-        assertEq(pausers[0], pauser);
-        assertEq(resumers.length, 0);
+        assertEq(vm.parseTomlAddress(exitBooksArtifact, ".exit_books.pauser"), pauser);
+        assertFalse(vm.keyExistsToml(exitBooksArtifact, ".roles"), "derived roles are not deployment inputs");
         vm.removeDir(string.concat("deployed/", run), true);
     }
 
@@ -179,41 +240,39 @@ contract ProtocolConfigFileTest is Test {
     }
 
     function _metadata(string memory run) private pure returns (ArtifactMetadata memory) {
-        return ArtifactMetadata({deployment: run, chainId: 1, configHash: bytes32(uint256(0xCAFE))});
+        return ArtifactMetadata({
+            deployment: run,
+            chainId: 1,
+            configHash: bytes32(uint256(0xCAFE)),
+            compatibilityHash: bytes32(uint256(0xBEEF))
+        });
     }
 
-    function _market(string memory name, bytes32 id, address circuitBreaker)
-        private
-        pure
-        returns (MarketDeployment memory d)
-    {
+    function _market(string memory name, bytes32 id) private pure returns (MarketDeployment memory d) {
         d = MarketDeployment({
             name: name,
+            role: "wsteth-weth",
             oracleArtifact: "wsteth",
             guardianGroup: "main",
-            circuitBreakerArtifact: "breaker",
             id: id,
             factory: address(0xB0),
             controller: address(0xC0),
             vault: address(0xA0),
             irm: address(0x1),
-            ownerFacade: address(0xFA),
-            riskStewardDashboard: address(0xDA),
-            controllerAdmin: address(0x50),
-            circuitBreaker: circuitBreaker,
             market: LidoLendMarketFactory.MarketSpec({
                 loanToken: address(0x10),
                 collateralToken: address(0x20),
                 oracle: address(0x30),
                 lltv: 0.8 ether,
                 guardianSignals: address(0x40),
+                supplyCap: 1_000 ether,
                 activationConfig: CollateralActivationConfig({
                     minActivationDelay: 1,
                     maxActivationDelay: 2,
                     maxDelayInflow: 3,
-                    activatingLockAmount: 4,
                     activatingLockDuration: 5,
                     minActivationAmount: 6,
+                    minDepositAmount: 0,
                     maxGuardiansQuorumDelay: 7,
                     delayPerStrike: 8,
                     delayPerSuspect: 9
@@ -232,6 +291,7 @@ contract ProtocolConfigFileTest is Test {
                     maxRateAtTarget: 3,
                     maxBorrowRate: 4
                 }),
+            irmConfig: address(0x1CF6),
             deployedBlock: 100
         });
     }

@@ -20,7 +20,6 @@ import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {LidoLendPrimitives} from "./LidoLendPrimitives.sol";
 import {ProtocolConfig, ProtocolDeployment} from "./ProtocolConfigFile.sol";
-import {GuardianSignalsConfig, GuardianSignalsConfigFile} from "./GuardianSignalsConfigFile.sol";
 import {ExitBookConfig} from "./ExitBookConfigFile.sol";
 
 interface ICircuitBreakerConfig {
@@ -38,7 +37,6 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     error MissingCircuitBreaker();
     error CircuitBreakerNotContract(address circuitBreaker);
     error UnexpectedCircuitBreakerAdmin(address expected, address actual);
-    error DuplicateMarketId(string firstMarket, string secondMarket);
     error MissingExitBookPauser();
 
     function _requireChainId(uint256 expected) internal view {
@@ -57,9 +55,11 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         d.agent = cfg.agent;
         d.evmScriptExecutor = cfg.evmScriptExecutor;
         d.circuitBreaker = cfg.circuitBreaker;
+        d.resealManager = cfg.resealManager;
 
         d.core = _deployCore(deployer);
         d.ownerFacade = _deployOwnerFacade(d.core, deployer, address(0), address(0));
+        ILidoLend(d.core).setFeeRecipient(cfg.agent);
         ILidoLend(d.core).setOwner(d.ownerFacade);
         d.irmRouter = _deployIrm(d.core, deployer);
 
@@ -89,6 +89,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
                     irmRouter: d.irmRouter,
                     lidoLendOwner: d.ownerFacade,
                     circuitBreaker: cfg.circuitBreaker,
+                    resealManager: cfg.resealManager,
                     riskStewardDashboard: d.riskStewardDashboard
                 }),
                 cfg.agent
@@ -101,7 +102,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         facade.grantRole(facade.GUARDIAN_MANAGER_ROLE(), cfg.evmScriptExecutor);
         IrmRouter(d.irmRouter).setManager(cfg.evmScriptExecutor);
 
-        facade.grantRole(facade.FEE_MANAGER_ROLE(), cfg.agent);
+        facade.grantRole(facade.FEE_MANAGER_ROLE(), cfg.evmScriptExecutor);
         facade.grantRole(facade.DEFAULT_ADMIN_ROLE(), cfg.agent);
         facade.revokeRole(facade.DEFAULT_ADMIN_ROLE(), deployer);
         IrmRouter(d.irmRouter).transferOwnership(cfg.agent);
@@ -109,40 +110,11 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         OssifiableProxy(payable(d.irmRouter)).proxy__changeAdmin(cfg.agent);
     }
 
-    /// @dev The facade is the only operational manager.
-    function _deployGuardianSignals(string memory name, address factory) internal returns (address guardianSignals) {
-        GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.read(name);
-
-        guardianSignals = LidoLendMarketFactory(factory)
-            .deployGuardianSignals(
-                LidoLendMarketFactory.GuardianSpec({
-                    guardians: cfg.guardians, quorum: cfg.quorum, suspectWindow: cfg.suspectWindow
-                })
-            );
-    }
-
     function _requireCircuitBreakerPolicy(address circuitBreaker, address executor) internal view {
         if (circuitBreaker == address(0)) revert MissingCircuitBreaker();
         if (circuitBreaker.code.length == 0) revert CircuitBreakerNotContract(circuitBreaker);
         address actualAdmin = ICircuitBreakerConfig(circuitBreaker).ADMIN();
         if (actualAdmin != executor) revert UnexpectedCircuitBreakerAdmin(executor, actualAdmin);
-    }
-
-    /// @dev The shared IRM router makes these four inputs sufficient to detect duplicate market ids.
-    function _requireUniqueMarketIds(string[] memory names, LidoLendMarketFactory.MarketSpec[] memory markets)
-        internal
-        pure
-    {
-        for (uint256 i; i < markets.length; ++i) {
-            bytes32 current = _marketIdInputHash(markets[i]);
-            for (uint256 j; j < i; ++j) {
-                if (current == _marketIdInputHash(markets[j])) revert DuplicateMarketId(names[j], names[i]);
-            }
-        }
-    }
-
-    function _marketIdInputHash(LidoLendMarketFactory.MarketSpec memory market) private pure returns (bytes32) {
-        return keccak256(abi.encode(market.loanToken, market.collateralToken, market.oracle, market.lltv));
     }
 
     function _deployExitBooks(ExitBookConfig memory cfg, address deployer)
@@ -170,7 +142,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         // EasyTrack and the Agent both need independent allow-list control.
         book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.evmScriptExecutor);
         book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.agent);
-        book.grantRole(book.FEE_MANAGER_ROLE(), cfg.agent);
+        book.grantRole(book.FEE_MANAGER_ROLE(), cfg.evmScriptExecutor);
         book.grantRole(book.RECOVERER_ROLE(), cfg.agent);
         book.grantRole(book.PAUSER_ROLE(), cfg.pauser);
         // RESUMER_ROLE deliberately starts empty. Governance grants it only when it needs to resume the book.

@@ -64,10 +64,6 @@ interface ILidoLendMarketController is
     /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
 
-    /// @notice Thrown when a withdrawal would leave raw collateral below the amount still held in the
-    ///         un-matured buckets (a locked activating lot plus dust).
-    error ActivationLockActive();
-
     /// @notice Thrown when a borrow would mint borrow shares while transferring zero loan assets.
     error ZeroBorrowAssets();
 
@@ -171,8 +167,8 @@ interface ILidoLendMarketController is
     function currentInflow() external view returns (uint256);
 
     /// @notice Base inflow-throttle delay for a hypothetical `inflowIncrement` at the current decayed inflow.
-    ///         Excludes instant activation, dust aggregation, the minimum amount, and guardian surcharges; it is not
-    ///         a complete quote for a specific collateral supply.
+    ///         Excludes instant activation, any existing dust, the minimum amount, and guardian surcharges; it is
+    ///         not a complete quote for a specific collateral supply.
     function currentActivationDelay(uint256 inflowIncrement) external view returns (uint256);
 
     /// @notice Whether `caller`'s supplies skip the activation timer.
@@ -210,7 +206,8 @@ interface ILidoLendMarketController is
     /// @notice The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance
     ///         or the borrower's own settlement-LTV allowance — shrunk to what `budgetSupplyShares` of core supply
     ///         funds. Pass 0 for the policy cut itself, unshrunk. A concrete lender may execute the root-policy
-    ///         part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty.
+    ///         part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty, and
+    ///         the slice quotes zero `borrowShares` when no executable cut is available.
     function nextSettlementBorrower(uint256 budgetSupplyShares)
         external
         view
@@ -219,7 +216,8 @@ interface ILidoLendMarketController is
     /// @notice The borrower's personal cut and its prospective queue-root cut, each shrunk to what
     ///         `budgetSupplyShares` of core supply funds. Pass 0 for the policy cuts themselves, unshrunk. The
     ///         queue-root quote does not assert that the borrower is currently the root. A candidate that grants
-    ///         no cut is represented by an all-zero slice.
+    ///         no cut quotes zero `borrowShares` — including one whose cut would be too small to seize a
+    ///         whole collateral unit, which the core rejects.
     function settlementFor(address borrower, uint256 budgetSupplyShares)
         external
         view

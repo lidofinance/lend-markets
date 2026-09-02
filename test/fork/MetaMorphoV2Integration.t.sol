@@ -8,336 +8,316 @@ import {
     MarketParams as AdapterMarketParams
 } from "@vault-v2/lib/morpho-blue/src/interfaces/IMorpho.sol";
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
-import {Test} from "forge-std/Test.sol";
-import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
-import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
+
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
+import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
+import {SettlementConfig, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 import {WAD} from "../../src/libs/Constants.sol";
-import {ForkTest} from "./helpers/ForkTest.sol";
+import {ForkStack} from "./helpers/ForkStack.sol";
 
-struct LidoMarketParams {
-    address loanToken;
-    address collateralToken;
-    address oracle;
-    address irm;
-    uint256 lltv;
-}
-
-interface IERC20Like {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-}
-
-interface IWETH is IERC20Like {
+interface IWETH {
     function deposit() external payable;
 }
 
-interface IStETH is IERC20Like {
-    function submit(address referral) external payable returns (uint256);
-}
-
-interface IWstETH is IERC20Like {
-    function wrap(uint256 stETHAmount) external returns (uint256);
-}
-
-interface ILidoLendLike {
-    function enableIrm(address irm) external;
-    function enableLltv(uint256 lltv) external;
-    function createMarket(LidoMarketParams memory marketParams, address controller, bool enableSettlement) external;
-    function supply(
-        LidoMarketParams memory marketParams,
-        uint256 assets,
-        uint256 shares,
-        address onBehalf,
-        bytes calldata data
-    ) external returns (uint256, uint256);
-    function supplyCollateral(
-        LidoMarketParams memory marketParams,
-        uint256 assets,
-        address onBehalf,
-        bytes calldata data
-    ) external;
-    function borrow(
-        LidoMarketParams memory marketParams,
-        uint256 assets,
-        uint256 shares,
-        address onBehalf,
-        address receiver
-    ) external returns (uint256, uint256);
-    function settle(
-        LidoMarketParams memory marketParams,
-        uint256 borrowShares,
-        address onBehalf,
-        address borrower,
-        address receiver
-    ) external returns (uint256, uint256, uint256, uint256);
-    function position(bytes32 id, address user)
-        external
-        view
-        returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral);
-}
-
-contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer, ForkTest {
+/// @notice Fork integration of the external vault-v2 stack with the ALREADY-DEPLOYED `weth-wsteth` market: a
+///         vault-v2 allocator routes deposits through the deployed Morpho adapter
+///         into the Lido fork core, borrowers drain every last unit of liquidity so a plain vault withdraw
+///         reverts, then `forceDeallocate` exits the vault user and a direct-lender fallback `settle` seizes the
+///         borrower's collateral to exit the direct lender.
+///
+///         The suite deploys nothing. It binds the Lido stack via {ForkStack} and the vault-v2 pair from the
+///         run's `vaults/` + `adapters/` artifacts, which the deploy leaves UNCONFIGURED (no curator, adapter,
+///         or caps). Because that vault is SHARED, the suite configures it for this run against fresh test-actor
+///         roles and refuses (loudly) to run against an already-configured vault.
+///
+///         State-robustness contract (a shared deployed market may already carry supply/borrow):
+///         the drain borrows exactly the MEASURED free liquidity (`_freeLiquidity`) so the core is emptied at
+///         any live level, collateral is sized from the live oracle price, adapter allocations are asserted as
+///         deltas, and the fallback settle loudly requires the test borrower to be the settlement-queue root so
+///         a pre-existing riskier borrower cannot starve the cut.
+contract MetaMorphoV2IntegrationTest is ForkStack {
     using AdapterMarketParamsLib for AdapterMarketParams;
 
-    address internal constant CURATOR = address(0x1001);
-    address internal constant ALLOCATOR = address(0x1002);
-    address internal constant USER = address(0x1003);
-    address internal constant BORROWER = address(0x1004);
-    address internal constant SOLVER = address(0x1005);
-    address internal constant DIRECT_LENDER = address(0x1006);
-    address internal constant LOW_LTV_BORROWER = address(0x1007);
+    BoundMarket internal m;
 
-    // Populated in setUp from script/config/<NETWORK>.toml.
-    address internal WETH_ADDRESS;
-    address internal STETH_ADDRESS;
-    address internal WSTETH_ADDRESS;
+    // Rebound from the bound market in `setUp` so the flow reads like the freshly-deployed variant did.
+    ILidoLend internal core;
+    MarketParams internal params;
+    Id internal marketId;
+
+    // The deployed vault-v2 pair, and the adapter's params rebuilt from the live market params.
+    IVaultV2 internal vault2;
+    IMorphoMarketV1AdapterLike internal adapter;
+    address internal adapterAddr;
+    AdapterMarketParams internal adapterParams;
 
     IWETH internal WETH;
-    IStETH internal STETH;
-    IWstETH internal WSTETH;
 
-    uint256 internal constant LLTV = 0.8e18;
+    // Role-only actors (curator/allocator hold no market position or vault shares).
+    address internal CURATOR;
+    address internal ALLOCATOR;
 
-    struct IntegrationContext {
-        IERC20Like loanToken;
-        IERC20Like collateralToken;
-        ILidoLendLike market;
-        LidoMarketParams lidoParams;
-        AdapterMarketParams adapterParams;
-        bytes32 marketId;
-        IVaultV2 vault;
-        IMorphoMarketV1AdapterLike adapter;
-    }
+    // Market-participating actors — fresh and market-clean, so per-actor reads double as deltas.
+    address internal USER;
+    address internal BORROWER;
+    address internal SOLVER;
+    address internal DIRECT_LENDER;
+    address internal LOW_LTV_BORROWER;
+
+    /// @dev The direct-lender fallback exit cancels the direct lender's whole ~5 WETH supply in ONE settle. The
+    ///      committed settlement config sizes the root cut from `sliceFloorBps` / `ltvStepBps` alone
+    ///      (`sliceFloorAssets == 0`), which caps a single cut far below 5 WETH; the test raises the absolute
+    ///      floor to 20 WETH at runtime, as self-granted manager, so the exit clears in one cut.
+    uint96 internal constant SLICE_FLOOR_ASSETS = 20 ether;
 
     function setUp() public {
         _fork();
-        WETH_ADDRESS = _ext("weth");
-        STETH_ADDRESS = _ext("stEth");
-        WSTETH_ADDRESS = _ext("wstEth");
-        WETH = IWETH(WETH_ADDRESS);
-        STETH = IStETH(STETH_ADDRESS);
-        WSTETH = IWstETH(WSTETH_ADDRESS);
+        string memory market_ = _marketForRole("weth-wsteth");
+        if (bytes(market_).length == 0) return; // not applicable to this deployment
+        m = _bindMarket(market_);
+        _pokeAccrue(m); // fold in pending interest up front so the exact liquidity math below holds
+
+        core = m.core;
+        params = m.params;
+        marketId = m.id;
+
+        // The pair is recorded under the name of the market it serves, and a deployment may carry none.
+        string memory vaultArtifact = string.concat("vaults/", market_, ".toml");
+        string memory adapterArtifact = string.concat("adapters/", market_, ".toml");
+        if (!_hasArtifact(vaultArtifact) || !_hasArtifact(adapterArtifact)) {
+            vm.skip(true, string.concat("MetaMorphoV2: run has no vault-v2 pair for '", market_, "'"));
+            return;
+        }
+        vault2 = IVaultV2(_artifactAddr(vaultArtifact, "vault.address"));
+        adapterAddr = _artifactAddr(adapterArtifact, "adapter.address");
+        adapter = IMorphoMarketV1AdapterLike(adapterAddr);
+
+        // The adapter drives the SAME market the suite is bound to. The two param structs are ABI-identical
+        // (both `{address loanToken, collateralToken, oracle, irm; uint256 lltv}`), so rebuild the adapter's from
+        // the live core params and assert the derived id matches the bound market — a mismatch means the
+        // run's vault-v2 pieces point at a different market than the one bound.
+        adapterParams = AdapterMarketParams({
+            loanToken: params.loanToken,
+            collateralToken: params.collateralToken,
+            oracle: params.oracle,
+            irm: params.irm,
+            lltv: params.lltv
+        });
+        assertEq(AdapterId.unwrap(adapterParams.id()), Id.unwrap(marketId), "adapter marketId matches the bound market");
+
+        WETH = IWETH(address(m.loanToken));
+
+        CURATOR = makeAddr("metaMorphoV2.curator");
+        ALLOCATOR = makeAddr("metaMorphoV2.allocator");
+        USER = _freshActor(m, "metaMorphoV2.user");
+        BORROWER = _freshActor(m, "metaMorphoV2.borrower");
+        SOLVER = _freshActor(m, "metaMorphoV2.solver");
+        DIRECT_LENDER = _freshActor(m, "metaMorphoV2.directLender");
+        LOW_LTV_BORROWER = _freshActor(m, "metaMorphoV2.lowLtvBorrower");
+
+        _raiseSliceFloor();
+        _configureVault();
     }
 
     /// @dev A vault-v2 allocator supplies into the Lido fork market via the Morpho adapter; borrowers drain all
     ///      liquidity so a plain vault withdraw reverts, then forceDeallocate exits the vault user and a
     ///      direct-lender fallback settle seizes the borrower's collateral to exit the direct lender.
     function test_metaMorphoV2_allocatesIntoForkAndForceDeallocates() public {
-        IntegrationContext memory ctx = _setupIntegrationContext();
-        uint256 directSupplySharesBefore = _seedVaultAndDirectLender(ctx);
-        _seedBorrowersAndDrainLiquidity(ctx);
+        uint256 directSupplyShares = _seedVaultAndDirectLender();
+        _seedBorrowersAndDrainLiquidity();
 
-        assertEq(ctx.loanToken.balanceOf(address(ctx.market)), 0, "Lido market fully utilized");
+        // The vault-allocate + direct-lender supply are now fully borrowed out, so the core holds no loan tokens:
+        // a plain vault withdraw has nothing to pull and must revert. Assert on the CORE's balance (as the
+        // original did) — on this market the core's idle loan-token balance is exactly its free liquidity.
+        assertEq(m.loanToken.balanceOf(address(core)), 0, "Lido market fully utilized");
 
         vm.expectRevert();
         vm.prank(USER);
-        ctx.vault.withdraw(10 ether, USER, USER);
+        vault2.withdraw(10 ether, USER, USER);
 
-        _forceDeallocateVaultUser(ctx);
-        _settleDirectLenderAndAssert(ctx, directSupplySharesBefore);
+        _forceDeallocateVaultUser();
+        _settleDirectLenderAndAssert(directSupplyShares);
 
-        (uint256 userDirectSupplySharesAfter,,) = ctx.market.position(ctx.marketId, USER);
-        assertTrue(userDirectSupplySharesAfter > 0, "direct market position remains with user");
-        assertEq(ctx.vault.balanceOf(USER), 0, "user exited vault shares");
-        assertEq(ctx.loanToken.balanceOf(SOLVER), 10 ether, "solver can repay temporary liquidity");
+        assertGt(core.position(marketId, USER).supplyShares, 0, "direct market position remains with user");
+        assertEq(vault2.balanceOf(USER), 0, "user exited vault shares");
+        assertEq(m.loanToken.balanceOf(SOLVER), 10 ether, "solver can repay temporary liquidity");
     }
 
-    function _setupIntegrationContext() internal returns (IntegrationContext memory ctx) {
-        ctx.loanToken = IERC20Like(WETH_ADDRESS);
-        ctx.collateralToken = IERC20Like(WSTETH_ADDRESS);
-
-        address[] memory guardians = new address[](1);
-        guardians[0] = address(this);
-
-        Deployed memory d = _deployForkStack(
-            DeployConfig({
-                admin: address(this),
-                loanToken: WETH_ADDRESS,
-                collateralToken: WSTETH_ADDRESS,
-                oracleSource: WSTETH_ADDRESS,
-                lltv: LLTV,
-                enableSettlement: true,
-                activation: CollateralActivationConfig({
-                    minActivationDelay: 10 minutes,
-                    maxActivationDelay: 2 hours,
-                    activatingLockAmount: 0,
-                    activatingLockDuration: 0,
-                    maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 10 ether,
-                    maxGuardiansQuorumDelay: 0,
-                    delayPerStrike: 0,
-                    delayPerSuspect: 0
-                }),
-                settlementConfig: SettlementConfig({
-                    sliceFloorBps: 100, sliceFloorAssets: 20 ether, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
-                }),
-                guardians: guardians,
-                quorum: 1,
-                suspectWindow: 0,
-                vaultName: "Lido wstETH/WETH Vault",
-                vaultSymbol: "lidoWSTETH-WETH"
-            })
-        );
-
-        ctx.market = ILidoLendLike(d.core);
-        ctx.lidoParams = LidoMarketParams({
-            loanToken: WETH_ADDRESS, collateralToken: WSTETH_ADDRESS, oracle: d.oracle, irm: d.irm, lltv: LLTV
-        });
-        ctx.adapterParams = AdapterMarketParams({
-            loanToken: WETH_ADDRESS, collateralToken: WSTETH_ADDRESS, oracle: d.oracle, irm: d.irm, lltv: LLTV
-        });
-        ctx.marketId = AdapterId.unwrap(ctx.adapterParams.id());
-
-        // vault-v2 compiles at 0.8.28, this suite at 0.8.36, so `vm.getCode` finds no same-version artifact.
-        // Read the bytecode straight from `out/` instead (version-agnostic), the way the other scenario suites do.
-        ctx.vault = IVaultV2(_deployOut("VaultV2.sol", "VaultV2", abi.encode(address(this), address(ctx.loanToken))));
-        ctx.adapter = IMorphoMarketV1AdapterLike(
-            _deployOut(
-                "MorphoMarketV1AdapterV2.sol",
-                "MorphoMarketV1AdapterV2",
-                abi.encode(address(ctx.vault), address(ctx.market), d.irm)
-            )
-        );
-        _configureVault(ctx.vault, ctx.adapter, ctx.adapterParams);
-    }
-
-    function _seedVaultAndDirectLender(IntegrationContext memory ctx) internal returns (uint256 directSupplyShares) {
+    /// @dev USER deposits into the vault, the allocator routes it into the Lido market via the adapter, and a
+    ///      direct lender supplies straight into the core. Adapter supply is asserted as a delta (the adapter is
+    ///      shared), and the direct lender's supply shares are returned for the later fallback settle.
+    function _seedVaultAndDirectLender() internal returns (uint256 directSupplyShares) {
+        uint256 vaultIdleBefore = m.loanToken.balanceOf(address(vault2));
         _mintWETH(USER, 10 ether);
         vm.prank(USER);
-        ctx.loanToken.approve(address(ctx.vault), type(uint256).max);
+        m.loanToken.approve(address(vault2), type(uint256).max);
         vm.prank(USER);
-        uint256 vaultShares = ctx.vault.deposit(10 ether, USER);
-        assertTrue(vaultShares > 0, "vault shares minted");
+        uint256 vaultShares = vault2.deposit(10 ether, USER);
+        assertGt(vaultShares, 0, "vault shares minted");
 
+        uint256 adapterSupplyBefore = adapter.expectedSupplyAssets(Id.unwrap(marketId));
         vm.prank(ALLOCATOR);
-        ctx.vault.allocate(address(ctx.adapter), abi.encode(ctx.adapterParams), 10 ether);
+        vault2.allocate(adapterAddr, abi.encode(adapterParams), 10 ether);
 
-        assertEq(ctx.loanToken.balanceOf(address(ctx.vault)), 0, "vault allocated idle assets");
-        assertEq(ctx.adapter.expectedSupplyAssets(ctx.marketId), 10 ether, "adapter supplied into Lido fork");
+        assertEq(m.loanToken.balanceOf(address(vault2)), vaultIdleBefore, "vault allocated the deposited idle assets");
+        assertEq(
+            adapter.expectedSupplyAssets(Id.unwrap(marketId)) - adapterSupplyBefore,
+            10 ether,
+            "adapter supplied into Lido fork"
+        );
 
         _mintWETH(DIRECT_LENDER, 5 ether);
         vm.prank(DIRECT_LENDER);
-        ctx.loanToken.approve(address(ctx.market), type(uint256).max);
+        m.loanToken.approve(address(core), type(uint256).max);
         vm.prank(DIRECT_LENDER);
-        ctx.market.supply(ctx.lidoParams, 5 ether, 0, DIRECT_LENDER, "");
+        core.supply(params, 5 ether, 0, DIRECT_LENDER, "");
 
-        (directSupplyShares,,) = ctx.market.position(ctx.marketId, DIRECT_LENDER);
-        assertTrue(directSupplyShares > 0, "direct lender supplied into Lido fork");
+        directSupplyShares = core.position(marketId, DIRECT_LENDER).supplyShares;
+        assertGt(directSupplyShares, 0, "direct lender supplied into Lido fork");
     }
 
-    function _seedBorrowersAndDrainLiquidity(IntegrationContext memory ctx) internal {
-        uint256 borrowerCollateral = _mintWstETH(BORROWER, 40 ether);
-        vm.prank(BORROWER);
-        ctx.collateralToken.approve(address(ctx.market), type(uint256).max);
-        vm.prank(BORROWER);
-        ctx.market.supplyCollateral(ctx.lidoParams, borrowerCollateral, BORROWER, "");
+    /// @dev Both borrowers supply live-price-sized collateral; only BORROWER draws debt, borrowing exactly the
+    ///      measured free liquidity so the core empties. LOW_LTV_BORROWER stays a collateral-only participant the
+    ///      settle never touches. Requires BORROWER to be the settle-queue root (see the settle helper).
+    function _seedBorrowersAndDrainLiquidity() internal {
+        // Measure everything the vault + direct lender put in; the loan token is WETH, so the collateral supplies
+        // below do not move it. Borrowing exactly this empties the core at whatever the live level is.
+        uint256 drain = _freeLiquidity(m);
+        uint256 collateral = _collateralFor(drain);
 
-        uint256 lowLtvBorrowerCollateral = _mintWstETH(LOW_LTV_BORROWER, 40 ether);
-        vm.prank(LOW_LTV_BORROWER);
-        ctx.collateralToken.approve(address(ctx.market), type(uint256).max);
-        vm.prank(LOW_LTV_BORROWER);
-        ctx.market.supplyCollateral(ctx.lidoParams, lowLtvBorrowerCollateral, LOW_LTV_BORROWER, "");
+        _supplyCollateral(BORROWER, collateral);
+        _supplyCollateral(LOW_LTV_BORROWER, collateral);
 
-        vm.warp(block.timestamp + 2 hours + 1);
+        _warpPastActivation(m);
 
-        uint256 borrowerLoanBefore = ctx.loanToken.balanceOf(BORROWER);
+        uint256 borrowerLoanBefore = m.loanToken.balanceOf(BORROWER);
         vm.prank(BORROWER);
-        ctx.market.borrow(ctx.lidoParams, 15 ether, 0, BORROWER, BORROWER);
-        assertEq(
-            ctx.loanToken.balanceOf(BORROWER) - borrowerLoanBefore, 15 ether, "borrower received borrowed liquidity"
+        core.borrow(params, drain, 0, BORROWER, BORROWER);
+        assertEq(m.loanToken.balanceOf(BORROWER) - borrowerLoanBefore, drain, "borrower received borrowed liquidity");
+
+        // The direct-lender fallback settle names BORROWER, but the policy only cuts the settlement-queue ROOT
+        // (a non-root borrower gets a zero allowed slice). On this quiet market BORROWER is the sole debtor, so it
+        // must be the root; assert it so a pre-existing riskier borrower cannot silently starve the cut.
+        (address root,) = m.controller.nextSettlementBorrower(0);
+        require(
+            root == BORROWER,
+            "MetaMorphoV2Integration: a pre-existing borrower outranks the test borrower in the settle queue"
         );
     }
 
-    function _forceDeallocateVaultUser(IntegrationContext memory ctx) internal {
+    /// @dev Injects temporary market liquidity so the fully-utilized vault user can be force-deallocated: SOLVER
+    ///      supplies 10 WETH on USER's behalf (giving USER a direct supply position and the core 10 WETH to
+    ///      withdraw), then forceDeallocate pulls the adapter's 10 WETH back to the vault (asserted as deltas)
+    ///      and USER withdraws it to SOLVER so the temporary liquidity can be repaid.
+    function _forceDeallocateVaultUser() internal {
         _mintWETH(SOLVER, 10 ether);
         vm.prank(SOLVER);
-        ctx.loanToken.approve(address(ctx.market), type(uint256).max);
+        m.loanToken.approve(address(core), type(uint256).max);
         vm.prank(SOLVER);
-        ctx.market.supply(ctx.lidoParams, 10 ether, 0, USER, "");
+        core.supply(params, 10 ether, 0, USER, "");
 
-        (uint256 userDirectSupplyShares,,) = ctx.market.position(ctx.marketId, USER);
-        assertTrue(userDirectSupplyShares > 0, "user got direct Lido market supply shares");
+        assertGt(core.position(marketId, USER).supplyShares, 0, "user got direct Lido market supply shares");
 
-        ctx.vault.forceDeallocate(address(ctx.adapter), abi.encode(ctx.adapterParams), 10 ether, USER);
+        uint256 adapterSupplyBefore = adapter.expectedSupplyAssets(Id.unwrap(marketId));
+        uint256 vaultIdleBefore = m.loanToken.balanceOf(address(vault2));
+        vault2.forceDeallocate(adapterAddr, abi.encode(adapterParams), 10 ether, USER);
 
-        assertEq(ctx.adapter.expectedSupplyAssets(ctx.marketId), 0, "adapter deallocated from Lido fork");
-        assertEq(ctx.loanToken.balanceOf(address(ctx.vault)), 10 ether, "vault received deallocated assets");
+        assertEq(
+            adapterSupplyBefore - adapter.expectedSupplyAssets(Id.unwrap(marketId)),
+            10 ether,
+            "adapter deallocated from Lido fork"
+        );
+        assertEq(
+            m.loanToken.balanceOf(address(vault2)) - vaultIdleBefore, 10 ether, "vault received deallocated assets"
+        );
 
         vm.prank(USER);
-        ctx.vault.withdraw(10 ether, SOLVER, USER);
+        vault2.withdraw(10 ether, SOLVER, USER);
     }
 
-    function _settleDirectLenderAndAssert(IntegrationContext memory ctx, uint256 supplyShares) internal {
-        uint256 directCollateralBefore = ctx.collateralToken.balanceOf(DIRECT_LENDER);
-        (,, uint128 borrowerRawCollateralBefore) = ctx.market.position(ctx.marketId, BORROWER);
+    /// @dev The direct lender exits by settling its whole supply against BORROWER: with the core empty, the
+    ///      core's "cancel up to onBehalf's supply minus free liquidity" gate lets the full ~5 WETH cut through,
+    ///      backed by the raised slice floor. Collateral movements are asserted per-position.
+    function _settleDirectLenderAndAssert(uint256 supplyShares) internal {
+        uint256 directCollateralBefore = m.collateralToken.balanceOf(DIRECT_LENDER);
+        uint256 borrowerRawCollateralBefore = core.position(marketId, BORROWER).collateral;
+        (, SettlementSlice memory slice) = m.controller.nextSettlementBorrower(supplyShares);
 
         vm.prank(DIRECT_LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
-            ctx.market.settle(ctx.lidoParams, supplyShares, DIRECT_LENDER, BORROWER, DIRECT_LENDER);
+            core.settle(params, slice.borrowShares, DIRECT_LENDER, BORROWER, DIRECT_LENDER);
 
-        (uint256 directSupplySharesAfterFallback,,) = ctx.market.position(ctx.marketId, DIRECT_LENDER);
-        (,, uint128 borrowerRawCollateralAfter) = ctx.market.position(ctx.marketId, BORROWER);
+        uint256 directSupplySharesAfter = core.position(marketId, DIRECT_LENDER).supplyShares;
+        uint256 borrowerRawCollateralAfter = core.position(marketId, BORROWER).collateral;
 
-        assertEq(directSupplySharesAfterFallback, 0, "direct lender exited via fallback");
+        assertEq(directSupplySharesAfter, 0, "direct lender exited via fallback");
         assertTrue(debtCanceled > 4.9 ether && debtCanceled <= 5 ether, "direct lender canceled near 5 WETH debt");
         assertEq(
-            ctx.collateralToken.balanceOf(DIRECT_LENDER),
+            m.collateralToken.balanceOf(DIRECT_LENDER),
             directCollateralBefore + collateralSeized,
             "direct lender received collateral"
         );
         assertEq(
-            uint256(borrowerRawCollateralAfter),
-            uint256(borrowerRawCollateralBefore) - collateralSeized,
+            borrowerRawCollateralAfter,
+            borrowerRawCollateralBefore - collateralSeized,
             "fallback debited borrower collateral"
         );
     }
 
-    function _mintWETH(address user, uint256 amount) internal {
-        vm.deal(user, amount);
-        vm.prank(user);
-        WETH.deposit{value: amount}();
+    // ---
+    // SETUP HELPERS
+    // ---
+
+    /// @dev Raise the settlement absolute floor to `SLICE_FLOOR_ASSETS`, read-modify-write over the live config so
+    ///      only that knob moves. Manager-gated, so self-grant first. See the constant for why the floor is needed.
+    function _raiseSliceFloor() internal {
+        _grantSelfManager(m);
+        SettlementConfig memory cfg = m.controller.settlementConfig();
+        cfg.sliceFloorAssets = SLICE_FLOOR_ASSETS;
+        m.controller.setSettlementConfig(cfg);
     }
 
-    function _mintWstETH(address user, uint256 ethAmount) internal returns (uint256) {
-        vm.deal(user, ethAmount);
-        vm.prank(user);
-        STETH.submit{value: ethAmount}(address(0));
+    /// @dev Configure the SHARED, provisioned vault-v2 fixture for this run: register the adapter, authorize the
+    ///      allocator, and open the caps, with a fresh test-actor curator. The provision leaves the vault
+    ///      UNCONFIGURED, so probe that state first and fail loudly on an already-configured vault rather than
+    ///      dying inside an opaque timelock / "already pending" revert — a re-used vault must stop the
+    ///      run with a clear message. (Within one forge run each test re-forks anvil, so this only guards the
+    ///      provisioned state, never leakage between tests.)
+    function _configureVault() internal {
+        require(
+            vault2.curator() == address(0) && !vault2.isAdapter(adapterAddr) && !vault2.isAllocator(ALLOCATOR)
+                && vault2.absoluteCap(keccak256(abi.encode("this", adapterAddr))) == 0,
+            "MetaMorphoV2Integration: vault-v2 fixture is already configured; expected the unconfigured provision"
+        );
 
-        uint256 stETHAmount = STETH.balanceOf(user);
-        vm.prank(user);
-        STETH.approve(WSTETH_ADDRESS, stETHAmount);
+        // setCurator is owner-gated. The provisioned vault's owner is the deploy key, not this test — prank it.
+        // The curator itself stays a fresh test actor.
+        vm.prank(vault2.owner());
+        vault2.setCurator(CURATOR);
 
-        uint256 wstETHBefore = WSTETH.balanceOf(user);
-        vm.prank(user);
-        WSTETH.wrap(stETHAmount);
-        return WSTETH.balanceOf(user) - wstETHBefore;
+        _executeTimelocked(abi.encodeCall(vault2.setIsAllocator, (ALLOCATOR, true)));
+        _executeTimelocked(abi.encodeCall(vault2.addAdapter, (adapterAddr)));
+
+        _enableCap(abi.encode("this", adapterAddr));
+        _enableCap(abi.encode("collateralToken", params.collateralToken));
+        _enableCap(abi.encode("this/marketParams", adapterAddr, adapterParams));
     }
 
-    function _configureVault(
-        IVaultV2 vault,
-        IMorphoMarketV1AdapterLike adapter,
-        AdapterMarketParams memory marketParams
-    ) internal {
-        vault.setCurator(CURATOR);
-
-        _executeTimelocked(vault, abi.encodeCall(vault.setIsAllocator, (ALLOCATOR, true)));
-        _executeTimelocked(vault, abi.encodeCall(vault.addAdapter, (address(adapter))));
-
-        _enableCap(vault, abi.encode("this", address(adapter)));
-        _enableCap(vault, abi.encode("collateralToken", marketParams.collateralToken));
-        _enableCap(vault, abi.encode("this/marketParams", address(adapter), marketParams));
+    function _enableCap(bytes memory idData) internal {
+        _executeTimelocked(abi.encodeCall(vault2.increaseAbsoluteCap, (idData, type(uint128).max)));
+        _executeTimelocked(abi.encodeCall(vault2.increaseRelativeCap, (idData, WAD)));
     }
 
-    function _enableCap(IVaultV2 vault, bytes memory idData) internal {
-        _executeTimelocked(vault, abi.encodeCall(vault.increaseAbsoluteCap, (idData, type(uint128).max)));
-        _executeTimelocked(vault, abi.encodeCall(vault.increaseRelativeCap, (idData, WAD)));
-    }
-
-    function _executeTimelocked(IVaultV2 vault, bytes memory data) internal {
+    /// @dev Submit a curator action (zero timelock on the provisioned vault) as the curator, then execute it.
+    ///      The timelocked curator functions gate only on the submission, so this contract can execute them.
+    function _executeTimelocked(bytes memory data) internal {
         vm.prank(CURATOR);
-        vault.submit(data);
-        (bool success, bytes memory returnData) = address(vault).call(data);
+        vault2.submit(data);
+        (bool success, bytes memory returnData) = address(vault2).call(data);
         if (!success) {
             assembly ("memory-safe") {
                 revert(add(returnData, 0x20), mload(returnData))
@@ -345,15 +325,34 @@ contract MetaMorphoV2IntegrationTest is Test, LidoLendDeployer, ForkTest {
         }
     }
 
-    /// @dev Deploy a contract from its compiled artifact in `out/`, reading the bytecode directly. vault-v2
-    ///      compiles at 0.8.28 while this suite is 0.8.36, so `vm.getCode` finds no same-version artifact;
-    ///      reading the JSON is version-agnostic.
-    function _deployOut(string memory file, string memory name, bytes memory args) internal returns (address a) {
-        string memory json = vm.readFile(string.concat("out/", file, "/", name, ".json"));
-        bytes memory code = bytes.concat(vm.parseJsonBytes(json, ".bytecode.object"), args);
-        assembly ("memory-safe") {
-            a := create(0, add(code, 0x20), mload(code))
-        }
-        require(a != address(0) && a.code.length != 0, "MetaMorphoV2Integration: deploy failed");
+    // ---
+    // ACTION HELPERS
+    // ---
+
+    /// @dev Collateral (in collateral units) that backs `loanAssets` at ~2x the LLTV requirement from the live
+    ///      oracle price, floored at twice the activation dust threshold so the lot both activates and holds ample
+    ///      borrow capacity. Mirrors {ForkStack} `_pinFreeLiquidity`'s sizing.
+    function _collateralFor(uint256 loanAssets) internal view returns (uint256 collateral) {
+        uint256 price = m.oracle.price();
+        uint256 valueNeeded = Math.mulDiv(loanAssets, 2 * WAD, params.lltv, Math.Rounding.Ceil);
+        collateral = Math.mulDiv(valueNeeded, ORACLE_PRICE_SCALE, price, Math.Rounding.Ceil);
+        uint256 dustFloor = 2 * uint256(m.activation.minActivationAmount);
+        if (collateral < dustFloor) collateral = dustFloor;
+    }
+
+    /// @dev Supply `collateral` (collateral units) for `who`. wstETH is non-rebasing, so `deal` sets the exact
+    ///      balance the sizing computed (the same approach {ForkStack} uses for its pin borrower).
+    function _supplyCollateral(address who, uint256 collateral) internal {
+        deal(address(m.collateralToken), who, collateral);
+        vm.startPrank(who);
+        m.collateralToken.approve(address(core), collateral);
+        core.supplyCollateral(params, collateral, who, "");
+        vm.stopPrank();
+    }
+
+    function _mintWETH(address user, uint256 amount) internal {
+        vm.deal(user, amount);
+        vm.prank(user);
+        WETH.deposit{value: amount}();
     }
 }

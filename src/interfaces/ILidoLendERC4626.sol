@@ -45,7 +45,8 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @param assets The deposited assets that mapped to zero core supply shares.
     error ZeroCoreSupplySharesMinted(uint256 assets);
 
-    /// @notice Thrown when a targeted settlement consumes no core supply shares across all requested borrowers.
+    /// @notice Thrown when a targeted settlement consumes no core supply shares across all requested borrowers,
+    ///         or when a fallback exit burns no shares in either leg.
     error NothingSettled();
 
     /// @notice Thrown when the requested exit shares exceed the owner's balance.
@@ -65,11 +66,16 @@ interface ILidoLendERC4626 is IERC4626 {
     // EVENTS
     // ---
 
-    /// @notice A `fallbackExit` reached its queue-driven settlement leg, possibly with a zero or partial fill.
+    /// @notice A `fallbackExit` call completed with a positive, possibly partial fill — serviced from market
+    ///         liquidity, queue settlement, or both.
     /// @param caller The address that called the exit.
     /// @param owner The account whose shares were burned.
     /// @param receiver The recipient of the liquid-leg loan assets and seized collateral.
-    /// @param sharesBurned Shares burned by the settle leg.
+    /// @param sharesBurned Shares burned by the whole call — the liquid leg and the settle leg together.
+    /// @param sharesSettled Shares burned by the settle leg alone, 0 when liquidity serviced the whole request
+    ///        or the queue funded no cut.
+    /// @param assetsWithdrawn Loan assets the liquid leg paid out, 0 when the market had no free liquidity or
+    ///        the requested shares' floor-rounded value was zero.
     /// @param collateralSeized Collateral seized from the cut positions.
     /// @param debtCanceled Borrower debt cancelled by the cuts.
     event FallbackExit(
@@ -77,6 +83,8 @@ interface ILidoLendERC4626 is IERC4626 {
         address indexed owner,
         address indexed receiver,
         uint256 sharesBurned,
+        uint256 sharesSettled,
+        uint256 assetsWithdrawn,
         uint256 collateralSeized,
         uint256 debtCanceled
     );
@@ -101,8 +109,7 @@ interface ILidoLendERC4626 is IERC4626 {
     // CONSTANTS / IMMUTABLES
     // ---
 
-    /// @notice Default per-call cut bound for the fallback-exit loop (gas safety); `fallbackExit` callers may
-    ///         override it, and passing 0 falls back to this.
+    /// @notice Number of settlement cuts a fallback exit makes when the caller does not choose one.
     function DEFAULT_MAX_SETTLEMENT_ITERATIONS() external view returns (uint256);
 
     /// @notice The LidoLend core (Morpho Blue fork) this vault supplies into and settles against.
@@ -156,12 +163,11 @@ interface ILidoLendERC4626 is IERC4626 {
     /// @param receiver Recipient of the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
     /// @return sharesBurned Shares burned for the settled slice.
-    /// @return loanAssets Always 0 — a targeted settle pays only seized collateral and withdraws no liquidity.
     /// @return collateralSeized Collateral seized from the cut positions and sent to `receiver`.
     /// @return debtCanceled Borrower debt cancelled by the cuts.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
-        returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
+        returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
 
     /// @notice Queue-driven fallback exit. The liquid leg burns as many requested shares as current market liquidity
     ///         can service and pays loan assets; the settlement leg applies the remaining share claim to risk-queue

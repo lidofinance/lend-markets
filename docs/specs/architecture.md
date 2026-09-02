@@ -114,7 +114,7 @@ Accounting isolation does not make every dependency or permission market-specifi
 | Dependency | What the system relies on |
 |---|---|
 | Controller | It can reject every controller-checked action. Binding it does not let that address spend user tokens or act for user accounts. |
-| Guardians and delegates | A guardian may authorize a delegate address to report for it. Reports may ban new borrowing or delay collateral activation. The required quorum counts guardian identities, not independent keys, so shared delegate keys weaken the committee. |
+| Guardians and delegates | A guardian may authorize a delegate address to report for it. Reports may ban new borrowing or delay collateral activation. Active delegates are unique and never guardian addresses, so one address cannot represent two identities. Quorum counts guardian identities. |
 | Oracle | A wrong or stale value can allow unsafe borrowing, block actions, or misprice liquidation and settlement. |
 | IRM and rate managers | The selected model and configuration determine interest accrual. A reverting, reentrant, or extreme-rate model can block or distort the market. |
 | Loan and collateral tokens | Transfers must move the requested amount without fees, rebasing, arbitrary balance changes, or token callbacks into the protocol. Transfer restrictions may still reject a selected receiver. |

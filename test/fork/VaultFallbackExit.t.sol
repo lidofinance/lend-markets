@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {Test} from "forge-std/Test.sol";
-
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
-import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
-import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
-import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
-import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
-import {ForkTest} from "./helpers/ForkTest.sol";
+import {Id, Market, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
+import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
+import {WAD} from "../../src/libs/Constants.sol";
+import {ForkStack} from "./helpers/ForkStack.sol";
 
 interface IWETH {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -27,116 +27,152 @@ interface IStETH {
 interface IWstETH {
     function approve(address spender, uint256 amount) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
-    function stEthPerToken() external view returns (uint256);
+    function getStETHByWstETH(uint256 wstETHAmount) external view returns (uint256);
     function wrap(uint256 stETHAmount) external returns (uint256);
 }
 
-/// @notice Mainnet-fork scenarios for the vault's two settle-backed exits, `fallbackExit` and `settle`.
-///         `fallbackExit` pays ordinary liquidity first and settles the remainder; targeted `settle` leaves that
-///         liquidity untouched and requires the borrower's personal settlement-LTV opt-in. Both use an
-///         unhealthy-but-solvent borrower for the collateral leg.
-contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
-    // Populated in setUp from script/config/<NETWORK>.toml.
-    address internal WETH_ADDRESS;
-    address internal STETH_ADDRESS;
-    address internal WSTETH_ADDRESS;
+/// @notice Mainnet-fork scenarios for the vault's two settle-backed exits, `fallbackExit` and `settle`, run
+///         against the ALREADY-DEPLOYED `weth-wsteth` market (bound via {ForkStack}, never re-deployed).
+///         Each shows the redeem-first design: the exit first pays out whatever ordinary liquidity
+///         (idle + Morpho-withdrawable) covers, then settles the remainder against an unhealthy-but-
+///         solvent borrower for collateral. This also removes the front-run griefing vector — a
+///         top-up of idle before the call just flows to the owner instead of reverting the settle.
+///
+///         State-robustness contract (a shared deployed market may already carry supply/borrow):
+///         idle is MEASURED (`_freeLiquidity`) after pinning it to a known target, never assumed from the
+///         deposits; the negative rebase is derived from the live position so the borrower lands strictly
+///         inside `(LLTV, 1)` whatever the live wstETH rate is; and each settle path loudly requires the test
+///         borrower to be the settlement-queue root, so a pre-existing riskier borrower cannot hijack the cut.
+contract VaultFallbackExitTest is ForkStack {
+    BoundMarket internal m;
+
+    // Rebound from the bound market in `setUp` so the tests read like the freshly-deployed variant did.
+    ILidoLend internal core;
+    ILidoLendERC4626 internal vault;
+    MarketParams internal params;
+    Id internal marketId;
 
     IWETH internal WETH;
     IStETH internal STETH;
     IWstETH internal WSTETH;
 
-    address internal constant LENDER = address(0x1000);
-    address internal constant BORROWER = address(0x2000);
+    // Fresh, market-clean actors (start at zero position and zero vault shares), so per-actor balance
+    // assertions double as deltas.
+    address internal LENDER;
+    address internal BORROWER;
 
-    uint256 internal constant LLTV = 0.8e18;
+    /// @dev The mocked post-rebase wstETH rate (ETH per wstETH, scaled by `ORACLE_PRICE_SCALE`), computed in
+    ///      `_setupExitWithIdle` from the live position. Collateral-seizure expectations recompute from THIS,
+    ///      never from a stale constant.
+    uint256 internal mockedPrice;
 
-    ILidoLend internal core;
-    LidoLendERC4626 internal vault;
-    ILidoLendMarketController internal controller;
-    MarketParams internal params;
-    Id internal marketId;
+    uint256 internal constant LENDER_DEPOSIT = 20 ether;
+    uint256 internal constant BORROW_ASSETS = 18 ether;
+    uint256 internal constant COLLATERAL_ETH = 25 ether;
+    uint256 internal constant IDLE_TARGET = 2 ether;
+
+    /// @dev Post-rebase target LTV for the test borrower: strictly inside `(LLTV, 1)`, so the position is
+    ///      unhealthy but solvent — settle-eligible with no bad debt. Only known post-bind (it depends on the
+    ///      live market's LLTV), so it is set in `setUp` rather than a compile-time constant.
+    uint256 internal targetPostRebaseLtv;
 
     function setUp() public {
         _fork();
-        WETH_ADDRESS = _ext("weth");
-        STETH_ADDRESS = _ext("stEth");
-        WSTETH_ADDRESS = _ext("wstEth");
-        WETH = IWETH(WETH_ADDRESS);
-        STETH = IStETH(STETH_ADDRESS);
-        WSTETH = IWstETH(WSTETH_ADDRESS);
+        string memory market_ = _marketForRole("weth-wsteth");
+        if (bytes(market_).length == 0) return; // not applicable to this deployment
+        m = _bindMarket(market_);
+        _pokeAccrue(m); // fold in pending interest up front so the exact idle/liquidity math below holds
 
-        address[] memory guardians = new address[](1);
-        guardians[0] = address(this);
+        core = m.core;
+        vault = m.vault;
+        params = m.params;
+        marketId = m.id;
 
-        Deployed memory d = _deployForkStack(
-            DeployConfig({
-                admin: address(this),
-                loanToken: WETH_ADDRESS,
-                collateralToken: WSTETH_ADDRESS,
-                oracleSource: WSTETH_ADDRESS,
-                lltv: LLTV,
-                enableSettlement: true,
-                activation: CollateralActivationConfig({
-                    minActivationDelay: 10 minutes,
-                    maxActivationDelay: 2 hours,
-                    activatingLockAmount: 0,
-                    activatingLockDuration: 0,
-                    maxDelayInflow: 10_000 ether,
-                    minActivationAmount: 10 ether,
-                    maxGuardiansQuorumDelay: 0,
-                    delayPerStrike: 0,
-                    delayPerSuspect: 0
-                }),
-                settlementConfig: SettlementConfig({
-                    sliceFloorBps: 100, sliceFloorAssets: 0, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
-                }),
-                guardians: guardians,
-                quorum: 1,
-                suspectWindow: 0,
-                vaultName: "Lido wstETH/WETH Vault",
-                vaultSymbol: "lidoWSTETH-WETH"
-            })
-        );
+        // Midpoint of (LLTV, 1e18): strictly inside the unhealthy-but-solvent band regardless of the live LLTV.
+        targetPostRebaseLtv = (params.lltv + WAD) / 2;
 
-        core = ILidoLend(d.core);
-        vault = LidoLendERC4626(d.vault);
-        controller = ILidoLendMarketController(d.controllerProxy);
-        params = d.params;
-        marketId = d.marketId;
+        WETH = IWETH(address(m.loanToken));
+        STETH = IStETH(_ext("stEth"));
+        WSTETH = IWstETH(address(m.collateralToken));
+
+        LENDER = _freshActor(m, "vaultFallbackExit.lender");
+        BORROWER = _freshActor(m, "vaultFallbackExit.borrower");
     }
 
-    /// @dev Lender funds the vault, a borrower draws most of it (leaving some idle), then a negative
-    ///      rebase makes the borrower unhealthy but solvent — settle-eligible, no bad debt. Returns the
-    ///      idle WETH left in the market (what the redeem leg can pay out).
+    /// @dev Lender funds the vault, a borrower draws most of it, then a negative rebase makes the borrower
+    ///      unhealthy but solvent — settle-eligible, no bad debt. Returns the idle WETH left in the market
+    ///      (what the redeem leg can pay out), MEASURED after pinning, not inferred from the deposits.
     function _setupExitWithIdle() internal returns (uint256 idle) {
-        _mintWETH(LENDER, 20 ether);
+        _requireDepositHeadroom(m, LENDER_DEPOSIT);
+        _mintWETH(LENDER, LENDER_DEPOSIT);
         vm.prank(LENDER);
-        vault.deposit(20 ether, LENDER);
+        vault.deposit(LENDER_DEPOSIT, LENDER);
 
-        uint256 collateral = _mintWstETH(BORROWER, 25 ether);
+        uint256 collateral = _mintWstETH(BORROWER, COLLATERAL_ETH);
         vm.prank(BORROWER);
         core.supplyCollateral(params, collateral, BORROWER, "");
 
-        vm.warp(block.timestamp + 2 hours + 1);
+        _warpPastActivation(m);
         vm.prank(BORROWER);
-        core.borrow(params, 18 ether, 0, BORROWER, BORROWER); // healthy now; ~2 WETH stays idle
+        core.borrow(params, BORROW_ASSETS, 0, BORROWER, BORROWER); // healthy at the live rate
 
-        // Negative rebase: LTV crosses above LLTV (unhealthy) but collateral still covers debt (solvent).
+        // Pin free liquidity to a known target and MEASURE the result: a shared deployed market may already
+        // carry idle, which would break `loanAssets ~= idle` and could let the redeem leg cover the whole exit
+        // (collateralSeized == 0). The pin borrower is over-collateralized, so it never outranks BORROWER below.
+        _pinFreeLiquidity(m, IDLE_TARGET);
+        idle = _freeLiquidity(m);
+
+        // Real, relative negative rebase. The deployed oracle (WstEthRateOracle) prices wstETH via
+        // `getStETHByWstETH(1e36)`, so THAT is mocked (nothing in src reads `stEthPerToken`). Derive the mocked
+        // rate from the live position so BORROWER lands at targetPostRebaseLtv — inside (LLTV, 1) — regardless
+        // of the live wstETH rate.
+        uint256 livePrice = m.oracle.price();
+        uint256 debtAssets = m.controller.positionOf(BORROWER).debtAssets;
+        uint256 rawCollateral = core.position(marketId, BORROWER).collateral;
+        // Collateral value that makes LTV == target, then the rate that yields that value.
+        uint256 valueAtTarget = Math.mulDiv(debtAssets, WAD, targetPostRebaseLtv);
+        mockedPrice = Math.mulDiv(valueAtTarget, ORACLE_PRICE_SCALE, rawCollateral);
         vm.mockCall(
-            WSTETH_ADDRESS, abi.encodeWithSelector(IWstETH.stEthPerToken.selector), abi.encode(uint256(0.95e18))
+            address(WSTETH),
+            abi.encodeWithSelector(IWstETH.getStETHByWstETH.selector, ORACLE_PRICE_SCALE),
+            abi.encode(mockedPrice)
         );
 
-        vm.prank(BORROWER);
-        controller.setSettlementLtv(1);
+        // Sanity: the rebase drops the rate (negative), pushes BORROWER above LLTV (unhealthy) yet leaves its
+        // collateral worth more than its debt (solvent) — so it is settle-eligible with no bad debt.
+        assertLt(mockedPrice, livePrice, "rebase is negative");
+        assertGt(debtAssets, _maxBorrow(rawCollateral, mockedPrice), "borrower unhealthy (LTV > LLTV)");
+        assertGt(Math.mulDiv(rawCollateral, mockedPrice, ORACLE_PRICE_SCALE), debtAssets, "borrower solvent");
+        assertFalse(m.controller.hasBadDebt(), "no bad debt after rebase");
 
-        idle = 20 ether - 18 ether;
+        // Targeted settlement is borrower-opt-in. A near-zero target admits both direct-settle tests below;
+        // fallbackExit still selects the same borrower through the risk queue.
+        vm.prank(BORROWER);
+        m.controller.setSettlementLtv(1);
+
+        // Both settle paths below cut BORROWER (fallbackExit head-first via the queue root; settle by naming it),
+        // which needs BORROWER to be the queue root. A near-max debt keeps it the riskiest on a quiet market;
+        // assert it so a pre-existing riskier borrower cannot silently hijack the cut.
+        (address root,) = m.controller.nextSettlementBorrower(0);
+        require(
+            root == BORROWER,
+            "VaultFallbackExit: a pre-existing riskier borrower outranks the test borrower in the settle queue"
+        );
     }
 
-    /// @dev Asserts a vault exit ran both phases: redeemed idle as loan assets AND settled collateral.
-    function _assertBothPhases(uint256 idle, uint256 loanAssets, uint256 collateralSeized) internal {
+    /// @dev Asserts a vault exit ran both phases: redeemed idle as loan assets AND settled collateral. The
+    ///      seized collateral is recomputed from the mocked oracle rate (approx: fallbackExit accumulates many
+    ///      per-cut floors), never from a hardcoded price.
+    function _assertBothPhases(uint256 idle, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
+        internal
+        view
+    {
         assertGt(loanAssets, 0, "redeem leg paid loan assets");
         assertApproxEqAbs(loanAssets, idle, 1e15, "redeem leg drained the available idle");
         assertGt(collateralSeized, 0, "settle leg seized collateral for the remainder");
+        assertApproxEqAbs(
+            collateralSeized, debtCanceled * ORACLE_PRICE_SCALE / mockedPrice, 1e6, "collateral seized at mocked rate"
+        );
         assertEq(WETH.balanceOf(LENDER), loanAssets, "receiver got the loan assets");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
     }
@@ -149,9 +185,10 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
         // Request more than idle covers, so the redeem leg pays the idle and the settle leg covers the rest.
         uint256 shares = vault.balanceOf(LENDER) / 2;
         vm.prank(LENDER);
-        (, uint256 loanAssets, uint256 collateralSeized,) = vault.fallbackExit(shares, LENDER, LENDER, 0);
+        (, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
+            vault.fallbackExit(shares, LENDER, LENDER, 0);
 
-        _assertBothPhases(idle, loanAssets, collateralSeized);
+        _assertBothPhases(idle, loanAssets, collateralSeized, debtCanceled);
     }
 
     /* settle: liquidity-neutral targeted cut — seizes collateral, withdraws NO ordinary liquidity */
@@ -162,18 +199,20 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
         address[] memory borrowers = new address[](1);
         borrowers[0] = BORROWER;
 
-        uint256 wethBefore = WETH.balanceOf(LENDER); // lender holds no idle WETH (all deposited)
+        uint256 wethBefore = WETH.balanceOf(LENDER); // fresh lender holds no idle WETH (all deposited)
+        Market memory marketBefore = core.market(marketId);
+        uint256 borrowerBorrowSharesBefore = core.position(marketId, BORROWER).borrowShares;
 
         uint256 shares = vault.balanceOf(LENDER) / 2;
         vm.prank(LENDER);
-        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized,) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             vault.settle(shares, borrowers, LENDER, LENDER);
 
         // Pure settle: the cut seizes collateral to the receiver and burns the matching shares, but the
         // ordinary liquidity is left untouched — no redeem leg, so no loan assets are paid out.
         assertGt(collateralSeized, 0, "settle seized collateral for the cut");
         assertGt(sharesBurned, 0, "shares burned for the settled slice");
-        assertEq(loanAssets, 0, "settle withdrew no ordinary liquidity");
+        _assertSettlementAccounting(marketBefore, borrowerBorrowSharesBefore, collateralSeized, debtCanceled);
         assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
     }
@@ -181,25 +220,47 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
     /* A personal targeted cut remains available even when the request is fully covered by ordinary liquidity. */
 
     function test_settle_smallCutBelowLiquidityUsesPersonalPolicy() public {
-        _setupExitWithIdle(); // ~2 WETH of ordinary liquidity sits in the market
+        _setupExitWithIdle(); // IDLE_TARGET of ordinary liquidity sits in the market
 
         address[] memory borrowers = new address[](1);
         borrowers[0] = BORROWER;
 
         uint256 wethBefore = WETH.balanceOf(LENDER);
-        uint256 borrowerDebtSharesBefore = core.position(marketId, BORROWER).borrowShares;
-        uint256 shares = vault.balanceOf(LENDER) / 40; // ~0.5 WETH worth, well below the ~2 WETH liquidity
+        Market memory marketBefore = core.market(marketId);
+        uint256 borrowerBorrowSharesBefore = core.position(marketId, BORROWER).borrowShares;
+        uint256 shares = vault.balanceOf(LENDER) / 40; // ~0.5 WETH worth, well below the idle liquidity
         vm.prank(LENDER);
-        (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled) =
+        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             vault.settle(shares, borrowers, LENDER, LENDER);
 
-        assertGt(sharesBurned, 0, "personal settlement burns lender shares");
-        assertEq(loanAssets, 0, "targeted settlement leaves ordinary liquidity untouched");
-        assertGt(collateralSeized, 0, "receiver gets collateral despite available liquidity");
-        assertGt(debtCanceled, 0, "personal settlement cancels debt");
+        assertGt(collateralSeized, 0, "sub-liquidity settle seized collateral under the new gate");
+        assertGt(sharesBurned, 0, "shares burned for the slice");
+        _assertSettlementAccounting(marketBefore, borrowerBorrowSharesBefore, collateralSeized, debtCanceled);
         assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
-        assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got seized collateral");
-        assertLt(core.position(marketId, BORROWER).borrowShares, borrowerDebtSharesBefore, "borrower debt was cut");
+        assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
+    }
+
+    function _assertSettlementAccounting(
+        Market memory marketBefore,
+        uint256 borrowerBorrowSharesBefore,
+        uint256 collateralSeized,
+        uint256 debtCanceled
+    ) internal view {
+        uint256 borrowSharesCut = borrowerBorrowSharesBefore - core.position(marketId, BORROWER).borrowShares;
+        uint256 expectedDebt =
+            SharesMathLib.toAssetsUp(borrowSharesCut, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
+        uint256 expectedCollateral = Math.mulDiv(
+            SharesMathLib.toAssetsDown(borrowSharesCut, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares),
+            ORACLE_PRICE_SCALE,
+            mockedPrice
+        );
+        assertEq(debtCanceled, expectedDebt, "debt uses the up-rounded borrow-share value");
+        assertEq(collateralSeized, expectedCollateral, "collateral uses the down-rounded borrow-share value");
+    }
+
+    /// @dev Largest debt (loan assets) borrowable against `collateral` at `price`, at the market LLTV.
+    function _maxBorrow(uint256 collateral, uint256 price) internal view returns (uint256) {
+        return Math.mulDiv(Math.mulDiv(collateral, price, ORACLE_PRICE_SCALE), params.lltv, WAD);
     }
 
     function _mintWETH(address user, uint256 amount) internal {
@@ -214,7 +275,7 @@ contract VaultFallbackExitTest is Test, LidoLendDeployer, ForkTest {
         vm.deal(user, ethAmount);
         vm.startPrank(user);
         STETH.submit{value: ethAmount}(address(0));
-        STETH.approve(WSTETH_ADDRESS, STETH.balanceOf(user));
+        STETH.approve(address(WSTETH), STETH.balanceOf(user));
         wstETHAmount = WSTETH.wrap(STETH.balanceOf(user));
         WSTETH.approve(address(core), type(uint256).max);
         vm.stopPrank();

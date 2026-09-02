@@ -533,6 +533,11 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
         return "KINKED";
     }
 
+    /// @dev Account authorized to apply a replacement config to the routed IRM.
+    function _candidateAdmin() internal view virtual returns (address) {
+        return address(this);
+    }
+
     /// @dev Attach the IRM under test behind the market's `router` (`_deployIrm` deployed the router; the market's
     ///      immutable `irm` points at it). The peg and capD read staking directly (their dynamic ceiling tracks the
     ///      yield) and need no retune; adaptive and kinked are re-tuned yearly with newly deployed immutable configs.
@@ -616,11 +621,13 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
             // market's rateAtTarget is set); the rate self-adapts via utilization between retunes
             _adaptiveCapApr = avgApr * CAP_MULT_BPS / 10_000;
             AdaptiveCurveConfig config = new AdaptiveCurveConfig(_adaptiveCfgFor(avgApr));
+            vm.prank(_candidateAdmin());
             AdaptiveCurveIrm(_candidate).applyIrmConfig(irmParams, address(config));
         } else if (_irmKind == IrmKind.Kinked) {
             // re-center the whole curve: at target ~0.9*avgApr, at 100% ~1.5*avgApr
             LinearKinkConfig config =
                 new LinearKinkConfig(_kinkParams(avgApr / 5 / YEAR, avgApr * 7 / 10 / YEAR, avgApr * 6 / 10 / YEAR));
+            vm.prank(_candidateAdmin());
             LinearKinkIrm(_candidate).applyIrmConfig(irmParams, address(config));
         }
     }
@@ -668,7 +675,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
         return n == 0 ? _stakingApr(dayIndex) : sum / n;
     }
 
-    function _deployStack() internal {
+    function _deployStack() internal virtual {
         _setupTokens();
         address[] memory guardians = new address[](1);
         guardians[0] = address(this);
@@ -680,14 +687,15 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
                 collateralToken: collateralToken,
                 oracleSource: collateralToken,
                 lltv: LLTV,
+                supplyCap: 0,
                 enableSettlement: true,
                 activation: CollateralActivationConfig({
                     minActivationDelay: 10 minutes,
                     maxActivationDelay: 2 hours,
                     maxDelayInflow: 10_000 ether,
-                    activatingLockAmount: 0,
                     activatingLockDuration: 0,
                     minActivationAmount: 10 ether,
+                    minDepositAmount: 0,
                     maxGuardiansQuorumDelay: 0,
                     delayPerStrike: 2 hours,
                     delayPerSuspect: 0

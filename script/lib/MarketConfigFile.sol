@@ -82,6 +82,12 @@ library MarketConfigFile {
         return _parseArtifactRefs(vm.readFile(marketPath(name))).oracle;
     }
 
+    /// @notice The part this market plays in a deployment, e.g. `"weth-wsteth"`. Markets on different networks
+    ///         share a role, so a consumer can name what it needs without naming a network's market.
+    function role(string memory name) internal view returns (string memory) {
+        return ConfigToml.requireString(vm.readFile(marketPath(name)), ".market.role");
+    }
+
     function _parseArtifactRefs(string memory toml) private view returns (ArtifactRefs memory) {
         return ArtifactRefs({
             oracle: ConfigToml.requireString(toml, ".market.oracle_artifact"),
@@ -96,6 +102,7 @@ library MarketConfigFile {
             oracle: vm.parseTomlAddress(toml, ".market.oracle"),
             lltv: vm.parseTomlUint(toml, ".market.lltv"),
             guardianSignals: vm.parseTomlAddress(toml, ".market.guardian_signals"),
+            supplyCap: vm.parseTomlUint(toml, ".market.supply_cap"),
             activationConfig: _parseActivation(toml),
             settlementConfig: _parseSettlement(toml)
         });
@@ -106,9 +113,9 @@ library MarketConfigFile {
             minActivationDelay: _uint40(toml, ".activation.min_activation_delay"),
             maxActivationDelay: _uint40(toml, ".activation.max_activation_delay"),
             maxDelayInflow: _uint128(toml, ".activation.max_delay_inflow"),
-            activatingLockAmount: _uint128(toml, ".activation.activating_lock_amount"),
             activatingLockDuration: _uint40(toml, ".activation.activating_lock_duration"),
             minActivationAmount: _uint128(toml, ".activation.min_activation_amount"),
+            minDepositAmount: _uint128(toml, ".activation.min_deposit_amount"),
             maxGuardiansQuorumDelay: _uint40(toml, ".activation.max_guardians_quorum_delay"),
             delayPerStrike: _uint40(toml, ".activation.delay_per_strike"),
             delayPerSuspect: _uint40(toml, ".activation.delay_per_suspect")
