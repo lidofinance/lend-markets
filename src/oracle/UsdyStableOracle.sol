@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
+
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 interface IRWADynamicOracle {
     /// @notice Current USDY redemption value (NAV) in USD, scaled by 1e18.
@@ -25,23 +26,23 @@ interface IChainlinkAggregator {
 /// @title UsdyStableOracle
 /// @author Lido
 /// @notice Morpho oracle for USDY collateral quoted in any USD-stablecoin loan asset with a Chainlink feed.
-/// @dev    Values USDY by its NAV (Ondo dynamic-rate oracle), not a market price; the stablecoin leg divides
-///         by its Chainlink USD feed, so a stablecoin depeg flows into the collateral valuation. No
-///         staleness/bounds guards, matching Morpho's stock oracle.
+/// @dev Values USDY by its NAV (Ondo dynamic-rate oracle), not a market price; the stablecoin leg divides
+///      by its Chainlink USD feed, so a stablecoin depeg flows into the collateral valuation. No
+///      staleness/bounds guards, matching Morpho's stock oracle.
 ///
-///         price() = getPrice() * scale / stableUsdPrice
-///         scale   = 10^(36 + loanDecimals + feedDecimals - USDY_DECIMALS - NAV_DECIMALS)
+///      price() = getPrice() * scale / stableUsdPrice
+///      scale   = 10^(36 + loanDecimals + feedDecimals - USDY_DECIMALS - NAV_DECIMALS)
 ///
-///         The USDY NAV oracle is shared across markets, so it stays immutable; the per-market stablecoin feed
-///         and decimal-derived `scale` are set in `initialize`, so one implementation behind per-market proxies
-///         serves any Chainlink-priced stablecoin. Matches Morpho's IOracle convention: price of 1 collateral
-///         asset quoted in 1 loan asset, scaled by 1e36.
+///      The USDY NAV oracle is shared across markets, so it stays immutable; the per-market stablecoin feed
+///      and decimal-derived `scale` are set in `initialize`, so one implementation behind per-market proxies
+///      serves any Chainlink-priced stablecoin. Matches Morpho's IOracle convention: price of 1 collateral
+///      asset quoted in 1 loan asset, scaled by 1e36.
 contract UsdyStableOracle layout at erc7201("lido.lend.storage.UsdyStableOracle") is Initializable, IOracle {
     // ---
     // CONSTANTS
     // ---
 
-    /// @dev USDY collateral decimals — the only collateral this oracle prices.
+    /// @dev Decimals of USDY, the only collateral this oracle prices.
     uint256 internal constant USDY_DECIMALS = 18;
 
     /// @dev Decimals of Ondo's USDY NAV `getPrice()` output.

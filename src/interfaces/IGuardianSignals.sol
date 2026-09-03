@@ -9,11 +9,10 @@ import {IGuardianSignalsView} from "./IGuardianSignalsView.sol";
 
 /// @title IGuardianSignals
 /// @notice Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address
-///         that may appoint one **delegate** (at most one at a time, unique across the committee) to act on its
+///         that may appoint one delegate (at most one at a time, unique across the committee) to act on its
 ///         behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag,
 ///         unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was
-///         raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in
-///         `IGuardianSignalsView`; this interface adds the rest.
+///         raised in.
 interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // ---
     // CONSTANTS
@@ -43,13 +42,15 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // ---
 
     /// @notice Emitted when a guardian is added.
+    /// @param guardian The added guardian.
     event GuardianAdded(address indexed guardian);
 
     /// @notice Emitted when a guardian is removed.
+    /// @param guardian The removed guardian.
     event GuardianRemoved(address indexed guardian);
 
     /// @notice Emitted when a guardian sets or clears its delegate.
-    /// @param guardian    The guardian that changed its delegate.
+    /// @param guardian The guardian that changed its delegate.
     /// @param oldDelegate The previous delegate (zero if none).
     /// @param newDelegate The new delegate (zero to clear).
     event DelegateSet(address indexed guardian, address indexed oldDelegate, address indexed newDelegate);
@@ -63,107 +64,125 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     event SuspectWindowSet(uint256 suspectWindow);
 
     /// @notice Emitted when a guardian's liveness is recorded.
-    /// @param guardian    The guardian the scan is recorded for.
-    /// @param blockNumber The block number reported as scanned past (carried for off-chain tooling).
-    /// @param timestamp   Guardian-reported scan timestamp; the quorum-scan frontier orders guardians by this value.
-    /// @param data        Guardian-supplied payload the registry does not read (carried for off-chain tooling).
+    /// @param guardian The guardian the scan is recorded for.
+    /// @param blockNumber The block number reported as scanned past.
+    /// @param timestamp Guardian-reported scan timestamp; the quorum-scan frontier orders guardians by this value.
+    /// @param data Guardian-supplied payload the registry does not read.
     event Heartbeat(address indexed guardian, uint256 blockNumber, uint256 timestamp, bytes data);
 
     /// @notice Emitted when the quorum-scan frontier advances (the quorum-th largest heartbeat rises).
-    /// @param caller    The account whose call advanced the frontier.
+    /// @param caller The account whose call advanced the frontier.
     /// @param timestamp The new frontier timestamp.
     event QuorumFrontierAdvanced(address indexed caller, uint256 timestamp);
 
     /// @notice Emitted when a guardian reports an account as suspect (raises the activation delay, never bans).
-    /// @param marketId  The market the report is scoped to.
-    /// @param account   The suspected account.
-    /// @param guardian  The reporting guardian.
-    /// @param actor     The caller that made the call (the guardian or its delegate).
+    /// @param marketId The market the report is scoped to.
+    /// @param account The suspected account.
+    /// @param guardian The reporting guardian.
+    /// @param actor The caller that made the call (the guardian or its delegate).
     /// @param timestamp The report time, recorded so the report can be aged out of the suspect window.
     event Suspected(
         Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 timestamp
     );
 
     /// @notice Emitted when a guardian's suspect report on an account is retracted.
+    /// @param marketId The market the report was scoped to.
+    /// @param account The account the report was on.
+    /// @param guardian The guardian whose report was retracted.
+    /// @param actor The caller that made the call (the guardian or its delegate).
     event SuspectCleared(Id indexed marketId, address indexed account, address indexed guardian, address actor);
 
-    /// @notice Emitted when a suspect report is pruned — its guardian was removed from the committee, or its suspect
+    /// @notice Emitted when a suspect report is pruned: its guardian was removed from the committee, or its suspect
     ///         window lapsed.
+    /// @param marketId The market the report was scoped to.
+    /// @param account The account the report was on.
+    /// @param guardian The guardian whose report was pruned.
     event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
 
     /// @notice Emitted when a guardian flags an account.
     /// @param marketId The market id.
-    /// @param account  The flagged account.
+    /// @param account The flagged account.
     /// @param guardian The flagging guardian.
-    /// @param actor    The caller that made the call (the guardian or its delegate).
-    /// @param strikes  The account's flag count after the flag.
+    /// @param actor The caller that made the call (the guardian or its delegate).
+    /// @param strikes The account's flag count after the flag.
     event Flagged(
         Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 strikes
     );
 
     /// @notice Emitted when a guardian's flag is retracted.
+    /// @param marketId The market id.
+    /// @param account The unflagged account.
+    /// @param guardian The guardian whose flag was retracted.
+    /// @param actor The caller that made the call (the guardian or its delegate).
+    /// @param strikes The account's flag count after the retraction.
     event Unflagged(
         Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 strikes
     );
 
     /// @notice Emitted when a flag cast by a removed guardian is pruned.
+    /// @param marketId The market id.
+    /// @param account The account the flag was on.
+    /// @param guardian The removed guardian whose flag was pruned.
+    /// @param strikes The account's flag count after the prune.
     event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint256 strikes);
 
     /// @notice Emitted when an account's ban latches, by quorum or by `ban`.
+    /// @param marketId The market the ban is scoped to.
+    /// @param account The banned account.
     event Banned(Id indexed marketId, address indexed account);
 
     /// @notice Emitted when an account's ban is lifted.
     /// @param marketId The market the ban was scoped to.
-    /// @param account  The unbanned account.
-    /// @param by       The `ACCESS_RESTORER_ROLE` holder that unbanned.
+    /// @param account The unbanned account.
+    /// @param by The `ACCESS_RESTORER_ROLE` holder that unbanned.
     event Unbanned(Id indexed marketId, address indexed account, address indexed by);
 
     // ---
     // ERRORS
     // ---
 
-    /// @notice Thrown when a zero address is passed where an account or guardian is required.
+    /// @notice A zero address was passed where an account or guardian is required.
     error ZeroAddress();
 
-    /// @notice Thrown when the quorum is zero or exceeds the guardian count.
+    /// @notice The quorum is zero or exceeds the guardian count.
     error BadQuorum();
 
-    /// @notice Thrown when removing a guardian would drop the set below the quorum.
+    /// @notice Removing the guardian would drop the set below the quorum.
     error WouldBreakQuorum();
 
-    /// @notice Thrown when adding a guardian that is already in the set.
+    /// @notice The added guardian is already in the set.
     error AlreadyGuardian();
 
-    /// @notice Thrown when the caller is neither `onBehalf` nor its delegate, or when a non-guardian appoints a
-    /// delegate.
+    /// @notice `onBehalf` is not a guardian, the caller is neither `onBehalf` nor its delegate, or a
+    ///         non-guardian appointed a delegate.
     error Unauthorized();
 
-    /// @notice Thrown when the target of a guardian-only management action is not a guardian.
+    /// @notice The target of a guardian-only management action is not a guardian.
     error NotGuardian();
 
-    /// @notice Thrown when the guardian set is already at `MAX_GUARDIANS_COUNT`.
+    /// @notice The guardian set is already at `MAX_GUARDIANS_COUNT`.
     error MaxGuardiansReached();
 
-    /// @notice Thrown when a heartbeat reports a block number ahead of the current block.
+    /// @notice The heartbeat reports a block number ahead of the current block.
     error BlockInTheFuture();
 
-    /// @notice Thrown when a heartbeat reports a timestamp ahead of the current block.
+    /// @notice The heartbeat reports a timestamp ahead of the current block.
     error TimestampInTheFuture();
 
-    /// @notice Thrown when a heartbeat reports a timestamp below the guardian's previous heartbeat.
+    /// @notice The heartbeat reports a timestamp below the guardian's previous heartbeat.
     error HeartbeatTimestampRegressed();
 
-    /// @notice Thrown when a heartbeat's reported hash does not match the block's hash.
+    /// @notice The heartbeat's reported hash does not match the block's hash.
     error InvalidBlockHash();
 
-    /// @notice Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
+    /// @notice The suspect window exceeds `MAX_SUSPECT_WINDOW`.
     error SuspectWindowTooHigh();
 
-    /// @notice Thrown when the appointed delegate is a guardian.
+    /// @notice The appointed delegate is a guardian.
     error DelegateIsGuardian();
 
-    /// @notice Thrown when an address that is a guardian's delegate (the caller's own included) is
-    ///         appointed as a delegate or added as a guardian.
+    /// @notice An address that is a guardian's delegate (the caller's own included) was appointed as a
+    ///         delegate or added as a guardian.
     error AccountIsDelegate();
 
     // ---
@@ -188,11 +207,10 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     ///         heartbeat are untouched.
     function setDelegate(address newDelegate) external;
 
-    /// @notice Set the quorum — the distinct guardians' flags that latch a ban.
+    /// @notice Set the quorum: the distinct guardians' flags that latch a ban.
     function setQuorum(uint256 newQuorum) external;
 
-    /// @notice Set the suspect window — how long a suspect report keeps counting. The per-flag and per-suspect
-    ///         delays live in the market's activation config.
+    /// @notice Set the suspect window: how long a suspect report keeps counting.
     function setSuspectWindow(uint256 suspectWindow) external;
 
     /// @notice The quorum: distinct guardians' flags that latch a ban.
@@ -223,10 +241,10 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     ///         guardian-reported timestamp is independently required not to regress or exceed `block.timestamp`.
     ///         Callable by the guardian or its delegate and keyed by the guardian. If the heartbeat raises the
     ///         quorum frontier, it advances it in the same call; `syncQuorumFrontier` is a permissionless fallback.
-    /// @param onBehalf         The guardian the scan is recorded for.
+    /// @param onBehalf The guardian the scan is recorded for.
     /// @param lastScannedBlock The block reported as scanned past.
-    /// @param data             Payload the registry does not read, validate, or store; emitted in `Heartbeat` for
-    ///                         off-chain tooling. May be empty.
+    /// @param data Payload the registry does not read, validate, or store; only emitted in `Heartbeat`. May
+    ///        be empty.
     function heartbeat(address onBehalf, BlockInfoWithHash calldata lastScannedBlock, bytes calldata data) external;
 
     /// @notice Recompute the quorum-scan frontier from current heartbeats and ratchet it up. Permissionless and
@@ -238,11 +256,12 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     function getHeartbeat(address guardian) external view returns (uint40 timestamp);
 
     /// @notice The guardian set paired with each guardian's last reported scan timestamp, aligned by index.
-    /// @return guardians  The current guardian set.
+    /// @return guardians The current guardian set.
     /// @return timestamps Each guardian's last reported scan timestamp, aligned by index with `guardians`.
     function getHeartbeats() external view returns (address[] memory guardians, uint40[] memory timestamps);
 
-    /// @notice Highest guardian-reported scan timestamp ever accepted from a quorum calculation. Monotonic.
+    /// @notice The stored quorum frontier: the highest timestamp a quorum of guardians has reported reviewing
+    ///         past. It never decreases; membership and quorum changes do not lower it.
     function getQuorumFrontier() external view returns (uint40);
 
     // ---
@@ -250,14 +269,14 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
     // ---
 
     /// @notice Flag `accounts` in `marketId` on behalf of guardian `onBehalf`. Per account a no-op if the guardian
-    ///         already flags it, so a batch won't revert on a repeat.
+    ///         already flags it, so a batch will not revert on a repeat.
     /// @param marketId The market to flag in.
     /// @param onBehalf The guardian the flags are recorded for.
     /// @param accounts The accounts to flag.
     function flag(Id marketId, address onBehalf, address[] calldata accounts) external;
 
     /// @notice Retract guardian `onBehalf`'s flags on `accounts` in `marketId`. Per account a no-op if the guardian
-    ///         doesn't flag it. Never lifts a ban already in effect (including a quorum-derived one).
+    ///         does not flag it. Never lifts a ban already in effect (including a quorum-derived one).
     function unflag(Id marketId, address onBehalf, address[] calldata accounts) external;
 
     /// @notice Report `accounts` as suspect in `marketId` on behalf of guardian `onBehalf`. A suspect report never
@@ -298,10 +317,10 @@ interface IGuardianSignals is IGuardianSignalsView, IAccessControlEnumerable {
 
     /// @notice The raw stored suspect-report set for `account` in `marketId`, paired with report timestamps. It may
     ///         include a removed guardian until `prune`, or an expired report until a later report/retraction cleans
-    ///         it up. Use `getOpinion` for the active snapshotted count consumed by the controller.
-    /// @param marketId    The market to read the signal in.
-    /// @param account     The account to read.
-    /// @return guardians  The guardians still present in the raw stored suspect set.
+    ///         it up. Use `getOpinion` for the active snapshotted count.
+    /// @param marketId The market to read the signal in.
+    /// @param account The account to read.
+    /// @return guardians The guardians still present in the raw stored suspect set.
     /// @return reportedAt The timestamp of each guardian's last suspect report, aligned by index with `guardians`.
     function getSuspectedBy(Id marketId, address account)
         external

@@ -3,11 +3,15 @@ pragma solidity 0.8.36;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// @notice Shared value types of the exit book. File-scope so `ExitBookBase`, its concrete books, and
-///         `IExitBook` use them as bare `Request` / `ExitStatus`.
+/// @notice Shared value types of the exit book, defined at file scope (not in a library) so they import as
+///         bare types.
+
+// ---
+// TYPES
+// ---
 
 /// @notice Lifecycle marker. `NotCreated` is the zero-value sentinel for unknown ids, not a stored request state.
-///         `Expired` is not stored — it is derived from `block.timestamp > deadline`.
+///         `Expired` is not stored: it is derived from `block.timestamp > deadline`.
 enum ExitStatus {
     NotCreated,
     Open,
@@ -15,10 +19,9 @@ enum ExitStatus {
     Cancelled
 }
 
-/// @notice Lender-set priority-fee schedule — a Dutch auction on the fee carved out of each fill. The rate
-///         holds at `startRate` for `rampStart` seconds from creation, then climbs linearly to `endRate` by
-///         `rampEnd`, then holds at `endRate` until the deadline. Rates are WAD fractions, each capped at
-///         `MAX_PRIORITY_FEE`.
+/// @notice Lender-set priority-fee schedule: the fee rate offered to fillers. The rate holds at `startRate`
+///         for `rampStart` seconds from creation, then rises linearly to `endRate` by `rampEnd`, then holds at
+///         `endRate` until the deadline. Rates are WAD fractions, each capped at `MAX_PRIORITY_FEE`.
 /// @param startRate Priority-fee rate (WAD) charged from creation through the `rampStart` hold.
 /// @param endRate Priority-fee rate (WAD) reached after the ramp and held to the deadline; `>= startRate`.
 /// @param rampStart Seconds from creation the rate holds at `startRate` before the climb begins (0 climbs
@@ -39,7 +42,7 @@ struct PriorityRamp {
 ///        `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`.
 /// @param receiver Address credited the filled amount minus the priority fee.
 /// @param status NotCreated for an unknown id; stored requests are Open / Filled / Cancelled (Expired is derived).
-/// @param asset The underlying loan token paid out — the request, proceeds, and fees are denominated in it.
+/// @param asset The underlying loan token paid out: the request, proceeds, and fees are denominated in it.
 /// @param assetsRemaining Outstanding asset amount to exit.
 /// @param assetsTotal Original asset amount requested.
 /// @param minFillAssets Minimum non-final fill; 0 disables it. Whole-remainder fills qualify; capped at assetsTotal.

@@ -17,14 +17,22 @@ contract Erc4626ExitBook is ExitBookBase, IErc4626ExitBook {
     // ERRORS
     // ---
 
+    /// @notice The vault is not allowed for new requests.
     error VaultNotAllowed();
+
+    /// @notice The caller's vault balance or allowance cannot back the request.
     error InsufficientBacking();
+
+    /// @notice The vault to allow or disallow is the zero address.
     error ZeroVault();
 
     // ---
     // EVENTS
     // ---
 
+    /// @notice Emitted when a vault is allowed or disallowed for new requests.
+    /// @param vault The vault whose allowance was set.
+    /// @param allowed Whether new requests may name the vault.
     event VaultAllowedSet(address indexed vault, bool allowed);
 
     // ---

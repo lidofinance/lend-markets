@@ -25,28 +25,81 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     // ERRORS
     // ---
 
+    /// @notice A required address argument is zero.
     error ZeroAddress();
+
+    /// @notice The requested or filled asset amount is zero.
     error ZeroAssets();
+
+    /// @notice The maximum request lifetime passed to the constructor is zero.
     error ZeroMaxLifetime();
+
+    /// @notice The service fee exceeds `MAX_SERVICE_FEE`.
     error FeeTooHigh();
+
+    /// @notice A nonzero service fee was set with a zero recipient.
     error FeeRecipientRequired();
+
+    /// @notice The request's end priority-fee rate exceeds `MAX_PRIORITY_FEE`.
     error PriorityFeeTooHigh();
+
+    /// @notice The request's start priority-fee rate exceeds its end rate.
     error StartFeeAboveEnd();
+
+    /// @notice The request's fee ramp starts after it ends.
     error RampStartAfterEnd();
+
+    /// @notice The request's fee ramp would end after its deadline.
     error RampPastDeadline();
+
+    /// @notice The fill requests more assets than the request has remaining.
+    /// @param requested Asset amount the fill requested.
+    /// @param remaining The request's remaining unfilled assets.
     error FillExceedsRemaining(uint256 requested, uint256 remaining);
+
+    /// @notice A non-final fill is below the request's minimum fill.
+    /// @param requested Asset amount the fill requested.
+    /// @param minimum The request's minimum fill.
     error FillBelowMinimum(uint256 requested, uint256 minimum);
+
+    /// @notice The request's share-burn budget cannot cover the placement share quote.
+    /// @param maximum The share-burn budget passed with the request.
+    /// @param quote Source shares quoted for the full request at placement.
     error MaxShareBurnBelowQuote(uint256 maximum, uint256 quote);
+
+    /// @notice The fill burns more source shares than its pro-rata share-burn limit.
+    /// @param actual Source shares the withdrawal burned.
+    /// @param maximum The fill's pro-rata share-burn limit.
     error ShareBurnExceedsMaximum(uint256 actual, uint256 maximum);
+
+    /// @notice The source withdrawal delivered a different asset amount than the fill debited.
+    /// @param expected Asset amount the fill debited.
+    /// @param actual Asset amount received from the source withdrawal.
     error AssetsOutMismatch(uint256 expected, uint256 actual);
+
+    /// @notice The request's deadline is not in the future.
     error DeadlineInPast();
+
+    /// @notice The request's deadline is more than `MAX_REQUEST_LIFETIME` away.
     error DeadlineTooFar();
+
+    /// @notice The book is paused.
     error EnforcedPause();
 
     // ---
     // EVENTS
     // ---
 
+    /// @notice Emitted when an exit request is placed.
+    /// @param id Id of the new request.
+    /// @param owner The exiting lender the fills withdraw from.
+    /// @param receiver Recipient of fill payouts, net of priority fees.
+    /// @param asset Loan token the request is denominated in.
+    /// @param assets Total assets requested.
+    /// @param minFillAssets Minimum non-final fill, capped at the total.
+    /// @param maxShareBurn Full-request share-burn budget; 0 disables the per-fill limit.
+    /// @param ramp The priority-fee schedule.
+    /// @param deadline Last timestamp the request may be filled.
     event ExitRequested(
         uint256 indexed id,
         address indexed owner,
@@ -59,6 +112,15 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         uint256 deadline
     );
 
+    /// @notice Emitted when a fill pays out: the receiver's assets, the filler's reward, and the service cut.
+    /// @param id Id of the filled request.
+    /// @param executor Caller that executed the fill.
+    /// @param rewardRecipient Address the filler chose for its reward.
+    /// @param asset Loan token paid out.
+    /// @param filledAssets Asset amount this fill debited from the request.
+    /// @param sharesBurned Source shares burned to withdraw the fill.
+    /// @param fillerReward Priority fee paid to `rewardRecipient`, net of the service cut.
+    /// @param serviceCut Service-fee part of the priority fee, paid to the fee recipient.
     event ExitProcessed(
         uint256 indexed id,
         address indexed executor,
@@ -70,12 +132,21 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
         uint256 serviceCut
     );
 
+    /// @notice Emitted when a request is cancelled by its owner.
+    /// @param id Id of the cancelled request.
     event ExitCancelled(uint256 indexed id);
 
+    /// @notice Emitted when the service fee and its recipient are set.
+    /// @param feeRecipient Recipient of the service cut.
+    /// @param serviceFee The service fee (WAD), a cut of each fill's priority fee.
     event ServiceFeeSet(address indexed feeRecipient, uint256 serviceFee);
 
+    /// @notice Emitted when request placement and fills are paused.
+    /// @param account Caller that paused.
     event Paused(address account);
 
+    /// @notice Emitted when request placement and fills are resumed.
+    /// @param account Caller that resumed.
     event Unpaused(address account);
 
     // ---
@@ -93,10 +164,10 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     /// @inheritdoc IExitBook
     bytes32 public constant RESUMER_ROLE = keccak256("RESUMER_ROLE");
 
-    /// @notice Cap on a request's priority-fee rate (WAD), checked at `place` — 10%.
+    /// @notice Cap on a request's priority-fee rate (WAD), enforced when the request is placed: 10%.
     uint256 public constant MAX_PRIORITY_FEE = 0.1e18;
 
-    /// @notice Hard cap on the service fee — a cut of the priority fee (WAD) — 25%.
+    /// @notice Hard cap on the service fee, a cut of the priority fee (WAD): 25%.
     uint256 public constant MAX_SERVICE_FEE = 0.25e18;
 
     // ---
@@ -119,14 +190,14 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     /// @notice Service fee: a cut of each fill's priority fee, as a WAD rate.
     uint256 public serviceFee;
 
-    /// @notice The append-only request registry (see `ExitBookLib`).
+    /// @notice The append-only request registry.
     ExitBookLib.State internal _book;
 
     // ---
     // CONSTRUCTOR
     // ---
 
-    /// @param admin        Holder of `DEFAULT_ADMIN_ROLE`.
+    /// @param admin Holder of `DEFAULT_ADMIN_ROLE`.
     /// @param maxLifetime_ Cap on a request's lifetime; must be non-zero.
     constructor(address admin, uint256 maxLifetime_) {
         if (admin == address(0)) revert ZeroAddress();
@@ -295,7 +366,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     }
 
     // ---
-    // INTERNAL — orchestration
+    // INTERNAL
     // ---
 
     /// @dev Validate and append a request (called by a concrete book's `placeExitRequest`).
@@ -328,7 +399,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     }
 
     /// @dev The priority-fee rate (WAD) in force now: `startRate` while within the `rampStart` hold, then
-    ///      climbing linearly to `endRate` by `rampEnd`, then held at `endRate` until the deadline.
+    ///      rising linearly to `endRate` by `rampEnd`, then held at `endRate` until the deadline.
     function _priorityFeeRate(Request storage request) internal view returns (uint256) {
         uint256 startRate = request.startRate;
         uint256 rampStart = request.rampStart;
@@ -345,7 +416,7 @@ abstract contract ExitBookBase is IExitBook, AccessControlEnumerable, AssetRecov
     }
 
     // ---
-    // SOURCE OPERATIONS — abstract, implemented by a concrete book
+    // SOURCE OPERATIONS
     // ---
 
     /// @dev Withdraw exactly `assets` from `account`'s position to this contract and return the source shares

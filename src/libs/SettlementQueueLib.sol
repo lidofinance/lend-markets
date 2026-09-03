@@ -2,16 +2,20 @@
 pragma solidity 0.8.36;
 
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {MaxHeapLib} from "./MaxHeapLib.sol";
-import {WAD, BPS} from "./Constants.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import {MarketView, PositionView, SettlementConfig, SettlementSlice} from "../types/SettlementTypes.sol";
+import {WAD, BPS} from "./Constants.sol";
+import {MaxHeapLib} from "./MaxHeapLib.sol";
 
 /// @title SettlementQueueLib
-/// @author Lido Lending contributors.
-/// @notice Risk-ordered queue of borrowers for the settle waterfall, with per-borrower settlement-LTV
-///         targets and the slice-sizing policy. Wraps a max-heap keyed by
+/// @author Lido
+/// @notice Risk-ordered queue of borrowers for lender settlement, with per-borrower settlement-LTV targets
+///         and the slice-sizing policy. The queue selects the borrower that a queue-driven settlement cuts:
+///         always the riskiest tracked borrower (the heap root). The policy bounds each cut, not an exit's
+///         total: an exit may cut the root again while it remains the root. Wraps a max-heap keyed by
 ///         borrowShares * KEY_SCALE / rawCollateral, so the root has the highest stored rounded risk key.
 ///         The controller uses it for an O(1) bad-debt gate, but equal keys and later valuation rounding mean a
 ///         solvent root does not prove that every tracked position is solvent.
@@ -44,9 +48,12 @@ library SettlementQueueLib {
     // ---
 
     /// @notice Emitted when a borrower sets their personal settlement LTV.
+    /// @param borrower The borrower that set its target.
+    /// @param ltv The target post-cut LTV (WAD); 0 clears it.
     event SettlementLtvSet(address indexed borrower, uint256 ltv);
 
     /// @notice Emitted when the settlement config is set.
+    /// @param config The stored policy.
     event SettlementConfigSet(SettlementConfig config);
 
     // ---
@@ -163,20 +170,18 @@ library SettlementQueueLib {
         }
     }
 
-    /// @notice Converts a loan-asset slice into the borrow-share handle the core accepts, shrunk to what the
-    ///         caller's supply funds, plus the supply cost that handle burns. `remainingBorrowShares` is the debt
-    ///         left after the cut, 0 for a full close. A zero `sliceAssets`, a budget that funds nothing, and a cut
-    ///         too small to seize a whole collateral unit all come back with no cut and no cost, only the borrower's
-    ///         untouched debt in `remainingBorrowShares`.
-    /// @dev `supplyShares` is derived from the resulting handle the core's way, so budgeting it always funds the
-    ///      cut. The budget conversions round against the caller, so the supply the core burns for `borrowShares`
-    ///      never exceeds `budgetSupplyShares`. The seizure the core derives from the handle is checked the core's
-    ///      way too, so a handle that would be rejected there is reported as unavailable instead.
+    /// @notice Converts a loan-asset slice into the borrow shares to cancel, shrunk to what the caller's supply
+    ///         budget funds, plus the supply shares that cut burns. A zero `sliceAssets`, a budget that funds
+    ///         nothing, or a cut too small to seize one whole collateral unit returns no cut and no cost, only
+    ///         the borrower's untouched debt.
+    /// @dev The cut's supply cost is computed the way the core computes the burn, and the budget conversions
+    ///      round against the caller, so the supply the core burns for the cut never exceeds
+    ///      `budgetSupplyShares`. The seizure is checked the way the core checks it, so a cut the core would
+    ///      reject is returned as no cut instead.
     /// @param position The borrower's position to cut.
     /// @param sliceAssets Policy-bounded debt to cancel, in loan assets.
     /// @param budgetSupplyShares Core supply shares the caller can spend, or 0 if there is no limit.
-    /// @return slice The borrow-share handle the core accepts, the supply it burns, and the borrower's untouched debt
-    ///      after the cut.
+    /// @return slice The borrow shares to cancel, the supply shares they burn, and the borrower's remaining debt.
     function settlementSlice(
         MarketView memory marketView,
         PositionView memory position,
@@ -233,10 +238,11 @@ library SettlementQueueLib {
     /// @notice Loan-asset slice that brings a position's LTV down to `targetLtv` (WAD), using oracle-value math
     ///         before the core rounds collateral to token units. Backs both the settlement-LTV slice and the root
     ///         LTV-step rule.
-    /// @param debtAssets      Borrower debt in loan-asset units.
-    /// @param collateralValue Borrower collateral value in loan-asset units (rawCollateral × price / SCALE).
-    /// @dev c = (debtAssets × WAD − targetLtv × collateralValue) / (WAD − targetLtv); 0 when already at or below
+    /// @dev c = (debtAssets * WAD - targetLtv * collateralValue) / (WAD - targetLtv); 0 when already at or below
     ///      the target, or when `targetLtv >= WAD`.
+    /// @param debtAssets Borrower debt in loan-asset units.
+    /// @param collateralValue Borrower collateral value in loan-asset units (rawCollateral * price / SCALE).
+    /// @param targetLtv Target post-cut LTV (WAD).
     function sliceToLtv(uint256 debtAssets, uint256 collateralValue, uint256 targetLtv)
         internal
         pure
@@ -254,8 +260,8 @@ library SettlementQueueLib {
     // ---
 
     /// @dev Collateral the core seizes for a `borrowShares` cut: the cut's debt rounded down, priced at the oracle
-    ///      and rounded down again. 0 when the market has no price, or when that debt buys no whole collateral unit
-    ///      — which above `ORACLE_PRICE_SCALE` takes more than one loan-asset unit of debt.
+    ///      and rounded down again. 0 when the market has no price, or when the cut's debt is too small to buy one
+    ///      whole collateral unit.
     function _seizedCollateral(MarketView memory marketView, uint256 borrowShares) private pure returns (uint256) {
         if (marketView.price == 0) return 0;
         uint256 cutAssets = borrowShares.toAssetsDown(marketView.totalBorrowAssets, marketView.totalBorrowShares);
@@ -275,9 +281,9 @@ library SettlementQueueLib {
         return remainingCollateral < $.config.fullCutBelowCollateral;
     }
 
-    /// @dev Root slice: the largest of the three slice rules — `sliceFloorBps` of the debt, `sliceFloorAssets`,
-    ///      and the slice that lowers the LTV by `ltvStepBps`. Caller guarantees `debtAssets > 0` and
-    ///      `collateralValue > 0` (the `slice` entry gate), so the LTV division here is safe.
+    /// @dev Root slice: the largest of `sliceFloorBps` of the debt, `sliceFloorAssets`, and the slice that
+    ///      lowers the LTV by `ltvStepBps`. Caller guarantees `debtAssets > 0` and `collateralValue > 0`
+    ///      (the `slice` entry gate), so the LTV division here is safe.
     function _policySlice(SettlementConfig storage config, uint256 debtAssets, uint256 collateralValue)
         private
         view

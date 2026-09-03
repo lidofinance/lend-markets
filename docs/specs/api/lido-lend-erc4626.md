@@ -4,7 +4,7 @@
 
 Standard inherited ERC-20 share-token and ERC-4626 vault functions are not repeated; see [ERC-4626](https://eips.ethereum.org/EIPS/eip-4626).
 
-Single-market ERC-4626 wrapper for a Morpho Blue fork market with settle exit support.
+ERC-4626 vault over one LidoLend (Morpho Blue fork) market. Lenders deposit the loan token; the vault supplies it to the market, and shares grow with the market's interest. A normal withdrawal requires free market liquidity, which a heavily borrowed market may not have. Settlement is the exit for that case: the vault cancels borrower debt against its market supply and pays the exiting lender that borrower's collateral of the same oracle value, subject to rounding, so the exit requires no loan-token liquidity.
 
 Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
 
@@ -23,13 +23,13 @@ event FallbackExit(address indexed caller, address indexed owner, address indexe
 | `caller` | `address` | The address that called the exit. |
 | `owner` | `address` | The account whose shares were burned. |
 | `receiver` | `address` | The recipient of the liquid-leg loan assets and seized collateral. |
-| `sharesBurned` | `uint256` | Shares burned by the whole call — the liquid leg and the settle leg together. |
+| `sharesBurned` | `uint256` | Shares burned by the whole call: the liquid leg and the settle leg together. |
 | `sharesSettled` | `uint256` | Shares burned by the settle leg alone, 0 when liquidity serviced the whole request or the queue funded no cut. |
 | `assetsWithdrawn` | `uint256` | Loan assets the liquid leg paid out, 0 when the market had no free liquidity or the requested shares' floor-rounded value was zero. |
 | `collateralSeized` | `uint256` | Collateral seized from the cut positions. |
 | `debtCanceled` | `uint256` | Borrower debt cancelled by the cuts. |
 
-A `fallbackExit` call completed with a positive, possibly partial fill — serviced from market liquidity, queue settlement, or both.
+A `fallbackExit` call completed with a positive, possibly partial fill: serviced from market liquidity, queue settlement, or both.
 
 ### `Settled`
 
@@ -58,7 +58,7 @@ A targeted `settle` call completed with a positive, possibly partial fill.
 error ZeroShares();
 ```
 
-Thrown when an exit is requested for zero shares.
+The exit requests zero shares.
 
 ### `ZeroAddress`
 
@@ -66,7 +66,7 @@ Thrown when an exit is requested for zero shares.
 error ZeroAddress();
 ```
 
-Thrown when the seized-collateral receiver is the zero address.
+The seized-collateral receiver is the zero address.
 
 ### `ZeroLidoLend`
 
@@ -74,7 +74,7 @@ Thrown when the seized-collateral receiver is the zero address.
 error ZeroLidoLend();
 ```
 
-Thrown when the LidoLend core address is zero at construction.
+The LidoLend core address is zero at construction.
 
 ### `ZeroController`
 
@@ -82,7 +82,7 @@ Thrown when the LidoLend core address is zero at construction.
 error ZeroController();
 ```
 
-Thrown when the controller address is zero at initialization.
+The controller address is zero at initialization.
 
 ### `ControllerMarketMismatch`
 
@@ -90,7 +90,7 @@ Thrown when the controller address is zero at initialization.
 error ControllerMarketMismatch();
 ```
 
-Thrown when the bound controller governs a different market than the vault's.
+The bound controller governs a different market than the vault's.
 
 ### `ZeroLoanToken`
 
@@ -98,7 +98,7 @@ Thrown when the bound controller governs a different market than the vault's.
 error ZeroLoanToken();
 ```
 
-Thrown when the market's loan token is the zero address at initialization.
+The market's loan token is the zero address at initialization.
 
 ### `ZeroCollateralToken`
 
@@ -106,7 +106,7 @@ Thrown when the market's loan token is the zero address at initialization.
 error ZeroCollateralToken();
 ```
 
-Thrown when the market's collateral token is the zero address at initialization.
+The market's collateral token is the zero address at initialization.
 
 ### `ZeroMorphoSupplyShares`
 
@@ -114,7 +114,7 @@ Thrown when the market's collateral token is the zero address at initialization.
 error ZeroMorphoSupplyShares();
 ```
 
-Thrown when an exit maps to a zero core supply-share budget.
+The exit maps to a zero core supply-share budget.
 
 ### `ZeroCoreSupplySharesMinted`
 
@@ -128,7 +128,7 @@ error ZeroCoreSupplySharesMinted(uint256 assets);
 | --- | --- | --- |
 | `assets` | `uint256` | The deposited assets that mapped to zero core supply shares. |
 
-Thrown when a nonzero deposit receives zero core supply shares.
+A nonzero deposit received zero core supply shares.
 
 ### `NothingSettled`
 
@@ -136,7 +136,7 @@ Thrown when a nonzero deposit receives zero core supply shares.
 error NothingSettled();
 ```
 
-Thrown when a targeted settlement consumes no core supply shares across all requested borrowers, or when a fallback exit burns no shares in either leg.
+A targeted settlement consumed no core supply shares across all requested borrowers, or a fallback exit burned no shares in either leg.
 
 ### `ExceededBalance`
 
@@ -152,7 +152,7 @@ error ExceededBalance(address owner, uint256 shares, uint256 balance);
 | `shares` | `uint256` | The requested shares. |
 | `balance` | `uint256` | The owner's actual balance. |
 
-Thrown when the requested exit shares exceed the owner's balance.
+The requested exit shares exceed the owner's balance.
 
 ### `EmptyBorrowers`
 
@@ -160,7 +160,7 @@ Thrown when the requested exit shares exceed the owner's balance.
 error EmptyBorrowers();
 ```
 
-Thrown when `settle` is called with an empty borrowers list.
+`settle` was called with an empty borrowers list.
 
 ### `ZeroSharesMinted`
 
@@ -174,7 +174,7 @@ error ZeroSharesMinted(uint256 assets);
 | --- | --- | --- |
 | `assets` | `uint256` | The deposited assets that mapped to zero shares. |
 
-Thrown when a nonzero-asset deposit would mint zero vault shares.
+A nonzero-asset deposit would mint zero vault shares.
 
 ## Functions
 
@@ -183,6 +183,12 @@ Thrown when a nonzero-asset deposit would mint zero vault shares.
 ```solidity
 constructor(address lidoLend);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `lidoLend` | `address` | The LidoLend core. |
 
 ### `initialize`
 
@@ -213,7 +219,7 @@ function managedSupplyShares() external view returns (uint256);
 function totalAssets() public view returns (uint256);
 ```
 
-Only vault-originated supply shares back shares — direct loan-token donations and permissionless core `supply` credits to the vault address are uncounted and cannot move the share price.
+Only vault-originated supply shares back shares: direct loan-token donations and permissionless core `supply` credits to the vault address are uncounted and cannot move the share price.
 
 ### `maxWithdraw`
 
@@ -229,7 +235,7 @@ Capped by the market's free liquidity, not just the owner's position: supplied t
 function maxRedeem(address owner) public view returns (uint256);
 ```
 
-Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in nonzero free liquidity it returns the exact share balance. Otherwise the floor conversion is a conservative ERC-4626 gate; `fallbackExit` can also service the remaining shares on the same redeem rounding plateau. Zero when the controller reports no withdrawable assets, including while paused.
+Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in nonzero free liquidity it returns the exact share balance. Otherwise the floor conversion is a conservative ERC-4626 gate; shares excluded by that rounding can still exit through `fallbackExit`. Zero when the controller reports no withdrawable assets, including while paused.
 
 ### `maxDeposit`
 
@@ -258,7 +264,7 @@ function settle(
 ) external returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
-A targeted, liquidity-neutral cut of borrowers that expose a positive personal settlement-LTV slice. Current free liquidity is not redeemed or reserved against the request. Budget exhaustion partial-fills; a call that consumes no core supply shares reverts. Collateral goes from the core straight to `receiver`. `fallbackExit` instead consumes available liquidity first and selects risk-queue roots for the remainder.
+Cuts only borrowers with a positive personal settlement-LTV slice, in the caller's order. Market liquidity is neither withdrawn nor reserved. Shares burn pro rata to the budget the cuts consumed: a budget exhausted before the list ends burns all requested shares, and a list whose cuts fall short of the budget burns only the settled fraction. A call that settles nothing reverts. Seized collateral moves from the core directly to `receiver`.
 
 ### `fallbackExit`
 
@@ -271,7 +277,7 @@ function fallbackExit(
 ) external returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
-Pays the liquid part to `receiver` before settling the remainder. When the controller reports nonzero withdrawable liquidity and the requested shares' entire floor-rounded value fits, the vault burns exactly those shares. Otherwise it withdraws the exact available asset amount so no liquidity is stranded by share rounding. The settle leg sends seized collateral from the core straight to the same receiver. Queue or iteration exhaustion partial-fills; controller and core errors revert the whole call. If neither leg burns any shares, the call reverts instead of silently returning a no-op.
+Pays out available market liquidity first, then settles the remainder. When nonzero available liquidity covers the requested shares' floor-rounded value, the vault burns exactly those shares. Otherwise it withdraws the exact liquid amount, so share rounding cannot strand liquidity, and settles the rest against the risk queue, riskiest borrower first. Seized collateral moves from the core directly to the same `receiver`. When the queue or the iteration cap ends the loop early, the call burns shares only for what was serviced; controller and core errors revert the whole call. A call that burns no shares in either leg reverts.
 
 ## State variables
 

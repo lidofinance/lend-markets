@@ -39,7 +39,7 @@ Inside a contract, order top to bottom:
 ## Namespaced Storage (Upgradeable Contracts)
 
 Upgradeable contracts (everything deployed behind `OssifiableProxy`) declare their storage with
-the builtin `layout at erc7201("lido.lending.storage.<ContractName>")` clause on the contract
+the builtin `layout at erc7201("lido.lend.storage.<ContractName>")` clause on the contract
 header and plain state variables in the body. Do not hand-roll the ERC-7201 slot constant +
 assembly `_storage()` accessor — the compiler computes the same base slot and enforces the layout.
 Placement of the clause within the header is whatever `forge fmt` produces; don't fight the
@@ -100,7 +100,7 @@ the contract's `layout at`.
 - **Policy bounds** (configurable floors/minimums compared against accounting values): `uint96` is
   acceptable when it buys slot packing. Degradation is graceful — for a token whose amounts exceed
   uint96 the bound saturates low and the policy weakens, nothing reverts.
-- **Timestamps and durations**: `uint64`.
+- **Timestamps and durations**: `uint40`; a `uint32` duration is acceptable when it buys slot packing.
 - **Ratios**: `uint16` basis points for policy knobs; `uint256` WAD where the math composes with
   core values (LTV, watermark).
 - Counters and indexes: smallest type that demonstrably cannot overflow (`uint16` flags), `uint256`

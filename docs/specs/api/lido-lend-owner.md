@@ -4,7 +4,7 @@
 
 Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
 
-Role-gated governance facade bound to a `LidoLend` core. It is designed to hold the core's single-owner authority, which must be transferred separately and can later be moved away. While it is the owner, the facade splits the core's owner-only surface and per-market governance surface across distinct roles so each capability can be delegated independently. Per-market calls resolve the target controller and guardian registry from the core, giving governance one stable facade address for every market.
+Role-gated governance facade bound to a `LidoLend` core. It is designed to hold the core's single-owner authority, which must be transferred to it separately and can later be transferred away. While it is the owner, the facade splits the core's owner-only surface and per-market governance surface across distinct roles so each capability can be delegated independently. Per-market calls resolve the target controller and guardian registry from the core, giving governance one stable facade address for every market.
 
 Role-management events and the unauthorized-caller error come from OpenZeppelin's `IAccessControlEnumerable`.
 
@@ -16,13 +16,19 @@ Role-management events and the unauthorized-caller error come from OpenZeppelin'
 error ZeroAddress();
 ```
 
-Thrown when the core, required admin, or an ownership target is the zero address.
+The core, required admin, or an ownership target is the zero address.
 
 ### `UnknownMarket`
 
 ```solidity
 error UnknownMarket(Id marketId);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market id without a controller. |
 
 The market id has no controller on the core (unknown or controller-less).
 
@@ -45,8 +51,8 @@ constructor(
 | --- | --- | --- |
 | `core` | `ILidoLend` | The `LidoLend` core this facade will own. The deploy must hand the core's `owner` to this facade after construction; the facade cannot do it itself. |
 | `admin` | `address` | Holder of `DEFAULT_ADMIN_ROLE`, which manages the capability roles and core ownership. Required. |
-| `marketCreator` | `address` | Initial `MARKET_CREATOR_ROLE` holder; `address(0)` grants none (admin can later). |
-| `feeManager` | `address` | Initial `FEE_MANAGER_ROLE` holder; `address(0)` grants none (admin can later). |
+| `marketCreator` | `address` | Initial `MARKET_CREATOR_ROLE` holder; `address(0)` grants none, and the admin can grant the role later. |
+| `feeManager` | `address` | Initial `FEE_MANAGER_ROLE` holder; `address(0)` grants none, and the admin can grant the role later. |
 
 ### `LIDO_LEND`
 

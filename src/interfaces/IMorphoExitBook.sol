@@ -9,7 +9,7 @@ import {PriorityRamp} from "../types/ExitBookTypes.sol";
 /// @notice Exit book backed by supply positions in governance-allowed Morpho markets. Extends the common
 ///         exit-book surface (`IExitBook`) with market placement and allow-list admin.
 interface IMorphoExitBook is IExitBook {
-    /// @notice The Morpho deployment this book reads positions from and withdraws against.
+    /// @notice The Morpho deployment this book is bound to.
     function MORPHO() external view returns (IMorpho);
 
     /// @notice Whether market `marketId` is allowed for new requests.
@@ -41,7 +41,7 @@ interface IMorphoExitBook is IExitBook {
     ///        `ceil(maxShareBurn * fillAssets / assetsTotal)`. Across a split request, total burn may exceed this
     ///        value by at most one raw share unit per additional fill. Must fit `uint128`; 0 disables the limit,
     ///        and a non-zero value must cover the placement share quote.
-    /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end.
+    /// @param ramp The priority-fee schedule.
     /// @param deadline Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
     /// @return id The new request id.
     function placeExitRequest(

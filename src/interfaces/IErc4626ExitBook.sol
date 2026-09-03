@@ -35,7 +35,7 @@ interface IErc4626ExitBook is IExitBook {
     ///        `ceil(maxShareBurn * fillAssets / assetsTotal)`. Across a split request, total burn may exceed this
     ///        value by at most one raw share unit per additional fill. Must fit `uint128`; 0 disables the limit,
     ///        and a non-zero value must cover the placement share quote.
-    /// @param ramp Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end.
+    /// @param ramp The priority-fee schedule.
     /// @param deadline Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends.
     /// @return id The new request id.
     function placeExitRequest(

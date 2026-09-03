@@ -10,10 +10,12 @@ import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController
 import {IRiskStewardDashboard} from "../interfaces/IRiskStewardDashboard.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
 
-/// @notice Bounded risk-reduction levers over the markets of one core, from a single instance. Activation-config
-///         changes are tighten-only; the dashboard may revoke instant activation and freeze markets, but exposes no
-///         instant-activation grant or market-unfreeze path. Stewards are appointed per market id, so one dashboard
-///         serves every market.
+/// @title RiskStewardDashboard
+/// @author Lido
+/// @notice Bounded risk-reduction controls over the markets of one core. Activation-config changes are
+///         tighten-only; the dashboard may revoke instant activation and freeze markets, but exposes no
+///         instant-activation grant or market-unfreeze path. Stewards are appointed per market id, so one
+///         dashboard serves every market.
 contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard {
     using EnumerableSet for EnumerableSet.AddressSet;
 
@@ -42,6 +44,7 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     // MODIFIERS
     // ---
 
+    /// @dev Restricts a call to the stewards appointed for `marketId`.
     modifier onlyMarketSteward(Id marketId) {
         if (!_stewards[marketId].contains(msg.sender)) revert NotMarketSteward();
         _;
@@ -51,6 +54,8 @@ contract RiskStewardDashboard is AccessControlEnumerable, IRiskStewardDashboard 
     // CONSTRUCTOR
     // ---
 
+    /// @param admin Holder of `DEFAULT_ADMIN_ROLE`, which administers `STEWARD_ADMIN_ROLE`.
+    /// @param lidoLend Core whose markets this dashboard configures.
     constructor(address admin, ILidoLend lidoLend) {
         if (admin == address(0) || address(lidoLend) == address(0)) revert ZeroAddress();
         LIDO_LEND = lidoLend;

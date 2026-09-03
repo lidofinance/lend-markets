@@ -21,7 +21,7 @@ enum ExitStatus {
 }
 ```
 
-Lifecycle marker. `NotCreated` is the zero-value sentinel for unknown ids, not a stored request state. `Expired` is not stored — it is derived from `block.timestamp > deadline`.
+Lifecycle marker. `NotCreated` is the zero-value sentinel for unknown ids, not a stored request state. `Expired` is not stored: it is derived from `block.timestamp > deadline`.
 
 ### Structs
 
@@ -36,7 +36,7 @@ struct PriorityRamp {
 }
 ```
 
-Lender-set priority-fee schedule — a Dutch auction on the fee carved out of each fill. The rate holds at `startRate` for `rampStart` seconds from creation, then climbs linearly to `endRate` by `rampEnd`, then holds at `endRate` until the deadline. Rates are WAD fractions, each capped at `MAX_PRIORITY_FEE`.
+Lender-set priority-fee schedule: the fee rate offered to fillers. The rate holds at `startRate` for `rampStart` seconds from creation, then rises linearly to `endRate` by `rampEnd`, then holds at `endRate` until the deadline. Rates are WAD fractions, each capped at `MAX_PRIORITY_FEE`.
 
 **Fields**
 
@@ -79,7 +79,7 @@ One exit request's source-agnostic lifecycle state. The backing source (which va
 | `deadline` | `uint40` | Last timestamp the request may be filled. Chosen by the lender, capped at `createdAt + MAX_REQUEST_LIFETIME` and never earlier than `createdAt + rampEnd`. |
 | `receiver` | `address` | Address credited the filled amount minus the priority fee. |
 | `status` | `ExitStatus` | NotCreated for an unknown id; stored requests are Open / Filled / Cancelled (Expired is derived). |
-| `asset` | `IERC20` | The underlying loan token paid out — the request, proceeds, and fees are denominated in it. |
+| `asset` | `IERC20` | The underlying loan token paid out: the request, proceeds, and fees are denominated in it. |
 | `assetsRemaining` | `uint128` | Outstanding asset amount to exit. |
 | `assetsTotal` | `uint128` | Original asset amount requested. |
 | `minFillAssets` | `uint128` | Minimum non-final fill; 0 disables it. Whole-remainder fills qualify; capped at assetsTotal. |
@@ -97,11 +97,42 @@ One exit request's source-agnostic lifecycle state. The backing source (which va
 event ExitRequested(uint256 indexed id, address indexed owner, address indexed receiver, address asset, uint256 assets, uint256 minFillAssets, uint256 maxShareBurn, PriorityRamp ramp, uint256 deadline);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `uint256` | Id of the new request. |
+| `owner` | `address` | The exiting lender the fills withdraw from. |
+| `receiver` | `address` | Recipient of fill payouts, net of priority fees. |
+| `asset` | `address` | Loan token the request is denominated in. |
+| `assets` | `uint256` | Total assets requested. |
+| `minFillAssets` | `uint256` | Minimum non-final fill, capped at the total. |
+| `maxShareBurn` | `uint256` | Full-request share-burn budget; 0 disables the per-fill limit. |
+| `ramp` | `PriorityRamp` | The priority-fee schedule. |
+| `deadline` | `uint256` | Last timestamp the request may be filled. |
+
+Emitted when an exit request is placed.
+
 #### `ExitProcessed`
 
 ```solidity
 event ExitProcessed(uint256 indexed id, address indexed executor, address indexed rewardRecipient, address asset, uint256 filledAssets, uint256 sharesBurned, uint256 fillerReward, uint256 serviceCut);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `uint256` | Id of the filled request. |
+| `executor` | `address` | Caller that executed the fill. |
+| `rewardRecipient` | `address` | Address the filler chose for its reward. |
+| `asset` | `address` | Loan token paid out. |
+| `filledAssets` | `uint256` | Asset amount this fill debited from the request. |
+| `sharesBurned` | `uint256` | Source shares burned to withdraw the fill. |
+| `fillerReward` | `uint256` | Priority fee paid to `rewardRecipient`, net of the service cut. |
+| `serviceCut` | `uint256` | Service-fee part of the priority fee, paid to the fee recipient. |
+
+Emitted when a fill pays out: the receiver's assets, the filler's reward, and the service cut.
 
 #### `ExitCancelled`
 
@@ -109,11 +140,28 @@ event ExitProcessed(uint256 indexed id, address indexed executor, address indexe
 event ExitCancelled(uint256 indexed id);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `uint256` | Id of the cancelled request. |
+
+Emitted when a request is cancelled by its owner.
+
 #### `ServiceFeeSet`
 
 ```solidity
 event ServiceFeeSet(address indexed feeRecipient, uint256 serviceFee);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `feeRecipient` | `address` | Recipient of the service cut. |
+| `serviceFee` | `uint256` | The service fee (WAD), a cut of each fill's priority fee. |
+
+Emitted when the service fee and its recipient are set.
 
 #### `Paused`
 
@@ -121,11 +169,27 @@ event ServiceFeeSet(address indexed feeRecipient, uint256 serviceFee);
 event Paused(address account);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `account` | `address` | Caller that paused. |
+
+Emitted when request placement and fills are paused.
+
 #### `Unpaused`
 
 ```solidity
 event Unpaused(address account);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `account` | `address` | Caller that resumed. |
+
+Emitted when request placement and fills are resumed.
 
 #### `EtherRecovered`
 
@@ -133,11 +197,30 @@ event Unpaused(address account);
 event EtherRecovered(address indexed recipient, uint256 amount);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `recipient` | `address` | Recipient of the Ether. |
+| `amount` | `uint256` | Ether sent, in wei. |
+
+Emitted when the contract's Ether balance is recovered.
+
 #### `ERC20Recovered`
 
 ```solidity
 event ERC20Recovered(address indexed token, address indexed recipient, uint256 amount);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `token` | `address` | The recovered token. |
+| `recipient` | `address` | Recipient of the tokens. |
+| `amount` | `uint256` | Token amount sent. |
+
+Emitted when an ERC-20 amount is recovered.
 
 #### `ERC721Recovered`
 
@@ -145,11 +228,32 @@ event ERC20Recovered(address indexed token, address indexed recipient, uint256 a
 event ERC721Recovered(address indexed token, uint256 tokenId, address indexed recipient);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `token` | `address` | The recovered token's contract. |
+| `tokenId` | `uint256` | Id of the recovered token. |
+| `recipient` | `address` | Recipient of the token. |
+
+Emitted when an ERC-721 token is recovered.
+
 #### `ERC1155Recovered`
 
 ```solidity
 event ERC1155Recovered(address indexed token, uint256 tokenId, address indexed recipient, uint256 amount);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `token` | `address` | The recovered token's contract. |
+| `tokenId` | `uint256` | Id of the recovered token. |
+| `recipient` | `address` | Recipient of the balance. |
+| `amount` | `uint256` | Balance amount sent. |
+
+Emitted when an ERC-1155 balance is recovered.
 
 ### Errors
 
@@ -159,11 +263,15 @@ event ERC1155Recovered(address indexed token, uint256 tokenId, address indexed r
 error ZeroAddress();
 ```
 
+A required address argument is zero.
+
 #### `ZeroAssets`
 
 ```solidity
 error ZeroAssets();
 ```
+
+The requested or filled asset amount is zero.
 
 #### `ZeroMaxLifetime`
 
@@ -171,11 +279,15 @@ error ZeroAssets();
 error ZeroMaxLifetime();
 ```
 
+The maximum request lifetime passed to the constructor is zero.
+
 #### `FeeTooHigh`
 
 ```solidity
 error FeeTooHigh();
 ```
+
+The service fee exceeds `MAX_SERVICE_FEE`.
 
 #### `FeeRecipientRequired`
 
@@ -183,11 +295,15 @@ error FeeTooHigh();
 error FeeRecipientRequired();
 ```
 
+A nonzero service fee was set with a zero recipient.
+
 #### `PriorityFeeTooHigh`
 
 ```solidity
 error PriorityFeeTooHigh();
 ```
+
+The request's end priority-fee rate exceeds `MAX_PRIORITY_FEE`.
 
 #### `StartFeeAboveEnd`
 
@@ -195,11 +311,15 @@ error PriorityFeeTooHigh();
 error StartFeeAboveEnd();
 ```
 
+The request's start priority-fee rate exceeds its end rate.
+
 #### `RampStartAfterEnd`
 
 ```solidity
 error RampStartAfterEnd();
 ```
+
+The request's fee ramp starts after it ends.
 
 #### `RampPastDeadline`
 
@@ -207,11 +327,22 @@ error RampStartAfterEnd();
 error RampPastDeadline();
 ```
 
+The request's fee ramp would end after its deadline.
+
 #### `FillExceedsRemaining`
 
 ```solidity
 error FillExceedsRemaining(uint256 requested, uint256 remaining);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `requested` | `uint256` | Asset amount the fill requested. |
+| `remaining` | `uint256` | The request's remaining unfilled assets. |
+
+The fill requests more assets than the request has remaining.
 
 #### `FillBelowMinimum`
 
@@ -219,11 +350,29 @@ error FillExceedsRemaining(uint256 requested, uint256 remaining);
 error FillBelowMinimum(uint256 requested, uint256 minimum);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `requested` | `uint256` | Asset amount the fill requested. |
+| `minimum` | `uint256` | The request's minimum fill. |
+
+A non-final fill is below the request's minimum fill.
+
 #### `MaxShareBurnBelowQuote`
 
 ```solidity
 error MaxShareBurnBelowQuote(uint256 maximum, uint256 quote);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `maximum` | `uint256` | The share-burn budget passed with the request. |
+| `quote` | `uint256` | Source shares quoted for the full request at placement. |
+
+The request's share-burn budget cannot cover the placement share quote.
 
 #### `ShareBurnExceedsMaximum`
 
@@ -231,11 +380,29 @@ error MaxShareBurnBelowQuote(uint256 maximum, uint256 quote);
 error ShareBurnExceedsMaximum(uint256 actual, uint256 maximum);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `actual` | `uint256` | Source shares the withdrawal burned. |
+| `maximum` | `uint256` | The fill's pro-rata share-burn limit. |
+
+The fill burns more source shares than its pro-rata share-burn limit.
+
 #### `AssetsOutMismatch`
 
 ```solidity
 error AssetsOutMismatch(uint256 expected, uint256 actual);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `expected` | `uint256` | Asset amount the fill debited. |
+| `actual` | `uint256` | Asset amount received from the source withdrawal. |
+
+The source withdrawal delivered a different asset amount than the fill debited.
 
 #### `DeadlineInPast`
 
@@ -243,17 +410,23 @@ error AssetsOutMismatch(uint256 expected, uint256 actual);
 error DeadlineInPast();
 ```
 
+The request's deadline is not in the future.
+
 #### `DeadlineTooFar`
 
 ```solidity
 error DeadlineTooFar();
 ```
 
+The request's deadline is more than `MAX_REQUEST_LIFETIME` away.
+
 #### `EnforcedPause`
 
 ```solidity
 error EnforcedPause();
 ```
+
+The book is paused.
 
 #### `RequestClosed`
 
@@ -527,8 +700,8 @@ Recover the full balance of `tokenId` of the ERC-1155 `token` to `recipient`.
 | `ALLOWLIST_MANAGER_ROLE` | `bytes32` (constant) | Role allowed to manage which markets or vaults may receive new requests. |
 | `FEE_MANAGER_ROLE` | `bytes32` (constant) | Role allowed to set the service fee and its recipient. |
 | `RECOVERER_ROLE` | `bytes32` (constant) | Role allowed to recover tokens held by the contract. |
-| `MAX_PRIORITY_FEE` | `uint256` (constant) | Cap on a request's priority-fee rate (WAD), checked at `place` — 10%. |
-| `MAX_SERVICE_FEE` | `uint256` (constant) | Hard cap on the service fee — a cut of the priority fee (WAD) — 25%. |
+| `MAX_PRIORITY_FEE` | `uint256` (constant) | Cap on a request's priority-fee rate (WAD), enforced when the request is placed: 10%. |
+| `MAX_SERVICE_FEE` | `uint256` (constant) | Hard cap on the service fee, a cut of the priority fee (WAD): 25%. |
 | `MAX_REQUEST_LIFETIME` | `uint256` (immutable) | Cap on a request's lifetime: its `deadline` may be at most `createdAt + MAX_REQUEST_LIFETIME`. |
 | `feeRecipient` | `address` | Recipient of the service fee. |
 | `serviceFee` | `uint256` | Service fee: a cut of each fill's priority fee, as a WAD rate. |
@@ -545,6 +718,15 @@ Exit book backed by shares of governance-allowed ERC-4626 vaults. Extends the co
 event VaultAllowedSet(address indexed vault, bool allowed);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `vault` | `address` | The vault whose allowance was set. |
+| `allowed` | `bool` | Whether new requests may name the vault. |
+
+Emitted when a vault is allowed or disallowed for new requests.
+
 ### Errors
 
 #### `VaultNotAllowed`
@@ -553,17 +735,23 @@ event VaultAllowedSet(address indexed vault, bool allowed);
 error VaultNotAllowed();
 ```
 
+The vault is not allowed for new requests.
+
 #### `InsufficientBacking`
 
 ```solidity
 error InsufficientBacking();
 ```
 
+The caller's vault balance or allowance cannot back the request.
+
 #### `ZeroVault`
 
 ```solidity
 error ZeroVault();
 ```
+
+The vault to allow or disallow is the zero address.
 
 ### Functions
 
@@ -669,6 +857,15 @@ Exit book backed by supply positions in governance-allowed Morpho markets. Exten
 event MarketAllowedSet(Id indexed marketId, bool allowed);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market whose allowance was set. |
+| `allowed` | `bool` | Whether new requests may name the market. |
+
+Emitted when a market is allowed or disallowed for new requests.
+
 ### Errors
 
 #### `MarketNotAllowed`
@@ -677,11 +874,15 @@ event MarketAllowedSet(Id indexed marketId, bool allowed);
 error MarketNotAllowed();
 ```
 
+The market is not allowed for new requests.
+
 #### `MarketNotCreated`
 
 ```solidity
 error MarketNotCreated();
 ```
+
+The market params do not name a live Morpho market.
 
 #### `NotAuthorizedOnMorpho`
 
@@ -689,17 +890,23 @@ error MarketNotCreated();
 error NotAuthorizedOnMorpho();
 ```
 
+The caller has not authorized this book on Morpho.
+
 #### `InsufficientBacking`
 
 ```solidity
 error InsufficientBacking();
 ```
 
+The caller's supply position cannot back the request.
+
 #### `ZeroMorpho`
 
 ```solidity
 error ZeroMorpho();
 ```
+
+The Morpho address passed to the constructor is the zero address.
 
 ### Functions
 
