@@ -11,13 +11,13 @@
   "lib/lido-lend": {
     "branch": {
       "name": "main",
-      "rev": "b9ac620aaca5fe0b71b361717e014052e27cb647"
+      "rev": "422d589f9d098124249b54b55306884165833207"
     }
   },
   "lib/lido-lend-irm": {
     "branch": {
       "name": "main",
-      "rev": "deef8387a5ede011492a18821a22d9cb6ed019b7"
+      "rev": "566d31f7dfdf83d07a6593f641f7474c263a7f89"
     }
   },
   "lib/openzeppelin-contracts": {
