@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
 import {IMorpho, Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
-import {ExitBookBase} from "./ExitBookBase.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 import {IMorphoExitBook} from "../interfaces/IMorphoExitBook.sol";
 import {PriorityRamp} from "../types/ExitBookTypes.sol";
+import {ExitBookBase} from "./ExitBookBase.sol";
 
 /// @title MorphoExitBook
 /// @author Lido
@@ -24,16 +24,28 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     // ERRORS
     // ---
 
+    /// @notice The market is not allowed for new requests.
     error MarketNotAllowed();
+
+    /// @notice The market params do not name a live Morpho market.
     error MarketNotCreated();
+
+    /// @notice The caller has not authorized this book on Morpho.
     error NotAuthorizedOnMorpho();
+
+    /// @notice The caller's supply position cannot back the request.
     error InsufficientBacking();
+
+    /// @notice The Morpho address passed to the constructor is the zero address.
     error ZeroMorpho();
 
     // ---
     // EVENTS
     // ---
 
+    /// @notice Emitted when a market is allowed or disallowed for new requests.
+    /// @param marketId The market whose allowance was set.
+    /// @param allowed Whether new requests may name the market.
     event MarketAllowedSet(Id indexed marketId, bool allowed);
 
     // ---
@@ -51,7 +63,7 @@ contract MorphoExitBook is ExitBookBase, IMorphoExitBook {
     mapping(Id marketId => bool isAllowed) public isMarketAllowed;
 
     /// @dev Registered params per market id, kept permanently so existing requests still resolve after the market
-    ///      is disallowed. The id is the params' hash, so canonical.
+    ///      is disallowed. The id is the hash of the params, so one id maps to one parameter set.
     mapping(Id marketId => MarketParams marketParams) internal _marketParams;
 
     /// @dev The market a request was placed against (params via `_marketParams`).

@@ -8,13 +8,15 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 
 /// @title CollateralActivationLib
 /// @author Lido
-/// @notice Collateral activation throttle. Stores a borrower's un-matured collateral (`dust` and `activating`)
-///         and the timer. The caller owns the raw `total` and derives `active = total - inactive`, where
-///         `inactive = activating + dust`.
+/// @notice Collateral activation throttle. Fresh collateral protects its position immediately but cannot back
+///         a borrow until it matures; the delay scales with market-wide inflow and gives guardians time to
+///         review a deposit and flag its owner before it becomes borrowable. Stores a borrower's un-matured
+///         collateral (`dust` and `activating`) and the timer. The caller owns the raw `total` and derives
+///         `active = total - inactive`, where `inactive = activating + dust`.
 /// @dev Per-borrower the lib stores two un-matured buckets plus the timer. Deposits, maturity, voluntary
 ///      withdrawal, and forced seizure move collateral within or out of these buckets:
 ///
-///         dust        below the threshold, untimed, freely withdrawable, not borrowable
+///         dust        below the threshold, untimed, not borrowable
 ///         activating  crossed the threshold, timed and lockable, not borrowable yet
 ///         active      derived by the caller as total - activating - dust
 ///
@@ -52,19 +54,32 @@ library CollateralActivationLib {
     // EVENTS
     // ---
 
-    /// @notice A deposit enters or extends the activation timer. `position` is the resulting state.
+    /// @notice Emitted when a deposit enters or extends the activation timer.
+    /// @param borrower The borrower whose collateral is activating.
+    /// @param amount Collateral that entered the timer: the deposit plus any promoted dust.
+    /// @param position The borrower's resulting un-matured state.
     event CollateralActivating(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice An activating lot matures, or an instant deposit lands active. `position` is the resulting state.
+    /// @notice Emitted when an activating lot matures or an instant deposit lands active.
+    /// @param borrower The borrower whose collateral activated.
+    /// @param amount The matured lot, or the instant deposit.
+    /// @param position The borrower's resulting un-matured state.
     event CollateralActivated(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice A sub-threshold deposit is held as untimed dust. `position` is the resulting state.
+    /// @notice Emitted when a sub-threshold deposit is held as untimed dust.
+    /// @param borrower The borrower holding the dust.
+    /// @param amount The deposit held as dust.
+    /// @param position The borrower's resulting un-matured state.
     event CollateralDusted(address indexed borrower, uint256 amount, Position position);
 
-    /// @notice Collateral is drained from the un-matured buckets. `position` is the resulting state.
+    /// @notice Emitted when collateral is drained from the un-matured buckets.
+    /// @param borrower The borrower whose buckets were drained.
+    /// @param amount Collateral removed from the dust and activating buckets.
+    /// @param position The borrower's resulting un-matured state.
     event CollateralDrained(address indexed borrower, uint256 amount, Position position);
 
     /// @notice Emitted when the full activation config is set.
+    /// @param config The stored config.
     event CollateralActivationConfigSet(CollateralActivationConfig config);
 
     // ---
@@ -106,16 +121,25 @@ library CollateralActivationLib {
     error MaxDelayPerSuspectExceeded();
 
     /// @notice A non-instant deposit is below the configured minimum.
+    /// @param assets The deposit.
+    /// @param minDepositAmount The configured minimum deposit.
     error DepositTooSmall(uint256 assets, uint256 minDepositAmount);
 
     /// @notice A non-instant deposit onto existing dust leaves the combined amount below the activation threshold.
+    /// @param dust The pending dust balance.
+    /// @param assets The deposit.
+    /// @param minActivationAmount The activation threshold the combined amount must reach.
     error DustNotResolved(uint256 dust, uint256 assets, uint256 minActivationAmount);
 
     /// @notice A voluntary withdrawal would remove only part of the inactive balance (`dust + activating`);
     ///         it must remove the whole balance or none of it.
+    /// @param requested The withdrawal amount.
+    /// @param inactive The inactive balance the withdrawal must cover.
     error InactiveCollateralNotCleared(uint256 requested, uint256 inactive);
 
     /// @notice A voluntary withdrawal cannot remove activating collateral before the lock deadline.
+    /// @param activating The locked activating balance.
+    /// @param lockDeadline Timestamp the lock ends.
     error ActivatingCollateralLocked(uint256 activating, uint256 lockDeadline);
 
     // ---
@@ -123,8 +147,8 @@ library CollateralActivationLib {
     // ---
 
     /// @notice Per-borrower un-matured collateral. The caller derives `active` as `total - activating - dust`.
-    /// @param dust            Free collateral below the activation threshold, withdrawable, never timed.
-    /// @param activating      Collateral inside the activation timer, not yet borrowable.
+    /// @param dust Collateral below the activation threshold, untimed, not borrowable.
+    /// @param activating Collateral inside the activation timer, not yet borrowable.
     /// @param activatingStart Activation timer start, 0 when there is no active timer.
     /// @param activatingDelay Base inflow-scaled delay, frozen at deposit.
     struct Position {
@@ -136,10 +160,10 @@ library CollateralActivationLib {
 
     /// @notice Market-wide activation state. Per-borrower the lib stores the un-matured buckets, and the caller
     ///         derives `active` from the core `total`.
-    /// @param inflow          Recent collateral inflow, time-decayed. The throttle accumulator snapshot.
+    /// @param inflow Recent collateral inflow, time-decayed. The throttle accumulator snapshot.
     /// @param inflowUpdatedAt Timestamp `inflow` was snapshotted at. The decay clock starts here.
-    /// @param config          Governance-tunable parameters.
-    /// @param positions       Per-borrower un-matured collateral.
+    /// @param config Governance-tunable parameters.
+    /// @param positions Per-borrower un-matured collateral.
     struct State {
         uint128 inflow;
         uint40 inflowUpdatedAt;
@@ -182,7 +206,8 @@ library CollateralActivationLib {
     ///         timer and adds that amount to the market inflow. When `instant` (a trusted caller) the deposit
     ///         joins neither bucket and counts as active immediately; existing dust stays untouched.
     /// @dev All activating collateral shares one timer: a top-up that extends the deadline restarts
-    ///      `activatingStart` for the whole lot, clearing the suspect surcharge if it restarts past `suspectExpiry`.
+    ///      `activatingStart` for the whole lot. A restart past the suspect snapshot's expiry also ends the
+    ///      suspect surcharge, which applies only to lots started before that expiry.
     /// @param instant Whether the supplying caller is trusted to skip the activation timer and inflow throttle.
     function credit(State storage $, address borrower, uint256 assets, bool instant) internal {
         Position storage position = $.positions[borrower];
@@ -421,8 +446,8 @@ library CollateralActivationLib {
         return position.activatingStart + position.activatingDelay + surcharge;
     }
 
-    /// @dev Base delay scales linearly with the inflow, clamped at both ends. The dormant lot's size is folded
-    ///      into `effectiveInflow` before the call, so a lot's own size lengthens its delay.
+    /// @dev Base delay scales linearly with the inflow, clamped between the delay floor and cap. Callers fold
+    ///      the deposit's own size into `effectiveInflow`, so a deposit lengthens its own delay.
     function _computeDelay(State storage $, uint256 effectiveInflow) private view returns (uint256) {
         uint256 maxDelayInflow = $.config.maxDelayInflow;
         uint256 maxActivationDelay = $.config.maxActivationDelay;

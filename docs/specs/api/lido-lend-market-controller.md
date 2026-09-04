@@ -4,7 +4,7 @@
 
 Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
 
-Contract-specific external surface of `LidoLendMarketController`: the inherited core hook interface, Lido policy, freeze/pause, settlement-queue views, and borrower dashboard. Standard role membership and administration use the inherited `IAccessControlEnumerable` surface. The controller implements this interface, so it is the source for its dashboard struct, events, errors, and policy-function docs.
+Contract-specific external surface of `LidoLendMarketController`: the inherited core hook interface, Lido policy, freeze/pause, settlement-queue views, and borrower dashboard. Standard role membership and administration use the inherited `IAccessControlEnumerable` surface. The controller's dashboard struct, events, and errors are declared here.
 
 ## Enums
 
@@ -54,7 +54,7 @@ One-read borrower snapshot for off-chain dashboards: collateral split, activatio
 | --- | --- | --- |
 | `active` | `uint256` | Derived collateral outside the stored inactive buckets, including matured and instantly activated amounts. It supports borrowing only when the total meets the current activation threshold. |
 | `activating` | `uint256` | Collateral inside the activation timer, not yet borrowable. |
-| `dust` | `uint256` | Stored untimed collateral classified as dust. Configuration changes do not reclassify it, so it need not remain below the current activation threshold. It is withdrawable and not borrowable. |
+| `dust` | `uint256` | Stored untimed collateral classified as dust. Configuration changes do not reclassify it, so it need not remain below the current activation threshold. It is not borrowable. |
 | `unlockTime` | `uint256` | Activation unlock timestamp, 0 when there is no timer. |
 | `flagCount` | `uint256` | Raw guardian flags on the account, regardless of status. |
 | `banned` | `bool` | Effective guardian ban: either the stored latch or a flag count at or above the current quorum. |
@@ -308,6 +308,13 @@ Governance-tunable activation parameters, validated by `CollateralActivationLib.
 event FrozenSet(bool frozen, address indexed account);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `frozen` | `bool` | The new freeze state. |
+| `account` | `address` | Caller that set it. |
+
 Emitted when the market is frozen or unfrozen.
 
 ### `InstantActivationSet`
@@ -315,6 +322,13 @@ Emitted when the market is frozen or unfrozen.
 ```solidity
 event InstantActivationSet(address indexed caller, bool enabled);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The supply caller whose trusted status was set. |
+| `enabled` | `bool` | Whether that caller's supplies activate instantly. |
 
 Emitted when a trusted caller's instant-activation status is set.
 
@@ -324,6 +338,13 @@ Emitted when a trusted caller's instant-activation status is set.
 event SupplyCapSet(uint256 cap, address indexed account);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `cap` | `uint256` | The new supply cap. |
+| `account` | `address` | Caller that set the cap. |
+
 Emitted when the supply cap is set.
 
 ### `GuardianSignalsSet`
@@ -331,6 +352,12 @@ Emitted when the supply cap is set.
 ```solidity
 event GuardianSignalsSet(address indexed guardianSignals);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `guardianSignals` | `address` | The bound guardian-signals registry. |
 
 Emitted once when the market binds its guardian-signals registry at initialization.
 
@@ -342,7 +369,7 @@ Emitted once when the market binds its guardian-signals registry at initializati
 error Unauthorized();
 ```
 
-Thrown when the hook caller is not the core.
+The hook caller is not the core.
 
 ### `ZeroAddress`
 
@@ -350,7 +377,7 @@ Thrown when the hook caller is not the core.
 error ZeroAddress();
 ```
 
-Thrown when a required address argument is zero.
+A required address argument is zero.
 
 ### `InvalidMarketId`
 
@@ -358,7 +385,7 @@ Thrown when a required address argument is zero.
 error InvalidMarketId();
 ```
 
-Thrown when the hook id is not this controller's market.
+The hook id is not this controller's market.
 
 ### `UnknownHookEvent`
 
@@ -366,7 +393,7 @@ Thrown when the hook id is not this controller's market.
 error UnknownHookEvent();
 ```
 
-Thrown when the hook event is unrecognized.
+The hook event is unrecognized.
 
 ### `MarketIsFrozen`
 
@@ -374,7 +401,7 @@ Thrown when the hook event is unrecognized.
 error MarketIsFrozen();
 ```
 
-Thrown when a freeze blocks the action.
+A freeze blocks the action.
 
 ### `AddressBanned`
 
@@ -382,7 +409,7 @@ Thrown when a freeze blocks the action.
 error AddressBanned();
 ```
 
-Thrown when a banned address borrows, receives a borrow, or initiates one.
+The borrow's caller, receiver, or borrower is banned.
 
 ### `SupplyCapExceeded`
 
@@ -390,7 +417,14 @@ Thrown when a banned address borrows, receives a borrow, or initiates one.
 error SupplyCapExceeded(uint256 cap, uint256 attempted);
 ```
 
-Thrown when a supply would push the market's total supplied loan assets above the cap.
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `cap` | `uint256` | The supply cap. |
+| `attempted` | `uint256` | Total supplied loan assets the deposit would reach. |
+
+The supply would push the market's total supplied loan assets above the cap.
 
 ### `InsufficientActiveCollateral`
 
@@ -398,7 +432,7 @@ Thrown when a supply would push the market's total supplied loan assets above th
 error InsufficientActiveCollateral();
 ```
 
-Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
+Active (matured) collateral cannot cover the debt at the market LLTV.
 
 ### `ZeroBorrowAssets`
 
@@ -406,7 +440,7 @@ Thrown when active (matured) collateral cannot cover the debt at the market LLTV
 error ZeroBorrowAssets();
 ```
 
-Thrown when a borrow would mint borrow shares while transferring zero loan assets.
+The borrow would mint borrow shares while transferring zero loan assets.
 
 ### `BorrowShareRateExceeded`
 
@@ -414,7 +448,7 @@ Thrown when a borrow would mint borrow shares while transferring zero loan asset
 error BorrowShareRateExceeded();
 ```
 
-Thrown when a borrow, repay, or settle would push the market's borrow-share rate over the ceiling.
+The borrow, repay, or settle would push the market's borrow-share rate over the ceiling.
 
 ### `PositionAccountingMismatch`
 
@@ -422,7 +456,7 @@ Thrown when a borrow, repay, or settle would push the market's borrow-share rate
 error PositionAccountingMismatch();
 ```
 
-Thrown when a core-applied position delta exceeds the controller's read of that position. The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
+A core-applied position delta exceeds the controller's read of that position. The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
 
 ### `SettlementBadDebt`
 
@@ -430,7 +464,7 @@ Thrown when a core-applied position delta exceeds the controller's read of that 
 error SettlementBadDebt();
 ```
 
-Thrown when a tracked borrower is bad debt, blocking settlement.
+The settlement queue's root is bad debt, blocking settlement.
 
 ### `SettlementExceedsAllowed`
 
@@ -438,7 +472,7 @@ Thrown when a tracked borrower is bad debt, blocking settlement.
 error SettlementExceedsAllowed();
 ```
 
-Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
+The requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
 
 ### `SettlementExceedsSettleableSupply`
 
@@ -446,7 +480,7 @@ Thrown when the requested cut exceeds the policy-allowed slice (a zero slice mea
 error SettlementExceedsSettleableSupply();
 ```
 
-Thrown when a root-policy cut exceeds the lender's illiquid supply tail.
+The root-policy cut exceeds the lender's illiquid supply tail.
 
 ## Functions
 
@@ -496,7 +530,7 @@ Role allowed to lift a pause.
 function MAX_BORROW_SHARE_RATE() external view returns (uint256);
 ```
 
-Ceiling on the market's borrow-share rate; borrow/repay/settle may not push past it (liquidation exempt). Bounds rounding-driven borrow-share inflation.
+Ceiling on the market's borrow-share rate; borrow/repay/settle may not push past it (liquidation exempt). Near an empty debt book, borrow-and-near-full-repay cycles would otherwise inflate the share total toward overflow.
 
 ### `maxDeposit`
 
@@ -514,7 +548,7 @@ function maxWithdrawableAssets(
 ) external view returns (uint256);
 ```
 
-Loan assets `supplier` can withdraw from its market supply right now: its position capped by the idle liquidity, 0 while paused.
+Loan assets `supplier` can withdraw from its market supply right now: its position capped by the market's free liquidity, 0 while paused.
 
 ### `guardianSignals`
 
@@ -530,7 +564,7 @@ The guardian-signals registry this controller reads for the borrow gate and acti
 function currentInflow() external view returns (uint256);
 ```
 
-Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
+Current decayed activation inflow: the throttle accumulator.
 
 ### `currentActivationDelay`
 
@@ -598,7 +632,7 @@ Number of borrowers tracked in the settlement queue.
 function hasBadDebt() external view returns (bool);
 ```
 
-Whether the current settlement-queue root has bad debt: its debt value exceeds its collateral value.
+Whether the current settlement-queue root has bad debt: its debt value exceeds its collateral value. While true, every settlement path is blocked, so a lender cannot exit at full value and leave the unrealized loss to the remaining lenders.
 
 O(1): checks only the root selected by the rounded borrow-share/raw-collateral key. It does not scan all tracked borrowers. Equal keys and separate debt/collateral valuation rounding mean that a solvent root does not prove every other tracked position is solvent.
 
@@ -610,7 +644,7 @@ function nextSettlementBorrower(
 ) external view returns (address borrower, SettlementSlice memory slice);
 ```
 
-The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance or the borrower's own settlement-LTV allowance — shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 for the policy cut itself, unshrunk. A concrete lender may execute the root-policy part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty, and the slice quotes zero `borrowShares` when no executable cut is available.
+The queue root and the cut it is eligible for: the larger of the root policy's allowance and the borrower's own settlement-LTV allowance, shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 to get the policy cut unshrunk. A cut above the settlement-LTV allowance must fit the settling lender's illiquid supply tail in full. `borrower` is address(0) when the queue is empty, and the slice quotes zero `borrowShares` when no executable cut is available.
 
 ### `settlementFor`
 
@@ -621,7 +655,7 @@ function settlementFor(
 ) external view returns (SettlementQuote memory quote);
 ```
 
-The borrower's personal cut and its prospective queue-root cut, each shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 for the policy cuts themselves, unshrunk. The queue-root quote does not assert that the borrower is currently the root. A candidate that grants no cut quotes zero `borrowShares` — including one whose cut would be too small to seize a whole collateral unit, which the core rejects.
+The borrower's personal cut and its prospective queue-root cut, each shrunk to what `budgetSupplyShares` of core supply funds. Pass 0 to get the policy cuts unshrunk. The queue-root quote does not assert that the borrower is currently the root. A candidate that grants no cut quotes zero `borrowShares`, including one whose cut would be too small to seize a whole collateral unit, which the core rejects.
 
 ### `settlementBorrowers`
 
@@ -640,7 +674,7 @@ A window of queued borrowers (approximate top-down order) and their risk keys: u
 function freeze() external;
 ```
 
-Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation maturation is deferred. Freeze adds no debt gate to debt-free withdrawals, but existing activation locks still apply.
+Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation maturation is deferred. Freeze blocks risk-increasing actions while repay, liquidation, settlement, and lender exits remain available; it adds no debt gate to debt-free withdrawals, though existing activation locks still apply.
 
 ### `unfreeze`
 
@@ -656,7 +690,7 @@ Lift the freeze.
 function pauseFor(uint256 duration) external;
 ```
 
-Pause every hook for `duration` seconds. Pass PAUSE_INFINITELY for an indefinite pause.
+Pause every hook for `duration` seconds: unlike a freeze, this stops every market action, including repay, liquidation, and settlement, for incidents in which even those are unsafe. Pass PAUSE_INFINITELY for an indefinite pause.
 
 ### `resume`
 

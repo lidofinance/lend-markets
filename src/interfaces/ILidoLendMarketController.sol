@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
+
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
+
+import {SettlementConfig, SettlementQuote, SettlementSlice} from "../types/SettlementTypes.sol";
 import {ILidoLendMarketConfigurator} from "./ILidoLendMarketConfigurator.sol";
 import {IPausableUntil} from "./IPausableUntil.sol";
-import {SettlementConfig, SettlementQuote, SettlementSlice} from "../types/SettlementTypes.sol";
 
 /// @title ILidoLendMarketController
 /// @notice Contract-specific external surface of `LidoLendMarketController`: the inherited core hook interface,
-///         Lido policy, freeze/pause, settlement-queue views, and borrower dashboard. Standard role membership and
-///         administration use the inherited `IAccessControlEnumerable` surface. The controller implements this
-///         interface, so it is the source for its dashboard struct, events, errors, and policy-function docs.
+///         Lido policy, freeze/pause, settlement-queue views, and the borrower position view. The controller's
+///         `BorrowerPosition` struct, events, and errors are declared here.
 interface ILidoLendMarketController is
     ILidoLendBaseMarketController,
     IAccessControlEnumerable,
@@ -25,75 +26,84 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice Emitted when the market is frozen or unfrozen.
+    /// @param frozen The new freeze state.
+    /// @param account Caller that set it.
     event FrozenSet(bool frozen, address indexed account);
 
     /// @notice Emitted when a trusted caller's instant-activation status is set.
+    /// @param caller The supply caller whose trusted status was set.
+    /// @param enabled Whether that caller's supplies activate instantly.
     event InstantActivationSet(address indexed caller, bool enabled);
 
     /// @notice Emitted when the supply cap is set.
+    /// @param cap The new supply cap.
+    /// @param account Caller that set the cap.
     event SupplyCapSet(uint256 cap, address indexed account);
 
     /// @notice Emitted once when the market binds its guardian-signals registry at initialization.
+    /// @param guardianSignals The bound guardian-signals registry.
     event GuardianSignalsSet(address indexed guardianSignals);
 
     // ---
     // ERRORS
     // ---
 
-    /// @notice Thrown when the hook caller is not the core.
+    /// @notice The hook caller is not the core.
     error Unauthorized();
 
-    /// @notice Thrown when a required address argument is zero.
+    /// @notice A required address argument is zero.
     error ZeroAddress();
 
-    /// @notice Thrown when the hook id is not this controller's market.
+    /// @notice The hook id is not this controller's market.
     error InvalidMarketId();
 
-    /// @notice Thrown when the hook event is unrecognized.
+    /// @notice The hook event is unrecognized.
     error UnknownHookEvent();
 
-    /// @notice Thrown when a freeze blocks the action.
+    /// @notice A freeze blocks the action.
     error MarketIsFrozen();
 
-    /// @notice Thrown when a banned address borrows, receives a borrow, or initiates one.
+    /// @notice The borrow's caller, receiver, or borrower is banned.
     error AddressBanned();
 
-    /// @notice Thrown when a supply would push the market's total supplied loan assets above the cap.
+    /// @notice The supply would push the market's total supplied loan assets above the cap.
+    /// @param cap The supply cap.
+    /// @param attempted Total supplied loan assets the deposit would reach.
     error SupplyCapExceeded(uint256 cap, uint256 attempted);
 
-    /// @notice Thrown when active (matured) collateral cannot cover the debt at the market LLTV.
+    /// @notice Active (matured) collateral cannot cover the debt at the market LLTV.
     error InsufficientActiveCollateral();
 
-    /// @notice Thrown when a borrow would mint borrow shares while transferring zero loan assets.
+    /// @notice The borrow would mint borrow shares while transferring zero loan assets.
     error ZeroBorrowAssets();
 
-    /// @notice Thrown when a borrow, repay, or settle would push the market's borrow-share rate over the ceiling.
+    /// @notice The borrow, repay, or settle would push the market's borrow-share rate over the ceiling.
     error BorrowShareRateExceeded();
 
-    /// @notice Thrown when a core-applied position delta exceeds the controller's read of that position.
+    /// @notice A core-applied position delta exceeds the controller's read of that position.
     ///         The controller's accounting mirrors the core, so a divergence reverts instead of masking it.
     error PositionAccountingMismatch();
 
-    /// @notice Thrown when a tracked borrower is bad debt, blocking settlement.
+    /// @notice The settlement queue's root is bad debt, blocking settlement.
     error SettlementBadDebt();
 
-    /// @notice Thrown when the requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
+    /// @notice The requested cut exceeds the policy-allowed slice (a zero slice means ineligible).
     error SettlementExceedsAllowed();
 
-    /// @notice Thrown when a root-policy cut exceeds the lender's illiquid supply tail.
+    /// @notice The root-policy cut exceeds the lender's illiquid supply tail.
     error SettlementExceedsSettleableSupply();
 
     // ---
     // TYPES
     // ---
 
-    /// @notice One-read borrower snapshot for off-chain dashboards: collateral split, activation timer,
-    ///         guardian signal, debt, personal settlement target, current queue status, and policy quotes.
+    /// @notice One-read borrower snapshot: collateral split, activation timer, guardian signal, debt,
+    ///         personal settlement target, current queue status, and policy quotes.
     /// @param active Derived collateral outside the stored inactive buckets, including matured and instantly
     ///        activated amounts. It supports borrowing only when the total meets the current activation threshold.
     /// @param activating Collateral inside the activation timer, not yet borrowable.
     /// @param dust Stored untimed collateral classified as dust. Configuration changes do not reclassify it, so it
-    ///        need not remain below the current activation threshold. It is withdrawable and not borrowable.
+    ///        need not remain below the current activation threshold. It is not borrowable.
     /// @param unlockTime Activation unlock timestamp, 0 when there is no timer.
     /// @param flagCount Raw guardian flags on the account, regardless of status.
     /// @param banned Effective guardian ban: either the stored latch or a flag count at or above the current quorum.
@@ -141,7 +151,8 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice Ceiling on the market's borrow-share rate; borrow/repay/settle may not push past it (liquidation
-    ///         exempt). Bounds rounding-driven borrow-share inflation.
+    ///         exempt). Near an empty debt book, borrow-and-near-full-repay cycles would otherwise inflate the
+    ///         share total toward overflow.
     function MAX_BORROW_SHARE_RATE() external view returns (uint256);
 
     // ---
@@ -153,17 +164,17 @@ interface ILidoLendMarketController is
     function maxDeposit() external view returns (uint256);
 
     /// @notice Loan assets `supplier` can withdraw from its market supply right now: its position capped by
-    ///         the idle liquidity, 0 while paused.
+    ///         the market's free liquidity, 0 while paused.
     function maxWithdrawableAssets(address supplier) external view returns (uint256);
 
-    /// @notice The guardian-signals registry this controller reads for the borrow gate and activation scaling.
+    /// @notice The guardian-signals registry.
     function guardianSignals() external view returns (address);
 
     // ---
     // COLLATERAL ACTIVATION
     // ---
 
-    /// @notice Current decayed activation inflow (the throttle accumulator) — for monitoring and tests.
+    /// @notice Current decayed activation inflow: the throttle accumulator.
     function currentInflow() external view returns (uint256);
 
     /// @notice Base inflow-throttle delay for a hypothetical `inflowIncrement` at the current decayed inflow.
@@ -198,26 +209,28 @@ interface ILidoLendMarketController is
     function settlementBorrowersCount() external view returns (uint256);
 
     /// @notice Whether the current settlement-queue root has bad debt: its debt value exceeds its collateral value.
+    ///         While true, every settlement path is blocked, so a lender cannot exit at full value and leave the
+    ///         unrealized loss to the remaining lenders.
     /// @dev O(1): checks only the root selected by the rounded borrow-share/raw-collateral key. It does not scan all
     ///      tracked borrowers. Equal keys and separate debt/collateral valuation rounding mean that a solvent root
     ///      does not prove every other tracked position is solvent.
     function hasBadDebt() external view returns (bool);
 
-    /// @notice The queue root and the cut it is eligible for — whichever is larger, the root policy's allowance
-    ///         or the borrower's own settlement-LTV allowance — shrunk to what `budgetSupplyShares` of core supply
-    ///         funds. Pass 0 for the policy cut itself, unshrunk. A concrete lender may execute the root-policy
-    ///         part only against its illiquid supply tail. `borrower` is address(0) when the queue is empty, and
-    ///         the slice quotes zero `borrowShares` when no executable cut is available.
+    /// @notice The queue root and the cut it is eligible for: the larger of the root policy's allowance and the
+    ///         borrower's own settlement-LTV allowance, shrunk to what `budgetSupplyShares` of core supply funds.
+    ///         Pass 0 to get the policy cut unshrunk. A cut above the settlement-LTV allowance must fit the
+    ///         settling lender's illiquid supply tail in full. `borrower` is address(0) when the queue is empty,
+    ///         and the slice quotes zero `borrowShares` when no executable cut is available.
     function nextSettlementBorrower(uint256 budgetSupplyShares)
         external
         view
         returns (address borrower, SettlementSlice memory slice);
 
     /// @notice The borrower's personal cut and its prospective queue-root cut, each shrunk to what
-    ///         `budgetSupplyShares` of core supply funds. Pass 0 for the policy cuts themselves, unshrunk. The
-    ///         queue-root quote does not assert that the borrower is currently the root. A candidate that grants
-    ///         no cut quotes zero `borrowShares` — including one whose cut would be too small to seize a
-    ///         whole collateral unit, which the core rejects.
+    ///         `budgetSupplyShares` of core supply funds. Pass 0 to get the policy cuts unshrunk. The queue-root
+    ///         quote does not assert that the borrower is currently the root. A candidate that grants no cut
+    ///         quotes zero `borrowShares`, including one whose cut would be too small to seize a whole collateral
+    ///         unit, which the core rejects.
     function settlementFor(address borrower, uint256 budgetSupplyShares)
         external
         view
@@ -235,14 +248,17 @@ interface ILidoLendMarketController is
     // ---
 
     /// @notice Freeze the market: new borrows and debt-bearing collateral withdrawals revert, and activation
-    ///         maturation is deferred. Freeze adds no debt gate to debt-free withdrawals, but existing activation
-    ///         locks still apply.
+    ///         maturation is deferred. Freeze blocks risk-increasing actions while repay, liquidation,
+    ///         settlement, and lender exits remain available; it adds no debt gate to debt-free withdrawals,
+    ///         though existing activation locks still apply.
     function freeze() external;
 
     /// @notice Lift the freeze.
     function unfreeze() external;
 
-    /// @notice Pause every hook for `duration` seconds. Pass PAUSE_INFINITELY for an indefinite pause.
+    /// @notice Pause every hook for `duration` seconds: unlike a freeze, this stops every market action,
+    ///         including repay, liquidation, and settlement, for incidents in which even those are unsafe.
+    ///         Pass PAUSE_INFINITELY for an indefinite pause.
     function pauseFor(uint256 duration) external;
 
     /// @notice Lift the pause.
@@ -255,7 +271,7 @@ interface ILidoLendMarketController is
     // POSITION VIEW
     // ---
 
-    /// @notice One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt,
+    /// @notice One-call borrower snapshot: collateral split, activation unlock, guardian signal, debt,
     ///         personal settlement target, current queue status, and policy quotes.
     function positionOf(address borrower) external view returns (BorrowerPosition memory);
 }

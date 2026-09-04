@@ -288,6 +288,12 @@ A component is bound to a different LidoLend core.
 error InvalidLltv(uint256 lltv);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `lltv` | `uint256` | The rejected LLTV (WAD). |
+
 A market LLTV is not strictly below WAD.
 
 ### `MarketAlreadyExists`
@@ -295,6 +301,12 @@ A market LLTV is not strictly below WAD.
 ```solidity
 error MarketAlreadyExists(Id marketId);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | Id of the existing market. |
 
 The market described by the deployment input already exists on the core.
 
@@ -441,6 +453,12 @@ A guardian registry contains an unexpected number of guardians.
 error DuplicateGuardian(address guardian);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `guardian` | `address` | The guardian listed more than once. |
+
 The expected guardian list contains the same guardian more than once.
 
 ### `MissingGuardian`
@@ -448,6 +466,12 @@ The expected guardian list contains the same guardian more than once.
 ```solidity
 error MissingGuardian(address guardian);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `guardian` | `address` | The expected guardian absent from the registry. |
 
 An expected guardian is absent from the registry.
 

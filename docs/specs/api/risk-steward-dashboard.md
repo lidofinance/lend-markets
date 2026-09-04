@@ -4,7 +4,7 @@
 
 Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
 
-Dashboard-specific external surface: per-market steward management and bounded risk-reduction levers. Access-control membership and administration use the inherited `IAccessControlEnumerable` surface.
+Dashboard-specific external surface: per-market steward management and bounded risk-reduction controls. Access-control membership and administration use the inherited `IAccessControlEnumerable` surface.
 
 ## Events
 
@@ -14,6 +14,14 @@ Dashboard-specific external surface: per-market steward management and bounded r
 event MarketStewardSet(Id indexed marketId, address indexed steward, bool enabled);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market the steward is scoped to. |
+| `steward` | `address` | The steward whose appointment was set. |
+| `enabled` | `bool` | True when appointed, false when removed. |
+
 Emitted when a steward is appointed to or removed from a market.
 
 ### `ActivationDelaysIncreased`
@@ -21,6 +29,15 @@ Emitted when a steward is appointed to or removed from a market.
 ```solidity
 event ActivationDelaysIncreased(Id indexed marketId, uint256 newMinActivationDelay, uint256 newMaxActivationDelay, uint256 newMaxGuardiansQuorumDelay);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The updated market. |
+| `newMinActivationDelay` | `uint256` | The new activation delay floor, in seconds. |
+| `newMaxActivationDelay` | `uint256` | The new activation delay cap, in seconds. |
+| `newMaxGuardiansQuorumDelay` | `uint256` | The new guardian-quorum fallback delay, in seconds. |
 
 Emitted after an accepted non-decreasing update to a market's activation delay floor, cap, and guardian-quorum fallback.
 
@@ -30,6 +47,13 @@ Emitted after an accepted non-decreasing update to a market's activation delay f
 event ActivatingLockDurationIncreased(Id indexed marketId, uint256 newDuration);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The updated market. |
+| `newDuration` | `uint256` | The new activating-lock duration, in seconds. |
+
 Emitted after an accepted update to a market's activating-lock duration.
 
 ### `MinDepositAmountIncreased`
@@ -38,6 +62,13 @@ Emitted after an accepted update to a market's activating-lock duration.
 event MinDepositAmountIncreased(Id indexed marketId, uint256 newMinDepositAmount);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The updated market. |
+| `newMinDepositAmount` | `uint256` | The new minimum deposit, in collateral units. |
+
 Emitted after an accepted update to a market's minimum deposit.
 
 ### `InstantActivationRevoked`
@@ -45,6 +76,13 @@ Emitted after an accepted update to a market's minimum deposit.
 ```solidity
 event InstantActivationRevoked(Id indexed marketId, address indexed caller);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market the revocation applies to. |
+| `caller` | `address` | The supply caller losing instant activation. |
 
 Emitted when a steward revokes a caller's instant activation on a market.
 
@@ -80,13 +118,19 @@ A zero-address steward was supplied.
 error ZeroAddress();
 ```
 
-Thrown when a required address argument is zero.
+A required address argument is zero.
 
 ### `UnknownMarket`
 
 ```solidity
 error UnknownMarket(Id marketId);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market id without a controller. |
 
 The market id has no controller on the core (unknown or not yet created).
 
@@ -133,7 +177,7 @@ function isMarketSteward(
 ) external view returns (bool);
 ```
 
-Whether `steward` may pull this dashboard's levers on `marketId`.
+Whether `steward` may operate this dashboard's risk controls for `marketId`.
 
 ### `increaseActivationDelays`
 

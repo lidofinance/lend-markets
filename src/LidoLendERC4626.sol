@@ -1,27 +1,33 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
-import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
+import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
+import {ILidoLendERC4626} from "./interfaces/ILidoLendERC4626.sol";
 import {ILidoLendMarketController} from "./interfaces/ILidoLendMarketController.sol";
 import {SettlementQuote, SettlementSlice} from "./types/SettlementTypes.sol";
-import {ILidoLendERC4626} from "./interfaces/ILidoLendERC4626.sol";
 
 /// @title LidoLendERC4626
-/// @notice Single-market ERC-4626 wrapper for a Morpho Blue fork market with settle exit support.
-/// @dev    Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer
-///         callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
+/// @author Lido
+/// @notice ERC-4626 vault over one LidoLend (Morpho Blue fork) market. Lenders deposit the loan token; the
+///         vault supplies it to the market, and shares grow with the market's interest. A normal withdrawal
+///         requires free market liquidity, which a heavily borrowed market may not have. Settlement is the exit
+///         for that case: the vault cancels borrower debt against its market supply and pays the exiting lender
+///         that borrower's collateral of the same oracle value, subject to rounding, so the exit requires no
+///         loan-token liquidity.
+/// @dev Assumes `asset()` and the market's collateral token are standard ERC-20s without transfer
+///      callbacks (no ERC-777 `tokensToSend`, no ERC-1363 `transferAndCall`).
 contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     is
     ERC4626Upgradeable,
@@ -38,8 +44,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     /// @inheritdoc ILidoLendERC4626
     uint256 public constant DEFAULT_MAX_SETTLEMENT_ITERATIONS = 50;
 
-    /// @dev Decimals the vault's shares normalize to, like every Morpho vault — independent of the loan
-    ///      token's own decimals. The virtual-share offset is `SHARE_DECIMALS - loanTokenDecimals` (floored at 0).
+    /// @dev Decimals the vault's shares normalize to, independent of the loan token's own decimals. The
+    ///      virtual-share offset is `SHARE_DECIMALS - loanTokenDecimals` (floored at 0).
     uint8 private constant SHARE_DECIMALS = 18;
 
     // ---
@@ -59,21 +65,22 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     /// @inheritdoc ILidoLendERC4626
     ILidoLendMarketController public controller;
 
-    /// @dev Cached market params (loan/collateral/oracle/irm/lltv) for the core supply, withdraw and settle calls.
+    /// @dev Cached market params (loan/collateral/oracle/irm/lltv); the core takes full params rather than the id.
     MarketParams internal _marketParams;
 
     /// @dev Virtual-share decimals offset, `SHARE_DECIMALS - loanTokenDecimals`, frozen at init (see
     ///     `_decimalsOffset`).
     uint8 internal _loanDecimalsOffset;
 
-    /// @dev Core supply shares from vault operations only — backs shares in place of the full core position,
-    ///      which `supply(onBehalf)` lets anyone inflate.
+    /// @dev Core supply shares from vault operations only. This backs the share price in place of the full core
+    ///      position, which anyone can inflate by supplying to the core on the vault's behalf.
     uint256 internal _managedSupplyShares;
 
     // ---
     // INITIALIZATION
     // ---
 
+    /// @param lidoLend The LidoLend core.
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
     constructor(address lidoLend) {
         if (lidoLend == address(0)) revert ZeroLidoLend();
@@ -128,7 +135,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     // OVERRIDES
     // ---
 
-    /// @dev Only vault-originated supply shares back shares — direct loan-token donations and permissionless
+    /// @inheritdoc IERC4626
+    /// @dev Only vault-originated supply shares back shares: direct loan-token donations and permissionless
     ///      core `supply` credits to the vault address are uncounted and cannot move the share price.
     function totalAssets() public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         uint256 supplyShares = _managedSupplyShares;
@@ -137,6 +145,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         return supplyShares.toAssetsDown(totalSupplyAssets, totalSupplyShares);
     }
 
+    /// @inheritdoc IERC4626
     /// @dev Capped by the market's free liquidity, not just the owner's position: supplied tokens may be borrowed
     ///      out, so withdrawing past liquidity reverts in the core. The illiquid remainder exits via `fallbackExit`.
     ///      Zero while the controller is paused, since a real withdraw would revert then too.
@@ -144,10 +153,11 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         return Math.min(previewRedeem(balanceOf(owner)), _morphoWithdrawableAssets());
     }
 
+    /// @inheritdoc IERC4626
     /// @dev Liquidity cap of `maxWithdraw`, in shares. When the owner's whole position fits in nonzero free liquidity
     ///      it returns the exact share balance. Otherwise the floor conversion is a conservative ERC-4626 gate;
-    ///      `fallbackExit` can also service the remaining shares on the same redeem rounding plateau. Zero when the
-    ///      controller reports no withdrawable assets, including while paused.
+    ///      shares excluded by that rounding can still exit through `fallbackExit`. Zero when the controller
+    ///      reports no withdrawable assets, including while paused.
     function maxRedeem(address owner) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         uint256 liquidAssets = _morphoWithdrawableAssets();
         if (liquidAssets == 0) return 0;
@@ -156,11 +166,13 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         return previewRedeem(ownerShares) <= liquidAssets ? ownerShares : convertToShares(liquidAssets);
     }
 
+    /// @inheritdoc IERC4626
     /// @dev Deferred to the controller, which decides how much the market accepts.
     function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         return controller.maxDeposit();
     }
 
+    /// @inheritdoc IERC4626
     /// @dev `maxDeposit` in shares, floored; the unlimited sentinel passes through unconverted.
     function maxMint(address receiver) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         uint256 maxAssets = maxDeposit(receiver);
@@ -199,10 +211,11 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     // ---
 
     /// @inheritdoc ILidoLendERC4626
-    /// @dev A targeted, liquidity-neutral cut of borrowers that expose a positive personal settlement-LTV slice.
-    ///      Current free liquidity is not redeemed or reserved against the request. Budget exhaustion partial-fills;
-    ///      a call that consumes no core supply shares reverts. Collateral goes from the core straight to `receiver`.
-    ///      `fallbackExit` instead consumes available liquidity first and selects risk-queue roots for the remainder.
+    /// @dev Cuts only borrowers with a positive personal settlement-LTV slice, in the caller's order. Market
+    ///      liquidity is neither withdrawn nor reserved. Shares burn pro rata to the budget the cuts consumed:
+    ///      a budget exhausted before the list ends burns all requested shares, and a list whose cuts fall
+    ///      short of the budget burns only the settled fraction. A call that settles nothing reverts. Seized
+    ///      collateral moves from the core directly to `receiver`.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
         returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled)
@@ -212,7 +225,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         if (receiver == address(0)) revert ZeroAddress();
         if (shares > balanceOf(owner)) revert ExceededBalance(owner, shares, balanceOf(owner));
 
-        // The owner's pro-rata managed core supply shares — the budget the cuts consume.
+        // The owner's pro-rata managed core supply shares: the budget the cuts consume.
         uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply());
         if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
 
@@ -224,7 +237,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
 
             debtCanceled += cutDebt;
             collateralSeized += cutCollateral;
-            // The quote was sized against this budget, so the burn the core derives from it fits.
+            // The quote was sized against this budget, so the supply burn the core derives from it stays
+            // within the remainder.
             remainingSupplyShares -= cutShares;
         }
 
@@ -258,12 +272,13 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     }
 
     /// @inheritdoc ILidoLendERC4626
-    /// @dev Pays the liquid part to `receiver` before settling the remainder. When the controller reports nonzero
-    ///      withdrawable liquidity and the requested shares' entire floor-rounded value fits, the vault burns exactly
-    ///      those shares. Otherwise it withdraws the exact available asset amount so no liquidity is stranded by
-    ///      share rounding. The settle leg sends seized collateral from the core straight to the same receiver. Queue
-    ///      or iteration exhaustion partial-fills; controller and core errors revert the whole call. If neither leg
-    ///      burns any shares, the call reverts instead of silently returning a no-op.
+    /// @dev Pays out available market liquidity first, then settles the remainder. When nonzero available
+    ///      liquidity covers the requested shares' floor-rounded value, the vault burns exactly those shares.
+    ///      Otherwise it withdraws the exact liquid amount, so share rounding cannot strand liquidity, and
+    ///      settles the rest against borrowers the controller selects. Seized collateral moves from the core
+    ///      directly to the same `receiver`. When no executable cut remains or the iteration cap ends the loop
+    ///      early, the call burns shares only for what was serviced; controller and core errors revert the
+    ///      whole call. A call that burns no shares in either leg reverts.
     function fallbackExit(uint256 shares, address receiver, address owner, uint256 maxIterations)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
@@ -294,8 +309,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         // `shares` is reused for the remainder to keep this frame under the stack limit (via_ir = false).
         shares = shares - sharesBurned;
 
-        // 2. Settle the remainder against the risk queue, head first (collateral to receiver), up to the owner's
-        //    pro-rata managed core supply-share budget for it.
+        // 2. Settle the remainder against controller-selected borrowers (collateral to receiver), up to the
+        //    owner's pro-rata managed core supply-share budget for it.
         uint256 settledShares;
         if (shares != 0) {
             uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply());
@@ -346,8 +361,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         });
     }
 
-    /// @dev Resolve the current queue root together with its selected max(personal, queue-root) cut, already shrunk
-    ///      to `budgetSupplyShares`, and settle it.
+    /// @dev Resolve the controller's next settlement borrower and its allowed cut, already shrunk to
+    ///      `budgetSupplyShares`, and settle it.
     function _settleNextAllowedBorrower(uint256 budgetSupplyShares, address receiver)
         internal
         returns (uint256 cutShares, uint256 collateralSeized, uint256 debtCanceled)
@@ -357,8 +372,8 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     }
 
     /// @dev Settle `borrowShares` of `borrower`'s debt against this vault's core supply. The controller sized the
-    ///      handle against the settling budget on the same market snapshot the core then accrues to, so the supply
-    ///      burn it derives stays within that budget.
+    ///      handle from market totals with pending interest simulated, which are the totals the core reaches when
+    ///      it accrues in this transaction, so the supply burn the core derives stays within the settling budget.
     function _settle(address borrower, uint256 borrowShares, address receiver)
         internal
         returns (uint256 cutSupplyShares, uint256 collateralSeized, uint256 debtCanceled)

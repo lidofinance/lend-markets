@@ -10,12 +10,11 @@ import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 /// @title ILidoLendOwner
 /// @notice Role-gated governance facade bound to a `LidoLend` core. It is designed to hold the core's single-owner
-///         authority, which must be transferred separately and can later be moved away. While it is the owner, the
-///         facade splits the core's owner-only surface and per-market governance surface across distinct roles so
-///         each capability can be delegated independently. Per-market calls resolve the target controller and
-///         guardian registry from the core, giving governance one stable facade address for every market.
-/// @dev Role-management events and the unauthorized-caller error come from OpenZeppelin's
-///      `IAccessControlEnumerable`.
+///         authority, which must be transferred to it separately and can later be transferred away. While it is
+///         the owner, the facade splits the core's owner-only surface and per-market governance surface across
+///         distinct roles so each capability can be delegated independently. Per-market calls resolve the
+///         target controller and guardian registry from the core, giving governance one stable facade address
+///         for every market.
 interface ILidoLendOwner is IAccessControlEnumerable {
     // ---
     // IMMUTABLES
@@ -44,10 +43,11 @@ interface ILidoLendOwner is IAccessControlEnumerable {
     // ERRORS
     // ---
 
-    /// @notice Thrown when the core, required admin, or an ownership target is the zero address.
+    /// @notice The core, required admin, or an ownership target is the zero address.
     error ZeroAddress();
 
     /// @notice The market id has no controller on the core (unknown or controller-less).
+    /// @param marketId The market id without a controller.
     error UnknownMarket(Id marketId);
 
     // ---
@@ -57,6 +57,7 @@ interface ILidoLendOwner is IAccessControlEnumerable {
     /// @notice Create a controller-less market on the core.
     /// @dev Requires `MARKET_CREATOR_ROLE`.
     function createMarket(MarketParams calldata marketParams) external;
+
     /// @notice Create a controlled market on the core, binding `controller` and the `settle` opt-in.
     /// @dev Requires `MARKET_CREATOR_ROLE`.
     function createMarket(MarketParams calldata marketParams, address controller, bool enableSettlement) external;
@@ -68,6 +69,7 @@ interface ILidoLendOwner is IAccessControlEnumerable {
     /// @notice Set the fee of an existing market.
     /// @dev Requires `FEE_MANAGER_ROLE`.
     function setFee(MarketParams calldata marketParams, uint256 newFee) external;
+
     /// @notice Set the global fee recipient.
     /// @dev Requires `FEE_MANAGER_ROLE`.
     function setFeeRecipient(address newFeeRecipient) external;

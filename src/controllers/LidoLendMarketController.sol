@@ -2,23 +2,24 @@
 pragma solidity 0.8.36;
 
 import {Id, IMorpho, MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
-import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
-import {WAD} from "../libs/Constants.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import {
     AccessControlEnumerableUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
-import {PausableUntil} from "../utils/PausableUntil.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import {IGuardianSignalsView} from "../interfaces/IGuardianSignalsView.sol";
-import {GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
-import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 import {ILidoLendMarketConfigurator} from "../interfaces/ILidoLendMarketConfigurator.sol";
+import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 import {CollateralActivationLib} from "../libs/CollateralActivationLib.sol";
+import {WAD} from "../libs/Constants.sol";
 import {SettlementQueueLib} from "../libs/SettlementQueueLib.sol";
 import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol";
-import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {GuardiansOpinion} from "../types/GuardianSignalsTypes.sol";
 import {
     MarketView,
     PositionView,
@@ -26,9 +27,15 @@ import {
     SettlementQuote,
     SettlementSlice
 } from "../types/SettlementTypes.sol";
+import {PausableUntil} from "../utils/PausableUntil.sol";
 
-/// @notice Lido-policy controller for a Lido Lend market: collateral activation, freeze and pause,
-///         address gating, and the settlement queue. All hook policy enters through `on`.
+/// @title LidoLendMarketController
+/// @author Lido
+/// @notice Lido-policy layer for one LidoLend market. The core calls `on` before applying each market action;
+///         the controller then allows the action or reverts it, and never changes the amounts the core
+///         resolved. It enforces the lender supply cap, delays fresh collateral before it can back a borrow,
+///         blocks banned borrowers, orders borrowers for lender settlement, and provides the freeze and pause
+///         controls.
 contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendMarketController")
     is
     AccessControlEnumerableUpgradeable,
@@ -66,22 +73,25 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     // IMMUTABLES
     // ---
 
-    /// @dev The Morpho-fork core. The only authorized hook caller, and the source of position and market reads.
+    /// @notice The LidoLend core.
     IMorpho public immutable LIDO_LEND;
 
     // ---
     // STORAGE
     // ---
 
-    /// @dev The single market this controller is bound to. Hooks for any other id revert.
+    /// @notice The id of the single market this controller is bound to.
+    /// @dev Hooks for any other id revert.
     Id public marketId;
+    /// @inheritdoc ILidoLendMarketConfigurator
     /// @dev Ceiling on total supplied loan assets (principal plus accrued interest), enforced on the Supply
     ///      hook against the market total. 0 means no cap.
     uint256 public supplyCap;
+    /// @inheritdoc ILidoLendMarketController
     /// @dev When set, new borrows and debt-bearing collateral withdrawals revert and activation maturation
     ///      defers. Freeze adds no gate to debt-free withdrawals, but activation locks still apply.
     bool public isFrozen;
-    /// @dev Guardian-signal registry read on every hook to gate borrowing (ban) and scale activation (strikes).
+    /// @dev The guardian-signals registry.
     IGuardianSignalsView private _guardianSignals;
     /// @dev Config + inflow accumulator + per-borrower activation pipeline.
     CollateralActivationLib.State private _activation;
@@ -108,6 +118,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     // INITIALIZATION
     // ---
 
+    /// @param lidoLend The LidoLend core.
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
     constructor(IMorpho lidoLend) {
         if (address(lidoLend) == address(0)) revert ZeroAddress();
@@ -117,6 +128,12 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
 
     /// @notice One-shot initializer: binds the market, grants roles, wires the guardian-signals registry, and
     ///         sets the initial supply cap, activation config, and settlement config.
+    /// @param marketId_ The market this controller is bound to; hooks for any other id revert.
+    /// @param admin Holder of `DEFAULT_ADMIN_ROLE`, the admin of every controller role.
+    /// @param supplyCap_ Initial ceiling on total supplied loan assets; 0 means no cap.
+    /// @param guardianSignals The guardian-signals registry.
+    /// @param activationConfig Initial collateral-activation config.
+    /// @param settlementConfig Initial settlement config.
     function initialize(
         Id marketId_,
         address admin,
@@ -417,8 +434,8 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         PositionView memory position = _positionView(id, borrower);
 
         // Freeze blocks withdraw only while there is open debt. It adds no gate to a zero-debt non-custody exit,
-        // although the activation lock below still binds any inactive buckets; a banned address may pull its own
-        // collateral.
+        // although the activation lock below still binds any inactive buckets; a banned address may withdraw its
+        // own collateral.
         bool frozen = isFrozen;
         if (frozen && position.borrowShares != 0) revert MarketIsFrozen();
 
@@ -478,7 +495,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         uint256 activeCollateral = position.collateral - inactive;
 
         // Capacity check: active collateral must cover the post-borrow debt at LLTV. `_getMaxBorrow` returns 0
-        // when active collateral is sub-threshold dust, so a sub-floor position cannot open or grow debt — the
+        // when active collateral is sub-threshold dust, so a sub-floor position cannot open or grow debt; the
         // position floor is folded in here rather than a separate raw-collateral revert.
         if (_debtAssets(marketView, position) + hookData.assets > _getMaxBorrow(marketView, activeCollateral)) {
             revert InsufficientActiveCollateral();
@@ -596,7 +613,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
         return Math.mulDiv(_collateralValue(marketView, collateral), marketView.lltv, WAD);
     }
 
-    /// @dev Bad debt over a position+market snapshot: debt value exceeds collateral value. Pure.
+    /// @dev Bad debt over a position and market snapshot: debt value exceeds collateral value.
     function _isBadDebt(MarketView memory marketView, PositionView memory position) internal pure returns (bool) {
         if (position.borrowShares == 0) return false;
         return _debtAssets(marketView, position) > _collateralValue(marketView, position.collateral);
@@ -617,7 +634,7 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
     }
 
     /// @dev Supply/borrow totals with pending interest simulated, so view numbers match what the core sees
-    ///      at hook time. No oracle read — the lender limits built on this stay available during an oracle
+    ///      at hook time. No oracle read: the lender limits built on this stay available during an oracle
     ///      outage.
     function _marketTotals(MarketParams memory params)
         internal
@@ -633,7 +650,9 @@ contract LidoLendMarketController layout at erc7201("lido.lend.storage.LidoLendM
             MorphoBalancesLib.expectedMarketBalances(LIDO_LEND, params);
     }
 
-    /// @dev Part of `supplier`'s supply value left after withdrawing all current market liquidity.
+    /// @dev Part of `supplier`'s supply value left after withdrawing all current market liquidity. Root-policy
+    ///      settlement may convert only this part: the supply that a full withdrawal of current market liquidity
+    ///      could not pay out.
     function _settleableSupplyAssets(Id id, MarketView memory marketView, address supplier)
         private
         view

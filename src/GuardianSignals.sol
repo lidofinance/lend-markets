@@ -16,18 +16,16 @@ import {BlockInfoWithHash, GuardiansOpinion, GuardiansSignal} from "./types/Guar
 /// @title GuardianSignals
 /// @author Lido
 /// @notice One guardian committee serving many markets. Guardians flag accounts they suspect; once a quorum of
-///         flags is reached, a ban latches for the market it was raised in. A softer suspect report only raises a
-///         borrower's collateral-activation delay — it never bans. The market controller reads
-///         `getOpinion(marketId, account)` to scale the delay and hard-block borrowing.
-/// @dev    A guardian is a single committee address. It may appoint one **delegate** — a hot key allowed to act on
-///         its behalf; `setDelegate` replaces it (at most one at a time), and the zero address clears it. A
-///         delegate must not be a guardian or another guardian's current delegate, so one address cannot sign for
-///         two committee identities. Signalling and liveness calls name the guardian they act for (`onBehalf`) and
-///         accept that guardian or its current delegate. All signals and heartbeats are stored under the guardian,
-///         so replacing the delegate keeps the guardian's standing.
-///         Governance (`MANAGER_ROLE`) adds and removes guardians and sets the quorum and suspect window. Upgradeable
-///         behind a proxy (`initialize`, not a constructor); ERC-7201 namespaced storage. Events and errors live in
-///         {IGuardianSignals}.
+///         flags is reached, a ban latches for the market it was raised in. A suspect report only raises a
+///         borrower's collateral-activation delay; it never bans. Guardians also submit heartbeats reporting
+///         how far they have reviewed chain activity, and the registry keeps the timestamp a quorum has
+///         reviewed past (the quorum frontier).
+/// @dev A guardian is a single committee address. It may appoint one delegate: a hot key allowed to act in its
+///      place. Signalling and liveness calls name the guardian they act for (`onBehalf`) and accept that
+///      guardian or its current delegate. All signals and heartbeats are stored under the guardian, so
+///      replacing the delegate keeps the guardian's standing.
+///      Governance (`MANAGER_ROLE`) adds and removes guardians and sets the quorum and suspect window.
+///      Upgradeable behind a proxy (`initialize`, not a constructor); ERC-7201 namespaced storage.
 contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     is
     AccessControlEnumerableUpgradeable,
@@ -53,17 +51,20 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     // ROLES
     // ---
 
+    /// @inheritdoc IGuardianSignals
     /// @dev `ban` (fast, risk-reducing).
     bytes32 public constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
+    /// @inheritdoc IGuardianSignals
     /// @dev `unban` (slow, risk-increasing).
     bytes32 public constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
-    /// @dev Manages the guardian set, quorum, and suspect window.
+    /// @inheritdoc IGuardianSignals
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
     // ---
     // STORAGE
     // ---
 
+    /// @dev The number of distinct guardians' flags that latches a ban.
     uint8 private _quorum;
     /// @dev Freshness horizon for a suspect snapshot: `suspectReportedAt + suspectWindow` is when it lapses.
     uint40 private _suspectWindow;
@@ -75,7 +76,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     mapping(address guardian => address delegate) private _delegates;
     /// @dev Each guardian's last-scanned block timestamp (a Unix timestamp, not a block number).
     mapping(address guardian => uint40 timestamp) private _heartbeats;
-    /// @dev Per (market, account) signal. `flaggedBy`/`suspectedBy` hold guardian addresses — a delegate's
+    /// @dev Per (market, account) signal. `flaggedBy`/`suspectedBy` hold guardian addresses: a delegate's
     ///      signal is recorded under its guardian, not the raw caller.
     mapping(Id marketId => mapping(address account => GuardiansSignal signal)) private _signals;
 
@@ -90,9 +91,9 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
     /// @notice Set the admin and seed the guardian set and quorum. The suspect window is set afterwards via
     ///         `setSuspectWindow`; guardians appoint their delegates separately via `setDelegate`.
-    /// @param admin     Holder of `DEFAULT_ADMIN_ROLE`, the default admin of the guardian and override roles.
+    /// @param admin Holder of `DEFAULT_ADMIN_ROLE`, the default admin of the guardian and override roles.
     /// @param guardians The initial guardian set. Each must be non-zero, unique, and within `MAX_GUARDIANS_COUNT`.
-    /// @param quorum    The initial quorum. Must satisfy `1 <= quorum <= guardians.length`.
+    /// @param quorum The initial quorum. Must satisfy `1 <= quorum <= guardians.length`.
     function initialize(address admin, address[] calldata guardians, uint256 quorum) external initializer {
         if (admin == address(0)) revert ZeroAddress();
 
@@ -125,7 +126,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
 
     /// @inheritdoc IGuardianSignals
     /// @dev Reverts if removal would drop the set below `quorum`. Clears the guardian's delegate and heartbeat, so
-    ///      re-adding it starts fresh. Its existing signals linger (still counted) until a permissionless `prune`.
+    ///      re-adding it starts fresh. Its existing signals remain stored and counted until a permissionless
+    ///      `prune`.
     function removeGuardian(address guardian) external onlyRole(MANAGER_ROLE) {
         _removeGuardian(guardian);
         if (_guardians.length() < _quorum) revert WouldBreakQuorum();
@@ -200,11 +202,12 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         // a guardian cannot have scanned a block that does not exist yet
         if (lastScannedBlock.number > block.number) revert BlockInTheFuture();
         // The frontier trusts the reported timestamp (the chain can't attest it by number), so bound it to the past
-        // and force it non-decreasing per guardian — no backdating or fast-forwarding the frontier it feeds.
+        // and force it non-decreasing per guardian: no backdating or fast-forwarding the frontier it feeds.
         if (lastScannedBlock.timestamp > block.timestamp) revert TimestampInTheFuture();
         if (lastScannedBlock.timestamp < previousTimestamp) revert HeartbeatTimestampRegressed();
-        // number + hash only prove the block is real and un-reorged; the frontier orders by timestamp. Reject a zero
-        // hash — `blockhash` returns zero for the current or out-of-window block, which it would spuriously match.
+        // number + hash only prove the block is real and was not reorged away; the frontier orders by timestamp.
+        // Reject a zero hash: `blockhash` returns zero for the current or out-of-window block, which it would
+        // spuriously match.
         if (lastScannedBlock.hash == bytes32(0)) revert InvalidBlockHash();
         if (blockhash(lastScannedBlock.number) != lastScannedBlock.hash) revert InvalidBlockHash();
 
@@ -383,8 +386,9 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         return msg.sender == onBehalf || msg.sender == _delegates[onBehalf];
     }
 
-    /// @dev Recompute the quorum frontier (the quorum-th largest heartbeat timestamp) and ratchet it up.
-    ///      Monotonic: adding fresh zero-heartbeat guardians cannot pull it back.
+    /// @dev Recompute the quorum frontier (the quorum-th largest heartbeat timestamp) and raise the stored
+    ///      value when the recomputed one is higher. The stored frontier never decreases: adding guardians with
+    ///      zero heartbeats lowers only the recomputed candidate, never the stored value.
     function _syncQuorumFrontier() internal {
         uint256 quorum = _quorum;
         uint256 n = _guardians.length();
@@ -449,8 +453,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         emit Flagged(marketId, account, guardian, msg.sender, strikes);
     }
 
-    /// @dev Never lifts a ban. Before dropping the count, latch any currently-effective ban — including a
-    ///      quorum-derived one never written — so a retraction below quorum can't lift a ban that is in effect.
+    /// @dev Never lifts a ban. Before dropping the count, latch any currently-effective ban, including a
+    ///      quorum-derived one never written, so a retraction below quorum cannot lift a ban that is in effect.
     function _unflag(address guardian, Id marketId, address account) internal {
         GuardiansSignal storage signal = _signals[marketId][account];
         if (!signal.banned && signal.flaggedBy.length() >= _quorum) {
@@ -462,7 +466,7 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
     }
 
     /// @dev Single-account suspect report. Records (or refreshes) the guardian's timestamp, then snapshots
-    ///      `(now, activeSuspectCount)` so the delay read needn't re-scan the suspect set. Never bans.
+    ///      `(now, activeSuspectCount)` so the delay read need not re-scan the suspect set. Never bans.
     function _suspect(address guardian, Id marketId, address account) internal {
         if (account == address(0)) revert ZeroAddress();
 
@@ -500,8 +504,8 @@ contract GuardianSignals layout at erc7201("lido.lend.storage.GuardianSignals")
         signal.suspectCount = count.toUint16();
     }
 
-    /// @dev The raw counters the activation lib turns into a delay: flag count, snapshotted active-suspect count,
-    ///      and the snapshot's expiry (`suspectReportedAt + suspectWindow`). Reads the stored snapshot, no scan.
+    /// @dev The raw signal counters: flag count, snapshotted active-suspect count, and the snapshot's expiry
+    ///      (`suspectReportedAt + suspectWindow`). Reads the stored snapshot, no scan.
     function _signalCounters(Id marketId, address account)
         internal
         view

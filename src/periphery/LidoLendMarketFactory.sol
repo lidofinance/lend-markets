@@ -21,11 +21,12 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 interface ILidoLendBound {
+    /// @notice The LidoLend core the component is bound to.
     function LIDO_LEND() external view returns (address);
 }
 
 /// @title LidoLendMarketFactory
-/// @author Lido Lending contributors.
+/// @author Lido
 /// @notice Deploys controllers, ERC-4626 wrappers, and guardian registries at fixed implementations, assigns their
 ///         final roles, and validates the resulting bindings. Market creation on the core remains a separate
 ///         governance action.
@@ -82,8 +83,8 @@ contract LidoLendMarketFactory {
     /// @param collateralToken Market collateral asset.
     /// @param oracle Market oracle contract. Deployment checks only that the address has code.
     /// @param lltv Liquidation loan-to-value ratio, in WAD and strictly below 1e18.
-    /// @param guardianSignals Guardian registry read by the controller. Deployment checks only that the address has
-    ///                        code; registry configuration is validated through `validateGuardianSignals`.
+    /// @param guardianSignals Guardian registry bound to the controller. Deployment checks only that the address has
+    ///        code; registry configuration is validated through `validateGuardianSignals`.
     /// @param supplyCap Initial lender supply cap. Zero disables it.
     /// @param activationConfig Initial collateral-activation configuration.
     /// @param settlementConfig Initial settlement configuration.
@@ -110,7 +111,7 @@ contract LidoLendMarketFactory {
     /// @param guardians Exact initial guardian set; addresses must be nonzero and unique.
     /// @param quorum Number of distinct guardian flags required to latch a ban; between one and the guardian count.
     /// @param suspectWindow Duration for which a suspect report remains active, in seconds, bounded by the registry's
-    ///                      maximum.
+    ///        maximum.
     struct GuardianSpec {
         address[] guardians;
         uint256 quorum;
@@ -144,9 +145,11 @@ contract LidoLendMarketFactory {
     error LidoLendMismatch(address component, address expected, address actual);
 
     /// @notice A market LLTV is not strictly below WAD.
+    /// @param lltv The rejected LLTV (WAD).
     error InvalidLltv(uint256 lltv);
 
     /// @notice The market described by the deployment input already exists on the core.
+    /// @param marketId Id of the existing market.
     error MarketAlreadyExists(Id marketId);
 
     /// @notice An existing market is registered with a controller other than the one being validated.
@@ -197,9 +200,11 @@ contract LidoLendMarketFactory {
     error GuardianCountMismatch(uint256 expected, uint256 actual);
 
     /// @notice The expected guardian list contains the same guardian more than once.
+    /// @param guardian The guardian listed more than once.
     error DuplicateGuardian(address guardian);
 
     /// @notice An expected guardian is absent from the registry.
+    /// @param guardian The expected guardian absent from the registry.
     error MissingGuardian(address guardian);
 
     /// @notice An expected role holder is absent.
@@ -318,7 +323,7 @@ contract LidoLendMarketFactory {
     /// @param implementations Implementations used behind newly deployed proxies.
     /// @param dependencies Core and protocol-wide role recipients embedded in newly deployed components.
     /// @param admin Proxy admin for every deployment and sole initial `DEFAULT_ADMIN_ROLE` holder on controllers and
-    ///              guardian registries.
+    ///        guardian registries.
     constructor(Implementations memory implementations, Dependencies memory dependencies, address admin) {
         if (admin == address(0)) revert AdminZeroAddress();
         if (dependencies.circuitBreaker == address(0)) revert CircuitBreakerZeroAddress();

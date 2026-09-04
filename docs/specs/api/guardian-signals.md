@@ -4,7 +4,7 @@
 
 Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
 
-Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address that may appoint one **delegate** (at most one at a time, unique across the committee) to act on its behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in `IGuardianSignalsView`; this interface adds the rest.
+Guardian-committee signals over accounts, kept per market. Each guardian is a single committee address that may appoint one delegate (at most one at a time, unique across the committee) to act on its behalf. A guardian (or its delegate) raises signals (flag, suspect) and retracts them (unflag, unsuspect). Once a `quorum` of distinct guardians flag an account, a ban latches in the market it was raised in. The small read surface the controller depends on (`getOpinion`, `isBanned`) lives in `IGuardianSignalsView`; this interface adds the rest.
 
 ## Structs
 
@@ -60,6 +60,12 @@ Everything the controller reads about an account in one call, forwarded to the a
 event GuardianAdded(address indexed guardian);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `guardian` | `address` | The added guardian. |
+
 Emitted when a guardian is added.
 
 ### `GuardianRemoved`
@@ -67,6 +73,12 @@ Emitted when a guardian is added.
 ```solidity
 event GuardianRemoved(address indexed guardian);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `guardian` | `address` | The removed guardian. |
 
 Emitted when a guardian is removed.
 
@@ -170,6 +182,15 @@ Emitted when a guardian reports an account as suspect (raises the activation del
 event SuspectCleared(Id indexed marketId, address indexed account, address indexed guardian, address actor);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market the report was scoped to. |
+| `account` | `address` | The account the report was on. |
+| `guardian` | `address` | The guardian whose report was retracted. |
+| `actor` | `address` | The caller that made the call (the guardian or its delegate). |
+
 Emitted when a guardian's suspect report on an account is retracted.
 
 ### `SuspectPruned`
@@ -178,7 +199,15 @@ Emitted when a guardian's suspect report on an account is retracted.
 event SuspectPruned(Id indexed marketId, address indexed account, address indexed guardian);
 ```
 
-Emitted when a suspect report is pruned — its guardian was removed from the committee, or its suspect window lapsed.
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market the report was scoped to. |
+| `account` | `address` | The account the report was on. |
+| `guardian` | `address` | The guardian whose report was pruned. |
+
+Emitted when a suspect report is pruned: its guardian was removed from the committee, or its suspect window lapsed.
 
 ### `Flagged`
 
@@ -204,6 +233,16 @@ Emitted when a guardian flags an account.
 event Unflagged(Id indexed marketId, address indexed account, address indexed guardian, address actor, uint256 strikes);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market id. |
+| `account` | `address` | The unflagged account. |
+| `guardian` | `address` | The guardian whose flag was retracted. |
+| `actor` | `address` | The caller that made the call (the guardian or its delegate). |
+| `strikes` | `uint256` | The account's flag count after the retraction. |
+
 Emitted when a guardian's flag is retracted.
 
 ### `FlagPruned`
@@ -212,6 +251,15 @@ Emitted when a guardian's flag is retracted.
 event FlagPruned(Id indexed marketId, address indexed account, address indexed guardian, uint256 strikes);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market id. |
+| `account` | `address` | The account the flag was on. |
+| `guardian` | `address` | The removed guardian whose flag was pruned. |
+| `strikes` | `uint256` | The account's flag count after the prune. |
+
 Emitted when a flag cast by a removed guardian is pruned.
 
 ### `Banned`
@@ -219,6 +267,13 @@ Emitted when a flag cast by a removed guardian is pruned.
 ```solidity
 event Banned(Id indexed marketId, address indexed account);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `marketId` | `Id` | The market the ban is scoped to. |
+| `account` | `address` | The banned account. |
 
 Emitted when an account's ban latches, by quorum or by `ban`.
 
@@ -246,7 +301,7 @@ Emitted when an account's ban is lifted.
 error ZeroAddress();
 ```
 
-Thrown when a zero address is passed where an account or guardian is required.
+A zero address was passed where an account or guardian is required.
 
 ### `BadQuorum`
 
@@ -254,7 +309,7 @@ Thrown when a zero address is passed where an account or guardian is required.
 error BadQuorum();
 ```
 
-Thrown when the quorum is zero or exceeds the guardian count.
+The quorum is zero or exceeds the guardian count.
 
 ### `WouldBreakQuorum`
 
@@ -262,7 +317,7 @@ Thrown when the quorum is zero or exceeds the guardian count.
 error WouldBreakQuorum();
 ```
 
-Thrown when removing a guardian would drop the set below the quorum.
+Removing the guardian would drop the set below the quorum.
 
 ### `AlreadyGuardian`
 
@@ -270,7 +325,7 @@ Thrown when removing a guardian would drop the set below the quorum.
 error AlreadyGuardian();
 ```
 
-Thrown when adding a guardian that is already in the set.
+The added guardian is already in the set.
 
 ### `Unauthorized`
 
@@ -278,7 +333,7 @@ Thrown when adding a guardian that is already in the set.
 error Unauthorized();
 ```
 
-Thrown when the caller is neither `onBehalf` nor its delegate, or when a non-guardian appoints a delegate.
+`onBehalf` is not a guardian, the caller is neither `onBehalf` nor its delegate, or a non-guardian appointed a delegate.
 
 ### `NotGuardian`
 
@@ -286,7 +341,7 @@ Thrown when the caller is neither `onBehalf` nor its delegate, or when a non-gua
 error NotGuardian();
 ```
 
-Thrown when the target of a guardian-only management action is not a guardian.
+The target of a guardian-only management action is not a guardian.
 
 ### `MaxGuardiansReached`
 
@@ -294,7 +349,7 @@ Thrown when the target of a guardian-only management action is not a guardian.
 error MaxGuardiansReached();
 ```
 
-Thrown when the guardian set is already at `MAX_GUARDIANS_COUNT`.
+The guardian set is already at `MAX_GUARDIANS_COUNT`.
 
 ### `BlockInTheFuture`
 
@@ -302,7 +357,7 @@ Thrown when the guardian set is already at `MAX_GUARDIANS_COUNT`.
 error BlockInTheFuture();
 ```
 
-Thrown when a heartbeat reports a block number ahead of the current block.
+The heartbeat reports a block number ahead of the current block.
 
 ### `TimestampInTheFuture`
 
@@ -310,7 +365,7 @@ Thrown when a heartbeat reports a block number ahead of the current block.
 error TimestampInTheFuture();
 ```
 
-Thrown when a heartbeat reports a timestamp ahead of the current block.
+The heartbeat reports a timestamp ahead of the current block.
 
 ### `HeartbeatTimestampRegressed`
 
@@ -318,7 +373,7 @@ Thrown when a heartbeat reports a timestamp ahead of the current block.
 error HeartbeatTimestampRegressed();
 ```
 
-Thrown when a heartbeat reports a timestamp below the guardian's previous heartbeat.
+The heartbeat reports a timestamp below the guardian's previous heartbeat.
 
 ### `InvalidBlockHash`
 
@@ -326,7 +381,7 @@ Thrown when a heartbeat reports a timestamp below the guardian's previous heartb
 error InvalidBlockHash();
 ```
 
-Thrown when a heartbeat's reported hash does not match the block's hash.
+The heartbeat's reported hash does not match the block's hash.
 
 ### `SuspectWindowTooHigh`
 
@@ -334,7 +389,7 @@ Thrown when a heartbeat's reported hash does not match the block's hash.
 error SuspectWindowTooHigh();
 ```
 
-Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
+The suspect window exceeds `MAX_SUSPECT_WINDOW`.
 
 ### `DelegateIsGuardian`
 
@@ -342,7 +397,7 @@ Thrown when the suspect window exceeds `MAX_SUSPECT_WINDOW`.
 error DelegateIsGuardian();
 ```
 
-Thrown when the appointed delegate is a guardian.
+The appointed delegate is a guardian.
 
 ### `AccountIsDelegate`
 
@@ -350,7 +405,7 @@ Thrown when the appointed delegate is a guardian.
 error AccountIsDelegate();
 ```
 
-Thrown when an address that is a guardian's delegate (the caller's own included) is appointed as a delegate or added as a guardian.
+An address that is a guardian's delegate (the caller's own included) was appointed as a delegate or added as a guardian.
 
 ## Functions
 
@@ -432,7 +487,7 @@ Set the caller-guardian's delegate: a hot key that may act on its behalf. The ze
 function setQuorum(uint256 newQuorum) external;
 ```
 
-Set the quorum — the distinct guardians' flags that latch a ban.
+Set the quorum: the distinct guardians' flags that latch a ban.
 
 ### `setSuspectWindow`
 
@@ -440,7 +495,7 @@ Set the quorum — the distinct guardians' flags that latch a ban.
 function setSuspectWindow(uint256 suspectWindow) external;
 ```
 
-Set the suspect window — how long a suspect report keeps counting. The per-flag and per-suspect delays live in the market's activation config.
+Set the suspect window: how long a suspect report keeps counting. The per-flag and per-suspect delays live in the market's activation config.
 
 ### `getQuorum`
 
@@ -562,7 +617,7 @@ The guardian set paired with each guardian's last reported scan timestamp, align
 function getQuorumFrontier() external view returns (uint40);
 ```
 
-Highest guardian-reported scan timestamp ever accepted from a quorum calculation. Monotonic.
+The stored quorum frontier: the highest timestamp a quorum of guardians has reported reviewing past. It never decreases; membership and quorum changes do not lower it.
 
 ### `flag`
 
@@ -729,6 +784,6 @@ function isBanned(Id marketId, address account) external view returns (bool);
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `<none>` | `bool` | True if the account's status is `Banned`. |
+| `<none>` | `bool` | Whether the account is banned. |
 
-Whether `account` is banned in `marketId` — the borrow hard-block on the caller and receiver. True when the ban is latched or the flag count is at or above the current quorum.
+Whether `account` is banned in `marketId`: the hard block on borrowing. True when the ban is latched or the flag count is at or above the current quorum.

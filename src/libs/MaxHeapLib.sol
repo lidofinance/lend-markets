@@ -2,11 +2,9 @@
 pragma solidity 0.8.36;
 
 /// @title MaxHeapLib
+/// @author Lido
 /// @notice Generic binary max-heap over a storage struct, keyed by `(account, key)`.
-/// @dev Risk-agnostic: it only orders accounts by an externally supplied `key`. Callers in this
-///      repo derive the key as `borrowShares × 1e18 / rawCollateral` — this NatSpec is the single
-///      canonical place where the formula is documented; other contracts reference this rather
-///      than restate it.
+/// @dev Risk-agnostic: it only orders accounts by an externally supplied `key`.
 ///
 ///      Nodes live in a 1-indexed array with a zero sentinel at index 0 so parent/child index
 ///      math (`idx*2`, `idx*2+1`, `idx/2`) works directly. A side mapping tracks each account's
@@ -61,7 +59,7 @@ library MaxHeapLib {
         return self.nodes.length - 1;
     }
 
-    /// @notice Account and key at the root — the highest-key entry. Reverts on an empty heap.
+    /// @notice Account and key at the root: the highest-key entry. Reverts on an empty heap.
     function peek(Heap storage self) internal view returns (address account, uint256 key) {
         if (self.nodes.length <= 1) revert EmptyHeap();
         Node storage root = self.nodes[1];

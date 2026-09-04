@@ -5,18 +5,25 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 
 /// @title IRiskStewardDashboard
-/// @notice Dashboard-specific external surface: per-market steward management and bounded risk-reduction levers.
-///         Access-control membership and administration use the inherited `IAccessControlEnumerable` surface.
+/// @notice Dashboard-specific external surface: per-market steward management and bounded risk-reduction
+///         controls.
 interface IRiskStewardDashboard is IAccessControlEnumerable {
     // ---
     // EVENTS
     // ---
 
     /// @notice Emitted when a steward is appointed to or removed from a market.
+    /// @param marketId The market the steward is scoped to.
+    /// @param steward The steward whose appointment was set.
+    /// @param enabled True when appointed, false when removed.
     event MarketStewardSet(Id indexed marketId, address indexed steward, bool enabled);
 
     /// @notice Emitted after an accepted non-decreasing update to a market's activation delay floor, cap, and
     ///         guardian-quorum fallback.
+    /// @param marketId The updated market.
+    /// @param newMinActivationDelay The new activation delay floor, in seconds.
+    /// @param newMaxActivationDelay The new activation delay cap, in seconds.
+    /// @param newMaxGuardiansQuorumDelay The new guardian-quorum fallback delay, in seconds.
     event ActivationDelaysIncreased(
         Id indexed marketId,
         uint256 newMinActivationDelay,
@@ -25,12 +32,18 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     );
 
     /// @notice Emitted after an accepted update to a market's activating-lock duration.
+    /// @param marketId The updated market.
+    /// @param newDuration The new activating-lock duration, in seconds.
     event ActivatingLockDurationIncreased(Id indexed marketId, uint256 newDuration);
 
     /// @notice Emitted after an accepted update to a market's minimum deposit.
+    /// @param marketId The updated market.
+    /// @param newMinDepositAmount The new minimum deposit, in collateral units.
     event MinDepositAmountIncreased(Id indexed marketId, uint256 newMinDepositAmount);
 
     /// @notice Emitted when a steward revokes a caller's instant activation on a market.
+    /// @param marketId The market the revocation applies to.
+    /// @param caller The supply caller losing instant activation.
     event InstantActivationRevoked(Id indexed marketId, address indexed caller);
 
     // ---
@@ -46,10 +59,11 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     /// @notice A zero-address steward was supplied.
     error ZeroSteward();
 
-    /// @notice Thrown when a required address argument is zero.
+    /// @notice A required address argument is zero.
     error ZeroAddress();
 
     /// @notice The market id has no controller on the core (unknown or not yet created).
+    /// @param marketId The market id without a controller.
     error UnknownMarket(Id marketId);
 
     // ---
@@ -72,7 +86,7 @@ interface IRiskStewardDashboard is IAccessControlEnumerable {
     /// @notice The stewards currently appointed for a market.
     function marketStewards(Id marketId) external view returns (address[] memory);
 
-    /// @notice Whether `steward` may pull this dashboard's levers on `marketId`.
+    /// @notice Whether `steward` may operate this dashboard's risk controls for `marketId`.
     function isMarketSteward(Id marketId, address steward) external view returns (bool);
 
     // ---

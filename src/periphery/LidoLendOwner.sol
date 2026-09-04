@@ -12,7 +12,7 @@ import {CollateralActivationConfig} from "../types/CollateralActivationTypes.sol
 import {SettlementConfig} from "../types/SettlementTypes.sol";
 
 /// @title LidoLendOwner
-/// @author Lido Lending contributors.
+/// @author Lido
 /// @notice Stable role-gated governance facade over a `LidoLend` core and all its markets. Core-owner calls and
 ///         per-market controller and guardian-registry calls sit behind independent capability roles.
 contract LidoLendOwner is AccessControlEnumerable, ILidoLendOwner {
@@ -41,12 +41,14 @@ contract LidoLendOwner is AccessControlEnumerable, ILidoLendOwner {
     // CONSTRUCTOR
     // ---
 
-    /// @param core          The `LidoLend` core this facade will own. The deploy must hand the core's `owner`
-    ///                      to this facade after construction; the facade cannot do it itself.
-    /// @param admin         Holder of `DEFAULT_ADMIN_ROLE`, which manages the capability roles and core
-    ///                      ownership. Required.
-    /// @param marketCreator Initial `MARKET_CREATOR_ROLE` holder; `address(0)` grants none (admin can later).
-    /// @param feeManager    Initial `FEE_MANAGER_ROLE` holder; `address(0)` grants none (admin can later).
+    /// @param core The `LidoLend` core this facade will own. The deploy must hand the core's `owner`
+    ///        to this facade after construction; the facade cannot do it itself.
+    /// @param admin Holder of `DEFAULT_ADMIN_ROLE`, which manages the capability roles and core
+    ///        ownership. Required.
+    /// @param marketCreator Initial `MARKET_CREATOR_ROLE` holder; `address(0)` grants none, and the admin can
+    ///        grant the role later.
+    /// @param feeManager Initial `FEE_MANAGER_ROLE` holder; `address(0)` grants none, and the admin can
+    ///        grant the role later.
     constructor(ILidoLend core, address admin, address marketCreator, address feeManager) {
         if (address(core) == address(0) || admin == address(0)) revert ZeroAddress();
         LIDO_LEND = core;
