@@ -24,13 +24,15 @@ contract DeployUsdyOracle is Script, LidoLendPrimitives {
         OracleConfigFile.requireUndeployed(name);
 
         vm.startBroadcast();
-        address impl = address(new UsdyStableOracle(c.usdyOracle));
+        address impl = address(new UsdyStableOracle(c.usdyOracle, c.minPrice, c.maxPrice));
         bytes memory init = abi.encodeCall(UsdyStableOracle.initialize, (c.feed, c.loanToken));
         oracle = _behindProxy(impl, deployConfig.agent, init);
         vm.stopBroadcast();
 
         console2.log("oracle          :", name);
         console2.log("  usdyStableOracle :", oracle);
+        console2.log("  minPrice        :", c.minPrice);
+        console2.log("  maxPrice        :", c.maxPrice);
         console2.log("  recorded        :", OracleConfigFile.writeDeployed(name, oracle, metadata));
     }
 }
