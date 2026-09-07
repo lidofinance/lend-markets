@@ -106,3 +106,44 @@ contract MockPriceOracle {
         price = price_;
     }
 }
+
+/// @dev Ondo-style RWA NAV source (USD per unit, 1e18) with an outage switch, so a suite can take a real
+///      oracle's upstream down and observe what the market does without mocking calls.
+contract MockNavOracle {
+    /// @notice The source is down: every read reverts.
+    error NavOracleDown();
+
+    uint256 public navPrice;
+    bool public isDown;
+
+    function setPrice(uint256 navPrice_) external {
+        navPrice = navPrice_;
+    }
+
+    function setDown(bool isDown_) external {
+        isDown = isDown_;
+    }
+
+    function getPrice() external view returns (uint256) {
+        if (isDown) revert NavOracleDown();
+        return navPrice;
+    }
+}
+
+/// @dev Chainlink-style USD aggregator for a stablecoin leg: 8 decimals, answer settable, round metadata
+///      always fresh (freshness is not what the suites using it exercise).
+contract MockUsdFeed {
+    int256 public answer = 1e8;
+
+    function setAnswer(int256 answer_) external {
+        answer = answer_;
+    }
+
+    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
+        return (1, answer, block.timestamp, block.timestamp, 1);
+    }
+
+    function decimals() external pure returns (uint8) {
+        return 8;
+    }
+}

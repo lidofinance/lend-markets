@@ -129,6 +129,8 @@ interface IReadUsdyOracle {
     function USDY_ORACLE() external view returns (address);
     function stableUsdFeed() external view returns (address);
     function scale() external view returns (uint256);
+    function MIN_PRICE() external view returns (uint256);
+    function MAX_PRICE() external view returns (uint256);
 }
 
 interface IReadDecimals {
@@ -506,13 +508,22 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
             address expectedCollateralToken = vm.parseTomlAddress(oracleCfg, ".oracle.collateral_token");
             assertEq(expectedLoanToken, loanToken, "oracle loan token != market loan token");
             assertEq(expectedCollateralToken, collateralToken, "oracle USDY != collateral token");
-            address expectedImplementation = address(new UsdyStableOracle(expectedUsdyOracle));
+            uint256 expectedMinPrice = vm.parseTomlUint(oracleCfg, ".oracle.min_price");
+            uint256 expectedMaxPrice = vm.parseTomlUint(oracleCfg, ".oracle.max_price");
+            address expectedImplementation =
+                address(new UsdyStableOracle(expectedUsdyOracle, expectedMinPrice, expectedMaxPrice));
             assertEq(implementation.codehash, expectedImplementation.codehash, "USDY oracle implementation");
             assertEq(IReadUsdyOracle(oracle).USDY_ORACLE(), expectedUsdyOracle, "oracle.USDY_ORACLE");
             assertEq(IReadUsdyOracle(oracle).stableUsdFeed(), expectedFeed, "oracle.stableUsdFeed");
             uint256 expectedScale =
                 10 ** (uint256(IReadDecimals(expectedLoanToken).decimals()) + IReadDecimals(expectedFeed).decimals());
             assertEq(IReadUsdyOracle(oracle).scale(), expectedScale, "oracle.scale");
+            assertEq(IReadUsdyOracle(oracle).MIN_PRICE(), expectedMinPrice, "oracle.MIN_PRICE");
+            assertEq(IReadUsdyOracle(oracle).MAX_PRICE(), expectedMaxPrice, "oracle.MAX_PRICE");
+            // The band must not already be at its edge: `price()` would revert on the next ordinary move.
+            uint256 livePrice = IReadOracle(oracle).price();
+            assertGt(livePrice, expectedMinPrice, "oracle price at or below MIN_PRICE");
+            assertLt(livePrice, expectedMaxPrice, "oracle price at or above MAX_PRICE");
         }
 
         assertGt(IReadOracle(oracle).price(), 0, "oracle price is zero");

@@ -58,9 +58,16 @@ contract MockLoanToken18 {
 /// @notice Unit/fuzz for `UsdyStableOracle`: price = mulDiv(USDY/USD price,
 ///         SCALE, stable/USD price) with SCALE = 1e14 = 10^(36+6+8-18-18) for an 18-dec USDY collateral /
 ///         6-dec stablecoin loan market (Morpho scale 36+6-18 = 24). Recomputed independently. A non-positive
-///         feed answer is rejected (`InvalidStablePrice`); the adapter performs no on-chain staleness check.
+///         feed answer is rejected (`InvalidStablePrice`); a result outside the immutable
+///         [`MIN_PRICE`, `MAX_PRICE`] band is rejected (`PriceOutOfBounds`); the adapter performs no on-chain
+///         staleness check.
 contract UsdyStableOracleTest is Test {
     uint256 internal constant SCALE = 1e14;
+
+    /// @dev Band for the default fixture, in the returned domain (Morpho scale 24): [$0.5, $10] of loan
+    ///      token per USDY. Wide enough that every in-band case below returns a price.
+    uint256 internal constant MIN_PRICE = 0.5e24;
+    uint256 internal constant MAX_PRICE = 10e24;
 
     MockRWAOracle internal usdy;
     MockChainlinkFeed internal feed;
@@ -78,9 +85,23 @@ contract UsdyStableOracleTest is Test {
     /// @dev Deploy as in production: shared impl (USDY oracle immutable) behind an OssifiableProxy, with the
     ///      per-market stable feed + scale bound via `initialize`.
     function _deploy(address usdyOracle, address stableFeed, address loanToken) internal returns (UsdyStableOracle) {
-        address impl = address(new UsdyStableOracle(usdyOracle));
+        return _deploy(usdyOracle, stableFeed, loanToken, MIN_PRICE, MAX_PRICE);
+    }
+
+    /// @dev Same, at an explicit price band.
+    function _deploy(address usdyOracle, address stableFeed, address loanToken, uint256 minPrice, uint256 maxPrice)
+        internal
+        returns (UsdyStableOracle)
+    {
+        address impl = address(new UsdyStableOracle(usdyOracle, minPrice, maxPrice));
         bytes memory initData = abi.encodeCall(UsdyStableOracle.initialize, (stableFeed, loanToken));
         return UsdyStableOracle(address(new OssifiableProxy(impl, address(this), initData)));
+    }
+
+    /// @dev An instance whose band accepts everything, for the tests that probe the arithmetic domain rather
+    ///      than the guard: `price()` is then the plain quotient at any input the sources can produce.
+    function _unbounded() internal returns (UsdyStableOracle) {
+        return _deploy(address(usdy), address(feed), address(loan), 1, type(uint256).max);
     }
 
     function _expected(uint256 getPrice, int256 answer) internal pure returns (uint256) {
@@ -92,12 +113,33 @@ contract UsdyStableOracleTest is Test {
     /// @dev Constructing with a zero USDY oracle address reverts ZeroAddress.
     function testRevert_constructor_zeroUsdyOracle() public {
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
-        new UsdyStableOracle(address(0));
+        new UsdyStableOracle(address(0), MIN_PRICE, MAX_PRICE);
+    }
+
+    /// @dev A zero lower bound is rejected: it would admit a fully collapsed price, the fail-open case the
+    ///      band exists to close.
+    function testRevert_constructor_zeroMinPrice() public {
+        vm.expectRevert(abi.encodeWithSelector(UsdyStableOracle.InvalidPriceBounds.selector, 0, MAX_PRICE));
+        new UsdyStableOracle(address(usdy), 0, MAX_PRICE);
+    }
+
+    /// @dev An upper bound below the lower one is an empty band — every price would revert.
+    function testRevert_constructor_invertedBounds() public {
+        vm.expectRevert(abi.encodeWithSelector(UsdyStableOracle.InvalidPriceBounds.selector, MAX_PRICE, MAX_PRICE - 1));
+        new UsdyStableOracle(address(usdy), MAX_PRICE, MAX_PRICE - 1);
+    }
+
+    /// @dev A degenerate but non-empty band (min == max) is accepted, and only that price passes it.
+    function test_constructor_equalBoundsAccepted() public {
+        UsdyStableOracle o = _deploy(address(usdy), address(feed), address(loan), 1.08e24, 1.08e24);
+        assertEq(o.MIN_PRICE(), 1.08e24, "MIN_PRICE");
+        assertEq(o.MAX_PRICE(), 1.08e24, "MAX_PRICE");
+        assertEq(o.price(), 1.08e24, "the single in-band price");
     }
 
     /// @dev Initializing with a zero stable feed address reverts ZeroAddress.
     function testRevert_initialize_zeroStableFeed() public {
-        address impl = address(new UsdyStableOracle(address(usdy)));
+        address impl = address(new UsdyStableOracle(address(usdy), MIN_PRICE, MAX_PRICE));
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
         new OssifiableProxy(
             impl, address(this), abi.encodeCall(UsdyStableOracle.initialize, (address(0), address(loan)))
@@ -106,7 +148,7 @@ contract UsdyStableOracleTest is Test {
 
     /// @dev Initializing with a zero loan token address reverts ZeroAddress.
     function testRevert_initialize_zeroLoanToken() public {
-        address impl = address(new UsdyStableOracle(address(usdy)));
+        address impl = address(new UsdyStableOracle(address(usdy), MIN_PRICE, MAX_PRICE));
         vm.expectRevert(UsdyStableOracle.ZeroAddress.selector);
         new OssifiableProxy(
             impl, address(this), abi.encodeCall(UsdyStableOracle.initialize, (address(feed), address(0)))
@@ -139,7 +181,8 @@ contract UsdyStableOracleTest is Test {
 
     /// @dev An 18-decimal stablecoin loan (DAI-like) sizes SCALE differently: 10^(36+18+8-18-18) = 1e26.
     function test_price_eighteenDecimalStable() public {
-        UsdyStableOracle o = _deploy(address(usdy), address(feed), address(new MockLoanToken18()));
+        // The band lives in the returned domain, which is 1e12 larger here (Morpho scale 36, not 24).
+        UsdyStableOracle o = _deploy(address(usdy), address(feed), address(new MockLoanToken18()), 0.5e36, 10e36);
         assertEq(o.scale(), 1e26, "18-dec loan / 8-dec feed -> scale 1e26");
 
         usdy.setPrice(1.08e18);
@@ -149,23 +192,27 @@ contract UsdyStableOracleTest is Test {
         assertEq(o.price(), 1.08e36, "explicit value");
     }
 
-    /// @dev Across realistic nav and feed bands, price equals mulDiv(getPrice, SCALE, answer).
+    /// @dev Across realistic nav and feed bands, price equals mulDiv(getPrice, SCALE, answer). Run against an
+    ///      all-accepting band so this pins the formula alone; the band itself is covered separately.
     function testFuzz_price_recompute(uint256 getPrice, int256 answer) public {
+        UsdyStableOracle o = _unbounded();
         getPrice = bound(getPrice, 0.5e18, 5e18);
         answer = int256(bound(uint256(answer), 0.5e8, 2e8)); // positive, realistic stablecoin band
         usdy.setPrice(getPrice);
         feed.setAnswer(answer);
-        assertEq(oracle.price(), _expected(getPrice, answer), "price == mulDiv(getPrice, SCALE, answer)");
+        assertEq(o.price(), _expected(getPrice, answer), "price == mulDiv(getPrice, SCALE, answer)");
     }
 
-    /// @dev Even at a tiny feed answer against a large nav, price matches the recompute with no overflow.
+    /// @dev Even at a tiny feed answer against a large nav, price matches the recompute with no overflow —
+    ///      again at an all-accepting band, so the arithmetic is what is under test.
     function testFuzz_price_noOverflow_tinyFeedLargePrice(uint256 getPrice, int256 answer) public {
+        UsdyStableOracle o = _unbounded();
         getPrice = bound(getPrice, 1e18, 5e18); // up to ~$5 USDY
         answer = int256(bound(uint256(answer), 1, 1e8)); // down to 1 (8-dec) -> very large price
         usdy.setPrice(getPrice);
         feed.setAnswer(answer);
         // mulDiv has a 512-bit intermediate; getPrice*1e14 ≈ 5e32 ≪ 2^256, so no overflow even at feed=1.
-        assertEq(oracle.price(), _expected(getPrice, answer), "no overflow across the input domain");
+        assertEq(o.price(), _expected(getPrice, answer), "no overflow across the input domain");
     }
 
     // ── documented no-guard behaviour (NatSpec L26-27: intentionally matches Morpho's stock oracle) ──
@@ -204,6 +251,77 @@ contract UsdyStableOracleTest is Test {
     function testRevert_price_zeroNavPrice() public {
         usdy.setPrice(0);
         vm.expectRevert(UsdyStableOracle.InvalidNavPrice.selector);
+        oracle.price();
+    }
+
+    // ── price band ──
+
+    /// @dev The band is exposed as immutables, so a deployment can be verified against its config.
+    function test_priceBounds_areImmutable() public view {
+        assertEq(oracle.MIN_PRICE(), MIN_PRICE, "MIN_PRICE");
+        assertEq(oracle.MAX_PRICE(), MAX_PRICE, "MAX_PRICE");
+    }
+
+    /// @dev Both bounds are inclusive: a price landing exactly on either edge still prices.
+    function test_price_boundsAreInclusive() public {
+        // price == MIN_PRICE: nav such that nav * SCALE / 1e8 == 0.5e24, i.e. nav == 0.5e18.
+        usdy.setPrice(0.5e18);
+        assertEq(oracle.price(), MIN_PRICE, "price at the lower edge is accepted");
+
+        // price == MAX_PRICE at nav == 10e18.
+        usdy.setPrice(10e18);
+        assertEq(oracle.price(), MAX_PRICE, "price at the upper edge is accepted");
+    }
+
+    /// @dev One NAV wei below the lower edge reverts with the offending value, so a mis-scaled or collapsing
+    ///      NAV source fails closed instead of repricing every position. At a $1.00 feed one NAV wei is 1e6 of
+    ///      returned price, so this is the smallest out-of-band price the sources can produce.
+    function testRevert_price_belowMinPrice() public {
+        uint256 nav = 0.5e18 - 1; // MIN_PRICE is exactly nav 0.5e18
+        usdy.setPrice(nav);
+        uint256 expected = _expected(nav, 1e8);
+        assertLt(expected, MIN_PRICE, "setup is below the band");
+        vm.expectRevert(abi.encodeWithSelector(UsdyStableOracle.PriceOutOfBounds.selector, expected));
+        oracle.price();
+    }
+
+    /// @dev Symmetrically above the band: a NAV blow-up (or a near-zero feed answer) reverts.
+    function testRevert_price_aboveMaxPrice() public {
+        uint256 nav = 10e18 + 1; // MAX_PRICE is exactly nav 10e18
+        usdy.setPrice(nav);
+        uint256 expected = _expected(nav, 1e8);
+        assertGt(expected, MAX_PRICE, "setup is above the band");
+        vm.expectRevert(abi.encodeWithSelector(UsdyStableOracle.PriceOutOfBounds.selector, expected));
+        oracle.price();
+    }
+
+    /// @dev The stablecoin leg is bounded too: a feed answer small enough to inflate the quotient past
+    ///      `MAX_PRICE` reverts, where before the band it would have returned an absurd collateral value.
+    function testRevert_price_tinyFeedAnswerBlowsBand() public {
+        usdy.setPrice(1.08e18);
+        feed.setAnswer(1); // 1e-8 USD -> price = 1.08e18 * 1e14 / 1 = 1.08e32, far above MAX_PRICE
+        vm.expectRevert(abi.encodeWithSelector(UsdyStableOracle.PriceOutOfBounds.selector, uint256(1.08e32)));
+        oracle.price();
+    }
+
+    /// @dev Inside the band the guard is transparent: the returned value is the unaltered quotient.
+    function testFuzz_price_inBandIsUnchanged(uint256 getPrice, int256 answer) public {
+        getPrice = bound(getPrice, 0.9e18, 1.5e18);
+        answer = int256(bound(uint256(answer), 0.9e8, 1.1e8));
+        usdy.setPrice(getPrice);
+        feed.setAnswer(answer);
+        uint256 expected = _expected(getPrice, answer);
+        assertGe(expected, MIN_PRICE, "fuzz band setup stays inside MIN_PRICE");
+        assertLe(expected, MAX_PRICE, "fuzz band setup stays inside MAX_PRICE");
+        assertEq(oracle.price(), expected, "in-band price is the plain quotient");
+    }
+
+    /// @dev Outside the band, on either side, `price()` reverts rather than returning a value.
+    function testFuzz_price_outOfBandReverts(uint256 getPrice, bool low) public {
+        // Below: nav < 0.5e18 -> price < MIN_PRICE. Above: nav > 10e18 -> price > MAX_PRICE. Feed stays $1.
+        getPrice = low ? bound(getPrice, 1, 0.5e18 - 1) : bound(getPrice, 10e18 + 1, 1e30);
+        usdy.setPrice(getPrice);
+        vm.expectRevert(abi.encodeWithSelector(UsdyStableOracle.PriceOutOfBounds.selector, _expected(getPrice, 1e8)));
         oracle.price();
     }
 }

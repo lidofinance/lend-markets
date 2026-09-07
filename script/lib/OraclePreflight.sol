@@ -21,6 +21,8 @@ interface IUsdyOraclePreflight {
     function USDY_ORACLE() external view returns (address);
     function stableUsdFeed() external view returns (address);
     function scale() external view returns (uint256);
+    function MIN_PRICE() external view returns (uint256);
+    function MAX_PRICE() external view returns (uint256);
 }
 
 interface IFeedDecimals {
@@ -37,6 +39,8 @@ library OraclePreflight {
     error OracleImplementationMismatch(bytes32 expected, bytes32 actual);
     error OracleAddressMismatch(string field, address expected, address actual);
     error OracleScaleMismatch(uint256 expected, uint256 actual);
+    error OracleUintMismatch(string field, uint256 expected, uint256 actual);
+    error OraclePriceOutOfConfiguredBounds(uint256 price, uint256 minPrice, uint256 maxPrice);
     error OraclePriceIsZero();
 
     function validate(
@@ -109,7 +113,7 @@ library OraclePreflight {
             revert OracleAddressMismatch("collateral_token", collateralToken, cfg.collateralToken);
         }
 
-        address expectedImplementation = address(new UsdyStableOracle(cfg.usdyOracle));
+        address expectedImplementation = address(new UsdyStableOracle(cfg.usdyOracle, cfg.minPrice, cfg.maxPrice));
         _requireCodehash(expectedImplementation, implementation);
 
         address actualNavOracle = IUsdyOraclePreflight(oracle).USDY_ORACLE();
@@ -123,6 +127,18 @@ library OraclePreflight {
             10 ** (uint256(IERC20Metadata(cfg.loanToken).decimals()) + IFeedDecimals(cfg.feed).decimals());
         uint256 actualScale = IUsdyOraclePreflight(oracle).scale();
         if (actualScale != expectedScale) revert OracleScaleMismatch(expectedScale, actualScale);
+
+        uint256 actualMinPrice = IUsdyOraclePreflight(oracle).MIN_PRICE();
+        if (actualMinPrice != cfg.minPrice) revert OracleUintMismatch("min_price", cfg.minPrice, actualMinPrice);
+        uint256 actualMaxPrice = IUsdyOraclePreflight(oracle).MAX_PRICE();
+        if (actualMaxPrice != cfg.maxPrice) revert OracleUintMismatch("max_price", cfg.maxPrice, actualMaxPrice);
+
+        // A live price on either edge means the band is mis-set: `price()` would revert on the next move.
+        // Catch that before the market is wired to this oracle.
+        uint256 livePrice = IOraclePreflight(oracle).price();
+        if (livePrice <= cfg.minPrice || livePrice >= cfg.maxPrice) {
+            revert OraclePriceOutOfConfiguredBounds(livePrice, cfg.minPrice, cfg.maxPrice);
+        }
     }
 
     function _requireCodehash(address expected, address actual) private view {

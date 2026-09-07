@@ -95,6 +95,11 @@ contract FeedMock {
 }
 
 contract OraclePreflightTest is Test {
+    /// @dev Band for the USDY fixtures below, in the returned domain: the mocks price 1 USDY at 1e24 (a $1.00
+    ///      NAV over a $1.00 feed, 6-dec loan), which sits strictly inside [0.5e24, 10e24].
+    uint256 internal constant USDY_MIN_PRICE = 0.5e24;
+    uint256 internal constant USDY_MAX_PRICE = 10e24;
+
     OraclePreflightHarness internal harness;
     WstEthRateMock internal wstEth;
     address internal admin;
@@ -169,20 +174,8 @@ contract OraclePreflightTest is Test {
         DecimalsMock collateral = new DecimalsMock(18);
         NavOracleMock nav = new NavOracleMock();
         FeedMock feed = new FeedMock();
-        UsdyStableOracle implementation = new UsdyStableOracle(address(nav));
-        address usdyOracle = address(
-            new OssifiableProxy(
-                address(implementation),
-                admin,
-                abi.encodeCall(UsdyStableOracle.initialize, (address(feed), address(loan)))
-            )
-        );
-        UsdyOracleConfig memory cfg = UsdyOracleConfig({
-            usdyOracle: address(nav),
-            feed: address(feed),
-            loanToken: address(loan),
-            collateralToken: address(collateral)
-        });
+        address usdyOracle = _deployUsdy(address(nav), address(feed), address(loan), USDY_MIN_PRICE, USDY_MAX_PRICE);
+        UsdyOracleConfig memory cfg = _usdyConfig(address(nav), address(feed), address(loan), address(collateral));
 
         harness.validateUsdy(cfg, usdyOracle, address(loan), address(collateral));
     }
@@ -192,19 +185,8 @@ contract OraclePreflightTest is Test {
         DecimalsMock collateral = new DecimalsMock(18);
         NavOracleMock nav = new NavOracleMock();
         FeedMock feed = new FeedMock();
-        address usdyOracle = address(
-            new OssifiableProxy(
-                address(new UsdyStableOracle(address(nav))),
-                admin,
-                abi.encodeCall(UsdyStableOracle.initialize, (address(feed), address(loan)))
-            )
-        );
-        UsdyOracleConfig memory cfg = UsdyOracleConfig({
-            usdyOracle: address(nav),
-            feed: address(feed),
-            loanToken: address(loan),
-            collateralToken: address(collateral)
-        });
+        address usdyOracle = _deployUsdy(address(nav), address(feed), address(loan), USDY_MIN_PRICE, USDY_MAX_PRICE);
+        UsdyOracleConfig memory cfg = _usdyConfig(address(nav), address(feed), address(loan), address(collateral));
         address wrongCollateral = makeAddr("wrongUsdyCollateral");
 
         vm.expectRevert(
@@ -213,5 +195,78 @@ contract OraclePreflightTest is Test {
             )
         );
         harness.validateUsdy(cfg, usdyOracle, address(loan), wrongCollateral);
+    }
+
+    /// @dev An instance whose immutable band does not match the config it is validated against is rejected,
+    ///      which is how a band edited after deployment is caught. The mismatch is staged by widening the
+    ///      config's floor below the deployed one.
+    function testRevert_validate_rejectsUsdyPriceBoundMismatch() external {
+        DecimalsMock loan = new DecimalsMock(6);
+        DecimalsMock collateral = new DecimalsMock(18);
+        NavOracleMock nav = new NavOracleMock();
+        FeedMock feed = new FeedMock();
+        address usdyOracle = _deployUsdy(address(nav), address(feed), address(loan), USDY_MIN_PRICE, USDY_MAX_PRICE);
+        UsdyOracleConfig memory cfg = _usdyConfig(address(nav), address(feed), address(loan), address(collateral));
+        cfg.minPrice = 0.25e24; // config says a wider floor than the deployed immutable
+
+        // The codehash of an impl built from the config's bounds differs from the deployed one, so the
+        // implementation check fires first — the band is part of the verified bytecode.
+        address expectedImplementation = address(new UsdyStableOracle(address(nav), cfg.minPrice, cfg.maxPrice));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                OraclePreflight.OracleImplementationMismatch.selector,
+                expectedImplementation.codehash,
+                OssifiableProxy(payable(usdyOracle)).proxy__getImplementation().codehash
+            )
+        );
+        harness.validateUsdy(cfg, usdyOracle, address(loan), address(collateral));
+    }
+
+    /// @dev A live price on the band edge is rejected before the market is wired: the next NAV move would
+    ///      make `price()` revert.
+    function testRevert_validate_rejectsUsdyPriceOnBandEdge() external {
+        DecimalsMock loan = new DecimalsMock(6);
+        DecimalsMock collateral = new DecimalsMock(18);
+        NavOracleMock nav = new NavOracleMock();
+        FeedMock feed = new FeedMock();
+        // Band floor exactly at the live price: 1e18 NAV over a 1e8 feed at scale 1e14 -> 1e24.
+        address usdyOracle = _deployUsdy(address(nav), address(feed), address(loan), 1e24, USDY_MAX_PRICE);
+        UsdyOracleConfig memory cfg = _usdyConfig(address(nav), address(feed), address(loan), address(collateral));
+        cfg.minPrice = 1e24;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                OraclePreflight.OraclePriceOutOfConfiguredBounds.selector, 1e24, 1e24, USDY_MAX_PRICE
+            )
+        );
+        harness.validateUsdy(cfg, usdyOracle, address(loan), address(collateral));
+    }
+
+    function _deployUsdy(address nav, address feed, address loan, uint256 minPrice, uint256 maxPrice)
+        private
+        returns (address)
+    {
+        return address(
+            new OssifiableProxy(
+                address(new UsdyStableOracle(nav, minPrice, maxPrice)),
+                admin,
+                abi.encodeCall(UsdyStableOracle.initialize, (feed, loan))
+            )
+        );
+    }
+
+    function _usdyConfig(address nav, address feed, address loan, address collateral)
+        private
+        pure
+        returns (UsdyOracleConfig memory)
+    {
+        return UsdyOracleConfig({
+            usdyOracle: nav,
+            feed: feed,
+            loanToken: loan,
+            collateralToken: collateral,
+            minPrice: USDY_MIN_PRICE,
+            maxPrice: USDY_MAX_PRICE
+        });
     }
 }
