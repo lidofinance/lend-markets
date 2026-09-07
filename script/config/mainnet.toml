@@ -10,6 +10,7 @@ exit_book_max_request_lifetime = 31536000  # 365 days
 
 # External addresses used by fork tests.
 [external]
+morphoVaultV2Factory = "0xA1D94F746dEfa1928926b84fB2596c06926C0405"
 weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 stEth = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
 wstEth = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"

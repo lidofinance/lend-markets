@@ -4,7 +4,7 @@
 # Make normally lets an included file replace exported environment variables. Preserve the public inputs so
 # precedence is consistently: command line > exported environment > .env > defaults.
 DOTENV_OVERRIDE_VARS := CONFIG FORK_CONFIG RUN MARKET MARKET_A MARKET_B ORACLE GUARDIAN_GROUP PIN_BLOCK \
-	VAULT ADAPTER BUNDLER RPC_URL DEPLOYER_ACCOUNT DEPLOYER_SENDER ETHERSCAN_API_KEY VERIFY RESUME CHAIN_ID EXECUTOR ARTIFACTS_DIR \
+	BUNDLER RPC_URL DEPLOYER_ACCOUNT DEPLOYER_SENDER ETHERSCAN_API_KEY VERIFY RESUME CHAIN_ID EXECUTOR ARTIFACTS_DIR \
 	FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED ACCEPTANCE_RPC_URL ACCEPTANCE_REGISTRY ACCEPTANCE_PAUSER_COMMITTEE \
 	ACCEPTANCE_ENABLE_SETTLEMENT
 
@@ -41,8 +41,6 @@ MARKET ?= weth-wsteth
 ORACLE ?= weth-wsteth
 GUARDIAN_GROUP ?= $(MARKET)
 PIN_BLOCK ?=
-VAULT ?= weth-wsteth
-ADAPTER ?= $(VAULT)
 BUNDLER ?= mainnet
 RPC_URL ?=
 # Encrypted Foundry keystore name (`cast wallet import --interactive <name>`); forge prompts for its password.
@@ -81,7 +79,7 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork test-simulation test-mutation deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-vault-v2 verify-vault-v2 deploy-bundler verify-bundler deploy-exit-books deploy-protocol deploy-market deploy-run deploy-all activate-markets fork-activate deploy-wizard state-mate-config acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop apply-pending pending-stop test-pending test-fork-live test-fork-provision
+.PHONY: help build sizes test test-local test-fork test-simulation test-mutation deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-bundler verify-bundler deploy-exit-books deploy-protocol deploy-market deploy-run deploy-all activate-markets fork-activate deploy-wizard state-mate-config acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop apply-pending pending-stop test-pending test-fork-live test-fork-provision
 
 help:
 	@echo "Targets:"
@@ -97,8 +95,6 @@ help:
 	@echo "  deploy-circuit-breaker CONFIG=<config> RUN=<run>"
 	@echo "  deploy-protocol CONFIG=<config> RUN=<run>  (backbone + exit books; markets are separate)"
 	@echo "  deploy-guardian CONFIG=<config> RUN=<run> GUARDIAN_GROUP=<group>  (before its markets)"
-	@echo "  deploy-vault-v2 CONFIG=<config> RUN=<existing-run> VAULT=<name> ADAPTER=<name>"
-	@echo "  verify-vault-v2 RUN=<run> VAULT=<name> ADAPTER=<name>  (deploy-vault-v2 runs this itself)"
 	@echo "  deploy-bundler CONFIG=<config> RUN=<existing-run> BUNDLER=<name>  (Bundler3 + adapters over the run's core)"
 	@echo "  verify-bundler RUN=<run> BUNDLER=<name>  (deploy-bundler runs this itself)"
 	@echo "  deploy-exit-books CONFIG=<config> RUN=<existing-run>"
@@ -197,39 +193,6 @@ deploy-guardian:
 	$(require_deploy_context)
 	@$(DEPLOY_ENV) forge script script/DeployGuardianSignals.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(GUARDIAN_GROUP)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployGuardianSignals.s.sol,guardian-$(GUARDIAN_GROUP))
-
-# The vault + its Morpho adapter in one broadcast: the adapter's parent vault is a constructor immutable.
-# Needs an existing run — the adapter's other immutables are that run's core and IRM router.
-deploy-vault-v2:
-	$(require_deploy_context)
-	@$(DEPLOY_ENV) forge script script/DeployVaultV2.s.sol --sig 'run(string,string,string)' "$(CONFIG)" "$(VAULT)" "$(ADAPTER)" $(DEPLOY_FLAGS)
-	$(call archive_broadcast,DeployVaultV2.s.sol,vault-v2-$(VAULT))
-	@test "$(VERIFY)" = "false" || $(MAKE) verify-vault-v2 RUN="$(RUN)" VAULT="$(VAULT)" ADAPTER="$(ADAPTER)"
-
-# The vault-v2 pair is created with vm.deployCode, which records the creations without a contract name, so
-# `forge script --verify` skips them. Verify them explicitly from the addresses and constructor arguments the
-# artifacts recorded.
-verify-vault-v2:
-	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
-	@test -n "$(VAULT)" || { echo "ERROR: set VAULT"; exit 1; }
-	@test -n "$(ADAPTER)" || { echo "ERROR: set ADAPTER"; exit 1; }
-	@test -n "$(ETHERSCAN_API_KEY)" || { echo "ERROR: set ETHERSCAN_API_KEY"; exit 1; }
-	@ARTIFACTS_DIR="$(RUN)" forge script script/DeployVaultV2.s.sol \
-		--sig 'validateArtifacts(string,string)' "$(VAULT)" "$(ADAPTER)"
-	@set -e; \
-	V="deployed/$(RUN)/vaults/$(VAULT).toml"; A="deployed/$(RUN)/adapters/$(ADAPTER).toml"; \
-	test -f "$$V" || { echo "ERROR: no vault artifact at $$V"; exit 1; }; \
-	test -f "$$A" || { echo "ERROR: no adapter artifact at $$A"; exit 1; }; \
-	key() { sed -n "s/^[[:space:]]*$$2[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$$1" | head -1; }; \
-	forge verify-contract "$$(key $$V address)" lib/vault-v2/src/VaultV2.sol:VaultV2 \
-		--chain "$(CHAIN_ID)" --watch \
-		--constructor-args "$$(cast abi-encode 'constructor(address,address)' \
-			"$$(key $$V owner)" "$$(key $$V asset)")"; \
-	forge verify-contract "$$(key $$A address)" \
-		lib/vault-v2/src/adapters/MorphoMarketV1AdapterV2.sol:MorphoMarketV1AdapterV2 \
-		--chain "$(CHAIN_ID)" --watch \
-		--constructor-args "$$(cast abi-encode 'constructor(address,address,address)' \
-			"$$(key $$A vault)" "$$(key $$A morpho)" "$$(key $$A adaptive_curve_irm)")"
 
 # This run's own bundler stack over an existing run: a fresh Bundler3 dispatcher, the general adapter bound to it
 # and to the run's core, and the vault adapter bound to it.
@@ -373,7 +336,7 @@ fork-run:
 deploy-wizard:
 	@printf 'Config [mainnet]: '; read config; config=$${config:-mainnet}; \
 	printf 'Run directory (required): '; read run; test -n "$$run" || { echo 'ERROR: run directory is required'; exit 1; }; \
-	printf 'Step (circuit-breaker, oracle, oracle-usdy, guardian, vault-v2, bundler, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
+	printf 'Step (circuit-breaker, oracle, oracle-usdy, guardian, bundler, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
 	printf 'Resource name (shared by oracle/guardian/market for full; the bundler config for bundler; ignored for circuit-breaker/protocol/exit-books): '; read name; \
 	name=$${name:-weth-wsteth}; \
 	case "$$step" in \
@@ -381,7 +344,6 @@ deploy-wizard:
 		oracle) exec $(MAKE) deploy-oracle CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		oracle-usdy) exec $(MAKE) deploy-oracle-usdy CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		guardian) exec $(MAKE) deploy-guardian CONFIG="$$config" RUN="$$run" GUARDIAN_GROUP="$$name" ;; \
-		vault-v2) exec $(MAKE) deploy-vault-v2 CONFIG="$$config" RUN="$$run" VAULT="$$name" ADAPTER="$$name" ;; \
 		bundler) exec $(MAKE) deploy-bundler CONFIG="$$config" RUN="$$run" BUNDLER="$$name" ;; \
 		exit-books) exec $(MAKE) deploy-exit-books CONFIG="$$config" RUN="$$run" ;; \
 		protocol) exec $(MAKE) deploy-protocol CONFIG="$$config" RUN="$$run" ;; \

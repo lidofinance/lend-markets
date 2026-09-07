@@ -24,7 +24,10 @@
   EVM with mock tokens. Driven through shared helpers; happy path first, then revert and
   edge cases. Pure-library fuzz tests live here too.
 - `test/fork/`: test suite that runs against a forked network, binding to an **already-deployed** protocol —
-  fork suites never deploy what they test. `RPC_URL` is the node to fork and `ARTIFACTS_DIR` names the deploy
+  fork suites never deploy the LidoLend stack they test. External-integration examples may create disposable
+  external resources on the fork (e.g. a Morpho Vault V2 through its onchain factory and a test-only adapter).
+  The Vault V2 multi-market scenario may also create a disposable market on the existing core through the deployed factory and governance facade; it must not deploy a replacement LidoLend stack or write deployment artifacts.
+  `RPC_URL` is the node to fork and `ARTIFACTS_DIR` names the deploy
   run under `deployed/<run>/` whose artifacts they read; the run records its own network and chain id, so
   there is no network selector.
 - `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
@@ -35,7 +38,7 @@
   `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
 - `script/`: deployment scripts.
 - `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `circuit-breakers/`,
-  `guardians/`, `oracles/`, `vaults/`, `adapters/`, optional `exit-books.toml` and `bundler.toml`, and archived
+  `guardians/`, `oracles/`, optional `exit-books.toml` and `bundler.toml`, and archived
   transaction records. Read directly by both `test/fork/` (`ARTIFACTS_DIR`) and `test/acceptance/`
   (`ACCEPTANCE_REGISTRY` -> `protocol.toml`); nothing is composed or prepared in between.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
@@ -89,7 +92,7 @@
   reverting when either is unset, the run has no `protocol.toml`, the network config it names is missing, or
   its recorded chain id differs from the forked chain. A role the deployment has no market for skips the
   suite; everything else reverts. Protocol addresses come from `_protocol("core")`,
-  `_market(name, "controller")`, `_marketId(name)`, or `_artifactAddr("vaults/weth-wsteth.toml", "vault.address")`
+  `_market(name, "controller")`, `_marketId(name)`, or `_artifactAddr("oracles/weth-wsteth.toml", "oracle.address")`
   for the per-resource artifacts; each reverts on a key the run does not define. `FORK_BLOCK` pins a block for
   replay.
 

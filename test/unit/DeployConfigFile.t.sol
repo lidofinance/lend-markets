@@ -128,7 +128,7 @@ contract DeployConfigFileTest is Test {
                     "exit_book_pauser = \"0x0000000000000000000000000000000000000003\"\n",
                     "exit_book_max_request_lifetime = 31536000\n",
                     "pauser_committee = \"0x0000000000000000000000000000000000000004\"\n",
-                    "[provision]\nmarkets = [\"one\"]\nvaults = []\n"
+                    "[provision]\nmarkets = [\"one\"]\n"
                 )
             )
         );
