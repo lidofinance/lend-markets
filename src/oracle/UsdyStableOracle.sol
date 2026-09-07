@@ -27,16 +27,22 @@ interface IChainlinkAggregator {
 /// @author Lido
 /// @notice Morpho oracle for USDY collateral quoted in any USD-stablecoin loan asset with a Chainlink feed.
 /// @dev Values USDY by its NAV (Ondo dynamic-rate oracle), not a market price; the stablecoin leg divides
-///      by its Chainlink USD feed, so a stablecoin depeg flows into the collateral valuation. No
-///      staleness/bounds guards, matching Morpho's stock oracle.
+///      by its Chainlink USD feed, so a stablecoin depeg flows into the collateral valuation. No staleness
+///      guard, matching Morpho's stock oracle; the immutable price band below is the only guard.
 ///
 ///      price() = getPrice() * scale / stableUsdPrice
 ///      scale   = 10^(36 + loanDecimals + feedDecimals - USDY_DECIMALS - NAV_DECIMALS)
 ///
-///      The USDY NAV oracle is shared across markets, so it stays immutable; the per-market stablecoin feed
-///      and decimal-derived `scale` are set in `initialize`, so one implementation behind per-market proxies
-///      serves any Chainlink-priced stablecoin. Matches Morpho's IOracle convention: price of 1 collateral
-///      asset quoted in 1 loan asset, scaled by 1e36.
+///      `price()` reverts outside the inclusive band [`MIN_PRICE`, `MAX_PRICE`], so a mis-scaled NAV or a
+///      collapsing feed answer stops every price-dependent action instead of repricing every position. The
+///      band is a sanity check on the sources, not a risk parameter: it is wide enough that NAV accrual and
+///      stablecoin depegs stay inside it.
+///
+///      The NAV oracle and the band are fixed for the life of an instance, so both are immutable; the
+///      per-market stablecoin feed and decimal-derived `scale` are set in `initialize`. The bounds are in
+///      the returned 1e36-convention domain, whose magnitude depends on the loan token's decimals, so a
+///      band is valid only for the loan token its instance is initialized with. Matches Morpho's IOracle
+///      convention: price of 1 collateral asset quoted in 1 loan asset, scaled by 1e36.
 contract UsdyStableOracle layout at erc7201("lido.lend.storage.UsdyStableOracle") is Initializable, IOracle {
     // ---
     // CONSTANTS
@@ -54,6 +60,12 @@ contract UsdyStableOracle layout at erc7201("lido.lend.storage.UsdyStableOracle"
 
     /// @dev Ondo USDY dynamic-rate (NAV) oracle; `getPrice()` is the redemption value scaled by 1e18.
     IRWADynamicOracle public immutable USDY_ORACLE;
+
+    /// @dev Inclusive lower bound on `price()`, in the returned 1e36-convention domain.
+    uint256 public immutable MIN_PRICE;
+
+    /// @dev Inclusive upper bound on `price()`, in the returned 1e36-convention domain.
+    uint256 public immutable MAX_PRICE;
 
     // ---
     // STORAGE
@@ -79,15 +91,29 @@ contract UsdyStableOracle layout at erc7201("lido.lend.storage.UsdyStableOracle"
     /// @notice The USDY NAV oracle returned zero, which would collapse the collateral price to zero.
     error InvalidNavPrice();
 
+    /// @notice The constructor's price band was not a usable range: a zero lower bound would admit a
+    ///         collapsed price, and an upper bound below the lower one would reject every price.
+    error InvalidPriceBounds(uint256 minPrice, uint256 maxPrice);
+
+    /// @notice The computed price fell outside the immutable [`MIN_PRICE`, `MAX_PRICE`] band, so the NAV or
+    ///         the feed reported a magnitude this market does not price against.
+    error PriceOutOfBounds(uint256 price);
+
     // ---
     // CONSTRUCTOR
     // ---
 
     /// @param usdyOracle Ondo USDY dynamic-rate (NAV) oracle; `getPrice()` scaled by 1e18.
+    /// @param minPrice Inclusive lower bound on `price()`, scaled by 10^(36 + loanDecimals - USDY_DECIMALS)
+    ///        for the loan token passed to `initialize`.
+    /// @param maxPrice Inclusive upper bound on `price()`, in the same domain as `minPrice`.
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
-    constructor(address usdyOracle) {
+    constructor(address usdyOracle, uint256 minPrice, uint256 maxPrice) {
         if (usdyOracle == address(0)) revert ZeroAddress();
+        if (minPrice == 0 || maxPrice < minPrice) revert InvalidPriceBounds(minPrice, maxPrice);
         USDY_ORACLE = IRWADynamicOracle(usdyOracle);
+        MIN_PRICE = minPrice;
+        MAX_PRICE = maxPrice;
         _disableInitializers();
     }
 
@@ -121,6 +147,8 @@ contract UsdyStableOracle layout at erc7201("lido.lend.storage.UsdyStableOracle"
         if (navPrice == 0) revert InvalidNavPrice();
         (, int256 stableUsdPrice,,,) = stableUsdFeed.latestRoundData();
         if (stableUsdPrice <= 0) revert InvalidStablePrice();
-        return Math.mulDiv(navPrice, scale, uint256(stableUsdPrice));
+        uint256 value = Math.mulDiv(navPrice, scale, uint256(stableUsdPrice));
+        if (value < MIN_PRICE || value > MAX_PRICE) revert PriceOutOfBounds(value);
+        return value;
     }
 }

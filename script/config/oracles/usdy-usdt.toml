@@ -4,3 +4,9 @@ usdy_oracle = "0x0000000000000000000000000000000000000000"
 feed = "0x0000000000000000000000000000000000000000"
 loan_token = "0x0000000000000000000000000000000000000000"
 collateral_token = "0x0000000000000000000000000000000000000000"
+# Sanity band on the returned price. Its scale is 1e24 per 1 USDT of value per USDY (18-dec collateral,
+# 6-dec loan), so the band below is [$0.50, $10.00] of loan token per USDY. Draft values: wide enough that
+# NAV accrual and a USDT depeg stay inside, tight enough to reject a mis-scaled source. Strings because
+# TOML integers are limited to int64.
+min_price = "500000000000000000000000"      # 0.5e24
+max_price = "10000000000000000000000000"    # 10e24

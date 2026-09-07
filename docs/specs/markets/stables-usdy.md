@@ -28,7 +28,13 @@ price = floor(usdyNavUsd * scale / stablecoinUsdPrice)
 
 A stablecoin price below one dollar increases the reported value of USDY in that stablecoin's units. This keeps the quote denominated in the loan asset; it does not protect the lender from a loss in that asset's dollar value.
 
-If either source fails to return a usable positive value, price-dependent actions revert, including borrowing, debt-bearing collateral withdrawal, liquidation, and settlement. That oracle failure does not by itself block repayment or ordinary loan-asset withdrawal. A positive stale value is accepted because the oracle does not enforce freshness or deviation limits.
+### Price sanity band
+
+Each oracle instance carries an inclusive band `[MIN_PRICE, MAX_PRICE]`, fixed at deployment from the oracle's configuration and expressed in the same scaled domain as the returned price. The oracle reverts rather than return a price outside that band, so a mis-scaled NAV or a near-zero feed answer stops the market's price-dependent actions instead of repricing every position.
+
+The band is a sanity check on the sources, not a risk parameter: it is chosen wide enough that NAV accrual and stablecoin depegs stay inside it, and changing it requires deploying a new oracle. Its magnitude depends on the loan token's decimals, so a band is valid only for the loan token its instance was initialized with. Deployment preflight and the acceptance suite both require the live price to sit strictly inside the band, which keeps a market from being wired to an oracle already at its edge.
+
+If either source fails to return a usable positive value, or the result falls outside the band, price-dependent actions revert, including borrowing, debt-bearing collateral withdrawal, liquidation, and settlement. That oracle failure does not by itself block repayment or ordinary loan-asset withdrawal. A positive stale value inside the band is accepted because the oracle does not enforce freshness or deviation limits.
 
 > [!WARNING]
 > **NAV and feed trust boundary.** Health checks, liquidation, and settlement use the reported NAV conversion, not executable USDY sale or redemption proceeds. A stale feed, stale NAV, redemption delay or fee, transfer restriction, issuer freeze, or loss of redeemability can therefore make the onchain collateral value exceed what a receiver can realize.

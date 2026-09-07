@@ -17,6 +17,8 @@ struct UsdyOracleConfig {
     address feed;
     address loanToken;
     address collateralToken;
+    uint256 minPrice;
+    uint256 maxPrice;
 }
 
 library OracleConfigFile {
@@ -38,11 +40,18 @@ library OracleConfigFile {
     }
 
     function readUsdy(string memory name) internal view returns (UsdyOracleConfig memory cfg) {
-        string memory toml = vm.readFile(configPath(name));
+        return parseUsdy(vm.readFile(configPath(name)));
+    }
+
+    function parseUsdy(string memory toml) internal view returns (UsdyOracleConfig memory cfg) {
         cfg.usdyOracle = ConfigToml.requireAddress(toml, ".usdy_oracle");
         cfg.feed = ConfigToml.requireAddress(toml, ".feed");
         cfg.loanToken = ConfigToml.requireAddress(toml, ".loan_token");
         cfg.collateralToken = ConfigToml.requireAddress(toml, ".collateral_token");
+        // Both bounds are in the oracle's returned 1e36-convention domain, so they are strings: TOML
+        // integers are limited to int64.
+        cfg.minPrice = ConfigToml.requireUint(toml, ".min_price");
+        cfg.maxPrice = ConfigToml.requireUint(toml, ".max_price");
     }
 
     function configPath(string memory name) internal pure returns (string memory) {
@@ -91,6 +100,8 @@ library OracleConfigFile {
             artifact = string.concat(artifact, "feed = \"", vm.toString(cfg.feed), "\"\n");
             artifact = string.concat(artifact, "loan_token = \"", vm.toString(cfg.loanToken), "\"\n");
             artifact = string.concat(artifact, "collateral_token = \"", vm.toString(cfg.collateralToken), "\"\n");
+            artifact = string.concat(artifact, "min_price = \"", vm.toString(cfg.minPrice), "\"\n");
+            artifact = string.concat(artifact, "max_price = \"", vm.toString(cfg.maxPrice), "\"\n");
         }
         vm.writeFile(path, artifact);
     }
