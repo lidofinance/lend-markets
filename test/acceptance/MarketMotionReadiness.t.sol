@@ -30,6 +30,7 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
         _assertCircuitBreakerReadyAsPauser();
         // ...and nothing is bound yet — the motion has work to do
         _assertNotYetActivated();
+        _assertZeroState();
         _assertExitBooksNotAllowed();
     }
 
@@ -89,8 +90,36 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
         this.assertRoles();
     }
 
+    /// @dev Mocked rather than deposited into: the readiness phase has no market on the core to supply to, and
+    ///      the assertion under test is that a non-zero balance is read and rejected at all.
+    function testRevert_nonZeroVaultSupplyIsRejected() external {
+        vm.mockCall(vault, abi.encodeWithSignature("totalSupply()"), abi.encode(uint256(1)));
+        vm.expectRevert();
+        this.assertZeroState();
+    }
+
+    function testRevert_nonZeroSettlementQueueIsRejected() external {
+        vm.mockCall(controller, abi.encodeWithSignature("settlementBorrowersCount()"), abi.encode(uint256(1)));
+        vm.expectRevert();
+        this.assertZeroState();
+    }
+
+    function testRevert_wrongVaultSymbolIsRejected() external {
+        vm.mockCall(vault, abi.encodeWithSignature("symbol()"), abi.encode("wrongSymbol"));
+        vm.expectRevert();
+        this.assertConfig();
+    }
+
     function assertWiring() external {
         _assertWiring();
+    }
+
+    function assertConfig() external view {
+        _assertConfig();
+    }
+
+    function assertZeroState() external view {
+        _assertZeroState();
     }
 
     function assertComponents() external {

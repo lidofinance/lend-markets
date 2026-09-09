@@ -13,6 +13,8 @@ import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfa
 import {IrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/IrmConfigFactory.sol";
 import {IIrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/interfaces/IIrmConfigFactory.sol";
 
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
@@ -39,6 +41,9 @@ interface IReadController {
     function guardianSignals() external view returns (address);
     function isFrozen() external view returns (bool);
     function isPaused() external view returns (bool);
+    function currentInflow() external view returns (uint256);
+    function settlementBorrowersCount() external view returns (uint256);
+    function hasBadDebt() external view returns (bool);
     function hasInstantActivation(address caller) external view returns (bool);
     function setInstantActivation(address caller, bool enabled) external;
     function freeze() external;
@@ -110,6 +115,12 @@ interface IReadVault {
     function controller() external view returns (address);
     function marketId() external view returns (bytes32);
     function asset() external view returns (address);
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+    function totalSupply() external view returns (uint256);
+    function totalAssets() external view returns (uint256);
+    function managedSupplyShares() external view returns (uint256);
 }
 
 interface IReadProxy {
@@ -610,6 +621,20 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
             irmConfig,
             "IRM config factory entry"
         );
+
+        _assertVaultIdentity();
+    }
+
+    /// @notice The vault's ERC-20 identity, fixed by `initialize` and unreachable afterwards.
+    /// @dev Shares carry the loan token's decimals plus the virtual-share offset the vault freezes at init.
+    ///      The offset closes the gap up to 18, and is zero for a loan token already at or above it.
+    function _assertVaultIdentity() internal view {
+        IReadVault deployedVault = IReadVault(vault);
+        assertEq(deployedVault.name(), vm.parseTomlString(toml, ".market.vault_name"), "vault.name");
+        assertEq(deployedVault.symbol(), vm.parseTomlString(toml, ".market.vault_symbol"), "vault.symbol");
+
+        uint256 loanDecimals = uint256(IReadDecimals(loanToken).decimals());
+        assertEq(uint256(deployedVault.decimals()), Math.max(18, loanDecimals), "vault.decimals");
     }
 
     /// @dev The per-market curve params used by the activation simulation.
@@ -789,6 +814,30 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         // No per-market curve config may be applied to the singleton while the market is inert.
         assertEq(IReadCurve(curve).marketCurveConfig(marketId), address(0), "curve config already applied");
         assertEq(IReadCircuitBreaker(circuitBreaker).getPauser(controller), address(0), "pauser already registered");
+    }
+
+    /// @notice Every accounting variable on the market, the vault, and the controller is still zero, and no
+    ///         protocol fee is set. Each one changes only through user activity or a later governance action.
+    /// @dev Holds in both phases: before the motion the core has no market under this id, and the motion
+    ///      creates an empty one without setting a fee.
+    function _assertZeroState() internal view {
+        (uint128 tSupplyA, uint128 tSupplyS, uint128 tBorrowA, uint128 tBorrowS,, uint128 fee) =
+            IReadCore(core).market(marketId);
+        assertEq(uint256(tSupplyA), 0, "core totalSupplyAssets");
+        assertEq(uint256(tSupplyS), 0, "core totalSupplyShares");
+        assertEq(uint256(tBorrowA), 0, "core totalBorrowAssets");
+        assertEq(uint256(tBorrowS), 0, "core totalBorrowShares");
+        assertEq(uint256(fee), 0, "core market fee");
+
+        IReadVault deployedVault = IReadVault(vault);
+        assertEq(deployedVault.totalSupply(), 0, "vault.totalSupply");
+        assertEq(deployedVault.totalAssets(), 0, "vault.totalAssets");
+        assertEq(deployedVault.managedSupplyShares(), 0, "vault.managedSupplyShares");
+
+        IReadController deployedController = IReadController(controller);
+        assertEq(deployedController.currentInflow(), 0, "controller.currentInflow");
+        assertEq(deployedController.settlementBorrowersCount(), 0, "controller.settlementBorrowersCount");
+        assertFalse(deployedController.hasBadDebt(), "controller.hasBadDebt");
     }
 
     function _assertExitBooksNotAllowed() internal view {
