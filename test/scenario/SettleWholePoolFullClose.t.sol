@@ -39,12 +39,15 @@ contract MockToken is ERC20 {
 interface IVault {
     function deposit(uint256 assets, address receiver) external returns (uint256);
     function balanceOf(address account) external view returns (uint256);
+    function totalSupply() external view returns (uint256);
+    function totalAssets() external view returns (uint256);
+    function previewRedeem(uint256 shares) external view returns (uint256);
     function fallbackExit(uint256 shares, address receiver, address owner, uint256 maxIterations)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 }
 
-/// @notice Full-pool fallback exit with only virtual-share dust left at the end.
+/// @notice A full-pool fallback exit reserves the value assigned to virtual shares.
 contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
     uint256 internal constant LLTV = 0.945e18;
     uint256 internal constant PRICE = 1.2e36;
@@ -147,8 +150,8 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
         vm.stopPrank();
     }
 
-    /// @dev The lender exits fully. The core keeps only zero-value supply dust and one debt-asset wei.
-    function test_fallbackExit_fullPool_leavesOnlyVirtualShareDust() public {
+    /// @dev All real vault shares burn, but the redemption budget leaves backing for virtual shares.
+    function test_fallbackExit_fullPool_preservesVirtualBacking() public {
         assertEq(core.market(id).totalSupplyAssets, core.market(id).totalBorrowAssets, "100% utilisation (no free)");
         (address root,) = controller.nextSettlementBorrower(0);
         assertEq(root, RISKY, "highest-LTV borrower is the queue root");
@@ -159,6 +162,13 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
         uint256 bookDebtBefore = core.market(id).totalBorrowAssets;
 
         uint256 shares = IVault(vault).balanceOf(LENDER);
+        uint256 redeemAssets = IVault(vault).previewRedeem(shares);
+        Market memory marketBefore = core.market(id);
+        uint256 supplyBefore = _lidoLendSupplyShares();
+        uint256 budget =
+            SharesMathLib.toSharesDown(redeemAssets, marketBefore.totalSupplyAssets, marketBefore.totalSupplyShares);
+        assertLt(budget, supplyBefore, "virtual shares reserve part of the managed supply");
+        (uint256 expectedDebtCanceled, uint256 expectedSupplyBurn) = _expectedFullPoolSettlement(budget, marketBefore);
         vm.prank(LENDER);
         (,,, uint256 debtCanceled) = IVault(vault).fallbackExit(shares, RECEIVER, LENDER, 0);
 
@@ -167,15 +177,37 @@ contract SettleWholePoolFullCloseTest is Test, LidoLendDeployer {
         uint256 supplyDust = _lidoLendSupplyShares();
         assertEq(core.position(id, RISKY).borrowShares, 0, "RISKY closed to zero");
         assertGt(core.position(id, TAIL).borrowShares, 0, "TAIL keeps debt dust");
-        assertLe(bookDebtAfter, 1, "only the unbacked one-wei buffer of debt remains in the whole book");
+        assertLe(debtCanceled, redeemAssets, "canceled debt fits the pre-call redemption value");
+        assertEq(debtCanceled, expectedDebtCanceled, "both cuts cancel the debt affordable by the redemption budget");
         assertEq(debtCanceled, bookDebtBefore - bookDebtAfter, "debtCanceled == the exact book debt removed");
         assertEq(IVault(vault).balanceOf(LENDER), 0, "lender has no vault shares");
-        assertLe(supplyDust, 1e6, "only one virtual-share unit remains");
-        assertEq(
-            SharesMathLib.toAssetsDown(supplyDust, marketAfter.totalSupplyAssets, marketAfter.totalSupplyShares),
-            0,
-            "remaining supply shares have no asset value"
-        );
+        assertEq(IVault(vault).totalSupply(), 0, "all real vault shares burned");
+        assertEq(supplyBefore - supplyDust, expectedSupplyBurn, "both cuts consume the modeled core supply shares");
+        assertGt(IVault(vault).totalAssets(), 0, "virtual backing need not have zero asset value");
+    }
+
+    /// @dev Both root policies request full closes; only the remaining supply budget limits the second cut.
+    function _expectedFullPoolSettlement(uint256 budget, Market memory market_)
+        internal
+        view
+        returns (uint256 debtCanceled, uint256 supplyBurned)
+    {
+        for (uint256 i; i < 2; ++i) {
+            uint256 assets = SharesMathLib.toAssetsDown(budget, market_.totalSupplyAssets, market_.totalSupplyShares);
+            uint256 borrowShares =
+                SharesMathLib.toSharesDown(assets, market_.totalBorrowAssets, market_.totalBorrowShares);
+            uint256 borrowerShares = core.position(id, i == 0 ? RISKY : TAIL).borrowShares;
+            if (borrowShares > borrowerShares) borrowShares = borrowerShares;
+            uint256 debt = SharesMathLib.toAssetsUp(borrowShares, market_.totalBorrowAssets, market_.totalBorrowShares);
+            uint256 supply = SharesMathLib.toSharesUp(debt, market_.totalSupplyAssets, market_.totalSupplyShares);
+            debtCanceled += debt;
+            supplyBurned += supply;
+            budget -= supply;
+            market_.totalSupplyAssets -= uint128(debt);
+            market_.totalSupplyShares -= uint128(supply);
+            market_.totalBorrowAssets -= uint128(debt);
+            market_.totalBorrowShares -= uint128(borrowShares);
+        }
     }
 
     function _lidoLendSupplyShares() internal view returns (uint256) {

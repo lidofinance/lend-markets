@@ -163,7 +163,8 @@ interface ILidoLendERC4626 is IERC4626 {
     ///         whose personal policy grants no cut consumes nothing. Market liquidity is untouched. When the
     ///         budget is exhausted early, the call settles what it covers; a call that settles no borrower
     ///         reverts.
-    /// @param shares Vault shares whose pro-rata core-supply claim bounds the cuts.
+    /// @dev The core supply-share budget is `previewRedeem(shares)` converted down at the accrued core supply rate.
+    /// @param shares Vault shares whose redemption value bounds the cuts.
     /// @param borrowers Positions to cut in order, each sized by its personal settlement-LTV target.
     /// @param receiver Recipient of the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.
@@ -178,6 +179,8 @@ interface ILidoLendERC4626 is IERC4626 {
     ///         loan tokens; the rest of the request is settled against borrowers the controller selects, and
     ///         paid in their seized collateral. When no executable cut remains or the iteration cap ends the
     ///         loop early, only the serviced part burns shares; controller and core errors still revert.
+    /// @dev After the liquid withdrawal, the remaining shares' `previewRedeem` value is converted down into core
+    ///      supply shares. A nonzero remainder whose core budget rounds to zero reverts the whole call.
     /// @param shares Vault shares to exit through the liquid leg first and settlement second.
     /// @param receiver Recipient of both the redeemed loan assets and the seized collateral.
     /// @param owner Account whose shares are burned; the caller must hold its allowance if not the owner.

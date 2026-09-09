@@ -168,7 +168,7 @@ seizedCollateral = floor(cutAssets * 1e36 / oraclePrice)
 
 The floor binds on whichever input drives the amount down: a policy allowance of a few loan-asset units, or a supply-share budget shrunk onto that range. Because it is reported as budget exhaustion rather than an error, an executor sees the documented stop condition — `settle` reverts `NothingSettled` when the whole list yields nothing, and `fallbackExit` partial-fills on its liquid leg.
 
-Passing a zero budget asks for the policy quote without budget reduction and is useful for inspection. An executor should quote against its live supply-share budget and revalidate a quote that is not consumed immediately. Zero is a sentinel only at the controller view: a vault request whose pro-rata supply budget rounds to zero reverts before requesting a quote.
+Passing a zero budget asks for the policy quote without budget reduction and is useful for inspection. An executor should quote against its live supply-share budget and revalidate a quote that is not consumed immediately. Zero is a sentinel only at the controller view: a vault request whose redemption-based supply budget rounds to zero reverts before requesting a quote.
 
 The controller exposes two views over this calculation:
 
@@ -231,11 +231,14 @@ managedSupplyShares <= actual core supply shares held by the vault
 For either settlement entrypoint, a request for `requestedVaultShares` receives this core budget:
 
 ```text
+redeemAssets = previewRedeem(requestedVaultShares)
 settlingSupplyShares =
-    floor(managedSupplyShares * requestedVaultShares / totalVaultShareSupply)
+    floor(redeemAssets * (totalCoreSupplyShares + 1e6) / (totalCoreSupplyAssets + 1))
 ```
 
-The vault spends only that budget and later removes the consumed core shares from managed accounting.
+`previewRedeem` converts vault shares to loan assets, rounded down, including the vault's virtual assets and shares. Core totals include accrued interest. For fallback exit, the budget uses the remaining vault shares and the totals after the liquid withdrawal.
+
+The vault spends only that budget and later removes the consumed core shares from managed accounting. If a nonzero fallback remainder maps to a zero budget, the whole call reverts, including the liquid withdrawal.
 
 Both vault exits require nonzero requested shares, a nonzero receiver, and a request no larger than the owner's current vault-share balance. Targeted settlement additionally requires a nonempty borrower list.
 
@@ -266,7 +269,7 @@ If the liquid withdrawal covers the whole request, the call returns without sett
 
 ### 2. Queue settlement
 
-For the remaining vault shares, the vault computes the pro-rata managed supply budget and repeatedly requests the live queue root's larger personal-or-root settlement, already reduced to the remaining budget. Each successful core settlement transfers collateral to the same receiver, consumes budget, and updates the root's queue entry before the next iteration. The vault does not search non-root borrowers for personal candidates.
+For the remaining vault shares, the vault computes the redemption-based supply budget and repeatedly requests the live queue root's larger personal-or-root settlement, already reduced to the remaining budget. Each successful core settlement transfers collateral to the same receiver, consumes budget, and updates the root's queue entry before the next iteration. The vault does not search non-root borrowers for personal candidates.
 
 The loop stops when:
 
@@ -286,7 +289,7 @@ The vault burns shares for the liquid withdrawal plus the pro-rata shares covere
 The return value `sharesBurned` covers both steps. Every successful call emits one `FallbackExit` event, and it reports each step separately: `sharesBurned` is the whole call's burn, `sharesSettled` the settlement step's share of it, and `assetsWithdrawn` the loan assets the liquid step paid out. The liquid step also emits the standard ERC-4626 `Withdraw` event for the same transfer. Each core settlement emits a borrower-specific `Settle` event, which is required to attribute an aggregate multi-borrower exit.
 
 > [!NOTE]
-> **Final virtual-share boundary.** At the specific final boundary where the vault is the only supplier, `totalSupplyAssets == totalBorrowAssets`, and fallback exit consumes the vault's full managed supply budget, Morpho's virtual shares can leave zero-value core supply shares and residual total borrow assets. The lender can still burn all vault shares and exit because the residual does not represent a remaining lender claim. Its raw size depends on the live share price; there is no universal one-raw-unit bound.
+> **Final virtual-share boundary.** Burning all vault shares can leave managed core supply shares with positive asset value and residual borrower debt. The redemption budget includes the vault's virtual shares, so it need not consume the full managed supply position. Residual amounts depend on the live share price; there is no universal one-raw-unit bound.
 
 ## Related references
 

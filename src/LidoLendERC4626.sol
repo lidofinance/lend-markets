@@ -216,6 +216,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     ///      a budget exhausted before the list ends burns all requested shares, and a list whose cuts fall
     ///      short of the budget burns only the settled fraction. A call that settles nothing reverts. Seized
     ///      collateral moves from the core directly to `receiver`.
+    /// @dev The budget is `previewRedeem(shares)` converted down into core supply shares at the accrued rate.
     function settle(uint256 shares, address[] calldata borrowers, address receiver, address owner)
         external
         returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled)
@@ -225,8 +226,7 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         if (receiver == address(0)) revert ZeroAddress();
         if (shares > balanceOf(owner)) revert ExceededBalance(owner, shares, balanceOf(owner));
 
-        // The owner's pro-rata managed core supply shares: the budget the cuts consume.
-        uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply());
+        uint256 settlingSupplyShares = _settlementSupplyShares(shares);
         if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
 
         uint256 remainingSupplyShares = settlingSupplyShares;
@@ -278,7 +278,9 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
     ///      settles the rest against borrowers the controller selects. Seized collateral moves from the core
     ///      directly to the same `receiver`. When no executable cut remains or the iteration cap ends the loop
     ///      early, the call burns shares only for what was serviced; controller and core errors revert the
-    ///      whole call. A call that burns no shares in either leg reverts.
+    ///      whole call. The settlement budget is the remaining shares' `previewRedeem` value after the liquid
+    ///      withdrawal, converted down into core supply shares. A nonzero remainder with a zero budget reverts
+    ///      the whole call. A call that burns no shares in either leg reverts.
     function fallbackExit(uint256 shares, address receiver, address owner, uint256 maxIterations)
         external
         returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled)
@@ -310,10 +312,10 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
         shares = shares - sharesBurned;
 
         // 2. Settle the remainder against controller-selected borrowers (collateral to receiver), up to the
-        //    owner's pro-rata managed core supply-share budget for it.
+        //    remaining shares' redemption-based core supply-share budget.
         uint256 settledShares;
         if (shares != 0) {
-            uint256 settlingSupplyShares = Math.mulDiv(_managedSupplyShares, shares, totalSupply());
+            uint256 settlingSupplyShares = _settlementSupplyShares(shares);
             if (settlingSupplyShares == 0) revert ZeroMorphoSupplyShares();
 
             if (maxIterations == 0) maxIterations = DEFAULT_MAX_SETTLEMENT_ITERATIONS;
@@ -359,6 +361,11 @@ contract LidoLendERC4626 layout at erc7201("lido.lend.storage.LidoLendERC4626")
             collateralSeized: collateralSeized,
             debtCanceled: debtCanceled
         });
+    }
+
+    function _settlementSupplyShares(uint256 shares) internal view returns (uint256) {
+        (uint256 supplyAssets, uint256 supplyShares) = _marketSupplyTotals();
+        return previewRedeem(shares).toSharesDown(supplyAssets, supplyShares);
     }
 
     /// @dev Resolve the controller's next settlement borrower and its allowed cut, already shrunk to
