@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
+import {Vm} from "forge-std/Vm.sol";
 import {CommonBase} from "forge-std/Base.sol";
 import {StdCheats} from "forge-std/StdCheats.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
@@ -40,6 +41,34 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         uint256 withdrawableAssets;
         uint256 idle;
         uint256 receiverCollateral;
+        uint256 receiverLoan;
+        uint256 oraclePrice;
+    }
+
+    struct ExitPayout {
+        uint256 redeemAssets;
+        uint256 loanAssets;
+        uint256 receivedWhole;
+        uint256 fraction;
+    }
+
+    struct CutRoundingState {
+        uint256 supplyAssets;
+        uint256 supplyShares;
+        uint256 borrowAssets;
+        uint256 borrowShares;
+        uint256 consumedSupplyShares;
+        uint256 cuts;
+        uint256 roundingScaled;
+    }
+
+    struct CoreSettlement {
+        address caller;
+        address receiver;
+        uint256 supplySharesBurned;
+        uint256 borrowAssetsCanceled;
+        uint256 borrowSharesCanceled;
+        uint256 seizedAssets;
     }
 
     ILidoLend internal immutable CORE;
@@ -52,11 +81,15 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     uint256 internal immutable SEED_PRICE;
     address internal immutable ORACLE;
     uint256 internal immutable VAULT_VIRTUAL_SHARES;
+    uint256 internal immutable LOAN_UNIT;
     uint256 internal constant LLTV = 0.8e18;
     uint256 internal constant FLOOR = 10 ether;
     uint8 internal constant VAULT_SHARE_DECIMALS = 18;
     uint256 internal constant CORE_VIRTUAL_SHARES = 1e6;
     uint256 internal constant CORE_VIRTUAL_ASSETS = 1;
+    uint256 internal constant PAYOUT_SCALE = 1e36;
+    bytes32 internal constant CORE_SETTLE_TOPIC =
+        keccak256("Settle(bytes32,address,address,address,address,uint256,uint256,uint256,uint256)");
     bytes4 internal constant PANIC_SELECTOR = 0x4e487b71;
     uint256 internal constant ARITHMETIC_PANIC_CODE = 0x11;
     bytes32 internal constant SETTLEMENT_SLICE_TOO_SMALL_HASH = keccak256("settlement slice too small");
@@ -73,8 +106,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     bool public targetedSettlementExceededGrossClaim; // targeted settle consumed more than the request's core claim
     bool public priceMovedByDonation; // a direct donation shifted the share price
     bool public exitBurnedTooMuch; // an exit burned more shares than requested
-    bool public settleMovedLiquidity; // a targeted settle paid loan assets or changed idle (not liquidity-neutral)
-    bool public fallbackExitLiquidityMismatch; // fallbackExit's idle drop != its redeem-leg payout
+    bool public settleLiquidityMismatch; // idle delta differs from the final debt-rounding adjustment
+    bool public fallbackExitLiquidityMismatch; // idle drop differs from liquid payout plus debt-rounding adjustment
     bool public parViolated; // an exit seized collateral worth MORE than the debt it cancelled (a penalty)
     bool public settlePayoutExceededCut; // a settle's seized value (rounded up) exceeded its down-rounded debt cut
     bool public settleBurnBelowDebt; // a settle burned core supply shares worth less than the debt it cancelled
@@ -82,6 +115,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     bool public settleDebtReportMismatch; // debtCanceled != the observed cut's value, or borrow totals off it
     bool public settleMovedLoanToken; // the core's loan-token balance moved by other than what the exit paid out
     bool public settlementArithmeticPanicked; // settle / fallbackExit reverted with Panic(0x11)
+    bool public exitPayoutBoundViolated;
+    string public exitPayoutBoundFailure;
     uint256 public totalDonated; // loan tokens sent straight to the vault (uncounted)
 
     // Coverage counters.
@@ -132,6 +167,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         SEED_PRICE = oraclePrice;
         ORACLE = oracle;
         uint8 assetDecimals = IERC20Metadata(vault.asset()).decimals();
+        LOAN_UNIT = 10 ** assetDecimals;
         VAULT_VIRTUAL_SHARES = assetDecimals < VAULT_SHARE_DECIMALS ? 10 ** (VAULT_SHARE_DECIMALS - assetDecimals) : 1;
         actors = actors_;
     }
@@ -157,20 +193,16 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         return mk.totalSupplyAssets - mk.totalBorrowAssets;
     }
 
-    /// @dev Independently derives `C`, `q`, and `ceil(requestedShares * q / C)` from observable state deltas.
-    function _settlementModel(
-        uint256 requestedShares,
-        uint256 supplyBefore,
-        uint256 coreSharesBefore,
-        uint256 coreSharesAfter
-    ) internal pure returns (uint256 claim, uint256 settled, uint256 expectedBurn, bool invalid) {
-        if (coreSharesAfter > coreSharesBefore) return (0, 0, 0, true);
-
-        claim = Math.mulDiv(coreSharesBefore, requestedShares, supplyBefore);
-        if (claim == 0) return (0, 0, 0, true);
+    /// @dev Derive consumed shares `q` and the ceiling burn from redemption budget `C` and core state deltas.
+    function _settlementModel(uint256 requestedShares, uint256 claim, uint256 coreSharesBefore, uint256 coreSharesAfter)
+        internal
+        pure
+        returns (uint256 settled, uint256 expectedBurn, bool invalid)
+    {
+        if (coreSharesAfter > coreSharesBefore || claim == 0) return (0, 0, true);
 
         settled = coreSharesBefore - coreSharesAfter;
-        if (settled > claim) return (0, 0, 0, true);
+        if (settled > claim) return (0, 0, true);
 
         // `C = claim`, `q = settled`: burn exactly `ceil(requestedShares * q / C)`.
         expectedBurn = Math.mulDiv(requestedShares, settled, claim);
@@ -203,6 +235,160 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         state.withdrawableAssets = CONTROLLER.maxWithdrawableAssets(address(VAULT));
         state.idle = market_.totalSupplyAssets - market_.totalBorrowAssets;
         state.receiverCollateral = COLLATERAL.balanceOf(receiver);
+        state.receiverLoan = LOAN.balanceOf(receiver);
+        state.oraclePrice = _price();
+    }
+
+    /// @dev Price both observed receipts against the burned shares at the pre-call ERC-4626 conversion.
+    function _exitPayout(SettlementState memory before, address receiver)
+        internal
+        view
+        returns (ExitPayout memory payout)
+    {
+        uint256 burnedShares = before.vaultSupply - VAULT.totalSupply();
+        payout.redeemAssets =
+            Math.mulDiv(burnedShares, before.vaultAssets + 1, before.vaultSupply + VAULT_VIRTUAL_SHARES);
+        payout.loanAssets = LOAN.balanceOf(receiver) - before.receiverLoan;
+        uint256 collateralReceived = COLLATERAL.balanceOf(receiver) - before.receiverCollateral;
+        payout.receivedWhole = payout.loanAssets + Math.mulDiv(collateralReceived, before.oraclePrice, PAYOUT_SCALE);
+        payout.fraction = mulmod(collateralReceived, before.oraclePrice, PAYOUT_SCALE);
+    }
+
+    /// @dev Replay the borrow-share cuts from pre-call totals. Neither the reported collateral nor the receiver's
+    ///      collateral balance enters the model. mulmod keeps each oracle remainder exact at 1e-36 loan precision.
+    function _executedCuts(SettlementState memory before, uint256 loanAssets)
+        internal
+        returns (CutRoundingState memory state)
+    {
+        state.supplyAssets = before.coreTotalSupplyAssets - loanAssets;
+        state.supplyShares = before.coreTotalSupplyShares
+            - Math.mulDiv(
+                loanAssets,
+                before.coreTotalSupplyShares + CORE_VIRTUAL_SHARES,
+                before.coreTotalSupplyAssets + 1,
+                Math.Rounding.Ceil
+            );
+        state.borrowAssets = before.coreTotalBorrowAssets;
+        state.borrowShares = before.coreTotalBorrowShares;
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        for (uint256 i; i < entries.length; ++i) {
+            Vm.Log memory entry = entries[i];
+            if (
+                entry.emitter == address(CORE) && entry.topics.length == 4 && entry.topics[0] == CORE_SETTLE_TOPIC
+                    && entry.topics[1] == Id.unwrap(ID) && entry.topics[2] == bytes32(uint256(uint160(address(VAULT))))
+            ) _observeCutRounding(state, abi.decode(entry.data, (CoreSettlement)), before.oraclePrice);
+        }
+        MorphoMarket memory after_ = CORE.market(ID);
+        require(
+            state.supplyAssets == after_.totalSupplyAssets && state.supplyShares == after_.totalSupplyShares
+                && state.borrowAssets == after_.totalBorrowAssets && state.borrowShares == after_.totalBorrowShares,
+            "rounding model matches core totals"
+        );
+    }
+
+    function _observeCutRounding(CutRoundingState memory state, CoreSettlement memory cut, uint256 price)
+        internal
+        pure
+    {
+        uint256 debtDown =
+            Math.mulDiv(cut.borrowSharesCanceled, state.borrowAssets + 1, state.borrowShares + CORE_VIRTUAL_SHARES);
+        uint256 debtRounding = mulmod(
+                cut.borrowSharesCanceled, state.borrowAssets + 1, state.borrowShares + CORE_VIRTUAL_SHARES
+            ) == 0
+            ? 0
+            : 1;
+        uint256 debtUp = debtDown + debtRounding;
+        uint256 supplyBurn =
+            Math.mulDiv(debtUp, state.supplyShares + CORE_VIRTUAL_SHARES, state.supplyAssets + 1, Math.Rounding.Ceil);
+        require(
+            cut.borrowAssetsCanceled == debtUp && cut.supplySharesBurned == supplyBurn,
+            "rounding model matches core cut"
+        );
+        state.roundingScaled += debtRounding * PAYOUT_SCALE + mulmod(debtDown, PAYOUT_SCALE, price);
+        state.consumedSupplyShares += supplyBurn;
+        ++state.cuts;
+        state.supplyAssets -= debtUp;
+        state.supplyShares -= supplyBurn;
+        state.borrowAssets = state.borrowAssets > debtUp ? state.borrowAssets - debtUp : 0;
+        state.borrowShares -= cut.borrowSharesCanceled;
+    }
+
+    /// @dev U = consumed core supply shares, n = cuts, r = core share value immediately after the liquid leg.
+    ///      Ceiling each supply-share burn gives (U-n)*r < cancelled debt <= U*r when n > 0.
+    ///      Thus E_min = L + floor((U-n)*r) + 1 - T - R; E_max = L + floor(U*r) - T - R.
+    ///      L = loan payout, R = pre-call previewRedeem(burned), T = sum of debt ceil/floor gaps and oracle dust.
+    ///      With no cuts both bounds are L-R. All values use raw loan units, scaled by 1e36 for exact fractions.
+    function _cutRoundingInterval(SettlementState memory before, ExitPayout memory payout, CutRoundingState memory cuts)
+        internal
+        pure
+        returns (int256 lower, int256 upper)
+    {
+        uint256 minimumDebt;
+        uint256 maximumDebt;
+        if (cuts.cuts != 0) {
+            uint256 supplyShares = before.coreTotalSupplyShares
+                - Math.mulDiv(
+                    payout.loanAssets,
+                    before.coreTotalSupplyShares + CORE_VIRTUAL_SHARES,
+                    before.coreTotalSupplyAssets + 1,
+                    Math.Rounding.Ceil
+                );
+            uint256 supplyAssets = before.coreTotalSupplyAssets - payout.loanAssets;
+            minimumDebt = Math.mulDiv(
+                cuts.consumedSupplyShares - cuts.cuts, supplyAssets + 1, supplyShares + CORE_VIRTUAL_SHARES
+            ) + 1;
+            maximumDebt = Math.mulDiv(cuts.consumedSupplyShares, supplyAssets + 1, supplyShares + CORE_VIRTUAL_SHARES);
+        }
+        lower = (int256(payout.loanAssets + minimumDebt) - int256(payout.redeemAssets)) * int256(PAYOUT_SCALE)
+            - int256(cuts.roundingScaled);
+        upper = (int256(payout.loanAssets + maximumDebt) - int256(payout.redeemAssets)) * int256(PAYOUT_SCALE)
+            - int256(cuts.roundingScaled);
+    }
+
+    function _observeExitPayoutBound(SettlementState memory before, address receiver) internal {
+        ExitPayout memory payout = _exitPayout(before, receiver);
+        CutRoundingState memory cuts = _executedCuts(before, payout.loanAssets);
+        require(
+            (cuts.cuts == 0) == (payout.receivedWhole == payout.loanAssets && payout.fraction == 0),
+            "cut event coverage"
+        );
+        require(_price() == before.oraclePrice, "rounding bound requires a constant in-call oracle price");
+        (int256 lower, int256 upper) = _cutRoundingInterval(before, payout, cuts);
+        // The rounding interval alone permits overpayment; the ERC-4626 entitlement additionally requires E <= 0.
+        if (upper > 0) upper = 0;
+        int256 actual = (int256(payout.receivedWhole) - int256(payout.redeemAssets)) * int256(PAYOUT_SCALE)
+            + int256(payout.fraction);
+        if (!exitPayoutBoundViolated && (actual < lower || actual > upper)) {
+            exitPayoutBoundViolated = true;
+            exitPayoutBoundFailure = string.concat(
+                "payout minus pre-call previewRedeem(burned shares): E=",
+                _formatSigned(actual),
+                "; min=",
+                _formatSigned(lower),
+                "; max=",
+                _formatSigned(upper),
+                "; cuts=",
+                vm.toString(cuts.cuts),
+                " (loan-token raw units)"
+            );
+        }
+    }
+
+    function _formatSigned(int256 value) internal pure returns (string memory) {
+        uint256 magnitude = uint256(value < 0 ? -value : value);
+        return
+            string.concat(value < 0 ? "-" : "", _formatOracleValue(magnitude / PAYOUT_SCALE, magnitude % PAYOUT_SCALE));
+    }
+
+    /// @dev The oracle denominator is 1e36, so 36 zero-padded decimal digits represent the remainder exactly.
+    function _formatOracleValue(uint256 whole, uint256 fraction) internal pure returns (string memory) {
+        if (fraction == 0) return vm.toString(whole);
+        bytes memory padded = bytes(vm.toString(1e36 + fraction));
+        bytes memory decimals = new bytes(36);
+        for (uint256 i; i < decimals.length; ++i) {
+            decimals[i] = padded[i + 1];
+        }
+        return string.concat(vm.toString(whole), ".", string(decimals));
     }
 
     /// @dev Checks the exact settlement burn and the core-share entitlement left to each remaining vault share.
@@ -211,10 +397,11 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         uint256 actualBurn,
         uint256 supplyBefore,
         uint256 coreSharesBefore,
-        uint256 coreSharesAfter
+        uint256 coreSharesAfter,
+        uint256 claim
     ) internal {
-        (uint256 claim, uint256 settled, uint256 expectedBurn, bool invalid) =
-            _settlementModel(requestedShares, supplyBefore, coreSharesBefore, coreSharesAfter);
+        (uint256 settled, uint256 expectedBurn, bool invalid) =
+            _settlementModel(requestedShares, claim, coreSharesBefore, coreSharesAfter);
         if (invalid) {
             settlementBurnMismatch = true;
             return;
@@ -237,7 +424,44 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         }
     }
 
-    /// @dev A targeted settle may consume at most the request's gross pro-rata core-share claim.
+    function _observeTargetedSettlementLeg(uint256 shares, uint256 burnedShares, SettlementState memory before)
+        internal
+    {
+        _observeSettlementLeg(
+            shares,
+            burnedShares,
+            before.vaultSupply,
+            before.coreSupplyShares,
+            CORE.position(ID, address(VAULT)).supplyShares,
+            _redemptionCoreClaim(shares, before, 0)
+        );
+    }
+
+    /// @dev Model the request's ERC-4626 entitlement and round it down into core shares, after any liquid leg.
+    function _redemptionCoreClaim(uint256 requestedShares, SettlementState memory before, uint256 loanAssets)
+        internal
+        view
+        returns (uint256)
+    {
+        uint256 coreBurn = Math.mulDiv(
+            loanAssets,
+            before.coreTotalSupplyShares + CORE_VIRTUAL_SHARES,
+            before.coreTotalSupplyAssets + 1,
+            Math.Rounding.Ceil
+        );
+        uint256 vaultBurn = Math.mulDiv(
+            loanAssets, before.vaultSupply + VAULT_VIRTUAL_SHARES, before.vaultAssets + 1, Math.Rounding.Ceil
+        );
+        uint256 coreAssets = before.coreTotalSupplyAssets - loanAssets;
+        uint256 coreShares = before.coreTotalSupplyShares - coreBurn;
+        uint256 vaultAssets =
+            Math.mulDiv(before.coreSupplyShares - coreBurn, coreAssets + 1, coreShares + CORE_VIRTUAL_SHARES);
+        uint256 assets =
+            Math.mulDiv(requestedShares, vaultAssets + 1, before.vaultSupply - vaultBurn + VAULT_VIRTUAL_SHARES);
+        return Math.mulDiv(assets, coreShares + CORE_VIRTUAL_SHARES, coreAssets + 1);
+    }
+
+    /// @dev In this sole-supplier fixture, the redemption budget also fits the gross pro-rata core-share claim.
     function _observeTargetedSettlementClaim(uint256 requestedShares, SettlementState memory before) internal {
         uint256 claim = Math.mulDiv(before.coreSupplyShares, requestedShares, before.vaultSupply);
         if (claim == 0) {
@@ -317,10 +541,27 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
             return;
         }
 
-        _observeSettlementLeg(
-            settlementRequest, settlementBurn, before.vaultSupply - liquidBurn, settlementCoreBefore, coreSharesAfter
-        );
+        _observeFallbackSettlementLeg(requestedShares, settlementBurn, before, actualLoanAssets);
         if (liquidBurn != 0 && settlementBurn != 0) ++mixedFallbackSettlementFills;
+    }
+
+    function _observeFallbackSettlementLeg(
+        uint256 requestedShares,
+        uint256 burnedShares,
+        SettlementState memory before,
+        uint256 loanAssets
+    ) internal {
+        (uint256 liquidBurn, uint256 coreBurn,) = _fallbackLiquidLeg(requestedShares, before);
+        uint256 settlementRequest = requestedShares - liquidBurn;
+        uint256 claim = _redemptionCoreClaim(settlementRequest, before, loanAssets);
+        _observeSettlementLeg(
+            settlementRequest,
+            burnedShares,
+            before.vaultSupply - liquidBurn,
+            before.coreSupplyShares - coreBurn,
+            CORE.position(ID, address(VAULT)).supplyShares,
+            claim
+        );
     }
 
     function _ctrl() internal view returns (LidoLendMarketController) {
@@ -415,8 +656,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     function deposit(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         uint256 room = VAULT.maxDeposit(a);
-        if (!_paused() && room < 1e18) return;
-        amount = bound(amount, 1e18, _paused() ? 1_000_000e18 : Math.min(room, 1_000_000e18));
+        if (!_paused() && room < LOAN_UNIT) return;
+        amount = bound(amount, LOAN_UNIT, _paused() ? 1_000_000 * LOAN_UNIT : Math.min(room, 1_000_000 * LOAN_UNIT));
         _mintTo(LOAN, a, amount);
         vm.startPrank(a);
         LOAN.approve(address(VAULT), amount);
@@ -514,7 +755,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     // ── new mechanics: settle / fallbackExit / donation ──
 
     /// @dev Target one borrower. A successful call must have a positive personal settlement-LTV slice at quote time,
-    ///      and its burn must be the one-sided rounded fraction of the owner's gross core-share claim consumed.
+    ///      and its burn must be the ceiling-rounded fraction of the redemption budget consumed.
     function settle(uint256 ownerSeed, uint256 borrowerSeed, uint256 shares) external {
         address owner = _actor(ownerSeed);
         uint256 bal = VAULT.balanceOf(owner);
@@ -533,6 +774,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         SettlementState memory before = _settlementState(receiver);
         before.borrowerShares = CORE.position(ID, borrower).borrowShares;
         shares = bound(shares, 1, bal);
+        vm.recordLogs();
         vm.prank(owner);
         uint256 sharesBurned;
         uint256 collateralSeized;
@@ -557,19 +799,15 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         if (sharesBurned > shares) exitBurnedTooMuch = true;
         if (personalSlice == 0) targetedSettlementWithoutPersonalEligibility = true;
         _observeTargetedSettlementClaim(shares, before);
-        _observeSettlementLeg(
-            shares,
-            sharesBurned,
-            before.vaultSupply,
-            before.coreSupplyShares,
-            CORE.position(ID, address(VAULT)).supplyShares
-        );
+        _observeTargetedSettlementLeg(shares, sharesBurned, before);
         _observeCollateralPayout(collateralSeized, receiver, before);
-        // Liquidity-neutral: settle pays no loan and cancels debt + supply by the same amount, so idle is unchanged.
-        if (_idle() != before.idle) settleMovedLiquidity = true;
+        // Supply loses the full up-rounded debt, but the core floors remaining borrow assets at zero.
+        uint256 debtRounding = Math.saturatingSub(debtCanceled, before.coreTotalBorrowAssets);
+        if (_idle() + debtRounding != before.idle) settleLiquidityMismatch = true;
         if (_seizedValueExceedsDebt(collateralSeized, debtCanceled)) parViolated = true;
         _observeSettleValueBounds(before, borrower, collateralSeized, debtCanceled);
         _observeCoreConservation(before, 0, debtCanceled);
+        _observeExitPayoutBound(before, receiver);
         settles++;
     }
 
@@ -585,6 +823,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         address receiver = actors[(actorSeed % actors.length + 1) % actors.length];
         SettlementState memory before = _settlementState(receiver);
         shares = bound(shares, 1, bal);
+        vm.recordLogs();
         vm.prank(owner);
         uint256 sharesBurned;
         uint256 loanAssets;
@@ -611,11 +850,13 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         if (sharesBurned > shares) exitBurnedTooMuch = true;
         _observeFallbackExit(shares, sharesBurned, loanAssets, before);
         _observeCollateralPayout(collateralSeized, receiver, before);
-        // The redeem leg drops idle by exactly its payout; the settle leg is liquidity-neutral -> idle drop == loan.
+        // Include any final debt rounding beyond the borrow-asset balance; it moves accounting, not loan tokens.
         uint256 idleAfter = _idle();
-        if (idleAfter > before.idle || before.idle - idleAfter != loanAssets) fallbackExitLiquidityMismatch = true;
+        uint256 debtRounding = Math.saturatingSub(debtCanceled, before.coreTotalBorrowAssets);
+        if (idleAfter + loanAssets + debtRounding != before.idle) fallbackExitLiquidityMismatch = true;
         if (_seizedValueExceedsDebt(collateralSeized, debtCanceled)) parViolated = true;
         _observeCoreConservation(before, loanAssets, debtCanceled);
+        _observeExitPayoutBound(before, receiver);
         fallbackExits++;
     }
 
@@ -627,7 +868,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
             CORE.accrueInterest(params);
             return;
         }
-        amount = bound(amount, 1, 1_000_000e18);
+        amount = bound(amount, 1, 1_000_000 * LOAN_UNIT);
         CORE.accrueInterest(params);
         uint256 ppsBefore = _pps();
         _mintTo(LOAN, address(this), amount);
@@ -663,8 +904,8 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         uint256 healthRoom = (maxBorrow - debt) * 99 / 100;
         uint256 liquidity = mk.totalSupplyAssets - mk.totalBorrowAssets;
         uint256 room = healthRoom < liquidity ? healthRoom : liquidity;
-        if (room < 1e18) return;
-        amount = bound(amount, 1e18, room);
+        if (room < LOAN_UNIT) return;
+        amount = bound(amount, LOAN_UNIT, room);
         uint256 mintShares = Math.mulDiv(
             amount, uint256(mk.totalBorrowShares) + 1e6, uint256(mk.totalBorrowAssets) + 1, Math.Rounding.Ceil
         );
@@ -734,7 +975,7 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     function setSupplyCap(uint256 seed) external {
         uint256 tSA = CORE.market(ID).totalSupplyAssets;
         // Mostly a binding cap near the current supply; sometimes uncap (0 == unlimited).
-        _ctrl().setSupplyCap(seed % 4 == 0 ? 0 : tSA + bound(seed, 0, 500e18));
+        _ctrl().setSupplyCap(seed % 4 == 0 ? 0 : tSA + bound(seed, 0, 500 * LOAN_UNIT));
         caps++;
     }
 
@@ -742,6 +983,12 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         factor = bound(factor, 25, 90);
         MockPriceOracle(ORACLE).setPrice(SEED_PRICE * factor / 100);
         crashes++;
+    }
+
+    /// @dev A bounded, monotonic price path: compound from the current oracle value instead of the seed price.
+    function growPrice(uint256 growthBps) external {
+        growthBps = bound(growthBps, 1, 100);
+        MockPriceOracle(ORACLE).setPrice(Math.mulDiv(_price(), 10_000 + growthBps, 10_000));
     }
 
     function liquidate(uint256 actorSeed, uint256 seize) external {

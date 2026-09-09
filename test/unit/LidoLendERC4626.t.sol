@@ -141,14 +141,13 @@ contract LidoLendERC4626Test is LidoLendSetup {
         uint256 shares,
         uint256 availableLiquidity
     ) internal {
-        // request assets, gross claim, expected cut, vault core shares before, borrower debt shares before.
+        // Request assets, redemption budget, expected cut, core shares before, borrower debt shares before.
         uint256[5] memory expected;
         {
             expected[0] = m.vault.previewRedeem(shares);
-            expected[1] =
-                Math.mulDiv(m.core.position(m.id, address(m.vault)).supplyShares, shares, m.vault.totalSupply());
             SettlementQuote memory quote = m.controller.settlementFor(borrower, 0);
             MorphoMarket memory market_ = m.core.market(m.id);
+            expected[1] = expected[0].toSharesDown(market_.totalSupplyAssets, market_.totalSupplyShares);
             uint256 budgetAssets = expected[1].toAssetsDown(market_.totalSupplyAssets, market_.totalSupplyShares);
             uint256 borrowShares = Math.min(
                 quote.personal.borrowShares,
@@ -166,11 +165,11 @@ contract LidoLendERC4626Test is LidoLendSetup {
             m.settle(lender, shares, borrowers, lender);
 
         assertLt(expected[0], availableLiquidity, "request is fully covered by current free liquidity");
-        assertGt(expected[1], 0, "request has a positive gross settlement claim");
+        assertGt(expected[1], 0, "request has a positive redemption settlement budget");
         assertEq(
             expected[3] - m.core.position(m.id, address(m.vault)).supplyShares,
             expected[2],
-            "settlement consumes the independently modeled gross request budget"
+            "settlement consumes the independently modeled redemption budget"
         );
         assertEq(sharesBurned, shares, "the whole request is serviced");
         assertGt(collateralSeized, 0, "targeted request seizes collateral");
@@ -293,9 +292,9 @@ contract LidoLendERC4626Test is LidoLendSetup {
         assertEq(debtCanceled, 0, "no debt canceled");
     }
 
-    /// @dev Targeted settlement uses the request's gross core-supply claim even when the request is fully covered by
+    /// @dev Targeted settlement uses the request's redemption value even when the request is fully covered by
     ///      free liquidity. The 6-decimal loan token exercises the vault's 12-decimal offset and nontrivial share math.
-    function test_settle_usesGrossRequest_withSixDecimalLoanToken() public {
+    function test_settle_usesRedemptionBudget_withSixDecimalLoanToken() public {
         Market storage m = _deploySixDecimalMarket();
         address lender = _actor("six-decimal-settle-lender");
         address borrower = _actor("six-decimal-settle-borrower");

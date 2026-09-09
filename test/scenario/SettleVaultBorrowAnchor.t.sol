@@ -270,7 +270,7 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
         uint256 debtSharesBefore = core.position(id, BORROWER).borrowShares;
         uint256 vaultSupplySharesBefore = core.position(id, vault).supplyShares;
         uint256 vaultSharesBefore = IVault(vault).balanceOf(LENDER);
-        // Gross budget, borrow cut, debt canceled, supply burn, remaining debt assets.
+        // Redemption budget, borrow cut, debt canceled, supply burn, remaining debt assets.
         uint256[5] memory expected;
         uint256 shares;
         {
@@ -281,9 +281,11 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
             assertEq(settlementQuote.queueRoot.remainingBorrowShares, 0, "queue-root quote is dust-promoted");
 
             shares = Math.mulDiv(personalSupplyShares - 1, vaultSharesBefore, vaultSupplySharesBefore);
-            expected[0] = Math.mulDiv(vaultSupplySharesBefore, shares, vaultSharesBefore);
-            assertGt(expected[0], 0, "request has a positive gross settlement budget");
-            assertLt(expected[0], personalSupplyShares, "gross request budget is below the personal quote");
+            expected[0] = SharesMathLib.toSharesDown(
+                IVault(vault).previewRedeem(shares), mk.totalSupplyAssets, mk.totalSupplyShares
+            );
+            assertGt(expected[0], 0, "request has a positive redemption settlement budget");
+            assertLt(expected[0], personalSupplyShares, "redemption request budget is below the personal quote");
 
             uint256 budgetAssets = SharesMathLib.toAssetsDown(expected[0], mk.totalSupplyAssets, mk.totalSupplyShares);
             expected[1] = Math.min(
@@ -727,15 +729,16 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
         quote = _quoteBorrowAnchoredBudget();
         uint256 targetSettlementBudget = quote.firstSupplyBurn + quote.secondSupplyBurn;
 
-        uint256 postLiquidVaultSupply = IVault(vault).totalSupply();
-        uint256 postLiquidCoreSupplyShares = core.position(id, vault).supplyShares;
-        uint256 settleLegShares =
-            Math.mulDiv(targetSettlementBudget, postLiquidVaultSupply, postLiquidCoreSupplyShares, Math.Rounding.Ceil);
-        quote.quotedSettlementBudget =
-            Math.mulDiv(postLiquidCoreSupplyShares, settleLegShares, postLiquidVaultSupply, Math.Rounding.Floor);
+        MorphoMarket memory mk = core.market(id);
+        uint256 minimumAssets =
+            SharesMathLib.toAssetsUp(targetSettlementBudget, mk.totalSupplyAssets, mk.totalSupplyShares);
+        uint256 settleLegShares = IVault(vault).previewWithdraw(minimumAssets);
+        quote.quotedSettlementBudget = SharesMathLib.toSharesDown(
+            IVault(vault).previewRedeem(settleLegShares), mk.totalSupplyAssets, mk.totalSupplyShares
+        );
         if (settleLegShares != 0) {
-            quote.previousSettlementBudget = Math.mulDiv(
-                postLiquidCoreSupplyShares, settleLegShares - 1, postLiquidVaultSupply, Math.Rounding.Floor
+            quote.previousSettlementBudget = SharesMathLib.toSharesDown(
+                IVault(vault).previewRedeem(settleLegShares - 1), mk.totalSupplyAssets, mk.totalSupplyShares
             );
         }
         quote.requestShares = liquidShares + settleLegShares;
