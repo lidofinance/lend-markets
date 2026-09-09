@@ -24,12 +24,12 @@ event FallbackExit(address indexed caller, address indexed owner, address indexe
 | `owner` | `address` | The account whose shares were burned. |
 | `receiver` | `address` | The recipient of the liquid-leg loan assets and seized collateral. |
 | `sharesBurned` | `uint256` | Shares burned by the whole call: the liquid leg and the settle leg together. |
-| `sharesSettled` | `uint256` | Shares burned by the settle leg alone, 0 when liquidity serviced the whole request or the queue funded no cut. |
+| `sharesSettled` | `uint256` | Shares burned by the settle leg alone, 0 when liquidity serviced the whole request or no cut was executable. |
 | `assetsWithdrawn` | `uint256` | Loan assets the liquid leg paid out, 0 when the market had no free liquidity or the requested shares' floor-rounded value was zero. |
 | `collateralSeized` | `uint256` | Collateral seized from the cut positions. |
-| `debtCanceled` | `uint256` | Borrower debt cancelled by the cuts. |
+| `debtCanceled` | `uint256` | Borrower debt canceled by the cuts. |
 
-A `fallbackExit` call completed with a positive, possibly partial fill: serviced from market liquidity, queue settlement, or both.
+Emitted when a `fallbackExit` call completes with a positive, possibly partial fill: serviced from market liquidity, settlement, or both.
 
 ### `Settled`
 
@@ -46,9 +46,9 @@ event Settled(address indexed caller, address indexed owner, address indexed rec
 | `receiver` | `address` | The recipient of the seized collateral. |
 | `sharesBurned` | `uint256` | Shares burned for the settled slice. |
 | `collateralSeized` | `uint256` | Collateral seized from the cut positions. |
-| `debtCanceled` | `uint256` | Borrower debt cancelled by the cuts. |
+| `debtCanceled` | `uint256` | Borrower debt canceled by the cuts. |
 
-A targeted `settle` call completed with a positive, possibly partial fill.
+Emitted when a targeted `settle` call completes with a positive, possibly partial fill.
 
 ## Errors
 
@@ -266,6 +266,8 @@ function settle(
 
 Cuts only borrowers with a positive personal settlement-LTV slice, in the caller's order. Market liquidity is neither withdrawn nor reserved. Shares burn pro rata to the budget the cuts consumed: a budget exhausted before the list ends burns all requested shares, and a list whose cuts fall short of the budget burns only the settled fraction. A call that settles nothing reverts. Seized collateral moves from the core directly to `receiver`.
 
+The budget is `previewRedeem(shares)` converted down into core supply shares at the accrued rate.
+
 ### `fallbackExit`
 
 ```solidity
@@ -277,7 +279,7 @@ function fallbackExit(
 ) external returns (uint256 sharesBurned, uint256 loanAssets, uint256 collateralSeized, uint256 debtCanceled);
 ```
 
-Pays out available market liquidity first, then settles the remainder. When nonzero available liquidity covers the requested shares' floor-rounded value, the vault burns exactly those shares. Otherwise it withdraws the exact liquid amount, so share rounding cannot strand liquidity, and settles the rest against the risk queue, riskiest borrower first. Seized collateral moves from the core directly to the same `receiver`. When the queue or the iteration cap ends the loop early, the call burns shares only for what was serviced; controller and core errors revert the whole call. A call that burns no shares in either leg reverts.
+Pays out available market liquidity first, then settles the remainder. When nonzero available liquidity covers the requested shares' floor-rounded value, the vault burns exactly those shares. Otherwise it withdraws the exact liquid amount, so share rounding cannot strand liquidity, and settles the rest against borrowers the controller selects. Seized collateral moves from the core directly to the same `receiver`. When no executable cut remains or the iteration cap ends the loop early, the call burns shares only for what was serviced; controller and core errors revert the whole call. The settlement budget is the remaining shares' `previewRedeem` value after the liquid withdrawal, converted down into core supply shares. A nonzero remainder with a zero budget reverts the whole call. A call that burns no shares in either leg reverts.
 
 ## State variables
 

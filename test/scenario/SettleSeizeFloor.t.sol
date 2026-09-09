@@ -231,9 +231,11 @@ contract SettleSeizeFloorTest is LidoLendSetup {
         return SharesMathLib.toSharesUp(assets, cm.totalSupplyAssets, cm.totalSupplyShares);
     }
 
-    /// @dev Smallest vault share request whose pro-rata settling budget reaches `budgetSupplyShares`.
+    /// @dev Invert both downward budget conversions to find the smallest request that funds these core shares.
     function _vaultSharesForBudget(uint256 budgetSupplyShares) internal view returns (uint256) {
         Market storage m = protocol.markets[0];
-        return Math.ceilDiv(budgetSupplyShares * m.vault.totalSupply(), m.vault.managedSupplyShares());
+        CoreMarket memory cm = m.core.market(m.id);
+        uint256 assets = SharesMathLib.toAssetsUp(budgetSupplyShares, cm.totalSupplyAssets, cm.totalSupplyShares);
+        return m.vault.previewWithdraw(assets);
     }
 }
