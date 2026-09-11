@@ -82,7 +82,7 @@ contract EthStethForkTest is ForkStack {
     function test_borrowAgainstRealWstEthCollateral() public {
         // Lender supplies real WETH liquidity, gated by the live vault headroom. `deal` mints WETH directly;
         // vaultDeposit approves and deposits, asserting the exact share/totalAssets deltas.
-        _requireDepositHeadroom(m, LENDER_DEPOSIT);
+        _requireSupplyHeadroom(m, LENDER_DEPOSIT);
         address lender = _freshActor(m, "ethStethFork.lender");
         deal(address(market.loanToken), lender, LENDER_DEPOSIT);
         market.vaultDeposit(lender, LENDER_DEPOSIT);

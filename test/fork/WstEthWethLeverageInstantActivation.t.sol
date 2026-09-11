@@ -261,7 +261,6 @@ contract WstEthWethLeverageInstantActivationTest is ForkStack {
         if (bytes(market_).length == 0) return; // not applicable to this deployment
         m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest so the fresh borrows below start from an accrued clock
-        _grantSelfManager(m); // regain MANAGER_ROLE so `grantInstantActivation` call sites stay unchanged
 
         WETH_ADDRESS = address(m.loanToken);
         STETH_ADDRESS = _ext("stEth");
@@ -279,8 +278,9 @@ contract WstEthWethLeverageInstantActivationTest is ForkStack {
     function test_leverageLoop_compoundsAllActive_withInstantActivation() public {
         (Stack memory s, WstEthWethLeverageHelper helper, uint256 initialCollateral) = _setup();
 
-        // Trust the router: its supplies skip the timer and are active immediately.
-        s.controller.setInstantActivation(address(helper), true);
+        // Trust the router: its supplies skip the timer and are active immediately. Granted through the owner
+        // facade as the EasyTrack executor, which is the route production uses.
+        _setInstantActivation(m, address(helper), true);
 
         // The router's own token/ETH balances are asserted as DELTAS: its CREATE deployment address may carry a
         // pre-existing balance on the mainnet fork (a real account can already sit there), so "strands nothing"
@@ -350,7 +350,7 @@ contract WstEthWethLeverageInstantActivationTest is ForkStack {
         // loop (a shared market may already carry supply/borrow).
         uint256 maxLoopDebt = target * m.oracle.price() / ORACLE_PRICE_SCALE * m.params.lltv / WAD;
         uint256 liquidity = maxLoopDebt + 10 ether;
-        _requireDepositHeadroom(m, liquidity);
+        _requireSupplyHeadroom(m, liquidity);
         _mintWETH(LENDER, liquidity);
         vm.prank(LENDER);
         m.vault.deposit(liquidity, LENDER);

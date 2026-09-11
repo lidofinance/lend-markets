@@ -55,7 +55,6 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         if (bytes(market_).length == 0) return; // not applicable to this deployment
         m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest so live-config reads and per-borrower asserts are exact
-        _grantSelfManager(m); // lets this contract call the manager-gated `grantInstantActivation` directly
 
         dashboard = RiskStewardDashboard(_protocol("risk_steward_dashboard"));
 
@@ -120,7 +119,7 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         address borrower = _freshActor(m, "riskStewardDashboard.borrower");
         uint256 ethIn = 3 * uint256(cfg0.minActivationAmount);
 
-        m.controller.setInstantActivation(borrower, true);
+        _setInstantActivation(m, borrower, true);
         uint256 col = _mintWstETH(borrower, ethIn);
         require(col >= uint256(cfg0.minActivationAmount), "collateral must clear the live dust threshold");
         vm.prank(borrower);
@@ -184,12 +183,21 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         dashboard.increaseActivationDelays(bogus, 20 minutes, 3 hours, 0);
     }
 
-    /// @notice An appointed steward freezes the already-deployed controller through the live dashboard wiring.
-    function test_dashboard_freezesRealController() public {
+    /// @notice An appointed steward freezes the already-deployed controller through the live dashboard wiring,
+    ///         and the owner facade — the only `UNFREEZER_ROLE` holder — undoes it. The starting state is
+    ///         asserted, not assumed: without that, a deployment that is already frozen would pass this test
+    ///         while the freeze call did nothing.
+    function test_dashboard_freezesRealController_facadeUnfreezes() public {
+        assertFalse(m.controller.isFrozen(), "setup: the bound market starts live");
+
         vm.prank(STEWARD);
         dashboard.freezeMarket(m.id);
-
         assertTrue(m.controller.isFrozen(), "dashboard froze the live controller");
+
+        // The steward can freeze but cannot unfreeze: the two directions sit on different roles, and only the
+        // facade holds `UNFREEZER_ROLE`.
+        _unfreeze(m);
+        assertFalse(m.controller.isFrozen(), "facade unfroze the live controller");
     }
 
     // ---

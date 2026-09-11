@@ -10,12 +10,13 @@ import {
 import {MarketParamsLib as AdapterMarketParamsLib} from "@vault-v2/lib/morpho-blue/src/libraries/MarketParamsLib.sol";
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, MarketParams, Market} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {SettlementConfig, SettlementSlice} from "../../src/types/SettlementTypes.sol";
+import {SettlementSlice} from "../../src/types/SettlementTypes.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
 
@@ -68,12 +69,6 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
     address internal DIRECT_LENDER;
     address internal LOW_LTV_BORROWER;
 
-    /// @dev The direct-lender fallback exit cancels the direct lender's whole ~5 WETH supply in ONE settle. The
-    ///      committed settlement config sizes the root cut from `sliceFloorBps` / `ltvStepBps` alone
-    ///      (`sliceFloorAssets == 0`), which caps a single cut far below 5 WETH; the test raises the absolute
-    ///      floor to 20 WETH at runtime, as self-granted manager, so the exit clears in one cut.
-    uint96 internal constant SLICE_FLOOR_ASSETS = 20 ether;
-
     function setUp() public {
         _fork();
         string memory market_ = _marketForRole("weth-wsteth");
@@ -119,7 +114,6 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
         DIRECT_LENDER = _freshActor(m, "metaMorphoV2.directLender");
         LOW_LTV_BORROWER = _freshActor(m, "metaMorphoV2.lowLtvBorrower");
 
-        _raiseSliceFloor();
         _configureVault();
     }
 
@@ -130,14 +124,26 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
         uint256 directSupplyShares = _seedVaultAndDirectLender();
         _seedBorrowersAndDrainLiquidity();
 
-        // The vault-allocate + direct-lender supply are now fully borrowed out, so the core holds no loan tokens:
-        // a plain vault withdraw has nothing to pull and must revert. Assert on the CORE's balance (as the
-        // original did) — on this market the core's idle loan-token balance is exactly its free liquidity.
-        assertEq(m.loanToken.balanceOf(address(core)), 0, "Lido market fully utilized");
+        // The vault-allocate + direct-lender supply are now fully borrowed out. Read the market's own free
+        // liquidity, not the core's token balance: one core hosts many markets, so its balance is not this
+        // market's liquidity.
+        assertEq(_freeLiquidity(m), 0, "Lido market fully utilized");
 
-        vm.expectRevert();
+        // Point the vault's exit path at the adapter. Without this, `exit` never consults the Lido market at all
+        // — it transfers from its own idle balance and fails there — so the revert below would say nothing about
+        // the market being drained. Set here rather than in `_configureVault` because a liquidity adapter also
+        // auto-allocates on deposit, which would collide with the explicit allocate in the seeding step.
+        vm.prank(ALLOCATOR);
+        vault2.setLiquidityAdapterAndData(adapterAddr, abi.encode(adapterParams));
+
+        // Now the withdraw reaches the core, and the core refuses: the market has nothing to lend back.
         vm.prank(USER);
+        vm.expectRevert(bytes("insufficient liquidity"));
         vault2.withdraw(10 ether, USER, USER);
+
+        // Restore the exit path so the rest of the scenario runs as before.
+        vm.prank(ALLOCATOR);
+        vault2.setLiquidityAdapterAndData(address(0), "");
 
         _forceDeallocateVaultUser();
         _settleDirectLenderAndAssert(directSupplyShares);
@@ -239,47 +245,63 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
         vault2.withdraw(10 ether, SOLVER, USER);
     }
 
-    /// @dev The direct lender exits by settling its whole supply against BORROWER: with the core empty, the
-    ///      core's "cancel up to onBehalf's supply minus free liquidity" gate lets the full ~5 WETH cut through,
-    ///      backed by the raised slice floor. Collateral movements are asserted per-position.
+    /// @dev The direct lender settles against BORROWER for exactly the cut the DEPLOYED settlement policy quotes.
+    ///      That cut is a slice of the debt, not the lender's whole position — `sliceFloorAssets` is 0 on this
+    ///      market, so the root cut comes from `sliceFloorBps` / `ltvStepBps` alone. The outputs are recomputed
+    ///      from the pre-call market totals rather than compared against a hardcoded band, so the assertion
+    ///      tracks whatever the committed policy says.
     function _settleDirectLenderAndAssert(uint256 supplyShares) internal {
         uint256 directCollateralBefore = m.collateralToken.balanceOf(DIRECT_LENDER);
         uint256 borrowerRawCollateralBefore = core.position(marketId, BORROWER).collateral;
+        uint256 directSupplySharesBefore = core.position(marketId, DIRECT_LENDER).supplyShares;
         (, SettlementSlice memory slice) = m.controller.nextSettlementBorrower(supplyShares);
+        require(slice.borrowShares != 0, "MetaMorphoV2Integration: policy quotes no cut for the direct lender");
+
+        Market memory marketBefore = core.market(marketId);
+        uint256 price = m.oracle.price();
 
         vm.prank(DIRECT_LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
             core.settle(params, slice.borrowShares, DIRECT_LENDER, BORROWER, DIRECT_LENDER);
 
-        uint256 directSupplySharesAfter = core.position(marketId, DIRECT_LENDER).supplyShares;
-        uint256 borrowerRawCollateralAfter = core.position(marketId, BORROWER).collateral;
-
-        assertEq(directSupplySharesAfter, 0, "direct lender exited via fallback");
-        assertTrue(debtCanceled > 4.9 ether && debtCanceled <= 5 ether, "direct lender canceled near 5 WETH debt");
+        assertEq(
+            debtCanceled,
+            SharesMathLib.toAssetsUp(
+                slice.borrowShares, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares
+            ),
+            "debt canceled is the up-rounded value of the quoted cut"
+        );
+        assertEq(
+            collateralSeized,
+            Math.mulDiv(
+                SharesMathLib.toAssetsDown(
+                    slice.borrowShares, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares
+                ),
+                ORACLE_PRICE_SCALE,
+                price
+            ),
+            "collateral seized is the down-rounded cut priced at the oracle"
+        );
+        assertEq(
+            directSupplySharesBefore - core.position(marketId, DIRECT_LENDER).supplyShares,
+            slice.supplyShares,
+            "direct lender burned exactly the supply shares the policy sized"
+        );
         assertEq(
             m.collateralToken.balanceOf(DIRECT_LENDER),
             directCollateralBefore + collateralSeized,
             "direct lender received collateral"
         );
         assertEq(
-            borrowerRawCollateralAfter,
+            core.position(marketId, BORROWER).collateral,
             borrowerRawCollateralBefore - collateralSeized,
-            "fallback debited borrower collateral"
+            "settle debited borrower collateral"
         );
     }
 
     // ---
     // SETUP HELPERS
     // ---
-
-    /// @dev Raise the settlement absolute floor to `SLICE_FLOOR_ASSETS`, read-modify-write over the live config so
-    ///      only that knob moves. Manager-gated, so self-grant first. See the constant for why the floor is needed.
-    function _raiseSliceFloor() internal {
-        _grantSelfManager(m);
-        SettlementConfig memory cfg = m.controller.settlementConfig();
-        cfg.sliceFloorAssets = SLICE_FLOOR_ASSETS;
-        m.controller.setSettlementConfig(cfg);
-    }
 
     /// @dev Configure the SHARED, provisioned vault-v2 fixture for this run: register the adapter, authorize the
     ///      allocator, and open the caps, with a fresh test-actor curator. The provision leaves the vault

@@ -17,6 +17,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ILidoLendMarketController} from "../../../src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLendERC4626} from "../../../src/interfaces/ILidoLendERC4626.sol";
 import {IGuardianSignals} from "../../../src/interfaces/IGuardianSignals.sol";
+import {IPausableUntil} from "../../../src/interfaces/IPausableUntil.sol";
 import {CollateralActivationConfig} from "../../../src/types/CollateralActivationTypes.sol";
 import {WAD} from "../../../src/libs/Constants.sol";
 import {ForkTest} from "./ForkTest.sol";
@@ -25,6 +26,13 @@ import {ForkTest} from "./ForkTest.sol";
 ///      EVMScriptExecutor, which is how `_executor` resolves the executor on-chain.
 interface IReadRouter {
     function manager() external view returns (address);
+}
+
+/// @dev The owner-facade levers a fork suite drives. Production grants these to the EasyTrack executor, never to
+///      a test key, so a suite must route through the facade to exercise the wiring the deployment set up.
+interface IOwnerFacade {
+    function setInstantActivation(Id marketId, address caller, bool enabled) external;
+    function unfreezeMarket(Id marketId) external;
 }
 
 /// @notice Shared base for fork suites that exercise an ALREADY-DEPLOYED, ALREADY-ACTIVATED market. It binds a
@@ -176,6 +184,25 @@ abstract contract ForkStack is Test, ForkTest {
         m.loanToken = IERC20(m.params.loanToken);
         m.collateralToken = IERC20(m.params.collateralToken);
         m.activation = m.controller.collateralActivationConfig();
+
+        _requireLive(m, name);
+    }
+
+    /// @notice Assert the bound market is accepting traffic: neither paused nor frozen.
+    /// @dev Every suite starts from a live market and induces a pause or freeze itself, so a deployment that is
+    ///      already halted invalidates the run. Checked at bind so it says so, rather than surfacing later as a
+    ///      bare `ResumedExpected` from the first accrue or a `MarketIsFrozen` from deep inside a borrow.
+    /// @param m The bound market.
+    /// @param name The market artifact name, for the failure message.
+    function _requireLive(BoundMarket memory m, string memory name) internal view {
+        require(
+            !IPausableUntil(address(m.controller)).isPaused(),
+            string.concat("ForkStack: market '", name, "' is paused; fork suites bind a live market")
+        );
+        require(
+            !m.controller.isFrozen(),
+            string.concat("ForkStack: market '", name, "' is frozen; fork suites bind a live market")
+        );
     }
 
     // ---
@@ -210,16 +237,43 @@ abstract contract ForkStack is Test, ForkTest {
         require(executor != address(0), "ForkStack: irm router has no manager");
     }
 
-    /// @notice Grant the calling test contract the controller's `MANAGER_ROLE`, pranking the protocol admin.
-    /// @dev Idempotent: returns early when this contract already holds the role, so repeated calls do not revert
-    ///      or emit spurious grants. Lets a suite drive manager-only controller levers (supply cap, instant
-    ///      activation, settlement config) without hunting for the live manager key.
+    // ---
+    // GOVERNANCE, THROUGH THE DEPLOYED SURFACES
+    // ---
+
+    /// @notice The deployed owner facade (`LidoLendOwner`), the manager of every controller.
+    /// @dev Loud-fails when the run records no facade or the address carries no code.
+    /// @return facade The owner facade.
+    function _facade() internal view returns (IOwnerFacade facade) {
+        address addr = _protocol("owner_facade");
+        require(addr.code.length != 0, "ForkStack: owner facade has no code");
+        facade = IOwnerFacade(addr);
+    }
+
+    /// @notice Grant or revoke instant collateral activation for `caller`, through the deployed owner facade.
+    /// @dev Pranks the EasyTrack executor, the facade's `MARKET_MANAGER_ROLE` holder, so the call travels the
+    ///      route production uses: executor -> facade -> controller. Granting the test contract `MANAGER_ROLE`
+    ///      directly would reach the same state while skipping — and so never checking — that wiring.
     /// @param m The bound market.
-    function _grantSelfManager(BoundMarket memory m) internal {
-        bytes32 role = m.controller.MANAGER_ROLE();
-        if (m.controller.hasRole(role, address(this))) return;
-        vm.prank(_admin(m));
-        m.controller.grantRole(role, address(this));
+    /// @param caller The supply caller whose deposits activate instantly.
+    /// @param enabled Whether to grant or revoke.
+    function _setInstantActivation(BoundMarket memory m, address caller, bool enabled) internal {
+        vm.prank(_executor(m));
+        _facade().setInstantActivation(m.id, caller, enabled);
+        require(
+            m.controller.hasInstantActivation(caller) == enabled,
+            "ForkStack: facade did not change instant activation (does it hold MANAGER_ROLE?)"
+        );
+    }
+
+    /// @notice Unfreeze the market through the deployed owner facade.
+    /// @dev Pranks the EasyTrack executor. The facade is the only `UNFREEZER_ROLE` holder: neither the steward
+    ///      that can freeze nor the protocol admin can undo a freeze, so this is the whole unfreeze path.
+    /// @param m The bound market.
+    function _unfreeze(BoundMarket memory m) internal {
+        vm.prank(_executor(m));
+        _facade().unfreezeMarket(m.id);
+        require(!m.controller.isFrozen(), "ForkStack: facade did not unfreeze the market");
     }
 
     // ---
@@ -251,16 +305,18 @@ abstract contract ForkStack is Test, ForkTest {
         return uint256(mkt.totalSupplyAssets) - uint256(mkt.totalBorrowAssets);
     }
 
-    /// @notice Assert the market accepts a lender deposit of `assets`.
-    /// @dev Deposits are capped: the controller's supply cap surfaces through the vault's ERC-4626 `maxDeposit`
-    ///      (which also returns 0 while the controller is paused). Loud-fails when `assets` exceeds that headroom.
+    /// @notice Assert the market can absorb `assets` of new supply, by either entry path.
+    /// @dev Reads the controller's own `maxDeposit`, which is what the supply hook enforces and what the vault's
+    ///      ERC-4626 `maxDeposit` defers to. Asking the vault instead would quote headroom for the vault's
+    ///      position while the caller supplies to the core directly — the same cap, but measured on the wrong
+    ///      path. Loud-fails when `assets` exceeds the headroom.
     /// @param m The bound market.
-    /// @param assets The intended deposit, in loan-token assets.
-    function _requireDepositHeadroom(BoundMarket memory m, uint256 assets) internal view {
-        uint256 headroom = m.vault.maxDeposit(address(this));
+    /// @param assets The intended supply, in loan-token assets.
+    function _requireSupplyHeadroom(BoundMarket memory m, uint256 assets) internal view {
+        uint256 headroom = m.controller.maxDeposit();
         require(
             headroom >= assets,
-            string.concat("ForkStack: deposit ", vm.toString(assets), " exceeds vault headroom ", vm.toString(headroom))
+            string.concat("ForkStack: supply ", vm.toString(assets), " exceeds market headroom ", vm.toString(headroom))
         );
     }
 
@@ -298,9 +354,9 @@ abstract contract ForkStack is Test, ForkTest {
         if (collateral < dustFloor) collateral = dustFloor;
 
         // Instant-activate the pin borrower's own supply (keyed on the supply caller), so its collateral is
-        // borrowable with no maturation wait. Granting instant activation is manager-gated.
-        _grantSelfManager(m);
-        m.controller.setInstantActivation(pinBorrower, true);
+        // borrowable with no maturation wait. Granting instant activation is manager-gated, so it goes through
+        // the facade as the executor.
+        _setInstantActivation(m, pinBorrower, true);
 
         deal(address(m.collateralToken), pinBorrower, collateral);
         vm.startPrank(pinBorrower);
@@ -337,6 +393,14 @@ abstract contract ForkStack is Test, ForkTest {
             string.concat("ForkStack: actor '", label, "' already has a market position")
         );
         require(m.vault.balanceOf(a) == 0, string.concat("ForkStack: actor '", label, "' already holds vault shares"));
+        // Token balances too, not just protocol state: suites read an actor's post-action balance as if it were
+        // the delta. That only holds if the actor started empty, and on a live chain a `makeAddr` address may
+        // already hold either market token.
+        require(m.loanToken.balanceOf(a) == 0, string.concat("ForkStack: actor '", label, "' already holds loan token"));
+        require(
+            m.collateralToken.balanceOf(a) == 0,
+            string.concat("ForkStack: actor '", label, "' already holds collateral token")
+        );
     }
 
     // ---

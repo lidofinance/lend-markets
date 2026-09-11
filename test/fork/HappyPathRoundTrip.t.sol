@@ -5,6 +5,9 @@ import {Market} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
 
@@ -70,10 +73,10 @@ contract HappyPathRoundTripTest is ForkStack {
     ///      config so the test tracks governance values; comfortably covers the borrow in step 3.
     function _lenderDeposits() internal returns (uint256 depositAssets, uint256 shares) {
         depositAssets = 2 * uint256(m.activation.minActivationAmount);
-        _requireDepositHeadroom(m, depositAssets);
+        _requireSupplyHeadroom(m, depositAssets);
 
-        uint256 expectedShares = m.vault.previewDeposit(depositAssets);
         uint256 vaultAssetsBefore = m.vault.totalAssets();
+        uint256 expectedShares = _erc4626Shares(depositAssets, Math.Rounding.Floor);
 
         vm.deal(LENDER, depositAssets);
         vm.startPrank(LENDER);
@@ -82,7 +85,7 @@ contract HappyPathRoundTripTest is ForkStack {
         shares = m.vault.deposit(depositAssets, LENDER);
         vm.stopPrank();
 
-        assertEq(shares, expectedShares, "minted shares match the vault's preview");
+        assertEq(shares, expectedShares, "minted shares match the ERC-4626 conversion, recomputed from the totals");
         assertEq(m.vault.balanceOf(LENDER), shares, "lender holds the minted shares");
         assertEq(m.vault.totalAssets() - vaultAssetsBefore, depositAssets, "vault assets grew by the deposit");
     }
@@ -159,13 +162,13 @@ contract HappyPathRoundTripTest is ForkStack {
     /// @dev 5. The lender redeems every share. Principal comes back (minus at most 1 wei of share rounding),
     ///      plus whatever interest pre-existing market debt accrued over the activation warp.
     function _lenderExits(uint256 depositAssets, uint256 shares) internal {
-        uint256 expectedAssets = m.vault.previewRedeem(shares);
+        uint256 expectedAssets = _erc4626Assets(shares, Math.Rounding.Floor);
         require(_freeLiquidity(m) >= expectedAssets, "HappyPath: market lacks liquidity for the lender's exit");
 
         vm.prank(LENDER);
         uint256 redeemed = m.vault.redeem(shares, LENDER, LENDER);
 
-        assertEq(redeemed, expectedAssets, "redeemed assets match the vault's preview");
+        assertEq(redeemed, expectedAssets, "redeemed assets match the ERC-4626 conversion, recomputed from the totals");
         assertGe(redeemed, depositAssets - 1, "principal back (1 wei share rounding), plus any accrued interest");
         assertEq(m.vault.balanceOf(LENDER), 0, "no shares left behind");
     }
@@ -173,6 +176,24 @@ contract HappyPathRoundTripTest is ForkStack {
     // ---
     // HELPERS
     // ---
+
+    /// @dev OZ's ERC-4626 assets -> shares conversion, recomputed from the vault's live totals. Asking the vault
+    ///      itself (`previewDeposit`) would compare `deposit` against the same code path it already runs, so an
+    ///      error in that maths moves both sides together and the assertion holds regardless. The virtual offset
+    ///      is the one the vault froze at init: `SHARE_DECIMALS - loanDecimals`, saturating at zero.
+    function _erc4626Shares(uint256 assets, Math.Rounding rounding) internal view returns (uint256) {
+        return Math.mulDiv(assets, m.vault.totalSupply() + 10 ** _vaultOffset(), m.vault.totalAssets() + 1, rounding);
+    }
+
+    /// @dev The mirror of `_erc4626Shares`: shares -> assets at the same live totals.
+    function _erc4626Assets(uint256 shares, Math.Rounding rounding) internal view returns (uint256) {
+        return Math.mulDiv(shares, m.vault.totalAssets() + 1, m.vault.totalSupply() + 10 ** _vaultOffset(), rounding);
+    }
+
+    /// @dev The vault's virtual-share decimals offset, derived from the live token and vault decimals.
+    function _vaultOffset() internal view returns (uint8) {
+        return m.vault.decimals() - IERC20Metadata(address(m.loanToken)).decimals();
+    }
 
     /// @dev Stake `ethAmount` through the real Lido contracts (submit -> stETH -> wrap) and return the
     ///      resulting wstETH, left in `user`'s wallet.

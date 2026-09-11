@@ -86,7 +86,6 @@ contract UsdyTreasuriesMarketTest is ForkStack {
         if (bytes(market_).length == 0) return; // not applicable to this deployment
         m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest up front so the sizing/liquidity math below is exact
-        _grantSelfManager(m); // drive manager-only levers (instant activation used by `_pinFreeLiquidity`)
 
         core = m.core;
         vault = m.vault;
@@ -180,7 +179,7 @@ contract UsdyTreasuriesMarketTest is ForkStack {
 
     function test_liquidate_blocklistedCannot_allowlistedCan() public {
         // Lender funds the market with USDT liquidity (direct core supply); gated by the live supply-cap headroom.
-        _requireDepositHeadroom(m, LENDER_SUPPLY_LIQUIDATE);
+        _requireSupplyHeadroom(m, LENDER_SUPPLY_LIQUIDATE);
         deal(USDT, LENDER, LENDER_SUPPLY_LIQUIDATE);
         vm.startPrank(LENDER);
         IERC20Like(USDT).approve(address(core), type(uint256).max);
@@ -228,7 +227,7 @@ contract UsdyTreasuriesMarketTest is ForkStack {
 
     function test_fallbackExit_blocklistedReceiverCannot_allowlistedCan() public {
         // Lender deposits USDT into the vault (the vault supplies it to the market); gated by supply-cap headroom.
-        _requireDepositHeadroom(m, LENDER_DEPOSIT_SETTLE);
+        _requireSupplyHeadroom(m, LENDER_DEPOSIT_SETTLE);
         deal(USDT, LENDER, LENDER_DEPOSIT_SETTLE);
         vm.startPrank(LENDER);
         IERC20Like(USDT).approve(address(vault), type(uint256).max);

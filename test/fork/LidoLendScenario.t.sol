@@ -93,7 +93,6 @@ contract LidoLendScenarioTest is ForkStack {
         if (bytes(market_).length == 0) return; // not applicable to this deployment
         m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest up front so exact totals / delta math below holds
-        _grantSelfManager(m); // regain MANAGER_ROLE so `grantInstantActivation` call sites stay unchanged
 
         WETH_ADDRESS = address(m.loanToken);
         STETH_ADDRESS = _ext("stEth");
@@ -121,10 +120,16 @@ contract LidoLendScenarioTest is ForkStack {
         uint256 donorTopUp = _dealWstETH(DONOR, dustEach);
         uint256 activatedCollateral = borrowerDust + donorTopUp; // the pair clears the threshold once combined
 
-        _requireDepositHeadroom(m, 10 ether);
-        _mintWETH(ctx.market, LENDER, 10 ether);
+        // The borrow scales with the collateral, which scales with the live threshold. A fixed amount here would
+        // exceed capacity the moment governance lowered `minActivationAmount`, and fail as a capacity error
+        // rather than telling us anything about promotion.
+        uint256 borrowAmount = _maxBorrow(activatedCollateral, ctx.price) / 4;
+        uint256 lend = borrowAmount * 2;
+
+        _requireSupplyHeadroom(m, lend);
+        _mintWETH(ctx.market, LENDER, lend);
         vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        ctx.market.supply(ctx.marketParams, lend, 0, LENDER, "");
 
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, borrowerDust, BORROWER, "");
@@ -137,10 +142,10 @@ contract LidoLendScenarioTest is ForkStack {
         _warpPastActivation(m);
 
         vm.prank(BORROWER);
-        (uint256 borrowedAssets,) = ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
+        (uint256 borrowedAssets,) = ctx.market.borrow(ctx.marketParams, borrowAmount, 0, BORROWER, BORROWER);
 
-        assertEq(borrowedAssets, 3 ether, "borrowed after maturity");
-        assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrower received real WETH");
+        assertEq(borrowedAssets, borrowAmount, "borrowed after maturity");
+        assertEq(WETH.balanceOf(BORROWER), borrowAmount, "borrower received real WETH");
         _assertCollateralState(ctx.controller, BORROWER, activatedCollateral, 0, 0);
     }
 
@@ -148,27 +153,30 @@ contract LidoLendScenarioTest is ForkStack {
     ///         borrows with no maturation wait. Revoking restores the timer for fresh deposits.
     function test_instantActivation_skipsMaturationDelay() public {
         TestMarket memory ctx = _ctx();
-        ctx.controller.setInstantActivation(BORROWER, true);
+        _setInstantActivation(m, BORROWER, true);
         assertTrue(ctx.controller.hasInstantActivation(BORROWER), "borrower whitelisted");
 
-        _requireDepositHeadroom(m, 10 ether);
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether);
+        uint256 col = _mintWstETH(ctx.market, BORROWER, _stakeForThreshold());
+        uint256 borrowAmount = _maxBorrow(col, ctx.price) / 4;
+        uint256 lend = borrowAmount * 2;
+
+        _requireSupplyHeadroom(m, lend);
+        _mintWETH(ctx.market, LENDER, lend);
 
         vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        ctx.market.supply(ctx.marketParams, lend, 0, LENDER, "");
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
 
         // No warp: the deposit is active immediately, so the borrow goes through.
         _assertCollateralState(ctx.controller, BORROWER, col, 0, 0);
         vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 3 ether, 0, BORROWER, BORROWER);
-        assertEq(WETH.balanceOf(BORROWER), 3 ether, "borrowed with no maturation wait");
+        ctx.market.borrow(ctx.marketParams, borrowAmount, 0, BORROWER, BORROWER);
+        assertEq(WETH.balanceOf(BORROWER), borrowAmount, "borrowed with no maturation wait");
 
         // Revoke restores the timer: a fresh deposit enters activation instead of going straight to active.
-        ctx.controller.setInstantActivation(BORROWER, false);
-        uint256 more = _mintWstETH(ctx.market, BORROWER, 15 ether);
+        _setInstantActivation(m, BORROWER, false);
+        uint256 more = _mintWstETH(ctx.market, BORROWER, _stakeForThreshold());
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, more, BORROWER, "");
         _assertCollateralState(ctx.controller, BORROWER, col, more, 0);
@@ -183,19 +191,25 @@ contract LidoLendScenarioTest is ForkStack {
         uint256 min = uint256(m.activation.minActivationAmount);
         uint256 aboveFloor = min + 1 ether; // the smallest lot the floor still permits with open debt
 
-        _requireDepositHeadroom(m, 10 ether);
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether); // comfortably above the threshold
+        uint256 col = _mintWstETH(ctx.market, BORROWER, _stakeForThreshold()); // comfortably above the threshold
         assertGt(col, aboveFloor + 1 ether, "collateral above the threshold for the test");
 
+        // The debt has to survive the withdrawal down to `aboveFloor`, so size it against what THAT much
+        // collateral can carry, not against the starting position.
+        uint256 borrowAmount = _maxBorrow(aboveFloor, ctx.price) / 8;
+        uint256 lend = borrowAmount * 2;
+
+        _requireSupplyHeadroom(m, lend);
+        _mintWETH(ctx.market, LENDER, lend);
+
         vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        ctx.market.supply(ctx.marketParams, lend, 0, LENDER, "");
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
         _warpPastActivation(m);
 
         vm.prank(BORROWER);
-        ctx.market.borrow(ctx.marketParams, 2 ether, 0, BORROWER, BORROWER);
+        ctx.market.borrow(ctx.marketParams, borrowAmount, 0, BORROWER, BORROWER);
 
         // Down to just above the threshold is allowed (health is loose, so the threshold is what binds).
         vm.prank(BORROWER);
@@ -207,7 +221,7 @@ contract LidoLendScenarioTest is ForkStack {
         ctx.market.withdrawCollateral(ctx.marketParams, 2 ether, BORROWER, BORROWER);
 
         // Repay the debt to zero, then the floor no longer applies and the rest comes out.
-        _mintWETH(ctx.market, BORROWER, 3 ether);
+        _mintWETH(ctx.market, BORROWER, borrowAmount * 2); // headroom over the borrow for accrued interest
         uint128 borrowShares = ctx.market.position(ctx.id, BORROWER).borrowShares;
         vm.prank(BORROWER);
         ctx.market.repay(ctx.marketParams, 0, borrowShares, BORROWER, "");
@@ -222,13 +236,16 @@ contract LidoLendScenarioTest is ForkStack {
         TestMarket memory ctx = _ctx();
         uint256 belowFloor = uint256(m.activation.minActivationAmount) / 2; // half the threshold: sub-threshold
 
-        _requireDepositHeadroom(m, 10 ether);
-        _mintWETH(ctx.market, LENDER, 10 ether);
-        uint256 col = _mintWstETH(ctx.market, BORROWER, 18 ether); // above the threshold
+        uint256 col = _mintWstETH(ctx.market, BORROWER, _stakeForThreshold()); // above the threshold
         assertGt(col, belowFloor + 2 ether, "collateral above the threshold for the test");
 
+        // Enough supply that the borrow below fails on capacity, not on market liquidity.
+        uint256 lend = _maxBorrow(col, ctx.price) / 4;
+        _requireSupplyHeadroom(m, lend);
+        _mintWETH(ctx.market, LENDER, lend);
+
         vm.prank(LENDER);
-        ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
+        ctx.market.supply(ctx.marketParams, lend, 0, LENDER, "");
         vm.prank(BORROWER);
         ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
         _warpPastActivation(m);
@@ -259,7 +276,7 @@ contract LidoLendScenarioTest is ForkStack {
         uint256 secondBorrowerDebt = _maxBorrow(secondBorrowerCollateral, ctx.price) * 20 / 100; // low LTV: tail
 
         uint256 lend = borrowerDebt + secondBorrowerDebt + 2 ether;
-        _requireDepositHeadroom(m, lend);
+        _requireSupplyHeadroom(m, lend);
         _mintWETH(ctx.market, LENDER, lend);
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, lend, 0, LENDER, "");
@@ -312,7 +329,7 @@ contract LidoLendScenarioTest is ForkStack {
 
         // Lender saturates the market so every cut below has to go through settle and not the ordinary withdraw path.
         uint256 lend = highDebt + midDebt + lowDebt + 2 ether;
-        _requireDepositHeadroom(m, lend);
+        _requireSupplyHeadroom(m, lend);
         _mintWETH(ctx.market, LENDER, lend);
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, lend, 0, LENDER, "");
@@ -387,7 +404,7 @@ contract LidoLendScenarioTest is ForkStack {
         uint256 tailDebt = _maxBorrow(tailCol, ctx.price) * 10 / 100; // healthy tail
 
         uint256 lend = headDebt + tailDebt + 2 ether;
-        _requireDepositHeadroom(m, lend);
+        _requireSupplyHeadroom(m, lend);
         _mintWETH(ctx.market, LENDER, lend);
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, lend, 0, LENDER, "");
@@ -456,7 +473,7 @@ contract LidoLendScenarioTest is ForkStack {
         uint256 borrowAmount = _maxBorrow(col, ctx.price) * 85 / 100; // near-LLTV, healthy at the live rate
 
         uint256 lend = borrowAmount + 2 ether;
-        _requireDepositHeadroom(m, lend);
+        _requireSupplyHeadroom(m, lend);
         _mintWETH(ctx.market, LENDER, lend);
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, lend, 0, LENDER, "");
@@ -534,7 +551,7 @@ contract LidoLendScenarioTest is ForkStack {
         uint256 coldDebt = _maxBorrow(coldCol, ctx.price) * 71 / 100;
 
         uint256 lend = hotDebt + coldDebt + 2 ether;
-        _requireDepositHeadroom(m, lend);
+        _requireSupplyHeadroom(m, lend);
         _mintWETH(ctx.market, LENDER, lend);
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, lend, 0, LENDER, "");
@@ -577,7 +594,7 @@ contract LidoLendScenarioTest is ForkStack {
     function test_settle_eligibleViaPersonalSettlementLtv() public {
         TestMarket memory ctx = _ctx();
 
-        _requireDepositHeadroom(m, 10 ether);
+        _requireSupplyHeadroom(m, 10 ether);
         _mintWETH(ctx.market, LENDER, 10 ether);
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
@@ -604,8 +621,11 @@ contract LidoLendScenarioTest is ForkStack {
         (address root,) = ctx.controller.nextSettlementBorrower(0);
         require(root != SECOND_BORROWER, "settle_personalLtv: tail borrower unexpectedly heads the queue");
 
-        uint256 lenderShares = ctx.market.position(ctx.id, LENDER).supplyShares;
-        uint256 cut = lenderShares / 5;
+        // The cut is denominated in the TARGET'S DEBT SHARES — `settle`'s second argument is `borrowShares`, not
+        // the settler's supply shares. Sizing it off the lender's supply only lands in range by coincidence of
+        // the two share scales, and drifts apart as soon as interest accrues on either side.
+        uint256 tailDebtShares = ctx.market.position(ctx.id, SECOND_BORROWER).borrowShares;
+        uint256 cut = tailDebtShares / 5;
 
         // Targeting tail SECOND_BORROWER without a settlement LTV -> zero slice -> hook revert.
         vm.prank(LENDER);
@@ -616,14 +636,26 @@ contract LidoLendScenarioTest is ForkStack {
         vm.prank(SECOND_BORROWER);
         ctx.controller.setSettlementLtv(0.05e18);
 
+        Market memory marketBefore = ctx.market.market(ctx.id);
+        uint256 expectedDebt =
+            SharesMathLib.toAssetsUp(cut, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
         uint128 colBefore = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
+
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
             ctx.market.settle(ctx.marketParams, cut, LENDER, SECOND_BORROWER, LENDER);
 
-        uint128 colAfter = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
-        assertEq(uint256(colAfter), uint256(colBefore) - collateralSeized, "tail collateral debited");
-        assertGt(debtCanceled, 0, "tail debt canceled");
+        assertEq(
+            ctx.market.position(ctx.id, SECOND_BORROWER).borrowShares,
+            tailDebtShares - cut,
+            "exactly the requested debt shares were cancelled"
+        );
+        assertEq(debtCanceled, expectedDebt, "debt canceled is the up-rounded value of the requested shares");
+        assertEq(
+            uint256(ctx.market.position(ctx.id, SECOND_BORROWER).collateral),
+            uint256(colBefore) - collateralSeized,
+            "tail collateral debited"
+        );
         assertEq(collateralSeized, debtCanceled * ORACLE_PRICE_SCALE / ctx.price, "oracle-rate cut");
     }
 
@@ -633,7 +665,7 @@ contract LidoLendScenarioTest is ForkStack {
     function test_ban_bannedCollateralNeverMaturesAndBorrowBlocked() public {
         TestMarket memory ctx = _ctx();
 
-        _requireDepositHeadroom(m, 10 ether);
+        _requireSupplyHeadroom(m, 10 ether);
         _mintWETH(ctx.market, LENDER, 10 ether);
         vm.prank(LENDER);
         ctx.market.supply(ctx.marketParams, 10 ether, 0, LENDER, "");
@@ -643,17 +675,10 @@ contract LidoLendScenarioTest is ForkStack {
         ctx.market.supplyCollateral(ctx.marketParams, col, BORROWER, "");
         _assertCollateralState(ctx.controller, BORROWER, 0, col, 0);
 
-        // Ban BORROWER through the REAL committee: flag on behalf of a quorum of distinct guardians, which latches
-        // the ban. The test contract is not a guardian on the deployed registry, so we prank the live set.
-        (address[] memory guardians,) = m.guardianSignals.getGuardians();
-        uint256 quorum = m.guardianSignals.getQuorum();
-        require(guardians.length >= quorum, "ban: live guardian set smaller than its quorum");
-        address[] memory toFlag = new address[](1);
-        toFlag[0] = BORROWER;
-        for (uint256 i; i < quorum; ++i) {
-            vm.prank(guardians[i]);
-            m.guardianSignals.flag(ctx.id, guardians[i], toFlag);
-        }
+        // Ban BORROWER through the REAL committee. The loop over the live guardian set lives in a helper, not
+        // here: how many guardians a quorum takes is a property of the deployment, not of the behaviour this
+        // test names, and a failure inside it should point at the committee rather than at this test.
+        _banViaLiveCommittee(ctx.id, BORROWER);
 
         // Warp far past any normal activation delay — a banned address never settles.
         vm.warp(block.timestamp + 30 days);
@@ -813,6 +838,13 @@ contract LidoLendScenarioTest is ForkStack {
         return Math.mulDiv(Math.mulDiv(collateral, price, ORACLE_PRICE_SCALE), m.params.lltv, WAD);
     }
 
+    /// @dev ETH to stake so the resulting wstETH comfortably clears the LIVE activation threshold. wstETH is
+    ///      worth more than ETH, so staking twice the threshold in ETH always yields more than the threshold in
+    ///      wstETH, whatever the live rate — and it tracks governance moving the threshold.
+    function _stakeForThreshold() internal view returns (uint256) {
+        return 2 * uint256(m.activation.minActivationAmount);
+    }
+
     function _assertBorrowerCollateralDebited(
         TestMarket memory ctx,
         uint256 initialCollateral,
@@ -854,6 +886,25 @@ contract LidoLendScenarioTest is ForkStack {
         vm.prank(user);
         WSTETH.approve(address(m.core), type(uint256).max);
         return wstAmount;
+    }
+
+    /// @dev Latch a ban on `account` through the live guardian committee: a quorum of distinct guardians each
+    ///      flag it. The test contract is not a guardian on the deployed registry, so each flag is pranked as the
+    ///      real guardian. Asserts the ban actually latched, so a committee whose quorum moved fails here with a
+    ///      message about the committee rather than further downstream.
+    function _banViaLiveCommittee(Id id, address account) internal {
+        (address[] memory guardians,) = m.guardianSignals.getGuardians();
+        uint256 quorum = m.guardianSignals.getQuorum();
+        require(guardians.length >= quorum, "ban: live guardian set smaller than its quorum");
+
+        address[] memory toFlag = new address[](1);
+        toFlag[0] = account;
+        for (uint256 i; i < quorum; ++i) {
+            vm.prank(guardians[i]);
+            m.guardianSignals.flag(id, guardians[i], toFlag);
+        }
+
+        require(m.guardianSignals.isBanned(id, account), "ban: quorum of flags did not latch a ban");
     }
 
     function _assertCollateralState(
