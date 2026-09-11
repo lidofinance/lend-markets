@@ -105,7 +105,11 @@ contract DeployVaultScenarioTest is LidoLendSetup {
         _fund(m.loanToken, lenderB, 100 ether);
         vm.startPrank(lenderB);
         m.loanToken.approve(vault2Addr, 100 ether);
-        vm.expectRevert(); // ERC4626-standard max-deposit guard, enforced against the SHARED market cap
+        // ERC4626-standard max-deposit guard, enforced against the SHARED market cap: only the 50 ether of
+        // remaining headroom is depositable, so the 100 ether request is rejected with the exact overshoot.
+        vm.expectRevert(
+            abi.encodeWithSignature("ERC4626ExceededMaxDeposit(address,uint256,uint256)", lenderB, 100 ether, 50 ether)
+        );
         vault2.deposit(100 ether, lenderB);
         vault2.deposit(50 ether, lenderB); // exactly the remaining headroom
         vm.stopPrank();

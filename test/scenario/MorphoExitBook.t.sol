@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
+import {stdError} from "forge-std/StdError.sol";
+
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
@@ -460,7 +462,7 @@ contract MorphoExitBookTest is LidoLendSetup {
 
         address filler = _actor("filler");
         vm.prank(filler);
-        vm.expectRevert();
+        vm.expectRevert(bytes("unauthorized")); // the core rejects the book's withdrawal for the owner
         book.fillExitRequest(id, 10 ether, filler);
 
         assertEq(book.getExitRequest(id).assetsRemaining, 10 ether, "request debit rolled back");
@@ -830,8 +832,10 @@ contract MorphoExitBookTest is LidoLendSetup {
         uint256 liveBacking = _positionAssets(lender);
         assertLt(liveBacking, requestedAssets, "loss underbacks full request");
 
+        // Underbacking surfaces as an arithmetic panic inside the source withdrawal rather than a named
+        // error. Pinned as a panic so that giving this path a clean revert would fail here deliberately.
         vm.prank(filler);
-        vm.expectRevert();
+        vm.expectRevert(stdError.arithmeticError);
         book.fillExitRequest(id, requestedAssets, filler);
         assertEq(book.getExitRequest(id).assetsRemaining, requestedAssets, "failed exact fill is not clipped");
 

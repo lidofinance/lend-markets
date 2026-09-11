@@ -8,7 +8,12 @@ import {Id, Position, Market as MorphoMarket} from "@lido-lend/src/interfaces/IM
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {IPausableUntil} from "../../src/interfaces/IPausableUntil.sol";
+import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 
+import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
+
+import {MockPriceOracle} from "./Mocks.sol";
 import {Market} from "./Types.sol";
 
 /// @notice DG-style action helpers over a deployed `Market` (`using MarketActions for Market` →
@@ -20,6 +25,7 @@ import {Market} from "./Types.sol";
 ///         realistic: an actor holds a budget and the actions spend it.
 library MarketActions {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+    uint256 private constant ORACLE_PRICE_SCALE = 1e36;
 
     event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
     event Withdraw(
@@ -382,5 +388,244 @@ library MarketActions {
     function repayAssets(Market storage self, uint256 shares) internal view returns (uint256) {
         MorphoMarket memory m = self.core.market(self.id);
         return SharesMathLib.toAssetsUp(shares, m.totalBorrowAssets, m.totalBorrowShares);
+    }
+
+    // ── Direct core lender (no vault) ──
+
+    /// @notice Lender supplies `assets` straight to the core, bypassing the vault. Asserts the supply-share
+    ///         delta against the market totals and the loan tokens pulled.
+    function coreSupply(Market storage self, address lender, uint256 assets) internal returns (uint256 shares) {
+        vm.prank(lender);
+        self.loanToken.approve(address(self.core), type(uint256).max);
+
+        MorphoMarket memory pre = self.core.market(self.id);
+        uint256 expectedShares = SharesMathLib.toSharesDown(assets, pre.totalSupplyAssets, pre.totalSupplyShares);
+        uint256 lenderBefore = self.loanToken.balanceOf(lender);
+        uint256 posBefore = self.core.position(self.id, lender).supplyShares;
+
+        vm.prank(lender);
+        (uint256 assetsSupplied, uint256 sharesMinted) = self.core.supply(self.params, assets, 0, lender, "");
+        shares = sharesMinted;
+
+        vm.assertEq(assetsSupplied, assets, "coreSupply: assets");
+        vm.assertEq(shares, expectedShares, "coreSupply: shares vs recomputed");
+        vm.assertEq(self.core.position(self.id, lender).supplyShares, posBefore + shares, "coreSupply: position");
+        vm.assertEq(self.loanToken.balanceOf(lender), lenderBefore - assets, "coreSupply: loan pulled");
+    }
+
+    /// @notice Lender withdraws `assets` straight from the core. Asserts the burned shares against the market
+    ///         totals and the loan tokens received.
+    function coreWithdraw(Market storage self, address lender, uint256 assets) internal returns (uint256 shares) {
+        MorphoMarket memory pre = self.core.market(self.id);
+        uint256 expectedShares = SharesMathLib.toSharesUp(assets, pre.totalSupplyAssets, pre.totalSupplyShares);
+        uint256 lenderBefore = self.loanToken.balanceOf(lender);
+        uint256 posBefore = self.core.position(self.id, lender).supplyShares;
+
+        vm.prank(lender);
+        (uint256 assetsWithdrawn, uint256 sharesBurned) = self.core.withdraw(self.params, assets, 0, lender, lender);
+        shares = sharesBurned;
+
+        vm.assertEq(assetsWithdrawn, assets, "coreWithdraw: assets");
+        vm.assertEq(shares, expectedShares, "coreWithdraw: shares vs recomputed");
+        vm.assertEq(self.core.position(self.id, lender).supplyShares, posBefore - shares, "coreWithdraw: position");
+        vm.assertEq(self.loanToken.balanceOf(lender), lenderBefore + assets, "coreWithdraw: loan received");
+    }
+
+    // ── Borrower variants the plain helpers do not model ──
+
+    /// @notice `caller` (an instant-activation-enabled address) supplies collateral for `borrower`. Asserts the
+    ///         whole amount lands active immediately: the inactive buckets are untouched by this supply.
+    function supplyCollateralInstant(Market storage self, address caller, address borrower, uint256 amount) internal {
+        vm.prank(caller);
+        self.collateralToken.approve(address(self.core), amount);
+
+        ILidoLendMarketController.BorrowerPosition memory pre = self.controller.positionOf(borrower);
+        uint128 colBefore = self.core.position(self.id, borrower).collateral;
+
+        vm.prank(caller);
+        self.core.supplyCollateral(self.params, amount, borrower, "");
+
+        ILidoLendMarketController.BorrowerPosition memory post = self.controller.positionOf(borrower);
+        vm.assertEq(self.core.position(self.id, borrower).collateral, colBefore + amount, "instant: position");
+        vm.assertEq(post.dust, pre.dust, "instant: dust must be untouched");
+        vm.assertEq(post.activating, pre.activating, "instant: nothing may enter the timer");
+    }
+
+    /// @notice Borrower repays `assets` of debt by asset amount (the share-anchored helper is `repay`).
+    ///         Asserts the returned assets and that borrow shares strictly decreased.
+    function repayByAssets(Market storage self, address borrower, uint256 assets) internal returns (uint256 shares) {
+        vm.prank(borrower);
+        self.loanToken.approve(address(self.core), type(uint256).max);
+
+        uint128 sharesBefore = self.core.position(self.id, borrower).borrowShares;
+        vm.prank(borrower);
+        (uint256 assetsRepaid, uint256 sharesRepaid) = self.core.repay(self.params, assets, 0, borrower, "");
+        shares = sharesRepaid;
+
+        vm.assertEq(assetsRepaid, assets, "repayByAssets: assets");
+        vm.assertEq(
+            self.core.position(self.id, borrower).borrowShares,
+            sharesBefore - uint128(shares),
+            "repayByAssets: borrowShares delta"
+        );
+    }
+
+    // ── Market conditions ──
+
+    /// @notice Moves the oracle so `borrower` lands at `targetLtv` (WAD). Asserts the borrower actually has a
+    ///         position to distress and that the realized LTV matches the target, so a test never silently
+    ///         proceeds against a healthy position.
+    function distress(Market storage self, address borrower, uint256 targetLtv) internal returns (uint256 newPrice) {
+        accrueInterest(self);
+        Position memory pos = self.core.position(self.id, borrower);
+        vm.assertGt(pos.borrowShares, 0, "distress: borrower has no debt");
+        vm.assertGt(pos.collateral, 0, "distress: borrower has no collateral");
+
+        MorphoMarket memory m = self.core.market(self.id);
+        uint256 debtAssets = SharesMathLib.toAssetsUp(pos.borrowShares, m.totalBorrowAssets, m.totalBorrowShares);
+
+        // LTV = debtAssets * WAD / (collateral * price / ORACLE_PRICE_SCALE)  ⇒  solve for price.
+        newPrice = (debtAssets * 1e18 * ORACLE_PRICE_SCALE) / (uint256(pos.collateral) * targetLtv);
+        MockPriceOracle(address(self.oracle)).setPrice(newPrice);
+
+        uint256 collateralValue = (uint256(pos.collateral) * newPrice) / ORACLE_PRICE_SCALE;
+        uint256 realizedLtv = (debtAssets * 1e18) / collateralValue;
+        vm.assertApproxEqRel(realizedLtv, targetLtv, 1e15, "distress: realized LTV missed target");
+    }
+
+    // ── Control plane (drives state; access control is asserted by the tests that own it) ──
+
+    /// @notice Pauses the controller for `duration` as the market admin. Asserts the market reports paused.
+    function pause(Market storage self, uint256 duration) internal {
+        vm.startPrank(self.config.admin);
+        self.controller.grantRole(self.controller.PAUSER_ROLE(), self.config.admin);
+        self.controller.pauseFor(duration);
+        vm.stopPrank();
+        vm.assertTrue(IPausableUntil(address(self.controller)).isPaused(), "pause: not paused");
+    }
+
+    /// @notice Resumes a paused controller as the market admin. Asserts the market reports resumed.
+    function resume(Market storage self) internal {
+        vm.startPrank(self.config.admin);
+        self.controller.grantRole(self.controller.RESUMER_ROLE(), self.config.admin);
+        self.controller.resume();
+        vm.stopPrank();
+        vm.assertFalse(IPausableUntil(address(self.controller)).isPaused(), "resume: still paused");
+    }
+
+    /// @notice Freezes the market as the market admin. Asserts the market reports frozen.
+    function freeze(Market storage self) internal {
+        vm.startPrank(self.config.admin);
+        self.controller.grantRole(self.controller.FREEZER_ROLE(), self.config.admin);
+        self.controller.freeze();
+        vm.stopPrank();
+        vm.assertTrue(self.controller.isFrozen(), "freeze: not frozen");
+    }
+
+    /// @notice Unfreezes the market as the market admin. Asserts the market reports unfrozen.
+    function unfreeze(Market storage self) internal {
+        vm.startPrank(self.config.admin);
+        self.controller.grantRole(self.controller.UNFREEZER_ROLE(), self.config.admin);
+        self.controller.unfreeze();
+        vm.stopPrank();
+        vm.assertFalse(self.controller.isFrozen(), "unfreeze: still frozen");
+    }
+
+    /// @notice Sets the market supply cap as the market admin. Asserts the stored cap.
+    function setSupplyCap(Market storage self, uint256 cap) internal {
+        LidoLendMarketController ctrl = LidoLendMarketController(address(self.controller));
+        vm.startPrank(self.config.admin);
+        self.controller.grantRole(self.controller.MANAGER_ROLE(), self.config.admin);
+        ctrl.setSupplyCap(cap);
+        vm.stopPrank();
+        vm.assertEq(ctrl.supplyCap(), cap, "setSupplyCap: not stored");
+    }
+
+    /// @notice Grants or revokes instant activation for `caller` as the market admin. Asserts the stored flag.
+    function setInstantActivation(Market storage self, address caller, bool enabled) internal {
+        LidoLendMarketController ctrl = LidoLendMarketController(address(self.controller));
+        vm.startPrank(self.config.admin);
+        self.controller.grantRole(self.controller.MANAGER_ROLE(), self.config.admin);
+        ctrl.setInstantActivation(caller, enabled);
+        vm.stopPrank();
+        vm.assertEq(self.controller.hasInstantActivation(caller), enabled, "setInstantActivation: not stored");
+    }
+
+    // ── Guardian committee ──
+
+    /// @notice Guardian `guardian` flags `account` on its own behalf. Asserts the strike landed.
+    function flagAs(Market storage self, address guardian, address account) internal {
+        address[] memory accounts = new address[](1);
+        accounts[0] = account;
+        uint256 before = self.guardianSignals.getOpinion(self.id, account).strikeCount;
+
+        vm.prank(guardian);
+        self.guardianSignals.flag(self.id, guardian, accounts);
+
+        vm.assertEq(
+            self.guardianSignals.getOpinion(self.id, account).strikeCount, before + 1, "flagAs: strike not recorded"
+        );
+    }
+
+    /// @notice Guardian `guardian` retracts its flag on `account`. Asserts the strike was dropped — note this
+    ///         never lifts a ban that is already in effect.
+    function unflagAs(Market storage self, address guardian, address account) internal {
+        address[] memory accounts = new address[](1);
+        accounts[0] = account;
+        uint256 before = self.guardianSignals.getOpinion(self.id, account).strikeCount;
+        vm.assertGt(before, 0, "unflagAs: nothing to retract");
+
+        vm.prank(guardian);
+        self.guardianSignals.unflag(self.id, guardian, accounts);
+
+        vm.assertEq(
+            self.guardianSignals.getOpinion(self.id, account).strikeCount, before - 1, "unflagAs: strike not dropped"
+        );
+    }
+
+    /// @notice Enough distinct guardians flag `account` to reach quorum. Asserts the account ends up banned.
+    function banVia(Market storage self, address[] memory guardians, address account) internal {
+        for (uint256 i = 0; i < guardians.length; ++i) {
+            flagAs(self, guardians[i], account);
+        }
+        vm.assertTrue(self.guardianSignals.isBanned(self.id, account), "banVia: account is not banned");
+    }
+
+    /// @notice Clears `account`'s ban as the registry admin. Asserts the ban is gone.
+    function unban(Market storage self, address account) internal {
+        vm.startPrank(self.config.admin);
+        self.guardianSignals.grantRole(self.guardianSignals.ACCESS_RESTORER_ROLE(), self.config.admin);
+        self.guardianSignals.unban(self.id, account);
+        vm.stopPrank();
+
+        vm.assertFalse(self.guardianSignals.isBanned(self.id, account), "unban: still banned");
+    }
+
+    /// @notice Guardian `guardian` reports having scanned up to `scanTimestamp`. The block number and hash must
+    ///         name a real past block, while the reported scan time is independent of it — that is what moves
+    ///         the quorum frontier. Asserts the stored heartbeat.
+    /// @dev Requires at least one block to have elapsed (`vm.roll`), since `blockhash` of the current block is
+    ///      zero and the registry rejects a zero hash.
+    function heartbeatAt(Market storage self, address guardian, uint256 scanTimestamp) internal {
+        vm.assertGt(block.number, 0, "heartbeatAt: needs a past block; vm.roll first");
+        vm.assertLe(scanTimestamp, block.timestamp, "heartbeatAt: cannot report a future scan");
+
+        uint40 pastBlock = uint40(block.number - 1);
+        BlockInfoWithHash memory scanned =
+            BlockInfoWithHash({hash: blockhash(pastBlock), number: pastBlock, timestamp: uint40(scanTimestamp)});
+        vm.assertNotEq(scanned.hash, bytes32(0), "heartbeatAt: no blockhash available; vm.roll further");
+
+        vm.prank(guardian);
+        self.guardianSignals.heartbeat(guardian, scanned, "");
+
+        vm.assertEq(uint256(self.guardianSignals.getHeartbeat(guardian)), scanTimestamp, "heartbeatAt: not recorded");
+    }
+
+    /// @notice Permissionlessly recomputes the quorum frontier. Asserts it never moved backwards.
+    function syncFrontier(Market storage self) internal returns (uint256 frontier) {
+        uint256 before = self.guardianSignals.getQuorumFrontier();
+        self.guardianSignals.syncQuorumFrontier();
+        frontier = self.guardianSignals.getQuorumFrontier();
+        vm.assertGe(frontier, before, "syncFrontier: frontier moved backwards");
     }
 }

@@ -96,6 +96,11 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     uint256 public settlementRoundUpCases;
     uint256 public fullSettlementFills;
     uint256 public nothingSettledReverts;
+    // Bad-debt branch coverage: without these the campaign can silently stop entering the state at all.
+    uint256 public badDebtGateReverts;
+    uint256 public exceedsCollateralReverts;
+    uint256 public fallbackExitsLiquidOnlyUnderBadDebt;
+    bool public settledUnderBadDebt;
     uint256 public positiveSettlementLtvUpdates;
     uint256 public eligibleTargetedSettlementCalls;
     uint256 public mixedFallbackSettlementFills;
@@ -107,6 +112,29 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     uint256 public donations;
     uint256 public pauses;
     uint256 public caps;
+
+    // Rejection coverage: a guard whose state makes the contract's refusal certain proves that refusal instead
+    // of returning. The counters exist so a refusal that stops being reachable fails loudly.
+    uint256 public depositsRejectedAtCap;
+    uint256 public mintsRejectedAtCap;
+    uint256 public withdrawsRejectedAtZeroMax;
+    uint256 public redeemsRejectedAtZeroMax;
+    uint256 public settlesRejectedOverBalance;
+    uint256 public fallbackExitsRejectedOverBalance;
+    uint256 public pausedSettlementReverts;
+    uint256 public borrowsRejectedWithoutCollateral;
+    uint256 public liquidationsRejectedOnHealthy;
+    uint256 public zeroCoreClaimReverts; // the request's pro-rata core-share claim floored to nothing
+    bool public settledWhilePaused; // a settle path completed on a paused market
+    bool public settlementRejectedForPauseWhileResumed; // the pause error surfaced on a resumed market
+
+    // Counted no-ops: the fuzzer picked an input this action cannot use, and the contract's reaction to it is not
+    // determined by state the handler can model to the wei. Counted rather than silent, so `afterInvariant` shows
+    // a handler that never did anything.
+    uint256 public skippedBorrows;
+    uint256 public skippedRepays;
+    uint256 public skippedLiquidations;
+    uint256 public skippedSettlementLtv;
 
     constructor(
         ILidoLend core,
@@ -412,55 +440,81 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
 
     // ── ERC-4626 entry ──
 
+    /// @dev `maxDeposit` folds the supply cap and the pause into one number. With no usable room, prove the vault
+    ///      refuses one wei past the room it reports rather than skipping the call; pause is the same refusal at
+    ///      room zero.
     function deposit(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         uint256 room = VAULT.maxDeposit(a);
-        if (!_paused() && room < 1e18) return;
-        amount = bound(amount, 1e18, _paused() ? 1_000_000e18 : Math.min(room, 1_000_000e18));
+        if (room < 1e18) {
+            amount = room + 1;
+            _mintTo(LOAN, a, amount);
+            vm.startPrank(a);
+            LOAN.approve(address(VAULT), amount);
+            vm.expectRevert(
+                abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, a, amount, room)
+            );
+            VAULT.deposit(amount, a);
+            vm.stopPrank();
+            ++depositsRejectedAtCap;
+            return;
+        }
+
+        // Past the guard the market must be live: room reported on a paused market would be the leak.
+        vm.assertFalse(_paused(), "deposit: paused market reported deposit room");
+        amount = bound(amount, 1e18, Math.min(room, 1_000_000e18));
         _mintTo(LOAN, a, amount);
         vm.startPrank(a);
         LOAN.approve(address(VAULT), amount);
-        if (_paused()) {
-            vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, a, amount, 0));
-            VAULT.deposit(amount, a);
-            vm.stopPrank();
-            return;
-        }
         VAULT.deposit(amount, a);
         vm.stopPrank();
         deposits++;
     }
 
+    /// @dev The share-side mirror of `deposit`, against `maxMint`.
     function mint(uint256 actorSeed, uint256 shares) external {
         address a = _actor(actorSeed);
         uint256 shareRoom = VAULT.maxMint(a);
-        if (!_paused() && shareRoom < 1e18) return;
-        shares = bound(shares, 1e18, _paused() ? 1_000_000e18 : Math.min(shareRoom, 1_000_000e18));
+        if (shareRoom < 1e18) {
+            shares = shareRoom + 1;
+            uint256 rejectedCost = VAULT.previewMint(shares);
+            _mintTo(LOAN, a, rejectedCost);
+            vm.startPrank(a);
+            LOAN.approve(address(VAULT), rejectedCost);
+            vm.expectRevert(
+                abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxMint.selector, a, shares, shareRoom)
+            );
+            VAULT.mint(shares, a);
+            vm.stopPrank();
+            ++mintsRejectedAtCap;
+            return;
+        }
+
+        vm.assertFalse(_paused(), "mint: paused market reported mint room");
+        shares = bound(shares, 1e18, Math.min(shareRoom, 1_000_000e18));
         uint256 cost = VAULT.previewMint(shares);
         _mintTo(LOAN, a, cost);
         vm.startPrank(a);
         LOAN.approve(address(VAULT), cost);
-        if (_paused()) {
-            vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxMint.selector, a, shares, 0));
-            VAULT.mint(shares, a);
-            vm.stopPrank();
-            return;
-        }
         VAULT.mint(shares, a);
         vm.stopPrank();
         deposits++;
     }
 
+    /// @dev Nothing withdrawable — no shares, no liquidity, or a pause — reports as a zero `maxWithdraw`, and one
+    ///      wei against it must be refused.
     function withdraw(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
-        if (_paused()) {
+        uint256 max = VAULT.maxWithdraw(a);
+        if (max == 0) {
             vm.prank(a);
             vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxWithdraw.selector, a, 1, 0));
             VAULT.withdraw(1, a, a);
+            ++withdrawsRejectedAtZeroMax;
             return;
         }
-        uint256 max = VAULT.maxWithdraw(a);
-        if (max == 0) return;
+
+        vm.assertFalse(_paused(), "withdraw: paused market reported a withdrawable amount");
         amount = bound(amount, 1, max);
 
         uint256 supplyBefore = VAULT.totalSupply();
@@ -479,16 +533,19 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         withdraws++;
     }
 
+    /// @dev The share-side mirror of `withdraw`, against `maxRedeem`.
     function redeem(uint256 actorSeed, uint256 shares) external {
         address a = _actor(actorSeed);
-        if (_paused()) {
+        uint256 max = VAULT.maxRedeem(a);
+        if (max == 0) {
             vm.prank(a);
             vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxRedeem.selector, a, 1, 0));
             VAULT.redeem(1, a, a);
+            ++redeemsRejectedAtZeroMax;
             return;
         }
-        uint256 max = VAULT.maxRedeem(a);
-        if (max == 0) return;
+
+        vm.assertFalse(_paused(), "redeem: paused market reported redeemable shares");
         shares = bound(shares, 1, max);
 
         uint256 supplyBefore = VAULT.totalSupply();
@@ -517,22 +574,34 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     ///      and its burn must be the one-sided rounded fraction of the owner's gross core-share claim consumed.
     function settle(uint256 ownerSeed, uint256 borrowerSeed, uint256 shares) external {
         address owner = _actor(ownerSeed);
-        uint256 bal = VAULT.balanceOf(owner);
-        if (bal == 0 || _paused() || CONTROLLER.hasBadDebt() || CONTROLLER.settlementBorrowersCount() == 0) return;
-
         address borrower = _actor(borrowerSeed);
-        if (CORE.position(ID, borrower).borrowShares == 0) return;
         address[] memory borrowers = new address[](1);
         borrowers[0] = borrower;
+        address receiver = actors[(ownerSeed % actors.length + 1) % actors.length];
 
-        CORE.accrueInterest(params); // isolate the pro-rata burn from interest
+        // Nothing to settle with: the request is checked against the owner's balance before anything else. Read
+        // twice rather than held in a local — this frame is at the stack limit with `via_ir = false`.
+        if (VAULT.balanceOf(owner) == 0) {
+            vm.prank(owner);
+            vm.expectRevert(abi.encodeWithSelector(ILidoLendERC4626.ExceededBalance.selector, owner, 1, 0));
+            VAULT.settle(1, borrowers, receiver, owner);
+            ++settlesRejectedOverBalance;
+            return;
+        }
+
+        // A borrower with no debt and an empty queue both quote a zero cut, which the vault rejects as
+        // `NothingSettled` — a real boundary, so the call is made rather than guarded away.
+        bool pausedAtEntry = _paused();
+        // Accrual is hooked too, so it runs only on a resumed market. A paused settle is going to be rejected and
+        // has no burn to isolate from interest.
+        if (!pausedAtEntry) CORE.accrueInterest(params);
+        bool badDebtAtEntry = CONTROLLER.hasBadDebt();
         (, uint256 personalSlice) = CONTROLLER.settlementLtv(borrower);
         if (personalSlice != 0) ++eligibleTargetedSettlementCalls;
 
-        address receiver = actors[(ownerSeed % actors.length + 1) % actors.length];
         SettlementState memory before = _settlementState(receiver);
         before.borrowerShares = CORE.position(ID, borrower).borrowShares;
-        shares = bound(shares, 1, bal);
+        shares = bound(shares, 1, VAULT.balanceOf(owner));
         vm.prank(owner);
         uint256 sharesBurned;
         uint256 collateralSeized;
@@ -555,6 +624,10 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         }
 
         if (sharesBurned > shares) exitBurnedTooMuch = true;
+        // A targeted settle is a settle leg outright: succeeding under a bad-debt root means the gate leaked.
+        if (badDebtAtEntry) settledUnderBadDebt = true;
+        // Pause gates the core's settle hook, so a completed settle means it leaked.
+        if (pausedAtEntry) settledWhilePaused = true;
         if (personalSlice == 0) targetedSettlementWithoutPersonalEligibility = true;
         _observeTargetedSettlementClaim(shares, before);
         _observeSettlementLeg(
@@ -574,17 +647,29 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     }
 
     /// @dev Redeem the liquid part then settle the rest. The model reconstructs the intermediate state after the
-    ///      liquid leg, then checks the settle leg against that live core-share claim. Skips when a bad-debt root
-    ///      would revert the settle leg.
+    ///      liquid leg, then checks the settle leg against that live core-share claim. Under a bad-debt root only
+    ///      the liquid leg may serve the request, so a collateral payout there is recorded as a gate leak.
     function fallbackExit(uint256 actorSeed, uint256 shares, uint256 iterations) external {
         address owner = _actor(actorSeed);
-        uint256 bal = VAULT.balanceOf(owner);
-        if (bal == 0 || _paused() || CONTROLLER.hasBadDebt()) return;
-
-        CORE.accrueInterest(params);
         address receiver = actors[(actorSeed % actors.length + 1) % actors.length];
+
+        // Read twice rather than held in a local: this frame is at the stack limit with `via_ir = false`.
+        if (VAULT.balanceOf(owner) == 0) {
+            vm.prank(owner);
+            vm.expectRevert(abi.encodeWithSelector(ILidoLendERC4626.ExceededBalance.selector, owner, 1, 0));
+            VAULT.fallbackExit(1, receiver, owner, 0);
+            ++fallbackExitsRejectedOverBalance;
+            return;
+        }
+
+        // A pause zeroes the withdrawable amount, so the whole request falls to the settle leg and is rejected
+        // there. The call is made either way; the outcome is checked against this flag below.
+        bool pausedAtEntry = _paused();
+        if (!pausedAtEntry) CORE.accrueInterest(params);
+        bool badDebtAtEntry = CONTROLLER.hasBadDebt();
+
         SettlementState memory before = _settlementState(receiver);
-        shares = bound(shares, 1, bal);
+        shares = bound(shares, 1, VAULT.balanceOf(owner));
         vm.prank(owner);
         uint256 sharesBurned;
         uint256 loanAssets;
@@ -609,6 +694,14 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         }
 
         if (sharesBurned > shares) exitBurnedTooMuch = true;
+        // A bad-debt root only permits a fallback exit the liquid leg can serve on its own: any settle leg
+        // would have to pass the controller's gate. A collateral payout here would mean the gate leaked.
+        if (badDebtAtEntry) {
+            if (collateralSeized != 0) settledUnderBadDebt = true;
+            ++fallbackExitsLiquidOnlyUnderBadDebt;
+        }
+        // A pause zeroes the liquid leg and gates the settle hook, so neither leg can serve a request.
+        if (pausedAtEntry) settledWhilePaused = true;
         _observeFallbackExit(shares, sharesBurned, loanAssets, before);
         _observeCollateralPayout(collateralSeized, receiver, before);
         // The redeem leg drops idle by exactly its payout; the settle leg is liquidity-neutral -> idle drop == loan.
@@ -650,25 +743,49 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         vm.stopPrank();
     }
 
+    /// @dev With no collateral there is no capacity at any price, so the refusal is certain and gets proven. The
+    ///      other guards reject a fuzz input this action cannot use — below the position floor, no room under the
+    ///      LLTV, no liquidity, or a share mint past the core's width. Which reason the core would give there turns
+    ///      on rounding this handler does not model to the wei, so those are counted rather than asserted.
     function borrow(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         Position memory pos = CORE.position(ID, a);
-        if (pos.collateral < FLOOR) return;
+        if (pos.collateral == 0) {
+            if (_paused()) vm.expectRevert(PausableUntil.ResumedExpected.selector);
+            else vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+            vm.prank(a);
+            CORE.borrow(params, 1, 0, a, a);
+            ++borrowsRejectedWithoutCollateral;
+            return;
+        }
+        if (pos.collateral < FLOOR) {
+            ++skippedBorrows;
+            return;
+        }
         if (!_paused()) CORE.accrueInterest(params);
         MorphoMarket memory mk = CORE.market(ID);
         uint256 maxBorrow = Math.mulDiv(Math.mulDiv(pos.collateral, _price(), 1e36), LLTV, 1e18);
         uint256 debt =
             mk.totalBorrowShares == 0 ? 0 : Math.mulDiv(pos.borrowShares, mk.totalBorrowAssets, mk.totalBorrowShares);
-        if (maxBorrow <= debt) return;
+        if (maxBorrow <= debt) {
+            ++skippedBorrows;
+            return;
+        }
         uint256 healthRoom = (maxBorrow - debt) * 99 / 100;
         uint256 liquidity = mk.totalSupplyAssets - mk.totalBorrowAssets;
         uint256 room = healthRoom < liquidity ? healthRoom : liquidity;
-        if (room < 1e18) return;
+        if (room < 1e18) {
+            ++skippedBorrows;
+            return;
+        }
         amount = bound(amount, 1e18, room);
         uint256 mintShares = Math.mulDiv(
             amount, uint256(mk.totalBorrowShares) + 1e6, uint256(mk.totalBorrowAssets) + 1, Math.Rounding.Ceil
         );
-        if (mintShares > type(uint128).max) return;
+        if (mintShares > type(uint128).max) {
+            ++skippedBorrows;
+            return;
+        }
         bool paused = _paused();
         if (paused) vm.expectRevert(PausableUntil.ResumedExpected.selector);
         vm.prank(a);
@@ -677,18 +794,31 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
     }
 
     /// @dev Opt a live borrower into a target far enough below its current LTV to produce a positive personal slice.
+    ///      The opt-in is neither hooked nor gated on solvency — the queue only range-checks the LTV — so it is
+    ///      driven under bad debt too: that is the state whose settle paths need a personal slice to exercise.
+    ///      The guards below mean the chosen actor has no position to price a target against; there is nothing to
+    ///      prove the contract refuses, so they are counted.
     function setSettlementLtv(uint256 actorSeed, uint256 targetSeed) external {
         address borrower = _actor(actorSeed);
         Position memory position = CORE.position(ID, borrower);
-        if (position.borrowShares == 0 || position.collateral == 0 || CONTROLLER.hasBadDebt()) return;
+        if (position.borrowShares == 0 || position.collateral == 0) {
+            ++skippedSettlementLtv;
+            return;
+        }
 
         ILidoLendMarketController.BorrowerPosition memory dashboard = CONTROLLER.positionOf(borrower);
         uint256 collateralValue = Math.mulDiv(position.collateral, _price(), 1e36);
-        if (dashboard.debtAssets == 0 || collateralValue == 0) return;
+        if (dashboard.debtAssets == 0 || collateralValue == 0) {
+            ++skippedSettlementLtv;
+            return;
+        }
 
         uint256 currentLtv = Math.mulDiv(dashboard.debtAssets, 1e18, collateralValue);
         uint256 maxTarget = Math.min(currentLtv / 2, 1e18 - 1);
-        if (maxTarget == 0) return;
+        if (maxTarget == 0) {
+            ++skippedSettlementLtv;
+            return;
+        }
 
         uint256 target = bound(targetSeed, 1, maxTarget);
         vm.prank(borrower);
@@ -698,10 +828,15 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         if (personalSlice != 0) ++positiveSettlementLtvUpdates;
     }
 
+    /// @dev Repaying an actor with no debt underflows the core's share accounting rather than reverting with a
+    ///      reason of its own, so there is no refusal worth pinning here — the no-op is counted instead.
     function repay(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         Position memory pos = CORE.position(ID, a);
-        if (pos.borrowShares == 0) return;
+        if (pos.borrowShares == 0) {
+            ++skippedRepays;
+            return;
+        }
         if (!_paused()) CORE.accrueInterest(params);
         MorphoMarket memory mk = CORE.market(ID);
         uint256 shares = bound(amount, 1, pos.borrowShares);
@@ -744,22 +879,43 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         crashes++;
     }
 
+    /// @dev A debt-free position is healthy by definition, and one whose debt sits a clear margin under the LLTV
+    ///      threshold is healthy under the core's rounding as well as the handler's — both refusals are proven. The
+    ///      narrow band around the threshold, where the two models can disagree by a wei, is counted instead.
     function liquidate(uint256 actorSeed, uint256 seize) external {
         address victim = _actor(actorSeed);
         Position memory pos = CORE.position(ID, victim);
-        if (pos.borrowShares == 0 || pos.collateral == 0) return;
+        if (pos.borrowShares == 0) {
+            _expectHealthyLiquidationRefusal(victim);
+            return;
+        }
+        if (pos.collateral == 0) {
+            ++skippedLiquidations; // insolvent but nothing to seize: `liquidateBadDebt` territory, not this call
+            return;
+        }
         if (!_paused()) CORE.accrueInterest(params);
         MorphoMarket memory mk = CORE.market(ID);
         uint256 debt = Math.mulDiv(pos.borrowShares, mk.totalBorrowAssets, mk.totalBorrowShares);
         uint256 collValue = Math.mulDiv(pos.collateral, _price(), 1e36);
-        if (debt <= collValue * LLTV / 1e18) return;
+        uint256 liquidationThreshold = collValue * LLTV / 1e18;
+        if (debt * 100 <= liquidationThreshold * 99) {
+            _expectHealthyLiquidationRefusal(victim);
+            return;
+        }
+        if (debt <= liquidationThreshold) {
+            ++skippedLiquidations; // inside the margin where the handler's health model and the core's can differ
+            return;
+        }
 
         uint256 amount;
         if (debt > collValue) {
             amount = pos.collateral;
         } else {
             uint256 maxSeize = Math.mulDiv(debt, 1e36, _price());
-            if (maxSeize == 0) return;
+            if (maxSeize == 0) {
+                ++skippedLiquidations;
+                return;
+            }
             amount = bound(seize, 1, maxSeize);
         }
         address keeper = actors[(actorSeed % actors.length + 1) % actors.length];
@@ -776,6 +932,18 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
         vm.stopPrank();
         liquidations++;
     }
+
+    /// @dev Seizing a wei from a healthy position must be refused. The core checks health before it reaches the
+    ///      liquidate hook, and its internal accrual is unhooked, so a pause cannot pre-empt this refusal — unlike
+    ///      the unhealthy path below it, which does reach the hook. No keeper funding: nothing moves.
+    function _expectHealthyLiquidationRefusal(address victim) private {
+        vm.expectRevert(bytes("position is healthy"));
+        vm.prank(actors[0]);
+        CORE.liquidate(params, victim, 1, 0, "");
+        ++liquidationsRejectedOnHealthy;
+    }
+
+    bytes32 private constant SETTLEMENT_EXCEEDS_COLLATERAL_HASH = keccak256(bytes("settlement exceeds collateral"));
 
     function _recordSettlementPanicOrRevert(uint256 code) private {
         if (code == ARITHMETIC_PANIC_CODE) {
@@ -796,6 +964,10 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
             settlementDustReverts++;
             return;
         }
+        if (keccak256(bytes(reason)) == SETTLEMENT_EXCEEDS_COLLATERAL_HASH) {
+            ++exceedsCollateralReverts;
+            return;
+        }
         revert(reason);
     }
 
@@ -809,9 +981,22 @@ contract VaultHandler is CommonBase, StdCheats, StdUtils {
                 selector := mload(add(reason, 0x20))
             }
         }
-        if (selector == ILidoLendERC4626.ZeroMorphoSupplyShares.selector) return;
+        if (selector == ILidoLendERC4626.ZeroMorphoSupplyShares.selector) {
+            ++zeroCoreClaimReverts;
+            return;
+        }
         if (selector == ILidoLendERC4626.NothingSettled.selector) {
             ++nothingSettledReverts;
+            return;
+        }
+        if (selector == ILidoLendMarketController.SettlementBadDebt.selector) {
+            ++badDebtGateReverts;
+            return;
+        }
+        // The settle hook is the only thing a pause can stop here, so this reason is valid only while paused.
+        if (selector == PausableUntil.ResumedExpected.selector) {
+            if (!_paused()) settlementRejectedForPauseWhileResumed = true;
+            ++pausedSettlementReverts;
             return;
         }
 

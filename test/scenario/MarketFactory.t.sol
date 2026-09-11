@@ -215,6 +215,7 @@ contract MarketFactoryScenarioTest is Test {
         LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
         _deployMarketComponents(market, _erc4626WrapperSpec("A"));
 
+        // A CREATE2 collision reverts with no return data, so there is no selector to match here.
         vm.prank(caller);
         vm.expectRevert();
         factory.deployMarketComponents(market, _erc4626WrapperSpec("A"));
@@ -438,6 +439,7 @@ contract MarketFactoryScenarioTest is Test {
         vm.prank(caller);
         factory.deployGuardianSignals(spec, keccak256("group-a"));
 
+        // A CREATE2 collision reverts with no return data, so there is no selector to match here.
         vm.prank(caller);
         vm.expectRevert();
         factory.deployGuardianSignals(spec, keccak256("group-a"));
