@@ -171,6 +171,18 @@ interface IReadEnumerableAccessControl {
     function getRoleMember(bytes32 role, uint256 index) external view returns (address);
 }
 
+interface IReadGeneralAdapter1 {
+    function BUNDLER3() external view returns (address);
+    function MORPHO() external view returns (address);
+    function WRAPPED_NATIVE() external view returns (address);
+    function WST_ETH() external view returns (address);
+    function ST_ETH() external view returns (address);
+}
+
+interface IReadWstEth {
+    function stETH() external view returns (address);
+}
+
 interface IReadCircuitBreaker {
     function getPauser(address pausable) external view returns (address);
     function isPauserLive(address pauser) external view returns (bool);
@@ -259,6 +271,12 @@ abstract contract AcceptanceContext is Test {
     uint256 internal expectedExitBookMaxRequestLifetime;
     address internal exitBookPauser;
 
+    // Optional run-level artifact: the bundler stack over this core.
+    address internal bundler3;
+    address internal generalAdapter;
+    address internal vaultAdapter;
+    string internal bundlerArtifact;
+
     // Factory-derived controller and proxy admin.
     address internal rAdmin;
     address internal rProxyAdmin;
@@ -344,6 +362,13 @@ abstract contract AcceptanceContext is Test {
             erc4626Book = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.erc4626");
             expectedExitBookMaxRequestLifetime = vm.parseTomlUint(exitBooksArtifact, ".exit_books.max_request_lifetime");
             exitBookPauser = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.pauser");
+        }
+        string memory bundlerPath = string.concat(artifactsDir, "bundler.toml");
+        if (vm.exists(bundlerPath)) {
+            bundlerArtifact = ArtifactMetadataFile.requireCompatible(bundlerPath, artifactMetadata);
+            bundler3 = vm.parseTomlAddress(bundlerArtifact, ".bundler.bundler3");
+            generalAdapter = vm.parseTomlAddress(bundlerArtifact, ".bundler.general_adapter");
+            vaultAdapter = vm.parseTomlAddress(bundlerArtifact, ".bundler.vault_adapter");
         }
         oracle = _addr(".market.oracle");
         guardianSignals = _addr(".market.guardian_signals");
@@ -442,6 +467,11 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
             assertGt(morphoBook.code.length, 0, "morpho exit book missing code");
             assertGt(erc4626Book.code.length, 0, "ERC-4626 exit book missing code");
         }
+        if (vaultAdapter != address(0)) {
+            assertGt(bundler3.code.length, 0, "Bundler3 missing code");
+            assertGt(generalAdapter.code.length, 0, "general adapter missing code");
+            assertGt(vaultAdapter.code.length, 0, "vault adapter missing code");
+        }
         assertGt(circuitBreaker.code.length, 0, "CircuitBreaker missing code");
         _assertLocalBytecode();
     }
@@ -487,6 +517,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
             assertFalse(IReadMorphoBook(morphoBook).paused(), "morpho exit book is paused");
             assertFalse(IReadErc4626Book(erc4626Book).paused(), "ERC-4626 exit book is paused");
         }
+        if (vaultAdapter != address(0)) _assertBundlerWiring();
 
         // Additional direct core, asset, and operational-state checks.
         assertEq(IReadController(controller).LIDO_LEND(), core, "controller.LIDO_LEND");
@@ -496,6 +527,21 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertFalse(IReadController(controller).isFrozen(), "controller is frozen");
         // The curve singleton's per-market config is applied at activation, so its assert lives in
         // `_assertActivated` / `_assertNotYetActivated`, not here.
+    }
+
+    /// @dev The adapters' immutables are the dispatcher and token inputs the artifact recorded and the core this
+    ///      run owns. The role audits and the instant-activation log scan already prove they hold no privilege.
+    function _assertBundlerWiring() internal view {
+        IReadGeneralAdapter1 general = IReadGeneralAdapter1(generalAdapter);
+        address weth = vm.parseTomlAddress(bundlerArtifact, ".bundler.weth");
+        address wsteth = vm.parseTomlAddress(bundlerArtifact, ".bundler.wsteth");
+        assertEq(general.BUNDLER3(), bundler3, "generalAdapter.BUNDLER3");
+        assertEq(general.MORPHO(), core, "generalAdapter.MORPHO");
+        assertEq(general.WRAPPED_NATIVE(), weth, "generalAdapter.WRAPPED_NATIVE");
+        assertEq(general.WST_ETH(), wsteth, "generalAdapter.WST_ETH");
+        assertEq(general.ST_ETH(), IReadWstEth(wsteth).stETH(), "generalAdapter.ST_ETH");
+        assertEq(IReadGeneralAdapter1(vaultAdapter).BUNDLER3(), bundler3, "vaultAdapter.BUNDLER3");
+        assertEq(vm.parseTomlAddress(bundlerArtifact, ".bundler.morpho"), core, "bundler.toml morpho");
     }
 
     function _assertOracle() internal {

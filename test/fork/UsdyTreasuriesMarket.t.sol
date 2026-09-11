@@ -11,13 +11,7 @@ import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {IRWADynamicOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
-
-interface IERC20Like {
-    // No `returns (bool)`: USDT's approve/transfer return no data, so declaring a bool return would make Solidity
-    // revert decoding the missing return value. Safe for USDY too (a declared-void call ignores any return data).
-    function approve(address spender, uint256 amount) external;
-    function balanceOf(address account) external view returns (uint256);
-}
+import {IERC20NoReturn} from "./helpers/ForkTokens.sol";
 
 interface IUsdyBlocklist {
     function owner() external view returns (address);
@@ -128,7 +122,7 @@ contract UsdyTreasuriesMarketTest is ForkStack {
 
         deal(USDY, BORROWER, collateral);
         vm.startPrank(BORROWER);
-        IERC20Like(USDY).approve(address(core), type(uint256).max);
+        IERC20NoReturn(USDY).approve(address(core), type(uint256).max);
         core.supplyCollateral(params, collateral, BORROWER, "");
         vm.stopPrank();
 
@@ -182,7 +176,7 @@ contract UsdyTreasuriesMarketTest is ForkStack {
         _requireSupplyHeadroom(m, LENDER_SUPPLY_LIQUIDATE);
         deal(USDT, LENDER, LENDER_SUPPLY_LIQUIDATE);
         vm.startPrank(LENDER);
-        IERC20Like(USDT).approve(address(core), type(uint256).max);
+        IERC20NoReturn(USDT).approve(address(core), type(uint256).max);
         core.supply(params, LENDER_SUPPLY_LIQUIDATE, 0, LENDER, "");
         vm.stopPrank();
 
@@ -200,9 +194,9 @@ contract UsdyTreasuriesMarketTest is ForkStack {
         deal(USDT, KEEPER_GOOD, KEEPER_USDT);
         deal(USDT, KEEPER_BAD, KEEPER_USDT);
         vm.prank(KEEPER_GOOD);
-        IERC20Like(USDT).approve(address(core), type(uint256).max);
+        IERC20NoReturn(USDT).approve(address(core), type(uint256).max);
         vm.prank(KEEPER_BAD);
-        IERC20Like(USDT).approve(address(core), type(uint256).max);
+        IERC20NoReturn(USDT).approve(address(core), type(uint256).max);
         _blocklist(KEEPER_BAD);
 
         // Seize a small slice of the live collateral — well within the balance, so `seized` == requested.
@@ -216,11 +210,13 @@ contract UsdyTreasuriesMarketTest is ForkStack {
         core.liquidate(params, BORROWER, seize, 0, "");
 
         // Eligible keeper: liquidation succeeds and it receives exactly the seized USDY (a delta from clean).
-        uint256 balBefore = IERC20Like(USDY).balanceOf(KEEPER_GOOD);
+        uint256 balBefore = IERC20NoReturn(USDY).balanceOf(KEEPER_GOOD);
         vm.prank(KEEPER_GOOD);
         (uint256 seized,) = core.liquidate(params, BORROWER, seize, 0, "");
         assertEq(seized, seize, "seized the requested amount");
-        assertEq(IERC20Like(USDY).balanceOf(KEEPER_GOOD) - balBefore, seize, "eligible keeper received the seized USDY");
+        assertEq(
+            IERC20NoReturn(USDY).balanceOf(KEEPER_GOOD) - balBefore, seize, "eligible keeper received the seized USDY"
+        );
     }
 
     /* T2 — vault fallback exit respects USDY's blocklist on the receiver */
@@ -230,7 +226,7 @@ contract UsdyTreasuriesMarketTest is ForkStack {
         _requireSupplyHeadroom(m, LENDER_DEPOSIT_SETTLE);
         deal(USDT, LENDER, LENDER_DEPOSIT_SETTLE);
         vm.startPrank(LENDER);
-        IERC20Like(USDT).approve(address(vault), type(uint256).max);
+        IERC20NoReturn(USDT).approve(address(vault), type(uint256).max);
         vault.deposit(LENDER_DEPOSIT_SETTLE, LENDER);
         vm.stopPrank();
 
@@ -265,7 +261,7 @@ contract UsdyTreasuriesMarketTest is ForkStack {
         vault.fallbackExit(shares, KEEPER_BAD, LENDER, 0);
 
         // Eligible receiver: succeeds and receives exactly the seized USDY collateral (a delta from clean).
-        uint256 balBefore = IERC20Like(USDY).balanceOf(KEEPER_GOOD);
+        uint256 balBefore = IERC20NoReturn(USDY).balanceOf(KEEPER_GOOD);
         vm.prank(LENDER);
         (,, uint256 collateralSeized, uint256 debtCanceled) = vault.fallbackExit(shares, KEEPER_GOOD, LENDER, 0);
         assertGt(collateralSeized, 0, "collateral seized via the settle leg");
@@ -279,7 +275,7 @@ contract UsdyTreasuriesMarketTest is ForkStack {
             "collateral seized matches debt canceled at the mocked price"
         );
         assertEq(
-            IERC20Like(USDY).balanceOf(KEEPER_GOOD) - balBefore, collateralSeized, "eligible receiver got the USDY"
+            IERC20NoReturn(USDY).balanceOf(KEEPER_GOOD) - balBefore, collateralSeized, "eligible receiver got the USDY"
         );
     }
 }

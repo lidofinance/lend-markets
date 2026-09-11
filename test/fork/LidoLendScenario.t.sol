@@ -12,25 +12,7 @@ import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketCon
 import {SettlementSlice} from "../../src/types/SettlementTypes.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
-
-interface IWETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function deposit() external payable;
-}
-
-interface IStETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function submit(address referral) external payable returns (uint256);
-}
-
-interface IWstETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function getStETHByWstETH(uint256 wstETHAmount) external view returns (uint256);
-    function wrap(uint256 stETHAmount) external returns (uint256);
-}
+import {IWETH, IStETH, IWstETH} from "./helpers/ForkTokens.sol";
 
 /// @dev Runs a supplyCollateral -> withdrawCollateral round-trip in ONE call frame (one tx), so the
 ///      controller's same-tx flash-undo fires. Holds the collateral and is its own onBehalf/receiver.

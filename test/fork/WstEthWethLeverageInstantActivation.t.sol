@@ -11,25 +11,7 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {WAD, BPS} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
-
-interface IWETH {
-    function deposit() external payable;
-    function withdraw(uint256 amount) external;
-    function balanceOf(address account) external view returns (uint256);
-    function approve(address spender, uint256 amount) external returns (bool);
-}
-
-interface IStETH {
-    function submit(address referral) external payable returns (uint256);
-    function balanceOf(address account) external view returns (uint256);
-    function approve(address spender, uint256 amount) external returns (bool);
-}
-
-interface IWstETH {
-    function wrap(uint256 stETHAmount) external returns (uint256);
-    function balanceOf(address account) external view returns (uint256);
-    function approve(address spender, uint256 amount) external returns (bool);
-}
+import {IWETH, IStETH, IWstETH} from "./helpers/ForkTokens.sol";
 
 /// @title WstEthWethLeverageHelper
 /// @notice Leverage-loop entrypoint bound to the wstETH/WETH market. Runs `(borrow -> swap -> supplyCollateral)`

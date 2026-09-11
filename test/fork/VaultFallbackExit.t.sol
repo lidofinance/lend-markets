@@ -11,25 +11,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
-
-interface IWETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function deposit() external payable;
-}
-
-interface IStETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function submit(address referral) external payable returns (uint256);
-}
-
-interface IWstETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function getStETHByWstETH(uint256 wstETHAmount) external view returns (uint256);
-    function wrap(uint256 stETHAmount) external returns (uint256);
-}
+import {IWETH, IStETH, IWstETH} from "./helpers/ForkTokens.sol";
 
 /// @notice Mainnet-fork scenarios for the vault's two settle-backed exits, `fallbackExit` and `settle`, run
 ///         against the ALREADY-DEPLOYED `weth-wsteth` market (bound via {ForkStack}, never re-deployed).

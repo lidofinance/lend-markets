@@ -9,17 +9,7 @@ import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
-
-interface IStETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function submit(address referral) external payable returns (uint256);
-}
-
-interface IWstETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function wrap(uint256 stETHAmount) external returns (uint256);
-}
+import {IStETH, IWstETH} from "./helpers/ForkTokens.sol";
 
 /// @notice End-to-end scenario for the ALREADY-DEPLOYED `RiskStewardDashboard` driving the live `weth-wsteth`
 ///         controller (bound via {ForkStack}, never re-deployed). The suite drives the tighten-only levers
@@ -70,9 +60,8 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
 
         // The deploy grants the EasyTrack executor the dashboard's STEWARD_ADMIN_ROLE. Cross-check it holds
         // that role before pranking it, then appoint the test steward through it — the real appointment path,
-        // not a test-minted self-grant. `_executor(m)` resolves the executor as the IRM router's manager,
-        // which the deploy assigns to the same EVMScriptExecutor.
-        executor = _executor(m);
+        // not a test-minted self-grant. `_executor()` is the EVMScriptExecutor the run recorded.
+        executor = _executor();
         require(
             dashboard.hasRole(dashboard.STEWARD_ADMIN_ROLE(), executor),
             "RiskStewardDashboardScenario: EasyTrack executor does not hold the dashboard STEWARD_ADMIN_ROLE (deploy wiring bug)"

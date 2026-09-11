@@ -5,25 +5,12 @@ import {Market} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {Erc4626Math} from "../setup/Erc4626Math.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
-
-interface IWETH {
-    function deposit() external payable;
-}
-
-interface IStETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function submit(address referral) external payable returns (uint256);
-}
-
-interface IWstETH {
-    function wrap(uint256 stETHAmount) external returns (uint256);
-}
+import {IWETH, IStETH, IWstETH} from "./helpers/ForkTokens.sol";
 
 /// @notice The illustrative happy path over the DEPLOYED `weth-wsteth` market — the simplest end-to-end proof
 ///         that a provisioned stack and the fork-test binding work together. One story, one step per helper:
@@ -76,7 +63,7 @@ contract HappyPathRoundTripTest is ForkStack {
         _requireSupplyHeadroom(m, depositAssets);
 
         uint256 vaultAssetsBefore = m.vault.totalAssets();
-        uint256 expectedShares = _erc4626Shares(depositAssets, Math.Rounding.Floor);
+        uint256 expectedShares = Erc4626Math.toShares(m.vault, depositAssets, Math.Rounding.Floor);
 
         vm.deal(LENDER, depositAssets);
         vm.startPrank(LENDER);
@@ -162,7 +149,7 @@ contract HappyPathRoundTripTest is ForkStack {
     /// @dev 5. The lender redeems every share. Principal comes back (minus at most 1 wei of share rounding),
     ///      plus whatever interest pre-existing market debt accrued over the activation warp.
     function _lenderExits(uint256 depositAssets, uint256 shares) internal {
-        uint256 expectedAssets = _erc4626Assets(shares, Math.Rounding.Floor);
+        uint256 expectedAssets = Erc4626Math.toAssets(m.vault, shares, Math.Rounding.Floor);
         require(_freeLiquidity(m) >= expectedAssets, "HappyPath: market lacks liquidity for the lender's exit");
 
         vm.prank(LENDER);
@@ -176,24 +163,6 @@ contract HappyPathRoundTripTest is ForkStack {
     // ---
     // HELPERS
     // ---
-
-    /// @dev OZ's ERC-4626 assets -> shares conversion, recomputed from the vault's live totals. Asking the vault
-    ///      itself (`previewDeposit`) would compare `deposit` against the same code path it already runs, so an
-    ///      error in that maths moves both sides together and the assertion holds regardless. The virtual offset
-    ///      is the one the vault froze at init: `SHARE_DECIMALS - loanDecimals`, saturating at zero.
-    function _erc4626Shares(uint256 assets, Math.Rounding rounding) internal view returns (uint256) {
-        return Math.mulDiv(assets, m.vault.totalSupply() + 10 ** _vaultOffset(), m.vault.totalAssets() + 1, rounding);
-    }
-
-    /// @dev The mirror of `_erc4626Shares`: shares -> assets at the same live totals.
-    function _erc4626Assets(uint256 shares, Math.Rounding rounding) internal view returns (uint256) {
-        return Math.mulDiv(shares, m.vault.totalAssets() + 1, m.vault.totalSupply() + 10 ** _vaultOffset(), rounding);
-    }
-
-    /// @dev The vault's virtual-share decimals offset, derived from the live token and vault decimals.
-    function _vaultOffset() internal view returns (uint8) {
-        return m.vault.decimals() - IERC20Metadata(address(m.loanToken)).decimals();
-    }
 
     /// @dev Stake `ethAmount` through the real Lido contracts (submit -> stETH -> wrap) and return the
     ///      resulting wstETH, left in `user`'s wallet.

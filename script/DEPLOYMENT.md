@@ -12,7 +12,8 @@ Configuration lives under `script/config/`:
 - `oracles/<name>.toml`: oracle inputs; standalone deployment uses the configured DAO Agent as proxy admin;
 - `guardians/<group>.toml`: GuardianSignals guardian set, quorum, and suspect window; proxy admin and
   `DEFAULT_ADMIN_ROLE` are fixed by the market factory's immutable `ADMIN`;
-- `vaults/<name>.toml` and `adapters/<name>.toml`: an external vault-v2 vault and its Morpho adapter.
+- `vaults/<name>.toml` and `adapters/<name>.toml`: an external vault-v2 vault and its Morpho adapter;
+- `bundlers/<name>.toml`: the WETH / wstETH the general adapter binds; the Bundler3 it dispatches through is deployed with it.
 
 Set `RPC_URL`, `DEPLOYER_PRIVATE_KEY`, and `ETHERSCAN_API_KEY` in `.env`. Deployment targets broadcast and verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`; all steps for one deployment must use the same `RUN`. Artifacts are immutable and are not overwritten.
 
@@ -35,6 +36,7 @@ oracles/<oracle>.toml
 vaults/<name>.toml       # when a vault-v2 pair is deployed
 adapters/<name>.toml     # when a vault-v2 pair is deployed
 exit-books.toml          # when exit books are deployed
+bundler.toml             # when the bundler stack is deployed
 transactions/<step>.json
 ```
 
@@ -92,7 +94,7 @@ make deploy-market CONFIG=mainnet RUN=mainnet-weth-wsteth MARKET=weth-wsteth
 ```
 
 The full order is CircuitBreaker, oracles, the protocol, the guardian registries, the
-markets, then anything optional (`deploy-vault-v2`, `deploy-exit-books`).
+markets, then anything optional (`deploy-vault-v2`, `deploy-bundler`, `deploy-exit-books`).
 
 The checked-in `mainnet` profile is deliberately blocked before value-bearing deployment: governance has not
 yet supplied `exit_book_pauser`, and `guardians/weth-wsteth.toml` still has an empty production committee.
@@ -116,12 +118,19 @@ Optional standalone deployments:
 
 ```sh
 make deploy-vault-v2 CONFIG=mainnet RUN=mainnet-weth-wsteth VAULT=weth-wsteth ADAPTER=weth-wsteth
+make deploy-bundler CONFIG=mainnet RUN=mainnet-weth-wsteth BUNDLER=mainnet
 make deploy-exit-books CONFIG=mainnet RUN=mainnet-weth-wsteth
 ```
 
 `deploy-vault-v2` needs an existing run: the adapter's Morpho and IRM-router immutables come from its
 `protocol.toml`, and the vault is the adapter's own constructor immutable, so both are created in one broadcast.
 Both are left unconfigured — curator, adapter registration and caps are the vault owner's calls.
+`deploy-bundler` needs an existing run too: it deploys this run's own bundler stack — the stock `Bundler3`
+dispatcher, the vendored `EthereumGeneralAdapter1` bound to the run's core, and the `LidoLendVaultAdapter`, both
+adapters bound to that dispatcher — from the tokens `bundlers/<name>.toml` names, and records it as
+`bundler.toml`. The protocol does not share Morpho's dispatcher: a bundle running through it would carry
+whatever adapters Morpho registers there. Neither adapter holds any protocol role: they act for the bundle's
+initiator and nothing else.
 `deploy-exit-books` writes `exit-books.toml` without modifying the protocol artifact.
 
 For a deliberately standalone Exit Book rollout, deploy the backbone with `exit_books = false`. The pauser and

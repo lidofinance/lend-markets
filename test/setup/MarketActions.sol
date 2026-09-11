@@ -6,13 +6,19 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {Id, Position, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
+import {LIQUIDATION_CURSOR, MAX_LIQUIDATION_INCENTIVE_FACTOR} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
+import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {IPausableUntil} from "../../src/interfaces/IPausableUntil.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 
 import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 
+import {Approvals} from "./Approvals.sol";
+import {Erc4626Math} from "./Erc4626Math.sol";
 import {MockPriceOracle} from "./Mocks.sol";
 import {Market} from "./Types.sol";
 
@@ -24,8 +30,43 @@ import {Market} from "./Types.sol";
 ///         it cannot live in a library — funding helpers stay on the test base. This is also more
 ///         realistic: an actor holds a budget and the actions spend it.
 library MarketActions {
+    using SharesMathLib for uint256;
+    using MathLib for uint256;
+
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     uint256 private constant ORACLE_PRICE_SCALE = 1e36;
+
+    /// @dev Pre-call snapshot for the liquidation helpers, one memory slot on the stack (via_ir = false).
+    struct LiquidationSnapshot {
+        uint256 keeperCollateral;
+        uint128 borrowerCollateral;
+        uint128 borrowerShares;
+        uint256 borrowerActive;
+        uint128 totalSupplyAssets;
+        uint128 totalBorrowShares;
+        uint256 expectedSeized;
+        uint256 expectedRepaidAssets;
+        uint256 expectedRepaidShares;
+    }
+
+    /// @notice What one vault `settle` against a single borrower with a personal settlement LTV must do,
+    ///         recomputed from the market snapshot the way the spec states it (see `expectedPersonalSettlement`).
+    struct SettlementExpectation {
+        bool applies;
+        uint256 cutBorrowShares;
+        uint256 cutSupplyShares;
+        uint256 debtCanceled;
+        uint256 collateralSeized;
+        uint256 sharesBurned;
+    }
+
+    /// @dev Pre-call balances the `settle` assertions compare against.
+    struct SettleSnapshot {
+        uint256 ownerShares;
+        uint256 receiverCollateral;
+        uint256 ownerCollateral;
+        uint256 receiverLoan;
+    }
 
     event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
     event Withdraw(
@@ -38,24 +79,25 @@ library MarketActions {
 
     // ── Lender ──
 
-    /// @notice Lender deposits `assets` into the vault. Asserts shares vs preview, the `Deposit` event,
+    /// @notice Lender deposits `assets` into the vault. Asserts the minted shares against the ERC-4626
+    ///         conversion recomputed from the live totals (and that the preview agrees), the `Deposit` event,
     ///         the loan pulled, and the share-balance / `totalSupply` / `totalAssets` deltas.
     function vaultDeposit(Market storage self, address lender, uint256 assets) internal returns (uint256 shares) {
-        vm.prank(lender);
-        self.loanToken.approve(address(self.vault), assets);
+        Approvals.approve(address(self.loanToken), lender, address(self.vault), assets);
 
-        uint256 expectedShares = self.vault.previewDeposit(assets);
+        uint256 expectedShares = Erc4626Math.toShares(self.vault, assets, Math.Rounding.Floor);
         uint256 loanBefore = self.loanToken.balanceOf(lender);
         uint256 sharesBefore = self.vault.balanceOf(lender);
         uint256 supplyBefore = self.vault.totalSupply();
         uint256 assetsBefore = self.vault.totalAssets();
+        vm.assertEq(self.vault.previewDeposit(assets), expectedShares, "deposit: preview != ERC-4626 recompute");
 
         vm.expectEmit(true, true, false, true, address(self.vault));
         emit Deposit(lender, lender, assets, expectedShares);
         vm.prank(lender);
         shares = self.vault.deposit(assets, lender);
 
-        vm.assertEq(shares, expectedShares, "deposit: shares != preview");
+        vm.assertEq(shares, expectedShares, "deposit: shares != ERC-4626 recompute");
         vm.assertEq(self.loanToken.balanceOf(lender), loanBefore - assets, "deposit: loan not pulled");
         vm.assertEq(self.vault.balanceOf(lender), sharesBefore + shares, "deposit: shares not credited");
         vm.assertEq(self.vault.totalSupply(), supplyBefore + shares, "deposit: totalSupply delta");
@@ -65,16 +107,17 @@ library MarketActions {
     /// @notice Lender withdraws `assets` of ordinary liquidity. Asserts shares vs preview, the `Withdraw`
     ///         event, the loan received, and the share burn.
     function vaultWithdraw(Market storage self, address lender, uint256 assets) internal returns (uint256 shares) {
-        uint256 expectedShares = self.vault.previewWithdraw(assets);
+        uint256 expectedShares = Erc4626Math.toShares(self.vault, assets, Math.Rounding.Ceil);
         uint256 loanBefore = self.loanToken.balanceOf(lender);
         uint256 sharesBefore = self.vault.balanceOf(lender);
+        vm.assertEq(self.vault.previewWithdraw(assets), expectedShares, "withdraw: preview != ERC-4626 recompute");
 
         vm.expectEmit(true, true, true, true, address(self.vault));
         emit Withdraw(lender, lender, lender, assets, expectedShares);
         vm.prank(lender);
         shares = self.vault.withdraw(assets, lender, lender);
 
-        vm.assertEq(shares, expectedShares, "withdraw: shares != preview");
+        vm.assertEq(shares, expectedShares, "withdraw: shares != ERC-4626 recompute");
         vm.assertEq(self.loanToken.balanceOf(lender), loanBefore + assets, "withdraw: loan not received");
         vm.assertEq(self.vault.balanceOf(lender), sharesBefore - shares, "withdraw: shares not burned");
     }
@@ -82,20 +125,20 @@ library MarketActions {
     /// @notice Lender mints `shares` from the vault. Asserts assets vs preview, the `Deposit` event, the
     ///         loan pulled, and the share / `totalSupply` deltas.
     function vaultMint(Market storage self, address lender, uint256 shares) internal returns (uint256 assets) {
-        uint256 expectedAssets = self.vault.previewMint(shares);
-        vm.prank(lender);
-        self.loanToken.approve(address(self.vault), expectedAssets);
+        uint256 expectedAssets = Erc4626Math.toAssets(self.vault, shares, Math.Rounding.Ceil);
+        Approvals.approve(address(self.loanToken), lender, address(self.vault), expectedAssets);
 
         uint256 loanBefore = self.loanToken.balanceOf(lender);
         uint256 sharesBefore = self.vault.balanceOf(lender);
         uint256 supplyBefore = self.vault.totalSupply();
+        vm.assertEq(self.vault.previewMint(shares), expectedAssets, "mint: preview != ERC-4626 recompute");
 
         vm.expectEmit(true, true, false, true, address(self.vault));
         emit Deposit(lender, lender, expectedAssets, shares);
         vm.prank(lender);
         assets = self.vault.mint(shares, lender);
 
-        vm.assertEq(assets, expectedAssets, "mint: assets != preview");
+        vm.assertEq(assets, expectedAssets, "mint: assets != ERC-4626 recompute");
         vm.assertEq(self.loanToken.balanceOf(lender), loanBefore - assets, "mint: loan not pulled");
         vm.assertEq(self.vault.balanceOf(lender), sharesBefore + shares, "mint: shares not credited");
         vm.assertEq(self.vault.totalSupply(), supplyBefore + shares, "mint: totalSupply delta");
@@ -104,16 +147,17 @@ library MarketActions {
     /// @notice Lender redeems `shares` of ordinary liquidity. Asserts assets vs preview, the `Withdraw`
     ///         event, the loan received, and the share burn.
     function vaultRedeem(Market storage self, address lender, uint256 shares) internal returns (uint256 assets) {
-        uint256 expectedAssets = self.vault.previewRedeem(shares);
+        uint256 expectedAssets = Erc4626Math.toAssets(self.vault, shares, Math.Rounding.Floor);
         uint256 loanBefore = self.loanToken.balanceOf(lender);
         uint256 sharesBefore = self.vault.balanceOf(lender);
+        vm.assertEq(self.vault.previewRedeem(shares), expectedAssets, "redeem: preview != ERC-4626 recompute");
 
         vm.expectEmit(true, true, true, true, address(self.vault));
         emit Withdraw(lender, lender, lender, expectedAssets, shares);
         vm.prank(lender);
         assets = self.vault.redeem(shares, lender, lender);
 
-        vm.assertEq(assets, expectedAssets, "redeem: assets != preview");
+        vm.assertEq(assets, expectedAssets, "redeem: assets != ERC-4626 recompute");
         vm.assertEq(self.loanToken.balanceOf(lender), loanBefore + assets, "redeem: loan not received");
         vm.assertEq(self.vault.balanceOf(lender), sharesBefore - shares, "redeem: shares not burned");
     }
@@ -122,27 +166,81 @@ library MarketActions {
     ///         Best-effort within the batch but reverts when no borrower is settled. On success, asserts
     ///         `sharesBurned <= shares`, that no loan assets reached `receiver`, the owner's share burn, the
     ///         collateral received by `receiver`, and — when `owner != receiver` — that the owner's own collateral
-    ///         is untouched (all of it routed to `receiver`).
+    ///         is untouched (all of it routed to `receiver`). A single target carrying a personal settlement LTV
+    ///         has a fully determined outcome, and the three outputs are held to `expectedPersonalSettlement`.
     function settle(Market storage self, address owner, uint256 shares, address[] memory borrowers, address receiver)
         internal
         returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled)
     {
-        uint256 ownerSharesBefore = self.vault.balanceOf(owner);
-        uint256 recvColBefore = self.collateralToken.balanceOf(receiver);
-        uint256 ownerColBefore = self.collateralToken.balanceOf(owner);
-        uint256 recvLoanBefore = self.loanToken.balanceOf(receiver);
+        accrueInterest(self); // the vault quotes off simulated totals; same-block accrual makes them the stored ones
+        SettlementExpectation memory expected = _personalExpectation(self, shares, borrowers);
+        SettleSnapshot memory pre = _snapshotSettle(self, owner, receiver);
 
+        if (expected.applies) {
+            vm.expectEmit(true, true, true, true, address(self.vault));
+            emit ILidoLendERC4626.Settled(
+                owner, owner, receiver, expected.sharesBurned, expected.collateralSeized, expected.debtCanceled
+            );
+        }
         vm.prank(owner);
         (sharesBurned, collateralSeized, debtCanceled) = self.vault.settle(shares, borrowers, receiver, owner);
 
+        _assertSettle(self, pre, expected, owner, receiver, shares, sharesBurned, collateralSeized, debtCanceled);
+    }
+
+    /// @dev The personal recompute when the batch is one borrower with a personal LTV; `applies == false`
+    ///      otherwise (several borrowers, root-policy cuts), so `_assertSettle` keeps only the shape invariants.
+    function _personalExpectation(Market storage self, uint256 shares, address[] memory borrowers)
+        private
+        view
+        returns (SettlementExpectation memory expected)
+    {
+        if (borrowers.length != 1) return expected;
+        (uint256 ltv,) = self.controller.settlementLtv(borrowers[0]);
+        if (ltv == 0) return expected;
+        expected = expectedPersonalSettlement(self, shares, borrowers[0]);
+        expected.applies = true;
+    }
+
+    function _snapshotSettle(Market storage self, address owner, address receiver)
+        private
+        view
+        returns (SettleSnapshot memory pre)
+    {
+        pre.ownerShares = self.vault.balanceOf(owner);
+        pre.receiverCollateral = self.collateralToken.balanceOf(receiver);
+        pre.ownerCollateral = self.collateralToken.balanceOf(owner);
+        pre.receiverLoan = self.loanToken.balanceOf(receiver);
+    }
+
+    function _assertSettle(
+        Market storage self,
+        SettleSnapshot memory pre,
+        SettlementExpectation memory expected,
+        address owner,
+        address receiver,
+        uint256 shares,
+        uint256 sharesBurned,
+        uint256 collateralSeized,
+        uint256 debtCanceled
+    ) private view {
+        if (expected.applies) {
+            vm.assertEq(sharesBurned, expected.sharesBurned, "settle: sharesBurned != personal recompute");
+            vm.assertEq(collateralSeized, expected.collateralSeized, "settle: collateralSeized != personal recompute");
+            vm.assertEq(debtCanceled, expected.debtCanceled, "settle: debtCanceled != personal recompute");
+        }
         vm.assertLe(sharesBurned, shares, "settle: burned > requested");
-        vm.assertEq(self.loanToken.balanceOf(receiver), recvLoanBefore, "settle: not liquidity-neutral");
-        vm.assertEq(self.vault.balanceOf(owner), ownerSharesBefore - sharesBurned, "settle: owner shares burned");
+        vm.assertEq(self.loanToken.balanceOf(receiver), pre.receiverLoan, "settle: not liquidity-neutral");
+        vm.assertEq(self.vault.balanceOf(owner), pre.ownerShares - sharesBurned, "settle: owner shares burned");
         vm.assertEq(
-            self.collateralToken.balanceOf(receiver), recvColBefore + collateralSeized, "settle: receiver collateral"
+            self.collateralToken.balanceOf(receiver),
+            pre.receiverCollateral + collateralSeized,
+            "settle: receiver collateral"
         );
         if (owner != receiver) {
-            vm.assertEq(self.collateralToken.balanceOf(owner), ownerColBefore, "settle: owner collateral routed away");
+            vm.assertEq(
+                self.collateralToken.balanceOf(owner), pre.ownerCollateral, "settle: owner collateral routed away"
+            );
         }
     }
 
@@ -181,6 +279,90 @@ library MarketActions {
         }
     }
 
+    /// @notice Lender (`owner`) fallback-exits `shares` that free liquidity fully covers, so only the redeem leg
+    ///         runs: exactly `shares` burn, the ERC-4626 conversion of them is paid in loan tokens to `receiver`,
+    ///         and no collateral moves and no debt is canceled. Asserts the liquidity precondition first, so a
+    ///         resized fixture cannot turn this into a settling exit unnoticed.
+    function fallbackExitLiquid(Market storage self, address owner, uint256 shares, address receiver)
+        internal
+        returns (uint256 loanAssets)
+    {
+        uint256 expectedAssets = Erc4626Math.toAssets(self.vault, shares, Math.Rounding.Floor);
+        vm.assertLe(
+            expectedAssets, self.controller.maxWithdrawableAssets(address(self.vault)), "fallbackExitLiquid: illiquid"
+        );
+        uint256 ownerSharesBefore = self.vault.balanceOf(owner);
+        uint256 recvLoanBefore = self.loanToken.balanceOf(receiver);
+        uint256 recvColBefore = self.collateralToken.balanceOf(receiver);
+
+        vm.expectEmit(true, true, true, true, address(self.vault));
+        emit ILidoLendERC4626.FallbackExit(owner, owner, receiver, shares, 0, expectedAssets, 0, 0);
+        vm.prank(owner);
+        (uint256 sharesBurned, uint256 paid, uint256 collateralSeized, uint256 debtCanceled) =
+            self.vault.fallbackExit(shares, receiver, owner, 0);
+        loanAssets = paid;
+
+        vm.assertEq(sharesBurned, shares, "fallbackExitLiquid: not all shares burned");
+        vm.assertEq(loanAssets, expectedAssets, "fallbackExitLiquid: loan != ERC-4626 recompute");
+        vm.assertEq(collateralSeized, 0, "fallbackExitLiquid: settle leg seized collateral");
+        vm.assertEq(debtCanceled, 0, "fallbackExitLiquid: settle leg canceled debt");
+        vm.assertEq(self.vault.balanceOf(owner), ownerSharesBefore - shares, "fallbackExitLiquid: owner shares");
+        vm.assertEq(
+            self.loanToken.balanceOf(receiver), recvLoanBefore + loanAssets, "fallbackExitLiquid: receiver loan"
+        );
+        vm.assertEq(self.collateralToken.balanceOf(receiver), recvColBefore, "fallbackExitLiquid: receiver collateral");
+    }
+
+    /// @notice What a vault `settle(shares, [borrower], ...)` must do when `borrower` carries a personal
+    ///         settlement LTV, recomputed from the spec: the owner's pro-rata core supply budget; the debt slice
+    ///         that brings the borrower to its target `(debt * WAD - ltv * collateralValue) / (WAD - ltv)`, capped
+    ///         at the debt; that slice in borrow shares (up), closing the position when it spans the debt and
+    ///         shrunk to what the budget affords; the core's derived debt (up), supply burn (up from that debt)
+    ///         and seizure (debt down, priced down); and the vault shares burned — all `shares` when the budget is
+    ///         exhausted, else the settled fraction rounded up.
+    /// @dev Reads the stored totals, so call after `accrueInterest` in the same block.
+    function expectedPersonalSettlement(Market storage self, uint256 shares, address borrower)
+        internal
+        view
+        returns (SettlementExpectation memory e)
+    {
+        MorphoMarket memory mkt = self.core.market(self.id);
+        Position memory p = self.core.position(self.id, borrower);
+        uint256 price = self.oracle.price();
+        uint256 budget = Math.mulDiv(self.vault.managedSupplyShares(), shares, self.vault.totalSupply());
+        vm.assertGt(budget, 0, "expectedPersonalSettlement: zero supply budget");
+
+        uint256 debt = uint256(p.borrowShares).toAssetsUp(mkt.totalBorrowAssets, mkt.totalBorrowShares);
+        uint256 collateralValue = Math.mulDiv(p.collateral, price, ORACLE_PRICE_SCALE);
+        (uint256 ltv,) = self.controller.settlementLtv(borrower);
+        uint256 slice = Math.min(_sliceToLtv(debt, collateralValue, ltv), debt);
+        vm.assertGt(slice, 0, "expectedPersonalSettlement: borrower already at or below its target");
+
+        uint256 cut = slice.toSharesUp(mkt.totalBorrowAssets, mkt.totalBorrowShares);
+        if (slice == debt || cut >= p.borrowShares) cut = p.borrowShares;
+        uint256 affordable = budget.toAssetsDown(mkt.totalSupplyAssets, mkt.totalSupplyShares)
+            .toSharesDown(mkt.totalBorrowAssets, mkt.totalBorrowShares);
+        if (affordable < cut) cut = affordable;
+
+        e.cutBorrowShares = cut;
+        e.debtCanceled = cut.toAssetsUp(mkt.totalBorrowAssets, mkt.totalBorrowShares);
+        e.cutSupplyShares = e.debtCanceled.toSharesUp(mkt.totalSupplyAssets, mkt.totalSupplyShares);
+        e.collateralSeized =
+            Math.mulDiv(cut.toAssetsDown(mkt.totalBorrowAssets, mkt.totalBorrowShares), ORACLE_PRICE_SCALE, price);
+        vm.assertGt(e.collateralSeized, 0, "expectedPersonalSettlement: cut too small to seize one unit");
+        e.sharesBurned =
+            e.cutSupplyShares == budget ? shares : Math.mulDiv(shares, e.cutSupplyShares, budget, Math.Rounding.Ceil);
+    }
+
+    /// @dev Loan assets to cancel so a position at (`debt`, `collateralValue`) lands on `targetLtv`; 0 when it
+    ///      is already there or below.
+    function _sliceToLtv(uint256 debt, uint256 collateralValue, uint256 targetLtv) private pure returns (uint256) {
+        uint256 debtScaled = debt * WAD;
+        uint256 targetTerm = targetLtv * collateralValue;
+        if (debtScaled <= targetTerm) return 0;
+        return (debtScaled - targetTerm) / (WAD - targetLtv);
+    }
+
     // ── Borrower ──
 
     /// @notice Borrower supplies `amount` collateral (normal, non-instant path). Asserts the core event and
@@ -189,8 +371,7 @@ library MarketActions {
     /// @dev Assumes no lot matures inside this call — mature explicitly (warp + a syncing action) before
     ///      supplying when a test needs that.
     function supplyCollateral(Market storage self, address borrower, uint256 amount) internal {
-        vm.prank(borrower);
-        self.collateralToken.approve(address(self.core), amount);
+        Approvals.approve(address(self.collateralToken), borrower, address(self.core), amount);
 
         ILidoLendMarketController.BorrowerPosition memory pre = self.controller.positionOf(borrower);
         uint128 colBefore = self.core.position(self.id, borrower).collateral;
@@ -218,10 +399,11 @@ library MarketActions {
         }
     }
 
-    /// @notice Warps past the market's max activation delay so freshly supplied collateral matures and can
-    ///         back a borrow (the activation gate resolves lazily on the next borrow).
+    /// @notice Warps past the market's LIVE max activation delay so freshly supplied collateral matures and can
+    ///         back a borrow (the activation gate resolves lazily on the next borrow). Read from the controller,
+    ///         not the deploy config, so a delay governance raised after deployment is honoured.
     function activateCollateral(Market storage self) internal {
-        vm.warp(block.timestamp + self.config.activation.maxActivationDelay + 1);
+        vm.warp(block.timestamp + self.controller.collateralActivationConfig().maxActivationDelay + 1);
     }
 
     /// @notice Borrower borrows `amount` loan assets to itself. Asserts the returned assets/shares, the
@@ -247,8 +429,7 @@ library MarketActions {
     /// @notice Borrower repays `shares` of debt (must already hold enough loan tokens). Approves and
     ///         repays, then asserts the borrow-share delta.
     function repay(Market storage self, address borrower, uint256 shares) internal {
-        vm.prank(borrower);
-        self.loanToken.approve(address(self.core), type(uint256).max);
+        Approvals.approve(address(self.loanToken), borrower, address(self.core), type(uint256).max);
 
         uint128 sharesBefore = self.core.position(self.id, borrower).borrowShares;
         vm.prank(borrower);
@@ -308,8 +489,10 @@ library MarketActions {
     // ── Keeper ──
 
     /// @notice Keeper liquidates `borrower` (specify `seizedAssets` XOR `repaidShares`; the other is `0`)
-    ///         expecting NO bad debt. Keeper must hold loan tokens to repay. Asserts the seized collateral
-    ///         to the keeper, the borrower's collateral debit, and that no loss was socialized.
+    ///         expecting NO bad debt. Keeper must hold loan tokens to repay. Asserts the seized collateral and
+    ///         repaid shares against the liquidation-incentive recompute, the collateral to the keeper, the
+    ///         borrower's collateral and debt-share debits, the active-bucket debit, and that no loss was
+    ///         socialized.
     function liquidate(
         Market storage self,
         address keeper,
@@ -317,31 +500,23 @@ library MarketActions {
         uint256 seizedAssets,
         uint256 repaidShares
     ) internal returns (uint256 seized, uint256 repaid) {
-        accrueInterest(self); // settle pending interest so the supply-asset delta isolates bad debt
-        vm.prank(keeper);
-        self.loanToken.approve(address(self.core), type(uint256).max);
-
-        uint256 keeperColBefore = self.collateralToken.balanceOf(keeper);
-        uint128 borrowerColBefore = self.core.position(self.id, borrower).collateral;
-        uint128 supplyBefore = self.core.market(self.id).totalSupplyAssets;
+        LiquidationSnapshot memory pre = _snapshotLiquidation(self, keeper, borrower, seizedAssets, repaidShares);
 
         vm.prank(keeper);
         (seized, repaid) = self.core.liquidate(self.params, borrower, seizedAssets, repaidShares, "");
 
-        vm.assertEq(self.collateralToken.balanceOf(keeper), keeperColBefore + seized, "liquidate: keeper collateral");
-        vm.assertEq(
-            self.core.position(self.id, borrower).collateral,
-            borrowerColBefore - uint128(seized),
-            "liquidate: borrower debit"
-        );
+        _assertLiquidation(self, pre, keeper, borrower, seized, repaid);
         vm.assertGe(
-            self.core.market(self.id).totalSupplyAssets, supplyBefore, "liquidate: unexpected bad debt socialized"
+            self.core.market(self.id).totalSupplyAssets,
+            pre.totalSupplyAssets,
+            "liquidate: unexpected bad debt socialized"
         );
     }
 
     /// @notice Keeper liquidates `borrower` expecting bad debt to be realized: the position is fully wiped
-    ///         (collateral and debt both to zero) and the residual loss is socialized
-    ///         (`totalSupplyAssets` drops). Reverts the test if no bad debt occurs.
+    ///         (collateral and debt both to zero), every remaining debt share leaves the market, and the
+    ///         residual loss is socialized (`totalSupplyAssets` drops by exactly the unbacked debt). Reverts the
+    ///         test if no bad debt occurs.
     function liquidateBadDebt(
         Market storage self,
         address keeper,
@@ -349,24 +524,117 @@ library MarketActions {
         uint256 seizedAssets,
         uint256 repaidShares
     ) internal returns (uint256 seized, uint256 repaid) {
-        accrueInterest(self);
-        vm.prank(keeper);
-        self.loanToken.approve(address(self.core), type(uint256).max);
-
-        uint256 keeperColBefore = self.collateralToken.balanceOf(keeper);
-        uint128 supplyBefore = self.core.market(self.id).totalSupplyAssets;
+        LiquidationSnapshot memory pre = _snapshotLiquidation(self, keeper, borrower, seizedAssets, repaidShares);
+        uint256 expectedBadDebt = _expectedBadDebt(self, pre);
 
         vm.prank(keeper);
         (seized, repaid) = self.core.liquidate(self.params, borrower, seizedAssets, repaidShares, "");
 
-        Position memory p = self.core.position(self.id, borrower);
+        vm.assertEq(seized, pre.expectedSeized, "liquidateBadDebt: seized != incentive recompute");
+        vm.assertEq(repaid, pre.expectedRepaidAssets, "liquidateBadDebt: repaid assets != incentive recompute");
         vm.assertEq(
-            self.collateralToken.balanceOf(keeper), keeperColBefore + seized, "liquidateBadDebt: keeper collateral"
+            self.collateralToken.balanceOf(keeper), pre.keeperCollateral + seized, "liquidateBadDebt: keeper collateral"
         );
+        Position memory p = self.core.position(self.id, borrower);
         vm.assertEq(p.collateral, 0, "liquidateBadDebt: collateral not fully seized");
         vm.assertEq(p.borrowShares, 0, "liquidateBadDebt: debt not cleared");
-        vm.assertLt(
-            self.core.market(self.id).totalSupplyAssets, supplyBefore, "liquidateBadDebt: no bad debt socialized"
+        MorphoMarket memory post = self.core.market(self.id);
+        vm.assertEq(
+            post.totalBorrowShares, pre.totalBorrowShares - pre.borrowerShares, "liquidateBadDebt: borrow shares left"
+        );
+        vm.assertGt(expectedBadDebt, 0, "liquidateBadDebt: no bad debt to socialize");
+        vm.assertEq(
+            pre.totalSupplyAssets - post.totalSupplyAssets, expectedBadDebt, "liquidateBadDebt: socialized != recompute"
+        );
+    }
+
+    /// @dev Accrue, approve the keeper, and snapshot everything the liquidation assertions compare against,
+    ///      including the (seized, repaid) pair recomputed from the incentive formula.
+    function _snapshotLiquidation(
+        Market storage self,
+        address keeper,
+        address borrower,
+        uint256 seizedAssets,
+        uint256 repaidShares
+    ) private returns (LiquidationSnapshot memory pre) {
+        accrueInterest(self); // settle pending interest so the supply-asset delta isolates bad debt
+        Approvals.approve(address(self.loanToken), keeper, address(self.core), type(uint256).max);
+
+        Position memory p = self.core.position(self.id, borrower);
+        MorphoMarket memory mkt = self.core.market(self.id);
+        pre.keeperCollateral = self.collateralToken.balanceOf(keeper);
+        pre.borrowerCollateral = p.collateral;
+        pre.borrowerShares = p.borrowShares;
+        pre.borrowerActive = self.controller.positionOf(borrower).active;
+        pre.totalSupplyAssets = mkt.totalSupplyAssets;
+        pre.totalBorrowShares = mkt.totalBorrowShares;
+        (pre.expectedSeized, pre.expectedRepaidAssets, pre.expectedRepaidShares) =
+            expectedLiquidation(self, seizedAssets, repaidShares);
+    }
+
+    function _assertLiquidation(
+        Market storage self,
+        LiquidationSnapshot memory pre,
+        address keeper,
+        address borrower,
+        uint256 seized,
+        uint256 repaid
+    ) private view {
+        vm.assertEq(seized, pre.expectedSeized, "liquidate: seized != incentive recompute");
+        vm.assertEq(repaid, pre.expectedRepaidAssets, "liquidate: repaid assets != incentive recompute");
+        vm.assertEq(
+            self.collateralToken.balanceOf(keeper), pre.keeperCollateral + seized, "liquidate: keeper collateral"
+        );
+        Position memory p = self.core.position(self.id, borrower);
+        vm.assertEq(p.collateral, pre.borrowerCollateral - uint128(seized), "liquidate: borrower collateral debit");
+        vm.assertEq(
+            p.borrowShares,
+            pre.borrowerShares - uint128(pre.expectedRepaidShares),
+            "liquidate: borrower debt-share debit"
+        );
+        // A seizure takes active collateral first, so active drops by the seizure up to what was active.
+        vm.assertEq(
+            self.controller.positionOf(borrower).active,
+            pre.borrowerActive - Math.min(seized, pre.borrowerActive),
+            "liquidate: active bucket debit"
+        );
+    }
+
+    /// @notice What a core `liquidate` must produce for the given input — the seized collateral, the repaid debt
+    ///         in assets (what the call returns) and in shares (what leaves the position) — recomputed from the
+    ///         market's accrued totals, the oracle price and the LLTV-dependent liquidation incentive factor
+    ///         `min(1.15, 1 / (1 - 0.3 * (1 - lltv)))`. Exactly one input is non-zero.
+    function expectedLiquidation(Market storage self, uint256 seizedAssets, uint256 repaidShares)
+        internal
+        view
+        returns (uint256 seized, uint256 repaidAssets, uint256 repaid)
+    {
+        MorphoMarket memory mkt = self.core.market(self.id);
+        uint256 price = self.oracle.price();
+        uint256 incentive = Math.min(
+            MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD.wDivDown(WAD - LIQUIDATION_CURSOR.wMulDown(WAD - self.params.lltv))
+        );
+        if (seizedAssets != 0) {
+            seized = seizedAssets;
+            repaid = seizedAssets.mulDivUp(price, ORACLE_PRICE_SCALE).wDivUp(incentive)
+                .toSharesUp(mkt.totalBorrowAssets, mkt.totalBorrowShares);
+        } else {
+            repaid = repaidShares;
+            seized = repaidShares.toAssetsDown(mkt.totalBorrowAssets, mkt.totalBorrowShares).wMulDown(incentive)
+                .mulDivDown(ORACLE_PRICE_SCALE, price);
+        }
+        repaidAssets = repaid.toAssetsUp(mkt.totalBorrowAssets, mkt.totalBorrowShares);
+    }
+
+    /// @dev The loss a full-seizure liquidation socializes: the borrower's debt shares left after the repay,
+    ///      valued at the post-repay totals and capped at the remaining borrow assets.
+    function _expectedBadDebt(Market storage self, LiquidationSnapshot memory pre) private view returns (uint256) {
+        MorphoMarket memory mkt = self.core.market(self.id);
+        uint256 borrowAssetsAfterRepay = Math.saturatingSub(mkt.totalBorrowAssets, pre.expectedRepaidAssets);
+        uint256 remainingShares = pre.borrowerShares - pre.expectedRepaidShares;
+        return Math.min(
+            borrowAssetsAfterRepay,
+            remainingShares.toAssetsUp(borrowAssetsAfterRepay, mkt.totalBorrowShares - pre.expectedRepaidShares)
         );
     }
 
@@ -395,8 +663,7 @@ library MarketActions {
     /// @notice Lender supplies `assets` straight to the core, bypassing the vault. Asserts the supply-share
     ///         delta against the market totals and the loan tokens pulled.
     function coreSupply(Market storage self, address lender, uint256 assets) internal returns (uint256 shares) {
-        vm.prank(lender);
-        self.loanToken.approve(address(self.core), type(uint256).max);
+        Approvals.approve(address(self.loanToken), lender, address(self.core), type(uint256).max);
 
         MorphoMarket memory pre = self.core.market(self.id);
         uint256 expectedShares = SharesMathLib.toSharesDown(assets, pre.totalSupplyAssets, pre.totalSupplyShares);
@@ -436,8 +703,7 @@ library MarketActions {
     /// @notice `caller` (an instant-activation-enabled address) supplies collateral for `borrower`. Asserts the
     ///         whole amount lands active immediately: the inactive buckets are untouched by this supply.
     function supplyCollateralInstant(Market storage self, address caller, address borrower, uint256 amount) internal {
-        vm.prank(caller);
-        self.collateralToken.approve(address(self.core), amount);
+        Approvals.approve(address(self.collateralToken), caller, address(self.core), amount);
 
         ILidoLendMarketController.BorrowerPosition memory pre = self.controller.positionOf(borrower);
         uint128 colBefore = self.core.position(self.id, borrower).collateral;
@@ -451,11 +717,28 @@ library MarketActions {
         vm.assertEq(post.activating, pre.activating, "instant: nothing may enter the timer");
     }
 
+    /// @notice `caller` (with NO instant activation) supplies collateral for `borrower`. Asserts the whole lot
+    ///         enters the activation timer: the caller's lack of a grant, not the borrower's, decides the bucket.
+    ///         `amount` must clear the activation threshold on its own.
+    function supplyCollateralOnBehalf(Market storage self, address caller, address borrower, uint256 amount) internal {
+        Approvals.approve(address(self.collateralToken), caller, address(self.core), amount);
+
+        ILidoLendMarketController.BorrowerPosition memory pre = self.controller.positionOf(borrower);
+        uint128 colBefore = self.core.position(self.id, borrower).collateral;
+
+        vm.prank(caller);
+        self.core.supplyCollateral(self.params, amount, borrower, "");
+
+        ILidoLendMarketController.BorrowerPosition memory post = self.controller.positionOf(borrower);
+        vm.assertEq(self.core.position(self.id, borrower).collateral, colBefore + amount, "onBehalf: position");
+        vm.assertEq(post.active, pre.active, "onBehalf: nothing may land active");
+        vm.assertEq(post.activating, pre.activating + pre.dust + amount, "onBehalf: lot must enter the timer");
+    }
+
     /// @notice Borrower repays `assets` of debt by asset amount (the share-anchored helper is `repay`).
     ///         Asserts the returned assets and that borrow shares strictly decreased.
     function repayByAssets(Market storage self, address borrower, uint256 assets) internal returns (uint256 shares) {
-        vm.prank(borrower);
-        self.loanToken.approve(address(self.core), type(uint256).max);
+        Approvals.approve(address(self.loanToken), borrower, address(self.core), type(uint256).max);
 
         uint128 sharesBefore = self.core.position(self.id, borrower).borrowShares;
         vm.prank(borrower);

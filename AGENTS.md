@@ -7,7 +7,8 @@
 - `lib/lido-lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported
   via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
 - `lib/bundler3`: stock Morpho bundler3, pinned as a submodule and imported via
-  the `@bundler3/` remapping — the one-transaction bundling dispatcher and its adapter base contracts.
+  the `@bundler3/` remapping — the one-transaction bundling dispatcher, deployed per run rather than shared with
+  Morpho's, and its adapter base contracts.
   The Lido bundler code is `src/adapters/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and
   `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO
   token surface).
@@ -34,7 +35,7 @@
   `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
 - `script/`: deployment scripts.
 - `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `circuit-breakers/`,
-  `guardians/`, `oracles/`, `vaults/`, `adapters/`, optional `exit-books.toml`, and archived
+  `guardians/`, `oracles/`, `vaults/`, `adapters/`, optional `exit-books.toml` and `bundler.toml`, and archived
   transaction records. Read directly by both `test/fork/` (`ARTIFACTS_DIR`) and `test/acceptance/`
   (`ACCEPTANCE_REGISTRY` -> `protocol.toml`); nothing is composed or prepared in between.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
@@ -71,9 +72,12 @@
 - Format check for local Solidity files:
   `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
-- Writing a fork test: put it under `test/fork/`, extend `helpers/ForkStack.sol` (which extends `ForkTest`),
-  call `_fork()` first in `setUp`, bind the market with `_marketForRole("<role>")` + `_bindMarket`, and read external addresses
-  via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and binds the run named by `ARTIFACTS_DIR`,
+- Writing a fork test: put it under `test/fork/`, extend `helpers/ForkMarketStack.sol` (which extends `ForkStack`
+  and `ForkTest`), pass the market role to its constructor (`contract X is Base("weth-wsteth") {}`), and call
+  `_fork()` then `_bindRole()` first in `setUp`. That binds the run's market for the role into `deployed` (the raw
+  handle the `ForkStack` helpers take) and `market` (the handle the `MarketActions` helpers drive), and marks the
+  test skipped when the run has no such market. `_seedLenderAndBorrower()` is the shared fixture. Read external
+  addresses via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and binds the run named by `ARTIFACTS_DIR`,
   reverting when either is unset, the run has no `protocol.toml`, the network config it names is missing, or
   its recorded chain id differs from the forked chain. A role the deployment has no market for skips the
   suite; everything else reverts. Protocol addresses come from `_protocol("core")`,

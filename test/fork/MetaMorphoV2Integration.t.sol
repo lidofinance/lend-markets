@@ -19,10 +19,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SettlementSlice} from "../../src/types/SettlementTypes.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
-
-interface IWETH {
-    function deposit() external payable;
-}
+import {IWETH} from "./helpers/ForkTokens.sol";
 
 /// @notice Fork integration of the external vault-v2 stack with the ALREADY-DEPLOYED `weth-wsteth` market: a
 ///         vault-v2 allocator routes deposits through the deployed Morpho adapter
