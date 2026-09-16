@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {IMorphoBase, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {IMorphoBase, MarketParams, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
@@ -277,24 +278,27 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
 
     // ── settlement budgets exclude the credit (the severe one-victim extraction path) ──
 
-    /// @dev The settlement-assisted extraction relied on the settle budget scaling with the vault's FULL core
-    ///      position. With the managed counter, the pro-rata budget uses managed shares only, so a credit leaves
-    ///      the attacker's exit budget exactly where it was.
+    /// @dev Redemption values use managed backing, so an unsolicited core credit cannot enlarge the settlement budget.
     function test_settlementBudget_excludesDonation() public {
         Market storage m = _market();
         (address lender,) = _distress(m, 100 ether, 20 ether, 0.22e36);
         uint256 lenderShares = m.vault.balanceOf(lender);
 
-        uint256 budgetBefore = m.vault.managedSupplyShares() * lenderShares / m.vault.totalSupply();
+        uint256 budgetBefore = _redemptionBudget(m, lenderShares);
         _donateToVault(m, _actor("attacker"), 500 ether);
-        uint256 budgetAfter = m.vault.managedSupplyShares() * lenderShares / m.vault.totalSupply();
+        uint256 budgetAfter = _redemptionBudget(m, lenderShares);
 
         assertEq(budgetAfter, budgetBefore, "settle budget is independent of the unsolicited credit");
-        // And it equals the managed pro-rata, not the full-position pro-rata.
-        uint256 expected = m.vault.managedSupplyShares() * lenderShares / m.vault.totalSupply();
-        assertEq(budgetAfter, expected, "settle budget == managed pro-rata");
         assertLt(budgetAfter, _coreSupplyShares(m) * lenderShares / m.vault.totalSupply(), "credit excluded");
         _assertManagedLeCore(m);
+    }
+
+    function _redemptionBudget(Market storage m, uint256 shares) internal view returns (uint256) {
+        MorphoMarket memory market_ = m.core.market(m.id);
+        return
+            SharesMathLib.toSharesDown(
+                m.vault.previewRedeem(shares), market_.totalSupplyAssets, market_.totalSupplyShares
+            );
     }
 
     /// @dev The full one-victim extraction from the finding, executed end to end: attacker seeds one raw unit

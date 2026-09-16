@@ -25,9 +25,21 @@ contract VaultConformanceInvariant is LidoLendSetup {
 
     address[] internal actors;
 
+    function _loanDecimals() internal pure virtual returns (uint8) {
+        return 18;
+    }
+
+    function _priceAction() internal pure virtual returns (bytes4) {
+        return VaultHandler.crashPrice.selector;
+    }
+
     function setUp() public {
-        MockERC20 loan = new MockERC20("Loan", "LOAN", 18);
+        uint256 loanUnit = 10 ** _loanDecimals();
+        MockERC20 loan = new MockERC20("Loan", "LOAN", _loanDecimals());
         MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
+        _initSeed();
+        // Preserve the whole-token price distribution while changing the oracle's raw-unit scale.
+        oraclePrice = oraclePrice * loanUnit / 1 ether;
         _deployProtocol(_defaultConfig(address(loan), address(collateral), address(collateral)));
 
         Market storage m = protocol.markets[0];
@@ -59,9 +71,9 @@ contract VaultConformanceInvariant is LidoLendSetup {
 
         // Seed one live personal settlement path so the targeted-settlement invariants do not depend on a random
         // deposit -> collateral -> borrow -> opt-in prefix before they can observe a successful fill.
-        handler.deposit(0, 1_000 ether);
+        handler.deposit(0, 1_000 * loanUnit);
         handler.supplyCollateral(1, 1_000 ether);
-        handler.borrow(1, 25 ether);
+        handler.borrow(1, 25 * loanUnit);
         handler.setSettlementLtv(1, 1);
 
         bytes4[] memory all = new bytes4[](16);
@@ -76,7 +88,7 @@ contract VaultConformanceInvariant is LidoLendSetup {
         all[8] = VaultHandler.setSettlementLtv.selector;
         all[9] = VaultHandler.repay.selector;
         all[10] = VaultHandler.warp.selector;
-        all[11] = VaultHandler.crashPrice.selector;
+        all[11] = _priceAction();
         all[12] = VaultHandler.liquidate.selector;
         all[13] = VaultHandler.donate.selector;
         all[14] = VaultHandler.pauseResume.selector;
@@ -212,7 +224,7 @@ contract VaultConformanceInvariant is LidoLendSetup {
         );
     }
 
-    /// @dev A targeted settle cannot consume more core shares than the request's gross pro-rata claim.
+    /// @dev In the sole-supplier fixture, a targeted settle also fits the request's gross pro-rata core claim.
     function invariant_targetedSettlementStaysWithinGrossClaim() public view {
         assertFalse(handler.targetedSettlementExceededGrossClaim(), "targeted settlement stayed within gross claim");
     }
@@ -234,21 +246,27 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.exitBurnedTooMuch(), "settle/fallbackExit burned <= requested shares");
     }
 
-    /// @dev A targeted `settle` pays no loan and cancels debt and supply by the same amount, so it leaves the market's
-    ///      free liquidity (utilization) unchanged.
-    function invariant_settleIsLiquidityNeutral() public view {
-        assertFalse(handler.settleMovedLiquidity(), "settle left free liquidity unchanged");
+    /// @dev A targeted settle transfers no loan tokens. Accounting idle changes only when final debt rounding
+    ///      exceeds remaining borrow assets, which the core floors at zero.
+    function invariant_settleLiquidityMatchesDebtRounding() public view {
+        assertFalse(handler.settleLiquidityMismatch(), "settle idle matches the exact debt-rounding adjustment");
     }
 
-    /// @dev `fallbackExit` drops free liquidity by exactly its redeem-leg payout; its settle leg is liquidity-neutral.
+    /// @dev The accounting idle drop equals the liquid payout plus any final debt-rounding adjustment.
     function invariant_fallbackExitIdleMatchesRedeem() public view {
-        assertFalse(handler.fallbackExitLiquidityMismatch(), "fallbackExit idle drop == its loan payout");
+        assertFalse(handler.fallbackExitLiquidityMismatch(), "fallbackExit idle matches payout and debt rounding");
     }
 
     /// @dev Settlement runs at par with no penalty: the seized collateral is worth at most the debt it cancels,
     ///      even when its value is rounded up against the market.
     function invariant_settlementRunsAtPar() public view {
         assertFalse(handler.parViolated(), "seized collateral value <= cancelled debt (par, no penalty)");
+    }
+
+    /// @dev For both exits, E = loan received + exact oracle value of collateral - pre-call previewRedeem(burned).
+    ///      Require E_min <= E <= min(E_max, 0), with per-cut bounds derived in VaultHandler._cutRoundingInterval.
+    function invariant_exitPayoutWithinRoundingBounds() public view {
+        assertFalse(handler.exitPayoutBoundViolated(), handler.exitPayoutBoundFailure());
     }
 
     /// @dev A settle's collateral payout, valued at the oracle price rounded up, never exceeds the down-rounded
@@ -264,7 +282,7 @@ contract VaultConformanceInvariant is LidoLendSetup {
     }
 
     /// @dev The `debtCanceled` a settle reports equals the up-rounded value of the borrow shares it actually
-    ///      removed, and the market's borrow assets fall by exactly that amount.
+    ///      removed; the market's borrow-asset subtraction saturates at zero for the final debt.
     function invariant_settleDebtReportMatchesDeltas() public view {
         assertFalse(handler.settleDebtReportMismatch(), "reported debtCanceled == up-rounded observed share delta");
     }

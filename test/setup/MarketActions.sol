@@ -314,7 +314,8 @@ library MarketActions {
     }
 
     /// @notice What a vault `settle(shares, [borrower], ...)` must do when `borrower` carries a personal
-    ///         settlement LTV, recomputed from the spec: the owner's pro-rata core supply budget; the debt slice
+    ///         settlement LTV, recomputed from the spec: the request's ERC-4626 redemption value rounded down into
+    ///         core supply shares as the budget; the debt slice
     ///         that brings the borrower to its target `(debt * WAD - ltv * collateralValue) / (WAD - ltv)`, capped
     ///         at the debt; that slice in borrow shares (up), closing the position when it spans the debt and
     ///         shrunk to what the budget affords; the core's derived debt (up), supply burn (up from that debt)
@@ -329,7 +330,8 @@ library MarketActions {
         MorphoMarket memory mkt = self.core.market(self.id);
         Position memory p = self.core.position(self.id, borrower);
         uint256 price = self.oracle.price();
-        uint256 budget = Math.mulDiv(self.vault.managedSupplyShares(), shares, self.vault.totalSupply());
+        uint256 budget = Erc4626Math.toAssets(self.vault, shares, Math.Rounding.Floor)
+            .toSharesDown(mkt.totalSupplyAssets, mkt.totalSupplyShares);
         vm.assertGt(budget, 0, "expectedPersonalSettlement: zero supply budget");
 
         uint256 debt = uint256(p.borrowShares).toAssetsUp(mkt.totalBorrowAssets, mkt.totalBorrowShares);
