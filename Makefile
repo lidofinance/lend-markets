@@ -81,7 +81,7 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-vault-v2 verify-vault-v2 deploy-bundler verify-bundler deploy-exit-books deploy-protocol deploy-market deploy-run deploy-all activate-markets fork-activate deploy-wizard state-mate-config acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop apply-pending pending-stop test-pending test-fork-live test-fork-provision
+.PHONY: help build sizes test test-local test-fork test-simulation test-mutation deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-vault-v2 verify-vault-v2 deploy-bundler verify-bundler deploy-exit-books deploy-protocol deploy-market deploy-run deploy-all activate-markets fork-activate deploy-wizard state-mate-config acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop apply-pending pending-stop test-pending test-fork-live test-fork-provision
 
 help:
 	@echo "Targets:"
@@ -90,6 +90,8 @@ help:
 	@echo "  test          all tests, local + fork in one run; fork suites require RPC_URL + ARTIFACTS_DIR"
 	@echo "  test-local    forge test on the local suites only (excludes test/fork/; no RPC)"
 	@echo "  test-fork     forge test on test/fork/ only; the suites revert without the fork setup"
+	@echo "  test-simulation  the year-long solvency simulations (test/simulation/); the 30-day variants run in test-local"
+	@echo "  test-mutation forge mutation testing of src/ over the 30-day simulations (needs forge >= 1.8.0; slow)"
 	@echo "  deploy-oracle CONFIG=<config> RUN=<run> ORACLE=<name>"
 	@echo "  deploy-circuit-breaker CONFIG=<config> RUN=<run>"
 	@echo "  deploy-protocol CONFIG=<config> RUN=<run>  (backbone + exit books; markets are separate)"
@@ -150,6 +152,15 @@ test-local:
 # Fork suites only; they revert without a working fork setup.
 test-fork:
 	forge test --match-path '$(FORK_PATH)'
+
+# The 365-day solvency simulations; the 30-day runs are part of test-local. The gas limit is set in foundry.toml.
+test-simulation:
+	RUN_SOLVENCY_SIMULATION=true forge test --match-path 'test/simulation/**' -vv
+
+# Local only, not run in CI; needs forge >= 1.8.0. The score counts only the mutants forge evaluates; it skips many.
+test-mutation:
+	@forge test --help | grep -q -- '--mutate' || { echo "test-mutation: the local forge ($$(forge --version | head -1)) has no mutation testing; it needs forge >= 1.8.0 (foundryup -i v1.8.3)"; exit 1; }
+	TEST_SEED=1 forge test --mutate src --match-path 'test/simulation/**' --match-test shortRun --mutation-timeout 900
 
 # The helper is deliberately repeated by each target: invoking `make deploy-protocol` directly is as safe as
 # calling it through `deploy-run`.

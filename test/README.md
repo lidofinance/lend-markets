@@ -37,6 +37,28 @@ surfaced here gets pinned as an explicit deterministic test.
 - **Runs:** on every change (`make test-local`); CI pins `TEST_SEED=1`.
 - **Here:** `test/invariant/` + `invariant/handlers/`.
 
+**Solvency simulations** (`test/simulation/`) drive one market for 30 or 365 simulated days. Lenders,
+borrowers, keepers, governance and the vault-share exit book act at random, and a model of the
+protocol state predicts every outcome, reverts included. The guardians follow a fixed routine: both
+heartbeat every hour, and every ten days one ordinary borrower is suspected, flagged, banned and
+unbanned. Rare events, such as governance changes, are scheduled once per run at a random time; the
+price crash and the settlement scenarios also wait until they can succeed. Every 20 iterations the
+books and the settlement queue are checked against the model. The run then unwinds and reconciles
+every account. `test/setup/ActivationModel.sol` restates the collateral-activation rules from the spec.
+
+The 30-day runs are part of `make test-local` and assert coverage floors; each floor's comment says why
+it holds. `make test-simulation` runs the 365-day versions, and so does the fuzz workflow when dispatched.
+`make test-mutation` runs the 30-day simulations against mutants of `src/`; it is local only and needs
+forge >= 1.8.0.
+
+Limitations:
+
+- Moves run in a fixed order, one per hour; same-block and sub-hour cases are left to the unit suites.
+- The simulated transaction is the whole run on the pinned forge 1.7.1 and one `iterate` call on 1.8.x,
+  not one user call. `ActivationInflow.invariant.t.sol` covers the add-then-remove inflow rule.
+- Activation config changes move only the activating lock and the guardian-quorum delay.
+- `MorphoExitBook` and the guardian-signal admin surface are not driven; their own suites cover them.
+
 ## 4. Empty-fork deploy tests (scratch deploy on a fork)
 
 The full deploy path exercised on a fork of the target network that is empty of the protocol but

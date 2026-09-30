@@ -105,9 +105,15 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
     ///         A failed run reproduces by exporting the logged `TEST_SEED`.
     function _initSeed() internal {
         if (_seeded) return;
+        _useSeed(vm.envOr("TEST_SEED", uint256(vm.randomUint())));
+    }
+
+    /// @dev Pins the run seed and derives the oracle price; a test pinning a seed calls it before any deployment.
+    function _useSeed(uint256 runSeed) internal {
+        require(!_seeded, "seed: already set");
         _seeded = true;
-        seed = vm.envOr("TEST_SEED", uint256(vm.randomUint()));
-        oraclePrice = _priceFromSeed(seed);
+        seed = runSeed;
+        oraclePrice = _priceFromSeed(runSeed);
         console2.log("TEST_SEED       :", seed);
         console2.log("oraclePrice(1e36):", oraclePrice);
     }

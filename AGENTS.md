@@ -135,6 +135,7 @@ test/
 ├── unit/         # L0+L1 — one file per contract / pure library, method-by-method
 ├── scenario/     # L2 — end-to-end flows on a freshly deployed stack (local EVM, mock tokens)
 ├── invariant/    # L4 — handler-based stateful properties
+├── simulation/   # seeded months-long solvency simulations on a fresh stack; 30-day variants run in test-local
 ├── fork/         # fork tests vs the deployed protocol, bound from deployed/<ARTIFACTS_DIR>/
 └── acceptance/   # L3 — mainnet fork vs immutable artifacts under deployed/<run>/
 ```
@@ -146,6 +147,9 @@ test/
   `setup/`), on the local EVM with mock tokens.
 - `invariant/<Area>.invariant.t.sol` — handler-based stateful properties (actors, ghosts, bounded
   actions). Handlers under `invariant/handlers/`.
+- `simulation/<Market>Solvency.t.sol` — seeded 30- and 365-day solvency simulations on a freshly deployed
+  stack with the default market config. The driver draws everyday moves by odds and schedules each rare event
+  once per run.
 - `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
 - `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
   addresses and deployment values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
