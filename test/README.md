@@ -45,6 +45,10 @@ unbanned. Rare events, such as governance changes, are scheduled once per run at
 price crash and the settlement scenarios also wait until they can succeed. Every 20 iterations the
 books and the settlement queue are checked against the model. The run then unwinds and reconciles
 every account. `test/setup/ActivationModel.sol` restates the collateral-activation rules from the spec.
+Each suite has its own price model: WETH/wstETH follows Lido's accounting rate, WETH/wstETH crash walks
+and crashes once, and USDC/USDY only rises. Each also runs on the adaptive IRM.
+Solvency here means that every claim the core records is backed, by tokens it holds or by debt it is
+owed, once bad debt is written off. Lenders still take that loss, and the crash suite requires bad debt.
 
 The 30-day runs are part of `make test-local` and assert coverage floors; each floor's comment says why
 it holds. `make test-simulation` runs the 365-day versions, and so does the fuzz workflow when dispatched.

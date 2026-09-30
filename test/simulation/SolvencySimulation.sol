@@ -28,6 +28,8 @@ import {Random} from "./Random.sol";
 ///         market while the price walks, interest accrues, governance pauses, freezes, caps and re-tunes, guardians
 ///         follow a fixed routine, tokens get donated and exit requests get filled. Then everyone leaves and the books
 ///         must balance: every number the protocol reports is checked against a total the test computed itself.
+///         Solvency here means that every claim the core records is backed, by tokens it holds or by debt it is owed,
+///         once bad debt is written off. Lenders still take that loss, since a write-off lowers every supplier's claim.
 ///         Each iteration draws the everyday move families by their odds, rare families fire once a run at a
 ///         scheduled time, and a slot of time passes after every move. Two ways to leave:
 ///         - repayment: borrowers repay, suppliers redeem, the market must empty exactly;
@@ -102,7 +104,7 @@ abstract contract SolvencySimulation is SolvencyActions {
         _run(LONG_RUN, Unwind.ForcedExit);
     }
 
-    /// @notice Regression: this seed once failed the WETH/wstETH suite with "weth/wsteth: no write-off", when the
+    /// @notice Regression: this seed once failed the WETH/wstETH crash suite with "weth/wsteth: no write-off", when the
     ///         scheduled crash drowned no leveraged borrower. Kept as a replay point.
     function test_regressionSeed_noWriteOff_repaymentUnwind() public {
         _useSeed(NO_WRITE_OFF_SEED);
