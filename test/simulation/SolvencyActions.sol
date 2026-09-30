@@ -64,6 +64,9 @@ abstract contract SolvencyActions is LidoLendSetup {
     uint256 internal constant BOOK_LIFETIME = 30 days;
     uint256 internal constant BOOK_SERVICE_FEE = 0.2e18;
     uint256 internal constant ORACLE_SCALE = 1e36;
+    /// @dev Scale of `g.supplyIndex`, finer than WAD so that rounding the index at every accrual of a year costs no
+    ///      supplier a loan-asset unit.
+    uint256 internal constant INDEX_SCALE = 1e36;
     /// @dev `_nextDue`'s answer when no schedule entry is due; no index can collide with it.
     uint256 internal constant NOTHING_DUE = type(uint256).max;
     /// @dev How far under water the scheduled crash must put a leveraged borrower before it fires: debt over collateral
@@ -140,6 +143,8 @@ abstract contract SolvencyActions is LidoLendSetup {
         uint256 collateralOut;
         uint256 collateralOutValue; // at the oracle price when it moved
         uint256 debtCanceled;
+        uint256 scaledIn; // each flow in over the supply index when it moved; the fee recipient's fees count here
+        uint256 scaledOut; // each flow out, loan assets or settled debt, over the supply index when it moved
         uint256 ops;
         uint256 cuts;
     }
@@ -172,8 +177,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         uint256 interest;
         uint256 feeAmount;
         uint256 badDebt;
-        uint256 gainIdx; // product of the share-price ratios interest produced, WAD
-        uint256 lossIdx; // product of the share-price ratios bad debt produced, WAD
+        uint256 supplyIndex; // worth of a loan-asset unit supplied at the start, scaled by INDEX_SCALE
         uint256 minPrice;
         uint256 maxPrice;
         uint256 crashes;
@@ -349,8 +353,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         }
 
         random = Random.create(seed);
-        g.gainIdx = WAD;
-        g.lossIdx = WAD;
+        g.supplyIndex = INDEX_SCALE;
         g.minPrice = oraclePrice;
         g.maxPrice = oraclePrice;
         _setOdds();
@@ -389,9 +392,9 @@ abstract contract SolvencyActions is LidoLendSetup {
     // ---
 
     /// @dev One slot passes, the guardians run their routine and the core accrues, matching the interest, fee and fee
-    ///      shares the model computes from the fixed rate or the adaptive IRM's pre-accrual quote. While paused the
-    ///      accrual reverts; the first accrual after resume covers the whole span, which the model reproduces from
-    ///      `lastUpdate`.
+    ///      shares of `_pendingAccrual`. The supply index moves with the accrual and the fee recipient is credited the
+    ///      fee. While paused the accrual reverts; the first accrual after resume covers the whole span, which the
+    ///      model reproduces from `lastUpdate`.
     function _advanceSlot() internal {
         Market storage m = _m();
         vm.warp(block.timestamp + SLOT);
@@ -403,12 +406,7 @@ abstract contract SolvencyActions is LidoLendSetup {
             return;
         }
         MorphoMarket memory mk = m.core.market(m.id);
-        uint256 elapsed = block.timestamp - mk.lastUpdate;
-        uint256 rate = irmKind == IrmKind.Fixed ? fixedBorrowRate : IIrm(m.irm).borrowRateView(m.params, mk);
-        uint256 interest = uint256(mk.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(elapsed));
-        uint256 feeAmount = interest.wMulDown(FEE);
-        uint256 feeShares =
-            feeAmount.toSharesDown(uint256(mk.totalSupplyAssets) + interest - feeAmount, mk.totalSupplyShares);
+        (uint256 interest, uint256 feeAmount, uint256 feeShares) = _pendingAccrual(mk);
         uint256 feeBefore = m.core.position(m.id, feeRecipient).supplyShares;
 
         m.accrueInterest();
@@ -423,14 +421,42 @@ abstract contract SolvencyActions is LidoLendSetup {
         g.interest += interest;
         g.feeAmount += feeAmount;
         g.accruals++;
-        if (mk.totalSupplyAssets > 0) {
-            // Share price ratio net of the fee shares: (A + i) / (S + f) over A / S.
-            g.gainIdx = Math.mulDiv(
-                g.gainIdx,
-                (uint256(mk.totalSupplyAssets) + interest) * mk.totalSupplyShares,
-                uint256(mk.totalSupplyAssets) * (uint256(mk.totalSupplyShares) + feeShares)
-            );
-        }
+        g.supplyIndex = _indexAfter(mk, interest, feeShares);
+        // The fee shares are worth the fee at the share price the accrual leaves.
+        lender[feeRecipient].scaledIn += _toScaled(feeAmount);
+    }
+
+    /// @dev The interest the core books at its next accrual, from the fixed rate or the adaptive IRM's pre-accrual
+    ///      quote, and the fee and the fee shares minted for it.
+    function _pendingAccrual(MorphoMarket memory mk)
+        internal
+        view
+        returns (uint256 interest, uint256 feeAmount, uint256 feeShares)
+    {
+        Market storage m = _m();
+        uint256 rate = irmKind == IrmKind.Fixed ? fixedBorrowRate : IIrm(m.irm).borrowRateView(m.params, mk);
+        interest = uint256(mk.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(block.timestamp - mk.lastUpdate));
+        feeAmount = interest.wMulDown(FEE);
+        feeShares = feeAmount.toSharesDown(uint256(mk.totalSupplyAssets) + interest - feeAmount, mk.totalSupplyShares);
+    }
+
+    /// @dev `g.supplyIndex` after an accrual of `interest` minting `feeShares` on the totals `mk`, which moves the
+    /// share price net of the fee shares by `(A + i) / (S + f)` over `A / S`.
+    function _indexAfter(MorphoMarket memory mk, uint256 interest, uint256 feeShares) internal view returns (uint256) {
+        if (mk.totalSupplyAssets == 0) return g.supplyIndex;
+        return Math.mulDiv(
+            g.supplyIndex,
+            (uint256(mk.totalSupplyAssets) + interest) * mk.totalSupplyShares,
+            uint256(mk.totalSupplyAssets) * (uint256(mk.totalSupplyShares) + feeShares)
+        );
+    }
+
+    /// @dev `g.supplyIndex` with the interest the core has not booked yet, which only a pause holds back. The vault
+    ///      values its shares at the accrued totals even then, so every flow converts at this index.
+    function _supplyIndexNow() internal view returns (uint256) {
+        MorphoMarket memory mk = _m().core.market(_m().id);
+        (uint256 interest,, uint256 feeShares) = _pendingAccrual(mk);
+        return _indexAfter(mk, interest, feeShares);
     }
 
     // ---
@@ -635,7 +661,7 @@ abstract contract SolvencyActions is LidoLendSetup {
             return;
         }
         m.vaultDeposit(l, assets);
-        lender[l].loanIn += assets;
+        _bookIn(l, assets);
         _lenderOp(l, Action.Deposit, assets);
     }
 
@@ -655,7 +681,7 @@ abstract contract SolvencyActions is LidoLendSetup {
             return;
         }
         uint256 paid = m.vaultMint(l, shares);
-        lender[l].loanIn += paid;
+        _bookIn(l, paid);
         _lenderOp(l, Action.Mint, paid);
     }
 
@@ -675,7 +701,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         }
         uint256 assets = random.between(1, max);
         m.vaultWithdraw(l, assets);
-        lender[l].loanOut += assets;
+        _bookOut(l, assets);
         _lenderOp(l, Action.Withdraw, assets);
     }
 
@@ -693,7 +719,7 @@ abstract contract SolvencyActions is LidoLendSetup {
             return;
         }
         uint256 assets = m.vaultRedeem(l, random.between(1, max));
-        lender[l].loanOut += assets;
+        _bookOut(l, assets);
         _lenderOp(l, Action.Redeem, assets);
     }
 
@@ -819,7 +845,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         uint256 liquid = _freeLiquidity();
         if (caller == l && Erc4626Math.toAssets(m.vault, shares, Math.Rounding.Floor) <= liquid) {
             uint256 paid = m.fallbackExitLiquid(l, shares, l);
-            lender[l].loanOut += paid;
+            _bookOut(l, paid);
             _lenderOp(l, Action.FallbackExit, paid);
             return;
         }
@@ -839,7 +865,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         uint256 liquid = _freeLiquidity();
         if (liquid > 0) {
             uint256 paid = m.fallbackExitLiquid(l, shares, l);
-            lender[l].loanOut += paid;
+            _bookOut(l, paid);
             _lenderOp(l, Action.FallbackExitScenario, paid);
             return;
         }
@@ -1028,7 +1054,7 @@ abstract contract SolvencyActions is LidoLendSetup {
 
         vm.recordLogs();
         (e.burned, e.loanAssets, e.seized, e.canceled) = m.fallbackExitBy(x.caller, x.owner, x.shares, x.receiver, 0);
-        lender[x.owner].loanOut += e.loanAssets;
+        _bookOut(x.owner, e.loanAssets);
         (uint256 loggedSeized, uint256 loggedCanceled, uint256 settled, uint256 cuts) =
             _bookCuts(x.owner, vm.getRecordedLogs());
         assertEq(loggedSeized, e.seized, "fallbackExit: seized != sum of cuts");
@@ -1430,7 +1456,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         _bookLiquidation(b, seized, repaid);
         borrower[b].badDebt += bad;
         g.badDebt += bad;
-        g.lossIdx = Math.mulDiv(g.lossIdx, supplyBefore - bad, supplyBefore);
+        g.supplyIndex = Math.mulDiv(g.supplyIndex, supplyBefore - bad, supplyBefore);
     }
 
     // ── Market ──
@@ -1623,9 +1649,9 @@ abstract contract SolvencyActions is LidoLendSetup {
         m.vault.transfer(to, shares);
         assertEq(m.vault.balanceOf(from), fromBefore - shares, "transfer: sender shares");
         assertEq(m.vault.balanceOf(to), toBefore + shares, "transfer: receiver shares");
-        lender[from].loanOut += value;
+        _bookOut(from, value);
         lender[from].ops++;
-        lender[to].loanIn += value;
+        _bookIn(to, value);
         _lenderOp(to, Action.TransferShares, value);
     }
 
@@ -1650,7 +1676,7 @@ abstract contract SolvencyActions is LidoLendSetup {
             return;
         }
         m.coreSupply(l, assets);
-        lender[l].loanIn += assets;
+        _bookIn(l, assets);
         _lenderOp(l, Action.CoreSupply, assets);
     }
 
@@ -1675,7 +1701,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         }
         uint256 assets = random.between(1, Math.min(_supplyAssetsDown(l), free));
         m.coreWithdrawAssets(l, assets);
-        lender[l].loanOut += assets;
+        _bookOut(l, assets);
         _lenderOp(l, Action.CoreWithdraw, assets);
     }
 
@@ -2093,7 +2119,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         ExitStatus status = fill == r.assetsRemaining ? ExitStatus.Filled : ExitStatus.Open;
         assertEq(uint8(filled.status), uint8(status), "fill: status");
         assertEq(m.loanToken.balanceOf(address(book)), 0, "fill: book kept assets");
-        lender[r.owner].loanOut += fill;
+        _bookOut(r.owner, fill);
         g.bookFilled += fill;
         g.bookReceiver += fill - fee;
         g.bookReward += fee - service;
@@ -2503,6 +2529,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         L.collateralOut += seized;
         L.collateralOutValue += value;
         L.debtCanceled += canceled;
+        L.scaledOut += _toScaled(canceled);
         L.cuts++;
         BorrowerLedger storage B = borrower[b];
         B.collateralSeized += seized;
@@ -2580,6 +2607,29 @@ abstract contract SolvencyActions is LidoLendSetup {
             mk.totalBorrowAssets = uint128(Math.saturatingSub(mk.totalBorrowAssets, canceled));
             mk.totalBorrowShares -= uint128(cuts[i]);
         }
+    }
+
+    /// @dev Books `assets` put in on `l`'s behalf, as loan assets and scaled.
+    function _bookIn(address l, uint256 assets) internal {
+        lender[l].loanIn += assets;
+        lender[l].scaledIn += _toScaled(assets);
+    }
+
+    /// @dev Books `assets` taken out on `l`'s behalf, as loan assets and scaled.
+    function _bookOut(address l, uint256 assets) internal {
+        lender[l].loanOut += assets;
+        lender[l].scaledOut += _toScaled(assets);
+    }
+
+    /// @dev `assets` over the supply index now, carried with 18 more decimals than the loan asset so that the
+    ///      conversion loses no unit a check could see. Interest and bad debt then move what they are worth exactly as
+    ///      they move a supplier's position.
+    function _toScaled(uint256 assets) internal view returns (uint256) {
+        return Math.mulDiv(assets * WAD, INDEX_SCALE, _supplyIndexNow());
+    }
+
+    function _scaledWorth(uint256 scaled) internal view returns (uint256) {
+        return Math.mulDiv(scaled, _supplyIndexNow(), INDEX_SCALE * WAD);
     }
 
     function _lenderOp(address l, Action a, uint256 amt) internal {

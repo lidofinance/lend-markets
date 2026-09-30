@@ -135,7 +135,7 @@ abstract contract SolvencySimulation is SolvencyActions {
         address b = borrowers[0]; // instant activation: index 0 of every fourth borrower
         _mintLoan(l, 1000 * unit);
         m.vaultDeposit(l, 1000 * unit);
-        lender[l].loanIn += 1000 * unit;
+        _bookIn(l, 1000 * unit);
         _mintCollateral(b, 100 ether);
         borrower[b].collateralFunded += 100 ether;
         m.supplyCollateralInstant(b, b, 100 ether);
@@ -392,6 +392,60 @@ abstract contract SolvencySimulation is SolvencyActions {
         vm.prank(b);
         vm.expectRevert(PausableUntil.ResumedExpected.selector);
         m.core.repay(m.params, 0, shares, b, "");
+    }
+
+    /// @notice A lender that loses value off the books and leaves before a write-off fails the lender check. The
+    ///         write-off costs more than that loss, so a bound on the loss of the whole run would let it through.
+    /// @dev A share transfer the ledger never books stands in for any value moved between lenders.
+    function test_lenderCheck_unbookedLossBeforeWriteOff_fails() public {
+        _setUpSimulation(_shortCounts());
+        Market storage m = _m();
+        address early = lenders[0];
+        address late = lenders[1];
+        _depositBy(early, 500 * unit);
+        _depositBy(late, 500 * unit);
+
+        uint256 unbooked = m.vault.balanceOf(early) / 10;
+        vm.prank(early);
+        m.vault.transfer(late, unbooked);
+        _bookOut(early, m.vaultRedeem(early, m.vault.balanceOf(early)));
+        lender[early].ops++;
+
+        address b = borrowers[0]; // instant activation: index 0 of every fourth borrower
+        _mintCollateral(b, 1000 ether);
+        borrower[b].collateralFunded += 1000 ether;
+        m.supplyCollateralInstant(b, b, 1000 ether);
+        borrower[b].loanBorrowed += _borrowRoom(b);
+        m.borrow(b, borrower[b].loanBorrowed);
+        m.distress(b, 1.25e18);
+        uint256 lateBefore = m.vault.previewRedeem(m.vault.balanceOf(late));
+        _writeOff(keepers[0], b);
+        assertLt(
+            m.vault.previewRedeem(m.vault.balanceOf(late)) * 10,
+            lateBefore * 9,
+            "setup: the write-off must cost more than the unbooked loss"
+        );
+
+        try this.checkLenders() {
+            assertTrue(false, "the lender check missed the unbooked loss");
+        } catch (bytes memory failure) {
+            // A failed assertion reverts with forge's `CheatcodeError(string)`: the selector, then the message.
+            assertEq(bytes4(failure), bytes4(keccak256("CheatcodeError(string)")), "the lender check did not fail");
+            bytes memory encoded = new bytes(failure.length - 4);
+            for (uint256 i; i < encoded.length; ++i) {
+                encoded[i] = failure[i + 4];
+            }
+            assertEq(
+                vm.indexOf(abi.decode(encoded, (string)), "lender: below its flows"),
+                0,
+                "the lender check failed for another reason"
+            );
+        }
+    }
+
+    /// @dev `_checkLenders` as a call of its own, so a test can catch its failure.
+    function checkLenders() external view {
+        _checkLenders();
     }
 
     /// @dev One near-full-repay inflation cycle from `s` borrow shares at zero borrow assets: borrows
@@ -735,14 +789,14 @@ abstract contract SolvencySimulation is SolvencyActions {
             address l = lenders[i];
             uint256 bal = m.vault.balanceOf(l);
             if (bal == 0) continue;
-            lender[l].loanOut += m.vaultRedeem(l, bal);
+            _bookOut(l, m.vaultRedeem(l, bal));
             lender[l].ops++;
         }
         address[] memory direct = _directAndFee();
         for (uint256 i; i < direct.length; ++i) {
             uint256 shares = m.core.position(m.id, direct[i]).supplyShares;
             if (shares == 0) continue;
-            lender[direct[i]].loanOut += m.coreWithdraw(direct[i], shares);
+            _bookOut(direct[i], m.coreWithdraw(direct[i], shares));
             lender[direct[i]].ops++;
         }
     }
@@ -792,13 +846,13 @@ abstract contract SolvencySimulation is SolvencyActions {
             if (bal == 0) continue;
             uint256 liquid = _freeLiquidity();
             if (liquid > 0 && Erc4626Math.toAssets(m.vault, bal, Math.Rounding.Floor) <= liquid) {
-                lender[l].loanOut += m.fallbackExitLiquid(l, bal, l);
+                _bookOut(l, m.fallbackExitLiquid(l, bal, l));
                 lender[l].ops++;
                 continue;
             }
             if (liquid > 0) {
                 m.vaultWithdraw(l, liquid);
-                lender[l].loanOut += liquid;
+                _bookOut(l, liquid);
                 lender[l].ops++;
                 bal = m.vault.balanceOf(l);
             }
@@ -839,12 +893,12 @@ abstract contract SolvencySimulation is SolvencyActions {
         if (mine <= free) {
             uint256 shares = m.core.position(m.id, x).supplyShares;
             if (shares > 0) {
-                lender[x].loanOut += m.coreWithdraw(x, shares);
+                _bookOut(x, m.coreWithdraw(x, shares));
                 lender[x].ops++;
             }
         } else if (free > 0) {
             m.coreWithdrawAssets(x, free);
-            lender[x].loanOut += free;
+            _bookOut(x, free);
             lender[x].ops++;
         }
         for (uint256 k; k < 50; ++k) {
@@ -924,9 +978,9 @@ abstract contract SolvencySimulation is SolvencyActions {
         assertLe(coreLoan - backed, g.moves, "end: idle dust above one unit per move");
     }
 
-    /// @dev Each supplier's value, taken out plus still held, sits between its principal shrunk by every write-off
-    ///      and grown by every accrual, give or take the rounding per operation and per cut. The fee recipient's
-    ///      value is bounded the same way around the fee it earned.
+    /// @dev Each supplier holds, with what it took out, what its flows are worth at the supply index now, give or take
+    ///      its own rounding: up to two units per operation or cut, and two for the final conversions. Other accounts'
+    ///      rounding can only add to it, up to a unit per move.
     function _checkLenders() internal view {
         Market storage m = _m();
         for (uint256 i; i < lenders.length; ++i) {
@@ -937,19 +991,16 @@ abstract contract SolvencySimulation is SolvencyActions {
         for (uint256 i; i < directLenders.length; ++i) {
             _checkLender(directLenders[i], _supplyAssetsDown(directLenders[i]));
         }
-        LenderLedger storage F = lender[feeRecipient];
-        uint256 feeValue = F.loanOut + F.collateralOutValue + _supplyAssetsDown(feeRecipient);
-        uint256 feeDust = g.accruals + F.ops + F.cuts * (2 + _priceUnits());
-        assertGe(feeValue + feeDust, Math.mulDiv(g.feeAmount, g.lossIdx, WAD), "fee: below the fee after losses");
-        assertLe(feeValue, Math.mulDiv(g.feeAmount, g.gainIdx, WAD) + feeDust, "fee: above the fee plus interest");
+        _checkLender(feeRecipient, _supplyAssetsDown(feeRecipient));
     }
 
     function _checkLender(address l, uint256 positionValue) internal view {
         LenderLedger storage L = lender[l];
-        uint256 value = L.loanOut + L.collateralOutValue + positionValue;
-        uint256 dust = 2 * L.ops + L.cuts * (2 + _priceUnits());
-        assertGe(value + dust, Math.mulDiv(L.loanIn, g.lossIdx, WAD), "lender: below principal after losses");
-        assertLe(value, Math.mulDiv(L.loanIn, g.gainIdx, WAD) + dust, "lender: above principal plus interest");
+        uint256 dust = 2 * (1 + L.ops + L.cuts);
+        uint256 owed = _scaledWorth(L.scaledIn);
+        uint256 got = positionValue + _scaledWorth(L.scaledOut);
+        assertGe(got + dust, owed, "lender: below its flows at the supply index");
+        assertLe(got, owed + dust + g.moves, "lender: above its flows at the supply index");
         assertLe(L.collateralOutValue, L.debtCanceled, "lender: collateral worth more than the debt it settled");
     }
 
@@ -1098,7 +1149,7 @@ abstract contract SolvencySimulation is SolvencyActions {
         console2.log("iterations / moves / accruals   ", iterations, g.moves, g.accruals);
         console2.log("price min / max / crashes       ", g.minPrice, g.maxPrice, g.crashes);
         console2.log("interest / fee / bad debt       ", g.interest, g.feeAmount, g.badDebt);
-        console2.log("gain idx / loss idx (WAD)       ", g.gainIdx, g.lossIdx);
+        console2.log("supply index (1e36)             ", g.supplyIndex);
         console2.log("pauses / caps / bans            ", g.pauses, g.caps, g.bans);
         console2.log(
             "gifts: vault / core / collateral", g.donatedLoanToVault, g.donatedLoanToCore, g.donatedCollateralToCore
