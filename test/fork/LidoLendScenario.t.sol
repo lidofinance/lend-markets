@@ -375,11 +375,10 @@ contract LidoLendScenarioTest is ForkStack {
         assertGt(lowBorrowSharesAfter, 0, "low-LTV borrower still has debt");
     }
 
-    /// @notice Settle of any borrower is blocked while the queue root is bad debt.
+    /// @notice Settle of the queue root is blocked while it is bad debt, and succeeds again once it is solvent.
     /// @dev Setup: a high-LTV root (BORROWER) and a healthy tail (SECOND_BORROWER). A negative rebase — sized
     ///      RELATIVE to the root's own debt / collateral so it lands underwater at any live rate — pushes the root
-    ///      insolvent (debt > collateral value). Cutting the healthy tail must also revert while the root is
-    ///      insolvent — the whole queue halts until bad debt is resolved.
+    ///      insolvent (debt > collateral value).
     function testRevert_settle_whenHeapRootBadDebt() public {
         TestMarket memory ctx = _ctx();
 
@@ -432,8 +431,7 @@ contract LidoLendScenarioTest is ForkStack {
         );
         assertTrue(ctx.controller.hasBadDebt(), "head is bad debt after rebase");
 
-        // Even targeting the head itself is blocked while head is bad debt: the controller's bad-debt
-        // guard fires on every settle path.
+        // Targeting the head is blocked while the head is bad debt: the controller's bad-debt guard fires.
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementBadDebt()"));
         ctx.market.settle(ctx.marketParams, cut, LENDER, BORROWER, LENDER);
