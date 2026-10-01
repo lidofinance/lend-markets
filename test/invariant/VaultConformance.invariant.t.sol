@@ -322,12 +322,12 @@ contract VaultConformanceInvariant is LidoLendSetup {
 
         handler.fallbackExit(0, type(uint256).max, 0);
         handler.settle(0, 1, type(uint256).max);
+        assertGt(handler.exceedsCollateralReverts(), 0, "a full cut must hit the core's collateral check");
 
-        assertGt(
-            handler.badDebtGateReverts() + handler.exceedsCollateralReverts() + handler.nothingSettledReverts(),
-            0,
-            "no bad-debt settlement rejection was reached"
-        );
+        // A cut worth one loan unit fits the crashed collateral at any seeded price, so it clears the core's checks
+        // and only the controller's bad-debt gate can reject it.
+        handler.settle(0, 1, protocol.markets[0].vault.convertToShares(10 ** _loanDecimals()));
+        assertGt(handler.badDebtGateReverts(), 0, "a cut the core accepts must reach the bad-debt gate");
         assertFalse(handler.settledUnderBadDebt(), "gate held under the seeded bad-debt state");
     }
 
