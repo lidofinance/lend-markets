@@ -61,12 +61,19 @@ library MarketActions {
         uint256 sharesBurned;
     }
 
-    /// @dev Pre-call balances the `settle` assertions compare against.
+    /// @dev Pre-call state the `settle` assertions compare against. The borrower fields are set only for a
+    ///      single-borrower batch.
     struct SettleSnapshot {
         uint256 ownerShares;
         uint256 receiverCollateral;
         uint256 ownerCollateral;
         uint256 receiverLoan;
+        uint256 vaultTotalSupply;
+        uint256 managedSupplyShares;
+        MorphoMarket market;
+        address borrower;
+        uint128 borrowerShares;
+        uint128 borrowerCollateral;
     }
 
     event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
@@ -76,6 +83,17 @@ library MarketActions {
     event SupplyCollateral(Id indexed id, address indexed caller, address indexed onBehalf, uint256 assets);
     event WithdrawCollateral(
         Id indexed id, address caller, address indexed onBehalf, address indexed receiver, uint256 assets
+    );
+    event Settle(
+        Id indexed id,
+        address caller,
+        address indexed onBehalf,
+        address indexed borrower,
+        address receiver,
+        uint256 supplySharesBurned,
+        uint256 borrowAssetsCanceled,
+        uint256 borrowSharesCanceled,
+        uint256 seizedAssets
     );
 
     // ── Lender ──
@@ -165,24 +183,21 @@ library MarketActions {
 
     /// @notice Lender (`owner`) targeted-settles `shares` against `borrowers`, collateral to `receiver`.
     ///         Best-effort within the batch but reverts when no borrower is settled. On success, asserts
-    ///         `sharesBurned <= shares`, that no loan assets reached `receiver`, the owner's share burn, the
-    ///         collateral received by `receiver`, and — when `owner != receiver` — that the owner's own collateral
-    ///         is untouched (all of it routed to `receiver`). A single target carrying a personal settlement LTV
-    ///         has a fully determined outcome, and the three outputs are held to `expectedPersonalSettlement`.
+    ///         `sharesBurned <= shares`, the vault's `totalSupply` burn, that no loan assets reached `receiver`, the
+    ///         owner's share burn, the collateral received by `receiver`, and — when `owner != receiver` — that the
+    ///         owner's own collateral is untouched (all of it routed to `receiver`). A single target carrying a
+    ///         personal settlement LTV has a fully determined outcome: the three outputs, the core `Settle` and
+    ///         vault `Settled` events, the borrower's position, the market totals and the vault's managed supply
+    ///         shares are all held to `expectedPersonalSettlement`.
     function settle(Market storage self, address owner, uint256 shares, address[] memory borrowers, address receiver)
         internal
         returns (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled)
     {
         accrueInterest(self); // the vault quotes off simulated totals; same-block accrual makes them the stored ones
         SettlementExpectation memory expected = _personalExpectation(self, shares, borrowers);
-        SettleSnapshot memory pre = _snapshotSettle(self, owner, receiver);
+        SettleSnapshot memory pre = _snapshotSettle(self, owner, receiver, borrowers);
 
-        if (expected.applies) {
-            vm.expectEmit(true, true, true, true, address(self.vault));
-            emit ILidoLendERC4626.Settled(
-                owner, owner, receiver, expected.sharesBurned, expected.collateralSeized, expected.debtCanceled
-            );
-        }
+        if (expected.applies) _expectPersonalSettleEvents(self, expected, owner, pre.borrower, receiver);
         vm.prank(owner);
         (sharesBurned, collateralSeized, debtCanceled) = self.vault.settle(shares, borrowers, receiver, owner);
 
@@ -203,7 +218,7 @@ library MarketActions {
         expected.applies = true;
     }
 
-    function _snapshotSettle(Market storage self, address owner, address receiver)
+    function _snapshotSettle(Market storage self, address owner, address receiver, address[] memory borrowers)
         private
         view
         returns (SettleSnapshot memory pre)
@@ -212,6 +227,42 @@ library MarketActions {
         pre.receiverCollateral = self.collateralToken.balanceOf(receiver);
         pre.ownerCollateral = self.collateralToken.balanceOf(owner);
         pre.receiverLoan = self.loanToken.balanceOf(receiver);
+        pre.vaultTotalSupply = self.vault.totalSupply();
+        pre.managedSupplyShares = self.vault.managedSupplyShares();
+        pre.market = self.core.market(self.id);
+        if (borrowers.length == 1) {
+            Position memory position = self.core.position(self.id, borrowers[0]);
+            pre.borrower = borrowers[0];
+            pre.borrowerShares = position.borrowShares;
+            pre.borrowerCollateral = position.collateral;
+        }
+    }
+
+    /// @dev The core settles on the vault's own supply position and pays `receiver` directly, so its `Settle`
+    ///      carries the vault as caller and onBehalf. It fires inside the vault call, before the vault's `Settled`.
+    function _expectPersonalSettleEvents(
+        Market storage self,
+        SettlementExpectation memory expected,
+        address owner,
+        address borrower,
+        address receiver
+    ) private {
+        vm.expectEmit(true, true, true, true, address(self.core));
+        emit Settle(
+            self.id,
+            address(self.vault),
+            address(self.vault),
+            borrower,
+            receiver,
+            expected.cutSupplyShares,
+            expected.debtCanceled,
+            expected.cutBorrowShares,
+            expected.collateralSeized
+        );
+        vm.expectEmit(true, true, true, true, address(self.vault));
+        emit ILidoLendERC4626.Settled(
+            owner, owner, receiver, expected.sharesBurned, expected.collateralSeized, expected.debtCanceled
+        );
     }
 
     function _assertSettle(
@@ -229,10 +280,12 @@ library MarketActions {
             vm.assertEq(sharesBurned, expected.sharesBurned, "settle: sharesBurned != personal recompute");
             vm.assertEq(collateralSeized, expected.collateralSeized, "settle: collateralSeized != personal recompute");
             vm.assertEq(debtCanceled, expected.debtCanceled, "settle: debtCanceled != personal recompute");
+            _assertPersonalSettleDeltas(self, pre, expected);
         }
         vm.assertLe(sharesBurned, shares, "settle: burned > requested");
         vm.assertEq(self.loanToken.balanceOf(receiver), pre.receiverLoan, "settle: not liquidity-neutral");
         vm.assertEq(self.vault.balanceOf(owner), pre.ownerShares - sharesBurned, "settle: owner shares burned");
+        vm.assertEq(self.vault.totalSupply(), pre.vaultTotalSupply - sharesBurned, "settle: vault totalSupply burned");
         vm.assertEq(
             self.collateralToken.balanceOf(receiver),
             pre.receiverCollateral + collateralSeized,
@@ -243,6 +296,48 @@ library MarketActions {
                 self.collateralToken.balanceOf(owner), pre.ownerCollateral, "settle: owner collateral routed away"
             );
         }
+    }
+
+    /// @dev The cancelled debt rounds up, so it can exceed `totalBorrowAssets` by one unit; that total floors at zero.
+    function _assertPersonalSettleDeltas(
+        Market storage self,
+        SettleSnapshot memory pre,
+        SettlementExpectation memory expected
+    ) private view {
+        Position memory post = self.core.position(self.id, pre.borrower);
+        vm.assertEq(
+            post.borrowShares, pre.borrowerShares - expected.cutBorrowShares, "settle: borrower debt shares cut"
+        );
+        vm.assertEq(
+            post.collateral, pre.borrowerCollateral - expected.collateralSeized, "settle: borrower collateral debited"
+        );
+
+        MorphoMarket memory mkt = self.core.market(self.id);
+        vm.assertEq(
+            mkt.totalSupplyShares,
+            pre.market.totalSupplyShares - expected.cutSupplyShares,
+            "settle: market supply shares burned"
+        );
+        vm.assertEq(
+            mkt.totalSupplyAssets,
+            pre.market.totalSupplyAssets - expected.debtCanceled,
+            "settle: market supply assets cancelled"
+        );
+        vm.assertEq(
+            mkt.totalBorrowShares,
+            pre.market.totalBorrowShares - expected.cutBorrowShares,
+            "settle: market borrow shares cancelled"
+        );
+        vm.assertEq(
+            mkt.totalBorrowAssets,
+            Math.saturatingSub(pre.market.totalBorrowAssets, expected.debtCanceled),
+            "settle: market borrow assets cancelled"
+        );
+        vm.assertEq(
+            self.vault.managedSupplyShares(),
+            pre.managedSupplyShares - expected.cutSupplyShares,
+            "settle: vault managed supply shares burned"
+        );
     }
 
     /// @notice Lender (`owner`) fallback-exits `shares`: the redeem leg pays loan and the settle leg pays

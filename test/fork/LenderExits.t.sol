@@ -3,8 +3,6 @@ pragma solidity 0.8.36;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {Position} from "@lido-lend/src/interfaces/IMorpho.sol";
-
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {Erc4626Math} from "../setup/Erc4626Math.sol";
 import {Market} from "../setup/Types.sol";
@@ -68,24 +66,13 @@ abstract contract LenderExitsForkBase is ForkMarketStack {
     // ---
 
     /// @dev The borrower opts in; the lender's cut is exactly the slice that lands the borrower on its target,
-    ///      the burn is what the core derives for it, and the seized collateral goes to the receiver.
+    ///      the burn is what the core derives for it, and the seized collateral goes to the receiver. The settle
+    ///      helper holds each of those, and the position, market and vault deltas, to the recompute.
     function test_settle_personalLtv_cutsExactlyTheRecomputedSlice() public {
         market.setSettlementLtv(BORROWER, 0.05e18);
-        uint256 shares = lenderShares / 2;
-        MarketActions.SettlementExpectation memory expected = market.expectedPersonalSettlement(shares, BORROWER);
-        Position memory before = deployed.core.position(deployed.id, BORROWER);
-
         address[] memory borrowers = new address[](1);
         borrowers[0] = BORROWER;
-        (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
-            market.settle(LENDER, shares, borrowers, RECEIVER);
-
-        Position memory after_ = deployed.core.position(deployed.id, BORROWER);
-        assertEq(before.borrowShares - after_.borrowShares, expected.cutBorrowShares, "borrower debt shares cut");
-        assertEq(before.collateral - after_.collateral, collateralSeized, "borrower collateral debited");
-        assertEq(deployed.collateralToken.balanceOf(RECEIVER), collateralSeized, "receiver holds the seized collateral");
-        assertEq(deployed.vault.balanceOf(LENDER), lenderShares - sharesBurned, "lender shares burned");
-        assertGt(debtCanceled, 0, "a real cut");
+        market.settle(LENDER, lenderShares / 2, borrowers, RECEIVER);
     }
 
     function testRevert_vaultSettle_noPersonalLtv_NothingSettled() public {
