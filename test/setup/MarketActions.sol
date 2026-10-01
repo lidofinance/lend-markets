@@ -670,6 +670,7 @@ library MarketActions {
     function coreSupply(Market storage self, address lender, uint256 assets) internal returns (uint256 shares) {
         Approvals.approve(address(self.loanToken), lender, address(self.core), type(uint256).max);
 
+        accrueInterest(self); // the core accrues before pricing; same-block accrual makes the stored totals its own
         MorphoMarket memory pre = self.core.market(self.id);
         uint256 expectedShares = SharesMathLib.toSharesDown(assets, pre.totalSupplyAssets, pre.totalSupplyShares);
         uint256 lenderBefore = self.loanToken.balanceOf(lender);
@@ -685,20 +686,21 @@ library MarketActions {
         vm.assertEq(self.loanToken.balanceOf(lender), lenderBefore - assets, "coreSupply: loan pulled");
     }
 
-    /// @notice Lender withdraws `assets` straight from the core. Asserts the burned shares against the market
-    ///         totals and the loan tokens received.
-    function coreWithdraw(Market storage self, address lender, uint256 assets) internal returns (uint256 shares) {
+    /// @notice Lender withdraws `shares` straight from the core. Asserts the paid assets against the market totals
+    ///         and the loan tokens received. By shares, so a supply's minted shares round-trip at any share rate.
+    function coreWithdraw(Market storage self, address lender, uint256 shares) internal returns (uint256 assets) {
+        accrueInterest(self); // the core accrues before pricing; same-block accrual makes the stored totals its own
         MorphoMarket memory pre = self.core.market(self.id);
-        uint256 expectedShares = SharesMathLib.toSharesUp(assets, pre.totalSupplyAssets, pre.totalSupplyShares);
+        uint256 expectedAssets = SharesMathLib.toAssetsDown(shares, pre.totalSupplyAssets, pre.totalSupplyShares);
         uint256 lenderBefore = self.loanToken.balanceOf(lender);
         uint256 posBefore = self.core.position(self.id, lender).supplyShares;
 
         vm.prank(lender);
-        (uint256 assetsWithdrawn, uint256 sharesBurned) = self.core.withdraw(self.params, assets, 0, lender, lender);
-        shares = sharesBurned;
+        (uint256 assetsWithdrawn, uint256 sharesBurned) = self.core.withdraw(self.params, 0, shares, lender, lender);
+        assets = assetsWithdrawn;
 
-        vm.assertEq(assetsWithdrawn, assets, "coreWithdraw: assets");
-        vm.assertEq(shares, expectedShares, "coreWithdraw: shares vs recomputed");
+        vm.assertEq(sharesBurned, shares, "coreWithdraw: shares");
+        vm.assertEq(assets, expectedAssets, "coreWithdraw: assets vs recomputed");
         vm.assertEq(self.core.position(self.id, lender).supplyShares, posBefore - shares, "coreWithdraw: position");
         vm.assertEq(self.loanToken.balanceOf(lender), lenderBefore + assets, "coreWithdraw: loan received");
     }

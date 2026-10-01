@@ -103,8 +103,8 @@ abstract contract OracleOutageForkBase is ForkMarketStack {
         _mockOracleRevert(deployed);
         uint256 assets = _loanUnit(deployed);
         deal(address(deployed.loanToken), KEEPER, assets);
-        market.coreSupply(KEEPER, assets);
-        market.coreWithdraw(KEEPER, assets);
+        uint256 shares = market.coreSupply(KEEPER, assets);
+        market.coreWithdraw(KEEPER, shares);
     }
 
     function test_oracleDown_repay() public {

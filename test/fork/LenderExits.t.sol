@@ -52,12 +52,14 @@ abstract contract LenderExitsForkBase is ForkMarketStack {
         market.vaultRedeem(LENDER, shares);
     }
 
+    /// @dev Interest is left pending over the fixture's borrow, so the share rate is off 1e6 and unaccrued.
     function test_coreSupplyThenWithdraw_bySharesMath() public {
+        vm.warp(block.timestamp + 1 days);
         uint256 assets = 2 * _loanUnit(deployed) + 321;
         _requireSupplyHeadroom(deployed, assets);
         deal(address(deployed.loanToken), DIRECT_LENDER, assets);
-        market.coreSupply(DIRECT_LENDER, assets);
-        market.coreWithdraw(DIRECT_LENDER, assets);
+        uint256 shares = market.coreSupply(DIRECT_LENDER, assets);
+        market.coreWithdraw(DIRECT_LENDER, shares);
         assertEq(deployed.core.position(deployed.id, DIRECT_LENDER).supplyShares, 0, "round trip leaves no position");
     }
 
