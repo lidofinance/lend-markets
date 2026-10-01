@@ -15,6 +15,7 @@ import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketCon
 import {IPausableUntil} from "../../src/interfaces/IPausableUntil.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
 
 import {Approvals} from "./Approvals.sol";
@@ -401,11 +402,13 @@ library MarketActions {
         }
     }
 
-    /// @notice Warps past the market's LIVE max activation delay so freshly supplied collateral matures and can
-    ///         back a borrow (the activation gate resolves lazily on the next borrow). Read from the controller,
-    ///         not the deploy config, so a delay governance raised after deployment is honoured.
+    /// @notice Warps past the market's LIVE max activation delay and, without a guardian quorum, the max quorum delay,
+    ///         so freshly supplied collateral matures and can back a borrow (the activation gate resolves lazily on
+    ///         the next borrow). Read from the controller, not the deploy config, so a delay governance raised after
+    ///         deployment is honoured.
     function activateCollateral(Market storage self) internal {
-        vm.warp(block.timestamp + self.controller.collateralActivationConfig().maxActivationDelay + 1);
+        CollateralActivationConfig memory cfg = self.controller.collateralActivationConfig();
+        vm.warp(block.timestamp + Math.max(cfg.maxActivationDelay, cfg.maxGuardiansQuorumDelay) + 1);
     }
 
     /// @notice Borrower borrows `amount` loan assets to itself. Asserts the returned assets/shares, the

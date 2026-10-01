@@ -291,9 +291,10 @@ abstract contract ForkStack is Test, ForkTest {
         m.core.accrueInterest(m.params);
     }
 
-    /// @notice Warp one second past the market's maximum activation delay, so a fresh collateral lot matures.
+    /// @notice Warp one second past the market's maximum activation delay and, without a guardian quorum, its maximum
+    ///         quorum delay, so a fresh collateral lot matures.
     function _warpPastActivation(BoundMarket memory m) internal {
-        vm.warp(block.timestamp + uint256(m.activation.maxActivationDelay) + 1);
+        vm.warp(block.timestamp + Math.max(m.activation.maxActivationDelay, m.activation.maxGuardiansQuorumDelay) + 1);
     }
 
     /// @notice The market's unborrowed liquidity at the last-accrued totals: `totalSupplyAssets - totalBorrowAssets`.
