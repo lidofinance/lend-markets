@@ -672,7 +672,13 @@ contract LidoLendScenarioTest is ForkStack {
         vm.warp(block.timestamp + 30 days);
         ILidoLendMarketController.BorrowerPosition memory pv = ctx.controller.positionOf(BORROWER);
         assertTrue(pv.banned, "banned");
-        _assertCollateralState(ctx.controller, BORROWER, 0, col, 0); // still activating, never active
+
+        // `positionOf` reads stored buckets, so drive a sync the ban does not gate: a top-up syncs before it books.
+        // Had the first lot matured, `activating` would hold the top-up alone.
+        uint256 more = _mintWstETH(ctx.market, BORROWER, 20 ether);
+        vm.prank(BORROWER);
+        ctx.market.supplyCollateral(ctx.marketParams, more, BORROWER, "");
+        _assertCollateralState(ctx.controller, BORROWER, 0, col + more, 0); // still activating, never active
 
         vm.prank(BORROWER);
         vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
