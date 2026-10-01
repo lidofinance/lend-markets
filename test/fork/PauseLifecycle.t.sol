@@ -172,20 +172,20 @@ abstract contract PauseLifecycleForkBase is ForkMarketStack {
         assertEq(deployed.vault.balanceOf(LENDER), lenderShares - amount, "sender debited");
     }
 
-    /// @dev Across a pause the stored totals and clock do not move; the first accrual after resume books the
-    ///      whole gap in one step, sized by the IRM's rate for it.
+    /// @dev Accrual is hooked, so a live pause refuses it; the first accrual after resume books the whole gap in one
+    ///      step, sized by the IRM's rate for it.
     function test_paused_interestNotBookedUntilResume() public {
         MorphoMarket memory before = deployed.core.market(deployed.id);
         _pauseViaResealManager(deployed, 3 days);
-        vm.warp(block.timestamp + 3 days + 1);
+        vm.warp(block.timestamp + 1 days);
 
-        MorphoMarket memory during = deployed.core.market(deployed.id);
-        assertEq(during.totalBorrowAssets, before.totalBorrowAssets, "borrow total frozen while paused");
-        assertEq(during.lastUpdate, before.lastUpdate, "clock frozen while paused");
+        vm.expectRevert(PausableUntil.ResumedExpected.selector);
+        deployed.core.accrueInterest(deployed.params);
+        _resume();
 
         uint256 elapsed = block.timestamp - before.lastUpdate;
-        uint256 rate = IIrm(deployed.params.irm).borrowRateView(deployed.params, during);
-        uint256 interest = uint256(during.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(elapsed));
+        uint256 rate = IIrm(deployed.params.irm).borrowRateView(deployed.params, before);
+        uint256 interest = uint256(before.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(elapsed));
         assertGt(interest, 0, "setup: the gap must carry interest");
 
         deployed.core.accrueInterest(deployed.params);
