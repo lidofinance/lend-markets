@@ -80,6 +80,10 @@ abstract contract ExitBooksForkBase is ForkMarketStack {
         uint256 deadline = block.timestamp + REQUEST_LIFETIME;
         uint256 expectedId = ExitBookBase(address(morphoBook)).lastRequestId() + 1;
 
+        // One share under the quote is refused with the book's own required shares, so the quote is exact.
+        vm.expectRevert(abi.encodeWithSelector(ExitBookBase.MaxShareBurnBelowQuote.selector, quote - 1, quote));
+        _placeMorpho(requestAssets, requestAssets / 4, quote - 1);
+
         vm.expectEmit(true, true, true, true, address(morphoBook));
         emit ExitBookBase.ExitRequested(
             expectedId,
@@ -175,6 +179,10 @@ abstract contract ExitBooksForkBase is ForkMarketStack {
         uint256 quote = Erc4626Math.toShares(deployed.vault, requestAssets, Math.Rounding.Ceil);
         uint256 deadline = block.timestamp + REQUEST_LIFETIME;
         uint256 expectedId = ExitBookBase(address(erc4626Book)).lastRequestId() + 1;
+
+        // One share under the quote is refused with the book's own required shares, so the quote is exact.
+        vm.expectRevert(abi.encodeWithSelector(ExitBookBase.MaxShareBurnBelowQuote.selector, quote - 1, quote));
+        _placeErc4626(requestAssets, quote - 1);
 
         vm.expectEmit(true, true, true, true, address(erc4626Book));
         emit ExitBookBase.ExitRequested(
