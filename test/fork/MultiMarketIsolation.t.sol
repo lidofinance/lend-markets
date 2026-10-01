@@ -11,9 +11,9 @@ import {MarketActions} from "../setup/MarketActions.sol";
 import {ForkMarketStack} from "./helpers/ForkMarketStack.sol";
 
 /// @notice One core hosts both deployed markets; their per-market state must stay apart. A full flow on one leaves
-///         the other's stored market, settlement queue and inflow untouched, and a pause, freeze, ban or cap
-///         lands on the named market only. The red case is a provisioning change that shares a controller or
-///         registry between markets.
+///         the other's stored market, settlement queue and the borrower's position untouched, and a pause, freeze,
+///         ban or cap lands on the named market only. The red case is a provisioning change that shares a controller
+///         or registry between markets.
 contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
     using MarketActions for Market;
 
@@ -43,12 +43,14 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
     // ---
 
     function test_flowOnSecondMarket_leavesFirstUntouched() public {
+        _supplyCollateralAsBystander(market, deployed);
         bytes32 before = _fingerprint(deployed);
         _roundTrip(otherMarket, other);
         assertEq(_fingerprint(deployed), before, "first market's stored state unchanged");
     }
 
     function test_flowOnFirstMarket_leavesSecondUntouched() public {
+        _supplyCollateralAsBystander(otherMarket, other);
         bytes32 before = _fingerprint(other);
         _roundTrip(market, deployed);
         assertEq(_fingerprint(other), before, "second market's stored state unchanged");
@@ -108,11 +110,22 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
         target.vaultRedeem(LENDER, shares);
     }
 
-    /// @dev The stored market struct plus the controller's queue size and inflow: anything a flow on the OTHER
-    ///      market could conceivably touch by mistake.
+    /// @dev Recent collateral supply by someone else, as on a live market: the untouched market starts the flow with
+    ///      a non-zero, decaying inflow.
+    function _supplyCollateralAsBystander(Market storage target, BoundMarket memory bound) internal {
+        address bystander = _freshActor(bound, "multi.bystander");
+        uint256 lotSize = 2 * uint256(bound.activation.minActivationAmount);
+        deal(address(bound.collateralToken), bystander, lotSize);
+        target.supplyCollateral(bystander, lotSize);
+    }
+
+    /// @dev The stored market struct, the controller's queue size and the flow's borrower as this market sees it:
+    ///      anything a flow on the OTHER market could conceivably touch by mistake. Inflow is left out because it
+    ///      decays with the flow's warp; a misrouted collateral hook still shows up in the borrower's position.
     function _fingerprint(BoundMarket memory bound) internal view returns (bytes32) {
         MorphoMarket memory stored = bound.core.market(bound.id);
-        return
-            keccak256(abi.encode(stored, bound.controller.settlementBorrowersCount(), bound.controller.currentInflow()));
+        return keccak256(
+            abi.encode(stored, bound.controller.settlementBorrowersCount(), bound.controller.positionOf(BORROWER))
+        );
     }
 }
