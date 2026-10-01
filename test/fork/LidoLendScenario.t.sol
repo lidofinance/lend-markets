@@ -281,6 +281,10 @@ contract LidoLendScenarioTest is ForkStack {
         _assertCollateralState(ctx.controller, BORROWER, borrowerCollateral, 0, 0);
         _assertCollateralState(ctx.controller, SECOND_BORROWER, secondBorrowerCollateral, 0, 0);
 
+        // Accrued interest moves the borrow-share rate off 1e6, where up- and down-rounded debt differ.
+        vm.warp(block.timestamp + 7 days);
+        _pokeAccrue(m);
+
         // Drain free liquidity to zero so the lender's cut must go through settle, then require the test borrower
         // is the queue root — a pre-existing riskier borrower would otherwise take the slice.
         _pinFreeLiquidity(m, 0);
@@ -596,6 +600,10 @@ contract LidoLendScenarioTest is ForkStack {
         vm.prank(SECOND_BORROWER);
         ctx.market.borrow(ctx.marketParams, 3 ether, 0, SECOND_BORROWER, SECOND_BORROWER);
 
+        // Accrued interest moves the borrow-share rate off 1e6, where up- and down-rounded debt differ.
+        vm.warp(block.timestamp + 7 days);
+        _pokeAccrue(m);
+
         _pinFreeLiquidity(m, 0);
 
         // The mechanism only needs SECOND_BORROWER NOT to be the queue root: as a non-root borrower its policy slice
@@ -618,9 +626,7 @@ contract LidoLendScenarioTest is ForkStack {
         vm.prank(SECOND_BORROWER);
         ctx.controller.setSettlementLtv(0.05e18);
 
-        Market memory marketBefore = ctx.market.market(ctx.id);
-        uint256 expectedDebt =
-            SharesMathLib.toAssetsUp(cut, marketBefore.totalBorrowAssets, marketBefore.totalBorrowShares);
+        (uint256 expectedDebt, uint256 expectedCollateral) = _expectedSettlementAmounts(ctx, cut, ctx.price);
         uint128 colBefore = ctx.market.position(ctx.id, SECOND_BORROWER).collateral;
 
         vm.prank(LENDER);
@@ -638,7 +644,7 @@ contract LidoLendScenarioTest is ForkStack {
             uint256(colBefore) - collateralSeized,
             "tail collateral debited"
         );
-        assertEq(collateralSeized, debtCanceled * ORACLE_PRICE_SCALE / ctx.price, "oracle-rate cut");
+        assertEq(collateralSeized, expectedCollateral, "collateral uses the down-rounded borrow-share value");
     }
 
     /// @notice A banned borrower's collateral never settles into `active`, and its borrow is hard-blocked.
@@ -751,13 +757,14 @@ contract LidoLendScenarioTest is ForkStack {
 
     function _settleAndAssert(TestMarket memory ctx, uint256 borrowerCollateral) internal {
         uint256 sharesToExit = _rootCutShares(ctx);
+        (uint256 expectedDebt, uint256 expectedCollateral) = _expectedSettlementAmounts(ctx, sharesToExit, ctx.price);
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled,,) =
             ctx.market.settle(ctx.marketParams, sharesToExit, LENDER, BORROWER, LENDER);
 
-        uint256 expectedCollateralSeized = debtCanceled * ORACLE_PRICE_SCALE / ctx.price;
-        assertEq(collateralSeized, expectedCollateralSeized, "oracle-rate collateral");
+        assertEq(debtCanceled, expectedDebt, "debt uses the up-rounded borrow-share value");
+        assertEq(collateralSeized, expectedCollateral, "collateral uses the down-rounded borrow-share value");
         assertGt(debtCanceled, 0, "settled the allowed slice");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "lender received real wstETH");
 
