@@ -863,9 +863,9 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     /// @notice Every accounting variable on the market, the vault, and the controller is still zero, and no
-    ///         protocol fee is set. Each one changes only through user activity or a later governance action.
-    /// @dev Holds in both phases: before the motion the core has no market under this id, and the motion
-    ///      creates an empty one without setting a fee.
+    ///         protocol fee is set.
+    /// @dev Readiness only: before the motion the core has no market under this id. The motion itself preseeds
+    ///      the market and the vault, and sets any non-zero initial fee.
     function _assertZeroState() internal view {
         (uint128 tSupplyA, uint128 tSupplyS, uint128 tBorrowA, uint128 tBorrowS,, uint128 fee) =
             IReadCore(core).market(marketId);

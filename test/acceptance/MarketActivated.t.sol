@@ -23,7 +23,6 @@ contract MarketActivatedAcceptance is AcceptanceBase {
         _assertRoles();
         _assertRoleHolderCompleteness();
         _assertActivated();
-        _assertZeroState();
         _assertExitBooksAllowed();
     }
 
