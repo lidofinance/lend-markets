@@ -8,63 +8,64 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams, Market, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLendMarketController} from "../../../src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLendERC4626} from "../../../src/interfaces/ILidoLendERC4626.sol";
+import {ILidoLendOwner} from "../../../src/interfaces/ILidoLendOwner.sol";
 import {IGuardianSignals} from "../../../src/interfaces/IGuardianSignals.sol";
+import {IPausableUntil} from "../../../src/interfaces/IPausableUntil.sol";
+import {IRiskStewardDashboard} from "../../../src/interfaces/IRiskStewardDashboard.sol";
+import {LidoLendMarketController} from "../../../src/controllers/LidoLendMarketController.sol";
 import {CollateralActivationConfig} from "../../../src/types/CollateralActivationTypes.sol";
 import {WAD} from "../../../src/libs/Constants.sol";
+import {Approvals} from "../../setup/Approvals.sol";
 import {ForkTest} from "./ForkTest.sol";
+import {IWstETH} from "./ForkTokens.sol";
 
-/// @dev Read-only view of the IRM router's manager — production wiring assigns it to the EasyTrack
-///      EVMScriptExecutor, which is how `_executor` resolves the executor on-chain.
-interface IReadRouter {
-    function manager() external view returns (address);
+/// @dev The immutable each deployed oracle exposes for its price source, i.e. what a price mock targets.
+interface IReadWstEthRateOracle {
+    function WSTETH() external view returns (address);
 }
 
-/// @notice Shared base for fork suites that exercise an ALREADY-DEPLOYED, ALREADY-ACTIVATED market. It binds a
-///         suite to one market read from the deploy run's artifacts (via {ForkTest}) and hands back the privileged
-///         actors and state-shaping utilities the suites share, so each `setUp` shrinks to `_fork()` +
-///         `_bindMarket(name)`. Fork suites deploy nothing and create no market — every address and every role
-///         holder is resolved on-chain from the live stack, so the helper stays network-blind.
-///
-///         Every helper here fails loudly (a `require` prefixed `"ForkStack: "` and naming the market) rather
-///         than skipping or returning a silent default — a mis-provisioned or half-wired stack must stop the run,
-///         not pass a hollow one. The `Test` / `ForkTest` shared `CommonBase` ancestor is the intended diamond;
-///         `Test` supplies `deal` / `makeAddr` / assertions, `ForkTest` supplies the artifact accessors.
+interface IReadUsdyStableOracle {
+    function USDY_ORACLE() external view returns (address);
+}
+
+/// @dev Ondo's USDY NAV oracle: the exact member `UsdyStableOracle.price()` reads.
+interface IReadNavOracle {
+    function getPrice() external view returns (uint256);
+}
+
+/// @notice Shared base for fork suites over an already-deployed, activated market: binds one market from the run's
+///         artifacts, names the privileged actors the run recorded, and drives governance through the deployed
+///         surfaces as their real holders. Deploys nothing; a missing market role or optional artifact skips, any
+///         other inconsistency fails loudly (`"ForkStack: ..."`).
 abstract contract ForkStack is Test, ForkTest {
     using MarketParamsLib for MarketParams;
+    using SharesMathLib for uint256;
 
-    // ---
-    // CONSTANTS
-    // ---
+    uint256 private constant BPS = 10_000;
 
-    /// @dev OZ AccessControl's default admin role id (`0x00`); the interface exposes no getter for it.
-    bytes32 private constant DEFAULT_ADMIN_ROLE = 0x00;
+    /// @dev The revert a mocked-down oracle source returns, so a suite can match the outage by exact bytes.
+    error ForkOracleDown();
 
-    // ---
-    // TYPES
-    // ---
+    /// @notice Which deployed oracle prices the market, and therefore which external call a price mock targets.
+    enum OracleKind {
+        WstEthRate,
+        UsdyStable
+    }
 
-    /// @notice Everything a fork suite needs about one bound market, resolved from the run artifacts and the live
-    ///         core. `params` is reconstructed from the core (never hand-built) so it always matches the id.
-    /// @param core The Morpho-fork core hosting the market.
-    /// @param params The market's params, read back from `core.idToMarketParams(id)`.
-    /// @param id The market id (bytes32) from the market artifact.
-    /// @param controller The market's Lido-policy controller.
-    /// @param vault The market's ERC-4626 vault.
-    /// @param oracle The market's price oracle.
-    /// @param guardianSignals The guardian-signal registry wired into the controller.
-    /// @param irmRouter The protocol IRM router address.
-    /// @param loanToken The market's loan token (`params.loanToken`).
-    /// @param collateralToken The market's collateral token (`params.collateralToken`).
-    /// @param activation The controller's live collateral-activation config.
+    /// @notice One bound market, resolved from the run artifacts and the live core; `params` is read back from
+    ///         the core so it always matches `id`. `oracleSource` is the external contract the oracle prices from.
     struct BoundMarket {
+        string name;
         ILidoLend core;
         MarketParams params;
         Id id;
@@ -72,29 +73,23 @@ abstract contract ForkStack is Test, ForkTest {
         ILidoLendERC4626 vault;
         IOracle oracle;
         IGuardianSignals guardianSignals;
-        address irmRouter;
         IERC20 loanToken;
         IERC20 collateralToken;
         CollateralActivationConfig activation;
+        OracleKind oracleKind;
+        address oracleSource;
     }
 
     // ---
     // BINDING
     // ---
 
-    /// @notice The name of the run's market playing `role`, or an empty string when it has none — in which case
-    ///         the calling test is marked skipped and the caller returns without binding. Roles are shared across
-    ///         deployments while market names are not, so a suite names the part it drives rather than one
-    ///         deployment's market.
-    /// @dev A deployment need not contain every role: a run may carry no `usdy-usdt`, and a suite bound
-    ///      to that role is not applicable there. That is a fact about the deployment, readable from its
-    ///      artifacts. A run recording no markets at all IS a broken setup and reverts, so a mistyped role cannot
-    ///      pass as an absent one.
-    function _marketForRole(string memory role) internal returns (string memory) {
+    /// @notice The name of the run's market playing `role`; marks the test skipped when the run has none. A run
+    ///         recording no markets at all is a broken setup and reverts.
+    function _marketForRole(string memory role) internal returns (string memory marketName) {
         Vm.DirEntry[] memory entries = vm.readDir(string.concat(_runArtifactsDir(), "/markets"));
         uint256 seen;
         uint256 matches;
-        string memory marketName;
         bytes32 expected = keccak256(bytes(role));
         for (uint256 i; i < entries.length; ++i) {
             if (entries[i].isDir || entries[i].isSymlink) continue;
@@ -115,40 +110,21 @@ abstract contract ForkStack is Test, ForkTest {
             marketName = vm.parseTomlString(artifact, ".market.name");
         }
         require(seen != 0, "ForkStack: the bound run records no markets");
-        if (matches == 0) {
-            vm.skip(true, string.concat("ForkStack: run has no market for role '", role, "'"));
-            return "";
-        }
-        return marketName;
+        if (matches == 0) vm.skip(true, string.concat("ForkStack: run has no market for role '", role, "'"));
     }
 
-    /// @notice Resolve and validate the market recorded as `name` in the run, returning a fully-typed handle.
-    /// @dev Loud-fails when: any artifact key is missing (the {ForkTest} accessors revert first); the core,
-    ///      controller, vault, oracle, or guardian registry has no code; the market is not activated on the core
-    ///      (`lastUpdate == 0`) — the caller must run deploy + activation provisioning first
-    ///      (see script/DEPLOYMENT.md); the reconstructed params do not hash to the recorded id; or the artifact's
-    ///      oracle does not match the core params' oracle. Reading `params` from the core (not the artifact)
-    ///      keeps the params/id pair internally consistent.
-    /// @param name The market name, i.e. the `markets/<name>.toml` artifact in the run directory.
-    /// @return m The bound market handle.
+    /// @notice Resolve the market recorded as `name` and check it is activated, consistent with its artifacts (id
+    ///         and oracle), and live (neither paused nor frozen).
     function _bindMarket(string memory name) internal returns (BoundMarket memory m) {
+        m.name = name;
         m.core = ILidoLend(_protocol("core"));
         m.id = Id.wrap(_marketId(name));
         m.controller = ILidoLendMarketController(_market(name, "controller"));
         m.vault = ILidoLendERC4626(_market(name, "vault"));
         m.oracle = IOracle(_market(name, "oracle"));
         m.guardianSignals = IGuardianSignals(_market(name, "guardian_signals"));
-        m.irmRouter = _protocol("irm_router");
 
-        // Every contract the suite drives must actually be deployed at the recorded address.
-        _requireHasCode(address(m.core), name, "core");
-        _requireHasCode(address(m.controller), name, "controller");
-        _requireHasCode(address(m.vault), name, "vault");
-        _requireHasCode(address(m.oracle), name, "oracle");
-        _requireHasCode(address(m.guardianSignals), name, "guardianSignals");
-
-        // A never-touched market has `lastUpdate == 0`: it exists on the core but the activation motion has not
-        // run, so the suite would drive a market with no interest clock. Stop, do not silently proceed.
+        // `lastUpdate == 0` is a created market whose activation motion has not run: no interest clock yet.
         require(
             m.core.market(m.id).lastUpdate != 0,
             string.concat(
@@ -158,16 +134,11 @@ abstract contract ForkStack is Test, ForkTest {
             )
         );
 
-        // Reconstruct params from the core and assert they hash to the recorded id: catches an artifact pointing
-        // at a stale or wrong id for `name`.
         m.params = m.core.idToMarketParams(m.id);
         require(
             Id.unwrap(m.params.id()) == Id.unwrap(m.id),
             string.concat("ForkStack: market '", name, "' artifact id does not match core params")
         );
-
-        // Catches an artifact oracle pointing at a stale or wrong instance for `name`: the two are independently
-        // recorded (the market artifact vs. the core's params), and must agree.
         require(
             address(m.oracle) == m.params.oracle,
             string.concat("ForkStack: artifact oracle does not match the market's oracle for '", name, "'")
@@ -176,107 +147,175 @@ abstract contract ForkStack is Test, ForkTest {
         m.loanToken = IERC20(m.params.loanToken);
         m.collateralToken = IERC20(m.params.collateralToken);
         m.activation = m.controller.collateralActivationConfig();
+
+        _bindOracle(m);
+        _requireLive(m);
     }
 
-    // ---
-    // PRIVILEGED ACTORS
-    // ---
-
-    /// @notice The protocol admin (Lido Agent): the sole `DEFAULT_ADMIN_ROLE` holder of the guardian registry.
-    /// @dev Resolved off the guardian registry because it is `AccessControlEnumerable`, whereas the controller is
-    ///      plain `AccessControlUpgradeable` (no member enumeration). Loud-fails when the registry has no default
-    ///      admin, or when that admin does not also administer the controller — a mis-wired stack, not a live one.
-    /// @param m The bound market.
-    /// @return admin The protocol admin address.
-    function _admin(BoundMarket memory m) internal view returns (address admin) {
-        IAccessControlEnumerable registry = IAccessControlEnumerable(address(m.guardianSignals));
+    /// @notice Assert the bound market is neither paused nor frozen: every suite starts live and halts it itself.
+    function _requireLive(BoundMarket memory m) internal view {
         require(
-            registry.getRoleMemberCount(DEFAULT_ADMIN_ROLE) != 0, "ForkStack: guardian registry has no default admin"
+            !IPausableUntil(address(m.controller)).isPaused(),
+            string.concat("ForkStack: market '", m.name, "' is paused; fork suites bind a live market")
         );
-        admin = registry.getRoleMember(DEFAULT_ADMIN_ROLE, 0);
         require(
-            m.controller.hasRole(DEFAULT_ADMIN_ROLE, admin), "ForkStack: guardian admin does not admin the controller"
+            !m.controller.isFrozen(),
+            string.concat("ForkStack: market '", m.name, "' is frozen; fork suites bind a live market")
         );
     }
 
-    /// @notice The EasyTrack executor: the IRM router's `manager`, which the deploy assigns to the
-    ///         EVMScriptExecutor. (The guardian registry's `MANAGER_ROLE` belongs to the owner facade, so it
-    ///         cannot resolve the executor.)
-    /// @dev Loud-fails when the router reports no manager (an unprovisioned backbone).
-    /// @param m The bound market.
-    /// @return executor The EasyTrack executor address.
-    function _executor(BoundMarket memory m) internal view returns (address executor) {
-        executor = IReadRouter(m.irmRouter).manager();
-        require(executor != address(0), "ForkStack: irm router has no manager");
+    /// @dev The oracle's kind comes from its artifact, its price source from the deployed oracle's own immutable.
+    function _bindOracle(BoundMarket memory m) private view {
+        string memory relPath = string.concat("oracles/", _marketString(m.name, "oracle_artifact"), ".toml");
+        bytes32 kind = keccak256(bytes(_artifactString(relPath, "oracle.kind")));
+        if (kind == keccak256("wsteth-rate")) {
+            m.oracleKind = OracleKind.WstEthRate;
+            m.oracleSource = IReadWstEthRateOracle(address(m.oracle)).WSTETH();
+        } else if (kind == keccak256("usdy-stable")) {
+            m.oracleKind = OracleKind.UsdyStable;
+            m.oracleSource = IReadUsdyStableOracle(address(m.oracle)).USDY_ORACLE();
+        } else {
+            revert(string.concat("ForkStack: market '", m.name, "' records an unknown oracle kind"));
+        }
     }
 
-    /// @notice Grant the calling test contract the controller's `MANAGER_ROLE`, pranking the protocol admin.
-    /// @dev Idempotent: returns early when this contract already holds the role, so repeated calls do not revert
-    ///      or emit spurious grants. Lets a suite drive manager-only controller levers (supply cap, instant
-    ///      activation, settlement config) without hunting for the live manager key.
-    /// @param m The bound market.
-    function _grantSelfManager(BoundMarket memory m) internal {
-        bytes32 role = m.controller.MANAGER_ROLE();
-        if (m.controller.hasRole(role, address(this))) return;
-        vm.prank(_admin(m));
-        m.controller.grantRole(role, address(this));
+    /// @notice Mark the test skipped when the run does not record the optional artifact at `relPath`.
+    function _skipUnlessArtifact(string memory relPath) internal {
+        if (!_hasArtifact(relPath)) vm.skip(true, string.concat("ForkStack: run has no ", relPath));
+    }
+
+    // ---
+    // PRIVILEGED ACTORS AND DEPLOYED SURFACES, AS THE RUN RECORDED THEM
+    // ---
+
+    /// @notice The protocol admin (Lido Agent).
+    function _admin() internal view returns (address) {
+        return _protocol("agent");
+    }
+
+    /// @notice The EasyTrack EVMScriptExecutor, the owner facade's role holder.
+    function _executor() internal view returns (address) {
+        return _protocol("evm_script_executor");
+    }
+
+    /// @notice The reseal manager (Dual Governance): the controller's `PAUSER_ROLE` and sole `RESUMER_ROLE` holder.
+    function _resealManager() internal view returns (address) {
+        return _protocol("reseal_manager");
+    }
+
+    /// @notice The owner facade (`LidoLendOwner`), the manager of every controller and the core's owner.
+    function _facade() internal view returns (ILidoLendOwner) {
+        return ILidoLendOwner(_protocol("owner_facade"));
+    }
+
+    /// @notice The risk-steward dashboard, the controller's `FREEZER_ROLE` holder.
+    function _dashboard() internal view returns (IRiskStewardDashboard) {
+        return IRiskStewardDashboard(_protocol("risk_steward_dashboard"));
+    }
+
+    /// @notice OZ AccessControl's refusal for `account` lacking `role`, for `vm.expectRevert`.
+    function _unauthorized(address account, bytes32 role) internal pure returns (bytes memory) {
+        return abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, account, role);
+    }
+
+    // ---
+    // GOVERNANCE, THROUGH THE DEPLOYED SURFACES
+    // ---
+
+    /// @notice Grant or revoke instant activation for `caller` as the executor through the facade.
+    function _setInstantActivation(BoundMarket memory m, address caller, bool enabled) internal {
+        vm.prank(_executor());
+        _facade().setInstantActivation(m.id, caller, enabled);
+        require(
+            m.controller.hasInstantActivation(caller) == enabled,
+            "ForkStack: facade did not change instant activation (does it hold MANAGER_ROLE?)"
+        );
+    }
+
+    /// @notice Unfreeze the market as the executor through the facade, the only `UNFREEZER_ROLE` holder.
+    function _unfreeze(BoundMarket memory m) internal {
+        vm.prank(_executor());
+        _facade().unfreezeMarket(m.id);
+        require(!m.controller.isFrozen(), "ForkStack: facade did not unfreeze the market");
+    }
+
+    /// @notice Set the market's supply cap as the executor through the facade; 0 lifts the cap.
+    function _setSupplyCap(BoundMarket memory m, uint256 cap) internal {
+        vm.prank(_executor());
+        _facade().setMarketSupplyCap(m.id, cap);
+        require(
+            LidoLendMarketController(address(m.controller)).supplyCap() == cap,
+            "ForkStack: facade did not change the supply cap"
+        );
+    }
+
+    /// @notice Appoint a fresh steward for the market as the executor through the dashboard.
+    function _appointSteward(BoundMarket memory m, string memory label) internal returns (address steward) {
+        steward = makeAddr(label);
+        vm.prank(_executor());
+        _dashboard().addMarketSteward(m.id, steward);
+        require(_dashboard().isMarketSteward(m.id, steward), "ForkStack: dashboard did not appoint the steward");
+    }
+
+    /// @notice Freeze the market as `steward` through the dashboard.
+    function _freezeViaSteward(BoundMarket memory m, address steward) internal {
+        vm.prank(steward);
+        _dashboard().freezeMarket(m.id);
+        require(m.controller.isFrozen(), "ForkStack: dashboard did not freeze the market");
+    }
+
+    /// @notice Pause the controller for `duration` as the reseal manager.
+    function _pauseViaResealManager(BoundMarket memory m, uint256 duration) internal {
+        vm.prank(_resealManager());
+        m.controller.pauseFor(duration);
+        require(IPausableUntil(address(m.controller)).isPaused(), "ForkStack: reseal manager did not pause");
+    }
+
+    /// @notice The first `quorum` guardians of the market's live committee: enough distinct flags to latch a ban.
+    function _quorumGuardians(BoundMarket memory m) internal view returns (address[] memory quorum) {
+        (address[] memory guardians,) = m.guardianSignals.getGuardians();
+        uint256 n = m.guardianSignals.getQuorum();
+        require(guardians.length >= n, "ForkStack: live guardian set smaller than its quorum");
+        quorum = new address[](n);
+        for (uint256 i; i < n; ++i) {
+            quorum[i] = guardians[i];
+        }
     }
 
     // ---
     // STATE SHAPING
     // ---
 
-    /// @notice Accrue the market's pending interest now.
-    /// @dev A latest-block fork carries pending interest; without this the first state-mutating call folds it in
-    ///      and breaks exact `totalAssets` / `totalSupplyAssets` delta assertions. Reverts loudly if the market is
-    ///      paused (the core's `AccrueInterest` hook checks the controller is resumed).
-    /// @param m The bound market.
+    /// @notice Accrue pending interest now, so exact total-delta assertions hold; reverts if the market is paused.
     function _pokeAccrue(BoundMarket memory m) internal {
         m.core.accrueInterest(m.params);
     }
 
-    /// @notice Warp past the market's maximum activation delay, so a freshly supplied collateral lot matures.
-    /// @dev Advances one second beyond `maxActivationDelay` from the current timestamp.
-    /// @param m The bound market.
+    /// @notice Warp one second past the market's maximum activation delay and, without a guardian quorum, its maximum
+    ///         quorum delay, so a fresh collateral lot matures.
     function _warpPastActivation(BoundMarket memory m) internal {
-        vm.warp(block.timestamp + uint256(m.activation.maxActivationDelay) + 1);
+        vm.warp(block.timestamp + Math.max(m.activation.maxActivationDelay, m.activation.maxGuardiansQuorumDelay) + 1);
     }
 
-    /// @notice The market's free (unborrowed) liquidity: `totalSupplyAssets - totalBorrowAssets`.
-    /// @dev Reads the last-accrued core totals; call `_pokeAccrue` first when an exact figure matters.
-    /// @param m The bound market.
-    /// @return The free liquidity, in loan-token assets.
+    /// @notice The market's unborrowed liquidity at the last-accrued totals: `totalSupplyAssets - totalBorrowAssets`.
     function _freeLiquidity(BoundMarket memory m) internal view returns (uint256) {
         Market memory mkt = m.core.market(m.id);
         return uint256(mkt.totalSupplyAssets) - uint256(mkt.totalBorrowAssets);
     }
 
-    /// @notice Assert the market accepts a lender deposit of `assets`.
-    /// @dev Deposits are capped: the controller's supply cap surfaces through the vault's ERC-4626 `maxDeposit`
-    ///      (which also returns 0 while the controller is paused). Loud-fails when `assets` exceeds that headroom.
-    /// @param m The bound market.
-    /// @param assets The intended deposit, in loan-token assets.
-    function _requireDepositHeadroom(BoundMarket memory m, uint256 assets) internal view {
-        uint256 headroom = m.vault.maxDeposit(address(this));
+    /// @notice Assert the controller's supply headroom (what the supply hook enforces) covers `assets`.
+    function _requireSupplyHeadroom(BoundMarket memory m, uint256 assets) internal view {
+        uint256 headroom = m.controller.maxDeposit();
         require(
             headroom >= assets,
-            string.concat("ForkStack: deposit ", vm.toString(assets), " exceeds vault headroom ", vm.toString(headroom))
+            string.concat("ForkStack: supply ", vm.toString(assets), " exceeds market headroom ", vm.toString(headroom))
         );
     }
 
-    /// @notice Drive the market's free liquidity down to exactly `target` by borrowing the excess into a fresh,
-    ///         amply-collateralized borrower.
-    /// @dev Accrues first so the borrow (same block, zero elapsed) moves totals by exactly the borrowed amount,
-    ///      landing free liquidity on `target`. The pin borrower is instant-activated (no maturation warp) and
-    ///      over-collateralized to ~2x the LLTV requirement, floored at twice the activation dust threshold so the
-    ///      lot both activates and carries borrow capacity. Loud-fails when free liquidity is already below
-    ///      `target`, or when the post-borrow free liquidity does not land exactly on it.
-    /// @param m The bound market.
-    /// @param target The free liquidity to leave in the market.
-    /// @return pinBorrower The borrower that absorbed the excess, or `address(0)` when there was no excess.
-    function _pinFreeLiquidity(BoundMarket memory m, uint256 target) internal returns (address pinBorrower) {
-        // Freeze pending interest so the borrow below accrues nothing more and the post-state is exact.
-        _pokeAccrue(m);
+    /// @notice Borrow the market's free liquidity down to exactly `target` into a fresh, instant-activated,
+    ///         over-collateralized pin borrower.
+    function _pinFreeLiquidity(BoundMarket memory m, uint256 target) internal {
+        _pokeAccrue(m); // same-block borrow moves totals by exactly the borrowed amount
 
         uint256 free = _freeLiquidity(m);
         require(
@@ -284,27 +323,15 @@ abstract contract ForkStack is Test, ForkTest {
             string.concat("ForkStack: free liquidity ", vm.toString(free), " below pin target ", vm.toString(target))
         );
         uint256 excess = free - target;
-        if (excess == 0) return address(0);
+        if (excess == 0) return;
 
-        pinBorrower = makeAddr("forkstack.pinBorrower");
-
-        // Size collateral to back `excess` at ~2x margin over the LLTV requirement, then floor at twice the dust
-        // threshold so the lot clears `minActivationAmount` and holds real borrow capacity. `price` quotes one
-        // collateral unit in loan-token assets, scaled by `ORACLE_PRICE_SCALE` (1e36).
-        uint256 price = m.oracle.price();
-        uint256 valueNeeded = Math.mulDiv(excess, 2 * WAD, m.params.lltv, Math.Rounding.Ceil);
-        uint256 collateral = Math.mulDiv(valueNeeded, ORACLE_PRICE_SCALE, price, Math.Rounding.Ceil);
-        uint256 dustFloor = 2 * uint256(m.activation.minActivationAmount);
-        if (collateral < dustFloor) collateral = dustFloor;
-
-        // Instant-activate the pin borrower's own supply (keyed on the supply caller), so its collateral is
-        // borrowable with no maturation wait. Granting instant activation is manager-gated.
-        _grantSelfManager(m);
-        m.controller.setInstantActivation(pinBorrower, true);
+        address pinBorrower = makeAddr("forkstack.pinBorrower");
+        uint256 collateral = _collateralFor(m, excess, BPS);
+        _setInstantActivation(m, pinBorrower, true); // manager-gated, so through the facade as the executor
 
         deal(address(m.collateralToken), pinBorrower, collateral);
+        _approve(address(m.collateralToken), pinBorrower, address(m.core), collateral);
         vm.startPrank(pinBorrower);
-        m.collateralToken.approve(address(m.core), collateral);
         m.core.supplyCollateral(m.params, collateral, pinBorrower, "");
         m.core.borrow(m.params, excess, 0, pinBorrower, pinBorrower);
         vm.stopPrank();
@@ -319,16 +346,94 @@ abstract contract ForkStack is Test, ForkTest {
     }
 
     // ---
-    // ACTOR HYGIENE
+    // PRICING
     // ---
 
-    /// @notice A fresh labelled actor guaranteed clean of this market's state.
-    /// @dev Loud-fails when the address already holds any core position (supply / borrow / collateral) or any
-    ///      vault shares — so suites bind actors by intent instead of reusing fixed constants that may collide
-    ///      with the live deployment's existing participants.
-    /// @param m The bound market.
-    /// @param label The `makeAddr` label identifying the actor.
-    /// @return a The fresh actor address.
+    /// @notice Move the price so `borrower` lands at `targetLtv` (WAD) and assert it did; returns the mocked price.
+    ///         The price that does it is `debt * WAD * SCALE / (collateral * target)` off the accrued position.
+    function _distress(BoundMarket memory m, address borrower, uint256 targetLtv) internal returns (uint256 mocked) {
+        _pokeAccrue(m);
+        Position memory p = m.core.position(m.id, borrower);
+        require(p.borrowShares != 0 && p.collateral != 0, "ForkStack: borrower has no position to distress");
+        Market memory mkt = m.core.market(m.id);
+        uint256 debt = uint256(p.borrowShares).toAssetsUp(mkt.totalBorrowAssets, mkt.totalBorrowShares);
+
+        mocked = _mockCollateralPrice(m, Math.mulDiv(debt * WAD, ORACLE_PRICE_SCALE, uint256(p.collateral) * targetLtv));
+
+        uint256 collateralValue = Math.mulDiv(p.collateral, mocked, ORACLE_PRICE_SCALE);
+        assertApproxEqRel(Math.mulDiv(debt, WAD, collateralValue), targetLtv, 1e15, "distress: realized LTV");
+    }
+
+    /// @notice Take the oracle's source down so `price()` reverts `ForkOracleDown()`; returns those bytes.
+    function _mockOracleRevert(BoundMarket memory m) internal returns (bytes memory err) {
+        err = abi.encodeWithSelector(ForkOracleDown.selector);
+        vm.mockCallRevert(m.oracleSource, _oracleSourceCall(m), err);
+        (bool ok,) = address(m.oracle).staticcall(abi.encodeCall(IOracle.price, ()));
+        require(!ok, "ForkStack: oracle still prices after its source was mocked down");
+    }
+
+    /// @dev Move the oracle price to `target` by mocking the deployed oracle's own source (the wstETH rate call, or
+    ///      the Ondo NAV scaled so `price()` lands on `target`); returns the post-mock `price()`. The USDY oracle's
+    ///      immutable band still applies and reverts `PriceOutOfBounds` for a `target` outside it.
+    function _mockCollateralPrice(BoundMarket memory m, uint256 target) private returns (uint256 mocked) {
+        if (m.oracleKind == OracleKind.WstEthRate) {
+            vm.mockCall(m.oracleSource, _oracleSourceCall(m), abi.encode(target));
+        } else {
+            // `price()` is linear in the NAV, so scale the NAV by target/current.
+            uint256 currentNav = IReadNavOracle(m.oracleSource).getPrice();
+            uint256 mockNav = Math.mulDiv(currentNav, target, m.oracle.price());
+            vm.mockCall(m.oracleSource, _oracleSourceCall(m), abi.encode(mockNav));
+        }
+        mocked = m.oracle.price();
+    }
+
+    /// @dev The exact external call the deployed oracle makes on its source, i.e. what a price mock targets.
+    function _oracleSourceCall(BoundMarket memory m) private pure returns (bytes memory) {
+        if (m.oracleKind == OracleKind.WstEthRate) {
+            return abi.encodeCall(IWstETH.getStETHByWstETH, (ORACLE_PRICE_SCALE));
+        }
+        return abi.encodeCall(IReadNavOracle.getPrice, ());
+    }
+
+    // ---
+    // LIVE SIZING
+    // ---
+
+    /// @notice One whole loan token (`10 ** decimals`).
+    function _loanUnit(BoundMarket memory m) internal view returns (uint256) {
+        return 10 ** IERC20Metadata(address(m.loanToken)).decimals();
+    }
+
+    /// @notice Largest debt `collateral` carries at `price` and the live LLTV, floored twice like the controller.
+    function _maxBorrow(BoundMarket memory m, uint256 collateral, uint256 price) internal view returns (uint256) {
+        return Math.mulDiv(Math.mulDiv(collateral, price, ORACLE_PRICE_SCALE), m.params.lltv, WAD);
+    }
+
+    /// @dev Collateral carrying `loanAssets` at the live LLTV and price with `marginBps` of slack, floored at twice
+    ///      the activation threshold so the lot activates and holds real capacity.
+    function _collateralFor(BoundMarket memory m, uint256 loanAssets, uint256 marginBps)
+        private
+        view
+        returns (uint256 collateral)
+    {
+        uint256 valueNeeded = Math.mulDiv(loanAssets, WAD, m.params.lltv, Math.Rounding.Ceil);
+        valueNeeded = Math.mulDiv(valueNeeded, BPS + marginBps, BPS, Math.Rounding.Ceil);
+        collateral = Math.mulDiv(valueNeeded, ORACLE_PRICE_SCALE, m.oracle.price(), Math.Rounding.Ceil);
+        uint256 dustFloor = 2 * uint256(m.activation.minActivationAmount);
+        if (collateral < dustFloor) collateral = dustFloor;
+    }
+
+    // ---
+    // FUNDING AND ACTORS
+    // ---
+
+    /// @notice `owner` approves `spender` for `amount` of `token`, tolerating USDT's no-return, zero-first `approve`.
+    function _approve(address token, address owner, address spender, uint256 amount) internal {
+        Approvals.approve(token, owner, spender, amount);
+    }
+
+    /// @notice A fresh labelled actor, asserted clean of any position, vault shares and market tokens, so its
+    ///         post-action balances read as deltas.
     function _freshActor(BoundMarket memory m, string memory label) internal returns (address a) {
         a = makeAddr(label);
         Position memory p = m.core.position(m.id, a);
@@ -337,14 +442,10 @@ abstract contract ForkStack is Test, ForkTest {
             string.concat("ForkStack: actor '", label, "' already has a market position")
         );
         require(m.vault.balanceOf(a) == 0, string.concat("ForkStack: actor '", label, "' already holds vault shares"));
-    }
-
-    // ---
-    // PRIVATE HELPERS
-    // ---
-
-    /// @dev Loud-fail when `addr` (the market's `what` contract) carries no code.
-    function _requireHasCode(address addr, string memory name, string memory what) private view {
-        require(addr.code.length != 0, string.concat("ForkStack: market '", name, "' ", what, " has no code"));
+        require(m.loanToken.balanceOf(a) == 0, string.concat("ForkStack: actor '", label, "' already holds loan token"));
+        require(
+            m.collateralToken.balanceOf(a) == 0,
+            string.concat("ForkStack: actor '", label, "' already holds collateral token")
+        );
     }
 }

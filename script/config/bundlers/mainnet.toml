@@ -1,0 +1,5 @@
+# Bundler3 adapters for mainnet: the tokens the general adapter binds. Its other immutable (the core) and the
+# Bundler3 the adapters bind to both come from the run — the dispatcher is deployed alongside them, not shared
+# with another protocol. Reused as-is by fork provisioning.
+weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"      # WETH9
+wsteth = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"    # Lido wstETH; its stETH() is the adapter's stETH

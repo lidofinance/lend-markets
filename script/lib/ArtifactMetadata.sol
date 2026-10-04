@@ -77,6 +77,8 @@ library ArtifactMetadataFile {
 
         string memory exitBooks = string.concat(dir, "/exit-books.toml");
         if (vm.exists(exitBooks)) requireCompatible(exitBooks, expected);
+        string memory bundler = string.concat(dir, "/bundler.toml");
+        if (vm.exists(bundler)) requireCompatible(bundler, expected);
     }
 
     /// @dev `ARTIFACTS_DIR` must be one directory name below `deployed/`.
