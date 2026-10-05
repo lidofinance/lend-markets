@@ -1,0 +1,13 @@
+[artifact]
+kind = "exit-books-deployment"
+deployment = "hoodi-testnet"
+chain_id = 560048
+config_hash = "0xf119b4687e4364f297a36ae21775241b92cd6d62a4af2bd0951816df22642f7e"
+compatibility_hash = "0xb1aca1b38e8049e75719c885675a71e618c63343b44ce68c585352a3e1ac0f50"
+
+[exit_books]
+morpho = "0xE626f019B04930fd0992A524FbE162695E99644D"
+erc4626 = "0xc0DB4417ee3F4510fa60eabFEfC0227e5a1CF127"
+deployed_block = 3641147
+max_request_lifetime = 7776000
+pauser = "0xe65b86bB03Bd1B11BF39C6d87060c7A52236988D"

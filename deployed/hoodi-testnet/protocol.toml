@@ -1,0 +1,27 @@
+[artifact]
+kind = "protocol-deployment"
+deployment = "hoodi-testnet"
+chain_id = 560048
+config_hash = "0xf119b4687e4364f297a36ae21775241b92cd6d62a4af2bd0951816df22642f7e"
+compatibility_hash = "0xb1aca1b38e8049e75719c885675a71e618c63343b44ce68c585352a3e1ac0f50"
+
+[protocol]
+deployment = "hoodi-testnet"
+network = "hoodi"
+chain_id = 560048
+config_hash = "0xf119b4687e4364f297a36ae21775241b92cd6d62a4af2bd0951816df22642f7e"
+circuit_breaker_artifact = "lido-lend"
+core = "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+owner_facade = "0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B"
+irm_router = "0x88b624325385B3db69Db73A65DAdbaa15DE4406d"
+adaptive_curve_irm = "0x781f04920A82504B5AE13E02678dFc696eCca892"
+irm_config_factory = "0xcE80DA265F3b982a0B85192697c87df516c9555f"
+factory = "0x1ba98E8Cb00dC00a00E41E10cc17692917aEe896"
+risk_steward_dashboard = "0xc249abf58AC31dDEB3C715d7B395119aeeF729d1"
+circuit_breaker = "0x3d7f98a7aDa46DB97C100f09746bf3A0Ff4BE192"
+reseal_manager = "0x05172CbCDb7307228F781436b327679e4DAE166B"
+guardian_signals_impl = "0x57Fc097F8235Fd17343f66e1855AF2Ae96452553"
+deployed_block = 3641147
+agent = "0x0534aA41907c9631fae990960bCC72d75fA7cfeD"
+evm_script_executor = "0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"
+pauser_committee = "0x8223d372898CA8f185F24b5EDA373FDaea16B1c6"

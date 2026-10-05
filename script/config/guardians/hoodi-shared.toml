@@ -1,0 +1,7 @@
+# Hoodi guardian registry — a single registry shared by all three markets.
+quorum = 1
+suspect_window = 86400  # 24 h
+guardians = [
+    "0xe9bFDBB915b734D10aA53B3838371F67a7704102",  # hoodi guardian EOA
+    "0xA6b2dbCCE7895347A62b4409d29bA7ce29A74655",  # hoodi multisig (backup guardian)
+]

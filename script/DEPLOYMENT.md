@@ -15,7 +15,7 @@ Configuration lives under `script/config/`:
 - `vaults/<name>.toml` and `adapters/<name>.toml`: an external vault-v2 vault and its Morpho adapter;
 - `bundlers/<name>.toml`: the WETH / wstETH the general adapter binds; the Bundler3 it dispatches through is deployed with it.
 
-Set `RPC_URL`, `DEPLOYER_PRIVATE_KEY`, and `ETHERSCAN_API_KEY` in `.env`. Deployment targets broadcast and verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`; all steps for one deployment must use the same `RUN`. Artifacts are immutable and are not overwritten.
+Set `RPC_URL`, the deployer signer, and `ETHERSCAN_API_KEY` in `.env`. The signer is `DEPLOYER_ACCOUNT` — an encrypted Foundry keystore created with `cast wallet import --interactive <name>`, for which forge prompts for the password — plus `DEPLOYER_SENDER`, its address, passed as `--sender` (forge derives no sender from a keystore). A raw private key is not accepted; a local unlocked node sets `DEPLOYER_SENDER` alone. Deployment targets broadcast and verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`; all steps for one deployment must use the same `RUN`. Artifacts are immutable and are not overwritten.
 
 Each artifact header records two deploy-config hashes. `config_hash` is the exact hash of the complete TOML and
 is retained as provenance. `compatibility_hash` is canonical over the protocol identity that existing-protocol
@@ -145,9 +145,9 @@ Activation inputs are runtime EasyTrack motion choices, not deployment artifacts
 artifact is generated or required. EasyTrack acceptance reads reviewed values and resolved addresses from
 `deployed/<RUN>/markets/<market-name>.toml`. Deployment creates or reuses an immutable config for the recorded
 curve parameters. After confirmation, activation applies that config to Adaptive Curve, routes it,
-creates the market through `LidoLendOwner`, and registers the runtime pauser on the protocol
-CircuitBreaker. Other motion choices, such as settlement enablement and the pauser committee, remain runtime
-inputs.
+creates the market through `LidoLendOwner`, and registers the pauser committee on the protocol
+CircuitBreaker — `pauser_committee` from the network config, recorded in `protocol.toml`; the Agent stands in
+when the config sets none. Settlement enablement remains a runtime input.
 
 The EasyTrack factory implementation and its registration are outside this repository; this repository deploys
 the lending stack, records the immutable inputs, and verifies the result. A production rollout cannot be activated

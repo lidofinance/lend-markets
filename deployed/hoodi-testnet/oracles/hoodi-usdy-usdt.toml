@@ -1,0 +1,19 @@
+[artifact]
+kind = "oracle"
+deployment = "hoodi-testnet"
+chain_id = 560048
+config_hash = "0xf119b4687e4364f297a36ae21775241b92cd6d62a4af2bd0951816df22642f7e"
+compatibility_hash = "0xb1aca1b38e8049e75719c885675a71e618c63343b44ce68c585352a3e1ac0f50"
+
+[oracle]
+name = "hoodi-usdy-usdt"
+address = "0x53D670DD018A09Af8BfBAdD9817E383fDdf2fb27"
+reused = false
+proxy_admin = "0x0534aA41907c9631fae990960bCC72d75fA7cfeD"
+kind = "usdy-stable"
+usdy_oracle = "0xd6237FecDF9C1D9b023A5205C17549E3037EeEec"
+feed = "0xeC3785b13b21c226D66B5bC2E82BB2f4226f715e"
+loan_token = "0x64f1904d1b419c6889BDf3238e31A138E258eA68"
+collateral_token = "0xE22a71d42632aBAC08F44FCbd41221A8D8C56972"
+min_price = "100000000000000000000000"
+max_price = "100000000000000000000000000"

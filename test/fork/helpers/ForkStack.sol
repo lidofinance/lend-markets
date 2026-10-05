@@ -24,6 +24,7 @@ import {IPausableUntil} from "../../../src/interfaces/IPausableUntil.sol";
 import {IRiskStewardDashboard} from "../../../src/interfaces/IRiskStewardDashboard.sol";
 import {LidoLendMarketController} from "../../../src/controllers/LidoLendMarketController.sol";
 import {CollateralActivationConfig} from "../../../src/types/CollateralActivationTypes.sol";
+import {BlockInfoWithHash} from "../../../src/types/GuardianSignalsTypes.sol";
 import {WAD} from "../../../src/libs/Constants.sol";
 import {Approvals} from "../../setup/Approvals.sol";
 import {ForkTest} from "./ForkTest.sol";
@@ -291,10 +292,31 @@ abstract contract ForkStack is Test, ForkTest {
         m.core.accrueInterest(m.params);
     }
 
-    /// @notice Warp one second past the market's maximum activation delay and, without a guardian quorum, its maximum
-    ///         quorum delay, so a fresh collateral lot matures.
+    /// @notice Warp one second past the market's maximum activation delay, so a fresh collateral lot matures. A
+    ///         market that also gates on the guardian quorum gets a quorum of heartbeats at the warped time, so
+    ///         the frontier covers the unlock the way a live committee would.
     function _warpPastActivation(BoundMarket memory m) internal {
-        vm.warp(block.timestamp + Math.max(m.activation.maxActivationDelay, m.activation.maxGuardiansQuorumDelay) + 1);
+        vm.warp(block.timestamp + uint256(m.activation.maxActivationDelay) + 1);
+        if (m.activation.maxGuardiansQuorumDelay != 0) _heartbeatQuorumAt(m, block.timestamp);
+    }
+
+    /// @notice A quorum of the live committee reports `scanTimestamp` as scanned, moving the quorum frontier there.
+    function _heartbeatQuorumAt(BoundMarket memory m, uint256 scanTimestamp) internal {
+        vm.roll(block.number + 1);
+        uint40 pastBlock = uint40(block.number - 1);
+        BlockInfoWithHash memory scanned =
+            BlockInfoWithHash({hash: blockhash(pastBlock), number: pastBlock, timestamp: uint40(scanTimestamp)});
+        require(scanned.hash != bytes32(0), "ForkStack: no blockhash for the heartbeat; vm.roll further");
+
+        address[] memory quorum = _quorumGuardians(m);
+        for (uint256 i; i < quorum.length; ++i) {
+            vm.prank(quorum[i]);
+            m.guardianSignals.heartbeat(quorum[i], scanned, "");
+        }
+        require(
+            uint256(m.guardianSignals.getQuorumFrontier()) >= scanTimestamp,
+            "ForkStack: quorum frontier short of the scan"
+        );
     }
 
     /// @notice The market's unborrowed liquidity at the last-accrued totals: `totalSupplyAssets - totalBorrowAssets`.

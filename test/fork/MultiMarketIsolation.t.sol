@@ -12,8 +12,9 @@ import {ForkMarketStack} from "./helpers/ForkMarketStack.sol";
 
 /// @notice One core hosts both deployed markets; their per-market state must stay apart. A full flow on one leaves
 ///         the other's stored market, settlement queue and the borrower's position untouched, and a pause, freeze,
-///         ban or cap lands on the named market only. The red case is a provisioning change that shares a controller
-///         or registry between markets.
+///         ban or cap lands on the named market only — a ban is keyed by market, so this holds whether the markets
+///         share a guardian registry or not. The red case is a provisioning change that shares a controller between
+///         markets.
 contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
     using MarketActions for Market;
 
@@ -29,9 +30,6 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
         _copyMarket(otherMarket, other);
 
         require(address(deployed.controller) != address(other.controller), "MultiMarket: markets share a controller");
-        require(
-            address(deployed.guardianSignals) != address(other.guardianSignals), "MultiMarket: markets share a registry"
-        );
         require(address(deployed.core) == address(other.core), "MultiMarket: markets do not share the core");
 
         LENDER = _freshActor(deployed, "multi.lender");
@@ -75,9 +73,9 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
         _dashboard().freezeMarket(other.id);
     }
 
-    function test_banOnOneRegistry_invisibleOnOther() public {
+    function test_banOnOneMarket_invisibleOnOther() public {
         market.banVia(_quorumGuardians(deployed), BORROWER);
-        assertFalse(other.guardianSignals.isBanned(other.id, BORROWER), "ban is per registry");
+        assertFalse(other.guardianSignals.isBanned(other.id, BORROWER), "ban is per market");
         assertFalse(other.controller.positionOf(BORROWER).banned, "other controller does not see it");
     }
 

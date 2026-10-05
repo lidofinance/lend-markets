@@ -1,0 +1,15 @@
+[artifact]
+kind = "guardian-signals"
+deployment = "hoodi-testnet"
+chain_id = 560048
+config_hash = "0xf119b4687e4364f297a36ae21775241b92cd6d62a4af2bd0951816df22642f7e"
+compatibility_hash = "0xb1aca1b38e8049e75719c885675a71e618c63343b44ce68c585352a3e1ac0f50"
+
+[guardian_signals]
+name = "hoodi-shared"
+address = "0xF46eB3bf7783825B0ffb5f532C148A261Ec518a9"
+reused = false
+deployed_block = 3641148
+quorum = 1
+suspect_window = 86400
+guardians = ["0xe9bFDBB915b734D10aA53B3838371F67a7704102", "0xA6b2dbCCE7895347A62b4409d29bA7ce29A74655"]

@@ -78,6 +78,7 @@ contract UsdyTreasuriesMarketTest is ForkStack {
         _fork();
         string memory market_ = _marketForRole("usdy-usdt");
         if (bytes(market_).length == 0) return; // not applicable to this deployment
+        if (!_hasExt("usdyBlocklist")) vm.skip(true, "UsdyTreasuries: the network's USDY has no blocklist");
         m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest up front so the sizing/liquidity math below is exact
 

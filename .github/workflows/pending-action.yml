@@ -1,0 +1,95 @@
+name: pending-action
+
+# Pre-signing validation of a pending multisig action: fork the live network, apply the
+# transaction(s) from script/config/pending/, then verify the resulting state with state-mate
+# and the fork suites. Dispatch it on the branch that carries the pending calldata; a green run
+# is the signing gate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      state_mate_config:
+        description: "state-mate config file name under script/config/state-mate/"
+        default: "hoodi-testnet.yaml"
+      artifacts_run:
+        description: "run under deployed/ for the fork suites (skipped when absent)"
+        default: "hoodi-testnet"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: pending action present
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      has_pending: ${{ steps.check.outputs.has_pending }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - id: check
+        name: look for an active [[transaction]]
+        run: |
+          if grep -qE '^\[\[transaction\]\]' script/config/pending/hoodi.toml; then
+            echo "has_pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_pending=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no active [[transaction]] in script/config/pending/hoodi.toml — nothing to validate"
+          fi
+
+  validate:
+    name: apply pending action + state-mate + fork tests
+    needs: guard
+    if: needs.guard.outputs.has_pending == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      STATE_MATE_CONFIG: ${{ inputs.state_mate_config }}
+      ARTIFACTS_RUN: ${{ inputs.artifacts_run }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/repo-setup
+
+      - name: apply the pending action on a fork of the live network
+        env:
+          RPC_URL: ${{ secrets.HOODI_RPC_URL }}
+        run: |
+          test -n "$RPC_URL" || { echo "::error::HOODI_RPC_URL secret required"; exit 1; }
+          make apply-pending CONFIG=hoodi
+          # anvil keeps running on :8545 with the pending state applied
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: lidofinance/state-mate
+          ref: 835dbfeea055638c205338c777b8c2914289d799 # main 2026-09-11
+          path: .state-mate
+
+      - name: state-mate against the applied state
+        working-directory: .state-mate
+        env:
+          HOODI_RPC_URL: http://127.0.0.1:8545
+        run: |
+          corepack enable
+          yarn install --immutable
+          yarn start "$GITHUB_WORKSPACE/script/config/state-mate/$STATE_MATE_CONFIG"
+
+      - name: fork suites against the applied state
+        run: |
+          if [ -f "deployed/$ARTIFACTS_RUN/protocol.toml" ]; then
+            make test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR="$ARTIFACTS_RUN" FORK_BLOCK=
+          else
+            echo "::notice::deployed/$ARTIFACTS_RUN/protocol.toml not in the tree — fork suites skipped (place the run artifacts to enable them)"
+          fi
+
+      - name: stop the fork
+        if: always()
+        run: make pending-stop
