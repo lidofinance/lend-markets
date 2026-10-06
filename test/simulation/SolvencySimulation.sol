@@ -556,7 +556,11 @@ abstract contract SolvencySimulation is SolvencyActions {
         _assertMoved(Action.CoreSettleScenario);
         // The one floor on a revert: `_liquidate` stands any borrower in when none is liquidatable, and the core
         // rejects a healthy one before the hook. This family and `LiquidateBadDebt` clear unhealthy positions as
-        // they appear, so between price moves there is usually nothing to liquidate: p = 0.20, E >= 0.35.
+        // they appear, so between price moves there is usually nothing to liquidate: p = 0.20, E >= 0.35. The
+        // success carries no floor here: on a steady price only accrual tips a leveraged borrower drawn to its room,
+        // and a month can miss that (1 of 8 measured seeds on WETH/wstETH). The crash suite floors the write-off on
+        // both lengths and the solvent liquidation on a year, and every suite, so each loan scale, liquidates in
+        // `test_forcedLiquidations_nearInsolventBorrower_leavesNoBadDebt`.
         assertGt(predicted[Action.Liquidate], 0, "coverage: no predicted Liquidate");
         // Implied by the Liquidate floor, and kept as the statement that holds whatever the odds do. No other
         // revert family carries a floor: `Borrow` needs E >= 0.21 but rarely lacks room, `Settle` and

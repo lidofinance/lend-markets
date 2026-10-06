@@ -8,8 +8,9 @@ import {SolvencySimulation} from "./SolvencySimulation.sol";
 
 /// @notice Solvency simulation on an 18/18 market priced like the WETH/wstETH oracle, which reports Lido's accounting
 ///         rate. The price grows with the staking yield, about 3% a year, and one step in a hundred instead falls by up
-///         to 0.1%, as a negative rebase would. No position goes underwater, so the run must see no bad debt. It covers
-///         a healthy market with an 18-decimal loan token at the prices the real market sees.
+///         to 0.1%, as a negative rebase would. Under that walk a position can go unhealthy by accrual but never
+///         underwater, so the run must see no bad debt: a write-off would be a driver or core fault. It covers a
+///         healthy market with an 18-decimal loan token at the prices the real market sees.
 contract WethWstethSolvencySimulation is SolvencySimulation {
     using Random for Random.Context;
 

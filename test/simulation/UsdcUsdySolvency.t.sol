@@ -15,8 +15,9 @@ import {Random} from "./Random.sol";
 import {SolvencySimulation} from "./SolvencySimulation.sol";
 
 /// @notice Solvency simulation on a 6/18 market shaped like USDC/USDY. The price only rises, 1 to 10 basis points a
-///         step, so no position goes underwater and the run must see no bad debt. It covers exits, settlement,
-///         governance, fees, gifts and exit books on a healthy market with a six-decimal loan token.
+///         step. Under that walk a position can go unhealthy by accrual but never underwater, so the run must see no
+///         bad debt: a write-off would be a driver or core fault. It covers exits, settlement, governance, fees, gifts
+///         and exit books on a healthy market with a six-decimal loan token.
 contract UsdcUsdySolvencySimulation is SolvencySimulation {
     using MarketActions for Market;
     using Random for Random.Context;
