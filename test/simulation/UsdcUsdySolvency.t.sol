@@ -143,7 +143,7 @@ contract UsdcUsdySolvencySimulation is SolvencySimulation {
         assertGt(_freeLiquidity(), 0, "setup: an unlent market withdraws something");
         assertEq(m.vault.maxRedeem(l), m.vault.balanceOf(l), "a covered position redeems whole");
 
-        m.pause(2 hours);
+        _pauseFor(2 hours);
         assertEq(_freeLiquidity(), 0, "setup: a paused market withdraws nothing");
         assertEq(m.vault.balanceOf(dust), 1, "setup: the holder holds one share");
         assertEq(Erc4626Math.toAssets(m.vault, 1, Math.Rounding.Floor), 0, "setup: one share is worth no loan asset");

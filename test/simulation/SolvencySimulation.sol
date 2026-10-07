@@ -361,6 +361,7 @@ abstract contract SolvencySimulation is SolvencyActions {
         guardians[0] = guardian2;
         guardians[1] = address(this);
         m.banVia(guardians, b);
+        bannedModel[b] = true;
 
         assertTrue(_isBanned(b), "setup: the debt owner is banned");
         assertFalse(_isBanned(k), "setup: the caller and receiver are not banned");
@@ -387,7 +388,7 @@ abstract contract SolvencySimulation is SolvencyActions {
         uint256 shares = m.borrow(b, _borrowRoom(b) / 2);
         Approvals.approve(address(m.loanToken), b, address(m.core), type(uint256).max);
 
-        m.pause(2 hours);
+        _pauseFor(2 hours);
         assertTrue(_paused(), "setup: the controller is paused");
         assertGt(shares, 0, "setup: the borrower carries debt to repay");
 
@@ -752,10 +753,13 @@ abstract contract SolvencySimulation is SolvencyActions {
         Market storage m = _m();
         // On forge 1.8.x every unwind call is a transaction of its own, so none inherits an inflow contribution.
         if (perCallTransactions) ActivationModel.beginTransaction(activation, borrowers);
-        if (_paused()) m.resume();
+        if (_paused()) {
+            m.resume();
+            pauseUntil = block.timestamp;
+        }
         if (m.controller.isFrozen()) m.unfreeze();
         for (uint256 i; i < borrowers.length; ++i) {
-            assertFalse(_isBanned(borrowers[i]), "unwind: a guardian ban outlived its incident");
+            assertFalse(m.guardianSignals.isBanned(m.id, borrowers[i]), "unwind: a guardian ban outlived its incident");
         }
         m.setSupplyCap(0);
         m.setSettlementConfig(m.config.settlementConfig);

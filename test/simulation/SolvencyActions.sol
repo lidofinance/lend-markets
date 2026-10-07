@@ -233,6 +233,11 @@ abstract contract SolvencyActions is LidoLendSetup {
     ///      the `Pause` entry's due time, so the resume lands inside the real pause.
     uint256 internal pauseStart;
     uint256 internal pauseDuration;
+    /// @dev The pause and the guardian bans as the model predicts them, which every gate reads: the pause lapses at
+    ///      `pauseUntil`, set by `_pauseFor` and cut to now by a resume; a ban is latched by the quorum flag and
+    ///      cleared by the unban. `_advanceSlot` checks the contracts agree every slot.
+    uint256 internal pauseUntil;
+    mapping(address => bool) internal bannedModel;
     /// @dev When the run began and how long it lasts. The guardians time their incidents from the start and take no
     ///      incident step past the end.
     uint256 internal runStart;
@@ -391,15 +396,20 @@ abstract contract SolvencyActions is LidoLendSetup {
     // TIME
     // ---
 
-    /// @dev One slot passes, the guardians run their routine and the core accrues, matching the interest, fee and fee
-    ///      shares of `_pendingAccrual`. The supply index moves with the accrual and the fee recipient is credited the
-    ///      fee. While paused the accrual reverts; the first accrual after resume covers the whole span, which the
-    ///      model reproduces from `lastUpdate`.
+    /// @dev One slot passes, the guardians run their routine, the pause and the incident's ban are checked against
+    ///      the model, and the core accrues, matching the interest, fee and fee shares of `_pendingAccrual`. The
+    ///      supply index moves with the accrual and the fee recipient is credited the fee. While paused the accrual
+    ///      reverts; the first accrual after resume covers the whole span, which the model reproduces from
+    ///      `lastUpdate`.
     function _advanceSlot() internal {
         Market storage m = _m();
         vm.warp(block.timestamp + SLOT);
         vm.roll(block.number + 1);
-        _guardianRoutine();
+        address incident = _guardianRoutine();
+        assertEq(IPausableUntil(address(m.controller)).isPaused(), _paused(), "slot: pause != model");
+        if (incident != address(0)) {
+            assertEq(m.guardianSignals.isBanned(m.id, incident), _isBanned(incident), "slot: ban != model");
+        }
         if (_paused()) {
             vm.expectRevert(PausableUntil.ResumedExpected.selector);
             m.core.accrueInterest(m.params);
@@ -1517,16 +1527,29 @@ abstract contract SolvencyActions is LidoLendSetup {
     function _pause() internal {
         if (_paused()) return _nobody(Action.Pause);
         uint256 duration = random.between(12, 24) * SLOT;
-        _m().pause(duration);
+        _pauseFor(duration);
         (pauseStart, pauseDuration) = (block.timestamp, duration);
         g.pauses++;
         _move(Action.Pause, duration);
+    }
+
+    /// @dev Pauses the controller for `duration` and records when the model's pause lapses, which the controller must
+    ///      report as its resume timestamp.
+    function _pauseFor(uint256 duration) internal {
+        _m().pause(duration);
+        pauseUntil = block.timestamp + duration;
+        assertEq(
+            IPausableUntil(address(_m().controller)).getResumeSinceTimestamp(),
+            pauseUntil,
+            "pause: resume time != model"
+        );
     }
 
     /// @dev Governance lifts a pause before it expires.
     function _resume() internal {
         if (!_paused()) return _nobody(Action.Resume);
         _m().resume();
+        pauseUntil = block.timestamp;
         _move(Action.Resume, 0);
     }
 
@@ -1571,16 +1594,17 @@ abstract contract SolvencyActions is LidoLendSetup {
     ///      leveraged) goes through one incident: this guardian's suspect report on day 1 and flag on day 2, the
     ///      second guardian's flag on day 3, which reaches the quorum and bans it, and governance's unban on day 4.
     ///      The target is ordinary so a ban never blocks a lever the crash waits on or a borrower a settlement
-    ///      scenario prepares.
-    function _guardianRoutine() internal {
+    ///      scenario prepares. The model bans the target with the quorum flag and clears it with the unban. Returns
+    ///      the current incident's target, or none past the end.
+    function _guardianRoutine() internal returns (address b) {
         Market storage m = _m();
         uint256 scanned = block.timestamp - SLOT;
         m.heartbeatAt(address(this), scanned);
         m.heartbeatAt(guardian2, scanned);
         assertEq(m.guardianSignals.getQuorumFrontier(), scanned, "guardians: frontier != the block both scanned");
         uint256 elapsed = block.timestamp - runStart;
-        if (elapsed > runDuration) return;
-        address b = borrowers[(2 * (elapsed / INCIDENT_PERIOD) + 1) % borrowers.length];
+        if (elapsed > runDuration) return address(0);
+        b = borrowers[(2 * (elapsed / INCIDENT_PERIOD) + 1) % borrowers.length];
         uint256 day = elapsed % INCIDENT_PERIOD;
         if (day == 1 days) {
             m.suspectAs(address(this), b);
@@ -1588,10 +1612,12 @@ abstract contract SolvencyActions is LidoLendSetup {
             m.flagAs(address(this), b);
         } else if (day == 3 days) {
             m.flagAs(guardian2, b);
-            assertTrue(_isBanned(b), "guardians: the quorum flag did not ban");
+            bannedModel[b] = true;
+            assertTrue(m.guardianSignals.isBanned(m.id, b), "guardians: the quorum flag did not ban");
             g.bans++;
         } else if (day == 4 days) {
             m.unban(b);
+            bannedModel[b] = false;
         }
     }
 
@@ -2257,7 +2283,7 @@ abstract contract SolvencyActions is LidoLendSetup {
     }
 
     function _isBanned(address b) internal view returns (bool) {
-        return _m().guardianSignals.isBanned(_m().id, b);
+        return bannedModel[b];
     }
 
     /// @dev Loan `b` can still take: 99% of its `_capacity` headroom after the hook's sync, capped by free liquidity.
@@ -2656,7 +2682,7 @@ abstract contract SolvencyActions is LidoLendSetup {
     }
 
     function _paused() internal view returns (bool) {
-        return IPausableUntil(address(_m().controller)).isPaused();
+        return block.timestamp < pauseUntil;
     }
 
     function _price() internal view returns (uint256) {
