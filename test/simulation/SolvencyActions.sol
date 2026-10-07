@@ -186,7 +186,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         uint256 accruals;
         uint256 badDebtGate; // settle attempts the bad-debt gate stopped
         uint256 pauses;
-        uint256 caps;
+        uint256 caps; // live supply caps set; a removal is not one
         uint256 bans;
         uint256 donatedLoanToVault;
         uint256 donatedLoanToCore;
@@ -1566,17 +1566,18 @@ abstract contract SolvencyActions is LidoLendSetup {
         _move(Action.Unfreeze, 0);
     }
 
-    /// @dev Governance moves the supply cap: one time in three it removes it, one time in three it sets it at or below
-    ///      the current supply (new deposits must then fail), otherwise above.
+    /// @dev Governance moves the supply cap, and always to a live one: half the draws land it at or below the current
+    ///      supply (new deposits must then fail), the rest above. This family fires once a run, so a draw of zero
+    ///      would spend that occurrence on no cap at all, which is what `RemoveSupplyCap` covers.
     function _setSupplyCap() internal {
         Market storage m = _m();
         uint256 supply = m.core.market(m.id).totalSupplyAssets;
-        uint256 roll = random.between(0, 2);
-        uint256 cap;
-        if (roll == 1) cap = supply - random.between(0, supply / 2);
-        else if (roll == 2) cap = supply + random.between(1, 1000) * unit;
+        // At or below an empty supply is zero, so an empty market only takes the cap above it.
+        uint256 cap = supply > 0 && random.chance(5000)
+            ? supply - random.between(0, supply / 2)
+            : supply + random.between(1, 1000) * unit;
         m.setSupplyCap(cap);
-        g.caps++;
+        if (cap != 0) g.caps++;
         _move(Action.SetSupplyCap, cap);
     }
 
@@ -1584,7 +1585,6 @@ abstract contract SolvencyActions is LidoLendSetup {
     ///      supply and starve borrowing for the rest of the run. Unconditional so it always fires.
     function _removeSupplyCap() internal {
         _m().setSupplyCap(0);
-        g.caps++;
         _move(Action.RemoveSupplyCap, 0);
     }
 

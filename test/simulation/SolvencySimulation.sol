@@ -575,7 +575,9 @@ abstract contract SolvencySimulation is SolvencyActions {
 
         assertGt(g.pauses, 0, "coverage: no pause");
         assertEq(g.bans, longRun ? 37 : 3, "coverage: bans != one per incident");
-        assertGt(g.caps, 0, "coverage: no cap change");
+        // Implied by the schedule, since `_setSupplyCap` always sets a live cap, and kept as the statement the
+        // deposit and core-supply floors rest on: a run that never capped the market never tested the cap.
+        assertGt(g.caps, 0, "coverage: no supply cap set");
         // The scheduled third-party supply may land in the pause or over the cap and take a predicted revert.
         assertGt(
             count[Action.ThirdPartySupply] + predicted[Action.ThirdPartySupply],
