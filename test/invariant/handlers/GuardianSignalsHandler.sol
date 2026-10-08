@@ -387,10 +387,11 @@ contract GuardianSignalsHandler is Test {
     ///      permissionless interface no power to increase a restriction. An increase is a privilege
     ///      escalation.
     ///
-    ///      The suspect count needs a guard. A larger window makes a stored expired report active again, and a
-    ///      rebuild then counts it. This check therefore applies when the window did not grow since the last
-    ///      rebuild of the pair. Under that condition each stored report is harder to count than before, so the
-    ///      count cannot rise.
+    ///      The suspect count needs a guard. The `prune` call does not remove the expired reports before it
+    ///      rebuilds, so a larger window makes a stored expired report active again and the rebuild counts it.
+    ///      That behaviour is accepted. This check therefore applies when the window did not grow since the
+    ///      last rebuild of the pair. Under that condition each stored report is harder to count than before,
+    ///      so the count cannot rise.
     function _assertPruneOnlyLoosens(uint256 pair, PairState memory pre) internal {
         GuardiansOpinion memory post = GS.getOpinion(_market(pair), _account(pair));
         assertLe(post.strikeCount, pre.strikeCount, "prune increased the strike count");

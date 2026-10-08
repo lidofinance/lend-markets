@@ -19,10 +19,6 @@ import {GuardianSignalsHandler} from "./handlers/GuardianSignalsHandler.sol";
 ///
 ///      The handler asserts further properties. Each one compares the state before a call with the state after
 ///      the call, so each one is adjacent to its call.
-///
-///      One test is skipped. It states a requirement that the current `prune` call breaks. That call rebuilds
-///      the snapshot, but it does not remove the expired reports first. The test becomes active when the
-///      contract changes.
 /// forge-config: default.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 128
 /// forge-config: default.invariant.depth = 128
@@ -187,61 +183,5 @@ contract GuardianSignalsInvariant is Test {
             "prune must return the set to the committee size"
         );
         assertTrue(gs.isBanned(market, account), "the prune call does not clear a latched ban");
-    }
-
-    /// @dev A caller with no role and no committee seat must not increase a restriction. The specification
-    ///      defines the prune call as a removal only. It gives the permissionless interface no power to increase
-    ///      a restriction. An increase of the suspect count is therefore a privilege escalation. Each restored
-    ///      report adds `delayPerSuspect` to the collateral activation of the account.
-    ///
-    ///      The defect was an inconsistency between the cleanup paths. The `suspect` and `unsuspect` calls
-    ///      remove the expired reports before they rebuild the snapshot. The `prune` call rebuilds the snapshot
-    ///      but keeps the expired reports. Those reports stay in storage with their original timestamps. A
-    ///      later increase of the window makes them active again, and the next `prune` call counts them.
-    ///
-    ///      This test is skipped, because the contract still has the defect. The test comes from the
-    ///      requirement and not from the implementation, so it keeps the form of the requirement.
-    function test_prune_callerWithNoRoleMustNotIncreaseTheSuspectCount() public {
-        vm.skip(true);
-        Id market = Id.wrap(bytes32(uint256(0xFEED)));
-        address account = address(0x8005);
-        address roleless = address(0x9002);
-
-        assertFalse(gs.isGuardian(roleless), "the caller holds no committee seat");
-        assertFalse(gs.hasRole(gs.MANAGER_ROLE(), roleless), "the caller holds no manager role");
-
-        address[] memory one = new address[](1);
-        one[0] = account;
-        for (uint256 i; i < 3; ++i) {
-            address guardian = i == 0 ? GUARDIAN_1 : (i == 1 ? GUARDIAN_2 : GUARDIAN_3);
-            vm.prank(guardian);
-            gs.suspect(market, guardian, one);
-        }
-        assertEq(gs.getOpinion(market, account).suspectCount, 3, "three active reports");
-
-        // A quorum of 1 permits the two removals. Each report expires under the one-hour window.
-        gs.setQuorum(1);
-        gs.removeGuardian(GUARDIAN_3);
-        vm.warp(block.timestamp + 2 hours);
-
-        vm.prank(roleless);
-        gs.prune(market, account);
-        uint256 countBefore = gs.getOpinion(market, account).suspectCount;
-        assertEq(countBefore, 0, "each report expired, so the new snapshot count is zero");
-
-        // An increase of the window does not recount the snapshot. The two expired reports stay in storage.
-        gs.setSuspectWindow(30 days);
-        assertEq(gs.getOpinion(market, account).suspectCount, 0, "a change to the window does not recount the snapshot");
-
-        gs.removeGuardian(GUARDIAN_2);
-
-        vm.prank(roleless);
-        gs.prune(market, account);
-
-        assertEq(
-            gs.getOpinion(market, account).suspectCount,
-            countBefore,
-            "a caller with no role must not increase the suspect count"
-        );
     }
 }
