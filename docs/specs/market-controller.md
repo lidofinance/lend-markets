@@ -138,7 +138,7 @@ decayedInflow = max(storedInflow - decay, 0)
 
 Splitting a deposit across addresses does not reset this market-wide accumulator. A lot keeps the base delay quoted when it starts or when a later top-up extends its deadline.
 
-The decay formula always uses the current configuration. Changing `maxDelayInflow` or `maxActivationDelay` therefore reinterprets the existing inflow snapshot. Lowering the cap does not immediately clamp the stored value; a later threshold-crossing normal supply rewrites and clamps it.
+The decay formula always uses the current configuration. Changing `maxDelayInflow` or `maxActivationDelay` therefore reinterprets the existing inflow snapshot. Lowering the cap does not immediately clamp the stored value. The next write to the snapshot rewrites it, clamps it to the cap then in force, and restarts its decay clock. Two actions write it: a threshold-crossing normal supply, and a same-transaction reversal that returns part of a recorded contribution. A sub-threshold deposit and a reversal that returns nothing both leave the snapshot untouched.
 
 To keep an add-then-remove sequence from inflating future activation delays, the controller records each borrower's inflow contribution during the transaction. If that borrower's collateral is later withdrawn, liquidated, or settled in the same transaction, the controller subtracts at most that recorded contribution. Older inflow and other borrowers' contributions remain unchanged.
 

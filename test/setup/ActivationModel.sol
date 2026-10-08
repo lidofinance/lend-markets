@@ -205,7 +205,9 @@ library ActivationModel {
     ///         to this borrower's contribution in the current transaction.
     /// @dev A withdrawal that clears the inactive balance takes it first, so it passes `active = 0`; a forced
     ///      reduction passes the real active balance.
-    function reduce(State storage s, address b, uint256 active, uint256 amount) internal {
+    function reduce(State storage s, CollateralActivationConfig memory c, address b, uint256 active, uint256 amount)
+        internal
+    {
         Lot storage l = s.lots[b];
         uint256 left = amount > active ? amount - active : 0;
         uint256 fromDust = Math.min(l.dust, left);
@@ -220,8 +222,8 @@ library ActivationModel {
         if (reversed == 0) return;
         l.contribution -= reversed;
         s.txInflow -= reversed;
-        // The stored inflow is already capped, and a reversal only lowers it.
-        s.inflow = Math.min(s.txInflow, s.inflow);
+        // Clamped against the live cap, not the stored value, which was clamped under the cap of its own time.
+        s.inflow = Math.min(s.txInflow, c.maxDelayInflow);
         s.inflowAt = block.timestamp;
     }
 

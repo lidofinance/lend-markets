@@ -39,7 +39,7 @@ contract ActivationModelHarness {
     }
 
     function reduce(address borrower, uint256 active, uint256 amount) external {
-        ActivationModel.reduce(state, borrower, active, amount);
+        ActivationModel.reduce(state, config, borrower, active, amount);
     }
 
     function beginTransaction(address[] memory borrowers) external {
@@ -384,6 +384,36 @@ contract ActivationModelTest is Test {
         h.beginTransaction(borrowers);
         h.reduce(bob, 0, 40 ether);
         assertEq(h.inflow(t0), 40 ether, "a reversal reached into an earlier transaction");
+    }
+
+    /// @notice A reversal clamps the stored inflow to the cap in force now, not to the stored value, which was
+    ///         clamped under whatever cap stood when it was written. Governance moving `maxDelayInflow` between the
+    ///         deposit and the reversal is the only thing that separates the two, in either direction.
+    /// @dev `CollateralActivationLib._storePersistentInflow` stores `min(uncapped, maxDelayInflow)` on every write,
+    ///      the reversal path included. Kills `test/setup/ActivationModel.sol` with the clamp read off `s.inflow`
+    ///      instead of `c.maxDelayInflow`, which pins the accumulator at a stale cap.
+    function test_reduce_clampsToTheLiveCap() public {
+        uint256 t0 = block.timestamp;
+        h.classify(alice, 8_000 ether, false);
+        h.classify(bob, 7_000 ether, false);
+        // 15 000 gross, clamped to the standing cap.
+        assertEq(h.inflow(t0), 10_000 ether, "stored inflow is the gross total clamped to the cap");
+
+        CollateralActivationConfig memory raised = _config();
+        raised.maxDelayInflow = 20_000 ether;
+        h.setConfig(raised);
+
+        // 14 000 gross left, under the raised cap, so the whole remainder stands.
+        h.reduce(bob, 0, 1_000 ether);
+        assertEq(h.inflow(t0), 14_000 ether, "a raised cap must release the gross remainder");
+
+        CollateralActivationConfig memory lowered = _config();
+        lowered.maxDelayInflow = 5_000 ether;
+        h.setConfig(lowered);
+
+        // 13 000 gross left, over the lowered cap, so the cap binds.
+        h.reduce(bob, 0, 1_000 ether);
+        assertEq(h.inflow(t0), 5_000 ether, "a lowered cap must bind the gross remainder");
     }
 
     function test_reduce_laterInTheTransaction_givesBackUndecayed() public {

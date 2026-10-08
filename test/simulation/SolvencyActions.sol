@@ -2491,7 +2491,7 @@ abstract contract SolvencyActions is LidoLendSetup {
         assertEq(err.length, 0, "withdraw: the model blocks a withdrawal the test takes for granted");
         m.withdrawCollateral(b, amt, b);
         _syncModel(b);
-        ActivationModel.reduce(activation, b, clears ? 0 : active, amt);
+        ActivationModel.reduce(activation, m.controller.collateralActivationConfig(), b, clears ? 0 : active, amt);
         _assertActivation(b);
         borrower[b].collateralOut += amt;
     }
@@ -2501,7 +2501,13 @@ abstract contract SolvencyActions is LidoLendSetup {
     ///      the amount. It reads the position after the call, so a second cut of the same call trims nothing more.
     function _reduceModel(address b) internal {
         ActivationModel.Lot memory lot = activation.lots[b];
-        ActivationModel.reduce(activation, b, _m().core.position(_m().id, b).collateral, lot.dust + lot.activating);
+        ActivationModel.reduce(
+            activation,
+            _m().controller.collateralActivationConfig(),
+            b,
+            _m().core.position(_m().id, b).collateral,
+            lot.dust + lot.activating
+        );
     }
 
     /// @dev Asserts the controller's activation state equal to the model's after a collateral move: both inactive
