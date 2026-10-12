@@ -6,6 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
 import {GuardianSignals} from "../../../src/GuardianSignals.sol";
+import {IGuardianSignals} from "../../../src/interfaces/IGuardianSignals.sol";
 import {BlockInfoWithHash, GuardiansOpinion} from "../../../src/types/GuardianSignalsTypes.sol";
 
 /// @notice A handler for the registry alone. It calls each function that changes the state, and it uses two
@@ -13,11 +14,11 @@ import {BlockInfoWithHash, GuardiansOpinion} from "../../../src/types/GuardianSi
 ///         the subject of a signal.
 /// @dev The shadow model comes from the specification and not from the implementation. The model does not
 ///      remove a flag when the guardian leaves the committee. The model writes the latch on four edges only.
-///      The model keeps the timestamp and the window of the last rebuild.
+///      The model rebuilds its own suspect snapshot, and it keeps its own heartbeats and frontier. It reads
+///      only the membership, the quorum and the window from the registry, because the handler sets them.
 ///
-///      This contract extends `Test` because it asserts three properties. Each of these properties compares
-///      the state before a call with the state after the call. The actions use small internal functions
-///      because the repository compiles with `via_ir = false`.
+///      This contract extends `Test` because some actions assert the result of their own call. The actions use
+///      small internal functions because the repository compiles with `via_ir = false`.
 ///
 ///      Each action tests its own preconditions and returns early. A revert is therefore a defect.
 contract GuardianSignalsHandler is Test {
@@ -33,13 +34,14 @@ contract GuardianSignalsHandler is Test {
 
     GuardianSignals internal immutable GS;
 
-    /// @dev The candidate committee members. The pool is larger than the initial committee to permit rotation.
-    address[6] internal guardianPool =
-        [address(0x6001), address(0x6002), address(0x6003), address(0x6004), address(0x6005), address(0x6006)];
+    /// @dev The size of the address pool. It is larger than the 32-seat limit, so the committee can fill each
+    ///      seat and still leave addresses for delegates and rotation.
+    uint256 internal constant POOL_SIZE = 40;
 
-    /// @dev The candidate delegates. No address is in the guardian pool, because one address cannot hold both
-    ///      roles.
-    address[3] internal delegatePool = [address(0x7001), address(0x7002), address(0x7003)];
+    /// @dev The candidate guardians and delegates. One pool serves both roles. The registry does not let one
+    ///      address hold both roles at the same time, but an address can move from one role to the other during
+    ///      a run. The pool starts with the initial committee of the suite.
+    address[POOL_SIZE] internal pool;
 
     /// @dev The subjects of the signals. The third address is a guardian, and a committee member can therefore
     ///      receive a flag.
@@ -66,21 +68,26 @@ contract GuardianSignalsHandler is Test {
     mapping(uint256 pair => bool) internal modelLatch;
     /// @dev The timestamp of the suspect report for each guardian identity. The value is zero if the model
     ///      holds no report.
-    mapping(uint256 pair => mapping(address guardian => uint40)) internal modelReportedAt;
-    /// @dev The block timestamp of the last snapshot rebuild for the pair.
-    mapping(uint256 pair => uint40) internal modelRebuildAt;
+    mapping(uint256 pair => mapping(address guardian => uint40)) public modelReportedAt;
+    /// @dev The suspect snapshot of the last rebuild: the number of reports that were active, and the latest
+    ///      timestamp among them. The model computes both values from `modelReportedAt`.
+    mapping(uint256 pair => uint256) public modelSuspectCount;
+    mapping(uint256 pair => uint40) public modelSuspectReportedAt;
     /// @dev The suspect window at the last snapshot rebuild for the pair.
     mapping(uint256 pair => uint40) internal modelRebuildWindow;
+    /// @dev The stored heartbeat of each guardian identity. A removal or a replacement clears it.
+    mapping(address guardian => uint40) public modelHeartbeat;
+    /// @dev The stored frontier. Only a heartbeat that crosses it and a sync can raise it, and no action lowers
+    ///      it.
+    uint40 public modelFrontier;
+    /// @dev The last delegate that each guardian identity lost by a change of delegate, a removal or a
+    ///      replacement. The stale-authority action uses this address.
+    mapping(address guardian => address) internal formerDelegate;
+    /// @dev The guardian identities that lost a delegate at least once. The stale-authority action picks from
+    ///      this list, because few pool addresses have a former delegate.
+    address[] internal formerDelegateOwners;
     /// @dev The number of actions on each pair. These counts show a campaign that uses one pair only.
     mapping(uint256 pair => uint256) public pairTouches;
-    /// @dev The cached suspect count after the last `suspect` call on the pair. Only a new report can increase
-    ///      the count, so no other action can take the count above this value.
-    mapping(uint256 pair => uint256) public suspectCeiling;
-
-    /// @dev The largest frontier candidate in each block that the handler observes. The stored frontier can be
-    ///      smaller than this value, because the registry does not record a candidate between two syncs. The
-    ///      stored frontier must never be larger.
-    uint40 public candidateMax;
 
     // ── the campaign counters. These counts show an empty run ──
 
@@ -95,10 +102,23 @@ contract GuardianSignalsHandler is Test {
     uint256 public advances;
     /// @dev The number of `prune` calls that met the guard and tested the suspect count.
     uint256 public pruneCountChecks;
+    /// @dev The number of replacements that give the seat to the delegate of the outgoing guardian.
+    uint256 public delegatePromotions;
+    /// @dev The largest committee of the run, and the number of `addGuardian` calls that the full committee
+    ///      rejected.
+    uint256 public maxCommitteeSize;
+    uint256 public capRejections;
+    /// @dev The number of rejected calls from each kind of stale actor.
+    uint256 public staleGuardianCalls;
+    uint256 public staleDelegateCalls;
+    uint256 public reassignedDelegateCalls;
 
     constructor(GuardianSignals gs) {
         GS = gs;
-        _observeCandidate();
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            pool[i] = address(uint160(0x6001 + i));
+        }
+        maxCommitteeSize = gs.getGuardianCount();
     }
 
     // ── the pool and model values that the `invariant_` functions of the suite read ──
@@ -123,114 +143,114 @@ contract GuardianSignalsHandler is Test {
         return modelLatch[pair];
     }
 
-    /// @notice The number of flags in the model for the pair. The count includes the full candidate pool.
+    /// @notice The number of flags in the model for the pair. The count includes the full address pool.
     function modelStrikes(uint256 pair) external view returns (uint256) {
         return _modelStrikes(pair);
     }
 
-    /// @notice The value that the cached suspect count of the registry must match. It is the number of stored
-    ///         reports that were active at the last rebuild of the pair. The suspect window at that time decides
-    ///         which reports were active.
-    function modelSnapshotCount(uint256 pair) external view returns (uint256 count) {
-        uint40 rebuiltAt = modelRebuildAt[pair];
-        if (rebuiltAt == 0) return 0;
-        uint256 window = modelRebuildWindow[pair];
-        (, uint40[] memory reportedAt) = GS.getSuspectedBy(_market(pair), _account(pair));
-        for (uint256 i; i < reportedAt.length; ++i) {
-            if (uint256(reportedAt[i]) + window >= rebuiltAt) ++count;
+    /// @notice The number of stored reports in the model for the pair, active or expired.
+    function modelReportCount(uint256 pair) external view returns (uint256 count) {
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            if (modelReportedAt[pair][pool[i]] != 0) ++count;
         }
     }
 
-    // ── signalling ──
+    // ── signalling. Each action sends a batch of one to three accounts in one market ──
 
-    /// @notice A current guardian sends a flag for an account. It sometimes uses its delegate.
-    function doFlag(uint256 guardianSeed, uint256 pairSeed, bool viaDelegate) external {
+    /// @notice A current guardian sends flags. It sometimes uses its delegate.
+    function doFlag(uint256 guardianSeed, uint256 marketSeed, uint256 batchSeed, bool viaDelegate) external {
         (address guardian, address caller) = _actingGuardian(guardianSeed, viaDelegate);
         if (guardian == address(0)) return;
-        uint256 pair = _pair(pairSeed);
-
-        // Only a new identity adds a strike, and only a new flag reaches the latch. The registry removes a
-        // repeat flag before the comparison with the quorum. A repeat flag cannot latch a derived ban.
-        bool isNewFlag = !modelFlagged[pair][guardian];
+        (Id market, address[] memory accounts, uint256[] memory pairs) = _batch(marketSeed, batchSeed);
 
         vm.prank(caller);
-        GS.flag(_market(pair), guardian, _one(_account(pair)));
+        GS.flag(market, guardian, accounts);
 
-        if (isNewFlag) {
-            modelFlagged[pair][guardian] = true;
-            if (_modelStrikes(pair) >= GS.getQuorum()) modelLatch[pair] = true;
+        // The registry applies the batch in order, and the model does the same. A repeated account is a
+        // repeat flag.
+        for (uint256 i; i < pairs.length; ++i) {
+            _modelFlag(pairs[i], guardian);
         }
-
         ++flags;
-        ++pairTouches[pair];
-        _observeCandidate();
     }
 
-    /// @notice A current guardian removes its flag. The registry must latch an effective ban before the
+    /// @notice A current guardian removes its flags. The registry must latch an effective ban before each
     ///         removal.
-    function doUnflag(uint256 guardianSeed, uint256 pairSeed, bool viaDelegate) external {
+    function doUnflag(uint256 guardianSeed, uint256 marketSeed, uint256 batchSeed, bool viaDelegate) external {
         (address guardian, address caller) = _actingGuardian(guardianSeed, viaDelegate);
         if (guardian == address(0)) return;
-        uint256 pair = _pair(pairSeed);
-
-        // The order is important. The registry compares the count with the quorum before the removal.
-        if (modelLatch[pair] || _modelStrikes(pair) >= GS.getQuorum()) modelLatch[pair] = true;
+        (Id market, address[] memory accounts, uint256[] memory pairs) = _batch(marketSeed, batchSeed);
 
         vm.prank(caller);
-        GS.unflag(_market(pair), guardian, _one(_account(pair)));
+        GS.unflag(market, guardian, accounts);
 
-        modelFlagged[pair][guardian] = false;
-
+        for (uint256 i; i < pairs.length; ++i) {
+            _modelUnflag(pairs[i], guardian);
+        }
         ++unflags;
-        ++pairTouches[pair];
-        _observeCandidate();
     }
 
-    /// @notice A current guardian sends a suspect report. The action then asserts that no expired report
+    /// @notice A current guardian sends suspect reports. The action then asserts that no expired report
     ///         remains.
-    function doSuspect(uint256 guardianSeed, uint256 pairSeed, bool viaDelegate) external {
+    function doSuspect(uint256 guardianSeed, uint256 marketSeed, uint256 batchSeed, bool viaDelegate) external {
         (address guardian, address caller) = _actingGuardian(guardianSeed, viaDelegate);
         if (guardian == address(0)) return;
-        uint256 pair = _pair(pairSeed);
+        (Id market, address[] memory accounts, uint256[] memory pairs) = _batch(marketSeed, batchSeed);
 
         vm.prank(caller);
-        GS.suspect(_market(pair), guardian, _one(_account(pair)));
+        GS.suspect(market, guardian, accounts);
 
-        // Both calls remove the expired reports, then change the named report, then rebuild the snapshot.
-        _modelDropExpired(pair);
-        modelReportedAt[pair][guardian] = uint40(block.timestamp);
-        // The `suspect` call always rebuilds. The model records this block and the current window.
-        _recordRebuild(pair);
-
+        for (uint256 i; i < pairs.length; ++i) {
+            _modelSuspect(pairs[i], guardian);
+            _assertNoLapsedReport(pairs[i], "suspect");
+        }
         ++suspects;
-        ++pairTouches[pair];
-        // A new report is the one action that can increase the count, so the ceiling moves here only.
-        suspectCeiling[pair] = GS.getOpinion(_market(pair), _account(pair)).suspectCount;
-        _assertNoLapsedReport(pair, "suspect");
-        _observeCandidate();
     }
 
-    /// @notice A current guardian removes its report. The action then asserts the same postcondition.
-    function doUnsuspect(uint256 guardianSeed, uint256 pairSeed, bool viaDelegate) external {
+    /// @notice A current guardian removes its reports. The action then asserts the same postcondition.
+    function doUnsuspect(uint256 guardianSeed, uint256 marketSeed, uint256 batchSeed, bool viaDelegate) external {
         (address guardian, address caller) = _actingGuardian(guardianSeed, viaDelegate);
         if (guardian == address(0)) return;
-        uint256 pair = _pair(pairSeed);
-
-        // The registry rebuilds the snapshot if it removes the named report or if a stored report has
-        // expired.
-        bool rebuilds = modelReportedAt[pair][guardian] != 0 || _hasLapsedReport(pair);
+        (Id market, address[] memory accounts, uint256[] memory pairs) = _batch(marketSeed, batchSeed);
 
         vm.prank(caller);
-        GS.unsuspect(_market(pair), guardian, _one(_account(pair)));
+        GS.unsuspect(market, guardian, accounts);
 
-        _modelDropExpired(pair);
-        modelReportedAt[pair][guardian] = 0;
-        if (rebuilds) _recordRebuild(pair);
-
+        for (uint256 i; i < pairs.length; ++i) {
+            _modelUnsuspect(pairs[i], guardian);
+            _assertNoLapsedReport(pairs[i], "unsuspect");
+        }
         ++unsuspects;
-        ++pairTouches[pair];
-        _assertNoLapsedReport(pair, "unsuspect");
-        _observeCandidate();
+    }
+
+    /// @notice An address without authority acts for a guardian identity, and the call must revert with
+    ///         `Unauthorized`. Without `viaFormerDelegate`, the address acts for itself and is not a guardian:
+    ///         a removed guardian or an address that never had a seat. With `viaFormerDelegate`, the address is
+    ///         the former delegate of the identity. That address can now be the delegate of another guardian,
+    ///         or a guardian itself.
+    function doStaleSignal(uint256 identitySeed, uint256 kindSeed, bool viaFormerDelegate) external {
+        address onBehalf;
+        address caller;
+        if (viaFormerDelegate) {
+            if (formerDelegateOwners.length == 0) return;
+            onBehalf = formerDelegateOwners[identitySeed % formerDelegateOwners.length];
+            caller = formerDelegate[onBehalf];
+        } else {
+            onBehalf = pool[identitySeed % POOL_SIZE];
+            caller = onBehalf;
+        }
+        // The registry accepts the guardian itself and its current delegate only.
+        if (GS.isGuardian(onBehalf) && (caller == onBehalf || caller == GS.getDelegate(onBehalf))) return;
+        bool reassigned = _isDelegate(caller);
+        address[] memory accounts = _one(accountPool[0]);
+
+        vm.expectRevert(IGuardianSignals.Unauthorized.selector);
+        vm.prank(caller);
+        _signal(kindSeed % 5, onBehalf, accounts);
+
+        if (!viaFormerDelegate) ++staleGuardianCalls;
+        else if (reassigned) ++reassignedDelegateCalls;
+        else ++staleDelegateCalls;
     }
 
     // ── the permissionless interface ──
@@ -239,7 +259,7 @@ contract GuardianSignalsHandler is Test {
     ///         decreases a restriction. It also asserts that the call returns both sets to the committee size.
     function doPrune(uint256 pairSeed) external {
         uint256 pair = _pair(pairSeed);
-        bool rebuilds = _hasDepartedReporter(pair);
+        bool rebuilds = _modelHasDepartedReporter(pair);
         PairState memory pre = _snapshot(pair);
 
         vm.prank(ROLELESS);
@@ -249,28 +269,17 @@ contract GuardianSignalsHandler is Test {
         _assertPruneRestoresBound(pair, pre);
 
         _modelPrune(pair);
-        if (rebuilds) _recordRebuild(pair);
+        if (rebuilds) _modelRebuild(pair);
 
         ++prunes;
         ++pairTouches[pair];
-        _observeCandidate();
     }
 
-    /// @notice Any caller can recompute the frontier. The action asserts the exact value of the write.
+    /// @notice Any caller can recompute the frontier. The model sets the frontier to `max(F, candidate)`.
     function doSyncFrontier() external {
-        uint40 before = GS.getQuorumFrontier();
-        uint40 candidate = _liveCandidate();
-
         vm.prank(ROLELESS);
         GS.syncQuorumFrontier();
-
-        assertEq(
-            GS.getQuorumFrontier(),
-            candidate > before ? candidate : before,
-            "sync must set the frontier to max(stored, candidate)"
-        );
-        _assertEagerAdvance(before);
-        _observeCandidate();
+        _modelSync();
     }
 
     // ── governance overrides ──
@@ -280,7 +289,6 @@ contract GuardianSignalsHandler is Test {
         GS.ban(_market(pair), _account(pair));
         modelLatch[pair] = true;
         ++pairTouches[pair];
-        _observeCandidate();
     }
 
     function doUnban(uint256 pairSeed) external {
@@ -288,11 +296,10 @@ contract GuardianSignalsHandler is Test {
         GS.unban(_market(pair), _account(pair));
         // The `unban` call clears the latch and each flag. It does not change the suspect reports.
         modelLatch[pair] = false;
-        for (uint256 i; i < guardianPool.length; ++i) {
-            modelFlagged[pair][guardianPool[i]] = false;
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            modelFlagged[pair][pool[i]] = false;
         }
         ++pairTouches[pair];
-        _observeCandidate();
     }
 
     // ── committee and configuration ──
@@ -302,40 +309,62 @@ contract GuardianSignalsHandler is Test {
         if (count == 0) return;
         GS.setQuorum(bound(quorumSeed, 1, count));
         ++quorumChanges;
-        _observeCandidate();
     }
 
     function doSetSuspectWindow(uint256 windowSeed) external {
         GS.setSuspectWindow(bound(windowSeed, 0, GS.MAX_SUSPECT_WINDOW()));
         ++windowChanges;
-        _observeCandidate();
     }
 
+    /// @notice A new seat. When each seat is full, the call must revert with `MaxGuardiansReached`.
     function doAddGuardian(uint256 guardianSeed) external {
-        if (GS.getGuardianCount() >= GS.MAX_GUARDIANS_COUNT()) return;
-        address candidate = _freeGuardianSeat(guardianSeed);
+        address candidate = _freeAddress(guardianSeed);
         if (candidate == address(0)) return;
-        GS.addGuardian(candidate);
-        ++rotations;
-        _observeCandidate();
+        if (GS.getGuardianCount() == GS.MAX_GUARDIANS_COUNT()) {
+            vm.expectRevert(IGuardianSignals.MaxGuardiansReached.selector);
+            GS.addGuardian(candidate);
+            ++capRejections;
+            return;
+        }
+        _addGuardian(candidate);
     }
 
     function doRemoveGuardian(uint256 guardianSeed) external {
         address guardian = _currentGuardian(guardianSeed);
         if (guardian == address(0)) return;
         if (GS.getGuardianCount() - 1 < GS.getQuorum()) return;
-        GS.removeGuardian(guardian);
-        ++rotations;
-        _observeCandidate();
+        _removeGuardian(guardian);
     }
 
-    function doReplaceGuardian(uint256 oldSeed, uint256 newSeed) external {
-        address outgoing = _currentGuardian(oldSeed);
-        address incoming = _freeGuardianSeat(newSeed);
-        if (outgoing == address(0) || incoming == address(0)) return;
+    /// @notice A replacement. With `toDelegate`, the delegate of the outgoing guardian gets the seat. The
+    ///         specification permits this, because the removal clears the pairing before the registry adds
+    ///         the new seat.
+    function doReplaceGuardian(uint256 oldSeed, uint256 newSeed, bool toDelegate) external {
+        address outgoing = toDelegate ? _delegatedGuardian(oldSeed) : _currentGuardian(oldSeed);
+        if (outgoing == address(0)) return;
+        address delegate = GS.getDelegate(outgoing);
+        address incoming = toDelegate ? delegate : _freeAddress(newSeed);
+        if (incoming == address(0)) return;
+
         GS.replaceGuardian(outgoing, incoming);
+        _modelRemoval(outgoing, delegate);
+
+        if (toDelegate) ++delegatePromotions;
         ++rotations;
-        _observeCandidate();
+    }
+
+    /// @notice The action moves the committee to a size between the quorum and the 32-seat limit in one call.
+    ///         Single additions and removals cancel out over a run, so without this action the committee stays
+    ///         near its initial size. With `fill`, the target is the limit, so a run often fills each seat.
+    function doResizeCommittee(uint256 sizeSeed, bool fill) external {
+        uint256 target = fill ? GS.MAX_GUARDIANS_COUNT() : bound(sizeSeed, GS.getQuorum(), GS.MAX_GUARDIANS_COUNT());
+        while (GS.getGuardianCount() < target) {
+            address candidate = _freeAddress(sizeSeed);
+            // Delegates can hold each remaining pool address. The committee then stays below the target.
+            if (candidate == address(0)) break;
+            _addGuardian(candidate);
+        }
+        while (GS.getGuardianCount() > target) _removeGuardian(_currentGuardian(sizeSeed));
     }
 
     function doSetDelegate(uint256 guardianSeed, uint256 delegateSeed, bool clear) external {
@@ -344,13 +373,15 @@ contract GuardianSignalsHandler is Test {
 
         address delegate;
         if (!clear) {
-            delegate = _freeDelegate(delegateSeed);
+            delegate = _freeAddress(delegateSeed);
             if (delegate == address(0)) return;
         }
+        address previous = GS.getDelegate(guardian);
 
         vm.prank(guardian);
         GS.setDelegate(delegate);
-        _observeCandidate();
+
+        if (previous != address(0)) _recordFormerDelegate(guardian, previous);
     }
 
     // ── liveness ──
@@ -363,14 +394,14 @@ contract GuardianSignalsHandler is Test {
 
         BlockInfoWithHash memory scanned = _scannedBlock(guardian, timestampSeed);
         if (scanned.hash == bytes32(0)) return;
-
-        uint40 before = GS.getQuorumFrontier();
+        uint40 previous = modelHeartbeat[guardian];
 
         vm.prank(caller);
         GS.heartbeat(guardian, scanned, "");
 
-        _assertEagerAdvance(before);
-        _observeCandidate();
+        modelHeartbeat[guardian] = scanned.timestamp;
+        // The specification recomputes the candidate only when this guardian crosses the stored frontier.
+        if (previous <= modelFrontier && scanned.timestamp > modelFrontier) _modelSync();
     }
 
     /// @notice The action moves the time and the block number together. A suspect window can then expire, and
@@ -378,7 +409,6 @@ contract GuardianSignalsHandler is Test {
     function doWarp(uint256 secondsSeed) external {
         vm.warp(block.timestamp + bound(secondsSeed, 1, 10 days));
         vm.roll(block.number + 1 + (secondsSeed % 4));
-        _observeCandidate();
     }
 
     // ── internal assertions. Each one is adjacent to its action ──
@@ -438,16 +468,6 @@ contract GuardianSignalsHandler is Test {
         }
     }
 
-    /// @dev The registry advances the frontier in `heartbeat` or in an explicit sync. Both paths must give the
-    ///      same value. A quorum of current guardians must support that value in this block.
-    function _assertEagerAdvance(uint40 before) internal {
-        uint40 post = GS.getQuorumFrontier();
-        if (post <= before) return;
-        ++advances;
-        assertEq(post, _liveCandidate(), "advance != the heartbeat at the quorum position");
-        assertGe(_attestingCount(post), GS.getQuorum(), "frontier advanced without a quorum of heartbeats");
-    }
-
     // ── the internal model updates ──
 
     function _snapshot(uint256 pair) internal view returns (PairState memory state) {
@@ -458,13 +478,47 @@ contract GuardianSignalsHandler is Test {
         (state.reporters, state.reportedAt) = GS.getSuspectedBy(_market(pair), _account(pair));
     }
 
+    /// @dev Only a new identity adds a strike, and only a new flag reaches the latch. The registry removes a
+    ///      repeat flag before the comparison with the quorum. A repeat flag cannot latch a derived ban.
+    function _modelFlag(uint256 pair, address guardian) internal {
+        ++pairTouches[pair];
+        if (modelFlagged[pair][guardian]) return;
+        modelFlagged[pair][guardian] = true;
+        if (_modelStrikes(pair) >= GS.getQuorum()) modelLatch[pair] = true;
+    }
+
+    /// @dev The order is important. The registry compares the count with the quorum before the removal.
+    function _modelUnflag(uint256 pair, address guardian) internal {
+        ++pairTouches[pair];
+        if (_modelStrikes(pair) >= GS.getQuorum()) modelLatch[pair] = true;
+        modelFlagged[pair][guardian] = false;
+    }
+
+    /// @dev The `suspect` call removes the expired reports, then writes the named report, then always
+    ///      rebuilds the snapshot.
+    function _modelSuspect(uint256 pair, address guardian) internal {
+        ++pairTouches[pair];
+        _modelDropExpired(pair);
+        modelReportedAt[pair][guardian] = uint40(block.timestamp);
+        _modelRebuild(pair);
+    }
+
+    /// @dev The `unsuspect` call rebuilds the snapshot if it removes the named report or an expired report.
+    function _modelUnsuspect(uint256 pair, address guardian) internal {
+        ++pairTouches[pair];
+        bool rebuilds = modelReportedAt[pair][guardian] != 0 || _modelHasLapsedReport(pair);
+        _modelDropExpired(pair);
+        modelReportedAt[pair][guardian] = 0;
+        if (rebuilds) _modelRebuild(pair);
+    }
+
     /// @dev The model removes the flags and the reports of the departed identities. It does not remove the
     ///      expired reports, because the `prune` call does not remove them either. The model then compares the
     ///      remaining flags with the quorum. A derived ban that only departed flags support ends. It does not
     ///      latch.
     function _modelPrune(uint256 pair) internal {
-        for (uint256 i; i < guardianPool.length; ++i) {
-            address guardian = guardianPool[i];
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            address guardian = pool[i];
             if (GS.isGuardian(guardian)) continue;
             modelFlagged[pair][guardian] = false;
             modelReportedAt[pair][guardian] = 0;
@@ -477,40 +531,99 @@ contract GuardianSignalsHandler is Test {
     ///      difference permits the privilege escalation.
     function _modelDropExpired(uint256 pair) internal {
         uint256 window = GS.getSuspectWindow();
-        for (uint256 i; i < guardianPool.length; ++i) {
-            uint40 reportedAt = modelReportedAt[pair][guardianPool[i]];
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            uint40 reportedAt = modelReportedAt[pair][pool[i]];
             if (reportedAt != 0 && uint256(reportedAt) + window < block.timestamp) {
-                modelReportedAt[pair][guardianPool[i]] = 0;
+                modelReportedAt[pair][pool[i]] = 0;
             }
         }
     }
 
+    /// @dev The snapshot counts each report that is active under the current window, and it keeps the latest
+    ///      timestamp among them. A report is active when `reportedAt + window >= block.timestamp`.
+    function _modelRebuild(uint256 pair) internal {
+        uint256 window = GS.getSuspectWindow();
+        uint256 count;
+        uint40 latest;
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            uint40 reportedAt = modelReportedAt[pair][pool[i]];
+            if (reportedAt != 0 && uint256(reportedAt) + window >= block.timestamp) {
+                ++count;
+                if (reportedAt > latest) latest = reportedAt;
+            }
+        }
+        modelSuspectCount[pair] = count;
+        modelSuspectReportedAt[pair] = latest;
+        modelRebuildWindow[pair] = uint40(window);
+    }
+
+    /// @dev The specification sets the stored frontier to `max(F, candidate)`.
+    function _modelSync() internal {
+        uint40 candidate = _liveCandidate();
+        if (candidate <= modelFrontier) return;
+        modelFrontier = candidate;
+        ++advances;
+    }
+
+    /// @dev A removal or a replacement clears the stored heartbeat and the delegate of the identity. It does
+    ///      not change the frontier.
+    function _modelRemoval(address guardian, address delegate) internal {
+        modelHeartbeat[guardian] = 0;
+        if (delegate != address(0)) _recordFormerDelegate(guardian, delegate);
+    }
+
+    function _recordFormerDelegate(address guardian, address delegate) internal {
+        if (formerDelegate[guardian] == address(0)) formerDelegateOwners.push(guardian);
+        formerDelegate[guardian] = delegate;
+    }
+
     function _modelStrikes(uint256 pair) internal view returns (uint256 count) {
-        for (uint256 i; i < guardianPool.length; ++i) {
-            if (modelFlagged[pair][guardianPool[i]]) ++count;
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            if (modelFlagged[pair][pool[i]]) ++count;
         }
     }
 
-    function _recordRebuild(uint256 pair) internal {
-        modelRebuildAt[pair] = uint40(block.timestamp);
-        modelRebuildWindow[pair] = uint40(GS.getSuspectWindow());
+    // ── the internal committee updates ──
+
+    function _addGuardian(address guardian) internal {
+        GS.addGuardian(guardian);
+        uint256 count = GS.getGuardianCount();
+        if (count > maxCommitteeSize) maxCommitteeSize = count;
+        ++rotations;
+    }
+
+    function _removeGuardian(address guardian) internal {
+        address delegate = GS.getDelegate(guardian);
+        GS.removeGuardian(guardian);
+        _modelRemoval(guardian, delegate);
+        ++rotations;
+    }
+
+    /// @dev One call that checks the authority of the caller first. The heartbeat has an empty block proof,
+    ///      because the registry checks the caller before the proof.
+    function _signal(uint256 kind, address onBehalf, address[] memory accounts) internal {
+        Id market = marketIds[0];
+        if (kind == 0) GS.flag(market, onBehalf, accounts);
+        else if (kind == 1) GS.unflag(market, onBehalf, accounts);
+        else if (kind == 2) GS.suspect(market, onBehalf, accounts);
+        else if (kind == 3) GS.unsuspect(market, onBehalf, accounts);
+        else GS.heartbeat(onBehalf, BlockInfoWithHash({hash: bytes32(0), number: 0, timestamp: 0}), "");
     }
 
     // ── the internal state queries ──
 
-    function _hasLapsedReport(uint256 pair) internal view returns (bool) {
+    function _modelHasLapsedReport(uint256 pair) internal view returns (bool) {
         uint256 window = GS.getSuspectWindow();
-        (, uint40[] memory reportedAt) = GS.getSuspectedBy(_market(pair), _account(pair));
-        for (uint256 i; i < reportedAt.length; ++i) {
-            if (uint256(reportedAt[i]) + window < block.timestamp) return true;
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            uint40 reportedAt = modelReportedAt[pair][pool[i]];
+            if (reportedAt != 0 && uint256(reportedAt) + window < block.timestamp) return true;
         }
         return false;
     }
 
-    function _hasDepartedReporter(uint256 pair) internal view returns (bool) {
-        (address[] memory reporters,) = GS.getSuspectedBy(_market(pair), _account(pair));
-        for (uint256 i; i < reporters.length; ++i) {
-            if (!GS.isGuardian(reporters[i])) return true;
+    function _modelHasDepartedReporter(uint256 pair) internal view returns (bool) {
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            if (modelReportedAt[pair][pool[i]] != 0 && !GS.isGuardian(pool[i])) return true;
         }
         return false;
     }
@@ -530,13 +643,17 @@ contract GuardianSignalsHandler is Test {
 
     /// @dev The heartbeat at the quorum position, from the largest value down, across the current committee.
     ///      The value is zero if the committee is smaller than the quorum. This function uses the formula of
-    ///      the specification and not the routine of the registry.
+    ///      the specification and the model heartbeats, and not the routine or the storage of the registry.
     function _liveCandidate() internal view returns (uint40) {
-        (, uint40[] memory timestamps) = GS.getHeartbeats();
+        (address[] memory guardians,) = GS.getGuardians();
         uint256 quorum = GS.getQuorum();
-        uint256 n = timestamps.length;
+        uint256 n = guardians.length;
         if (quorum == 0 || n < quorum) return 0;
 
+        uint40[] memory timestamps = new uint40[](n);
+        for (uint256 i; i < n; ++i) {
+            timestamps[i] = modelHeartbeat[guardians[i]];
+        }
         for (uint256 i = 1; i < n; ++i) {
             uint40 key = timestamps[i];
             uint256 j = i;
@@ -549,21 +666,6 @@ contract GuardianSignalsHandler is Test {
         return timestamps[n - quorum];
     }
 
-    /// @dev The number of current guardians with a heartbeat at `timestamp` or later, in the current block.
-    ///      The evidence for an advance must come from one committee in one block. This count therefore
-    ///      includes the current members only.
-    function _attestingCount(uint40 timestamp) internal view returns (uint256 count) {
-        (, uint40[] memory timestamps) = GS.getHeartbeats();
-        for (uint256 i; i < timestamps.length; ++i) {
-            if (timestamps[i] >= timestamp) ++count;
-        }
-    }
-
-    function _observeCandidate() internal {
-        uint40 candidate = _liveCandidate();
-        if (candidate > candidateMax) candidateMax = candidate;
-    }
-
     // ── the internal selection functions. Each one limits its own result ──
 
     /// @dev A recent block with a scan timestamp that the registry accepts. The timestamp is not in the future,
@@ -574,12 +676,31 @@ contract GuardianSignalsHandler is Test {
         uint256 number = block.number - 1 - (seed % 8);
         if (number == 0 || number >= block.number) return scanned;
 
-        uint40 stored = GS.getHeartbeat(guardian);
+        uint40 stored = modelHeartbeat[guardian];
         if (stored > block.timestamp) return scanned;
 
         scanned.hash = blockhash(number);
         scanned.number = uint40(number);
         scanned.timestamp = uint40(bound(seed, stored, block.timestamp));
+    }
+
+    /// @dev One to three accounts of one market, with repeats, and the pair index of each account in call
+    ///      order. Each byte of `batchSeed` above the lowest byte selects one account.
+    function _batch(uint256 marketSeed, uint256 batchSeed)
+        internal
+        view
+        returns (Id market, address[] memory accounts, uint256[] memory pairs)
+    {
+        uint256 marketIndex = marketSeed % marketIds.length;
+        market = marketIds[marketIndex];
+        uint256 size = 1 + batchSeed % 3;
+        accounts = new address[](size);
+        pairs = new uint256[](size);
+        for (uint256 i; i < size; ++i) {
+            uint256 accountIndex = (batchSeed >> (8 * (i + 1))) % accountPool.length;
+            accounts[i] = accountPool[accountIndex];
+            pairs[i] = marketIndex * accountPool.length + accountIndex;
+        }
     }
 
     /// @dev A current committee member and the address that acts for it. The function returns the zero address
@@ -595,30 +716,31 @@ contract GuardianSignalsHandler is Test {
     }
 
     function _currentGuardian(uint256 seed) internal view returns (address) {
-        uint256 start = seed % guardianPool.length;
-        for (uint256 i; i < guardianPool.length; ++i) {
-            address candidate = guardianPool[(start + i) % guardianPool.length];
+        uint256 start = seed % POOL_SIZE;
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            address candidate = pool[(start + i) % POOL_SIZE];
             if (GS.isGuardian(candidate)) return candidate;
         }
         return address(0);
     }
 
-    /// @dev A pool address for a new seat. The address is not a guardian and is not a delegate.
-    function _freeGuardianSeat(uint256 seed) internal view returns (address) {
-        uint256 start = seed % guardianPool.length;
-        for (uint256 i; i < guardianPool.length; ++i) {
-            address candidate = guardianPool[(start + i) % guardianPool.length];
-            if (!GS.isGuardian(candidate) && !_isDelegate(candidate)) return candidate;
+    /// @dev A current guardian with a delegate. The value is the zero address if no guardian has a delegate.
+    function _delegatedGuardian(uint256 seed) internal view returns (address) {
+        (address[] memory guardians, address[] memory delegates) = GS.getGuardians();
+        uint256 start = seed % guardians.length;
+        for (uint256 i; i < guardians.length; ++i) {
+            uint256 index = (start + i) % guardians.length;
+            if (delegates[index] != address(0)) return guardians[index];
         }
         return address(0);
     }
 
-    /// @dev A pool address for a new delegate. The address is not a guardian and is not the delegate of
-    ///      another guardian.
-    function _freeDelegate(uint256 seed) internal view returns (address) {
-        uint256 start = seed % delegatePool.length;
-        for (uint256 i; i < delegatePool.length; ++i) {
-            address candidate = delegatePool[(start + i) % delegatePool.length];
+    /// @dev A pool address for a new seat or a new delegate. The address is not a guardian and is not the
+    ///      delegate of a guardian.
+    function _freeAddress(uint256 seed) internal view returns (address) {
+        uint256 start = seed % POOL_SIZE;
+        for (uint256 i; i < POOL_SIZE; ++i) {
+            address candidate = pool[(start + i) % POOL_SIZE];
             if (!GS.isGuardian(candidate) && !_isDelegate(candidate)) return candidate;
         }
         return address(0);

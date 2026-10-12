@@ -26,8 +26,7 @@ contract GuardianSignalsInvariant is Test {
     GuardianSignals internal gs;
     GuardianSignalsHandler internal handler;
 
-    /// @dev The initial committee. The guardian pool of the handler starts with these three addresses. The pool
-    ///      holds three more addresses for rotation.
+    /// @dev The initial committee. The address pool of the handler starts with these three addresses.
     address internal constant GUARDIAN_1 = address(0x6001);
     address internal constant GUARDIAN_2 = address(0x6002);
     address internal constant GUARDIAN_3 = address(0x6003);
@@ -66,7 +65,7 @@ contract GuardianSignalsInvariant is Test {
         gs.grantRole(gs.ACCESS_LIMITER_ROLE(), address(handler));
         gs.grantRole(gs.ACCESS_RESTORER_ROLE(), address(handler));
 
-        bytes4[] memory selectors = new bytes4[](16);
+        bytes4[] memory selectors = new bytes4[](18);
         selectors[0] = GuardianSignalsHandler.doFlag.selector;
         selectors[1] = GuardianSignalsHandler.doUnflag.selector;
         selectors[2] = GuardianSignalsHandler.doSuspect.selector;
@@ -85,6 +84,9 @@ contract GuardianSignalsInvariant is Test {
         // delegate, each signal uses the guardian route only.
         selectors[14] = GuardianSignalsHandler.doWarp.selector;
         selectors[15] = GuardianSignalsHandler.doSetDelegate.selector;
+        // Without this action the committee stays near its initial size and never reaches the 32-seat limit.
+        selectors[16] = GuardianSignalsHandler.doResizeCommittee.selector;
+        selectors[17] = GuardianSignalsHandler.doStaleSignal.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -104,27 +106,27 @@ contract GuardianSignalsInvariant is Test {
         }
     }
 
-    /// @dev The suspect count is equal to the number of reports that were active at the last rebuild of the
-    ///      pair. The suspect window at that time decides which reports were active. A later change to the
-    ///      window must not change the count. This test therefore does not read the current window.
-    function invariant_suspectCountEqualsReportsLiveAtLastRebuild() public view {
+    /// @dev The registry state of each pair is equal to the model: each field of `getOpinion`, the flag set, and
+    ///      the report set with its timestamps. A lost, extra or mis-timestamped signal therefore fails here.
+    function invariant_registryMatchesModel() public view {
         for (uint256 pair; pair < handler.pairCount(); ++pair) {
-            GuardiansOpinion memory opinion = gs.getOpinion(handler.pairMarket(pair), handler.pairAccount(pair));
-            assertEq(
-                opinion.suspectCount,
-                handler.modelSnapshotCount(pair),
-                "cached count != reports active at the last rebuild"
-            );
+            _assertOpinionMatchesModel(pair);
+            _assertFlagSetMatchesModel(pair);
+            _assertReportSetMatchesModel(pair);
         }
     }
 
-    /// @dev The frontier is less than or equal to the largest candidate of the committee. It is also less than
-    ///      or equal to the current time. This is a limit and not an equality. A change to the membership or to
-    ///      the quorum does not recompute the stored value. The registry can therefore omit a candidate that
-    ///      was the largest value between two syncs.
-    function invariant_frontierNeverExceedsHighestQuorumCandidate() public view {
-        assertLe(gs.getQuorumFrontier(), handler.candidateMax(), "frontier is larger than the largest candidate");
-        assertLe(gs.getQuorumFrontier(), block.timestamp, "frontier is later than the current time");
+    /// @dev The stored frontier and the stored heartbeats are equal to the model. The model applies the
+    ///      specification. A heartbeat that moves its guardian from at or below `F` to above `F` sets
+    ///      `max(F, candidate)`, a sync sets `max(F, candidate)`, and each other action keeps `F`. The model
+    ///      never decreases, so this equality also asserts that the frontier never moves back. It also finds a
+    ///      missed advance.
+    function invariant_frontierMatchesModel() public view {
+        assertEq(gs.getQuorumFrontier(), handler.modelFrontier(), "frontier != the model frontier");
+        (address[] memory guardians, uint40[] memory timestamps) = gs.getHeartbeats();
+        for (uint256 i; i < guardians.length; ++i) {
+            assertEq(timestamps[i], handler.modelHeartbeat(guardians[i]), "heartbeat != the model heartbeat");
+        }
     }
 
     /// @dev These counts show an empty campaign. The counts for each pair show the isolation property. If the
@@ -133,14 +135,55 @@ contract GuardianSignalsInvariant is Test {
         emit log_named_uint("flags", handler.flags());
         emit log_named_uint("unflags", handler.unflags());
         emit log_named_uint("suspects", handler.suspects());
+        emit log_named_uint("unsuspects", handler.unsuspects());
         emit log_named_uint("prunes", handler.prunes());
         emit log_named_uint("pruneCountChecks", handler.pruneCountChecks());
         emit log_named_uint("rotations", handler.rotations());
+        emit log_named_uint("delegatePromotions", handler.delegatePromotions());
+        emit log_named_uint("maxCommitteeSize", handler.maxCommitteeSize());
+        emit log_named_uint("capRejections", handler.capRejections());
         emit log_named_uint("quorumChanges", handler.quorumChanges());
         emit log_named_uint("windowChanges", handler.windowChanges());
         emit log_named_uint("frontierAdvances", handler.advances());
+        emit log_named_uint("staleGuardianCalls", handler.staleGuardianCalls());
+        emit log_named_uint("staleDelegateCalls", handler.staleDelegateCalls());
+        emit log_named_uint("reassignedDelegateCalls", handler.reassignedDelegateCalls());
         for (uint256 pair; pair < handler.pairCount(); ++pair) {
             emit log_named_uint("pairTouches", handler.pairTouches(pair));
+        }
+    }
+
+    function _assertOpinionMatchesModel(uint256 pair) internal view {
+        GuardiansOpinion memory opinion = gs.getOpinion(handler.pairMarket(pair), handler.pairAccount(pair));
+        assertEq(opinion.strikeCount, handler.modelStrikes(pair), "strikeCount != the model flags");
+        assertEq(
+            opinion.suspectCount, handler.modelSuspectCount(pair), "suspectCount != reports active at the last rebuild"
+        );
+        // The expiry uses the current window and not the window of the last rebuild.
+        assertEq(
+            opinion.suspectExpiryTimestamp,
+            uint256(handler.modelSuspectReportedAt(pair)) + gs.getSuspectWindow(),
+            "suspectExpiryTimestamp != the latest counted report + the current window"
+        );
+        assertEq(opinion.quorumFrontierTimestamp, handler.modelFrontier(), "opinion frontier != the model frontier");
+    }
+
+    /// @dev The registry set holds no duplicates. An equal size and the model membership of each entry
+    ///      therefore give set equality.
+    function _assertFlagSetMatchesModel(uint256 pair) internal view {
+        address[] memory flaggedBy = gs.getFlaggedBy(handler.pairMarket(pair), handler.pairAccount(pair));
+        assertEq(flaggedBy.length, handler.modelStrikes(pair), "flag set size != the model");
+        for (uint256 i; i < flaggedBy.length; ++i) {
+            assertTrue(handler.modelIsFlagged(pair, flaggedBy[i]), "the registry holds a flag that the model does not");
+        }
+    }
+
+    function _assertReportSetMatchesModel(uint256 pair) internal view {
+        (address[] memory reporters, uint40[] memory reportedAt) =
+            gs.getSuspectedBy(handler.pairMarket(pair), handler.pairAccount(pair));
+        assertEq(reporters.length, handler.modelReportCount(pair), "report set size != the model");
+        for (uint256 i; i < reporters.length; ++i) {
+            assertEq(reportedAt[i], handler.modelReportedAt(pair, reporters[i]), "report timestamp != the model");
         }
     }
 

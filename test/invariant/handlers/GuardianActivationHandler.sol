@@ -16,8 +16,8 @@ import {CollateralActivationConfig} from "../../../src/types/CollateralActivatio
 
 import {ActivationModel} from "../../setup/ActivationModel.sol";
 
-/// @notice This handler calls the collateral, debt, guardian signal, heartbeat and time actions. The market
-///         has a non-zero frontier fallback and a non-zero per-suspect delay.
+/// @notice This handler calls the collateral, debt, guardian signal, committee, heartbeat and time actions. The
+///         market has a non-zero frontier fallback and a non-zero per-suspect delay.
 /// @dev The handler records the lot start and the base delay for each borrower. It reads the base delay from
 ///      `currentActivationDelay` immediately before the deposit that forms the lot. The suite then computes
 ///      the unlock time from the formula of the specification. It does not read that value from the
@@ -41,7 +41,10 @@ contract GuardianActivationHandler is Test {
 
     MarketParams internal params;
 
-    address[3] internal guardians = [address(0x6001), address(0x6002), address(0x6003)];
+    /// @dev The candidate committee members. The first three addresses are the initial committee, and the
+    ///      other two permit a replacement.
+    address[5] internal guardianPool =
+        [address(0x6001), address(0x6002), address(0x6003), address(0x6004), address(0x6005)];
     address[3] internal borrowers;
 
     /// @dev The block timestamp of the start of the current lot for each borrower. The value is zero if the
@@ -56,6 +59,7 @@ contract GuardianActivationHandler is Test {
     uint256 public maturedOnFrontier;
     uint256 public maturedOnFallback;
     uint256 public signals;
+    uint256 public configChanges;
 
     constructor(
         ILidoLend core,
@@ -169,7 +173,7 @@ contract GuardianActivationHandler is Test {
     // ── the guardian signals ──
 
     function doFlag(uint256 guardianSeed, uint256 actorSeed) external {
-        address guardian = guardians[guardianSeed % 3];
+        address guardian = _currentGuardian(guardianSeed);
         address borrower = borrowers[actorSeed % 3];
         vm.prank(guardian);
         GS.flag(ID, guardian, _one(borrower));
@@ -177,20 +181,20 @@ contract GuardianActivationHandler is Test {
     }
 
     function doUnflag(uint256 guardianSeed, uint256 actorSeed) external {
-        address guardian = guardians[guardianSeed % 3];
+        address guardian = _currentGuardian(guardianSeed);
         vm.prank(guardian);
         GS.unflag(ID, guardian, _one(borrowers[actorSeed % 3]));
     }
 
     function doSuspect(uint256 guardianSeed, uint256 actorSeed) external {
-        address guardian = guardians[guardianSeed % 3];
+        address guardian = _currentGuardian(guardianSeed);
         vm.prank(guardian);
         GS.suspect(ID, guardian, _one(borrowers[actorSeed % 3]));
         ++signals;
     }
 
     function doUnsuspect(uint256 guardianSeed, uint256 actorSeed) external {
-        address guardian = guardians[guardianSeed % 3];
+        address guardian = _currentGuardian(guardianSeed);
         vm.prank(guardian);
         GS.unsuspect(ID, guardian, _one(borrowers[actorSeed % 3]));
     }
@@ -203,6 +207,28 @@ contract GuardianActivationHandler is Test {
         GS.unban(ID, borrowers[actorSeed % 3]);
     }
 
+    // ── the committee and configuration actions ──
+
+    /// @notice A new quorum. The registry does not recompute the stored frontier, so the frontier gate then
+    ///         uses a frontier that a different quorum set.
+    function doSetQuorum(uint256 quorumSeed) external {
+        GS.setQuorum(bound(quorumSeed, 1, GS.getGuardianCount()));
+        ++configChanges;
+    }
+
+    /// @notice A replacement. The new guardian has no heartbeat, and the stored frontier does not change.
+    function doReplaceGuardian(uint256 oldSeed, uint256 newSeed) external {
+        GS.replaceGuardian(_currentGuardian(oldSeed), _freeGuardian(newSeed));
+        ++configChanges;
+    }
+
+    /// @notice A new suspect window. It changes the expiry of the cached snapshot, and that expiry decides
+    ///         whether the suspect surcharge applies to a lot.
+    function doSetSuspectWindow(uint256 windowSeed) external {
+        GS.setSuspectWindow(bound(windowSeed, 0, GS.MAX_SUSPECT_WINDOW()));
+        ++configChanges;
+    }
+
     // ── the heartbeat and time actions ──
 
     /// @notice Heartbeats from a quorum of guardians. This is the only action that advances the frontier.
@@ -213,15 +239,14 @@ contract GuardianActivationHandler is Test {
         bytes32 hash = blockhash(number);
         if (hash == bytes32(0)) return;
 
+        (address[] memory current,) = GS.getGuardians();
         uint256 quorum = GS.getQuorum();
-        for (uint256 i; i < guardians.length && i < quorum; ++i) {
-            uint40 stored = GS.getHeartbeat(guardians[i]);
+        for (uint256 i; i < current.length && i < quorum; ++i) {
+            uint40 stored = GS.getHeartbeat(current[i]);
             if (stored > block.timestamp) continue;
             uint40 scannedAt = uint40(bound(timestampSeed, stored, block.timestamp));
-            vm.prank(guardians[i]);
-            GS.heartbeat(
-                guardians[i], BlockInfoWithHash({hash: hash, number: uint40(number), timestamp: scannedAt}), ""
-            );
+            vm.prank(current[i]);
+            GS.heartbeat(current[i], BlockInfoWithHash({hash: hash, number: uint40(number), timestamp: scannedAt}), "");
         }
     }
 
@@ -277,6 +302,22 @@ contract GuardianActivationHandler is Test {
         uint256 totalBorrowAssets = CORE.market(ID).totalBorrowAssets;
         uint256 totalBorrowShares = CORE.market(ID).totalBorrowShares;
         return Math.mulDiv(shares, totalBorrowAssets + 1, totalBorrowShares + 1e6, Math.Rounding.Ceil);
+    }
+
+    function _currentGuardian(uint256 seed) internal view returns (address) {
+        (address[] memory current,) = GS.getGuardians();
+        return current[seed % current.length];
+    }
+
+    /// @dev A pool address that is not a guardian. The committee holds three of the five addresses, so the
+    ///      result is never the zero address.
+    function _freeGuardian(uint256 seed) internal view returns (address) {
+        uint256 start = seed % guardianPool.length;
+        for (uint256 i; i < guardianPool.length; ++i) {
+            address candidate = guardianPool[(start + i) % guardianPool.length];
+            if (!GS.isGuardian(candidate)) return candidate;
+        }
+        return address(0);
     }
 
     function _one(address account) internal pure returns (address[] memory accounts) {

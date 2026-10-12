@@ -66,13 +66,15 @@ contract GuardianActivationInvariant is LidoLendSetup {
             m.core, m.controller, m.guardianSignals, m.oracle, m.loanToken, m.collateralToken, m.params, m.id, borrowers
         );
 
-        // The handler sends the governance overrides, and it therefore needs the two override roles.
-        // `initialize` grants neither role, and the deploy base grants `MANAGER_ROLE` to the admin only.
+        // The handler sends the governance overrides and the committee changes, and it therefore needs the two
+        // override roles and `MANAGER_ROLE`. `initialize` grants none of them, and the deploy base grants
+        // `MANAGER_ROLE` to the admin only.
         GuardianSignals gs = GuardianSignals(address(m.guardianSignals));
         gs.grantRole(gs.ACCESS_LIMITER_ROLE(), address(handler));
         gs.grantRole(gs.ACCESS_RESTORER_ROLE(), address(handler));
+        gs.grantRole(gs.MANAGER_ROLE(), address(handler));
 
-        bytes4[] memory selectors = new bytes4[](10);
+        bytes4[] memory selectors = new bytes4[](14);
         selectors[0] = GuardianActivationHandler.doSupplyCollateral.selector;
         selectors[1] = GuardianActivationHandler.doBorrow.selector;
         selectors[2] = GuardianActivationHandler.doRepay.selector;
@@ -83,6 +85,11 @@ contract GuardianActivationInvariant is LidoLendSetup {
         selectors[7] = GuardianActivationHandler.doBan.selector;
         selectors[8] = GuardianActivationHandler.doHeartbeatQuorum.selector;
         selectors[9] = GuardianActivationHandler.doWarp.selector;
+        // Without `doUnban` a ban lasts until the end of the run, and no banned lot matures.
+        selectors[10] = GuardianActivationHandler.doUnban.selector;
+        selectors[11] = GuardianActivationHandler.doSetQuorum.selector;
+        selectors[12] = GuardianActivationHandler.doReplaceGuardian.selector;
+        selectors[13] = GuardianActivationHandler.doSetSuspectWindow.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -115,6 +122,7 @@ contract GuardianActivationInvariant is LidoLendSetup {
         emit log_named_uint("supplies", handler.supplies());
         emit log_named_uint("borrows", handler.borrows());
         emit log_named_uint("signals", handler.signals());
+        emit log_named_uint("configChanges", handler.configChanges());
         emit log_named_uint("maturations", handler.maturations());
         emit log_named_uint("maturedOnFrontier", handler.maturedOnFrontier());
         emit log_named_uint("maturedOnFallback", handler.maturedOnFallback());
