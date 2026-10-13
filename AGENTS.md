@@ -62,6 +62,14 @@
   `make fork-run RUN=<run>` is the equivalent.
 - Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
 - Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
+- Year-long solvency simulations: `make test-simulation` sets `RUN_SOLVENCY_SIMULATION=true` over
+  `test/simulation/`. The 30-day variants of the same suites already run inside `make test-local`; without that
+  variable the year-long tests skip. The gas limit they need is set in `foundry.toml`.
+- Mutation testing: `make test-mutation` scores `src/` against the 30-day simulations. It is **outside the pinned
+  toolchain** — `--mutate` needs forge >= 1.8.0 while `.foundryref` pins 1.7.1 — so install that forge separately
+  and expect it never to run in CI. A 1.8.x run is not comparable with a pinned run: isolate mode makes every call
+  its own transaction, which moves gas and flips the simulation's `perCallTransactions` boundary. Slow, and the
+  score counts only the mutants forge evaluates.
 - Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot`. The
   fork suites are included — they revert without the fork setup — forking the latest block unless
   `FORK_BLOCK` pins one. `TEST_SEED` comes from the env when set; otherwise foundry picks
@@ -135,6 +143,7 @@ test/
 ├── unit/         # L0+L1 — one file per contract / pure library, method-by-method
 ├── scenario/     # L2 — end-to-end flows on a freshly deployed stack (local EVM, mock tokens)
 ├── invariant/    # L4 — handler-based stateful properties
+├── simulation/   # seeded months-long solvency simulations on a fresh stack; 30-day variants run in test-local
 ├── fork/         # fork tests vs the deployed protocol, bound from deployed/<ARTIFACTS_DIR>/
 └── acceptance/   # L3 — mainnet fork vs immutable artifacts under deployed/<run>/
 ```
@@ -146,6 +155,9 @@ test/
   `setup/`), on the local EVM with mock tokens.
 - `invariant/<Area>.invariant.t.sol` — handler-based stateful properties (actors, ghosts, bounded
   actions). Handlers under `invariant/handlers/`.
+- `simulation/<Market>Solvency.t.sol` — seeded 30- and 365-day solvency simulations on a freshly deployed
+  stack with the default market config. The driver draws everyday moves by odds and schedules each rare event
+  once per run.
 - `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
 - `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
   addresses and deployment values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).

@@ -82,7 +82,7 @@ additionally need `ARTIFACTS_DIR`, which the provisioning targets above pass for
 input, command-line assignments take precedence over exported environment values, which take precedence over
 `.env` and then Makefile defaults.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`). Locally `forge 1.5.1-stable` is the reference. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that provisions a deployment onto a local anvil fork from the `RPC_URL` secret and runs `test/fork/` against it), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same provisioned anvil), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that same version locally. `make test-mutation` is the one target that needs a newer forge than the pin and is therefore never run in CI. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that provisions a deployment onto a local anvil fork from the `RPC_URL` secret and runs `test/fork/` against it), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same provisioned anvil), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
 Additional workflows check action configuration and compiled contract bytecode sizes.
 
 To run the local pre-commit fmt check, point Git at the bundled hook:

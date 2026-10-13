@@ -1,6 +1,6 @@
 name: fuzz
 
-# Heavy fuzz/invariant suite. Runs nightly and on-demand.
+# Heavy fuzz/invariant suite. Runs on demand.
 # Kept off the PR path because high run counts slow down feedback.
 on:
   workflow_dispatch:
@@ -27,3 +27,6 @@ jobs:
           FOUNDRY_INVARIANT_RUNS: '4096'
           FOUNDRY_INVARIANT_DEPTH: '64'
         run: forge test --match-test 'invariant_'
+
+      - name: solvency simulations (365 days)
+        run: make test-simulation
