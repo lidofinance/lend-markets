@@ -91,6 +91,12 @@ abstract contract ForkTest is CommonBase {
     // ACCESSORS
     // ---
 
+    /// @notice Whether the run's network config defines `[external].<key>`.
+    function _hasExt(string memory key) internal view returns (bool) {
+        require(_bound, "ForkTest: _fork() not called");
+        return vm.keyExistsToml(_read(_externalsPath), string.concat(".external.", key));
+    }
+
     /// @notice Address at `[external].<key>` in the run's network config.
     function _ext(string memory key) internal view returns (address) {
         require(_bound, "ForkTest: _fork() not called");

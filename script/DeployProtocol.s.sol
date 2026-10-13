@@ -50,6 +50,7 @@ contract DeployProtocol is Script, ProtocolDeployer {
         protocol.circuitBreakerArtifact = cfg.circuitBreakerArtifact;
         protocol.deployedBlock = deployedBlock;
         protocol.deployer = deployer;
+        protocol.pauserCommittee = cfg.pauserCommittee;
 
         ExitBooksDeployment memory exitBooks;
 

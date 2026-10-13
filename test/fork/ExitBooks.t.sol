@@ -51,6 +51,9 @@ abstract contract ExitBooksForkBase is ForkMarketStack {
         morphoBook = IMorphoExitBook(_artifactAddr("exit-books.toml", "exit_books.morpho"));
         erc4626Book = IErc4626ExitBook(_artifactAddr("exit-books.toml", "exit_books.erc4626"));
         bookPauser = _artifactAddr("exit-books.toml", "exit_books.pauser");
+        bool booksAllow =
+            morphoBook.isMarketAllowed(deployed.id) && erc4626Book.isVaultAllowed(IERC4626(address(deployed.vault)));
+        if (!booksAllow) vm.skip(true, "ExitBooks: the run's books do not allow this market yet");
 
         LENDER = _freshActor(deployed, "exitBooks.lender");
         RECEIVER = _freshActor(deployed, "exitBooks.receiver");

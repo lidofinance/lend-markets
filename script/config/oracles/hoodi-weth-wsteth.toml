@@ -1,0 +1,3 @@
+# Hoodi wstETH rate oracle. wsteth = the hoodi wstETH address (real Lido hoodi, or mock with getStETHByWstETH).
+kind = "wsteth"
+wsteth = "0x7E99eE3C66636DE415D2d7C880938F2f40f94De4"  # wstETH (hoodi, docs.lido.fi)

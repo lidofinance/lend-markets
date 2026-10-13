@@ -17,6 +17,7 @@ import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketCont
 
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {BlockInfoWithHash} from "../../src/types/GuardianSignalsTypes.sol";
+import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 
 import {Approvals} from "./Approvals.sol";
 import {Erc4626Math} from "./Erc4626Math.sol";
@@ -497,13 +498,28 @@ library MarketActions {
         }
     }
 
-    /// @notice Warps past the market's LIVE max activation delay and, without a guardian quorum, the max quorum delay,
-    ///         so freshly supplied collateral matures and can back a borrow (the activation gate resolves lazily on
-    ///         the next borrow). Read from the controller, not the deploy config, so a delay governance raised after
-    ///         deployment is honoured.
+    /// @notice Warps past the market's LIVE max activation delay so freshly supplied collateral matures and can
+    ///         back a borrow (the activation gate resolves lazily on the next borrow). Read from the controller,
+    ///         not the deploy config, so a delay governance raised after deployment is honoured. A market that
+    ///         also gates on the guardian quorum gets a quorum of heartbeats at the warped time, so the frontier
+    ///         covers the unlock the way a live committee would.
     function activateCollateral(Market storage self) internal {
-        CollateralActivationConfig memory cfg = self.controller.collateralActivationConfig();
-        vm.warp(block.timestamp + Math.max(cfg.maxActivationDelay, cfg.maxGuardiansQuorumDelay) + 1);
+        CollateralActivationConfig memory config = self.controller.collateralActivationConfig();
+        vm.warp(block.timestamp + config.maxActivationDelay + 1);
+        if (config.maxGuardiansQuorumDelay == 0) return;
+
+        vm.roll(block.number + 1);
+        (address[] memory guardians,) = self.guardianSignals.getGuardians();
+        uint256 quorum = self.guardianSignals.getQuorum();
+        vm.assertGe(guardians.length, quorum, "activateCollateral: guardian set smaller than its quorum");
+        for (uint256 i; i < quorum; ++i) {
+            heartbeatAt(self, guardians[i], block.timestamp);
+        }
+        vm.assertGe(
+            uint256(self.guardianSignals.getQuorumFrontier()),
+            block.timestamp,
+            "activateCollateral: quorum frontier short of the unlock"
+        );
     }
 
     /// @notice Borrower borrows `amount` loan assets to itself. Asserts the returned assets/shares, the

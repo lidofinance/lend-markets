@@ -44,8 +44,8 @@ LOG_FILE="deployed/${RUN_NAME}-anvil.log"
 LOCK_DIR="deployed/.${RUN_NAME}-provision.lock"
 CONFIG_TOML="script/config/${CONFIG_NAME}.toml"
 
-# anvil's first dev account. Holds no protocol role; requireActorSeparation enforces that against the config.
-DEPLOYER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+# anvil's first dev account, impersonated rather than signed for: no key material anywhere in the deploy path.
+# Holds no protocol role; requireActorSeparation enforces that against the config.
 DEPLOYER_ADDRESS="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 TEN_ETHER_HEX="0x8AC7230489E80000"
 STARTED_ANVIL=0
@@ -633,7 +633,7 @@ prepare_run
 # VERIFY is off: a local node has no verifier.
 deploy() {
   make "$@" CONFIG="$CONFIG_NAME" RUN="$RUN_NAME" RPC_URL="$RPC_LOCAL" \
-    DEPLOYER_PRIVATE_KEY="$DEPLOYER_KEY" VERIFY=false RESUME=false
+    DEPLOYER_ACCOUNT= DEPLOYER_SENDER="$DEPLOYER_ADDRESS" VERIFY=false RESUME=false
 }
 
 # --- 4..8. the deploy pipeline --------------------------------------------------------------------------------

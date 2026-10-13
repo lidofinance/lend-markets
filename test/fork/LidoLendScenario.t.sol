@@ -349,9 +349,9 @@ contract LidoLendScenarioTest is ForkStack {
 
         // (2) A partial cut on the root, half the allowed slice. Cutting half reduces the root's key without
         //     flipping it below the runner-up.
-        uint256 firstCutShares = _rootCutShares(ctx) / 2;
+        uint256 cutShares = _rootCutShares(ctx) / 2;
         vm.prank(LENDER);
-        ctx.market.settle(ctx.marketParams, firstCutShares, LENDER, BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, cutShares, LENDER, BORROWER, LENDER);
         (root,) = ctx.controller.nextSettlementBorrower(0);
         assertEq(root, BORROWER, "BORROWER still highest after first partial cut");
 
@@ -359,14 +359,15 @@ contract LidoLendScenarioTest is ForkStack {
         //     a non-root borrower without a personal settlement LTV has a zero slice, so any cut exceeds it.
         vm.prank(LENDER);
         vm.expectRevert(abi.encodeWithSignature("SettlementExceedsAllowed()"));
-        ctx.market.settle(ctx.marketParams, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, cutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (4) SECOND_BORROWER opts in to a 5% post-cut LTV — they are now eligible regardless of
-        //     queue position. The same cut now succeeds against them.
+        //     queue position: a cut within their personal slice succeeds against them.
         vm.prank(SECOND_BORROWER);
         ctx.controller.setSettlementLtv(0.05e18);
+        cutShares = _personalCutShares(ctx, SECOND_BORROWER);
         vm.prank(LENDER);
-        ctx.market.settle(ctx.marketParams, firstCutShares, LENDER, SECOND_BORROWER, LENDER);
+        ctx.market.settle(ctx.marketParams, cutShares, LENDER, SECOND_BORROWER, LENDER);
 
         // (5) THIRD_BORROWER (lowest LTV, no settlement LTV) is never touched throughout the scenario.
         Position memory _pLow = ctx.market.position(ctx.id, THIRD_BORROWER);
@@ -779,6 +780,14 @@ contract LidoLendScenarioTest is ForkStack {
     function _rootCutShares(TestMarket memory ctx) internal view returns (uint256) {
         (, SettlementSlice memory slice) = ctx.controller.nextSettlementBorrower(0);
         return slice.borrowShares;
+    }
+
+    /// @dev Half of `borrower`'s personal settlement slice in borrow shares; the borrower must have opted in.
+    function _personalCutShares(TestMarket memory ctx, address borrower) internal view returns (uint256) {
+        uint256 personalSliceAssets = ctx.controller.positionOf(borrower).personalSliceAssets;
+        require(personalSliceAssets != 0, "settle_heap: borrower has no personal slice");
+        Market memory market_ = ctx.market.market(ctx.id);
+        return SharesMathLib.toSharesUp(personalSliceAssets, market_.totalBorrowAssets, market_.totalBorrowShares) / 2;
     }
 
     function _expectedSettlementAmounts(TestMarket memory ctx, uint256 borrowShares, uint256 price)

@@ -1,0 +1,14 @@
+[artifact]
+kind = "oracle"
+deployment = "hoodi-testnet"
+chain_id = 560048
+config_hash = "0xf119b4687e4364f297a36ae21775241b92cd6d62a4af2bd0951816df22642f7e"
+compatibility_hash = "0xb1aca1b38e8049e75719c885675a71e618c63343b44ce68c585352a3e1ac0f50"
+
+[oracle]
+name = "hoodi-weth-wsteth"
+address = "0x2ae747342805632E4909c1230AC2124937074545"
+reused = false
+proxy_admin = "0x0534aA41907c9631fae990960bCC72d75fA7cfeD"
+kind = "wsteth-rate"
+wsteth = "0x7E99eE3C66636DE415D2d7C880938F2f40f94De4"

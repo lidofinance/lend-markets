@@ -103,6 +103,15 @@ contract ActivateMarkets is Script {
 
     Backbone internal bb;
 
+    /// @dev The committee the motion registers on the CircuitBreaker: the run's recorded `pauser_committee`, or
+    ///      the Agent standing in for it when the run records none.
+    function _pauserCommittee(string memory protocol) internal view returns (address) {
+        if (vm.keyExistsToml(protocol, ".protocol.pauser_committee")) {
+            return vm.parseTomlAddress(protocol, ".protocol.pauser_committee");
+        }
+        return vm.parseTomlAddress(protocol, ".protocol.agent");
+    }
+
     function run() external {
         string memory protocolPath = ProtocolConfigFile.protocolPath();
         string memory protocol = vm.readFile(protocolPath);
@@ -129,8 +138,7 @@ contract ActivateMarkets is Script {
         bb.facade = vm.parseTomlAddress(protocol, ".protocol.owner_facade");
         bb.core = vm.parseTomlAddress(protocol, ".protocol.core");
         bb.circuitBreaker = vm.parseTomlAddress(protocol, ".protocol.circuit_breaker");
-        // Motion input: governance routes an emergency committee. The Agent stands in for it.
-        bb.pauserCommittee = vm.parseTomlAddress(protocol, ".protocol.agent");
+        bb.pauserCommittee = _pauserCommittee(protocol);
 
         string memory exitBooksPath = ProtocolConfigFile.exitBooksPath();
         if (vm.exists(exitBooksPath)) {
