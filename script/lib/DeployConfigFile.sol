@@ -85,8 +85,14 @@ library DeployConfigFile {
         }
     }
 
+    /// @notice The deploy config of deployment `name`: `script/config/<name>/protocol.toml`.
     function configPath(string memory name) internal pure returns (string memory) {
-        return string.concat("script/config/", name, ".toml");
+        return string.concat(configDir(name), "/protocol.toml");
+    }
+
+    /// @notice The folder holding every config of deployment `name`, laid out like its artifacts.
+    function configDir(string memory name) internal pure returns (string memory) {
+        return string.concat("script/config/", name);
     }
 
     function requireChainId(DeployConfig memory cfg) internal view {

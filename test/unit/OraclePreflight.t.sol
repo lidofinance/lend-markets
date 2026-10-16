@@ -11,10 +11,15 @@ import {OraclePreflight} from "../../script/lib/OraclePreflight.sol";
 import {WstEthOracleConfig, UsdyOracleConfig} from "../../script/lib/OracleConfigFile.sol";
 
 contract OraclePreflightHarness {
-    function validate(string memory name, address oracle, address loanToken, address collateralToken, address admin)
-        external
-    {
-        OraclePreflight.validate(name, oracle, loanToken, collateralToken, admin);
+    function validate(
+        string memory config,
+        string memory name,
+        address oracle,
+        address loanToken,
+        address collateralToken,
+        address admin
+    ) external {
+        OraclePreflight.validate(config, name, oracle, loanToken, collateralToken, admin);
     }
 
     function validateWstEth(WstEthOracleConfig memory cfg, address oracle, address collateralToken) external {

@@ -22,7 +22,7 @@ contract DeployVaultV2 is Script {
     error ProtocolIrmRouterNotContract(address irmRouter);
     error RecordedNameMismatch(string expected, string actual);
 
-    /// @param config The deploy config name (`script/config/<config>.toml`).
+    /// @param config The deployment whose configs are read (`script/config/<config>/`).
     function run(string memory config, string memory vaultName, string memory adapterName)
         external
         returns (address vault, address adapter)
@@ -31,8 +31,8 @@ contract DeployVaultV2 is Script {
         DeployConfigFile.requireChainId(deployConfig);
         DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
 
-        VaultV2Config memory vaultCfg = VaultV2ConfigFile.readVault(vaultName);
-        VaultV2AdapterConfig memory adapterCfg = VaultV2ConfigFile.readAdapter(adapterName);
+        VaultV2Config memory vaultCfg = VaultV2ConfigFile.readVault(config, vaultName);
+        VaultV2AdapterConfig memory adapterCfg = VaultV2ConfigFile.readAdapter(config, adapterName);
         VaultV2ConfigFile.requireVaultArtifact(adapterCfg, vaultName);
         VaultV2ConfigFile.requireUndeployed(vaultName, adapterName);
 

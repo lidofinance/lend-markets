@@ -1,0 +1,8 @@
+# Bounds match the upstream CircuitBreaker 1.0.0 mainnet deployment profile.
+# ADMIN is not configured here: the deploy script always sets it to the run's EVMScriptExecutor.
+min_pause_duration = 432000          # 5 days
+max_pause_duration = 5184000         # 60 days
+min_heartbeat_interval = 2592000     # 30 days
+max_heartbeat_interval = 94608000    # 3 years
+initial_pause_duration = 1814400     # 21 days
+initial_heartbeat_interval = 31536000 # 365 days

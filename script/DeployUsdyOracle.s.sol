@@ -20,7 +20,7 @@ contract DeployUsdyOracle is Script, LidoLendPrimitives {
         ArtifactMetadata memory metadata = DeployConfigFile.artifactMetadata(deployConfig);
         DeployConfigFile.requireRunResourcesCompatible(metadata);
         DeployConfigFile.requireExistingProtocolCompatible(deployConfig);
-        UsdyOracleConfig memory c = OracleConfigFile.readUsdy(name);
+        UsdyOracleConfig memory c = OracleConfigFile.readUsdy(config, name);
         OracleConfigFile.requireUndeployed(name);
 
         vm.startBroadcast();
@@ -33,6 +33,6 @@ contract DeployUsdyOracle is Script, LidoLendPrimitives {
         console2.log("  usdyStableOracle :", oracle);
         console2.log("  minPrice        :", c.minPrice);
         console2.log("  maxPrice        :", c.maxPrice);
-        console2.log("  recorded        :", OracleConfigFile.writeDeployed(name, oracle, metadata));
+        console2.log("  recorded        :", OracleConfigFile.writeDeployed(config, name, oracle, metadata));
     }
 }

@@ -71,8 +71,8 @@ contract DeployConfigFileTest is Test {
         harness = new DeployConfigFileHarness();
     }
 
-    function test_readForkMainnetConfig() external view {
-        DeployConfig memory cfg = harness.read("fork-mainnet");
+    function test_readForkConfig() external view {
+        DeployConfig memory cfg = harness.read("fork");
 
         assertEq(cfg.network, "mainnet");
         assertEq(cfg.chainId, 1);

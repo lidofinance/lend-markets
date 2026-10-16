@@ -5,6 +5,7 @@ import {Vm} from "forge-std/Vm.sol";
 
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 import {ConfigToml} from "./ConfigToml.sol";
+import {DeployConfigFile} from "./DeployConfigFile.sol";
 
 struct CircuitBreakerConfig {
     uint256 minPauseDuration;
@@ -20,8 +21,10 @@ library CircuitBreakerConfigFile {
 
     error ArtifactAlreadyExists(string path);
 
-    function read(string memory name) internal view returns (CircuitBreakerConfig memory cfg) {
-        string memory toml = vm.readFile(configPath(name));
+    /// @notice The deployment's CircuitBreaker config: one per deployment,
+    /// `script/config/<config>/circuit-breaker.toml`. The artifact keeps the name `circuit_breaker_artifact` selects.
+    function read(string memory config) internal view returns (CircuitBreakerConfig memory cfg) {
+        string memory toml = vm.readFile(configPath(config));
         cfg.minPauseDuration = ConfigToml.requireUint(toml, ".min_pause_duration");
         cfg.maxPauseDuration = ConfigToml.requireUint(toml, ".max_pause_duration");
         cfg.minHeartbeatInterval = ConfigToml.requireUint(toml, ".min_heartbeat_interval");
@@ -30,8 +33,8 @@ library CircuitBreakerConfigFile {
         cfg.initialHeartbeatInterval = ConfigToml.requireUint(toml, ".initial_heartbeat_interval");
     }
 
-    function configPath(string memory name) internal pure returns (string memory) {
-        return string.concat("script/config/circuit-breakers/", name, ".toml");
+    function configPath(string memory config) internal pure returns (string memory) {
+        return string.concat(DeployConfigFile.configDir(config), "/circuit-breaker.toml");
     }
 
     function deployedPath(string memory name) internal view returns (string memory) {

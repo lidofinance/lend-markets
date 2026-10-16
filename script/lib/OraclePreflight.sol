@@ -44,24 +44,25 @@ library OraclePreflight {
     error OraclePriceIsZero();
 
     function validate(
+        string memory config,
         string memory name,
         address oracle,
         address loanToken,
         address collateralToken,
         address expectedAdmin
     ) internal {
-        string memory toml = OracleConfigFile.readRaw(name);
+        string memory toml = OracleConfigFile.readRaw(config, name);
         bool isWstEth = OracleConfigFile.hasKey(toml, ".wsteth");
         bool isUsdy = OracleConfigFile.hasKey(toml, ".usdy_oracle");
         if (!isWstEth && !isUsdy) revert UnknownOracleConfig(name);
         if (isWstEth && isUsdy) revert AmbiguousOracleConfig(name);
 
         if (isWstEth) {
-            WstEthOracleConfig memory cfg = OracleConfigFile.readWstEth(name);
+            WstEthOracleConfig memory cfg = OracleConfigFile.readWstEth(config, name);
             address implementation = validateProxy(oracle, expectedAdmin);
             validateWstEth(cfg, oracle, implementation, collateralToken);
         } else {
-            UsdyOracleConfig memory cfg = OracleConfigFile.readUsdy(name);
+            UsdyOracleConfig memory cfg = OracleConfigFile.readUsdy(config, name);
             address implementation = validateProxy(oracle, expectedAdmin);
             validateUsdy(cfg, oracle, implementation, loanToken, collateralToken);
         }

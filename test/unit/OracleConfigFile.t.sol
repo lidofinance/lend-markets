@@ -11,8 +11,8 @@ contract OracleConfigFileHarness {
         return OracleConfigFile.parseUsdy(toml);
     }
 
-    function readUsdy(string memory name) external view returns (UsdyOracleConfig memory) {
-        return OracleConfigFile.readUsdy(name);
+    function readUsdy(string memory config, string memory name) external view returns (UsdyOracleConfig memory) {
+        return OracleConfigFile.readUsdy(config, name);
     }
 }
 
@@ -65,7 +65,7 @@ contract OracleConfigFileTest is Test {
     ///      carry a usable band: `deploy-oracle-usdy` cannot broadcast an instance whose `price()` reverts on
     ///      every call.
     function test_readUsdy_forkConfigCarriesUsableBand() external view {
-        UsdyOracleConfig memory cfg = harness.readUsdy("fork-usdy-usdt");
+        UsdyOracleConfig memory cfg = harness.readUsdy("fork", "usdy-usdt");
         assertGt(cfg.minPrice, 0, "min_price");
         assertLe(cfg.minPrice, cfg.maxPrice, "min_price <= max_price");
     }
@@ -73,7 +73,7 @@ contract OracleConfigFileTest is Test {
     /// @dev The mainnet config is an addresses-to-be-filled placeholder, so it is checked at the TOML level:
     ///      the band keys must already be there, since a filled-in address list with no band would not deploy.
     function test_mainnetConfig_declaresBand() external view {
-        string memory raw = vm.readFile(OracleConfigFile.configPath("usdy-usdt"));
+        string memory raw = vm.readFile(OracleConfigFile.configPath("mainnet", "usdy-usdt"));
         uint256 minPrice = vm.parseTomlUint(raw, ".min_price");
         uint256 maxPrice = vm.parseTomlUint(raw, ".max_price");
         assertGt(minPrice, 0, "min_price");

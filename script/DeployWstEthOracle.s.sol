@@ -19,7 +19,7 @@ contract DeployWstEthOracle is Script, LidoLendPrimitives {
         ArtifactMetadata memory metadata = DeployConfigFile.artifactMetadata(deployConfig);
         DeployConfigFile.requireRunResourcesCompatible(metadata);
         DeployConfigFile.requireExistingProtocolCompatible(deployConfig);
-        WstEthOracleConfig memory c = OracleConfigFile.readWstEth(name);
+        WstEthOracleConfig memory c = OracleConfigFile.readWstEth(config, name);
         OracleConfigFile.requireUndeployed(name);
 
         vm.startBroadcast();
@@ -29,6 +29,6 @@ contract DeployWstEthOracle is Script, LidoLendPrimitives {
 
         console2.log("oracle          :", name);
         console2.log("  wstEthRateOracle :", oracle);
-        console2.log("  recorded        :", OracleConfigFile.writeDeployed(name, oracle, metadata));
+        console2.log("  recorded        :", OracleConfigFile.writeDeployed(config, name, oracle, metadata));
     }
 }

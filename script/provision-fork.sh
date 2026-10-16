@@ -6,8 +6,8 @@
 #   bash script/provision-fork.sh check                             # is the run live on the local anvil?
 #   bash script/provision-fork.sh stop                              # stop the anvil a previous run started
 #
-# `config` is the fork deploy config and selects the network to fork: its chain_id is what the upstream must
-# report and what anvil is started with. `block` pins the upstream block anvil forks from; without it anvil
+# `config` is the provisioning deployment (its configs live under script/config/<config>/) and selects the
+# network to fork: its chain_id is what the upstream must report and what anvil is started with. `block` pins the upstream block anvil forks from; without it anvil
 # forks the tip and a run is not reproducible. When no compatible anvil is already
 # running, the upstream comes from the argument or RPC_URL and must be an archive node, not the local anvil.
 # Deploy steps always receive the local anvil URL on the command line.
@@ -25,10 +25,10 @@ if [ "$ACTION" = "stop-if-owned" ]; then
   STOP_EXPECTED_PID="${2:-}"
   STOP_EXPECTED_START="${3:-}"
   STOP_EXPECTED_TOKEN="${4:-}"
-  CONFIG_NAME="fork-mainnet"
+  CONFIG_NAME="fork"
   PIN_BLOCK=""
 else
-  CONFIG_NAME="${2:-fork-mainnet}"
+  CONFIG_NAME="${2:-fork}"
   PIN_BLOCK="${3:-}"
   case "$PIN_BLOCK" in ""|*[!0-9]*) [ -z "$PIN_BLOCK" ] || { echo "[provision] ERROR: PIN_BLOCK must be a number" >&2; exit 1; } ;; esac
 fi
@@ -42,7 +42,8 @@ TRASH_DIR="deployed/.${RUN_NAME}.previous.committed"
 PID_FILE="deployed/${RUN_NAME}-anvil.pid"
 LOG_FILE="deployed/${RUN_NAME}-anvil.log"
 LOCK_DIR="deployed/.${RUN_NAME}-provision.lock"
-CONFIG_TOML="script/config/${CONFIG_NAME}.toml"
+CONFIG_DIR="script/config/${CONFIG_NAME}"
+CONFIG_TOML="${CONFIG_DIR}/protocol.toml"
 
 # anvil's first dev account, impersonated rather than signed for: no key material anywhere in the deploy path.
 # Holds no protocol role; requireActorSeparation enforces that against the config.
@@ -482,9 +483,9 @@ MARKET_NAMES="$(toml_array "$CONFIG_TOML" provision markets)" \
 [ -n "$MARKET_NAMES" ] || die "$CONFIG_TOML defines no provision markets"
 VAULT_NAMES="$(toml_array "$CONFIG_TOML" provision vaults)" \
   || die "$CONFIG_TOML is missing a valid [provision].vaults string array"
-# Optional scalar: the bundler config the run deploys its Bundler3 and adapters from. Absent means the step is
-# skipped and the bundled fork suites skip with it.
-BUNDLER_NAME="$(toml_str "$CONFIG_TOML" bundler)"
+# Optional flag: `bundler = true` deploys the Bundler3 and adapters from the deployment's bundler.toml. Absent or
+# false means the step is skipped and the bundled fork suites skip with it.
+BUNDLER_ENABLED="$(sed -n 's/^[[:space:]]*bundler[[:space:]]*=[[:space:]]*\([a-z]*\).*/\1/p' "$CONFIG_TOML" | head -1)"
 # Unquoted on purpose: provision resource names are validated as whitespace-free logical names by toml_array.
 MARKETS=($MARKET_NAMES)
 
@@ -499,15 +500,15 @@ recover_previous_run
 # the node/run; the protocol-wide CircuitBreaker is selected by the deploy config.
 ORACLES="" GUARDIAN_GROUPS=""
 for market in "${MARKETS[@]}"; do
-  mcfg="script/config/markets/${market}.toml"
+  mcfg="${CONFIG_DIR}/markets/${market}.toml"
   [ -f "$mcfg" ] || die "market config not found: $mcfg"
   ORACLES="$(add_unique "$ORACLES" "$(toml_req "$mcfg" oracle_artifact)")"
   GUARDIAN_GROUPS="$(add_unique "$GUARDIAN_GROUPS" "$(toml_req "$mcfg" guardian_group)")"
 done
-[ -f "script/config/circuit-breakers/${CIRCUIT_BREAKER}.toml" ] \
-  || die "CircuitBreaker config not found: script/config/circuit-breakers/${CIRCUIT_BREAKER}.toml"
+[ -f "${CONFIG_DIR}/circuit-breaker.toml" ] \
+  || die "CircuitBreaker config not found: ${CONFIG_DIR}/circuit-breaker.toml"
 for oracle in $ORACLES; do
-  ocfg="script/config/oracles/${oracle}.toml"
+  ocfg="${CONFIG_DIR}/oracles/${oracle}.toml"
   [ -f "$ocfg" ] || die "oracle config not found: $ocfg"
   case "$(toml_req "$ocfg" kind)" in
     wsteth|usdy) ;;
@@ -515,19 +516,19 @@ for oracle in $ORACLES; do
   esac
 done
 for group in $GUARDIAN_GROUPS; do
-  [ -f "script/config/guardians/${group}.toml" ] \
-    || die "guardian config not found: script/config/guardians/${group}.toml"
+  [ -f "${CONFIG_DIR}/guardians/${group}.toml" ] \
+    || die "guardian config not found: ${CONFIG_DIR}/guardians/${group}.toml"
 done
 for vault in $VAULT_NAMES; do
-  [ -f "script/config/vaults/${vault}.toml" ] \
-    || die "vault config not found: script/config/vaults/${vault}.toml"
-  [ -f "script/config/adapters/${vault}.toml" ] \
-    || die "adapter config not found: script/config/adapters/${vault}.toml"
+  [ -f "${CONFIG_DIR}/vaults/${vault}.toml" ] \
+    || die "vault config not found: ${CONFIG_DIR}/vaults/${vault}.toml"
+  [ -f "${CONFIG_DIR}/adapters/${vault}.toml" ] \
+    || die "adapter config not found: ${CONFIG_DIR}/adapters/${vault}.toml"
 done
-[ -z "$BUNDLER_NAME" ] || [ -f "script/config/bundlers/${BUNDLER_NAME}.toml" ] \
-  || die "bundler config not found: script/config/bundlers/${BUNDLER_NAME}.toml"
+[ "$BUNDLER_ENABLED" != true ] || [ -f "${CONFIG_DIR}/bundler.toml" ] \
+  || die "bundler config not found: ${CONFIG_DIR}/bundler.toml"
 log "markets: ${MARKETS[*]}"
-log "vaults: ${VAULT_NAMES:-none}  bundler: ${BUNDLER_NAME:-none}"
+log "vaults: ${VAULT_NAMES:-none}  bundler: ${BUNDLER_ENABLED:-false}"
 log "circuit breaker: $CIRCUIT_BREAKER  oracles: ${ORACLES:-none}  guardians: ${GUARDIAN_GROUPS:-none}"
 
 # --- 2. anvil --------------------------------------------------------------------------------------------------
@@ -642,7 +643,7 @@ deploy deploy-circuit-breaker
 
 # The oracle config's explicit kind selects its deployment script.
 for oracle in $ORACLES; do
-  ocfg="script/config/oracles/${oracle}.toml"
+  ocfg="${CONFIG_DIR}/oracles/${oracle}.toml"
   case "$(toml_req "$ocfg" kind)" in
     wsteth)
       log "deploying wstETH rate oracle ($oracle)"
@@ -675,9 +676,9 @@ for vault in $VAULT_NAMES; do
   deploy deploy-vault-v2 VAULT="$vault" ADAPTER="$vault"
 done
 
-if [ -n "$BUNDLER_NAME" ]; then
-  log "deploying bundler3 + adapters ($BUNDLER_NAME)"
-  deploy deploy-bundler BUNDLER="$BUNDLER_NAME"
+if [ "$BUNDLER_ENABLED" = true ]; then
+  log "deploying bundler3 + adapters"
+  deploy deploy-bundler
 fi
 
 # Verification uses the same acceptance suite as a real deployment, against the artifacts this run wrote. Each
