@@ -1,5 +1,5 @@
 quorum = 1
-suspect_window = 0
+suspect_window = 86400  # 24 hours
 
 # Required before production deployment. The config reader rejects quorum 1 with an empty committee, so this
 # placeholder cannot accidentally deploy a registry with test actors.

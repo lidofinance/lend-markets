@@ -6,7 +6,7 @@ evm_script_executor = "0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"
 reseal_manager = "0x7914b5a1539b97Bd0bbd155757F25FD79A522d24"
 circuit_breaker_artifact = "lido-lend"
 exit_books = true
-exit_book_max_request_lifetime = 31536000  # 365 days
+exit_book_max_request_lifetime = 7776000  # 90 days
 
 # What a run of this config deploys, in the order the scripts require. Read by `make deploy-all`.
 [provision]
