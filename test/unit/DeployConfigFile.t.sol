@@ -107,7 +107,19 @@ contract DeployConfigFileTest is Test {
         assertEq(cfg.exitBookMaxRequestLifetime, 365 days);
     }
 
-    function test_parse_compatibilityHashIgnoresExitBookAndProvisionFields() external {
+    function test_parse_readsPauserCommittee() external {
+        address committee = makeAddr("pauserCommittee");
+        DeployConfig memory cfg =
+            harness.parse(_configToml(false, string.concat("pauser_committee = \"", vm.toString(committee), "\"\n")));
+
+        assertEq(cfg.pauserCommittee, committee);
+    }
+
+    function test_parse_withoutPauserCommittee_leavesItUnset() external {
+        assertEq(harness.parse(_configToml(false, "")).pauserCommittee, address(0));
+    }
+
+    function test_parse_compatibilityHashIgnoresOptionalAndProvisionFields() external {
         DeployConfig memory base = harness.parse(_configToml(false, ""));
         DeployConfig memory changed = harness.parse(
             _configToml(
@@ -115,6 +127,7 @@ contract DeployConfigFileTest is Test {
                 string.concat(
                     "exit_book_pauser = \"0x0000000000000000000000000000000000000003\"\n",
                     "exit_book_max_request_lifetime = 31536000\n",
+                    "pauser_committee = \"0x0000000000000000000000000000000000000004\"\n",
                     "[provision]\nmarkets = [\"one\"]\nvaults = []\n"
                 )
             )
@@ -183,6 +196,33 @@ contract DeployConfigFileTest is Test {
         cfg.exitBookPauser = executor;
 
         vm.expectRevert(DeployConfigFile.ExitBookPauserCannotBeExecutor.selector);
+        harness.requireActorSeparation(cfg, makeAddr("deployer"));
+    }
+
+    function testRevert_requireActorSeparation_pauserCommitteeIsDeployer() external {
+        address committee = makeAddr("pauserCommittee");
+        DeployConfig memory cfg = _config(makeAddr("agent"), makeAddr("executor"));
+        cfg.pauserCommittee = committee;
+
+        vm.expectRevert(DeployConfigFile.PauserCommitteeCannotBeDeployer.selector);
+        harness.requireActorSeparation(cfg, committee);
+    }
+
+    function testRevert_requireActorSeparation_pauserCommitteeIsAgent() external {
+        address agent = makeAddr("agent");
+        DeployConfig memory cfg = _config(agent, makeAddr("executor"));
+        cfg.pauserCommittee = agent;
+
+        vm.expectRevert(DeployConfigFile.PauserCommitteeCannotBeAgent.selector);
+        harness.requireActorSeparation(cfg, makeAddr("deployer"));
+    }
+
+    function testRevert_requireActorSeparation_pauserCommitteeIsExecutor() external {
+        address executor = makeAddr("executor");
+        DeployConfig memory cfg = _config(makeAddr("agent"), executor);
+        cfg.pauserCommittee = executor;
+
+        vm.expectRevert(DeployConfigFile.PauserCommitteeCannotBeExecutor.selector);
         harness.requireActorSeparation(cfg, makeAddr("deployer"));
     }
 

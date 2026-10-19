@@ -36,6 +36,7 @@ struct ProtocolDeployment {
     address deployer;
     address agent;
     address evmScriptExecutor;
+    address pauserCommittee; // zero when the Agent stands in for the committee
 }
 
 struct MarketDeployment {
@@ -104,6 +105,7 @@ library ProtocolConfigFile {
         s = string.concat(s, _kv("deployed_block", d.deployedBlock));
         s = string.concat(s, _kv("agent", d.agent));
         s = string.concat(s, _kv("evm_script_executor", d.evmScriptExecutor));
+        if (d.pauserCommittee != address(0)) s = string.concat(s, _kv("pauser_committee", d.pauserCommittee));
         vm.writeFile(path, s);
     }
 

@@ -1,0 +1,18 @@
+[artifact]
+kind = "circuit-breaker"
+deployment = "hoodi-testnet"
+chain_id = 560048
+config_hash = "0xf119b4687e4364f297a36ae21775241b92cd6d62a4af2bd0951816df22642f7e"
+compatibility_hash = "0xb1aca1b38e8049e75719c885675a71e618c63343b44ce68c585352a3e1ac0f50"
+
+[circuit_breaker]
+name = "lido-lend"
+address = "0x3d7f98a7aDa46DB97C100f09746bf3A0Ff4BE192"
+admin = "0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"
+deployed_block = 3641140
+min_pause_duration = 60
+max_pause_duration = 5184000
+min_heartbeat_interval = 2592000
+max_heartbeat_interval = 94608000
+initial_pause_duration = 300
+initial_heartbeat_interval = 31536000

@@ -1,6 +1,7 @@
 # WETH/wstETH market for fork provisioning, bound by most fork suites. LLTV is 0.945 rather than the canonical config's
-# 0.8 because the IRM model-selection scenario sizes its 7..13x leverage cohort against that constant. Every
-# other suite reads the live `params.lltv`.
+# 0.8 so the settlement and fallback-exit suites can rebase a borrower into the narrow (LLTV, 1) band — unhealthy
+# but still solvent — which is where their scenarios live. Suites read the live `params.lltv`; changing this value
+# changes the market id.
 
 [market]
 # The part this market plays; consumers bind by it rather than by file name.

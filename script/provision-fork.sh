@@ -44,8 +44,8 @@ LOG_FILE="deployed/${RUN_NAME}-anvil.log"
 LOCK_DIR="deployed/.${RUN_NAME}-provision.lock"
 CONFIG_TOML="script/config/${CONFIG_NAME}.toml"
 
-# anvil's first dev account. Holds no protocol role; requireActorSeparation enforces that against the config.
-DEPLOYER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+# anvil's first dev account, impersonated rather than signed for: no key material anywhere in the deploy path.
+# Holds no protocol role; requireActorSeparation enforces that against the config.
 DEPLOYER_ADDRESS="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 TEN_ETHER_HEX="0x8AC7230489E80000"
 STARTED_ANVIL=0
@@ -482,6 +482,9 @@ MARKET_NAMES="$(toml_array "$CONFIG_TOML" provision markets)" \
 [ -n "$MARKET_NAMES" ] || die "$CONFIG_TOML defines no provision markets"
 VAULT_NAMES="$(toml_array "$CONFIG_TOML" provision vaults)" \
   || die "$CONFIG_TOML is missing a valid [provision].vaults string array"
+# Optional scalar: the bundler config the run deploys its Bundler3 and adapters from. Absent means the step is
+# skipped and the bundled fork suites skip with it.
+BUNDLER_NAME="$(toml_str "$CONFIG_TOML" bundler)"
 # Unquoted on purpose: provision resource names are validated as whitespace-free logical names by toml_array.
 MARKETS=($MARKET_NAMES)
 
@@ -521,8 +524,10 @@ for vault in $VAULT_NAMES; do
   [ -f "script/config/adapters/${vault}.toml" ] \
     || die "adapter config not found: script/config/adapters/${vault}.toml"
 done
+[ -z "$BUNDLER_NAME" ] || [ -f "script/config/bundlers/${BUNDLER_NAME}.toml" ] \
+  || die "bundler config not found: script/config/bundlers/${BUNDLER_NAME}.toml"
 log "markets: ${MARKETS[*]}"
-log "vaults: ${VAULT_NAMES:-none}"
+log "vaults: ${VAULT_NAMES:-none}  bundler: ${BUNDLER_NAME:-none}"
 log "circuit breaker: $CIRCUIT_BREAKER  oracles: ${ORACLES:-none}  guardians: ${GUARDIAN_GROUPS:-none}"
 
 # --- 2. anvil --------------------------------------------------------------------------------------------------
@@ -628,7 +633,7 @@ prepare_run
 # VERIFY is off: a local node has no verifier.
 deploy() {
   make "$@" CONFIG="$CONFIG_NAME" RUN="$RUN_NAME" RPC_URL="$RPC_LOCAL" \
-    DEPLOYER_PRIVATE_KEY="$DEPLOYER_KEY" VERIFY=false RESUME=false
+    DEPLOYER_ACCOUNT= DEPLOYER_SENDER="$DEPLOYER_ADDRESS" VERIFY=false RESUME=false
 }
 
 # --- 4..8. the deploy pipeline --------------------------------------------------------------------------------
@@ -669,6 +674,11 @@ for vault in $VAULT_NAMES; do
   log "deploying vault-v2 vault + adapter ($vault)"
   deploy deploy-vault-v2 VAULT="$vault" ADAPTER="$vault"
 done
+
+if [ -n "$BUNDLER_NAME" ]; then
+  log "deploying bundler3 + adapters ($BUNDLER_NAME)"
+  deploy deploy-bundler BUNDLER="$BUNDLER_NAME"
+fi
 
 # Verification uses the same acceptance suite as a real deployment, against the artifacts this run wrote. Each
 # acceptance test forks the node itself, so its state changes do not reach the anvil. While the markets are

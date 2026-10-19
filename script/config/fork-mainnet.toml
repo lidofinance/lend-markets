@@ -12,7 +12,8 @@ exit_book_pauser = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 exit_book_max_request_lifetime = 31536000  # 365 days
 
 # Test-only composition consumed by script/provision-fork.sh. Market configs still name their own oracle and
-# guardian resources; vaults are standalone and therefore listed explicitly here.
+# guardian resources; vaults and the bundler stack are standalone and therefore listed explicitly here.
 [provision]
 markets = ["fork-weth-wsteth", "fork-usdy-usdt"]
 vaults = ["fork-weth-wsteth"]
+bundler = "mainnet"

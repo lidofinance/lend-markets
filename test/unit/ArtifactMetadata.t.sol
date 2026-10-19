@@ -135,6 +135,29 @@ contract ArtifactMetadataTest is Test {
         vm.removeDir(string.concat("deployed/", run), true);
     }
 
+    function testRevert_requireRunResourcesCompatible_rejectsPoisonedBundler() external {
+        string memory run = "artifact-metadata-incompatible-bundler-unit";
+        string memory runDir = string.concat("deployed/", run);
+        if (vm.exists(runDir)) vm.removeDir(runDir, true);
+        vm.createDir(runDir, true);
+        string memory path = string.concat(runDir, "/bundler.toml");
+        ArtifactMetadata memory recorded = _metadata(run, 1, 0xCAFE, 0xBEEF);
+        vm.writeFile(path, ArtifactMetadataFile.header(recorded, "bundler3-adapters"));
+        ArtifactMetadata memory expected = _metadata(run, 1, 0xBAD, 0xBAD);
+
+        // A run-level file is checked by its constructed path, not a directory-scan entry, so it reports relative.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ArtifactMetadataFile.ArtifactCompatibilityHashMismatch.selector,
+                path,
+                expected.compatibilityHash,
+                recorded.compatibilityHash
+            )
+        );
+        harness.requireRunResourcesCompatible(expected);
+        vm.removeDir(runDir, true);
+    }
+
     function testRevert_requireRunResourcesCompatible_rejectsPoisonedCircuitBreaker() external {
         string memory run = "artifact-metadata-incompatible-circuit-breaker-unit";
         string memory runDir = string.concat("deployed/", run);

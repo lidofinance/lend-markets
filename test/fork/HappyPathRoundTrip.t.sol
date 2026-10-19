@@ -5,22 +5,12 @@ import {Market} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {Erc4626Math} from "../setup/Erc4626Math.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
-
-interface IWETH {
-    function deposit() external payable;
-}
-
-interface IStETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function submit(address referral) external payable returns (uint256);
-}
-
-interface IWstETH {
-    function wrap(uint256 stETHAmount) external returns (uint256);
-}
+import {IWETH, IStETH, IWstETH} from "./helpers/ForkTokens.sol";
 
 /// @notice The illustrative happy path over the DEPLOYED `weth-wsteth` market — the simplest end-to-end proof
 ///         that a provisioned stack and the fork-test binding work together. One story, one step per helper:
@@ -70,10 +60,10 @@ contract HappyPathRoundTripTest is ForkStack {
     ///      config so the test tracks governance values; comfortably covers the borrow in step 3.
     function _lenderDeposits() internal returns (uint256 depositAssets, uint256 shares) {
         depositAssets = 2 * uint256(m.activation.minActivationAmount);
-        _requireDepositHeadroom(m, depositAssets);
+        _requireSupplyHeadroom(m, depositAssets);
 
-        uint256 expectedShares = m.vault.previewDeposit(depositAssets);
         uint256 vaultAssetsBefore = m.vault.totalAssets();
+        uint256 expectedShares = Erc4626Math.toShares(m.vault, depositAssets, Math.Rounding.Floor);
 
         vm.deal(LENDER, depositAssets);
         vm.startPrank(LENDER);
@@ -82,7 +72,7 @@ contract HappyPathRoundTripTest is ForkStack {
         shares = m.vault.deposit(depositAssets, LENDER);
         vm.stopPrank();
 
-        assertEq(shares, expectedShares, "minted shares match the vault's preview");
+        assertEq(shares, expectedShares, "minted shares match the ERC-4626 conversion, recomputed from the totals");
         assertEq(m.vault.balanceOf(LENDER), shares, "lender holds the minted shares");
         assertEq(m.vault.totalAssets() - vaultAssetsBefore, depositAssets, "vault assets grew by the deposit");
     }
@@ -159,13 +149,13 @@ contract HappyPathRoundTripTest is ForkStack {
     /// @dev 5. The lender redeems every share. Principal comes back (minus at most 1 wei of share rounding),
     ///      plus whatever interest pre-existing market debt accrued over the activation warp.
     function _lenderExits(uint256 depositAssets, uint256 shares) internal {
-        uint256 expectedAssets = m.vault.previewRedeem(shares);
+        uint256 expectedAssets = Erc4626Math.toAssets(m.vault, shares, Math.Rounding.Floor);
         require(_freeLiquidity(m) >= expectedAssets, "HappyPath: market lacks liquidity for the lender's exit");
 
         vm.prank(LENDER);
         uint256 redeemed = m.vault.redeem(shares, LENDER, LENDER);
 
-        assertEq(redeemed, expectedAssets, "redeemed assets match the vault's preview");
+        assertEq(redeemed, expectedAssets, "redeemed assets match the ERC-4626 conversion, recomputed from the totals");
         assertGe(redeemed, depositAssets - 1, "principal back (1 wei share rounding), plus any accrued interest");
         assertEq(m.vault.balanceOf(LENDER), 0, "no shares left behind");
     }

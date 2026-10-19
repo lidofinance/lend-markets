@@ -50,6 +50,10 @@ contract ActivateMarketsHarness is ActivateMarkets {
         ActivationInput memory input = _loadActivationInput(artifact);
         return Id.unwrap(input.market.id());
     }
+
+    function pauserCommittee(string memory protocol) external view returns (address) {
+        return _pauserCommittee(protocol);
+    }
 }
 
 contract MockActivationIrm {
@@ -266,6 +270,23 @@ contract ActivateMarketsTest is Test {
 
         assertEq(irm.applyCalls(), 0);
         assertEq(router.routeCalls(), 0);
+    }
+
+    function test_pauserCommittee_readsRecordedCommittee() external {
+        address agent = makeAddr("agent");
+        address committee = makeAddr("committee");
+        string memory protocol = string.concat(
+            "[protocol]\nagent = \"", vm.toString(agent), "\"\npauser_committee = \"", vm.toString(committee), "\"\n"
+        );
+
+        assertEq(activation.pauserCommittee(protocol), committee);
+    }
+
+    function test_pauserCommittee_fallsBackToAgent() external {
+        address agent = makeAddr("agent");
+        string memory protocol = string.concat("[protocol]\nagent = \"", vm.toString(agent), "\"\n");
+
+        assertEq(activation.pauserCommittee(protocol), agent);
     }
 
     function testRevert_loadActivationInput_rejectsRecordedIdMismatch() external {

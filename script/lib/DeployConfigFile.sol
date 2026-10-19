@@ -18,6 +18,7 @@ struct DeployConfig {
     bool exitBooks; // deploy the protocol's two exit books
     address exitBookPauser; // Risk Steward Committee for integrated or standalone Exit Book deployment
     uint256 exitBookMaxRequestLifetime;
+    address pauserCommittee; // CircuitBreaker pauser the activation registers; the Agent stands in when unset
 }
 
 interface ILidoLendMarketFactoryBindings {
@@ -37,6 +38,9 @@ library DeployConfigFile {
     error ExitBookPauserCannotBeDeployer();
     error ExitBookPauserCannotBeExecutor();
     error ExecutorCannotBeDeployer();
+    error PauserCommitteeCannotBeAgent();
+    error PauserCommitteeCannotBeDeployer();
+    error PauserCommitteeCannotBeExecutor();
     error RegistryAgentMismatch(address expected, address actual);
     error RegistryArtifactChainIdMismatch(uint256 artifactChainId, uint256 protocolChainId);
     error RegistryCompatibilityHashMismatch(bytes32 expected, bytes32 actual);
@@ -76,6 +80,9 @@ library DeployConfigFile {
         if (cfg.exitBooks || vm.keyExistsToml(toml, ".exit_book_max_request_lifetime")) {
             cfg.exitBookMaxRequestLifetime = ConfigToml.requireUint(toml, ".exit_book_max_request_lifetime");
         }
+        if (vm.keyExistsToml(toml, ".pauser_committee")) {
+            cfg.pauserCommittee = vm.parseTomlAddress(toml, ".pauser_committee");
+        }
     }
 
     function configPath(string memory name) internal pure returns (string memory) {
@@ -94,6 +101,11 @@ library DeployConfigFile {
             if (cfg.exitBookPauser == deployer) revert ExitBookPauserCannotBeDeployer();
             if (cfg.exitBookPauser == cfg.agent) revert ExitBookPauserCannotBeAgent();
             if (cfg.exitBookPauser == cfg.evmScriptExecutor) revert ExitBookPauserCannotBeExecutor();
+        }
+        if (cfg.pauserCommittee != address(0)) {
+            if (cfg.pauserCommittee == deployer) revert PauserCommitteeCannotBeDeployer();
+            if (cfg.pauserCommittee == cfg.agent) revert PauserCommitteeCannotBeAgent();
+            if (cfg.pauserCommittee == cfg.evmScriptExecutor) revert PauserCommitteeCannotBeExecutor();
         }
     }
 

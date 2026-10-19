@@ -182,29 +182,10 @@ contract ProtocolConfigFileTest is Test {
     function test_writeProtocolAndExitBooks_recordsGovernanceConfiguration() external {
         string memory run = _prepareRun("protocol-config-factory-unit");
         vm.setEnv("ARTIFACTS_DIR", run);
-        ProtocolDeployment memory protocol = ProtocolDeployment({
-            deployment: run,
-            network: "unit",
-            chainId: 1,
-            configHash: bytes32(uint256(0xCAFE)),
-            circuitBreakerArtifact: "lido-lend",
-            core: address(0x10),
-            ownerFacade: address(0x11),
-            irmRouter: address(0x12),
-            adaptiveCurveIrm: address(0x13),
-            irmConfigFactory: address(0x14),
-            factory: address(0x15),
-            riskStewardDashboard: address(0x17),
-            circuitBreaker: address(0xCB),
-            resealManager: address(0x5EA1),
-            guardianSignalsImpl: address(0x18),
-            deployedBlock: 100,
-            deployer: address(0x19),
-            agent: address(0x1A),
-            evmScriptExecutor: address(0x1B)
-        });
+        ProtocolDeployment memory protocol = _protocol(run);
 
-        string memory protocolArtifact = vm.readFile(harness.writeProtocol(protocol, _metadata(run)));
+        string memory protocolPath = harness.writeProtocol(protocol, _metadata(run));
+        string memory protocolArtifact = vm.readFile(protocolPath);
 
         assertEq(
             vm.parseTomlAddress(protocolArtifact, ".protocol.irm_config_factory"),
@@ -213,6 +194,13 @@ contract ProtocolConfigFileTest is Test {
         );
         assertEq(vm.parseTomlAddress(protocolArtifact, ".protocol.circuit_breaker"), protocol.circuitBreaker);
         assertEq(vm.parseTomlAddress(protocolArtifact, ".protocol.reseal_manager"), protocol.resealManager);
+        assertEq(vm.parseTomlAddress(protocolArtifact, ".protocol.pauser_committee"), protocol.pauserCommittee);
+
+        // An unset committee leaves the key out: the activation replay then falls back to the Agent.
+        vm.removeFile(protocolPath);
+        protocol.pauserCommittee = address(0);
+        protocolArtifact = vm.readFile(harness.writeProtocol(protocol, _metadata(run)));
+        assertFalse(vm.keyExistsToml(protocolArtifact, ".protocol.pauser_committee"), "unset committee recorded");
         assertEq(
             vm.parseTomlString(protocolArtifact, ".protocol.circuit_breaker_artifact"), protocol.circuitBreakerArtifact
         );
@@ -231,6 +219,31 @@ contract ProtocolConfigFileTest is Test {
         assertEq(vm.parseTomlAddress(exitBooksArtifact, ".exit_books.pauser"), pauser);
         assertFalse(vm.keyExistsToml(exitBooksArtifact, ".roles"), "derived roles are not deployment inputs");
         vm.removeDir(string.concat("deployed/", run), true);
+    }
+
+    function _protocol(string memory run) private pure returns (ProtocolDeployment memory) {
+        return ProtocolDeployment({
+            deployment: run,
+            network: "unit",
+            chainId: 1,
+            configHash: bytes32(uint256(0xCAFE)),
+            circuitBreakerArtifact: "lido-lend",
+            core: address(0x10),
+            ownerFacade: address(0x11),
+            irmRouter: address(0x12),
+            adaptiveCurveIrm: address(0x13),
+            irmConfigFactory: address(0x14),
+            factory: address(0x15),
+            riskStewardDashboard: address(0x17),
+            circuitBreaker: address(0xCB),
+            resealManager: address(0x5EA1),
+            guardianSignalsImpl: address(0x18),
+            deployedBlock: 100,
+            deployer: address(0x19),
+            agent: address(0x1A),
+            evmScriptExecutor: address(0x1B),
+            pauserCommittee: address(0x1C)
+        });
     }
 
     function _prepareRun(string memory run) private returns (string memory) {

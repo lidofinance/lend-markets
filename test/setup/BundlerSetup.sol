@@ -41,7 +41,7 @@ abstract contract BundlerSetup is LidoLendSetup {
         m = _deployProtocol(_defaultConfig(address(weth), address(wsteth), address(0)));
 
         // Both bundler contracts pin solc 0.8.28 while this suite is on 0.8.35, so they come from their
-        // `out/` artifacts (see test/setup/Bundler3Anchor.sol) rather than `new`.
+        // `out/` artifacts (see script/Bundler3Anchor.sol) rather than `new`.
         bundler3 = IBundler3(deployCode("Bundler3.sol:Bundler3"));
         adapter = IGeneralAdapter1(
             deployCode(

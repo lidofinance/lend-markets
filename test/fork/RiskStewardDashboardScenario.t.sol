@@ -9,17 +9,7 @@ import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
-
-interface IStETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function submit(address referral) external payable returns (uint256);
-}
-
-interface IWstETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function wrap(uint256 stETHAmount) external returns (uint256);
-}
+import {IStETH, IWstETH} from "./helpers/ForkTokens.sol";
 
 /// @notice End-to-end scenario for the ALREADY-DEPLOYED `RiskStewardDashboard` driving the live `weth-wsteth`
 ///         controller (bound via {ForkStack}, never re-deployed). The suite drives the tighten-only levers
@@ -55,7 +45,6 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         if (bytes(market_).length == 0) return; // not applicable to this deployment
         m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest so live-config reads and per-borrower asserts are exact
-        _grantSelfManager(m); // lets this contract call the manager-gated `grantInstantActivation` directly
 
         dashboard = RiskStewardDashboard(_protocol("risk_steward_dashboard"));
 
@@ -71,9 +60,8 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
 
         // The deploy grants the EasyTrack executor the dashboard's STEWARD_ADMIN_ROLE. Cross-check it holds
         // that role before pranking it, then appoint the test steward through it — the real appointment path,
-        // not a test-minted self-grant. `_executor(m)` resolves the executor as the IRM router's manager,
-        // which the deploy assigns to the same EVMScriptExecutor.
-        executor = _executor(m);
+        // not a test-minted self-grant. `_executor()` is the EVMScriptExecutor the run recorded.
+        executor = _executor();
         require(
             dashboard.hasRole(dashboard.STEWARD_ADMIN_ROLE(), executor),
             "RiskStewardDashboardScenario: EasyTrack executor does not hold the dashboard STEWARD_ADMIN_ROLE (deploy wiring bug)"
@@ -120,7 +108,7 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         address borrower = _freshActor(m, "riskStewardDashboard.borrower");
         uint256 ethIn = 3 * uint256(cfg0.minActivationAmount);
 
-        m.controller.setInstantActivation(borrower, true);
+        _setInstantActivation(m, borrower, true);
         uint256 col = _mintWstETH(borrower, ethIn);
         require(col >= uint256(cfg0.minActivationAmount), "collateral must clear the live dust threshold");
         vm.prank(borrower);
@@ -184,12 +172,21 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         dashboard.increaseActivationDelays(bogus, 20 minutes, 3 hours, 0);
     }
 
-    /// @notice An appointed steward freezes the already-deployed controller through the live dashboard wiring.
-    function test_dashboard_freezesRealController() public {
+    /// @notice An appointed steward freezes the already-deployed controller through the live dashboard wiring,
+    ///         and the owner facade — the only `UNFREEZER_ROLE` holder — undoes it. The starting state is
+    ///         asserted, not assumed: without that, a deployment that is already frozen would pass this test
+    ///         while the freeze call did nothing.
+    function test_dashboard_freezesRealController_facadeUnfreezes() public {
+        assertFalse(m.controller.isFrozen(), "setup: the bound market starts live");
+
         vm.prank(STEWARD);
         dashboard.freezeMarket(m.id);
-
         assertTrue(m.controller.isFrozen(), "dashboard froze the live controller");
+
+        // The steward can freeze but cannot unfreeze: the two directions sit on different roles, and only the
+        // facade holds `UNFREEZER_ROLE`.
+        _unfreeze(m);
+        assertFalse(m.controller.isFrozen(), "facade unfroze the live controller");
     }
 
     // ---

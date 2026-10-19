@@ -75,6 +75,21 @@ contract ActivationTest is LidoLendSetup {
         assertEq(m.loanToken.balanceOf(borrower), borrowAmt, "borrow unlocked after maturation");
     }
 
+    /// @dev Without a guardian quorum a lot matures only once `maxGuardiansQuorumDelay` has also elapsed, which a
+    ///      non-zero config sets above `maxActivationDelay`. `activateCollateral` must wait for both.
+    function test_activateCollateral_waitsOutGuardiansQuorumDelay() public {
+        Market storage m = _m();
+        CollateralActivationConfig memory cfg = m.controller.collateralActivationConfig();
+        cfg.maxGuardiansQuorumDelay = cfg.maxActivationDelay + 1 hours;
+        m.controller.setCollateralActivationConfig(cfg);
+        address borrower = _seedLenderAndCollateral(100 ether);
+        uint256 borrowAmt = _safeBorrow(100 ether);
+
+        m.activateCollateral();
+        m.borrow(borrower, borrowAmt);
+        assertEq(m.loanToken.balanceOf(borrower), borrowAmt, "borrow unlocked after the quorum delay");
+    }
+
     /// @dev A banned borrower's collateral never matures: even after warping past the delay, borrow reverts
     ///      AddressBanned.
     function test_bannedBorrower_staysLocked_evenPastTheTimer() public {

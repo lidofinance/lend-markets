@@ -1,0 +1,42 @@
+# Hoodi USDC/USDY market — testnet values. Loan = real hoodi
+# USDC; collateral = USDY mock (set in the config before the oracle deploys). Oracle resolves from
+# this run's `hoodi-usdy-usdc` oracle artifact (oracle = 0x0).
+[market]
+# The part this market plays; consumers bind by it rather than by file name.
+role = "usdy-usdc"
+loan_token = "0x97bb030B93faF4684eAC76bA0bf3be5ec7140F36"        # USDC (hoodi, docs.lido.fi)
+collateral_token = "0xE22a71d42632aBAC08F44FCbd41221A8D8C56972"  # USDY mock (reused)
+oracle = "0x0000000000000000000000000000000000000000"  # resolved from the run's oracle artifact
+oracle_artifact = "hoodi-usdy-usdc"
+lltv = "950000000000000000"  # 0.95
+supply_cap = "25000000000000"  # 25_000_000 USDC (6 dec) — 10_000 WETH at the 25_000 USDY ≈ 10 wstETH baseline
+guardian_signals = "0x0000000000000000000000000000000000000000"  # resolved by guardian_group
+guardian_group = "hoodi-shared"
+vault_name = "Lido USDC/USDY Vault (hoodi)"
+vault_symbol = "hoodiUSDC-USDY"
+
+[activation]
+min_activation_delay = 600
+max_activation_delay = 7200
+max_delay_inflow = "25000000000000000000000000"  # 25_000_000 USDY
+activating_lock_duration = 0
+min_activation_amount = "25000000000000000000000"  # 25_000 USDY (~10 wstETH at snapshot prices)
+min_deposit_amount = "2500000000000000000000"  # 2_500 USDY
+max_guardians_quorum_delay = 129600  # 36 h fallback from lot start
+delay_per_strike = 7200
+delay_per_suspect = 7200
+
+[settlement]
+slice_floor_bps = 100
+slice_floor_assets = "0"
+full_cut_below_collateral = "25000000000000000000000"  # 25_000 USDY
+ltv_step_bps = 100
+
+[curve]
+curve_steepness = "4000000000000000000"
+adjustment_speed = "1585489599188"
+target_utilization = "950000000000000000"  # 95%
+initial_rate_at_target = "1014713343"  # ~3.2% APR
+min_rate_at_target = "31709791"  # ~0.1% APR
+max_rate_at_target = "2254918540"  # ~7.1% APR
+max_borrow_rate = "2254918540"

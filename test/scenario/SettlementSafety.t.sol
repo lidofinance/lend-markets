@@ -44,6 +44,98 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.borrow(borrower, maxBorrow * borrowBps / 10_000);
     }
 
+    // ── Bad debt at the queue root: fallback exit has three distinct outcomes ──
+
+    /// @dev A request the free liquidity covers never enters the settle leg, so the bad-debt gate is never
+    ///      consulted and the lender exits normally. The cheapest thing to get wrong here is to assume a
+    ///      bad-debt root blocks every fallback exit.
+    function test_FallbackExit_BadDebtRoot_LiquidRequestStillExits() public {
+        Market storage m = _m();
+        (address lender, address borrower,) = _seed(100 ether, 9900);
+        m.setSettlementLtv(borrower, 0.5e18);
+
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 2);
+        m.accrueInterest();
+        assertTrue(m.controller.hasBadDebt(), "setup: root must carry bad debt");
+
+        uint256 liquid = m.controller.maxWithdrawableAssets(address(m.vault));
+        uint256 request = m.vault.previewWithdraw(liquid / 2);
+        assertLe(m.vault.previewRedeem(request), liquid, "setup: request must fit inside free liquidity");
+
+        (uint256 burned, uint256 loanAssets, uint256 seized, uint256 canceled) =
+            m.fallbackExit(lender, request, lender, 0);
+
+        assertEq(burned, request, "whole request served by the liquid leg");
+        assertGt(loanAssets, 0, "liquid leg paid out");
+        assertEq(seized, 0, "settle leg must not have run");
+        assertEq(canceled, 0, "settle leg must not have run");
+    }
+
+    /// @dev Past the liquid leg with a small settle budget, the quoted cut is small enough to seize less than
+    ///      the remaining collateral, so the controller hook runs and rejects on the bad-debt gate.
+    function testRevert_FallbackExit_BadDebtRoot_SmallCutHitsBadDebtGate() public {
+        Market storage m = _m();
+        (address lender, address borrower, uint256 shares) = _seed(100 ether, 9900);
+        m.setSettlementLtv(borrower, 0.5e18);
+
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 2);
+        m.accrueInterest();
+        assertTrue(m.controller.hasBadDebt(), "setup: root must carry bad debt");
+
+        // Just past what the liquid leg can serve, so the settle budget is a small remainder.
+        uint256 liquid = m.controller.maxWithdrawableAssets(address(m.vault));
+        uint256 request = m.vault.previewWithdraw(liquid) + shares / 1000;
+        assertGt(m.vault.previewRedeem(request), liquid, "setup: request must reach the settle leg");
+
+        vm.prank(lender);
+        vm.expectRevert(ILidoLendMarketController.SettlementBadDebt.selector);
+        m.vault.fallbackExit(request, lender, lender, 0);
+
+        assertEq(m.vault.balanceOf(lender), shares, "no shares burned: liquid leg rolled back too");
+    }
+
+    /// @dev With the whole position requested the quote is a full close, which on an underwater borrower
+    ///      seizes more collateral than exists. The core rejects on its own bound before the controller hook
+    ///      is ever reached, so the failure is the core's message rather than the bad-debt gate.
+    function testRevert_FallbackExit_BadDebtRoot_FullCloseExceedsCollateral() public {
+        Market storage m = _m();
+        (address lender, address borrower, uint256 shares) = _seed(100 ether, 9900);
+        m.setSettlementLtv(borrower, 0.5e18);
+
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 20); // deeply underwater
+        m.accrueInterest();
+        assertTrue(m.controller.hasBadDebt(), "setup: root must carry bad debt");
+
+        vm.prank(lender);
+        vm.expectRevert(bytes("settlement exceeds collateral"));
+        m.vault.fallbackExit(shares, lender, lender, 0);
+
+        assertEq(m.vault.balanceOf(lender), shares, "no shares burned");
+    }
+
+    /// @dev Clearing the bad debt unblocks the same call. Pins that the gate tracks live root health rather
+    ///      than latching once bad debt has ever existed.
+    function test_FallbackExit_AfterBadDebtIsLiquidated_Succeeds() public {
+        Market storage m = _m();
+        (address lender, address borrower, uint256 shares) = _seed(100 ether, 9900);
+        m.setSettlementLtv(borrower, 0.5e18);
+
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 2);
+        m.accrueInterest();
+        assertTrue(m.controller.hasBadDebt(), "setup: root must carry bad debt");
+
+        address keeper = _actor("badDebtKeeper");
+        _fund(m.loanToken, keeper, 10_000 ether);
+        uint256 seizeAll = m.core.position(m.id, borrower).collateral;
+        m.liquidateBadDebt(keeper, borrower, seizeAll, 0);
+        assertFalse(m.controller.hasBadDebt(), "bad debt cleared");
+
+        // The queue is empty now, so the settle leg quotes nothing and the liquid leg serves what it can.
+        (uint256 burned,, uint256 seized,) = m.fallbackExit(lender, shares, lender, 0);
+        assertGt(burned, 0, "lender can exit once the bad debt is cleared");
+        assertEq(seized, 0, "no settlement needed: the queue is empty");
+    }
+
     /// @dev The settle hook reverts if the queue ROOT (riskiest position) carries bad debt — the controller
     ///      doing the health check the core omits on settle. A hard crash makes the sole borrower's root
     ///      position underwater, so any settle against the market is rejected.

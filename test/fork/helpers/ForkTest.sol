@@ -91,6 +91,12 @@ abstract contract ForkTest is CommonBase {
     // ACCESSORS
     // ---
 
+    /// @notice Whether the run's network config defines `[external].<key>`.
+    function _hasExt(string memory key) internal view returns (bool) {
+        require(_bound, "ForkTest: _fork() not called");
+        return vm.keyExistsToml(_read(_externalsPath), string.concat(".external.", key));
+    }
+
     /// @notice Address at `[external].<key>` in the run's network config.
     function _ext(string memory key) internal view returns (address) {
         require(_bound, "ForkTest: _fork() not called");
@@ -120,6 +126,12 @@ abstract contract ForkTest is CommonBase {
         return vm.parseTomlBytes32(toml, _key(toml, relPath, "market.id"));
     }
 
+    /// @notice String at `[market].<key>` in `markets/<name>.toml` — the names of the per-resource artifacts a
+    ///         market points at (`oracle_artifact`, `guardian_group`).
+    function _marketString(string memory name, string memory key) internal view returns (string memory) {
+        return _artifactString(_marketArtifact(name), string.concat("market.", key));
+    }
+
     /// @notice Whether the run records the artifact at `relPath`. A deployment need not carry every optional
     ///         resource, so a suite that needs one checks before reading it.
     function _hasArtifact(string memory relPath) internal view returns (bool) {
@@ -138,6 +150,12 @@ abstract contract ForkTest is CommonBase {
     function _artifactUint(string memory relPath, string memory key) internal view returns (uint256) {
         string memory toml = _readArtifact(relPath);
         return vm.parseTomlUint(toml, _key(toml, relPath, key));
+    }
+
+    /// @notice String at dotted `key` in the run artifact at `relPath`.
+    function _artifactString(string memory relPath, string memory key) internal view returns (string memory) {
+        string memory toml = _readArtifact(relPath);
+        return vm.parseTomlString(toml, _key(toml, relPath, key));
     }
 
     /// @dev Shared by {ForkStack}'s directory scan so it cannot bypass the bound run's metadata checks.

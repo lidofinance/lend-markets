@@ -11,25 +11,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
-
-interface IWETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function deposit() external payable;
-}
-
-interface IStETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function submit(address referral) external payable returns (uint256);
-}
-
-interface IWstETH {
-    function approve(address spender, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function getStETHByWstETH(uint256 wstETHAmount) external view returns (uint256);
-    function wrap(uint256 stETHAmount) external returns (uint256);
-}
+import {IWETH, IStETH, IWstETH} from "./helpers/ForkTokens.sol";
 
 /// @notice Mainnet-fork scenarios for the vault's two settle-backed exits, `fallbackExit` and `settle`, run
 ///         against the ALREADY-DEPLOYED `weth-wsteth` market (bound via {ForkStack}, never re-deployed).
@@ -66,10 +48,12 @@ contract VaultFallbackExitTest is ForkStack {
     ///      never from a stale constant.
     uint256 internal mockedPrice;
 
-    uint256 internal constant LENDER_DEPOSIT = 20 ether;
-    uint256 internal constant BORROW_ASSETS = 18 ether;
-    uint256 internal constant COLLATERAL_ETH = 25 ether;
-    uint256 internal constant IDLE_TARGET = 2 ether;
+    /// @dev ETH staked for the borrower's collateral, as a multiple of the LIVE activation threshold. wstETH is
+    ///      worth more than ETH, so three times the threshold in ETH always clears it in wstETH.
+    uint256 internal constant COLLATERAL_STAKE_MULTIPLE = 3;
+    /// @dev The borrow, as a percentage of what the staked collateral can carry at the LIVE LLTV. High enough
+    ///      that a modest rebase pushes the position into `(LLTV, 1)`, low enough to open healthy.
+    uint256 internal constant BORROW_PCT_OF_CAPACITY = 76;
 
     /// @dev Post-rebase target LTV for the test borrower: strictly inside `(LLTV, 1)`, so the position is
     ///      unhealthy but solvent — settle-eligible with no bad debt. Only known post-bind (it depends on the
@@ -103,23 +87,31 @@ contract VaultFallbackExitTest is ForkStack {
     ///      unhealthy but solvent — settle-eligible, no bad debt. Returns the idle WETH left in the market
     ///      (what the redeem leg can pay out), MEASURED after pinning, not inferred from the deposits.
     function _setupExitWithIdle() internal returns (uint256 idle) {
-        _requireDepositHeadroom(m, LENDER_DEPOSIT);
-        _mintWETH(LENDER, LENDER_DEPOSIT);
-        vm.prank(LENDER);
-        vault.deposit(LENDER_DEPOSIT, LENDER);
+        // Stake first, then size the debt and the lender's deposit off what that collateral actually carries at
+        // the live LLTV and rate. Fixed amounts would break the moment governance moved `minActivationAmount`
+        // past the collateral, or the LLTV past the borrow.
+        uint256 stakeEth = COLLATERAL_STAKE_MULTIPLE * uint256(m.activation.minActivationAmount);
+        uint256 collateral = _mintWstETH(BORROWER, stakeEth);
+        uint256 borrowAssets = _maxBorrow(collateral, m.oracle.price()) * BORROW_PCT_OF_CAPACITY / 100;
+        uint256 idleTarget = borrowAssets / 9;
+        uint256 lenderDeposit = borrowAssets + idleTarget;
 
-        uint256 collateral = _mintWstETH(BORROWER, COLLATERAL_ETH);
+        _requireSupplyHeadroom(m, lenderDeposit);
+        _mintWETH(LENDER, lenderDeposit);
+        vm.prank(LENDER);
+        vault.deposit(lenderDeposit, LENDER);
+
         vm.prank(BORROWER);
         core.supplyCollateral(params, collateral, BORROWER, "");
 
         _warpPastActivation(m);
         vm.prank(BORROWER);
-        core.borrow(params, BORROW_ASSETS, 0, BORROWER, BORROWER); // healthy at the live rate
+        core.borrow(params, borrowAssets, 0, BORROWER, BORROWER); // healthy at the live rate
 
         // Pin free liquidity to a known target and MEASURE the result: a shared deployed market may already
         // carry idle, which would break `loanAssets ~= idle` and could let the redeem leg cover the whole exit
         // (collateralSeized == 0). The pin borrower is over-collateralized, so it never outranks BORROWER below.
-        _pinFreeLiquidity(m, IDLE_TARGET);
+        _pinFreeLiquidity(m, idleTarget);
         idle = _freeLiquidity(m);
 
         // Real, relative negative rebase. The deployed oracle (WstEthRateOracle) prices wstETH via
@@ -202,6 +194,7 @@ contract VaultFallbackExitTest is ForkStack {
         uint256 wethBefore = WETH.balanceOf(LENDER); // fresh lender holds no idle WETH (all deposited)
         Market memory marketBefore = core.market(marketId);
         uint256 borrowerBorrowSharesBefore = core.position(marketId, BORROWER).borrowShares;
+        uint256 freeBefore = _freeLiquidity(m);
 
         uint256 shares = vault.balanceOf(LENDER) / 2;
         vm.prank(LENDER);
@@ -215,12 +208,16 @@ contract VaultFallbackExitTest is ForkStack {
         _assertSettlementAccounting(marketBefore, borrowerBorrowSharesBefore, collateralSeized, debtCanceled);
         assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
+        // The market's own liquidity, not just the receiver's wallet: settle cancels supply and debt by the same
+        // amount, so free liquidity is unmoved. Without this, a path that pulled liquidity out and parked it
+        // somewhere other than the receiver would still pass.
+        assertEq(_freeLiquidity(m), freeBefore, "settle moved no ordinary liquidity");
     }
 
-    /* A personal targeted cut remains available even when the request is fully covered by ordinary liquidity. */
+    /* A targeted cut is still a settle, not a redeem, even when the request would fit inside free liquidity. */
 
-    function test_settle_smallCutBelowLiquidityUsesPersonalPolicy() public {
-        _setupExitWithIdle(); // IDLE_TARGET of ordinary liquidity sits in the market
+    function test_settle_requestBelowFreeLiquidity_isStillLiquidityNeutral() public {
+        _setupExitWithIdle(); // a measured slice of ordinary liquidity sits in the market
 
         address[] memory borrowers = new address[](1);
         borrowers[0] = BORROWER;
@@ -228,7 +225,14 @@ contract VaultFallbackExitTest is ForkStack {
         uint256 wethBefore = WETH.balanceOf(LENDER);
         Market memory marketBefore = core.market(marketId);
         uint256 borrowerBorrowSharesBefore = core.position(marketId, BORROWER).borrowShares;
-        uint256 shares = vault.balanceOf(LENDER) / 40; // ~0.5 WETH worth, well below the idle liquidity
+        uint256 freeBefore = _freeLiquidity(m);
+
+        uint256 shares = vault.balanceOf(LENDER) / 40;
+        // The premise the name makes: this request could have been served out of free liquidity. Asserted, not
+        // asserted-by-comment — the live share price drifts, and a request that quietly outgrew the idle amount
+        // would make this the ordinary above-liquidity case with nothing left to distinguish it.
+        assertLt(vault.previewRedeem(shares), freeBefore, "setup: the request fits inside free liquidity");
+
         vm.prank(LENDER);
         (uint256 sharesBurned, uint256 collateralSeized, uint256 debtCanceled) =
             vault.settle(shares, borrowers, LENDER, LENDER);
@@ -238,6 +242,7 @@ contract VaultFallbackExitTest is ForkStack {
         _assertSettlementAccounting(marketBefore, borrowerBorrowSharesBefore, collateralSeized, debtCanceled);
         assertEq(WETH.balanceOf(LENDER), wethBefore, "receiver got no loan assets");
         assertEq(WSTETH.balanceOf(LENDER), collateralSeized, "receiver got the seized collateral");
+        assertEq(_freeLiquidity(m), freeBefore, "settle took the settlement route, not the liquid one");
     }
 
     function _assertSettlementAccounting(

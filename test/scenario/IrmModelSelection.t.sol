@@ -3,8 +3,8 @@ pragma solidity 0.8.36;
 
 // IRM model-selection harness.
 // The adaptive candidate is the real `AdaptiveCurveIrm` from the `lido-lend-irm` submodule; the pegged and kinked
-// candidates, the mock tokens, the scenario harness (mock + mainnet-fork token sources), and the adaptive
-// parameter-upgrade tests live in this file. Not production code.
+// candidates, the mock tokens, the scenario harness, and the adaptive parameter-upgrade tests live in this file.
+// Not production code.
 
 import {Test, console2} from "forge-std/Test.sol";
 import {IIrm} from "@lido-lend/src/interfaces/IIrm.sol";
@@ -533,11 +533,6 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
         return "KINKED";
     }
 
-    /// @dev Account authorized to apply a replacement config to the routed IRM.
-    function _candidateAdmin() internal view virtual returns (address) {
-        return address(this);
-    }
-
     /// @dev Attach the IRM under test behind the market's `router` (`_deployIrm` deployed the router; the market's
     ///      immutable `irm` points at it). The peg and capD read staking directly (their dynamic ceiling tracks the
     ///      yield) and need no retune; adaptive and kinked are re-tuned yearly with newly deployed immutable configs.
@@ -621,13 +616,13 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
             // market's rateAtTarget is set); the rate self-adapts via utilization between retunes
             _adaptiveCapApr = avgApr * CAP_MULT_BPS / 10_000;
             AdaptiveCurveConfig config = new AdaptiveCurveConfig(_adaptiveCfgFor(avgApr));
-            vm.prank(_candidateAdmin());
+            vm.prank(address(this));
             AdaptiveCurveIrm(_candidate).applyIrmConfig(irmParams, address(config));
         } else if (_irmKind == IrmKind.Kinked) {
             // re-center the whole curve: at target ~0.9*avgApr, at 100% ~1.5*avgApr
             LinearKinkConfig config =
                 new LinearKinkConfig(_kinkParams(avgApr / 5 / YEAR, avgApr * 7 / 10 / YEAR, avgApr * 6 / 10 / YEAR));
-            vm.prank(_candidateAdmin());
+            vm.prank(address(this));
             LinearKinkIrm(_candidate).applyIrmConfig(irmParams, address(config));
         }
     }
@@ -675,7 +670,7 @@ abstract contract IrmScenarioBase is Test, LidoLendDeployer {
         return n == 0 ? _stakingApr(dayIndex) : sum / n;
     }
 
-    function _deployStack() internal virtual {
+    function _deployStack() internal {
         _setupTokens();
         address[] memory guardians = new address[](1);
         guardians[0] = address(this);

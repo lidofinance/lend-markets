@@ -38,6 +38,14 @@ contract ForkArtifactsHarness is ForkTest {
     function artifactAddr(string memory relPath, string memory key) external view returns (address) {
         return _artifactAddr(relPath, key);
     }
+
+    function artifactString(string memory relPath, string memory key) external view returns (string memory) {
+        return _artifactString(relPath, key);
+    }
+
+    function marketString(string memory name, string memory key) external view returns (string memory) {
+        return _marketString(name, key);
+    }
 }
 
 contract ForkStackRoleHarness is ForkStack {
@@ -207,6 +215,15 @@ contract ForkArtifactsTest is Test {
         string memory tag = "artifact";
         _bind(tag);
         assertEq(h.artifactAddr("oracles/weth-wsteth.toml", "oracle.address"), ORACLE, "oracles/weth-wsteth");
+        _cleanup(tag);
+    }
+
+    /// @dev String keys resolve the same way as addresses: the per-resource artifact names a market points at.
+    function test_artifactString_readsKey() public {
+        string memory tag = "artifact-string";
+        _bind(tag);
+        assertEq(h.artifactString("markets/weth-wsteth.toml", "market.name"), "weth-wsteth", "market.name");
+        assertEq(h.marketString("weth-wsteth", "name"), "weth-wsteth", "marketString(name)");
         _cleanup(tag);
     }
 
