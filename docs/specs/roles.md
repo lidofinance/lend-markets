@@ -142,6 +142,23 @@ Guardians and their delegates are privileged actors but are not AccessControl ho
 | Guardian | appoint, replace, or clear its delegate; report signals and heartbeat progress under its own identity | C1 / C3 / C4 | configured guardian set |
 | Current guardian delegate | report signals and heartbeat progress under the guardian's identity | C3 / C4 | none until appointed by a guardian |
 
+### NAV oracle
+
+Each NAV oracle (`UsdyOracle`, `CentrifugeOracle`, `ChainlinkNavOracle`, `Erc4626Oracle`) is an `AccessControlEnumerable` contract behind its own `OssifiableProxy`. The deployment script initializes it with the deployer as the temporary admin, grants the holders below and renounces in the same broadcast. `checkpoint()` and `moveReferencePrice()` are open to anyone, cannot change the returned price, and carry no role. The mechanism behind each power is specified in [NAV Oracle](nav-oracle.md).
+
+| Authority | Powers | Class | Initial onchain holder |
+|---|---|---|---|
+| `DEFAULT_ADMIN_ROLE` | grant and revoke oracle roles | C1 | Lido DAO Agent |
+| `CONFIG_ROLE` | `acceptCurrentPrice(lowest, highest)`: set the reference and the checkpoint to the live source price inside the given range, the only exit from a band revert and the way to admit a rise above the upper bound or a fall faster than the floor | C3 / C4 | EVMScriptExecutor and Lido DAO Agent, independently |
+| `CONFIG_ROLE` | `setGrowthLimit`: the yearly growth rate and the growth tolerance, where a changed tolerance moves a clamped price at once | C3 / C4 | EVMScriptExecutor and Lido DAO Agent, independently |
+| `CONFIG_ROLE` | `setFallLimit`: the floor's step and interval | C3 / C4 | EVMScriptExecutor and Lido DAO Agent, independently |
+| `CONFIG_ROLE` | `setRevertBand`: the drawdown and overshoot of the revert band and the interval between open reference moves | C3 / C4 | EVMScriptExecutor and Lido DAO Agent, independently |
+| `CONFIG_ROLE` | `setMarketLimits`: the minimum corridor ratio and the market's highest borrow rate, which the validator sizes the corridor against | C3 / C4 | EVMScriptExecutor and Lido DAO Agent, independently |
+| `CONFIG_ROLE` | `setLoanTokenPegCheck`: the loan token's allowed deviation from 1 USD | C3 / C4 | EVMScriptExecutor and Lido DAO Agent, independently |
+| `CONFIG_ROLE` | `releaseGrowthTolerance`: lower the protected tolerance the corridor ratio answers for, no lower than the current tolerance | C4 | EVMScriptExecutor and Lido DAO Agent, independently |
+
+Every setter passes the oracle's validator, which bounds any parameter set by the corridor ratio against the protected tolerance, so no `CONFIG_ROLE` write can accept a drawdown and tolerance that let debt admitted under the protected upper bound, grown by the interest it accrues at `maxBorrowRate` while the floor holds the price, fall past `minPriceRatio`. `minPriceRatio`, `maxBorrowRate` and the range given to `acceptCurrentPrice` are the holder's judgment, and the market's interest rate model must not charge more than `maxBorrowRate`, which the oracle cannot see. The oracle has no pause: the market pause is the CircuitBreaker on the controller.
+
 ### Exit Books
 
 Each Exit Book is a direct, non-upgradeable `AccessControlEnumerable` contract. The two standard books receive the same initial holder sets.

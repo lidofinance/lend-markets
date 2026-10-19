@@ -412,6 +412,13 @@ GUARDIAN_VIEW = "IGuardianSignalsView.sol/IGuardianSignalsView.json"
 GUARDIAN_TYPES = "GuardianSignalsTypes.sol/GuardianSignalsTypes.json"
 WSTETH_ORACLE = "WstEthRateOracle.sol/WstEthRateOracle.json"
 USDY_ORACLE = "UsdyStableOracle.sol/UsdyStableOracle.json"
+NAV_ORACLE_BASE = "NavOracleBase.sol/NavOracleBase.json"
+NAV_ORACLE_ADAPTERS = (
+    ("UsdyOracle.sol/UsdyOracle.json", "UsdyOracle"),
+    ("CentrifugeOracle.sol/CentrifugeOracle.json", "CentrifugeOracle"),
+    ("ChainlinkNavOracle.sol/ChainlinkNavOracle.json", "ChainlinkNavOracle"),
+    ("Erc4626Oracle.sol/Erc4626Oracle.json", "Erc4626Oracle"),
+)
 EXIT_BOOK_BASE = "IExitBook.sol/IExitBook.json"
 EXIT_BOOK_4626 = "IErc4626ExitBook.sol/IErc4626ExitBook.json"
 EXIT_BOOK_MORPHO = "IMorphoExitBook.sol/IMorphoExitBook.json"
@@ -552,6 +559,17 @@ def main() -> int:
                               render_contract(WSTETH_ORACLE, "WstEthRateOracle", reg, BASE)))
     written.append(write_page("usdy-stable-oracle.md", "UsdyStableOracle",
                               render_contract(USDY_ORACLE, "UsdyStableOracle", reg, BASE)))
+
+    # The NAV oracle family: every rule lives in the abstract base, each adapter adds its source and its scaling.
+    nav_body = ["The NAV oracle family. `NavOracleBase` holds every rule and each adapter binds one source and "
+                "overrides only how it is read. The mechanism, its invariants and its calibration are specified in "
+                "[NAV Oracle](../nav-oracle.md).", "", ACCESS_CONTROL_NOTE, ""]
+    nav_body += [f"{'#' * BASE} NavOracleBase", ""] + render_contract(
+        NAV_ORACLE_BASE, "NavOracleBase", reg, BASE + 1,
+        extra_structs=[struct_from_source("src/types/NavOracleTypes.sol", "NavOracleCheckParams")])
+    for rel, name in NAV_ORACLE_ADAPTERS:
+        nav_body += [f"{'#' * BASE} {name}", ""] + render_contract(rel, name, reg, BASE + 1)
+    written.append(write_page("nav-oracle.md", "NAV Oracle", nav_body))
 
     # Shared types: Id/MarketParams/Position are forked Morpho core (defer detail to the fork). The settlement types
     # are ours and are parsed from source because their file emits no standalone artifact.

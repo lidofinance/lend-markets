@@ -23,6 +23,7 @@ fs_permissions = [
     { access = "read", path = "./lib" },
     { access = "read", path = "./script/config" },
     { access = "read", path = "./test/acceptance" },
+    { access = "read", path = "./test/fixtures" },
     { access = "read-write", path = "./deployed" },
 ]
 

@@ -147,4 +147,5 @@ Exact role holders and governance paths are in [Privileged Roles](roles.md). Tra
 | IRM routing, configuration, and rate models | [Lido Lend IRM specification](https://github.com/lidofinance/lido-lend-irm/blob/main/SPECIFICATION.md) |
 | WETH/wstETH parameters and oracle assumptions | [WETH / wstETH](markets/eth-steth.md) |
 | USDY-backed stablecoin markets | [USDY / Stablecoin Markets](markets/stables-usdy.md) |
+| Oracle for NAV-priced collateral: bounds, floor, reference moves, calibration | [NAV Oracle](nav-oracle.md) |
 | Functions, structs, events, errors, and getters | [Generated API reference](README.md#api-reference-generated) |
