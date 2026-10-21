@@ -3,7 +3,6 @@
 @circuit-breaker/=lib/circuit-breaker/
 @lido-lend-irm/=lib/lido-lend-irm/
 @lido-lend/=lib/lido-lend/
-@vault-v2/=lib/vault-v2/
-forge-std/=lib/vault-v2/lib/forge-std/src/
+forge-std/=lib/circuit-breaker/lib/forge-std/src/
 @bundler3/=lib/bundler3/
 lib/bundler3/:solmate/=lib/bundler3/lib/permit2/lib/solmate/

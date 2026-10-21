@@ -480,8 +480,6 @@ CHAIN_ID="$(sed -n 's/^[[:space:]]*chain_id[[:space:]]*=[[:space:]]*\([0-9]*\).*
 MARKET_NAMES="$(toml_array "$CONFIG_TOML" provision markets)" \
   || die "$CONFIG_TOML is missing a valid [provision].markets string array"
 [ -n "$MARKET_NAMES" ] || die "$CONFIG_TOML defines no provision markets"
-VAULT_NAMES="$(toml_array "$CONFIG_TOML" provision vaults)" \
-  || die "$CONFIG_TOML is missing a valid [provision].vaults string array"
 # Optional scalar: the bundler config the run deploys its Bundler3 and adapters from. Absent means the step is
 # skipped and the bundled fork suites skip with it.
 BUNDLER_NAME="$(toml_str "$CONFIG_TOML" bundler)"
@@ -518,16 +516,10 @@ for group in $GUARDIAN_GROUPS; do
   [ -f "script/config/guardians/${group}.toml" ] \
     || die "guardian config not found: script/config/guardians/${group}.toml"
 done
-for vault in $VAULT_NAMES; do
-  [ -f "script/config/vaults/${vault}.toml" ] \
-    || die "vault config not found: script/config/vaults/${vault}.toml"
-  [ -f "script/config/adapters/${vault}.toml" ] \
-    || die "adapter config not found: script/config/adapters/${vault}.toml"
-done
 [ -z "$BUNDLER_NAME" ] || [ -f "script/config/bundlers/${BUNDLER_NAME}.toml" ] \
   || die "bundler config not found: script/config/bundlers/${BUNDLER_NAME}.toml"
 log "markets: ${MARKETS[*]}"
-log "vaults: ${VAULT_NAMES:-none}  bundler: ${BUNDLER_NAME:-none}"
+log "bundler: ${BUNDLER_NAME:-none}"
 log "circuit breaker: $CIRCUIT_BREAKER  oracles: ${ORACLES:-none}  guardians: ${GUARDIAN_GROUPS:-none}"
 
 # --- 2. anvil --------------------------------------------------------------------------------------------------
@@ -668,11 +660,6 @@ done
 for market in "${MARKETS[@]}"; do
   log "deploying market ($market)"
   deploy deploy-market MARKET="$market"
-done
-
-for vault in $VAULT_NAMES; do
-  log "deploying vault-v2 vault + adapter ($vault)"
-  deploy deploy-vault-v2 VAULT="$vault" ADAPTER="$vault"
 done
 
 if [ -n "$BUNDLER_NAME" ]; then

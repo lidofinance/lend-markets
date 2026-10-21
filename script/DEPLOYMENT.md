@@ -12,7 +12,6 @@ Configuration lives under `script/config/`:
 - `oracles/<name>.toml`: oracle inputs; standalone deployment uses the configured DAO Agent as proxy admin;
 - `guardians/<group>.toml`: GuardianSignals guardian set, quorum, and suspect window; proxy admin and
   `DEFAULT_ADMIN_ROLE` are fixed by the market factory's immutable `ADMIN`;
-- `vaults/<name>.toml` and `adapters/<name>.toml`: an external vault-v2 vault and its Morpho adapter;
 - `bundlers/<name>.toml`: the WETH / wstETH the general adapter binds; the Bundler3 it dispatches through is deployed with it.
 
 Set `RPC_URL`, the deployer signer, and `ETHERSCAN_API_KEY` in `.env`. The signer is `DEPLOYER_ACCOUNT` — an encrypted Foundry keystore created with `cast wallet import --interactive <name>`, for which forge prompts for the password — plus `DEPLOYER_SENDER`, its address, passed as `--sender` (forge derives no sender from a keystore). A raw private key is not accepted; a local unlocked node sets `DEPLOYER_SENDER` alone. Deployment targets broadcast and verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`; all steps for one deployment must use the same `RUN`. Artifacts are immutable and are not overwritten.
@@ -33,8 +32,6 @@ markets/<market>.toml
 circuit-breakers/<name>.toml
 guardians/<group>.toml
 oracles/<oracle>.toml
-vaults/<name>.toml       # when a vault-v2 pair is deployed
-adapters/<name>.toml     # when a vault-v2 pair is deployed
 exit-books.toml          # when exit books are deployed
 bundler.toml             # when the bundler stack is deployed
 transactions/<step>.json
@@ -94,7 +91,7 @@ make deploy-market CONFIG=mainnet RUN=mainnet-weth-wsteth MARKET=weth-wsteth
 ```
 
 The full order is CircuitBreaker, oracles, the protocol, the guardian registries, the
-markets, then anything optional (`deploy-vault-v2`, `deploy-bundler`, `deploy-exit-books`).
+markets, then anything optional (`deploy-bundler`, `deploy-exit-books`).
 
 The checked-in `mainnet` profile is deliberately blocked before value-bearing deployment: governance has not
 yet supplied `exit_book_pauser`, and `guardians/weth-wsteth.toml` still has an empty production committee.
@@ -117,15 +114,11 @@ make deploy-guardian CONFIG=mainnet RUN=mainnet-weth-wsteth GUARDIAN_GROUP=share
 Optional standalone deployments:
 
 ```sh
-make deploy-vault-v2 CONFIG=mainnet RUN=mainnet-weth-wsteth VAULT=weth-wsteth ADAPTER=weth-wsteth
 make deploy-bundler CONFIG=mainnet RUN=mainnet-weth-wsteth BUNDLER=mainnet
 make deploy-exit-books CONFIG=mainnet RUN=mainnet-weth-wsteth
 ```
 
-`deploy-vault-v2` needs an existing run: the adapter's Morpho and IRM-router immutables come from its
-`protocol.toml`, and the vault is the adapter's own constructor immutable, so both are created in one broadcast.
-Both are left unconfigured — curator, adapter registration and caps are the vault owner's calls.
-`deploy-bundler` needs an existing run too: it deploys this run's own bundler stack — the stock `Bundler3`
+`deploy-bundler` needs an existing run: it deploys this run's own bundler stack — the stock `Bundler3`
 dispatcher, the vendored `EthereumGeneralAdapter1` bound to the run's core, and the `LidoLendVaultAdapter`, both
 adapters bound to that dispatcher — from the tokens `bundlers/<name>.toml` names, and records it as
 `bundler.toml`. The protocol does not share Morpho's dispatcher: a bundle running through it would carry
@@ -197,8 +190,7 @@ role holders such as the Anvil Exit Book pauser without putting them in the prod
 the real network in `network`, so fork tests resolve external addresses from that network's config. The
 `fork-*` markets differ from production only where a test needs them to — for example a higher LLTV — and go
 through the same scripts, artifact layout and activation as everything above. Its `[provision]` section is the
-test-only deploy plan: it lists markets and standalone vault-v2 resources; oracle and guardian dependencies are
-derived from those market configs.
+test-only deploy plan: it lists markets; oracle and guardian dependencies are derived from those market configs.
 
 ```sh
 make provision-fork RPC_URL=<archive-rpc>            # starts anvil; CONFIG=mainnet -> fork-mainnet
@@ -216,16 +208,16 @@ commit first atomically moves that state into committed trash, then removes the 
 removal therefore preserves the accepted new run, and the next invocation only finishes the cleanup. Anvil
 ownership is matched by PID, process start time, a per-start ownership token, command, and port.
 
-`deploy-vault-v2` verifies its pair through `verify-vault-v2`, a separate target because the pair is created
-with `vm.deployCode` and `forge script --verify` cannot name those creations. A retry first validates the protocol,
-vault and adapter metadata and their immutable cross-links, then submits either address to the explorer.
-
 `make test-fork-provision RPC_URL=<archive-rpc>` chains provisioning and the fork suite. A private per-invocation
 result handshake records whether that exact call started or reused Anvil; cleanup stops only a returned
 PID/start-time/token identity. This remains correct across signals and concurrent calls. A compatible external
 node or a still-running node from an earlier `provision-fork` is reused and left running.
 
 The driver runs the `deploy-*` targets in the order this document describes — CircuitBreaker, oracles, the
-backbone, the guardian registries, the markets, the vault-v2 pair, then `activate-markets` — and finishes with
+backbone, the guardian registries, the markets, the bundler stack, then `activate-markets` — and finishes with
 `acceptance-run` per market, so provisioning reports success only once the deployed stack verifies against the
 artifacts it wrote.
+
+Morpho Vault V2 is an external integration example, not a deployment resource of this project. Its fork test
+creates a disposable vault through Morpho’s onchain factory and deploys an unaudited test-only adapter.
+See [the integration example](../test/fork/helpers/README.md) for prerequisites, scope and limitations.
