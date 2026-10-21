@@ -86,7 +86,7 @@ endef
 help:
 	@echo "Targets:"
 	@echo "  build         forge build"
-	@echo "  sizes         forge build --sizes"
+	@echo "  sizes         forge build src + Bundler3 anchor --sizes (test harnesses exceed EIP-170 by design)"
 	@echo "  test          all tests, local + fork in one run; fork suites require RPC_URL + ARTIFACTS_DIR"
 	@echo "  test-local    forge test on the local suites only (excludes test/fork/; no RPC)"
 	@echo "  test-fork     forge test on test/fork/ only; the suites revert without the fork setup"
@@ -138,7 +138,7 @@ build:
 	forge build
 
 sizes:
-	forge build --sizes
+	forge build src script/Bundler3Anchor.sol --sizes
 
 # All tests, local + fork, in one run. The fork suites revert without a working fork setup — RPC_URL and
 # ARTIFACTS_DIR set (see .env.example), that deploy run on disk, and the RPC answering. Use test-local /

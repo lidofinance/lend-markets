@@ -1,6 +1,6 @@
 # Lido Lend Markets
 
-Lido Lend is a family of isolated lending markets for established, low-risk looping trades, built on the [`lido-lend`](https://github.com/lidofinance/lido-lend) Morpho Blue fork. Each market is narrow by design, with strong exit paths and conservative controls that limit how quickly new collateral becomes borrowable.
+Lido Lend is a family of isolated lending markets for established looping trades, built on the [`lido-lend`](https://github.com/lidofinance/lido-lend) Morpho Blue fork. Each market is narrow by design, with several exit paths and controls that limit how quickly new collateral becomes borrowable.
 
 The Morpho-style market accounting lives in that core, with the interest-rate model in [`lido-lend-irm`](https://github.com/lidofinance/lido-lend-irm). This repository — Lido Lend Markets — holds everything built on top: the per-market policy and contracts, the specifications, the deployment scripts, and the deployed-address registry.
 
@@ -82,8 +82,8 @@ additionally need `ARTIFACTS_DIR`, which the provisioning targets above pass for
 input, command-line assignments take precedence over exported environment values, which take precedence over
 `.env` and then Makefile defaults.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that same version locally. `make test-mutation` is the one target that needs a newer forge than the pin and is therefore never run in CI. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that provisions a deployment onto a local anvil fork from the `RPC_URL` secret and runs `test/fork/` against it), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same provisioned anvil), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
-Additional workflows check action configuration and compiled contract bytecode sizes.
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that same version locally. `make test-mutation` is the one target that needs a newer forge than the pin and is therefore never run in CI. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that provisions a deployment onto a local anvil fork from the `RPC_URL` secret and runs `test/fork/` against it), `coverage.yml` (whole-suite coverage, fork suites included via the same provisioned anvil), and `fuzz.yml` (deep fuzz/invariant, local suites only).
+`pending-action.yml` validates a pending multisig action on a fork. Every workflow runs on manual dispatch.
 
 To run the local pre-commit fmt check, point Git at the bundled hook:
 
