@@ -81,7 +81,7 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork test-simulation test-mutation deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-vault-v2 verify-vault-v2 deploy-bundler verify-bundler deploy-exit-books deploy-protocol deploy-market deploy-run deploy-all activate-markets fork-activate deploy-wizard state-mate-config acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop apply-pending pending-stop test-pending test-fork-live test-fork-provision
+.PHONY: help build sizes test test-local test-fork test-simulation test-mutation deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-vault-v2 verify-vault-v2 deploy-bundler verify-bundler deploy-exit-books deploy-protocol deploy-market deploy-run deploy-all activate-markets fork-activate deploy-wizard state-mate-config acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc audit-checksums ci clean provision-fork provision-stop apply-pending pending-stop test-pending test-fork-live test-fork-provision
 
 help:
 	@echo "Targets:"
@@ -124,6 +124,8 @@ help:
 	@echo "  slither       slither . (needs slither installed)"
 	@echo "  solhint       solhint 'src/**/*.sol' (needs node + solhint installed)"
 	@echo "  doc           forge build --ast + regenerate docs/specs/api/ from NatSpec"
+	@echo "  audit-checksums [REF=<git-ref>]  keccak256 of the Cyfrin audit scope files, to compare with the report;"
+	@echo "                  files on disk by default, or as committed at REF"
 	@echo "  ci            build + lint + test-local  (mirrors ci.yml's local job)"
 	@echo "  clean         forge clean"
 	@echo "  provision-fork CONFIG=<network> [FORK_CONFIG=<config>] [PIN_BLOCK=<n>]"
@@ -423,6 +425,9 @@ solhint:
 doc:
 	forge build --ast
 	python3 tools/gen_api_from_artifacts.py
+
+audit-checksums:
+	bash tools/audit-checksums.sh $(REF)
 
 ci: build lint test-local
 

@@ -2,7 +2,7 @@
 
 # Shared Types
 
-The core market types (`Id`, `MarketParams`, `Position`) belong to the forked Morpho core — their full semantics live in the [Lido Lend specification](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md).
+The core market types (`Id`, `MarketParams`, `Position`) belong to the forked Morpho core — their full semantics live in the [Lido Lend specification](https://github.com/lidofinance/lend/blob/main/SPECIFICATION.md).
 
 ## `Id`
 
