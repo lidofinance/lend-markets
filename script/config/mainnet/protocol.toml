@@ -6,6 +6,11 @@ evm_script_executor = "0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"
 reseal_manager = "0x7914b5a1539b97Bd0bbd155757F25FD79A522d24"
 circuit_breaker_artifact = "lido-lend"
 exit_books = true
+# Interim committees: Safe 1.4.1, 1-of-1, owned by 0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd. Replaced by the
+# committee Safes before production deployment.
+exit_book_pauser = "0x604B13eD638663AA0C1eEF0c3482e51f228BA2E1"     # Exit-book pauser Safe (differs from deployer/agent/executor)
+pauser_committee = "0x4f29aA4c299e17176b48c41D67ee97aE673d29bC"     # Pauser committee (CircuitBreaker) Safe, registered by the activation
+risk_steward = "0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E"         # Risk Steward Committee Safe: appointed per market by the activation motion (state-mate expectation)
 exit_book_max_request_lifetime = 7776000  # 90 days
 
 # What a run of this config deploys, in the order the scripts require. Read by `make deploy-all`.
