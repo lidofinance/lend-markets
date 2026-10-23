@@ -33,7 +33,9 @@
   from immutable artifacts under `deployed/<run>/`; reviewed runtime motion choices come from
   `ACCEPTANCE_PAUSER_COMMITTEE` and `ACCEPTANCE_ENABLE_SETTLEMENT`. The suite skips unless
   `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
-- `script/`: deployment scripts.
+- `script/`: deployment scripts; `script/config/<deployment>/` holds each deployment's configs (`mainnet`,
+  `hoodi-testnet`, the provisioning `fork`), laid out like its artifacts: `protocol.toml`, `markets/`, `oracles/`,
+  `guardians/`, `circuit-breaker.toml`, `bundler.toml`, `pending.toml`, `state-mate/`.
 - `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `circuit-breakers/`,
   `guardians/`, `oracles/`, `vaults/`, `adapters/`, optional `exit-books.toml` and `bundler.toml`, and archived
   transaction records. Read directly by both `test/fork/` (`ARTIFACTS_DIR`) and `test/acceptance/`
@@ -53,9 +55,9 @@
 - All tests (local + fork): `make test`. The fork suites require a working fork setup — `RPC_URL` pointing at
   the node that HOLDS the deployment and `ARTIFACTS_DIR` naming its run on disk — and revert without it;
   a fork suite runs or it fails, it never skips.
-- Local fork setup: `make provision-fork RPC_URL=<archive-rpc>` deploys and activates the `fork-*` markets on a
-  local anvil fork of `CONFIG`'s network (mainnet by default), using `FORK_CONFIG=fork-<CONFIG>` for test-only
-  role holders, into `deployed/fork/` and leaves anvil running; a compatible node already on `:8545` is reused
+- Local fork setup: `make provision-fork RPC_URL=<archive-rpc>` deploys and activates the markets of the test-only
+  `fork` deployment (`script/config/fork/`, a mainnet fork with test-only role holders; `FORK_CONFIG` selects
+  another folder) into `deployed/fork/` and leaves anvil running; a compatible node already on `:8545` is reused
   without requiring the archive RPC;
   `make provision-stop` tears it down; `make test-fork-provision` does provision -> test-fork and stops the
   node only when that invocation started it (a reused node is left running). Against a real deploy run,

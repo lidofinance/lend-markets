@@ -19,7 +19,7 @@ contract DeployCircuitBreaker is Script {
         DeployConfigFile.requireRunResourcesCompatible(metadata);
         DeployConfigFile.requireExistingProtocolCompatible(deployConfig);
         string memory name = deployConfig.circuitBreakerArtifact;
-        CircuitBreakerConfig memory cfg = CircuitBreakerConfigFile.read(name);
+        CircuitBreakerConfig memory cfg = CircuitBreakerConfigFile.read(config);
         CircuitBreakerConfigFile.requireUndeployed(name);
         uint256 deployedBlock = vm.getBlockNumber();
 

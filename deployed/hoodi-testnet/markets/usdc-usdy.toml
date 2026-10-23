@@ -1,0 +1,53 @@
+[artifact]
+kind = "market-deployment"
+deployment = "hoodi-testnet"
+chain_id = 560048
+config_hash = "0xf119b4687e4364f297a36ae21775241b92cd6d62a4af2bd0951816df22642f7e"
+compatibility_hash = "0xb1aca1b38e8049e75719c885675a71e618c63343b44ce68c585352a3e1ac0f50"
+
+[market]
+name = "usdc-usdy"
+role = "usdy-usdc"
+id = "0x30f38864da6d3e8527220bb16de06dd27e8f6eda8ca202a5dd334d9f1dbdd938"
+loan_token = "0x97bb030B93faF4684eAC76bA0bf3be5ec7140F36"
+collateral_token = "0xE22a71d42632aBAC08F44FCbd41221A8D8C56972"
+oracle = "0x323b989e0056388A1207823bde6706cF3266A8B4"
+oracle_artifact = "usdy-usdc"
+irm = "0x88b624325385B3db69Db73A65DAdbaa15DE4406d"
+irm_config = "0x611401E778143B4f7BAA816F49FF5A4A35cf2101"
+lltv = "950000000000000000"
+supply_cap = "25000000000000"
+guardian_signals = "0xF46eB3bf7783825B0ffb5f532C148A261Ec518a9"
+guardian_group = "shared"
+factory = "0x1ba98E8Cb00dC00a00E41E10cc17692917aEe896"
+controller = "0x5BFA5af36D4f102650EE4FeCcB16bba3ccefE06e"
+vault = "0xCa29509BCF7D123009e1870F527437D79846F733"
+vault_name = "Lido USDC/USDY Vault (hoodi)"
+vault_symbol = "hoodiUSDC-USDY"
+deployed_block = 3641155
+
+[activation]
+min_activation_delay = "600"
+max_activation_delay = "7200"
+max_delay_inflow = "25000000000000000000000000"
+activating_lock_duration = "0"
+min_activation_amount = "25000000000000000000000"
+min_deposit_amount = "2500000000000000000000"
+max_guardians_quorum_delay = "129600"
+delay_per_strike = "7200"
+delay_per_suspect = "7200"
+
+[settlement]
+slice_floor_bps = "100"
+slice_floor_assets = "0"
+full_cut_below_collateral = "25000000000000000000000"
+ltv_step_bps = "100"
+
+[curve]
+curve_steepness = "4000000000000000000"
+adjustment_speed = "1585489599188"
+target_utilization = "950000000000000000"
+initial_rate_at_target = "1014713343"
+min_rate_at_target = "31709791"
+max_rate_at_target = "2254918540"
+max_borrow_rate = "2254918540"

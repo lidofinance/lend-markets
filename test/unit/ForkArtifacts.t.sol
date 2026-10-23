@@ -99,12 +99,12 @@ contract ForkArtifactsTest is Test {
         _cleanup(tag);
     }
 
-    /// @dev The externals config is resolved from the run's own `network`, so an unknown network fails at bind
-    ///      time rather than on the first `_ext` call.
+    /// @dev The externals config is resolved from the run's own deployment, then its `network`, so an unknown
+    ///      network fails at bind time rather than on the first `_ext` call.
     function testRevert_bind_unknownNetwork() public {
         string memory tag = "unknown-network";
         _writeProtocol(tag, "no-such-network");
-        vm.expectRevert(bytes("ForkTest: file not found: script/config/no-such-network.toml"));
+        vm.expectRevert(bytes("ForkTest: file not found: script/config/no-such-network/protocol.toml"));
         h.bindRun(_runName(tag));
         _cleanup(tag);
     }
@@ -247,7 +247,7 @@ contract ForkArtifactsTest is Test {
     function testRevert_ext_missingKey() public {
         string memory tag = "missing-ext";
         _bind(tag);
-        vm.expectRevert(bytes("ForkTest: script/config/mainnet.toml is missing key 'external.noSuchToken'"));
+        vm.expectRevert(bytes("ForkTest: script/config/mainnet/protocol.toml is missing key 'external.noSuchToken'"));
         h.ext("noSuchToken");
         _cleanup(tag);
     }

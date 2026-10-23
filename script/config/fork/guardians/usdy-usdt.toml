@@ -1,0 +1,8 @@
+# GuardianSignals config for fork provisioning's usdy-usdt group.
+
+quorum = 1
+suspect_window = 0
+
+# Must be non-empty: initialize enforces 1 <= quorum <= guardians.length. The Agent, which anvil impersonates,
+# so the suites can sign guardian actions.
+guardians = ["0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"]  # Agent

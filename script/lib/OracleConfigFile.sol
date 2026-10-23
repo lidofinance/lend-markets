@@ -6,6 +6,7 @@ import {Vm} from "forge-std/Vm.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {ConfigToml} from "./ConfigToml.sol";
+import {DeployConfigFile} from "./DeployConfigFile.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 
 struct WstEthOracleConfig {
@@ -26,21 +27,25 @@ library OracleConfigFile {
 
     error ArtifactAlreadyExists(string path);
 
-    function readRaw(string memory name) internal view returns (string memory) {
-        return vm.readFile(configPath(name));
+    function readRaw(string memory config, string memory name) internal view returns (string memory) {
+        return vm.readFile(configPath(config, name));
     }
 
     function hasKey(string memory toml, string memory key) internal view returns (bool) {
         return vm.keyExistsToml(toml, key);
     }
 
-    function readWstEth(string memory name) internal view returns (WstEthOracleConfig memory cfg) {
-        string memory toml = vm.readFile(configPath(name));
+    function readWstEth(string memory config, string memory name)
+        internal
+        view
+        returns (WstEthOracleConfig memory cfg)
+    {
+        string memory toml = vm.readFile(configPath(config, name));
         cfg.wstETH = ConfigToml.requireAddress(toml, ".wsteth");
     }
 
-    function readUsdy(string memory name) internal view returns (UsdyOracleConfig memory cfg) {
-        return parseUsdy(vm.readFile(configPath(name)));
+    function readUsdy(string memory config, string memory name) internal view returns (UsdyOracleConfig memory cfg) {
+        return parseUsdy(vm.readFile(configPath(config, name)));
     }
 
     function parseUsdy(string memory toml) internal view returns (UsdyOracleConfig memory cfg) {
@@ -54,28 +59,31 @@ library OracleConfigFile {
         cfg.maxPrice = ConfigToml.requireUint(toml, ".max_price");
     }
 
-    function configPath(string memory name) internal pure returns (string memory) {
-        return string.concat("script/config/oracles/", name, ".toml");
+    function configPath(string memory config, string memory name) internal pure returns (string memory) {
+        return string.concat(DeployConfigFile.configDir(config), "/oracles/", name, ".toml");
     }
 
-    function writeDeployed(string memory name, address oracle, ArtifactMetadata memory metadata)
+    function writeDeployed(string memory config, string memory name, address oracle, ArtifactMetadata memory metadata)
         internal
         returns (string memory path)
     {
-        return _write(name, oracle, false, metadata);
+        return _write(config, name, oracle, false, metadata);
     }
 
-    function writeReference(string memory name, address oracle, ArtifactMetadata memory metadata)
+    function writeReference(string memory config, string memory name, address oracle, ArtifactMetadata memory metadata)
         internal
         returns (string memory path)
     {
-        return _write(name, oracle, true, metadata);
+        return _write(config, name, oracle, true, metadata);
     }
 
-    function _write(string memory name, address oracle, bool reused, ArtifactMetadata memory metadata)
-        private
-        returns (string memory path)
-    {
+    function _write(
+        string memory config,
+        string memory name,
+        address oracle,
+        bool reused,
+        ArtifactMetadata memory metadata
+    ) private returns (string memory path) {
         ArtifactMetadataFile.ensureArtifactsDir();
         string memory dir = string.concat(ArtifactMetadataFile.artifactsDir(), "/oracles");
         if (!vm.exists(dir)) vm.createDir(dir, false);
@@ -88,13 +96,13 @@ library OracleConfigFile {
         artifact = string.concat(artifact, reused ? "reused = true\n" : "reused = false\n");
         address admin = OssifiableProxy(payable(oracle)).proxy__getAdmin();
         artifact = string.concat(artifact, "proxy_admin = \"", vm.toString(admin), "\"\n");
-        string memory raw = readRaw(name);
+        string memory raw = readRaw(config, name);
         if (hasKey(raw, ".wsteth")) {
-            WstEthOracleConfig memory cfg = readWstEth(name);
+            WstEthOracleConfig memory cfg = readWstEth(config, name);
             artifact = string.concat(artifact, "kind = \"wsteth-rate\"\n");
             artifact = string.concat(artifact, "wsteth = \"", vm.toString(cfg.wstETH), "\"\n");
         } else {
-            UsdyOracleConfig memory cfg = readUsdy(name);
+            UsdyOracleConfig memory cfg = readUsdy(config, name);
             artifact = string.concat(artifact, "kind = \"usdy-stable\"\n");
             artifact = string.concat(artifact, "usdy_oracle = \"", vm.toString(cfg.usdyOracle), "\"\n");
             artifact = string.concat(artifact, "feed = \"", vm.toString(cfg.feed), "\"\n");

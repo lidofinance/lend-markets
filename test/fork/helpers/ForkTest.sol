@@ -77,8 +77,7 @@ abstract contract ForkTest is CommonBase {
         });
         protocol = ArtifactMetadataFile.requireExact(protocolPath, metadata);
 
-        string memory externalsPath =
-            string.concat("script/config/", vm.parseTomlString(protocol, ".protocol.network"), ".toml");
+        string memory externalsPath = _deployConfigPath(protocol, runName);
         _requireFile(externalsPath); // bind-time error, not a first-`_ext` error
 
         _runDir = runDir;
@@ -91,7 +90,18 @@ abstract contract ForkTest is CommonBase {
     // ACCESSORS
     // ---
 
-    /// @notice Whether the run's network config defines `[external].<key>`.
+    /// @dev The deploy config the run was made from, laid out like its artifacts under
+    ///      `script/config/<deployment>/`: `ARTIFACTS_CONFIG` when set (a rehearsal run deployed from another
+    ///      deployment's config), else the folder named by the run, else the one named by its network.
+    function _deployConfigPath(string memory protocol, string memory runName) private view returns (string memory) {
+        string memory config = vm.envOr("ARTIFACTS_CONFIG", string(""));
+        if (bytes(config).length != 0) return DeployConfigFile.configPath(config);
+        string memory byRun = DeployConfigFile.configPath(runName);
+        if (vm.exists(byRun)) return byRun;
+        return DeployConfigFile.configPath(vm.parseTomlString(protocol, ".protocol.network"));
+    }
+
+    /// @notice Whether the run's deploy config defines `[external].<key>`.
     function _hasExt(string memory key) internal view returns (bool) {
         require(_bound, "ForkTest: _fork() not called");
         return vm.keyExistsToml(_read(_externalsPath), string.concat(".external.", key));

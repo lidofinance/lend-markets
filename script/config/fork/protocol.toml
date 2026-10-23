@@ -1,0 +1,32 @@
+# Local mainnet-fork provisioning only (`make provision-fork`, run `fork`). Production deployments use
+# mainnet/protocol.toml with the real committee.
+network = "mainnet"
+chain_id = 1
+
+agent = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
+evm_script_executor = "0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"
+reseal_manager = "0x7914b5a1539b97Bd0bbd155757F25FD79A522d24"
+circuit_breaker_artifact = "lido-lend"
+exit_books = true
+# Anvil's second development account; deliberately distinct from the deployer and governance accounts.
+exit_book_pauser = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+exit_book_max_request_lifetime = 31536000  # 365 days
+
+# Test-only composition consumed by script/provision-fork.sh. Market configs still name their own oracle and
+# guardian resources; vaults are standalone and therefore listed explicitly here. `bundler = true` deploys the
+# bundler stack from this folder's bundler.toml.
+[provision]
+markets = ["weth-wsteth", "usdy-usdt"]
+vaults = ["weth-wsteth"]
+bundler = true
+
+# External addresses used by fork tests.
+[external]
+weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+stEth = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
+wstEth = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
+usdy = "0x96F6eF951840721AdBF46Ac996b59E0235CB985C"
+usdt = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+ondoOracle = "0xA0219AA5B31e65Bc920B5b6DFb8EdF0988121De0"
+usdtUsdFeed = "0x3E7d1eAB13ad0104d2750B8863b489D65364e32D"
+usdyBlocklist = "0xd8c8174691d936E2C80114EC449037b13421B0a8"

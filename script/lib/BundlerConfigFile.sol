@@ -5,6 +5,7 @@ import {Vm} from "forge-std/Vm.sol";
 
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 import {ConfigToml} from "./ConfigToml.sol";
+import {DeployConfigFile} from "./DeployConfigFile.sol";
 
 /// @param weth The WETH the general adapter wraps and unwraps.
 /// @param wsteth The wstETH the general adapter wraps stETH into; its `stETH()` is the adapter's stETH.
@@ -26,8 +27,9 @@ library BundlerConfigFile {
     // CONFIG
     // ---
 
-    function read(string memory name) internal view returns (BundlerConfig memory cfg) {
-        return parse(vm.readFile(configPath(name)));
+    /// @notice The bundler config of deployment `config`: one stack per deployment, so the file carries no name.
+    function read(string memory config) internal view returns (BundlerConfig memory cfg) {
+        return parse(vm.readFile(configPath(config)));
     }
 
     function parse(string memory toml) internal pure returns (BundlerConfig memory cfg) {
@@ -35,8 +37,8 @@ library BundlerConfigFile {
         cfg.wsteth = ConfigToml.requireAddress(toml, ".wsteth");
     }
 
-    function configPath(string memory name) internal pure returns (string memory) {
-        return string.concat("script/config/bundlers/", name, ".toml");
+    function configPath(string memory config) internal pure returns (string memory) {
+        return string.concat(DeployConfigFile.configDir(config), "/bundler.toml");
     }
 
     // ---

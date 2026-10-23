@@ -91,8 +91,8 @@ contract LendGovernanceVoteFork is Test, ForkTest {
         circuitBreaker = _protocol("circuit_breaker");
         riskStewardDashboard = _protocol("risk_steward_dashboard");
         core = _protocol("core");
-        guardianSignals = _artifactAddr("guardians/hoodi-shared.toml", "guardian_signals.address");
-        marketNames = ["hoodi-weth-wsteth", "hoodi-usdt-usdy", "hoodi-usdc-usdy"];
+        guardianSignals = _artifactAddr("guardians/shared.toml", "guardian_signals.address");
+        marketNames = ["weth-wsteth", "usdt-usdy", "usdc-usdy"];
     }
 
     function test_addFactoriesVote_executesAndLeavesExecutorOnlyTopology() public {

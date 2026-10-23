@@ -20,7 +20,7 @@ interface IUsdyBlocklist {
 }
 
 /// @notice Mainnet-fork scenario for the USD/Treasuries market on the ALREADY-DEPLOYED, ALREADY-ACTIVATED
-///         `fork-usdy-usdt` market (USDY collateral, USDT loan), bound via {ForkStack} — never re-deployed, and the
+///         `usdy-usdt` fork market (USDY collateral, USDT loan), bound via {ForkStack} — never re-deployed, and the
 ///         `UsdyStableOracle`-over-Ondo-NAV + Chainlink-USDT/USD stack is provisioning's, not the test's.
 ///         Verifies the market's core constraint: USDY's transfer restriction means a blocklisted address cannot
 ///         RECEIVE seized collateral — so it can neither liquidate (core `liquidate`) nor be a fallback-exit

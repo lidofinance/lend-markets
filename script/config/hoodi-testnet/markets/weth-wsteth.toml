@@ -1,0 +1,41 @@
+# Hoodi WETH/wstETH market — testnet values. Real hoodi tokens
+# on both sides; oracle resolves from this run's `weth-wsteth` oracle artifact (oracle = 0x0).
+[market]
+# The part this market plays; consumers bind by it rather than by file name.
+role = "weth-wsteth"
+loan_token = "0xE69a5c6dd88cA798b93c3C92fc50c51Fd5305eB4"        # WETH (hoodi, canonical)
+collateral_token = "0x7E99eE3C66636DE415D2d7C880938F2f40f94De4"  # wstETH (hoodi, docs.lido.fi)
+oracle = "0x0000000000000000000000000000000000000000"  # resolved from the run's oracle artifact
+oracle_artifact = "weth-wsteth"
+lltv = "950000000000000000"  # 0.95
+supply_cap = "10000000000000000000000"  # 10_000 WETH
+guardian_signals = "0x0000000000000000000000000000000000000000"  # resolved by guardian_group
+guardian_group = "shared"
+vault_name = "Lido wstETH/WETH Vault (hoodi)"
+vault_symbol = "hoodiWSTETH-WETH"
+
+[activation]
+min_activation_delay = 600
+max_activation_delay = 7200
+max_delay_inflow = "10000000000000000000000"  # 10_000 wstETH
+activating_lock_duration = 0
+min_activation_amount = "10000000000000000000"  # 10 wstETH
+min_deposit_amount = "1000000000000000000"  # 1 wstETH
+max_guardians_quorum_delay = 129600  # 36 h fallback from lot start
+delay_per_strike = 7200
+delay_per_suspect = 7200
+
+[settlement]
+slice_floor_bps = 100
+slice_floor_assets = "10000000000000000000"  # 10 WETH
+full_cut_below_collateral = "10000000000000000000"  # 10 wstETH
+ltv_step_bps = 100
+
+[curve]
+curve_steepness = "4000000000000000000"
+adjustment_speed = "1585489599188"
+target_utilization = "900000000000000000"  # 90%
+initial_rate_at_target = "713470319"  # ~2.25% APR
+min_rate_at_target = "31709791"  # ~0.1% APR
+max_rate_at_target = "1585489597"  # ~5% APR
+max_borrow_rate = "1585489597"

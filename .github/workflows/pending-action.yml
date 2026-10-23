@@ -1,16 +1,19 @@
 name: pending-action
 
 # Pre-signing validation of a pending multisig action: fork the live network, apply the
-# transaction(s) from script/config/pending/, then verify the resulting state with state-mate
+# transaction(s) from script/config/<config>/pending.toml, then verify the resulting state with state-mate
 # and the fork suites. Dispatch it on the branch that carries the pending calldata; a green run
 # is the signing gate.
 
 on:
   workflow_dispatch:
     inputs:
+      config:
+        description: "deployment under script/config/ (its pending.toml and state-mate/ are used)"
+        default: "hoodi-testnet"
       state_mate_config:
-        description: "state-mate config file name under script/config/state-mate/"
-        default: "hoodi-testnet.yaml"
+        description: "state-mate config file name under script/config/<config>/state-mate/"
+        default: "live.yaml"
       artifacts_run:
         description: "run under deployed/ for the fork suites (skipped when absent)"
         default: "hoodi-testnet"
@@ -37,11 +40,11 @@ jobs:
       - id: check
         name: look for an active [[transaction]]
         run: |
-          if grep -qE '^\[\[transaction\]\]' script/config/pending/hoodi.toml; then
+          if grep -qE '^\[\[transaction\]\]' "script/config/${{ inputs.config }}/pending.toml"; then
             echo "has_pending=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_pending=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no active [[transaction]] in script/config/pending/hoodi.toml — nothing to validate"
+            echo "::notice::no active [[transaction]] in script/config/${{ inputs.config }}/pending.toml — nothing to validate"
           fi
 
   validate:
@@ -51,6 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      CONFIG: ${{ inputs.config }}
       STATE_MATE_CONFIG: ${{ inputs.state_mate_config }}
       ARTIFACTS_RUN: ${{ inputs.artifacts_run }}
     steps:
@@ -66,7 +70,7 @@ jobs:
           RPC_URL: ${{ secrets.HOODI_RPC_URL }}
         run: |
           test -n "$RPC_URL" || { echo "::error::HOODI_RPC_URL secret required"; exit 1; }
-          make apply-pending CONFIG=hoodi
+          make apply-pending CONFIG="$CONFIG"
           # anvil keeps running on :8545 with the pending state applied
 
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
@@ -87,7 +91,7 @@ jobs:
         run: |
           corepack enable
           yarn install --immutable
-          yarn start "$GITHUB_WORKSPACE/script/config/state-mate/$STATE_MATE_CONFIG"
+          yarn start "$GITHUB_WORKSPACE/script/config/$CONFIG/state-mate/$STATE_MATE_CONFIG"
 
       - name: fork suites against the applied state
         run: |

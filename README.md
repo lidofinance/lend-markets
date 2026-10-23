@@ -30,7 +30,7 @@ fork — the node that HOLDS the deployment — and `ARTIFACTS_DIR` names the de
 not match the forked chain. No registry is composed and no preparation step is needed.
 
 Locally, `make provision-fork` deploys and activates the fork markets onto a local anvil fork of the network
-`CONFIG` names (mainnet by default), using the test-only `FORK_CONFIG=fork-<CONFIG>`, and leaves it running;
+`FORK_CONFIG` names (`fork`, the test-only deployment under `script/config/fork/`), and leaves it running;
 `make test-fork-provision` chains provision -> test and stops Anvil only when that invocation started it:
 
 ```sh

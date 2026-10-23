@@ -21,7 +21,7 @@ contract DeployGuardianSignals is Script {
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
         DeployConfigFile.requireChainId(deployConfig);
         DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
-        string memory toml = vm.readFile(GuardianSignalsConfigFile.configPath(name));
+        string memory toml = vm.readFile(GuardianSignalsConfigFile.configPath(config, name));
         ArtifactMetadata memory metadata = DeployConfigFile.artifactMetadata(deployConfig);
         address factory;
         {
@@ -63,7 +63,7 @@ contract DeployGuardianSignals is Script {
         console2.log("  guardianSignals :", guardianSignals);
         console2.log(
             "  recorded        :",
-            GuardianSignalsConfigFile.writeDeployed(name, guardianSignals, deployedBlock, metadata)
+            GuardianSignalsConfigFile.writeDeployed(config, name, guardianSignals, deployedBlock, metadata)
         );
     }
 }

@@ -4,7 +4,7 @@
 # Make normally lets an included file replace exported environment variables. Preserve the public inputs so
 # precedence is consistently: command line > exported environment > .env > defaults.
 DOTENV_OVERRIDE_VARS := CONFIG FORK_CONFIG RUN MARKET MARKET_A MARKET_B ORACLE GUARDIAN_GROUP PIN_BLOCK \
-	VAULT ADAPTER BUNDLER RPC_URL DEPLOYER_ACCOUNT DEPLOYER_SENDER ETHERSCAN_API_KEY VERIFY RESUME CHAIN_ID EXECUTOR ARTIFACTS_DIR \
+	VAULT ADAPTER RPC_URL DEPLOYER_ACCOUNT DEPLOYER_SENDER ETHERSCAN_API_KEY VERIFY RESUME CHAIN_ID EXECUTOR ARTIFACTS_DIR \
 	FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED ACCEPTANCE_RPC_URL ACCEPTANCE_REGISTRY ACCEPTANCE_PAUSER_COMMITTEE \
 	ACCEPTANCE_ENABLE_SETTLEMENT
 
@@ -31,11 +31,13 @@ unexport $(addprefix _DOTENV_VALUE_,$(DOTENV_OVERRIDE_VARS))
 FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test
 FORK_PATH := test/fork/**
 
-# Deployment workflow. `RUN` is the sole artifact identity: every deploy target writes below
-# `deployed/$(RUN)/` by passing it as ARTIFACTS_DIR. RPC credentials stay in `.env`; the command line carries
+# Deployment workflow. `CONFIG` names the deployment whose configs are read from `script/config/$(CONFIG)/`
+# (laid out like the artifacts: protocol.toml, markets/, oracles/, guardians/, circuit-breaker.toml, bundler.toml).
+# `RUN` is the sole artifact identity: every deploy target writes below `deployed/$(RUN)/` by passing it as
+# ARTIFACTS_DIR; a rehearsal deploys CONFIG under another RUN. RPC credentials stay in `.env`; the command line carries
 # only the non-secret deployment choices.
 CONFIG ?= mainnet
-FORK_CONFIG ?= fork-$(CONFIG)
+FORK_CONFIG ?= fork
 RUN ?=
 MARKET ?= weth-wsteth
 ORACLE ?= weth-wsteth
@@ -43,7 +45,6 @@ GUARDIAN_GROUP ?= $(MARKET)
 PIN_BLOCK ?=
 VAULT ?= weth-wsteth
 ADAPTER ?= $(VAULT)
-BUNDLER ?= mainnet
 RPC_URL ?=
 # Encrypted Foundry keystore name (`cast wallet import --interactive <name>`); forge prompts for its password.
 # The only way to sign a broadcast: a raw key is never accepted, so it can never reach a printable command
@@ -58,7 +59,7 @@ RESUME ?= false
 CHAIN_ID ?= $(shell if [ -n "$(RUN)" ] && [ -f "deployed/$(RUN)/protocol.toml" ]; then \
 	awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' "deployed/$(RUN)/protocol.toml"; \
 	else \
-	awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' "script/config/$(CONFIG).toml"; \
+	awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' "script/config/$(CONFIG)/protocol.toml"; \
 	fi)
 
 # The activation motion is broadcast as the run's own EVMScriptExecutor (impersonated on a fork), so it is
@@ -74,7 +75,7 @@ SIGNER_FLAGS = --sender "$(DEPLOYER_SENDER)" $(if $(DEPLOYER_ACCOUNT),--account 
 DEPLOY_FLAGS = --rpc-url "$(RPC_URL)" $(SIGNER_FLAGS) --broadcast $(VERIFY_FLAGS) $(RESUME_FLAGS)
 
 define archive_broadcast
-	@test -n "$(CHAIN_ID)" || { echo "ERROR: could not read chain_id from script/config/$(CONFIG).toml"; exit 1; }
+	@test -n "$(CHAIN_ID)" || { echo "ERROR: could not read chain_id from script/config/$(CONFIG)/protocol.toml"; exit 1; }
 	@test -f "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" || { echo "ERROR: Foundry broadcast record missing for $(1)"; exit 1; }
 	@test ! -e "deployed/$(RUN)/transactions/$(2).json" || { echo "ERROR: transaction record already exists: $(2)"; exit 1; }
 	@mkdir -p "deployed/$(RUN)/transactions"
@@ -99,8 +100,8 @@ help:
 	@echo "  deploy-guardian CONFIG=<config> RUN=<run> GUARDIAN_GROUP=<group>  (before its markets)"
 	@echo "  deploy-vault-v2 CONFIG=<config> RUN=<existing-run> VAULT=<name> ADAPTER=<name>"
 	@echo "  verify-vault-v2 RUN=<run> VAULT=<name> ADAPTER=<name>  (deploy-vault-v2 runs this itself)"
-	@echo "  deploy-bundler CONFIG=<config> RUN=<existing-run> BUNDLER=<name>  (Bundler3 + adapters over the run's core)"
-	@echo "  verify-bundler RUN=<run> BUNDLER=<name>  (deploy-bundler runs this itself)"
+	@echo "  deploy-bundler CONFIG=<config> RUN=<existing-run>  (Bundler3 + adapters over the run's core, from <config>/bundler.toml)"
+	@echo "  verify-bundler RUN=<run> CONFIG=<config>  (deploy-bundler runs this itself)"
 	@echo "  deploy-exit-books CONFIG=<config> RUN=<existing-run>"
 	@echo "  deploy-market CONFIG=<config> RUN=<run> MARKET=<name>"
 	@echo "  deploy-run CONFIG=<config> RUN=<run> ORACLE=<name> MARKET=<name>"
@@ -126,8 +127,8 @@ help:
 	@echo "  doc           forge build --ast + regenerate docs/specs/api/ from NatSpec"
 	@echo "  ci            build + lint + test-local  (mirrors ci.yml's local job)"
 	@echo "  clean         forge clean"
-	@echo "  provision-fork CONFIG=<network> [FORK_CONFIG=<config>] [PIN_BLOCK=<n>]"
-	@echo "                  deploy + activate using fork-<network> config by default"
+	@echo "  provision-fork [FORK_CONFIG=fork] [PIN_BLOCK=<n>]"
+	@echo "                  deploy + activate script/config/fork/ (FORK_CONFIG) on a local anvil fork"
 	@echo "                  RPC_URL is the archive node when no compatible anvil already runs"
 	@echo "                  PIN_BLOCK pins the upstream block, making the run reproducible"
 	@echo "  test-fork-live  run the fork suites against an already-provisioned local anvil"
@@ -235,18 +236,18 @@ verify-vault-v2:
 # and to the run's core, and the vault adapter bound to it.
 deploy-bundler:
 	$(require_deploy_context)
-	@$(DEPLOY_ENV) forge script script/DeployBundler.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(BUNDLER)" $(DEPLOY_FLAGS)
-	$(call archive_broadcast,DeployBundler.s.sol,bundler-$(BUNDLER))
-	@test "$(VERIFY)" = "false" || $(MAKE) verify-bundler RUN="$(RUN)" BUNDLER="$(BUNDLER)"
+	@$(DEPLOY_ENV) forge script script/DeployBundler.s.sol --sig 'run(string)' "$(CONFIG)" $(DEPLOY_FLAGS)
+	$(call archive_broadcast,DeployBundler.s.sol,bundler)
+	@test "$(VERIFY)" = "false" || $(MAKE) verify-bundler RUN="$(RUN)" CONFIG="$(CONFIG)"
 
 # Bundler3 and the general adapter are created with vm.deployCode (nameless creations `forge script --verify`
 # skips), so they are verified explicitly from the addresses and constructor arguments the artifact recorded; the
 # vault adapter is created with `new` and verified by the script run.
 verify-bundler:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
-	@test -n "$(BUNDLER)" || { echo "ERROR: set BUNDLER"; exit 1; }
+	@test -n "$(CONFIG)" || { echo "ERROR: set CONFIG (the deployment the stack was deployed from)"; exit 1; }
 	@test -n "$(ETHERSCAN_API_KEY)" || { echo "ERROR: set ETHERSCAN_API_KEY"; exit 1; }
-	@ARTIFACTS_DIR="$(RUN)" forge script script/DeployBundler.s.sol --sig 'validateArtifacts(string)' "$(BUNDLER)"
+	@ARTIFACTS_DIR="$(RUN)" forge script script/DeployBundler.s.sol --sig 'validateArtifacts(string)' "$(CONFIG)"
 	@set -e; \
 	B="deployed/$(RUN)/bundler.toml"; \
 	test -f "$$B" || { echo "ERROR: no bundler artifact at $$B"; exit 1; }; \
@@ -284,7 +285,7 @@ deploy-run:
 	$(MAKE) deploy-market CONFIG="$(CONFIG)" RUN="$(RUN)" MARKET="$(MARKET)"
 
 # Every resource the deploy config declares under [provision], in the order the scripts require.
-toml_list = $(shell awk -v k='$(1)' 'f&&/^\[/{f=0} /^\[provision\]/{f=1;next} f&&$$1==k{sub(/^[^=]*=[[:space:]]*/,""); gsub(/[][",]/," "); print}' script/config/$(CONFIG).toml)
+toml_list = $(shell awk -v k='$(1)' 'f&&/^\[/{f=0} /^\[provision\]/{f=1;next} f&&$$1==k{sub(/^[^=]*=[[:space:]]*/,""); gsub(/[][",]/," "); print}' script/config/$(CONFIG)/protocol.toml)
 ORACLES ?= $(call toml_list,oracles)
 GUARDIAN_GROUPS ?= $(call toml_list,guardians)
 MARKETS ?= $(call toml_list,markets)
@@ -305,7 +306,7 @@ deploy-all:
 	fi
 	@$(STEP) "deployed/$(RUN)/circuit-breakers/lido-lend.toml" address "$(RPC_URL)" deploy-circuit-breaker $(STEP_VARS)
 	@for o in $(ORACLES); do \
-	  kind=$$(sed -n 's/^[[:space:]]*kind[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' script/config/oracles/$$o.toml); \
+	  kind=$$(sed -n 's/^[[:space:]]*kind[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' script/config/$(CONFIG)/oracles/$$o.toml); \
 	  case "$$kind" in \
 	    usdy) t=deploy-oracle-usdy ;; \
 	    wsteth) t=deploy-oracle ;; \
@@ -342,12 +343,12 @@ activate-markets:
 	@$(DEPLOY_ENV) forge script script/ActivateMarkets.s.sol --sig 'run()' \
 		--rpc-url "$(RPC_URL)" --unlocked --sender "$(EXECUTOR)" --broadcast
 
-# Post-activation state-mate configs for RUN: addresses from its artifacts, expectations from script/config/,
-# proxy implementations from the node at RPC_URL. Written next to script/config/state-mate/generate.py.
+# state-mate configs for RUN: addresses from its artifacts, expectations from script/config/$(CONFIG)/, proxy
+# implementations from the node at RPC_URL. Written into script/config/$(CONFIG)/state-mate/.
 state-mate-config:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL (the node the run lives on)"; exit 1; }
-	RUN="$(RUN)" HOODI_RPC_URL="$(RPC_URL)" python3 script/config/state-mate/generate.py
+	RUN="$(RUN)" CONFIG="$(CONFIG)" RPC_URL="$(RPC_URL)" python3 tools/gen_state_mate.py
 
 acceptance-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
@@ -374,7 +375,7 @@ deploy-wizard:
 	@printf 'Config [mainnet]: '; read config; config=$${config:-mainnet}; \
 	printf 'Run directory (required): '; read run; test -n "$$run" || { echo 'ERROR: run directory is required'; exit 1; }; \
 	printf 'Step (circuit-breaker, oracle, oracle-usdy, guardian, vault-v2, bundler, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
-	printf 'Resource name (shared by oracle/guardian/market for full; the bundler config for bundler; ignored for circuit-breaker/protocol/exit-books): '; read name; \
+	printf 'Resource name (shared by oracle/guardian/market for full; ignored for circuit-breaker/bundler/protocol/exit-books): '; read name; \
 	name=$${name:-weth-wsteth}; \
 	case "$$step" in \
 		circuit-breaker) exec $(MAKE) deploy-circuit-breaker CONFIG="$$config" RUN="$$run" ;; \
@@ -382,7 +383,7 @@ deploy-wizard:
 		oracle-usdy) exec $(MAKE) deploy-oracle-usdy CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		guardian) exec $(MAKE) deploy-guardian CONFIG="$$config" RUN="$$run" GUARDIAN_GROUP="$$name" ;; \
 		vault-v2) exec $(MAKE) deploy-vault-v2 CONFIG="$$config" RUN="$$run" VAULT="$$name" ADAPTER="$$name" ;; \
-		bundler) exec $(MAKE) deploy-bundler CONFIG="$$config" RUN="$$run" BUNDLER="$$name" ;; \
+		bundler) exec $(MAKE) deploy-bundler CONFIG="$$config" RUN="$$run" ;; \
 		exit-books) exec $(MAKE) deploy-exit-books CONFIG="$$config" RUN="$$run" ;; \
 		protocol) exec $(MAKE) deploy-protocol CONFIG="$$config" RUN="$$run" ;; \
 		market) exec $(MAKE) deploy-market CONFIG="$$config" RUN="$$run" MARKET="$$name" ;; \
@@ -429,10 +430,10 @@ ci: build lint test-local
 clean:
 	forge clean
 
-# Deploy + activate the fork markets on a local anvil fork of CONFIG's network, leaving `deployed/fork/` for the
-# fork suites to bind to. Every step is an ordinary deploy target; only the final activation is a script rather
-# than a governance motion. FORK_CONFIG defaults to fork-$(CONFIG), keeping test-only role holders out of the
-# production config. RPC_URL is the upstream archive node when the driver starts anvil; deploy steps target the
+# Deploy + activate the fork markets on a local anvil fork of the network FORK_CONFIG names, leaving
+# `deployed/fork/` for the fork suites to bind to. Every step is an ordinary deploy target; only the final
+# activation is a script rather than a governance motion. FORK_CONFIG defaults to `fork`, the provisioning
+# deployment's own config folder, keeping test-only role holders out of the production configs. RPC_URL is the upstream archive node when the driver starts anvil; deploy steps target the
 # local node in either mode.
 provision-fork:
 	@PROVISION_RESULT_FILE="$(PROVISION_RESULT_FILE)" PROVISION_REQUEST_TOKEN="$(PROVISION_REQUEST_TOKEN)" \
@@ -448,7 +449,7 @@ test-fork-live:
 	$(MAKE) test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork FORK_BLOCK=
 
 # Pending multisig action: fork the live network, apply the transaction(s) from
-# script/config/pending/<CONFIG>.toml, and leave the fork on :8545 for test-fork / state-mate.
+# script/config/<CONFIG>/pending.toml, and leave the fork on :8545 for test-fork / state-mate.
 apply-pending:
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL to the live network's RPC"; exit 1; }
 	bash script/pending-action.sh apply "$(CONFIG)" "$(PIN_BLOCK)"

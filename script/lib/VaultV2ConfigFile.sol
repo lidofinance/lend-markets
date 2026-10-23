@@ -5,6 +5,7 @@ import {Vm} from "forge-std/Vm.sol";
 
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
 import {ConfigToml} from "./ConfigToml.sol";
+import {DeployConfigFile} from "./DeployConfigFile.sol";
 
 /// @param owner Appoints the vault's curator.
 /// @param asset Must be the loan token of every market the vault allocates into.
@@ -33,14 +34,18 @@ library VaultV2ConfigFile {
     // CONFIG
     // ---
 
-    function readVault(string memory name) internal view returns (VaultV2Config memory cfg) {
-        string memory toml = vm.readFile(vaultConfigPath(name));
+    function readVault(string memory config, string memory name) internal view returns (VaultV2Config memory cfg) {
+        string memory toml = vm.readFile(vaultConfigPath(config, name));
         cfg.owner = ConfigToml.requireAddress(toml, ".owner");
         cfg.asset = ConfigToml.requireAddress(toml, ".asset");
     }
 
-    function readAdapter(string memory name) internal view returns (VaultV2AdapterConfig memory cfg) {
-        string memory toml = vm.readFile(adapterConfigPath(name));
+    function readAdapter(string memory config, string memory name)
+        internal
+        view
+        returns (VaultV2AdapterConfig memory cfg)
+    {
+        string memory toml = vm.readFile(adapterConfigPath(config, name));
         cfg.vaultArtifact = ConfigToml.requireString(toml, ".vault_artifact");
     }
 
@@ -51,12 +56,12 @@ library VaultV2ConfigFile {
         }
     }
 
-    function vaultConfigPath(string memory name) internal pure returns (string memory) {
-        return string.concat("script/config/vaults/", name, ".toml");
+    function vaultConfigPath(string memory config, string memory name) internal pure returns (string memory) {
+        return string.concat(DeployConfigFile.configDir(config), "/vaults/", name, ".toml");
     }
 
-    function adapterConfigPath(string memory name) internal pure returns (string memory) {
-        return string.concat("script/config/adapters/", name, ".toml");
+    function adapterConfigPath(string memory config, string memory name) internal pure returns (string memory) {
+        return string.concat(DeployConfigFile.configDir(config), "/adapters/", name, ".toml");
     }
 
     // ---

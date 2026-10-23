@@ -11,6 +11,7 @@ import {BPS} from "../../src/libs/Constants.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 import {ConfigToml} from "./ConfigToml.sol";
+import {DeployConfigFile} from "./DeployConfigFile.sol";
 import {GuardianSignalsConfigFile} from "./GuardianSignalsConfigFile.sol";
 import {OracleConfigFile} from "./OracleConfigFile.sol";
 
@@ -32,7 +33,7 @@ library MarketConfigFile {
     }
 
     /// @dev Resolves zero oracle and guardian addresses from run artifacts.
-    function read(string memory name)
+    function read(string memory config, string memory name)
         internal
         view
         returns (
@@ -41,7 +42,7 @@ library MarketConfigFile {
             AdaptiveCurveParams memory curveParams
         )
     {
-        string memory toml = vm.readFile(marketPath(name));
+        string memory toml = vm.readFile(marketPath(config, name));
         (market, erc4626WrapperSpec, curveParams) = parse(toml);
         ArtifactRefs memory refs = _parseArtifactRefs(toml);
 
@@ -70,22 +71,22 @@ library MarketConfigFile {
         curveParams = _parseCurve(toml);
     }
 
-    function marketPath(string memory name) internal pure returns (string memory) {
-        return string.concat("script/config/markets/", name, ".toml");
+    function marketPath(string memory config, string memory name) internal pure returns (string memory) {
+        return string.concat(DeployConfigFile.configDir(config), "/markets/", name, ".toml");
     }
 
-    function guardianGroup(string memory name) internal view returns (string memory) {
-        return _parseArtifactRefs(vm.readFile(marketPath(name))).guardianGroup;
+    function guardianGroup(string memory config, string memory name) internal view returns (string memory) {
+        return _parseArtifactRefs(vm.readFile(marketPath(config, name))).guardianGroup;
     }
 
-    function oracleArtifact(string memory name) internal view returns (string memory) {
-        return _parseArtifactRefs(vm.readFile(marketPath(name))).oracle;
+    function oracleArtifact(string memory config, string memory name) internal view returns (string memory) {
+        return _parseArtifactRefs(vm.readFile(marketPath(config, name))).oracle;
     }
 
     /// @notice The part this market plays in a deployment, e.g. `"weth-wsteth"`. Markets on different networks
     ///         share a role, so a consumer can name what it needs without naming a network's market.
-    function role(string memory name) internal view returns (string memory) {
-        return ConfigToml.requireString(vm.readFile(marketPath(name)), ".market.role");
+    function role(string memory config, string memory name) internal view returns (string memory) {
+        return ConfigToml.requireString(vm.readFile(marketPath(config, name)), ".market.role");
     }
 
     function _parseArtifactRefs(string memory toml) private view returns (ArtifactRefs memory) {

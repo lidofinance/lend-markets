@@ -4,16 +4,22 @@ Scripts deploy inert markets. Activation is a separate EasyTrack motion. Role ow
 
 ## Setup
 
-Configuration lives under `script/config/`:
+Configuration lives under `script/config/<config>/`, one folder per deployment (`mainnet`, `hoodi-testnet`, the
+provisioning `fork`), laid out like the artifacts it produces under `deployed/<run>/`:
 
-- `<config>.toml`: network, governance including the Reseal Manager, the CircuitBreaker artifact selector, and optional exit books;
+- `protocol.toml`: network, governance including the Reseal Manager, the CircuitBreaker artifact selector, optional
+  exit books, the `[provision]` plan `deploy-all` follows and the `[external]` addresses the fork suites read;
 - `markets/<market>.toml`: market parameters, vault metadata, role, and artifact references;
-- `circuit-breakers/<name>.toml`: immutable bounds and initial pause/heartbeat settings;
+- `circuit-breaker.toml`: the deployment's single CircuitBreaker — immutable bounds and initial pause/heartbeat settings;
 - `oracles/<name>.toml`: oracle inputs; standalone deployment uses the configured DAO Agent as proxy admin;
 - `guardians/<group>.toml`: GuardianSignals guardian set, quorum, and suspect window; proxy admin and
   `DEFAULT_ADMIN_ROLE` are fixed by the market factory's immutable `ADMIN`;
 - `vaults/<name>.toml` and `adapters/<name>.toml`: an external vault-v2 vault and its Morpho adapter;
-- `bundlers/<name>.toml`: the WETH / wstETH the general adapter binds; the Bundler3 it dispatches through is deployed with it.
+- `bundler.toml`: the WETH / wstETH the general adapter binds; the Bundler3 it dispatches through is deployed with it;
+- `pending.toml`: the multisig action awaiting signatures (`make apply-pending`);
+- `state-mate/`: the state-mate expectations `make state-mate-config` generates for the deployment.
+
+`CONFIG` selects the folder; `RUN` names the artifacts, so a rehearsal deploys the same folder under another run.
 
 Set `RPC_URL`, the deployer signer, and `ETHERSCAN_API_KEY` in `.env`. The signer is `DEPLOYER_ACCOUNT` — an encrypted Foundry keystore created with `cast wallet import --interactive <name>`, for which forge prompts for the password — plus `DEPLOYER_SENDER`, its address, passed as `--sender` (forge derives no sender from a keystore). A raw private key is not accepted; a local unlocked node sets `DEPLOYER_SENDER` alone. Deployment targets broadcast and verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`; all steps for one deployment must use the same `RUN`. Artifacts are immutable and are not overwritten.
 
@@ -52,7 +58,7 @@ CircuitBreaker, oracle, and GuardianSignals artifacts contain their resolved con
 
 Deploy the protocol's single CircuitBreaker before the protocol. The script
 fixes the CircuitBreaker's `ADMIN = evm_script_executor`; the remaining immutable bounds and initial settings
-come from the named `script/config/circuit-breakers/<circuit_breaker_artifact>.toml`. The resolved address is fixed in the market factory and receives
+come from `script/config/<config>/circuit-breaker.toml`; `circuit_breaker_artifact` names the artifact it is recorded as. The resolved address is fixed in the market factory and receives
 `PAUSER_ROLE` on every controller it deploys. The protocol-wide `reseal_manager` receives both `PAUSER_ROLE` and
 `RESUMER_ROLE` on those controllers. There are no per-market controller-role arrays: one CircuitBreaker and one
 Reseal Manager serve the core/factory and all of its markets.
@@ -118,7 +124,7 @@ Optional standalone deployments:
 
 ```sh
 make deploy-vault-v2 CONFIG=mainnet RUN=mainnet-weth-wsteth VAULT=weth-wsteth ADAPTER=weth-wsteth
-make deploy-bundler CONFIG=mainnet RUN=mainnet-weth-wsteth BUNDLER=mainnet
+make deploy-bundler CONFIG=mainnet RUN=mainnet-weth-wsteth
 make deploy-exit-books CONFIG=mainnet RUN=mainnet-weth-wsteth
 ```
 
@@ -127,7 +133,7 @@ make deploy-exit-books CONFIG=mainnet RUN=mainnet-weth-wsteth
 Both are left unconfigured — curator, adapter registration and caps are the vault owner's calls.
 `deploy-bundler` needs an existing run too: it deploys this run's own bundler stack — the stock `Bundler3`
 dispatcher, the vendored `EthereumGeneralAdapter1` bound to the run's core, and the `LidoLendVaultAdapter`, both
-adapters bound to that dispatcher — from the tokens `bundlers/<name>.toml` names, and records it as
+adapters bound to that dispatcher — from the tokens the deployment's `bundler.toml` names, and records it as
 `bundler.toml`. The protocol does not share Morpho's dispatcher: a bundle running through it would carry
 whatever adapters Morpho registers there. Neither adapter holds any protocol role: they act for the bundle's
 initiator and nothing else.
@@ -192,16 +198,16 @@ make fork-run RUN=mainnet-weth-wsteth
 ## Fork provisioning
 
 `test/fork/` needs a deployment to drive before any real network is live, so provisioning stands one up on a
-local anvil fork of a real network. `FORK_CONFIG` defaults to `fork-<CONFIG>`: the fork config records test-only
-role holders such as the Anvil Exit Book pauser without putting them in the production config. It still names
-the real network in `network`, so fork tests resolve external addresses from that network's config. The
-`fork-*` markets differ from production only where a test needs them to — for example a higher LLTV — and go
-through the same scripts, artifact layout and activation as everything above. Its `[provision]` section is the
-test-only deploy plan: it lists markets and standalone vault-v2 resources; oracle and guardian dependencies are
-derived from those market configs.
+local anvil fork of a real network. `FORK_CONFIG` defaults to `fork`, the provisioning deployment's own folder
+under `script/config/`: it records test-only role holders such as the Anvil Exit Book pauser without putting
+them in the production config, and carries its own `[external]` block for the fork suites. Its markets differ
+from production only where a test needs them to — for example a higher LLTV — and go through the same scripts,
+artifact layout and activation as everything above. Its `[provision]` section is the test-only deploy plan: it
+lists markets, standalone vault-v2 resources and whether the bundler stack is deployed; oracle and guardian
+dependencies are derived from those market configs.
 
 ```sh
-make provision-fork RPC_URL=<archive-rpc>            # starts anvil; CONFIG=mainnet -> fork-mainnet
+make provision-fork RPC_URL=<archive-rpc>            # starts anvil; deploys script/config/fork/
 make provision-fork                                  # reuses a compatible anvil already on :8545
 make test-fork-live                                 # the suites against it; re-runnable without re-provisioning
 make provision-stop

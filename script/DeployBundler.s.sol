@@ -19,17 +19,18 @@ contract DeployBundler is Script {
     error RecordedNameMismatch(string expected, string actual);
     error RecordedMorphoMismatch(address expected, address actual);
 
-    /// @param config The deploy config name (`script/config/<config>.toml`).
-    /// @param bundlerName The bundler config name (`script/config/bundlers/<bundlerName>.toml`).
-    function run(string memory config, string memory bundlerName)
+    /// @param config The deployment whose configs are read (`script/config/<config>/`); its `bundler.toml` names
+    ///        the tokens, and the artifact records the deployment as the stack's name.
+    function run(string memory config)
         external
         returns (address bundler3, address generalAdapter, address vaultAdapter)
     {
+        string memory bundlerName = config;
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
         DeployConfigFile.requireChainId(deployConfig);
         DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
 
-        BundlerConfig memory cfg = BundlerConfigFile.read(bundlerName);
+        BundlerConfig memory cfg = BundlerConfigFile.read(config);
         BundlerConfigFile.requireUndeployed();
 
         ArtifactMetadata memory metadata = DeployConfigFile.artifactMetadata(deployConfig);

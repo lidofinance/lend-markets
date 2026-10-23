@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 import {Vm} from "forge-std/Vm.sol";
 
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
+import {DeployConfigFile} from "./DeployConfigFile.sol";
 
 struct GuardianSignalsConfig {
     uint256 quorum;
@@ -17,8 +18,8 @@ library GuardianSignalsConfigFile {
     error ArtifactAlreadyExists(string path);
     error InvalidQuorum(uint256 quorum, uint256 guardiansCount);
 
-    function read(string memory name) internal view returns (GuardianSignalsConfig memory) {
-        return parse(vm.readFile(configPath(name)));
+    function read(string memory config, string memory name) internal view returns (GuardianSignalsConfig memory) {
+        return parse(vm.readFile(configPath(config, name)));
     }
 
     function parse(string memory toml) internal view returns (GuardianSignalsConfig memory cfg) {
@@ -30,29 +31,32 @@ library GuardianSignalsConfigFile {
         }
     }
 
-    function configPath(string memory name) internal pure returns (string memory) {
-        return string.concat("script/config/guardians/", name, ".toml");
+    function configPath(string memory config, string memory name) internal pure returns (string memory) {
+        return string.concat(DeployConfigFile.configDir(config), "/guardians/", name, ".toml");
     }
 
     function writeDeployed(
+        string memory config,
         string memory name,
         address guardianSignals,
         uint256 deployedBlock,
         ArtifactMetadata memory metadata
     ) internal returns (string memory path) {
-        return _write(name, guardianSignals, deployedBlock, false, metadata);
+        return _write(config, name, guardianSignals, deployedBlock, false, metadata);
     }
 
     function writeReference(
+        string memory config,
         string memory name,
         address guardianSignals,
         uint256 recordedBlock,
         ArtifactMetadata memory metadata
     ) internal returns (string memory path) {
-        return _write(name, guardianSignals, recordedBlock, true, metadata);
+        return _write(config, name, guardianSignals, recordedBlock, true, metadata);
     }
 
     function _write(
+        string memory config,
         string memory name,
         address guardianSignals,
         uint256 blockNumber,
@@ -64,7 +68,7 @@ library GuardianSignalsConfigFile {
         if (!vm.exists(dir)) vm.createDir(dir, false);
         path = deployedPath(name);
         if (vm.exists(path)) revert ArtifactAlreadyExists(path);
-        GuardianSignalsConfig memory cfg = read(name);
+        GuardianSignalsConfig memory cfg = read(config, name);
         string memory artifact = ArtifactMetadataFile.header(metadata, "guardian-signals");
         artifact = string.concat(artifact, "\n[guardian_signals]\n");
         artifact = string.concat(artifact, "name = \"", name, "\"\n");

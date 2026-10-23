@@ -89,11 +89,11 @@ contract AddMarket is Script, ProtocolDeployer {
         // is its own deploy step. Recorded here only when the market names an instance this run did not deploy.
         if (input.recordedGuardianSignals == address(0)) {
             GuardianSignalsConfigFile.writeReference(
-                input.guardianGroup, input.market.guardianSignals, deployedBlock, context.artifacts
+                config, input.guardianGroup, input.market.guardianSignals, deployedBlock, context.artifacts
             );
         }
         if (input.recordedOracle == address(0)) {
-            OracleConfigFile.writeReference(input.oracleArtifact, input.market.oracle, context.artifacts);
+            OracleConfigFile.writeReference(config, input.oracleArtifact, input.market.oracle, context.artifacts);
         }
 
         console2.log("market     :", name);
@@ -112,14 +112,15 @@ contract AddMarket is Script, ProtocolDeployer {
         returns (MarketInput memory input)
     {
         input.name = name;
-        input.role = MarketConfigFile.role(name);
-        input.guardianGroup = MarketConfigFile.guardianGroup(name);
-        input.oracleArtifact = MarketConfigFile.oracleArtifact(name);
-        (input.market, input.erc4626WrapperSpec, input.curveParams) = MarketConfigFile.read(name);
+        input.role = MarketConfigFile.role(config, name);
+        input.guardianGroup = MarketConfigFile.guardianGroup(config, name);
+        input.oracleArtifact = MarketConfigFile.oracleArtifact(config, name);
+        (input.market, input.erc4626WrapperSpec, input.curveParams) = MarketConfigFile.read(config, name);
         input.recordedOracle = OracleConfigFile.readDeployed(input.oracleArtifact, context.artifacts);
         input.recordedGuardianSignals = GuardianSignalsConfigFile.readDeployed(input.guardianGroup, context.artifacts);
 
         OraclePreflight.validate(
+            config,
             input.oracleArtifact,
             input.market.oracle,
             input.market.loanToken,
@@ -185,7 +186,7 @@ contract AddMarket is Script, ProtocolDeployer {
             }
         }
         if (input.market.guardianSignals != address(0)) {
-            _validateReusedGuardianSignals(input.guardianGroup, input.factory, input.market.guardianSignals);
+            _validateReusedGuardianSignals(config, input.guardianGroup, input.factory, input.market.guardianSignals);
         }
         if (
             input.recordedGuardianSignals != address(0) && input.recordedGuardianSignals != input.market.guardianSignals
@@ -232,11 +233,13 @@ contract AddMarket is Script, ProtocolDeployer {
         path = ProtocolConfigFile.writeMarket(md, artifacts);
     }
 
-    function _validateReusedGuardianSignals(string memory guardianGroup, address factory, address guardianSignals)
-        private
-        view
-    {
-        GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.read(guardianGroup);
+    function _validateReusedGuardianSignals(
+        string memory config,
+        string memory guardianGroup,
+        address factory,
+        address guardianSignals
+    ) private view {
+        GuardianSignalsConfig memory cfg = GuardianSignalsConfigFile.read(config, guardianGroup);
         LidoLendMarketFactory(factory)
             .validateGuardianSignals(
                 guardianSignals,

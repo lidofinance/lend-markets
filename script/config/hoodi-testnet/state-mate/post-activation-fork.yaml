@@ -1,0 +1,625 @@
+# state-mate config generated from deployed/hoodi-testnet (network hoodi, chain 560048) by tools/gen_state_mate.py: addresses
+# from the run's artifacts, expected values from script/config/hoodi-testnet/, implementations from the node at generation
+# time. Regenerate after any redeploy.
+# Fork activation replay: exit-book allowlists filled, no market steward.
+
+parameters:
+  - &proxyAdmin "0x0534aA41907c9631fae990960bCC72d75fA7cfeD"
+
+deployed:
+  l1:
+    - "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+    - "0x82Eb06AE9259e084ef0c2a8Ce2E02a6C8c260d44"
+    - "0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B"
+    - "0xF46eB3bf7783825B0ffb5f532C148A261Ec518a9"
+    - "0x57Fc097F8235Fd17343f66e1855AF2Ae96452553"
+    - "0x3d7f98a7aDa46DB97C100f09746bf3A0Ff4BE192"
+    - "0xc249abf58AC31dDEB3C715d7B395119aeeF729d1"
+    - "0x567032366c3Ccc84Af77647fffb3e7a00B8b3008"
+    - "0x115C265127A60e32b8EBF235caE88289D4315156"
+    - "0xA5597eF950A9BAA5e00f7138E0fdC9F8bA5a43eE"
+    - "0x236a99c185C7F1edB1FfB0efD2AaD20050A20eD7"
+    - "0xa868D126231D32CE6e930c59E9a279f13b0D2BFe"
+    - "0x823D546AD911fbC6305588448eae9EC794E7AC29"
+    - "0x5BFA5af36D4f102650EE4FeCcB16bba3ccefE06e"
+    - "0xCa29509BCF7D123009e1870F527437D79846F733"
+    - "0xE626f019B04930fd0992A524FbE162695E99644D"
+    - "0xc0DB4417ee3F4510fa60eabFEfC0227e5a1CF127"
+    - "0x88b624325385B3db69Db73A65DAdbaa15DE4406d"
+    - "0xBcf75a605d09e3D31d1BCe9f5Fa3552C58271B28"
+    - "0x781f04920A82504B5AE13E02678dFc696eCca892"
+    - "0x2ae747342805632E4909c1230AC2124937074545"
+    - "0x859c6823Ec7746B1B470b755B2AAc103CB793B69"
+    - "0x53D670DD018A09Af8BfBAdD9817E383fDdf2fb27"
+    - "0x32f290ff3666288d6fA6B9bADC60F0e5457668D7"
+    - "0x323b989e0056388A1207823bde6706cF3266A8B4"
+    - "0x4Bc9C3a51D2BF5D99Fc3bfaF998CC780aF2c8488"
+
+l1:
+  rpcUrl: HOODI_RPC_URL
+  chainId: 560048
+  contracts:
+    core:
+      name: LidoLend
+      address: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+      proxyName: OssifiableProxy
+      implementation: "0x82Eb06AE9259e084ef0c2a8Ce2E02a6C8c260d44"
+      proxyAdmin: *proxyAdmin
+      checks:
+        DOMAIN_SEPARATOR: null
+        extSloads: null
+        feeRecipient: "0x0534aA41907c9631fae990960bCC72d75fA7cfeD"
+        idToMarketParams:
+          - args: ["0x6a1c794db6232d046223fa809c14c59be90eedeb58ba10b9ee00d36e5b8f2f35"]
+            result:
+              loanToken: "0xE69a5c6dd88cA798b93c3C92fc50c51Fd5305eB4"
+              collateralToken: "0x7E99eE3C66636DE415D2d7C880938F2f40f94De4"
+              oracle: "0x2ae747342805632E4909c1230AC2124937074545"
+              irm: "0x88b624325385B3db69Db73A65DAdbaa15DE4406d"
+              lltv: "950000000000000000"
+          - args: ["0x860960f21264e07a94a3f77295952ac3be97bcbece961dd7e22e8da847ddc1f9"]
+            result:
+              loanToken: "0x64f1904d1b419c6889BDf3238e31A138E258eA68"
+              collateralToken: "0xE22a71d42632aBAC08F44FCbd41221A8D8C56972"
+              oracle: "0x53D670DD018A09Af8BfBAdD9817E383fDdf2fb27"
+              irm: "0x88b624325385B3db69Db73A65DAdbaa15DE4406d"
+              lltv: "950000000000000000"
+          - args: ["0x30f38864da6d3e8527220bb16de06dd27e8f6eda8ca202a5dd334d9f1dbdd938"]
+            result:
+              loanToken: "0x97bb030B93faF4684eAC76bA0bf3be5ec7140F36"
+              collateralToken: "0xE22a71d42632aBAC08F44FCbd41221A8D8C56972"
+              oracle: "0x323b989e0056388A1207823bde6706cF3266A8B4"
+              irm: "0x88b624325385B3db69Db73A65DAdbaa15DE4406d"
+              lltv: "950000000000000000"
+        isAuthorized: null
+        isInitialized: true
+        isIrmEnabled:
+          - args: ["0x88b624325385B3db69Db73A65DAdbaa15DE4406d"]
+            result: true
+        isLltvEnabled:
+          - args: ["950000000000000000"]
+            result: true
+        isSettlementEnabled:
+          - args: ["0x6a1c794db6232d046223fa809c14c59be90eedeb58ba10b9ee00d36e5b8f2f35"]
+            result: true
+          - args: ["0x860960f21264e07a94a3f77295952ac3be97bcbece961dd7e22e8da847ddc1f9"]
+            result: true
+          - args: ["0x30f38864da6d3e8527220bb16de06dd27e8f6eda8ca202a5dd334d9f1dbdd938"]
+            result: true
+        market:
+          - args: ["0x6a1c794db6232d046223fa809c14c59be90eedeb58ba10b9ee00d36e5b8f2f35"]
+            result:
+              totalSupplyAssets: null
+              totalSupplyShares: null
+              totalBorrowAssets: null
+              totalBorrowShares: null
+              lastUpdate: null
+              fee: "0"
+          - args: ["0x860960f21264e07a94a3f77295952ac3be97bcbece961dd7e22e8da847ddc1f9"]
+            result:
+              totalSupplyAssets: null
+              totalSupplyShares: null
+              totalBorrowAssets: null
+              totalBorrowShares: null
+              lastUpdate: null
+              fee: "0"
+          - args: ["0x30f38864da6d3e8527220bb16de06dd27e8f6eda8ca202a5dd334d9f1dbdd938"]
+            result:
+              totalSupplyAssets: null
+              totalSupplyShares: null
+              totalBorrowAssets: null
+              totalBorrowShares: null
+              lastUpdate: null
+              fee: "0"
+        marketController:
+          - args: ["0x6a1c794db6232d046223fa809c14c59be90eedeb58ba10b9ee00d36e5b8f2f35"]
+            result: "0x567032366c3Ccc84Af77647fffb3e7a00B8b3008"
+          - args: ["0x860960f21264e07a94a3f77295952ac3be97bcbece961dd7e22e8da847ddc1f9"]
+            result: "0xa868D126231D32CE6e930c59E9a279f13b0D2BFe"
+          - args: ["0x30f38864da6d3e8527220bb16de06dd27e8f6eda8ca202a5dd334d9f1dbdd938"]
+            result: "0x5BFA5af36D4f102650EE4FeCcB16bba3ccefE06e"
+        nonce: null
+        owner: "0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B"
+        position: null
+    ownerFacade:
+      name: LidoLendOwner
+      address: "0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B"
+      checks:
+        DEFAULT_ADMIN_ROLE: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        FEE_MANAGER_ROLE: "0x6c0757dc3e6b28b2580c03fd9e96c274acf4f99d91fbec9b418fa1d70604ff1c"
+        GUARDIAN_MANAGER_ROLE: "0xb3afbb2c56b38273bac1b7b0b06fc410454e2570313eb67ef81dfaef813acd18"
+        LIDO_LEND: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+        MARKET_CREATOR_ROLE: "0xd3065a24ad9e7725d223007135762d2902038999e3e5829146654498a58d9795"
+        MARKET_MANAGER_ROLE: "0x959ec338079b71742207829b3534c23a2ddd8bcc180652a0ea6677af748b5fed"
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        hasRole: null
+        supportsInterface: null
+      ozAcl:
+        "0x0000000000000000000000000000000000000000000000000000000000000000": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD"]
+        "0xd3065a24ad9e7725d223007135762d2902038999e3e5829146654498a58d9795": ["0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"]
+        "0x6c0757dc3e6b28b2580c03fd9e96c274acf4f99d91fbec9b418fa1d70604ff1c": ["0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"]
+        "0x959ec338079b71742207829b3534c23a2ddd8bcc180652a0ea6677af748b5fed": ["0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"]
+        "0xb3afbb2c56b38273bac1b7b0b06fc410454e2570313eb67ef81dfaef813acd18": ["0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"]
+    guardianSignalsShared:
+      name: GuardianSignals
+      address: "0xF46eB3bf7783825B0ffb5f532C148A261Ec518a9"
+      proxyName: OssifiableProxy
+      implementation: "0x57Fc097F8235Fd17343f66e1855AF2Ae96452553"
+      proxyAdmin: *proxyAdmin
+      checks:
+        ACCESS_LIMITER_ROLE: "0xfc5f5b5f0f3f8995740cf969e82c673b6edb5075d8813046f28c6058bdd58de0"
+        ACCESS_RESTORER_ROLE: "0x2185faf57ed59187a53d561a36691febce26676457b65b4553aa732fd2c9d195"
+        DEFAULT_ADMIN_ROLE: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        MANAGER_ROLE: "0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08"
+        MAX_GUARDIANS_COUNT: null
+        MAX_SUSPECT_WINDOW: null
+        getDelegate: null
+        getFlaggedBy: null
+        getGuardianCount: 2
+        getGuardians: null
+        getHeartbeat: null
+        getHeartbeats: null
+        getOpinion: null
+        getQuorum: 1
+        getQuorumFrontier: null
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        getSuspectWindow: 86400
+        getSuspectedBy: null
+        hasRole: null
+        isBanned: null
+        isGuardian:
+          - args: ["0xe9bFDBB915b734D10aA53B3838371F67a7704102"]
+            result: true
+          - args: ["0xA6b2dbCCE7895347A62b4409d29bA7ce29A74655"]
+            result: true
+        supportsInterface: null
+      ozAcl:
+        "0x0000000000000000000000000000000000000000000000000000000000000000": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD"]
+        "0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08": ["0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B"]
+        "0x2185faf57ed59187a53d561a36691febce26676457b65b4553aa732fd2c9d195": ["0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B"]
+        "0xfc5f5b5f0f3f8995740cf969e82c673b6edb5075d8813046f28c6058bdd58de0": []
+    circuitBreaker:
+      name: CircuitBreaker
+      address: "0x3d7f98a7aDa46DB97C100f09746bf3A0Ff4BE192"
+      checks:
+        ADMIN: "0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"
+        MAX_HEARTBEAT_INTERVAL: "94608000"
+        MAX_PAUSE_DURATION: "5184000"
+        MIN_HEARTBEAT_INTERVAL: "2592000"
+        MIN_PAUSE_DURATION: "60"
+        getPausableCount:
+          - args: ["0x8223d372898CA8f185F24b5EDA373FDaea16B1c6"]
+            result: 3
+        getPausables: null
+        getPauser:
+          - args: ["0x567032366c3Ccc84Af77647fffb3e7a00B8b3008"]
+            result: "0x8223d372898CA8f185F24b5EDA373FDaea16B1c6"
+          - args: ["0xa868D126231D32CE6e930c59E9a279f13b0D2BFe"]
+            result: "0x8223d372898CA8f185F24b5EDA373FDaea16B1c6"
+          - args: ["0x5BFA5af36D4f102650EE4FeCcB16bba3ccefE06e"]
+            result: "0x8223d372898CA8f185F24b5EDA373FDaea16B1c6"
+        heartbeatExpiry: null
+        heartbeatInterval: "31536000"
+        isPauserLive:
+          - args: ["0x8223d372898CA8f185F24b5EDA373FDaea16B1c6"]
+            result: true
+        pauseDuration: "300"
+    riskStewardDashboard:
+      name: RiskStewardDashboard
+      address: "0xc249abf58AC31dDEB3C715d7B395119aeeF729d1"
+      checks:
+        DEFAULT_ADMIN_ROLE: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        LIDO_LEND: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+        STEWARD_ADMIN_ROLE: "0x4aadd87f245821b0ca19440acc61321fad3b1dd387bc52b706900941926fbce8"
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        hasRole: null
+        isMarketSteward: null
+        marketStewards: null
+        supportsInterface: null
+      ozAcl:
+        "0x0000000000000000000000000000000000000000000000000000000000000000": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD"]
+        "0x4aadd87f245821b0ca19440acc61321fad3b1dd387bc52b706900941926fbce8": ["0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"]
+    controllerWethWsteth:
+      name: LidoLendMarketController
+      address: "0x567032366c3Ccc84Af77647fffb3e7a00B8b3008"
+      proxyName: OssifiableProxy
+      implementation: "0x115C265127A60e32b8EBF235caE88289D4315156"
+      proxyAdmin: *proxyAdmin
+      checks:
+        DEFAULT_ADMIN_ROLE: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        FREEZER_ROLE: "0x92de27771f92d6942691d73358b3a4673e4880de8356f8f2cf452be87e02d363"
+        LIDO_LEND: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+        MANAGER_ROLE: "0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08"
+        MAX_BORROW_SHARE_RATE: null
+        PAUSER_ROLE: "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a"
+        PAUSE_INFINITELY: null
+        RESUMER_ROLE: "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3"
+        UNFREEZER_ROLE: "0x3e02eaefb22229c9fa4ecb927d4a3b0bd2d30b1af650a970c5a95ba1f96906ea"
+        collateralActivationConfig: ["600", "7200", "10000000000000000000000", "1000000000000000000", "0", "10000000000000000000", "129600", "7200", "7200"]
+        currentActivationDelay: null
+        currentInflow: null
+        getResumeSinceTimestamp: null
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        guardianSignals: "0xF46eB3bf7783825B0ffb5f532C148A261Ec518a9"
+        hasBadDebt: false
+        hasInstantActivation: null
+        hasRole: null
+        isFrozen: false
+        isPaused: false
+        marketId: "0x6a1c794db6232d046223fa809c14c59be90eedeb58ba10b9ee00d36e5b8f2f35"
+        maxDeposit: null
+        maxWithdrawableAssets: null
+        nextSettlementBorrower: null
+        positionOf: null
+        settlementBorrowers: null
+        settlementBorrowersCount: null
+        settlementConfig: ["100", "10000000000000000000", "10000000000000000000", "100"]
+        settlementFor: null
+        settlementLtv: null
+        supplyCap: "10000000000000000000000"
+        supportsInterface: null
+      ozAcl:
+        "0x0000000000000000000000000000000000000000000000000000000000000000": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD"]
+        "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a": ["0x3d7f98a7aDa46DB97C100f09746bf3A0Ff4BE192", "0x05172CbCDb7307228F781436b327679e4DAE166B"]
+        "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3": ["0x05172CbCDb7307228F781436b327679e4DAE166B"]
+        "0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08": ["0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B", "0xc249abf58AC31dDEB3C715d7B395119aeeF729d1"]
+        "0x92de27771f92d6942691d73358b3a4673e4880de8356f8f2cf452be87e02d363": ["0xc249abf58AC31dDEB3C715d7B395119aeeF729d1"]
+        "0x3e02eaefb22229c9fa4ecb927d4a3b0bd2d30b1af650a970c5a95ba1f96906ea": ["0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B"]
+    vaultWethWsteth:
+      name: LidoLendERC4626
+      address: "0xA5597eF950A9BAA5e00f7138E0fdC9F8bA5a43eE"
+      proxyName: OssifiableProxy
+      implementation: "0x236a99c185C7F1edB1FfB0efD2AaD20050A20eD7"
+      proxyAdmin: *proxyAdmin
+      checks:
+        DEFAULT_MAX_SETTLEMENT_ITERATIONS: null
+        LIDO_LEND: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+        allowance: null
+        asset: "0xE69a5c6dd88cA798b93c3C92fc50c51Fd5305eB4"
+        balanceOf: null
+        controller: "0x567032366c3Ccc84Af77647fffb3e7a00B8b3008"
+        convertToAssets: null
+        convertToShares: null
+        decimals: 18
+        managedSupplyShares: null
+        marketId: "0x6a1c794db6232d046223fa809c14c59be90eedeb58ba10b9ee00d36e5b8f2f35"
+        marketParams: null
+        maxDeposit: null
+        maxMint: null
+        maxRedeem: null
+        maxWithdraw: null
+        name: "Lido wstETH/WETH Vault (hoodi)"
+        previewDeposit: null
+        previewMint: null
+        previewRedeem: null
+        previewWithdraw: null
+        symbol: "hoodiWSTETH-WETH"
+        totalAssets: null
+        totalSupply: null
+    controllerUsdyUsdt:
+      name: LidoLendMarketController
+      address: "0xa868D126231D32CE6e930c59E9a279f13b0D2BFe"
+      proxyName: OssifiableProxy
+      implementation: "0x115C265127A60e32b8EBF235caE88289D4315156"
+      proxyAdmin: *proxyAdmin
+      checks:
+        DEFAULT_ADMIN_ROLE: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        FREEZER_ROLE: "0x92de27771f92d6942691d73358b3a4673e4880de8356f8f2cf452be87e02d363"
+        LIDO_LEND: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+        MANAGER_ROLE: "0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08"
+        MAX_BORROW_SHARE_RATE: null
+        PAUSER_ROLE: "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a"
+        PAUSE_INFINITELY: null
+        RESUMER_ROLE: "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3"
+        UNFREEZER_ROLE: "0x3e02eaefb22229c9fa4ecb927d4a3b0bd2d30b1af650a970c5a95ba1f96906ea"
+        collateralActivationConfig: ["600", "7200", "25000000000000000000000000", "2500000000000000000000", "0", "25000000000000000000000", "129600", "7200", "7200"]
+        currentActivationDelay: null
+        currentInflow: null
+        getResumeSinceTimestamp: null
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        guardianSignals: "0xF46eB3bf7783825B0ffb5f532C148A261Ec518a9"
+        hasBadDebt: false
+        hasInstantActivation: null
+        hasRole: null
+        isFrozen: false
+        isPaused: false
+        marketId: "0x860960f21264e07a94a3f77295952ac3be97bcbece961dd7e22e8da847ddc1f9"
+        maxDeposit: null
+        maxWithdrawableAssets: null
+        nextSettlementBorrower: null
+        positionOf: null
+        settlementBorrowers: null
+        settlementBorrowersCount: null
+        settlementConfig: ["100", "0", "25000000000000000000000", "100"]
+        settlementFor: null
+        settlementLtv: null
+        supplyCap: "25000000000000"
+        supportsInterface: null
+      ozAcl:
+        "0x0000000000000000000000000000000000000000000000000000000000000000": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD"]
+        "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a": ["0x3d7f98a7aDa46DB97C100f09746bf3A0Ff4BE192", "0x05172CbCDb7307228F781436b327679e4DAE166B"]
+        "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3": ["0x05172CbCDb7307228F781436b327679e4DAE166B"]
+        "0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08": ["0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B", "0xc249abf58AC31dDEB3C715d7B395119aeeF729d1"]
+        "0x92de27771f92d6942691d73358b3a4673e4880de8356f8f2cf452be87e02d363": ["0xc249abf58AC31dDEB3C715d7B395119aeeF729d1"]
+        "0x3e02eaefb22229c9fa4ecb927d4a3b0bd2d30b1af650a970c5a95ba1f96906ea": ["0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B"]
+    vaultUsdyUsdt:
+      name: LidoLendERC4626
+      address: "0x823D546AD911fbC6305588448eae9EC794E7AC29"
+      proxyName: OssifiableProxy
+      implementation: "0x236a99c185C7F1edB1FfB0efD2AaD20050A20eD7"
+      proxyAdmin: *proxyAdmin
+      checks:
+        DEFAULT_MAX_SETTLEMENT_ITERATIONS: null
+        LIDO_LEND: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+        allowance: null
+        asset: "0x64f1904d1b419c6889BDf3238e31A138E258eA68"
+        balanceOf: null
+        controller: "0xa868D126231D32CE6e930c59E9a279f13b0D2BFe"
+        convertToAssets: null
+        convertToShares: null
+        decimals: 18
+        managedSupplyShares: null
+        marketId: "0x860960f21264e07a94a3f77295952ac3be97bcbece961dd7e22e8da847ddc1f9"
+        marketParams: null
+        maxDeposit: null
+        maxMint: null
+        maxRedeem: null
+        maxWithdraw: null
+        name: "Lido USDT/USDY Vault (hoodi)"
+        previewDeposit: null
+        previewMint: null
+        previewRedeem: null
+        previewWithdraw: null
+        symbol: "hoodiUSDT-USDY"
+        totalAssets: null
+        totalSupply: null
+    controllerUsdyUsdc:
+      name: LidoLendMarketController
+      address: "0x5BFA5af36D4f102650EE4FeCcB16bba3ccefE06e"
+      proxyName: OssifiableProxy
+      implementation: "0x115C265127A60e32b8EBF235caE88289D4315156"
+      proxyAdmin: *proxyAdmin
+      checks:
+        DEFAULT_ADMIN_ROLE: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        FREEZER_ROLE: "0x92de27771f92d6942691d73358b3a4673e4880de8356f8f2cf452be87e02d363"
+        LIDO_LEND: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+        MANAGER_ROLE: "0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08"
+        MAX_BORROW_SHARE_RATE: null
+        PAUSER_ROLE: "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a"
+        PAUSE_INFINITELY: null
+        RESUMER_ROLE: "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3"
+        UNFREEZER_ROLE: "0x3e02eaefb22229c9fa4ecb927d4a3b0bd2d30b1af650a970c5a95ba1f96906ea"
+        collateralActivationConfig: ["600", "7200", "25000000000000000000000000", "2500000000000000000000", "0", "25000000000000000000000", "129600", "7200", "7200"]
+        currentActivationDelay: null
+        currentInflow: null
+        getResumeSinceTimestamp: null
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        guardianSignals: "0xF46eB3bf7783825B0ffb5f532C148A261Ec518a9"
+        hasBadDebt: false
+        hasInstantActivation: null
+        hasRole: null
+        isFrozen: false
+        isPaused: false
+        marketId: "0x30f38864da6d3e8527220bb16de06dd27e8f6eda8ca202a5dd334d9f1dbdd938"
+        maxDeposit: null
+        maxWithdrawableAssets: null
+        nextSettlementBorrower: null
+        positionOf: null
+        settlementBorrowers: null
+        settlementBorrowersCount: null
+        settlementConfig: ["100", "0", "25000000000000000000000", "100"]
+        settlementFor: null
+        settlementLtv: null
+        supplyCap: "25000000000000"
+        supportsInterface: null
+      ozAcl:
+        "0x0000000000000000000000000000000000000000000000000000000000000000": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD"]
+        "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a": ["0x3d7f98a7aDa46DB97C100f09746bf3A0Ff4BE192", "0x05172CbCDb7307228F781436b327679e4DAE166B"]
+        "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3": ["0x05172CbCDb7307228F781436b327679e4DAE166B"]
+        "0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08": ["0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B", "0xc249abf58AC31dDEB3C715d7B395119aeeF729d1"]
+        "0x92de27771f92d6942691d73358b3a4673e4880de8356f8f2cf452be87e02d363": ["0xc249abf58AC31dDEB3C715d7B395119aeeF729d1"]
+        "0x3e02eaefb22229c9fa4ecb927d4a3b0bd2d30b1af650a970c5a95ba1f96906ea": ["0x5B2BdE06288a5db7289C028Fd4C8C175B5E3985B"]
+    vaultUsdyUsdc:
+      name: LidoLendERC4626
+      address: "0xCa29509BCF7D123009e1870F527437D79846F733"
+      proxyName: OssifiableProxy
+      implementation: "0x236a99c185C7F1edB1FfB0efD2AaD20050A20eD7"
+      proxyAdmin: *proxyAdmin
+      checks:
+        DEFAULT_MAX_SETTLEMENT_ITERATIONS: null
+        LIDO_LEND: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+        allowance: null
+        asset: "0x97bb030B93faF4684eAC76bA0bf3be5ec7140F36"
+        balanceOf: null
+        controller: "0x5BFA5af36D4f102650EE4FeCcB16bba3ccefE06e"
+        convertToAssets: null
+        convertToShares: null
+        decimals: 18
+        managedSupplyShares: null
+        marketId: "0x30f38864da6d3e8527220bb16de06dd27e8f6eda8ca202a5dd334d9f1dbdd938"
+        marketParams: null
+        maxDeposit: null
+        maxMint: null
+        maxRedeem: null
+        maxWithdraw: null
+        name: "Lido USDC/USDY Vault (hoodi)"
+        previewDeposit: null
+        previewMint: null
+        previewRedeem: null
+        previewWithdraw: null
+        symbol: "hoodiUSDC-USDY"
+        totalAssets: null
+        totalSupply: null
+    morphoExitBook:
+      name: MorphoExitBook
+      address: "0xE626f019B04930fd0992A524FbE162695E99644D"
+      checks:
+        ALLOWLIST_MANAGER_ROLE: "0x8f951261ef278c1584c41b9b68518433e1baeac2a60d977f71ca9fe81511cc2f"
+        DEFAULT_ADMIN_ROLE: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        FEE_MANAGER_ROLE: "0x6c0757dc3e6b28b2580c03fd9e96c274acf4f99d91fbec9b418fa1d70604ff1c"
+        MAX_PRIORITY_FEE: null
+        MAX_REQUEST_LIFETIME: "7776000"
+        MAX_SERVICE_FEE: null
+        MORPHO: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+        PAUSER_ROLE: "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a"
+        RECOVERER_ROLE: "0xb3e25b5404b87e5a838579cb5d7481d61ad96ee284d38ec1e97c07ba64e7f6fc"
+        RESUMER_ROLE: "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3"
+        feeRecipient: "0x0000000000000000000000000000000000000000"
+        getExitRequest: null
+        getOwnerRequestCount: null
+        getOwnerRequestIds: null
+        getRequests: null
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        hasRole: null
+        isMarketAllowed:
+          - args: ["0x6a1c794db6232d046223fa809c14c59be90eedeb58ba10b9ee00d36e5b8f2f35"]
+            result: true
+          - args: ["0x860960f21264e07a94a3f77295952ac3be97bcbece961dd7e22e8da847ddc1f9"]
+            result: true
+          - args: ["0x30f38864da6d3e8527220bb16de06dd27e8f6eda8ca202a5dd334d9f1dbdd938"]
+            result: true
+        lastRequestId: null
+        marketParamsOf: null
+        paused: false
+        serviceFee: "0"
+        supportsInterface: null
+      ozAcl:
+        "0x0000000000000000000000000000000000000000000000000000000000000000": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD"]
+        "0x8f951261ef278c1584c41b9b68518433e1baeac2a60d977f71ca9fe81511cc2f": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD", "0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"]
+        "0x6c0757dc3e6b28b2580c03fd9e96c274acf4f99d91fbec9b418fa1d70604ff1c": ["0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"]
+        "0xb3e25b5404b87e5a838579cb5d7481d61ad96ee284d38ec1e97c07ba64e7f6fc": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD"]
+        "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a": ["0xe65b86bB03Bd1B11BF39C6d87060c7A52236988D"]
+        "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3": []
+    erc4626ExitBook:
+      name: Erc4626ExitBook
+      address: "0xc0DB4417ee3F4510fa60eabFEfC0227e5a1CF127"
+      checks:
+        ALLOWLIST_MANAGER_ROLE: "0x8f951261ef278c1584c41b9b68518433e1baeac2a60d977f71ca9fe81511cc2f"
+        DEFAULT_ADMIN_ROLE: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        FEE_MANAGER_ROLE: "0x6c0757dc3e6b28b2580c03fd9e96c274acf4f99d91fbec9b418fa1d70604ff1c"
+        MAX_PRIORITY_FEE: null
+        MAX_REQUEST_LIFETIME: "7776000"
+        MAX_SERVICE_FEE: null
+        PAUSER_ROLE: "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a"
+        RECOVERER_ROLE: "0xb3e25b5404b87e5a838579cb5d7481d61ad96ee284d38ec1e97c07ba64e7f6fc"
+        RESUMER_ROLE: "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3"
+        feeRecipient: "0x0000000000000000000000000000000000000000"
+        getExitRequest: null
+        getOwnerRequestCount: null
+        getOwnerRequestIds: null
+        getRequests: null
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        hasRole: null
+        isVaultAllowed:
+          - args: ["0xA5597eF950A9BAA5e00f7138E0fdC9F8bA5a43eE"]
+            result: true
+          - args: ["0x823D546AD911fbC6305588448eae9EC794E7AC29"]
+            result: true
+          - args: ["0xCa29509BCF7D123009e1870F527437D79846F733"]
+            result: true
+        lastRequestId: null
+        paused: false
+        serviceFee: "0"
+        supportsInterface: null
+        vaultOf: null
+      ozAcl:
+        "0x0000000000000000000000000000000000000000000000000000000000000000": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD"]
+        "0x8f951261ef278c1584c41b9b68518433e1baeac2a60d977f71ca9fe81511cc2f": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD", "0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"]
+        "0x6c0757dc3e6b28b2580c03fd9e96c274acf4f99d91fbec9b418fa1d70604ff1c": ["0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"]
+        "0xb3e25b5404b87e5a838579cb5d7481d61ad96ee284d38ec1e97c07ba64e7f6fc": ["0x0534aA41907c9631fae990960bCC72d75fA7cfeD"]
+        "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a": ["0xe65b86bB03Bd1B11BF39C6d87060c7A52236988D"]
+        "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3": []
+    irmRouter:
+      name: IrmRouter
+      address: "0x88b624325385B3db69Db73A65DAdbaa15DE4406d"
+      proxyName: OssifiableProxy
+      implementation: "0xBcf75a605d09e3D31d1BCe9f5Fa3552C58271B28"
+      proxyAdmin: *proxyAdmin
+      checks:
+        MORPHO: "0x78d3262E82A35d290507bCF9B4834735DdA6b854"
+        borrowRateView: null
+        isInitialized: true
+        manager: "0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"
+        marketIrm:
+          - args: ["0x6a1c794db6232d046223fa809c14c59be90eedeb58ba10b9ee00d36e5b8f2f35"]
+            result: "0x781f04920A82504B5AE13E02678dFc696eCca892"
+          - args: ["0x860960f21264e07a94a3f77295952ac3be97bcbece961dd7e22e8da847ddc1f9"]
+            result: "0x781f04920A82504B5AE13E02678dFc696eCca892"
+          - args: ["0x30f38864da6d3e8527220bb16de06dd27e8f6eda8ca202a5dd334d9f1dbdd938"]
+            result: "0x781f04920A82504B5AE13E02678dFc696eCca892"
+        owner: "0x0534aA41907c9631fae990960bCC72d75fA7cfeD"
+    adaptiveCurveIrm:
+      name: AdaptiveCurveIrm
+      address: "0x781f04920A82504B5AE13E02678dFc696eCca892"
+      checks:
+        ROUTER: "0x88b624325385B3db69Db73A65DAdbaa15DE4406d"
+        borrowRateView: null
+        manager: "0x79a20FD0FA36453B2F45eAbab19bfef43575Ba9E"
+        marketCurveConfig:
+          - args: ["0x6a1c794db6232d046223fa809c14c59be90eedeb58ba10b9ee00d36e5b8f2f35"]
+            result: "0xe01a9F7FB41B7557f00Db1B485bb51cda1A2a003"
+          - args: ["0x860960f21264e07a94a3f77295952ac3be97bcbece961dd7e22e8da847ddc1f9"]
+            result: "0x611401E778143B4f7BAA816F49FF5A4A35cf2101"
+          - args: ["0x30f38864da6d3e8527220bb16de06dd27e8f6eda8ca202a5dd334d9f1dbdd938"]
+            result: "0x611401E778143B4f7BAA816F49FF5A4A35cf2101"
+        owner: "0x0534aA41907c9631fae990960bCC72d75fA7cfeD"
+        rateAtTarget: null
+    oracleWethWsteth:
+      name: WstEthRateOracle
+      address: "0x2ae747342805632E4909c1230AC2124937074545"
+      proxyName: OssifiableProxy
+      implementation: "0x859c6823Ec7746B1B470b755B2AAc103CB793B69"
+      proxyAdmin: *proxyAdmin
+      checks:
+        WSTETH: "0x7E99eE3C66636DE415D2d7C880938F2f40f94De4"
+        price: null
+    oracleUsdyUsdt:
+      name: UsdyStableOracle
+      address: "0x53D670DD018A09Af8BfBAdD9817E383fDdf2fb27"
+      proxyName: OssifiableProxy
+      implementation: "0x32f290ff3666288d6fA6B9bADC60F0e5457668D7"
+      proxyAdmin: *proxyAdmin
+      checks:
+        MAX_PRICE: "100000000000000000000000000"
+        MIN_PRICE: "100000000000000000000000"
+        USDY_ORACLE: "0xd6237FecDF9C1D9b023A5205C17549E3037EeEec"
+        price: null
+        scale: null
+        stableUsdFeed: "0xeC3785b13b21c226D66B5bC2E82BB2f4226f715e"
+    oracleUsdyUsdc:
+      name: UsdyStableOracle
+      address: "0x323b989e0056388A1207823bde6706cF3266A8B4"
+      proxyName: OssifiableProxy
+      implementation: "0x4Bc9C3a51D2BF5D99Fc3bfaF998CC780aF2c8488"
+      proxyAdmin: *proxyAdmin
+      checks:
+        MAX_PRICE: "100000000000000000000000000"
+        MIN_PRICE: "100000000000000000000000"
+        USDY_ORACLE: "0xd6237FecDF9C1D9b023A5205C17549E3037EeEec"
+        price: null
+        scale: null
+        stableUsdFeed: "0x9d156F7F5ed1fEbDc4996CAA835CD964A10bd650"
