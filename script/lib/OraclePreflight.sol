@@ -5,9 +5,15 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
+import {
+    TrailingAnchorOracleBase,
+    ORACLE_PRICE_DECIMALS,
+    PRICE_DECIMALS
+} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
-import {OracleConfigFile, WstEthOracleConfig, UsdyOracleConfig} from "./OracleConfigFile.sol";
+import {NavOracleImplementation} from "./NavOracleImplementation.sol";
+import {NavOracleConfig, OracleConfigFile, WstEthOracleConfig, UsdyOracleConfig} from "./OracleConfigFile.sol";
 
 interface IOraclePreflight {
     function price() external view returns (uint256);
@@ -53,10 +59,15 @@ library OraclePreflight {
         string memory toml = OracleConfigFile.readRaw(name);
         bool isWstEth = OracleConfigFile.hasKey(toml, ".wsteth");
         bool isUsdy = OracleConfigFile.hasKey(toml, ".usdy_oracle");
-        if (!isWstEth && !isUsdy) revert UnknownOracleConfig(name);
+        bool isNav = OracleConfigFile.isNavKind(OracleConfigFile.kind(name));
+        if (!isWstEth && !isUsdy && !isNav) revert UnknownOracleConfig(name);
         if (isWstEth && isUsdy) revert AmbiguousOracleConfig(name);
 
-        if (isWstEth) {
+        if (isNav) {
+            NavOracleConfig memory cfg = OracleConfigFile.readNav(name);
+            address implementation = validateProxy(oracle, expectedAdmin);
+            validateNav(cfg, oracle, implementation, loanToken, collateralToken);
+        } else if (isWstEth) {
             WstEthOracleConfig memory cfg = OracleConfigFile.readWstEth(name);
             address implementation = validateProxy(oracle, expectedAdmin);
             validateWstEth(cfg, oracle, implementation, collateralToken);
@@ -138,6 +149,47 @@ library OraclePreflight {
         uint256 livePrice = IOraclePreflight(oracle).price();
         if (livePrice <= cfg.minPrice || livePrice >= cfg.maxPrice) {
             revert OraclePriceOutOfConfiguredBounds(livePrice, cfg.minPrice, cfg.maxPrice);
+        }
+    }
+
+    /// @notice The NAV oracle is the configured adapter over the market's tokens, its implementation is the one the
+    ///         config builds, and it runs on the configured bounds, lifetime and speeds.
+    function validateNav(
+        NavOracleConfig memory cfg,
+        address oracle,
+        address implementation,
+        address loanToken,
+        address collateralToken
+    ) internal {
+        if (cfg.loanToken != loanToken) {
+            revert OracleAddressMismatch("loan_token", loanToken, cfg.loanToken);
+        }
+        if (cfg.collateralToken != collateralToken) {
+            revert OracleAddressMismatch("collateral_token", collateralToken, cfg.collateralToken);
+        }
+        _requireCodehash(NavOracleImplementation.deploy(cfg), implementation);
+
+        TrailingAnchorOracleBase nav = TrailingAnchorOracleBase(oracle);
+        uint256 expectedScale = 10
+            ** (ORACLE_PRICE_DECIMALS
+                + IERC20Metadata(loanToken).decimals()
+                - IERC20Metadata(collateralToken).decimals()
+                - PRICE_DECIMALS);
+        if (nav.PRICE_SCALE() != expectedScale) revert OracleScaleMismatch(expectedScale, nav.PRICE_SCALE());
+        if (nav.maxPriceIncrease() != cfg.maxPriceIncrease) {
+            revert OracleUintMismatch("max_price_increase", cfg.maxPriceIncrease, nav.maxPriceIncrease());
+        }
+        if (nav.maxPriceDecrease() != cfg.maxPriceDecrease) {
+            revert OracleUintMismatch("max_price_decrease", cfg.maxPriceDecrease, nav.maxPriceDecrease());
+        }
+        if (nav.anchorLifetime() != cfg.anchorLifetime) {
+            revert OracleUintMismatch("anchor_lifetime", cfg.anchorLifetime, nav.anchorLifetime());
+        }
+        if (nav.maxAnchorRise() != cfg.maxAnchorRise) {
+            revert OracleUintMismatch("max_anchor_rise", cfg.maxAnchorRise, nav.maxAnchorRise());
+        }
+        if (nav.maxAnchorFall() != cfg.maxAnchorFall) {
+            revert OracleUintMismatch("max_anchor_fall", cfg.maxAnchorFall, nav.maxAnchorFall());
         }
     }
 

@@ -412,6 +412,11 @@ GUARDIAN_VIEW = "IGuardianSignalsView.sol/IGuardianSignalsView.json"
 GUARDIAN_TYPES = "GuardianSignalsTypes.sol/GuardianSignalsTypes.json"
 WSTETH_ORACLE = "WstEthRateOracle.sol/WstEthRateOracle.json"
 USDY_ORACLE = "UsdyStableOracle.sol/UsdyStableOracle.json"
+NAV_ORACLE_BASE = "TrailingAnchorOracleBase.sol/TrailingAnchorOracleBase.json"
+NAV_ORACLE_ADAPTERS = (
+    ("UsdyNavOracle.sol/UsdyNavOracle.json", "UsdyNavOracle"),
+    ("CentrifugeNavOracle.sol/CentrifugeNavOracle.json", "CentrifugeNavOracle"),
+)
 EXIT_BOOK_BASE = "IExitBook.sol/IExitBook.json"
 EXIT_BOOK_4626 = "IErc4626ExitBook.sol/IErc4626ExitBook.json"
 EXIT_BOOK_MORPHO = "IMorphoExitBook.sol/IMorphoExitBook.json"
@@ -552,6 +557,16 @@ def main() -> int:
                               render_contract(WSTETH_ORACLE, "WstEthRateOracle", reg, BASE)))
     written.append(write_page("usdy-stable-oracle.md", "UsdyStableOracle",
                               render_contract(USDY_ORACLE, "UsdyStableOracle", reg, BASE)))
+
+    # The NAV oracle family: every rule lives in the abstract base, each adapter adds its source and its scaling.
+    nav_body = ["The NAV oracle family. `TrailingAnchorOracleBase` holds every rule and each adapter binds one source "
+                "and overrides only how it is read. The mechanism, its invariants and its calibration are specified in "
+                "[Trailing Anchor Oracle](../trailing-anchor-oracle.md).", "", ACCESS_CONTROL_NOTE, ""]
+    nav_body += [f"{'#' * BASE} TrailingAnchorOracleBase", ""] + render_contract(
+        NAV_ORACLE_BASE, "TrailingAnchorOracleBase", reg, BASE + 1)
+    for rel, name in NAV_ORACLE_ADAPTERS:
+        nav_body += [f"{'#' * BASE} {name}", ""] + render_contract(rel, name, reg, BASE + 1)
+    written.append(write_page("nav-oracle.md", "NAV Oracle", nav_body))
 
     # Shared types: Id/MarketParams/Position are forked Morpho core (defer detail to the fork). The settlement types
     # are ours and are parsed from source because their file emits no standalone artifact.

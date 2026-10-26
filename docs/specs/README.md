@@ -14,13 +14,14 @@ These documents explain system behavior, cross-contract rules, formulas, invaria
 - [lender-settlement.md](lender-settlement.md) — direct and vault settlement, lender exits, queue policy, budgets, and rounding boundaries.
 - [exit-books.md](exit-books.md) — request lifecycle, exact-asset fill accounting, external liquidity composition, and the filler workflow.
 - [roles.md](roles.md) — every privileged action mapped to its role, class, and intended holder.
+- [trailing-anchor-oracle.md](trailing-anchor-oracle.md) — the NAV oracle: the price check around an anchor that trails the source, anchor updates, staleness, and the source adapters.
 - [WETH / wstETH](markets/eth-steth.md) and [USDY / Stablecoin Markets](markets/stables-usdy.md) — market-specific assets, oracle assumptions, transfer constraints, and parameters.
 
 ## API reference (generated)
 
 These pages render the documented local contract surface from Solidity NatSpec: functions, structs, events, errors, and state variables. They are never hand-edited. Standard inherited surfaces may remain in the relevant upstream standard or dependency and are not repeated unless the page says otherwise.
 
-- Market runtime: [LidoLendMarketController](api/lido-lend-market-controller.md), [LidoLendERC4626](api/lido-lend-erc4626.md), [GuardianSignals](api/guardian-signals.md), [WstEthRateOracle](api/wst-eth-rate-oracle.md), and [UsdyStableOracle](api/usdy-stable-oracle.md).
+- Market runtime: [LidoLendMarketController](api/lido-lend-market-controller.md), [LidoLendERC4626](api/lido-lend-erc4626.md), [GuardianSignals](api/guardian-signals.md), [WstEthRateOracle](api/wst-eth-rate-oracle.md), [UsdyStableOracle](api/usdy-stable-oracle.md), and the [NAV oracles](api/nav-oracle.md).
 - Governance and deployment: [LidoLendOwner](api/lido-lend-owner.md), [LidoLendMarketFactory](api/lido-lend-market-factory.md), [RiskStewardDashboard](api/risk-steward-dashboard.md), and [OssifiableProxy](api/ossifiable-proxy.md).
 - Optional user periphery: the [Exit Book family](api/exit-book.md) and [Bundler3 adapters](api/bundler3-adapters.md).
 - Common ABI definitions: [shared types](api/shared-types.md).

@@ -78,6 +78,16 @@ make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
 `deploy-protocol` includes exit books when `exit_books = true`. Use `deploy-oracle-usdy` for USDY or
 `deploy-run` for the canonical single-CircuitBreaker, single-WstETH-oracle flow.
 
+`deploy-oracle-nav` deploys a NAV oracle: it builds the adapter its config's `kind` names (`nav-usdy`,
+`nav-centrifuge`) from the config's constructor arguments, puts it behind an `OssifiableProxy` with
+the DAO Agent as admin, and initializes it from the live source with the config's `max_price_increase`,
+`max_price_decrease`, `anchor_lifetime`, `max_anchor_rise` and `max_anchor_fall`. The deployer
+initializes as the temporary `DEFAULT_ADMIN_ROLE` holder, grants `MANAGER_ROLE` to the EVMScriptExecutor and the
+Agent, `PRICE_ACCEPTOR_ROLE` to the deploy config's `price_acceptor` (the Risk Steward Committee) and the Agent, and
+`DEFAULT_ADMIN_ROLE` to the Agent, and renounces in the same broadcast; it refuses to run without `price_acceptor`.
+The artifact under `deployed/<RUN>/oracles/` records the kind, the constructor arguments and the five parameters.
+The live source must already price inside the bounds, or `deploy-market`'s preflight refuses the oracle.
+
 `deploy-protocol` deploys the backbone and, when `exit_books = true`, the exit books. Markets are not part of
 it: each is its own `deploy-market` run against that backbone, so a run's market set is the sequence of those
 runs and is recorded in `deployed/<RUN>/markets/`.

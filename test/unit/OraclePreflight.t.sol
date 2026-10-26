@@ -5,10 +5,15 @@ import {Test} from "forge-std/Test.sol";
 
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
+import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {OraclePreflight} from "../../script/lib/OraclePreflight.sol";
-import {WstEthOracleConfig, UsdyOracleConfig} from "../../script/lib/OracleConfigFile.sol";
+import {NavOracleImplementation} from "../../script/lib/NavOracleImplementation.sol";
+import {NavOracleConfig, WstEthOracleConfig, UsdyOracleConfig} from "../../script/lib/OracleConfigFile.sol";
+
+import {MockNavOracle} from "../setup/Mocks.sol";
+import {TrailingAnchorOracleModel} from "../setup/TrailingAnchorOracleModel.sol";
 
 contract OraclePreflightHarness {
     function validate(string memory name, address oracle, address loanToken, address collateralToken, address admin)
@@ -32,6 +37,15 @@ contract OraclePreflightHarness {
         external
     {
         OraclePreflight.validateUsdy(
+            cfg, oracle, OssifiableProxy(payable(oracle)).proxy__getImplementation(), loanToken, collateralToken
+        );
+        if (IOracleForTest(oracle).price() == 0) revert OraclePreflight.OraclePriceIsZero();
+    }
+
+    function validateNav(NavOracleConfig memory cfg, address oracle, address loanToken, address collateralToken)
+        external
+    {
+        OraclePreflight.validateNav(
             cfg, oracle, OssifiableProxy(payable(oracle)).proxy__getImplementation(), loanToken, collateralToken
         );
         if (IOracleForTest(oracle).price() == 0) revert OraclePreflight.OraclePriceIsZero();
@@ -268,5 +282,128 @@ contract OraclePreflightTest is Test {
             minPrice: USDY_MIN_PRICE,
             maxPrice: USDY_MAX_PRICE
         });
+    }
+
+    /// @dev A NAV oracle built from its config over the market's tokens passes, and prices its $1.00 NAV at 1e24 for
+    ///      a 6-decimal loan token and an 18-decimal collateral.
+    function test_validate_acceptsMatchingNavOracle() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken);
+        assertEq(IOracleForTest(navOracle).price(), 1e24, "price");
+    }
+
+    function testRevert_validate_rejectsNavCollateralMismatch() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        address wrongCollateral = makeAddr("wrongCollateral");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                OraclePreflight.OracleAddressMismatch.selector, "collateral_token", wrongCollateral, cfg.collateralToken
+            )
+        );
+        harness.validateNav(cfg, navOracle, cfg.loanToken, wrongCollateral);
+    }
+
+    /// @dev An oracle over another source is another implementation, refused by codehash.
+    function testRevert_validate_rejectsNavImplementationMismatch() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        address deployed = OssifiableProxy(payable(navOracle)).proxy__getImplementation();
+        cfg.source = _navSource();
+        address expected = NavOracleImplementation.deploy(cfg);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                OraclePreflight.OracleImplementationMismatch.selector, expected.codehash, deployed.codehash
+            )
+        );
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken);
+    }
+
+    function testRevert_validate_rejectsNavMaxPriceIncreaseMismatch() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        cfg.maxPriceIncrease = 0.003e18;
+        _expectNavUintMismatch("max_price_increase", 0.003e18, TrailingAnchorOracleModel.MAX_PRICE_INCREASE);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken);
+    }
+
+    function testRevert_validate_rejectsNavMaxPriceDecreaseMismatch() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        cfg.maxPriceDecrease = 0.003e18;
+        _expectNavUintMismatch("max_price_decrease", 0.003e18, TrailingAnchorOracleModel.MAX_PRICE_DECREASE);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken);
+    }
+
+    function testRevert_validate_rejectsNavAnchorLifetimeMismatch() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        cfg.anchorLifetime = 9 days;
+        _expectNavUintMismatch("anchor_lifetime", 9 days, TrailingAnchorOracleModel.ANCHOR_LIFETIME);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken);
+    }
+
+    function testRevert_validate_rejectsNavMaxAnchorRiseMismatch() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        cfg.maxAnchorRise = 0.07e18;
+        _expectNavUintMismatch("max_anchor_rise", 0.07e18, TrailingAnchorOracleModel.MAX_ANCHOR_RISE);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken);
+    }
+
+    function testRevert_validate_rejectsNavMaxAnchorFallMismatch() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        cfg.maxAnchorFall = 0.02e18;
+        _expectNavUintMismatch("max_anchor_fall", 0.02e18, TrailingAnchorOracleModel.MAX_ANCHOR_FALL);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken);
+    }
+
+    /// @dev A source already outside the bounds fails the preflight with the oracle's own revert, on the 18-decimal
+    ///      prices it compares: $0.98 against a $1.00 anchor, 0.1% down and 0.05% up.
+    function testRevert_validate_rejectsTrippedNavOracle() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        MockNavOracle(cfg.source).setPrice(0.98 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(TrailingAnchorOracleBase.PriceOutOfBounds.selector, 0.98e18, 0.999e18, 1.0005e18)
+        );
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken);
+    }
+
+    function _expectNavUintMismatch(string memory key, uint256 expected, uint256 actual) private {
+        vm.expectRevert(abi.encodeWithSelector(OraclePreflight.OracleUintMismatch.selector, key, expected, actual));
+    }
+
+    function _navFixture() private returns (NavOracleConfig memory cfg, address navOracle) {
+        cfg = NavOracleConfig({
+            kind: "nav-usdy",
+            source: _navSource(),
+            poolId: 0,
+            shareClassId: bytes16(0),
+            loanToken: address(new DecimalsMock(6)),
+            collateralToken: address(new DecimalsMock(18)),
+            maxPriceIncrease: TrailingAnchorOracleModel.MAX_PRICE_INCREASE,
+            maxPriceDecrease: TrailingAnchorOracleModel.MAX_PRICE_DECREASE,
+            anchorLifetime: uint40(TrailingAnchorOracleModel.ANCHOR_LIFETIME),
+            maxAnchorRise: TrailingAnchorOracleModel.MAX_ANCHOR_RISE,
+            maxAnchorFall: TrailingAnchorOracleModel.MAX_ANCHOR_FALL
+        });
+        navOracle = address(
+            new OssifiableProxy(
+                NavOracleImplementation.deploy(cfg),
+                admin,
+                abi.encodeCall(
+                    TrailingAnchorOracleBase.initialize,
+                    (
+                        admin,
+                        cfg.maxPriceIncrease,
+                        cfg.maxPriceDecrease,
+                        cfg.anchorLifetime,
+                        cfg.maxAnchorRise,
+                        cfg.maxAnchorFall
+                    )
+                )
+            )
+        );
+    }
+
+    /// @dev An Ondo-style NAV getter at $1.00.
+    function _navSource() private returns (address source) {
+        MockNavOracle nav = new MockNavOracle();
+        nav.setPrice(1 ether);
+        return address(nav);
     }
 }

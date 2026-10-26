@@ -19,6 +19,7 @@ struct DeployConfig {
     address exitBookPauser; // Risk Steward Committee for integrated or standalone Exit Book deployment
     uint256 exitBookMaxRequestLifetime;
     address pauserCommittee; // CircuitBreaker pauser the activation registers; the Agent stands in when unset
+    address priceAcceptor; // Risk Steward Committee: the NAV oracles' price acceptor; required by `DeployNavOracle`
 }
 
 interface ILidoLendMarketFactoryBindings {
@@ -41,6 +42,9 @@ library DeployConfigFile {
     error PauserCommitteeCannotBeAgent();
     error PauserCommitteeCannotBeDeployer();
     error PauserCommitteeCannotBeExecutor();
+    error PriceAcceptorCannotBeAgent();
+    error PriceAcceptorCannotBeDeployer();
+    error PriceAcceptorCannotBeExecutor();
     error RegistryAgentMismatch(address expected, address actual);
     error RegistryArtifactChainIdMismatch(uint256 artifactChainId, uint256 protocolChainId);
     error RegistryCompatibilityHashMismatch(bytes32 expected, bytes32 actual);
@@ -83,6 +87,9 @@ library DeployConfigFile {
         if (vm.keyExistsToml(toml, ".pauser_committee")) {
             cfg.pauserCommittee = vm.parseTomlAddress(toml, ".pauser_committee");
         }
+        if (vm.keyExistsToml(toml, ".price_acceptor")) {
+            cfg.priceAcceptor = vm.parseTomlAddress(toml, ".price_acceptor");
+        }
     }
 
     function configPath(string memory name) internal pure returns (string memory) {
@@ -106,6 +113,11 @@ library DeployConfigFile {
             if (cfg.pauserCommittee == deployer) revert PauserCommitteeCannotBeDeployer();
             if (cfg.pauserCommittee == cfg.agent) revert PauserCommitteeCannotBeAgent();
             if (cfg.pauserCommittee == cfg.evmScriptExecutor) revert PauserCommitteeCannotBeExecutor();
+        }
+        if (cfg.priceAcceptor != address(0)) {
+            if (cfg.priceAcceptor == deployer) revert PriceAcceptorCannotBeDeployer();
+            if (cfg.priceAcceptor == cfg.agent) revert PriceAcceptorCannotBeAgent();
+            if (cfg.priceAcceptor == cfg.evmScriptExecutor) revert PriceAcceptorCannotBeExecutor();
         }
     }
 

@@ -11,7 +11,7 @@ The tables cover the integrated production deployment and its production prerequ
 | Lido DAO Agent | The onchain address that initially holds administration, ownership, and proxy-upgrade powers assigned to the DAO. |
 | EVMScriptExecutor | The onchain executor that initially holds routine governance capabilities. |
 | Market steward | An address appointed for one market in `RiskStewardDashboard`; it is not an AccessControl role holder. |
-| Risk Steward Committee | The configured emergency address that initially holds `PAUSER_ROLE` on both Exit Books. |
+| Risk Steward Committee | The configured emergency address that initially holds `PAUSER_ROLE` on both Exit Books. It also holds `PRICE_ACCEPTOR_ROLE` on NAV oracles. |
 | Registered controller pauser | An address registered for one target through CircuitBreaker; the registration is distinct from CircuitBreaker's immutable admin authority. |
 | Reseal Manager | The protocol-wide pause-extension authority that initially holds `PAUSER_ROLE` and `RESUMER_ROLE` on every controller. |
 
@@ -36,13 +36,13 @@ No action listed below, other than proxy administration, can directly rewrite or
 
 The production deployer and market factory use temporary setup authority, grant the holders listed below, and revoke their temporary roles before returning. Calling the permissionless market factory does not give the caller any role. The factory validates the exact controller and guardian-registry sets, including roles that must start empty. The standalone Exit Book script checks its required holders, sole pauser, and empty resumer set; acceptance later checks every listed Exit Book role exactly.
 
-At deployment, the deployer, Lido DAO Agent, and EVMScriptExecutor must be distinct. An Exit Book pauser must also differ from all three. These checks do not constrain guardians, stewards, delegates, controller pausers, or later role assignments.
+At deployment, the deployer, Lido DAO Agent, and EVMScriptExecutor must be distinct. An Exit Book pauser must also differ from all three, and so must a NAV oracle's price acceptor. These checks do not constrain guardians, stewards, delegates, controller pausers, or later role assignments.
 
-Acceptance checks the exact holder set for every AccessControl role listed below and rejects missing or extra holders. It also checks proxy admins, core ownership, and the router and Adaptive IRM owner-manager pairs.
+Acceptance checks the exact holder set for every AccessControl role listed below, except the NAV oracle roles, and rejects missing or extra holders. It also checks proxy admins, core ownership, and the router and Adaptive IRM owner-manager pairs.
 
 ## Proxy administration
 
-The Lido DAO Agent is the initial proxy admin for the shared core and IRM router; every factory-deployed controller, vault, and guardian registry; and each standard oracle proxy. A shared guardian registry has one proxy admin even when several markets use it.
+The Lido DAO Agent is the initial proxy admin for the shared core and IRM router; every factory-deployed controller, vault, and guardian registry; and each standard oracle proxy, NAV oracles included. A shared guardian registry has one proxy admin even when several markets use it.
 
 | Authority | Powers | Class | Initial onchain holder |
 |---|---|---|---|
@@ -156,3 +156,16 @@ Each Exit Book is a direct, non-upgradeable `AccessControlEnumerable` contract. 
 | `RESUMER_ROLE` | resume placement and fills | C4 | no initial holder |
 
 Delisting one source affects only new requests for that source. Pausing affects placement and fills for every source in the book; cancellation, reads, configuration, recovery, and direct source access remain available. A pause has no automatic expiry. Resume is impossible until the Lido DAO Agent grants `RESUMER_ROLE` to a caller.
+
+### NAV oracles
+
+`UsdyNavOracle` and `CentrifugeNavOracle` each sit behind their own `OssifiableProxy`, and one oracle may serve several markets. The price check these roles act on is specified in [Trailing Anchor Oracle](trailing-anchor-oracle.md).
+
+| Authority | Powers | Class | Initial onchain holder |
+|---|---|---|---|
+| `DEFAULT_ADMIN_ROLE` | grant and revoke the oracle's roles | C1 | Lido DAO Agent |
+| `MANAGER_ROLE` | set the price bounds, the anchor lifetime, and the anchor's rise and fall speeds | C3 / C4 | EVMScriptExecutor and Lido DAO Agent, independently |
+| `PRICE_ACCEPTOR_ROLE` | move the anchor to the source's current price at any distance, inside a range the caller passes, also when the anchor is stale | C4 | Risk Steward Committee and Lido DAO Agent, independently |
+| `OssifiableProxy` admin | replace the implementation, which can return any price; transfer proxy administration; irreversibly set the admin to `address(0)` | C1 | Lido DAO Agent |
+
+Tightening a bound, a speed, or the lifetime can stop every market that reads the oracle; loosening them lets a faulty source move the price further or faster. An acceptance restores a stopped price without a delay, unlike the intended path for C4 actions, but it can only take the source's own current value inside the range the acceptor checked; it cannot set a price.

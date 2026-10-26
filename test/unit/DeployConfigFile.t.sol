@@ -119,6 +119,18 @@ contract DeployConfigFileTest is Test {
         assertEq(harness.parse(_configToml(false, "")).pauserCommittee, address(0));
     }
 
+    function test_parse_readsPriceAcceptor() external {
+        address committee = makeAddr("priceAcceptor");
+        DeployConfig memory cfg =
+            harness.parse(_configToml(false, string.concat("price_acceptor = \"", vm.toString(committee), "\"\n")));
+
+        assertEq(cfg.priceAcceptor, committee);
+    }
+
+    function test_parse_withoutPriceAcceptor_leavesItUnset() external {
+        assertEq(harness.parse(_configToml(false, "")).priceAcceptor, address(0));
+    }
+
     function test_parse_compatibilityHashIgnoresOptionalAndProvisionFields() external {
         DeployConfig memory base = harness.parse(_configToml(false, ""));
         DeployConfig memory changed = harness.parse(
@@ -128,6 +140,7 @@ contract DeployConfigFileTest is Test {
                     "exit_book_pauser = \"0x0000000000000000000000000000000000000003\"\n",
                     "exit_book_max_request_lifetime = 31536000\n",
                     "pauser_committee = \"0x0000000000000000000000000000000000000004\"\n",
+                    "price_acceptor = \"0x0000000000000000000000000000000000000005\"\n",
                     "[provision]\nmarkets = [\"one\"]\nvaults = []\n"
                 )
             )
@@ -223,6 +236,33 @@ contract DeployConfigFileTest is Test {
         cfg.pauserCommittee = executor;
 
         vm.expectRevert(DeployConfigFile.PauserCommitteeCannotBeExecutor.selector);
+        harness.requireActorSeparation(cfg, makeAddr("deployer"));
+    }
+
+    function testRevert_requireActorSeparation_priceAcceptorIsDeployer() external {
+        address committee = makeAddr("priceAcceptor");
+        DeployConfig memory cfg = _config(makeAddr("agent"), makeAddr("executor"));
+        cfg.priceAcceptor = committee;
+
+        vm.expectRevert(DeployConfigFile.PriceAcceptorCannotBeDeployer.selector);
+        harness.requireActorSeparation(cfg, committee);
+    }
+
+    function testRevert_requireActorSeparation_priceAcceptorIsAgent() external {
+        address agent = makeAddr("agent");
+        DeployConfig memory cfg = _config(agent, makeAddr("executor"));
+        cfg.priceAcceptor = agent;
+
+        vm.expectRevert(DeployConfigFile.PriceAcceptorCannotBeAgent.selector);
+        harness.requireActorSeparation(cfg, makeAddr("deployer"));
+    }
+
+    function testRevert_requireActorSeparation_priceAcceptorIsExecutor() external {
+        address executor = makeAddr("executor");
+        DeployConfig memory cfg = _config(makeAddr("agent"), executor);
+        cfg.priceAcceptor = executor;
+
+        vm.expectRevert(DeployConfigFile.PriceAcceptorCannotBeExecutor.selector);
         harness.requireActorSeparation(cfg, makeAddr("deployer"));
     }
 
