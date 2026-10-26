@@ -127,8 +127,8 @@ section() {
 
 if [ -z "$ref" ]; then echo "Hashing the files on disk."; else echo "Hashing the files committed at $ref."; fi
 section lido-lend-markets . "$LIDO_LEND_MARKETS"
-section lido-lend lib/lido-lend "$LIDO_LEND"
-section lido-lend-irm lib/lido-lend-irm "$LIDO_LEND_IRM"
+section lido-lend lib/lend "$LIDO_LEND"
+section lido-lend-irm lib/lend-irm "$LIDO_LEND_IRM"
 
 root=$(printf '%s' "$pairs" | LC_ALL=C sort -t ' ' -k1,1 |
   awk '{ printf "%s%s  %s", (NR > 1 ? "\n" : ""), $2, $1 }' | keccak)
