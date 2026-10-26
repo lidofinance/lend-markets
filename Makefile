@@ -91,8 +91,7 @@ help:
 	@echo "  test-local    forge test on the local suites only (excludes test/fork/; no RPC)"
 	@echo "  test-fork     forge test on test/fork/ only; the suites revert without the fork setup"
 	@echo "  test-simulation  the year-long solvency simulations (test/simulation/); the 30-day variants run in test-local"
-	@echo "  test-mutation forge mutation testing of src/ over the 30-day simulations (slow; needs forge >= 1.8.0,"
-	@echo "                which is NOT the pinned .foundryref toolchain, so install it separately)"
+	@echo "  test-mutation forge mutation testing of src/ over the 30-day simulations (slow; needs forge >= 1.8.0)"
 	@echo "  deploy-oracle CONFIG=<config> RUN=<run> ORACLE=<name>"
 	@echo "  deploy-circuit-breaker CONFIG=<config> RUN=<run>"
 	@echo "  deploy-protocol CONFIG=<config> RUN=<run>  (backbone + exit books; markets are separate)"
@@ -160,13 +159,10 @@ test-fork:
 test-simulation:
 	RUN_SOLVENCY_SIMULATION=true forge test --match-path 'test/simulation/**' -vv
 
-# Outside the pinned toolchain: `--mutate` landed in forge 1.8.0 and `.foundryref` pins 1.7.1, so neither CI nor a
-# standard local setup can run this. It needs a separately installed forge, and a run under 1.8.x is not comparable
-# with a pinned run: isolate mode makes every call its own transaction, which moves gas and the simulation's
-# transaction boundary (`perCallTransactions`). Local only, never in CI. The score counts only the mutants forge
-# evaluates; it skips many.
+# `--mutate` landed in forge 1.8.0. Local only, never in CI. The score counts only the mutants forge evaluates; it
+# skips many.
 test-mutation:
-	@forge test --help | grep -q -- '--mutate' || { echo "test-mutation: the local forge ($$(forge --version | head -1)) has no mutation testing; it needs forge >= 1.8.0, which is not the pinned .foundryref toolchain (install it separately, e.g. foundryup -i v1.8.3)"; exit 1; }
+	@forge test --help | grep -q -- '--mutate' || { echo "test-mutation: the local forge ($$(forge --version | head -1)) has no mutation testing; it needs forge >= 1.8.0 (install the .foundryref version)"; exit 1; }
 	TEST_SEED=1 forge test --mutate src --match-path 'test/simulation/**' --match-test shortRun --mutation-timeout 900
 
 # The helper is deliberately repeated by each target: invoking `make deploy-protocol` directly is as safe as

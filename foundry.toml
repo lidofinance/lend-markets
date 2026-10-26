@@ -18,6 +18,9 @@ bytecode_hash = "none"
 # The solvency simulations (test/simulation/) run a whole simulated month or year in one test call. On forge 1.8.3
 # a 30-day forced-exit unwind can exceed the default gas_limit of 1_073_741_824.
 gas_limit = "18446744073709551615"
+# forge 1.8 defaults to isolate = true, which makes every top-level test call its own transaction; the
+# same-transaction activation-inflow tests need the whole test to be one.
+isolate = false
 fs_permissions = [
     { access = "read", path = "./out" },
     { access = "read", path = "./lib" },
