@@ -197,9 +197,12 @@ deploy-guardian:
 	$(call archive_broadcast,DeployGuardianSignals.s.sol,guardian-$(GUARDIAN_GROUP))
 
 # The vault + its Morpho adapter in one broadcast: the adapter's parent vault is a constructor immutable.
-# Needs an existing run — the adapter's other immutables are that run's core and IRM router.
+# Needs an existing run — the adapter's other immutables are that run's core and IRM router. `forge script` compiles
+# only `src/` and what the script imports, so the pair's artifacts, which vm.deployCode loads, are built from their
+# trigger first.
 deploy-vault-v2:
 	$(require_deploy_context)
+	@forge build test/utils/_VaultV2CompileTriggers.sol
 	@$(DEPLOY_ENV) forge script script/DeployVaultV2.s.sol --sig 'run(string,string,string)' "$(CONFIG)" "$(VAULT)" "$(ADAPTER)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployVaultV2.s.sol,vault-v2-$(VAULT))
 	@test "$(VERIFY)" = "false" || $(MAKE) verify-vault-v2 RUN="$(RUN)" VAULT="$(VAULT)" ADAPTER="$(ADAPTER)"
@@ -230,9 +233,11 @@ verify-vault-v2:
 			"$$(key $$A vault)" "$$(key $$A morpho)" "$$(key $$A adaptive_curve_irm)")"
 
 # This run's own bundler stack over an existing run: a fresh Bundler3 dispatcher, the general adapter bound to it
-# and to the run's core, and the vault adapter bound to it.
+# and to the run's core, and the vault adapter bound to it. `forge script` compiles only `src/` and what the script
+# imports, so Bundler3, which vm.deployCode loads, is built from its anchor first, together with the general adapter.
 deploy-bundler:
 	$(require_deploy_context)
+	@forge build script/Bundler3Anchor.sol src/adapters/EthereumGeneralAdapter1.sol
 	@$(DEPLOY_ENV) forge script script/DeployBundler.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(BUNDLER)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployBundler.s.sol,bundler-$(BUNDLER))
 	@test "$(VERIFY)" = "false" || $(MAKE) verify-bundler RUN="$(RUN)" BUNDLER="$(BUNDLER)"
