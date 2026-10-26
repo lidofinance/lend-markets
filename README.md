@@ -74,7 +74,7 @@ make test-fork-provision  # provision -> test-fork against it -> teardown
 
 Environment variables are documented in `.env.example`. Copy it to `.env` and set `RPC_URL`; fork tests additionally need `ARTIFACTS_DIR`, which the provisioning targets above pass for you. For every documented input, command-line assignments take precedence over exported environment values, which take precedence over `.env` and then Makefile defaults.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that same version locally. `make test-mutation` is the one target that needs a newer forge than the pin and is therefore never run in CI. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that provisions a deployment onto a local anvil fork from the `RPC_URL` secret and runs `test/fork/` against it), `coverage.yml` (whole-suite coverage, fork suites included via the same provisioned anvil), and `fuzz.yml` (deep fuzz/invariant, local suites only).
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that same version locally. `make test-mutation` is never run in CI. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that provisions a deployment onto a local anvil fork from the `RPC_URL` secret and runs `test/fork/` against it), `coverage.yml` (whole-suite coverage, fork suites included via the same provisioned anvil), and `fuzz.yml` (deep fuzz/invariant, local suites only).
 `pending-action.yml` validates a pending multisig action on a fork. Every workflow runs on manual dispatch.
 
 To run the local pre-commit solhint check, point Git at the bundled hook:

@@ -38,7 +38,7 @@ The 30-day runs are part of `make test-local` and assert coverage floors; each f
 Limitations:
 
 - Moves run in a fixed order, one per hour; same-block and sub-hour cases are left to the unit suites.
-- The simulated transaction is the whole run on the pinned forge 1.7.1 and one `iterate` call on 1.8.x, not one user call. `ActivationInflow.invariant.t.sol` covers the add-then-remove inflow rule.
+- The simulated transaction is the whole run, not one user call. `ActivationInflow.invariant.t.sol` covers the add-then-remove inflow rule.
 - Activation config changes move only the activating lock and the guardian-quorum delay.
 - `MorphoExitBook` and the guardian-signal admin surface are not driven; their own suites cover them.
 
