@@ -50,7 +50,7 @@ Placement of the clause within the header is whatever `forge fmt` produces; don'
 
 ## Errors And Reverts
 
-- **The vendored core (`lib/lido-lend`)** keeps upstream Morpho conventions (`require(..., "string")`).
+- **The vendored core (`lib/lend`)** keeps upstream Morpho conventions (`require(..., "string")`).
 - **New contracts** (controllers, libs, vaults, adapters) use custom errors. Declare them at the top of the contract, near other state declarations.
 - Custom errors include parameters where useful (`SupplyCapExceeded(cap, attempted)`), no parameters when the name alone is enough (`Unauthorized`).
 
@@ -95,7 +95,7 @@ Placement of the clause within the header is whatever `forge fmt` produces; don'
 
 ## Fork Conventions
 
-- The Morpho Blue fork is the vendored `lib/lido-lend` dependency. Its fork-point record lives in `lib/lido-lend/FORK_NOTES.md`.
+- The Morpho Blue fork is the vendored `lib/lend` dependency. Its fork-point record lives in `lib/lend/FORK_NOTES.md`.
 - `src/proxy/OssifiableProxy.sol` is imported Lido source — never reformat.
 
 ## Tooling

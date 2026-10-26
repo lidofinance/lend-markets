@@ -3,7 +3,7 @@
 ## Project Structure
 
 - `src/`: Lido-specific extensions over the Morpho Blue fork — controller, vault, registry, oracle, libraries.
-- `lib/lido-lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
+- `lib/lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lend/FORK_NOTES.md`.
 - `lib/bundler3`: stock Morpho bundler3, pinned as a submodule and imported via the `@bundler3/` remapping — the one-transaction bundling dispatcher, deployed per run rather than shared with Morpho's, and its adapter base contracts.
   The Lido bundler code is `src/adapters/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO token surface).
 - `lib/circuit-breaker`: pinned upstream emergency-pause manager, imported via the `@circuit-breaker/` remapping and deployed as a reusable per-run dependency.
@@ -32,7 +32,7 @@
 - Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
 - Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
 - Year-long solvency simulations: `make test-simulation` sets `RUN_SOLVENCY_SIMULATION=true` over `test/simulation/`. The 30-day variants of the same suites already run inside `make test-local`; without that variable the year-long tests skip. The gas limit they need is set in `foundry.toml`.
-- Mutation testing: `make test-mutation` scores `src/` against the 30-day simulations. It is **outside the pinned toolchain** — `--mutate` needs forge >= 1.8.0 while `.foundryref` pins 1.7.1 — so install that forge separately and expect it never to run in CI. A 1.8.x run is not comparable with a pinned run: isolate mode makes every call its own transaction, which moves gas and flips the simulation's `perCallTransactions` boundary. Slow, and the score counts only the mutants forge evaluates.
+- Mutation testing: `make test-mutation` scores `src/` against the 30-day simulations. `--mutate` needs forge >= 1.8.0; it never runs in CI. Slow, and the score counts only the mutants forge evaluates.
 - Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot`. The fork suites are included — they revert without the fork setup — forking the latest block unless `FORK_BLOCK` pins one. `TEST_SEED` comes from the env when set; otherwise foundry picks one random seed per run and the suites log it (fork suites also log their block), so a run is always replayable by exporting the logged `TEST_SEED`/`FORK_BLOCK`. `make snapshot-diff` diffs a fresh run against `.gas-snapshot` — run both at the same `TEST_SEED`, or the diff picks up seed noise on top of the code change.
 - Format check for local Solidity files (`make fmt-check`): `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
@@ -47,8 +47,8 @@
 
 ## Morpho Fork Policy
 
-- The Morpho Blue fork is the vendored `lib/lido-lend` dependency (core `src/LidoLend.sol`), pinned as a submodule. Its fork point, core-change record, and editing rules live in `lib/lido-lend/FORK_NOTES.md`.
-- The forked core accounting (positions, supply/borrow shares, interest accrual, market creation, liquidate, settle) changes only through a `lib/lido-lend` pin bump.
+- The Morpho Blue fork is the vendored `lib/lend` dependency (core `src/LidoLend.sol`), pinned as a submodule. Its fork point, core-change record, and editing rules live in `lib/lend/FORK_NOTES.md`.
+- The forked core accounting (positions, supply/borrow shares, interest accrual, market creation, liquidate, settle) changes only through a `lib/lend` pin bump.
 - Lido-layer policy and orchestration live in this repository: the per-market policy entry point is `src/controllers/LidoLendMarketController.sol`, while guardian state, vault settlement orchestration, and optional periphery remain in their own contracts under `src/`.
 
 ## Solidity Style
@@ -61,7 +61,7 @@ Read before writing or reviewing contracts.
 Specs live in `docs/specs/` in two layers (see `docs/specs/README.md`). They capture what a reviewer needs before reading code, not what the code already says.
 
 - **Conceptual specs** (hand-written): the architecture, cross-contract mechanisms, access-control matrix, per-market parameters, and the invariants and threat model the code cannot state itself. `architecture.md` is the system topology and runtime-boundary reference; `market-controller.md`, `guardian-signals.md`, `lender-settlement.md`, and `exit-books.md` own their respective state machines and formulas; `roles.md` maps every privilege to its role and holder; `markets/<market>.md` is per market.
-- **API reference** (`docs/specs/api/`, generated): the per-contract surface — functions, structs, state variables — rendered from the Solidity NatSpec by `tools/gen_api_from_artifacts.py` (`make doc`). It is the single source for per-member behaviour, so never hand-write or hand-edit it: keep the NatSpec accurate and regenerate. The forked Morpho core is documented under `lib/lido-lend/`.
+- **API reference** (`docs/specs/api/`, generated): the per-contract surface — functions, structs, state variables — rendered from the Solidity NatSpec by `tools/gen_api_from_artifacts.py` (`make doc`). It is the single source for per-member behaviour, so never hand-write or hand-edit it: keep the NatSpec accurate and regenerate. The forked Morpho core is documented under `lib/lend/`.
 - Invariants are **testable**: each one maps to a scenario, fork, or acceptance assertion in `test/`.
 - Threat model lists the actors (lender, borrower, liquidator, controller admin, guardian, oracle, IRM) and what each is trusted not to do.
 - Behaviour-changing PRs update the NatSpec (which regenerates the API reference) and any conceptual spec the change affects, under the same commit.
@@ -154,4 +154,4 @@ PR description includes:
 - Test commands actually run. If contract surface changed, confirm `forge build --force` passes with `via_ir = false` (the default for this repo).
 - Storage layout impact for struct, mapping, or proxy/controller storage changes (which slot moved, whether append-only).
 - Updated specification for behaviour-changing PRs: the NatSpec (regenerated into `docs/specs/api/`) and any affected conceptual spec under `docs/specs/`.
-- For a `lib/lido-lend` pin bump: note what moved in the fork (accounting, ABI, storage layout) and that `.gitmodules`, `foundry.lock`, and the gitlink are staged together.
+- For a `lib/lend` pin bump: note what moved in the fork (accounting, ABI, storage layout) and that `.gitmodules`, `foundry.lock`, and the gitlink are staged together.

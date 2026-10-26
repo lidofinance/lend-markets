@@ -11,7 +11,7 @@ The backend shells out to `forge` and `anvil`, so the parent repo must be able t
 curl -L https://foundry.paradigm.xyz | bash && foundryup
 forge --version                       # must be on PATH
 
-# submodules (recursive — lib/lido-lend-irm has its own nested submodules)
+# submodules (recursive — lib/lend-irm has its own nested submodules)
 git submodule update --init --recursive
 forge build                           # must succeed before the dashboard can deploy
 ```
