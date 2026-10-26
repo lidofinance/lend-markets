@@ -9,11 +9,11 @@
 	url = https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable
 [submodule "lib/lido-lend"]
 	path = lib/lido-lend
-	url = git@github.com:lidofinance/lido-lend.git
+	url = https://github.com/lidofinance/lend.git
 	branch = main
 [submodule "lib/lido-lend-irm"]
 	path = lib/lido-lend-irm
-	url = git@github.com:lidofinance/lido-lend-irm.git
+	url = https://github.com/lidofinance/lend-irm.git
 	branch = main
 [submodule "lib/bundler3"]
 	path = lib/bundler3

@@ -4,7 +4,7 @@
 
 Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
 
-Contract-specific external surface of `LidoLendMarketController`: the inherited core hook interface, Lido policy, freeze/pause, settlement-queue views, and borrower dashboard. Standard role membership and administration use the inherited `IAccessControlEnumerable` surface. The controller's dashboard struct, events, and errors are declared here.
+Contract-specific external surface of `LidoLendMarketController`: the inherited core hook interface, Lido policy, freeze/pause, settlement-queue views, and the borrower position view. The controller's `BorrowerPosition` struct, events, and errors are declared here.
 
 ## Enums
 
@@ -46,7 +46,7 @@ struct BorrowerPosition {
 }
 ```
 
-One-read borrower snapshot for off-chain dashboards: collateral split, activation timer, guardian signal, debt, personal settlement target, current queue status, and policy quotes.
+One-read borrower snapshot: collateral split, activation timer, guardian signal, debt, personal settlement target, current queue status, and policy quotes.
 
 **Fields**
 
@@ -255,6 +255,12 @@ struct SettleHookData {
 
 Payload for the `Settle` hook.
 
+> [!WARNING]
+> `borrowAssetsCanceled` can exceed the market's `totalBorrowAssets` by one raw loan-token unit. The core floors the new total at zero, so a controller reconstructing post-settlement state must do the same.
+
+> [!WARNING]
+> `seizedAssets` applies two downward roundings: debt-share valuation and loan-to-collateral conversion. Only the first difference is bounded by one raw loan-token unit. The second is less than one raw collateral-token unit, whose loan-token value depends on token decimals and the oracle price.
+
 **Fields**
 
 | Name | Type | Description |
@@ -264,9 +270,9 @@ Payload for the `Settle` hook.
 | `borrower` | `address` | The address whose debt is canceled and collateral seized. |
 | `receiver` | `address` | The address receiving the seized collateral. |
 | `supplySharesBurned` | `uint256` | The supply shares burned from onBehalf, after resolution. |
-| `borrowAssetsCanceled` | `uint256` | The loan-token debt canceled, computed in core. Warning: this is the canceled shares priced up, so it can exceed the market's `totalBorrowAssets` by one unit, and the core floors that total at zero when it applies the cut. A controller deriving post-cut state from this value must apply the same floor instead of subtracting directly. |
+| `borrowAssetsCanceled` | `uint256` | The loan-token debt canceled, computed by pricing the canceled shares up. |
 | `borrowSharesCanceled` | `uint256` | The borrow shares burned from borrower, computed in core. |
-| `seizedAssets` | `uint256` | The collateral-token amount seized, computed in core. This is the canceled shares priced down, so it can be worth up to one loan-asset unit less than `borrowAssetsCanceled`. |
+| `seizedAssets` | `uint256` | The collateral-token amount seized, computed by pricing the canceled shares down and then converting the result to collateral with downward rounding. |
 
 ### `CollateralActivationConfig`
 
@@ -284,7 +290,7 @@ struct CollateralActivationConfig {
 }
 ```
 
-Governance-tunable activation parameters, validated by `CollateralActivationLib.setConfig`.
+Governance-tunable activation parameters.
 
 **Fields**
 
@@ -556,7 +562,7 @@ Loan assets `supplier` can withdraw from its market supply right now: its positi
 function guardianSignals() external view returns (address);
 ```
 
-The guardian-signals registry this controller reads for the borrow gate and activation scaling.
+The guardian-signals registry.
 
 ### `currentInflow`
 
@@ -716,7 +722,7 @@ function positionOf(
 ) external view returns (BorrowerPosition memory);
 ```
 
-One-call borrower dashboard: collateral split, activation unlock, guardian signal, debt, personal settlement target, current queue status, and policy quotes.
+One-call borrower snapshot: collateral split, activation unlock, guardian signal, debt, personal settlement target, current queue status, and policy quotes.
 
 ### `collateralActivationConfig`
 

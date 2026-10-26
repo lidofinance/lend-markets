@@ -25,7 +25,7 @@ These pages render the documented local contract surface from Solidity NatSpec: 
 - Optional user periphery: the [Exit Book family](api/exit-book.md) and [Bundler3 adapters](api/bundler3-adapters.md).
 - Common ABI definitions: [shared types](api/shared-types.md).
 
-The forked core is documented in the [Lido Lend specification](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md). Its fork point and local change record are in [FORK_NOTES](https://github.com/lidofinance/lido-lend/blob/main/FORK_NOTES.md). The API reference here covers only the Lido layer on top.
+The forked core is documented in the [Lido Lend specification](https://github.com/lidofinance/lend/blob/main/SPECIFICATION.md). Its fork point and local change record are in [FORK_NOTES](https://github.com/lidofinance/lend/blob/main/FORK_NOTES.md). The API reference here covers only the Lido layer on top.
 
 ## Regenerating
 
