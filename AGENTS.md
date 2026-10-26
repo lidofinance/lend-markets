@@ -2,112 +2,53 @@
 
 ## Project Structure
 
-- `src/`: Lido-specific extensions over the Morpho Blue fork — controller, vault, registry, oracle,
-  libraries.
-- `lib/lido-lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported
-  via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
-- `lib/bundler3`: stock Morpho bundler3, pinned as a submodule and imported via
-  the `@bundler3/` remapping — the one-transaction bundling dispatcher, deployed per run rather than shared with
-  Morpho's, and its adapter base contracts.
-  The Lido bundler code is `src/adapters/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and
-  `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO
-  token surface).
-- `lib/circuit-breaker`: pinned upstream emergency-pause manager, imported via the
-  `@circuit-breaker/` remapping and deployed as a reusable per-run dependency.
+- `src/`: Lido-specific extensions over the Morpho Blue fork — controller, vault, registry, oracle, libraries.
+- `lib/lido-lend`: the Morpho Blue fork (core `src/LidoLend.sol`), pinned as a submodule and imported via the `@lido-lend/` remapping. Fork point and core-change record live in `lib/lido-lend/FORK_NOTES.md`.
+- `lib/bundler3`: stock Morpho bundler3, pinned as a submodule and imported via the `@bundler3/` remapping — the one-transaction bundling dispatcher, deployed per run rather than shared with Morpho's, and its adapter base contracts.
+  The Lido bundler code is `src/adapters/LidoLendVaultAdapter.sol` (the vault's `fallbackExit`) and `src/adapters/EthereumGeneralAdapter1.sol` (upstream's general adapter vendored without the MORPHO token surface).
+- `lib/circuit-breaker`: pinned upstream emergency-pause manager, imported via the `@circuit-breaker/` remapping and deployed as a reusable per-run dependency.
 - `src/controllers/`: the Lido-specific market controller and its hook policy.
 - `src/GuardianSignals.sol`: guardian-signal registry (one per guardian group; markets may share one).
 - `src/interfaces/`: local interfaces and hook payload structs.
 - `src/oracle/`: local oracle adapters.
 - `src/libs/`: pure libraries (math, data structures). Internal — they inline into call sites.
 - `src/proxy/OssifiableProxy.sol`: imported Lido proxy source. Do not reformat it.
-- `test/scenario/`: end-to-end flows on **freshly deployed** core / controller / vault, on the local
-  EVM with mock tokens. Driven through shared helpers; happy path first, then revert and
-  edge cases. Pure-library fuzz tests live here too.
-- `test/fork/`: test suite that runs against a forked network, binding to an **already-deployed** protocol —
-  fork suites never deploy what they test. `RPC_URL` is the node to fork and `ARTIFACTS_DIR` names the deploy
-  run under `deployed/<run>/` whose artifacts they read; the run records its own network and chain id, so
-  there is no network selector.
-- `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
-  deployed stack is correctly wired, has the exact initial-launch role topology (direct enumerable-role checks),
-  and is either ready for the activation motion or live after it. Expected deployment values and addresses come
-  from immutable artifacts under `deployed/<run>/`; reviewed runtime motion choices come from
-  `ACCEPTANCE_PAUSER_COMMITTEE` and `ACCEPTANCE_ENABLE_SETTLEMENT`. The suite skips unless
-  `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
+- `test/scenario/`: end-to-end flows on **freshly deployed** core / controller / vault, on the local EVM with mock tokens. Driven through shared helpers; happy path first, then revert and edge cases.
+- `test/fork/`: test suite that runs against a forked network, binding to an **already-deployed** protocol — fork suites never deploy what they test. `RPC_URL` is the node to fork and `ARTIFACTS_DIR` names the deploy run under `deployed/<run>/` whose artifacts they read; the run records its own network and chain id, so there is no network selector.
+- `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the deployed stack is correctly wired, has the exact initial-launch role topology (direct enumerable-role checks), and is either ready for the activation motion or live after it. Expected deployment values and addresses come from immutable artifacts under `deployed/<run>/`; reviewed runtime motion choices come from `ACCEPTANCE_PAUSER_COMMITTEE` and `ACCEPTANCE_ENABLE_SETTLEMENT`. The suite skips unless `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
 - `script/`: deployment scripts.
-- `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `circuit-breakers/`,
-  `guardians/`, `oracles/`, `vaults/`, `adapters/`, optional `exit-books.toml` and `bundler.toml`, and archived
-  transaction records. Read directly by both `test/fork/` (`ARTIFACTS_DIR`) and `test/acceptance/`
-  (`ACCEPTANCE_REGISTRY` -> `protocol.toml`); nothing is composed or prepared in between.
+- `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `circuit-breakers/`, `guardians/`, `oracles/`, `vaults/`, `adapters/`, optional `exit-books.toml` and `bundler.toml`, and archived transaction records. Read directly by both `test/fork/` (`ARTIFACTS_DIR`) and `test/acceptance/` (`ACCEPTANCE_REGISTRY` -> `protocol.toml`); nothing is composed or prepared in between.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).
   Read it before writing or reviewing new contracts.
-- `CLAUDE.md`: thin pointer (`@AGENTS.md`) so Claude Code picks up the same guidelines as Codex
-  (which reads `AGENTS.md` natively). `AGENTS.md` is the source of truth — update it, not the
-  pointer. Add similar stubs for other agents (Cursor, Copilot, Cline, ...) when those tools are
-  actually used on the project.
+- `CLAUDE.md`: thin pointer (`@AGENTS.md`) so Claude Code picks up the same guidelines as Codex (which reads `AGENTS.md` natively). `AGENTS.md` is the source of truth — update it, not the pointer. Add similar stubs for other agents (Cursor, Copilot, Cline, ...) when those tools are actually used on the project.
 
 ## Build, Test, And Formatting Commands
 
 - Build: `forge build --force`.
-- All tests (local + fork): `make test`. The fork suites require a working fork setup — `RPC_URL` pointing at
-  the node that HOLDS the deployment and `ARTIFACTS_DIR` naming its run on disk — and revert without it;
-  a fork suite runs or it fails, it never skips.
-- Local fork setup: `make provision-fork RPC_URL=<archive-rpc>` deploys and activates the `fork-*` markets on a
-  local anvil fork of `CONFIG`'s network (mainnet by default), using `FORK_CONFIG=fork-<CONFIG>` for test-only
-  role holders, into `deployed/fork/` and leaves anvil running; a compatible node already on `:8545` is reused
-  without requiring the archive RPC;
-  `make provision-stop` tears it down; `make test-fork-provision` does provision -> test-fork and stops the
-  node only when that invocation started it (a reused node is left running). Against a real deploy run,
-  `make fork-run RUN=<run>` is the equivalent.
+- All tests (local + fork): `make test`. The fork suites require a working fork setup — `RPC_URL` pointing at the node that HOLDS the deployment and `ARTIFACTS_DIR` naming its run on disk — and revert without it: a broken setup fails, it never skips. A suite skips only when the run lacks what it drives (a market for its role, an optional artifact such as `exit-books.toml` or `bundler.toml`) or a network-specific precondition does not hold (e.g. the Hoodi-only governance vote).
+- Local fork setup: `make provision-fork RPC_URL=<archive-rpc>` deploys and activates the `fork-*` markets on a local anvil fork of `CONFIG`'s network (mainnet by default), using `FORK_CONFIG=fork-<CONFIG>` for test-only role holders, into `deployed/fork/` and leaves anvil running; a compatible node already on `:8545` is reused without requiring the archive RPC; `make provision-stop` tears it down; `make test-fork-provision` does provision -> test-fork and stops the node only when that invocation started it (a reused node is left running). Against a real deploy run, `make fork-run RUN=<run>` is the equivalent.
 - Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
 - Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
-- Year-long solvency simulations: `make test-simulation` sets `RUN_SOLVENCY_SIMULATION=true` over
-  `test/simulation/`. The 30-day variants of the same suites already run inside `make test-local`; without that
-  variable the year-long tests skip. The gas limit they need is set in `foundry.toml`.
-- Mutation testing: `make test-mutation` scores `src/` against the 30-day simulations. It is **outside the pinned
-  toolchain** — `--mutate` needs forge >= 1.8.0 while `.foundryref` pins 1.7.1 — so install that forge separately
-  and expect it never to run in CI. A 1.8.x run is not comparable with a pinned run: isolate mode makes every call
-  its own transaction, which moves gas and flips the simulation's `perCallTransactions` boundary. Slow, and the
-  score counts only the mutants forge evaluates.
-- Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot`. The
-  fork suites are included — they revert without the fork setup — forking the latest block unless
-  `FORK_BLOCK` pins one. `TEST_SEED` comes from the env when set; otherwise foundry picks
-  one random seed per run and the suites log it (fork suites also log their block), so a run is always
-  replayable by exporting the logged `TEST_SEED`/`FORK_BLOCK`. `make snapshot-diff` diffs a fresh run
-  against `.gas-snapshot` — run both at the same `TEST_SEED`, or the diff picks up seed noise on top of the
-  code change (CI pins `TEST_SEED=1`).
-- Format check for local Solidity files:
-  `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
+- Year-long solvency simulations: `make test-simulation` sets `RUN_SOLVENCY_SIMULATION=true` over `test/simulation/`. The 30-day variants of the same suites already run inside `make test-local`; without that variable the year-long tests skip. The gas limit they need is set in `foundry.toml`.
+- Mutation testing: `make test-mutation` scores `src/` against the 30-day simulations. It is **outside the pinned toolchain** — `--mutate` needs forge >= 1.8.0 while `.foundryref` pins 1.7.1 — so install that forge separately and expect it never to run in CI. A 1.8.x run is not comparable with a pinned run: isolate mode makes every call its own transaction, which moves gas and flips the simulation's `perCallTransactions` boundary. Slow, and the score counts only the mutants forge evaluates.
+- Gas snapshots: `make snapshot` runs the whole suite into `.gas-snapshot`. The fork suites are included — they revert without the fork setup — forking the latest block unless `FORK_BLOCK` pins one. `TEST_SEED` comes from the env when set; otherwise foundry picks one random seed per run and the suites log it (fork suites also log their block), so a run is always replayable by exporting the logged `TEST_SEED`/`FORK_BLOCK`. `make snapshot-diff` diffs a fresh run against `.gas-snapshot` — run both at the same `TEST_SEED`, or the diff picks up seed noise on top of the code change.
+- Format check for local Solidity files (`make fmt-check`): `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
-- Writing a fork test: put it under `test/fork/`, extend `helpers/ForkMarketStack.sol` (which extends `ForkStack`
-  and `ForkTest`), pass the market role to its constructor (`contract X is Base("weth-wsteth") {}`), and call
-  `_fork()` then `_bindRole()` first in `setUp`. That binds the run's market for the role into `deployed` (the raw
-  handle the `ForkStack` helpers take) and `market` (the handle the `MarketActions` helpers drive), and marks the
-  test skipped when the run has no such market. `_seedLenderAndBorrower()` is the shared fixture. Read external
-  addresses via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and binds the run named by `ARTIFACTS_DIR`,
-  reverting when either is unset, the run has no `protocol.toml`, the network config it names is missing, or
-  its recorded chain id differs from the forked chain. A role the deployment has no market for skips the
-  suite; everything else reverts. Protocol addresses come from `_protocol("core")`,
-  `_market(name, "controller")`, `_marketId(name)`, or `_artifactAddr("vaults/weth-wsteth.toml", "vault.address")`
-  for the per-resource artifacts; each reverts on a key the run does not define. `FORK_BLOCK` pins a block for
-  replay.
+- Writing a fork test: put it under `test/fork/`, extend `helpers/ForkMarketStack.sol` (which extends `ForkStack` and `ForkTest`), pass the market role to its constructor (`contract X is Base("weth-wsteth") {}`), and call `_fork()` then `_bindRole()` first in `setUp`. That binds the run's market for the role into `deployed` (the raw handle the `ForkStack` helpers take) and `market` (the handle the `MarketActions` helpers drive), and marks the test skipped when the run has no such market. `_seedLenderAndBorrower()` is the shared fixture. Read external addresses via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and binds the run named by `ARTIFACTS_DIR`, reverting when either is unset, the run has no `protocol.toml`, the network config it names is missing, or its recorded chain id differs from the forked chain. A role the deployment has no market for skips the suite; everything else reverts. Protocol addresses come from `_protocol("core")`, `_market(name, "controller")`, `_marketId(name)`, or `_artifactAddr("vaults/weth-wsteth.toml", "vault.address")` for the per-resource artifacts; each reverts on a key the run does not define. `FORK_BLOCK` pins a block for replay.
 
 ## Dependency Policy
 
 - Foundry dependencies are pinned as git submodules under `lib/`.
 - Do not edit files inside `lib/` unless the task is explicitly about dependency patching.
-- When dependency pins change, stage and commit the relevant `.gitmodules`, `foundry.lock`,
-  and `lib/<dependency>` gitlink updates together.
+- When dependency pins change, stage and commit the relevant `.gitmodules`, `foundry.lock`, and `lib/<dependency>` gitlink updates together.
 - `git ls-files --stage lib/<dependency>` should show mode `160000` for submodules.
 
 ## Morpho Fork Policy
 
-- The Morpho Blue fork is the vendored `lib/lido-lend` dependency (core `src/LidoLend.sol`), pinned
-  as a submodule. Its fork point, core-change record, and editing rules live in
-  `lib/lido-lend/FORK_NOTES.md`.
-- The forked core accounting (positions, supply/borrow shares, interest accrual, market creation,
-  liquidate, settle) changes only through a `lib/lido-lend` pin bump.
+- The Morpho Blue fork is the vendored `lib/lido-lend` dependency (core `src/LidoLend.sol`), pinned as a submodule. Its fork point, core-change record, and editing rules live in `lib/lido-lend/FORK_NOTES.md`.
+- The forked core accounting (positions, supply/borrow shares, interest accrual, market creation, liquidate, settle) changes only through a `lib/lido-lend` pin bump.
 - Lido-layer policy and orchestration live in this repository: the per-market policy entry point is `src/controllers/LidoLendMarketController.sol`, while guardian state, vault settlement orchestration, and optional periphery remain in their own contracts under `src/`.
 
 ## Solidity Style
@@ -117,21 +58,14 @@ Read before writing or reviewing contracts.
 
 ## Specifications
 
-Specs live in `docs/specs/` in two layers (see `docs/specs/README.md`). They capture what a reviewer
-needs before reading code, not what the code already says.
+Specs live in `docs/specs/` in two layers (see `docs/specs/README.md`). They capture what a reviewer needs before reading code, not what the code already says.
 
 - **Conceptual specs** (hand-written): the architecture, cross-contract mechanisms, access-control matrix, per-market parameters, and the invariants and threat model the code cannot state itself. `architecture.md` is the system topology and runtime-boundary reference; `market-controller.md`, `guardian-signals.md`, `lender-settlement.md`, and `exit-books.md` own their respective state machines and formulas; `roles.md` maps every privilege to its role and holder; `markets/<market>.md` is per market.
-- **API reference** (`docs/specs/api/`, generated): the per-contract surface — functions, structs, state
-  variables — rendered from the Solidity NatSpec by `tools/gen_api_from_artifacts.py` (`make doc`). It is
-  the single source for per-member behaviour, so never hand-write or hand-edit it: keep the NatSpec
-  accurate and regenerate. The forked Morpho core is documented under `lib/lido-lend/`.
+- **API reference** (`docs/specs/api/`, generated): the per-contract surface — functions, structs, state variables — rendered from the Solidity NatSpec by `tools/gen_api_from_artifacts.py` (`make doc`). It is the single source for per-member behaviour, so never hand-write or hand-edit it: keep the NatSpec accurate and regenerate. The forked Morpho core is documented under `lib/lido-lend/`.
 - Invariants are **testable**: each one maps to a scenario, fork, or acceptance assertion in `test/`.
-- Threat model lists the actors (lender, borrower, liquidator, controller admin, guardian, oracle, IRM)
-  and what each is trusted not to do.
-- Behaviour-changing PRs update the NatSpec (which regenerates the API reference) and any conceptual spec
-  the change affects, under the same commit.
-- Specs reference the code; contract NatSpec never references specs, ADRs, tests, or docs
-  (see `STYLE_GUIDE.md`).
+- Threat model lists the actors (lender, borrower, liquidator, controller admin, guardian, oracle, IRM) and what each is trusted not to do.
+- Behaviour-changing PRs update the NatSpec (which regenerates the API reference) and any conceptual spec the change affects, under the same commit.
+- Specs reference the code; contract NatSpec never references specs, ADRs, tests, or docs (see `STYLE_GUIDE.md`).
 
 ## Testing Guidelines
 
@@ -145,76 +79,48 @@ test/
 ├── invariant/    # L4 — handler-based stateful properties
 ├── simulation/   # seeded months-long solvency simulations on a fresh stack; 30-day variants run in test-local
 ├── fork/         # fork tests vs the deployed protocol, bound from deployed/<ARTIFACTS_DIR>/
+├── utils/        # compile triggers for dependencies pinned to other solc versions + local test interfaces
 └── acceptance/   # L3 — mainnet fork vs immutable artifacts under deployed/<run>/
 ```
 
-- `unit/<Contract>.t.sol` — single contract or pure library in isolation; **flat, one file per
-  contract** (no per-contract subfolders), pure-library harnesses + fuzz alongside. Drives one
-  contract's methods through every branch.
-- `scenario/<Flow>.t.sol` — full cross-contract flows on a **freshly deployed** protocol (built via
-  `setup/`), on the local EVM with mock tokens.
-- `invariant/<Area>.invariant.t.sol` — handler-based stateful properties (actors, ghosts, bounded
-  actions). Handlers under `invariant/handlers/`.
-- `simulation/<Market>Solvency.t.sol` — seeded 30- and 365-day solvency simulations on a freshly deployed
-  stack with the default market config. The driver draws everyday moves by odds and schedules each rare event
-  once per run.
+- `unit/<Contract>.t.sol` — single contract or pure library in isolation; **flat, one file per contract** (no per-contract subfolders; a large surface may split into `<Contract><Aspect>.t.sol` files), pure-library harnesses + fuzz alongside. Drives one contract's methods through every branch.
+- `scenario/<Flow>.t.sol` — full cross-contract flows on a **freshly deployed** protocol (built via `setup/`), on the local EVM with mock tokens.
+- `invariant/<Area>.invariant.t.sol` — handler-based stateful properties (actors, ghosts, bounded actions). Handlers under `invariant/handlers/`.
+- `simulation/<Market>Solvency.t.sol` — seeded 30- and 365-day solvency simulations on a freshly deployed stack with the default market config. The driver draws everyday moves by odds and schedules each rare event once per run.
 - `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
-- `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
-  addresses and deployment values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
-  Activated/readiness runs also require independent reviewed `ACCEPTANCE_PAUSER_COMMITTEE` and
-  `ACCEPTANCE_ENABLE_SETTLEMENT` motion inputs. Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`);
-  skips without an artifact. It audits launch state, not role changes made by later governance. See
-  `script/DEPLOYMENT.md`.
+- `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live addresses and deployment values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
+  Activated/readiness runs also require independent reviewed `ACCEPTANCE_PAUSER_COMMITTEE` and `ACCEPTANCE_ENABLE_SETTLEMENT` motion inputs. Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`); skips without an artifact. It audits launch state, not role changes made by later governance. See `script/DEPLOYMENT.md`.
 
 ### Setup Infra (`test/setup/`)
 
 Every suite builds on `LidoLendSetup` (abstract base) — do not re-implement deployment:
 
-- **Deploys with `new`, not `vm.getCode`** (the fork core and IRM are 0.8.36-compatible). One
-  `LidoLend` core and one guardian registry are **singletons**; a core hosts **many markets**.
-  `Protocol { config, core, guardianSignals, Market[] markets }`; each `Market` carries its
-  per-market contracts (controller/vault/oracle/irm), its own config, and a handle on the core.
-- `_deployProtocol(cfg)` / `_addMarket(cfg)` deploy a market; `_defaultConfig(...)` is the starting
-  point; `irmKind` selects the IRM (Adaptive / Fixed); `_fund(token, to, amt)` and `_actor(name)`
-  set up actors.
-- **Oracle price is seeded, never `1e36` parity** (see Solidity-style / values rule below): the
-  seed is logged at deploy; reproduce a failure by exporting `TEST_SEED`.
-- Each proxied contract exposes two handles — the typed impl (`market.vault`) and the proxy admin
-  (`market.vaultProxy` / `IOssifiableProxy`) — at the same address.
+- **Deploys with `new`, not `vm.getCode`** (the fork core and IRM are 0.8.36-compatible). One `LidoLend` core and one guardian registry are **singletons**; a core hosts **many markets**.
+  `Protocol { config, core, guardianSignals, Market[] markets }`; each `Market` carries its per-market contracts (controller/vault/oracle/irm), its own config, and a handle on the core.
+- `_deployProtocol(cfg)` / `_addMarket(cfg)` deploy a market; `_defaultConfig(...)` is the starting point; `irmKind` selects the IRM (Adaptive / Fixed); `_fund(token, to, amt)` and `_actor(name)` set up actors.
+- **Oracle price is seeded, never `1e36` parity**: the seed is logged at deploy; reproduce a failure by exporting `TEST_SEED`.
+- Each proxied contract exposes two handles — the typed impl (`market.vault`) and the proxy admin (`market.vaultProxy` / `IOssifiableProxy`) — at the same address.
 
 ### Helper Pattern (`MarketActions`)
 
-Every user-visible action is a helper in the `MarketActions` library over `Market`
-(`using MarketActions for Market` → `market.borrow(bob, 10 ether)`). The helper does the action AND
-asserts everything around it — call sites never repeat assertion blocks. Each helper:
+Every user-visible action is a helper in the `MarketActions` library over `Market` (`using MarketActions for Market` → `market.borrow(bob, 10 ether)`). The helper does the action AND asserts everything around it — call sites never repeat assertion blocks. Each helper:
 
 1. Captures pre-state for the actors involved (position, market totals, ERC-20 balances, shares).
 2. Sets up `vm.expectEmit` for the events the action should fire (where args are static).
 3. Performs the call (`vm.prank` + invocation); returns the recorded outputs.
-4. **Recomputes expected values independently** — do not trust the call's return. Re-derive
-   shares↔assets, slice sizing, oracle conversions etc. with the spec formula.
+4. **Recomputes expected values independently** — do not trust the call's return. Re-derive shares↔assets, slice sizing, oracle conversions etc. with the spec formula.
 5. Asserts state deltas, events, and token movements match.
 
-Actors must be **funded first** (`_fund` on the base — `deal` is StdCheats, not a `vm` cheatcode, so
-it cannot live in the library). Coverage spans lender (deposit/mint/withdraw/redeem/settle/
-fallbackExit), borrower (supplyCollateral/activate/borrow/repay/withdrawCollateral/setSettlementLtv),
-keeper (`liquidate` asserts **no** bad debt, `liquidateBadDebt` asserts bad debt **is** realized),
-and interest utilities. Extend `MarketActions` rather than sprinkling ad-hoc assertions in tests.
+Actors must be **funded first** (`_fund` on the base — `deal` is StdCheats, not a `vm` cheatcode, so it cannot live in the library). Coverage spans lender (vaultDeposit/vaultMint/vaultWithdraw/vaultRedeem/settle/fallbackExit), borrower (supplyCollateral/activateCollateral/borrow/repay/withdrawCollateral/setSettlementLtv), keeper (`liquidate` asserts **no** bad debt, `liquidateBadDebt` asserts bad debt **is** realized), and interest utilities. Extend `MarketActions` rather than sprinkling ad-hoc assertions in tests.
 
 ### Black-box, Model-first
 
-Tests are derived from **requirements** (specs), **never from the implementation** — a test
-read off the code inherits its bugs. Model each method independently (requirements · revert
-conditions · parameter boundaries · all branches) and recompute expected numbers from the spec
-formula. Fuzz and invariants are mandatory for state-mutating methods, not just example tests.
-Coverage is necessary hygiene but not the goal — completeness is the closed branch checklist;
-mutation score is the honest measure of test strength.
+Tests are derived from **requirements** (specs), **never from the implementation** — a test read off the code inherits its bugs. Model each method independently (requirements · revert conditions · parameter boundaries · all branches) and recompute expected numbers from the spec formula. Fuzz and invariants are mandatory for state-mutating methods, not just example tests.
+Coverage is necessary hygiene but not the goal — completeness is the closed branch checklist; mutation score is the honest measure of test strength.
 
 ### Math Recomputation
 
-Where contracts compute amounts (shares↔assets, slice sizing, oracle conversions, settlement LTV),
-re-derive the expected number from inputs using the same formula. This catches drift in either the
-contract or the test setup.
+Where contracts compute amounts (shares↔assets, slice sizing, oracle conversions, settlement LTV), re-derive the expected number from inputs using the same formula. This catches drift in either the contract or the test setup.
 
 ### Naming
 
@@ -226,33 +132,26 @@ contract or the test setup.
 ### Discipline
 
 - Tests land with the change. Separate "tests follow-up" PRs are not accepted for new functionality.
-- After source changes, run at least `forge build --force` and `make test-local` (`make test` when a fork
-  setup is configured).
+- After source changes, run at least `forge build --force` and `make test-local` (`make test` when a fork setup is configured).
 
 ## Commit Messages
 
-Use [Conventional Commits](https://www.conventionalcommits.org/): the subject starts with a type
-prefix, an optional scope, and a short imperative summary.
+Use [Conventional Commits](https://www.conventionalcommits.org/): the subject starts with a type prefix, an optional scope, and a short imperative summary.
 
 ```
 <type>(<optional scope>): <summary>
 ```
 
 - Allowed types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `build`, `ci`, `perf`, `style`.
-- Scope is optional and names the area touched, e.g. `feat(controller):`, `fix(vault):`,
-  `test(scenario):`, `chore(deps):`.
-- Summary is imperative and lower-case, no trailing period; keep it under ~72 characters and put
-  detail in the body.
+- Scope is optional and names the area touched, e.g. `feat(controller):`, `fix(vault):`, `test(scenario):`, `chore(deps):`.
+- Summary is imperative and lower-case, no trailing period; keep it under ~72 characters and put detail in the body.
 - Breaking changes: add `!` after the type/scope (`refactor!:`) and explain the break in the body.
 
 ## Pull Request Notes
 
 PR description includes:
 
-- Test commands actually run. If contract surface changed, confirm `forge build --force` passes
-  with `via_ir = false` (the default for this repo).
-- Storage layout impact for struct, mapping, or proxy/controller storage changes (which slot
-  moved, whether append-only).
-- Updated specification (`docs/specs/<Contract>.md`) for behaviour-changing PRs.
-- For a `lib/lido-lend` pin bump: note what moved in the fork (accounting, ABI, storage layout) and
-  that `.gitmodules`, `foundry.lock`, and the gitlink are staged together.
+- Test commands actually run. If contract surface changed, confirm `forge build --force` passes with `via_ir = false` (the default for this repo).
+- Storage layout impact for struct, mapping, or proxy/controller storage changes (which slot moved, whether append-only).
+- Updated specification for behaviour-changing PRs: the NatSpec (regenerated into `docs/specs/api/`) and any affected conceptual spec under `docs/specs/`.
+- For a `lib/lido-lend` pin bump: note what moved in the fork (accounting, ABI, storage layout) and that `.gitmodules`, `foundry.lock`, and the gitlink are staged together.

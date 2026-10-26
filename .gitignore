@@ -23,7 +23,7 @@
 # Logs
 *.log
 
-# Per-run deploy artifacts (dated registries, activation plans, resolver records) — never committed.
+# Per-run deploy artifacts (dated registries, activation plans, resolver records) — never committed unless allow-listed below.
 /deployed/*
 !deployed/hoodi-testnet
 !deployed/.gitkeep

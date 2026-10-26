@@ -6,11 +6,11 @@ libs = ["lib"]
 names = true
 sizes = true
 
-# `evm_version = "paris"` is intentionally not set here because Vault V2 uses
-# transient storage and requires a Cancun-compatible EVM during integration tests.
+# Cancun is the minimum EVM target: the contracts use transient storage.
 # via_ir = false is the compile target — contracts must fit the legacy pipeline.
 # optimizer_runs is constrained by deploy size: at 999999 the controller exceeds
 # the EIP-170 24KB limit; at the configured 200 it fits with via_ir = false.
+evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
 via_ir = false
