@@ -29,18 +29,20 @@ contract ProtocolConfigFileHarness {
         return ProtocolConfigFile.writeMarket(market, metadata, deployment);
     }
 
-    function writeProtocol(ProtocolDeployment memory protocol, ArtifactMetadata memory metadata)
-        external
-        returns (string memory)
-    {
-        return ProtocolConfigFile.writeProtocol(protocol, metadata);
+    function writeProtocol(
+        ProtocolDeployment memory protocol,
+        ArtifactMetadata memory metadata,
+        string memory deployment
+    ) external returns (string memory) {
+        return ProtocolConfigFile.writeProtocol(protocol, metadata, deployment);
     }
 
-    function writeExitBooks(ExitBooksDeployment memory exitBooks, ArtifactMetadata memory metadata)
-        external
-        returns (string memory)
-    {
-        return ProtocolConfigFile.writeExitBooks(exitBooks, metadata);
+    function writeExitBooks(
+        ExitBooksDeployment memory exitBooks,
+        ArtifactMetadata memory metadata,
+        string memory deployment
+    ) external returns (string memory) {
+        return ProtocolConfigFile.writeExitBooks(exitBooks, metadata, deployment);
     }
 
     function requireMarketIdUndeployed(bytes32 id, string memory deployment) external view {
@@ -181,10 +183,9 @@ contract ProtocolConfigFileTest is Test {
 
     function test_writeProtocolAndExitBooks_recordsGovernanceConfiguration() external {
         string memory run = _prepareRun("protocol-config-factory-unit");
-        vm.setEnv("ARTIFACTS_DIR", run);
         ProtocolDeployment memory protocol = _protocol(run);
 
-        string memory protocolPath = harness.writeProtocol(protocol, _metadata(run));
+        string memory protocolPath = harness.writeProtocol(protocol, _metadata(run), run);
         string memory protocolArtifact = vm.readFile(protocolPath);
 
         assertEq(
@@ -199,7 +200,7 @@ contract ProtocolConfigFileTest is Test {
         // An unset committee leaves the key out: the activation replay then falls back to the Agent.
         vm.removeFile(protocolPath);
         protocol.pauserCommittee = address(0);
-        protocolArtifact = vm.readFile(harness.writeProtocol(protocol, _metadata(run)));
+        protocolArtifact = vm.readFile(harness.writeProtocol(protocol, _metadata(run), run));
         assertFalse(vm.keyExistsToml(protocolArtifact, ".protocol.pauser_committee"), "unset committee recorded");
         assertEq(
             vm.parseTomlString(protocolArtifact, ".protocol.circuit_breaker_artifact"), protocol.circuitBreakerArtifact
@@ -214,7 +215,7 @@ contract ProtocolConfigFileTest is Test {
             maxRequestLifetime: 365 days
         });
 
-        string memory exitBooksArtifact = vm.readFile(harness.writeExitBooks(exitBooks, _metadata(run)));
+        string memory exitBooksArtifact = vm.readFile(harness.writeExitBooks(exitBooks, _metadata(run), run));
 
         assertEq(vm.parseTomlAddress(exitBooksArtifact, ".exit_books.pauser"), pauser);
         assertFalse(vm.keyExistsToml(exitBooksArtifact, ".roles"), "derived roles are not deployment inputs");
