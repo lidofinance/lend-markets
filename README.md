@@ -73,6 +73,7 @@ make solhint         # stylistic/security checks (requires `solhint` in PATH)
 make ci              # everything CI runs on PRs: build + lint + local tests
 make provision-fork  # deploy + activate the fork markets on a local anvil fork of CONFIG's network
 make provision-stop  # stop the anvil provision-fork started
+make provision-market RUN=<run> RPC_URL=http://127.0.0.1:8545  # one market stack of CONFIG onto an anvil holding RUN
 make test-fork-live  # fork suites against an already-provisioned anvil (the iterative path)
 make test-fork-provision  # provision -> test-fork against it -> teardown
 ```

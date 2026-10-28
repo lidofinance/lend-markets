@@ -226,6 +226,15 @@ ownership is matched by PID, process start time, a per-start ownership token, co
 with `vm.deployCode` and `forge script --verify` cannot name those creations. A retry first validates the protocol,
 vault and adapter metadata and their immutable cross-links, then submits either address to the explorer.
 
+A production run is rehearsed market by market on an anvil fork of the network that holds it:
+`make provision-market CONFIG=mainnet RUN=mainnet MARKET=weth-wsteth RPC_URL=http://127.0.0.1:8545` deploys the
+market's oracle, guardian registry and inert market through the ordinary targets, unlocked and unverified, into
+`deployed/mainnet/`. The production guardians config carries no committee until governance names one, and no test
+address belongs in it: the driver fills an empty committee from anvil's default accounts (`GUARDIANS=<a>,<b>`
+overrides) in a throw-away copy of the config under `script/config/.provision-<config>/`, removed when it ends. The
+node must answer the anvil RPCs; a live network is refused. The artifacts it writes are fork-only: run
+`fork-activate`, `acceptance-run` and `fork-run` against them, then `git clean` them out.
+
 `make test-fork-provision RPC_URL=<archive-rpc>` chains provisioning and the fork suite. A private per-invocation
 result handshake records whether that exact call started or reused Anvil; cleanup stops only a returned
 PID/start-time/token identity. This remains correct across signals and concurrent calls. A compatible external

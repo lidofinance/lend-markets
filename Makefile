@@ -3,7 +3,7 @@
 
 # Make normally lets an included file replace exported environment variables. Preserve the public inputs so
 # precedence is consistently: command line > exported environment > .env > defaults.
-DOTENV_OVERRIDE_VARS := CONFIG FORK_CONFIG RUN MARKET MARKET_A MARKET_B ORACLE GUARDIAN_GROUP PIN_BLOCK \
+DOTENV_OVERRIDE_VARS := CONFIG FORK_CONFIG RUN MARKET MARKET_A MARKET_B ORACLE GUARDIAN_GROUP GUARDIANS PIN_BLOCK \
 	VAULT ADAPTER RPC_URL DEPLOYER_ACCOUNT DEPLOYER_SENDER ETHERSCAN_API_KEY VERIFY RESUME CHAIN_ID EXECUTOR ARTIFACTS_DIR \
 	FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED ACCEPTANCE_RPC_URL ACCEPTANCE_REGISTRY ACCEPTANCE_PAUSER_COMMITTEE \
 	ACCEPTANCE_ENABLE_SETTLEMENT
@@ -42,6 +42,7 @@ RUN ?=
 MARKET ?= weth-wsteth
 ORACLE ?= weth-wsteth
 GUARDIAN_GROUP ?= $(MARKET)
+GUARDIANS ?=
 PIN_BLOCK ?=
 VAULT ?= weth-wsteth
 ADAPTER ?= $(VAULT)
@@ -441,6 +442,15 @@ provision-fork:
 
 provision-stop:
 	bash script/provision-fork.sh stop
+
+# One market stack of CONFIG — oracle, guardian registry, inert market — onto a local anvil that already holds RUN:
+# the market rehearsal of a production run. A guardians config without a committee is filled from anvil's default
+# accounts in a throw-away copy of the config (GUARDIANS overrides the list); nothing under script/config/ changes.
+# RPC_URL is the local node and must answer the anvil RPCs.
+provision-market:
+	@test -n "$(RUN)" || { echo "ERROR: set RUN (the run deployed on the local node)"; exit 1; }
+	RPC_URL="$(RPC_URL)" DEPLOYER_SENDER="$(DEPLOYER_SENDER)" GUARDIANS="$(GUARDIANS)" \
+		bash script/provision-market.sh "$(CONFIG)" "$(RUN)" "$(MARKET)" "$(ORACLE)" "$(GUARDIAN_GROUP)"
 
 # Run the fork suites against a provisioned local anvil without touching it — the iterative path while editing
 # tests. Fails with what to do when nothing is provisioned.

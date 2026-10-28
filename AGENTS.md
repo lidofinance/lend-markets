@@ -59,6 +59,8 @@
   `fork` deployment (`script/config/fork/`, a mainnet fork with test-only role holders; `FORK_CONFIG` selects
   another folder) into `deployed/fork/` and leaves anvil running; a compatible node already on `:8545` is reused
   without requiring the archive RPC;
+  `make provision-market RUN=<run> RPC_URL=<anvil>` adds one market stack of `CONFIG` to a run already on a local
+  anvil, filling an empty guardians committee from anvil's default accounts in a throw-away config copy;
   `make provision-stop` tears it down; `make test-fork-provision` does provision -> test-fork and stops the
   node only when that invocation started it (a reused node is left running). Against a real deploy run,
   `make fork-run RUN=<run>` is the equivalent.
