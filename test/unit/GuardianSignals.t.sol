@@ -1292,4 +1292,34 @@ contract GuardianSignalsTest is Test {
         gs.syncQuorumFrontier();
         assertEq(gs.getQuorumFrontier(), _sort3(b1, b2, b3), "frontier = quorum-th largest heartbeat");
     }
+
+    // ── storage layout ──
+
+    /// @dev `_quorum` opens the ERC-7201 namespace in the low byte of the base slot. `_signals` closes it at
+    ///      base + 5, after `_guardians` (2 slots), `_delegates` and `_heartbeats`. A mapping slot holds no value,
+    ///      so the pin reads one signal, whose first slot packs `banned`, `suspectReportedAt` and `suspectCount`.
+    function test_storageLayout_firstAndLastFieldAtErc7201Slots() public {
+        gs.setSuspectWindow(1 days);
+        _suspect(GUARDIAN_1, BOB);
+        _suspect(GUARDIAN_2, BOB);
+
+        bytes32 base = _erc7201Slot("lido.lend.storage.GuardianSignals");
+        assertEq(uint8(uint256(vm.load(address(gs), base))), gs.getQuorum(), "_quorum at the base slot");
+
+        bytes32 signalSlot = keccak256(abi.encode(BOB, keccak256(abi.encode(MARKET, uint256(base) + 5))));
+        uint256 signalWord = uint256(vm.load(address(gs), signalSlot));
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 2, "setup: two active suspect reports");
+        assertEq(uint16(signalWord >> 48), opinion.suspectCount, "_signals suspectCount at base + 5");
+        assertEq(
+            uint40(signalWord >> 8) + gs.getSuspectWindow(),
+            opinion.suspectExpiryTimestamp,
+            "_signals suspectReportedAt at base + 5"
+        );
+    }
+
+    /// @dev ERC-7201 base slot of `namespaceId`, by the formula of the standard.
+    function _erc7201Slot(string memory namespaceId) private pure returns (bytes32) {
+        return keccak256(abi.encode(uint256(keccak256(bytes(namespaceId))) - 1)) & ~bytes32(uint256(0xff));
+    }
 }

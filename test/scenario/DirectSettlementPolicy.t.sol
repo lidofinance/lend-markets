@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {Position as MorphoPosition} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
+import {MarketParams, Market as MorphoMarket, Position as MorphoPosition} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
@@ -13,6 +15,24 @@ import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 import {Market} from "../setup/Types.sol";
+
+/// @dev Borrows for `onBehalf`, cuts `root` with `onBehalf`'s supply, and repays, all in one transaction.
+///      `onBehalf` must authorize this contract on the core.
+contract SameTransactionRootCut {
+    function run(
+        ILidoLend core,
+        MarketParams calldata params,
+        address onBehalf,
+        address root,
+        uint256 borrowAssets,
+        uint256 cutShares
+    ) external returns (uint256 debtCanceled) {
+        (, uint256 borrowShares) = core.borrow(params, borrowAssets, 0, onBehalf, address(this));
+        (, debtCanceled,,) = core.settle(params, cutShares, onBehalf, root, onBehalf);
+        IERC20(params.loanToken).approve(address(core), type(uint256).max);
+        core.repay(params, 0, borrowShares, onBehalf, "");
+    }
+}
 
 /// @notice Direct-core coverage of the controller's settlement execution rules.
 contract DirectSettlementPolicyTest is LidoLendSetup {
@@ -33,6 +53,8 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
     uint256 private constant ROOT_BORROW = 300 ether;
     uint256 private constant NON_ROOT_COLLATERAL = 1_000 ether;
     uint256 private constant NON_ROOT_BORROW = 100 ether;
+    /// @dev Lets the liquid supplier borrow all free liquidity at a lower LTV than the root, so the root stays root.
+    uint256 private constant SUPPLIER_COLLATERAL = 2_000 ether;
 
     struct Actors {
         address liquidSupplier;
@@ -362,6 +384,40 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         _expectSettlementBadDebt(m, actors.tailSupplier, actors.nonRoot, cutShares);
     }
 
+    /// @dev Pins open finding F4-C05: a supplier with no settleable supply at the start of a transaction borrows the
+    ///      free liquidity, cuts the root by its whole root-policy slice, and repays in the same transaction. A fix
+    ///      changes this outcome; update this test with the fix.
+    function test_F4C05_sameTxBorrowRootCutRepay_bypassesLenderTail() public {
+        Actors memory actors = _seed();
+        Market storage m = _m();
+        address supplier = actors.liquidSupplier;
+        _fund(m.collateralToken, supplier, SUPPLIER_COLLATERAL);
+        m.supplyCollateral(supplier, SUPPLIER_COLLATERAL);
+        m.activateCollateral();
+        m.accrueInterest();
+        assertEq(_tailAssets(m, supplier), 0, "setup: no settleable supply at the transaction start");
+        _expectSettlementExceedsTail(m, supplier, actors.root, _expectedRootShares(m, actors.root));
+
+        MorphoMarket memory market_ = m.core.market(m.id);
+        uint256 free = market_.totalSupplyAssets - market_.totalBorrowAssets;
+        (uint256 cutShares, uint256 expectedDebt) = _rootSliceAfterBorrow(m, actors.root, free);
+        uint256 rootSharesBefore = m.core.position(m.id, actors.root).borrowShares;
+
+        SameTransactionRootCut runner = new SameTransactionRootCut();
+        _fund(m.loanToken, address(runner), 1); // the share-based repay may round up by one asset
+        vm.prank(supplier);
+        m.core.setAuthorization(address(runner), true);
+
+        uint256 debtCanceled = runner.run(m.core, m.params, supplier, actors.root, free, cutShares);
+
+        assertEq(debtCanceled, expectedDebt, "the whole root-policy slice is cut");
+        assertGt(debtCanceled, 0, "the cut exceeds the zero settleable supply at the transaction start");
+        assertEq(
+            rootSharesBefore - m.core.position(m.id, actors.root).borrowShares, cutShares, "root debt shares decrease"
+        );
+        assertEq(m.core.position(m.id, supplier).borrowShares, 0, "the supplier repaid its borrow");
+    }
+
     function _m() private view returns (Market storage) {
         return protocol.markets[0];
     }
@@ -509,6 +565,22 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         (,, uint256 totalBorrowAssets, uint256 totalBorrowShares) =
             MorphoBalancesLib.expectedMarketBalances(m.core, m.params);
         return sliceAssets.toSharesUp(totalBorrowAssets, totalBorrowShares);
+    }
+
+    /// @dev The root-policy cut and its debt on the stored totals after a borrow of `borrowAssets`.
+    function _rootSliceAfterBorrow(Market storage m, address root, uint256 borrowAssets)
+        private
+        view
+        returns (uint256 cutShares, uint256 debtCanceled)
+    {
+        MorphoMarket memory market_ = m.core.market(m.id);
+        uint256 totalBorrowAssets = market_.totalBorrowAssets + borrowAssets;
+        uint256 totalBorrowShares =
+            market_.totalBorrowShares + borrowAssets.toSharesUp(market_.totalBorrowAssets, market_.totalBorrowShares);
+        uint256 rootDebt =
+            uint256(m.core.position(m.id, root).borrowShares).toAssetsUp(totalBorrowAssets, totalBorrowShares);
+        cutShares = Math.mulDiv(rootDebt, ROOT_POLICY_BPS, BPS).toSharesUp(totalBorrowAssets, totalBorrowShares);
+        debtCanceled = cutShares.toAssetsUp(totalBorrowAssets, totalBorrowShares);
     }
 
     function _positionValues(Market storage m, address borrower)

@@ -4,8 +4,10 @@ pragma solidity 0.8.36;
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
-import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, Market as MorphoMarket, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
+import {Erc4626Math} from "../setup/Erc4626Math.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
@@ -17,6 +19,14 @@ import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 ///         LTV opt-in.
 contract SettlementSafetyTest is LidoLendSetup {
     using MarketActions for Market;
+
+    /// @dev Raw collateral of each tied-key borrower. One rounded risk-key unit then spans 1e7 borrow shares, about
+    ///      ten loan units of debt.
+    uint256 private constant TIED_COLLATERAL = 1e25;
+    uint256 private constant TIED_KEY_SHARES = TIED_COLLATERAL / 1e18;
+    /// @dev Ten loan units per collateral unit, so ten consecutive cut values all seize the whole collateral.
+    uint256 private constant TIED_PRICE = 10e36;
+    uint256 private constant TIED_VALUE = TIED_COLLATERAL * TIED_PRICE / 1e36;
 
     function setUp() public {
         MockERC20 loan = new MockERC20("Loan", "LOAN", 18);
@@ -42,6 +52,52 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.activateCollateral();
         uint256 maxBorrow = collat * oraclePrice / 1e36 * 80 / 100;
         m.borrow(borrower, maxBorrow * borrowBps / 10_000);
+    }
+
+    /// @dev The tied-key case of the spec. `root` and `insolvent` post equal collateral and their risk keys round to
+    ///      the same value, so `root`, queued first, stays the root. The root's debt equals its collateral value.
+    ///      `insolvent` owes more than its collateral value and opts into personal settlement.
+    function _seedTiedKeys() private returns (address root, address insolvent) {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 3 * TIED_VALUE);
+        m.vaultDeposit(lender, 3 * TIED_VALUE);
+
+        root = _actor("root");
+        insolvent = _actor("insolvent");
+        _fund(m.collateralToken, root, TIED_COLLATERAL);
+        m.supplyCollateral(root, TIED_COLLATERAL);
+        _fund(m.collateralToken, insolvent, TIED_COLLATERAL);
+        m.supplyCollateral(insolvent, TIED_COLLATERAL);
+        m.activateCollateral();
+
+        // Borrow at twice the final price to stay within LLTV. The first borrow prices one asset at 1e6 shares.
+        MockPriceOracle(address(m.oracle)).setPrice(2 * TIED_PRICE);
+        m.borrowByShares(root, TIED_VALUE * 1e6);
+        m.borrowByShares(insolvent, TIED_VALUE * 1e6 + TIED_KEY_SHARES - 1);
+        m.setSettlementLtv(insolvent, 1);
+        MockPriceOracle(address(m.oracle)).setPrice(TIED_PRICE);
+
+        (address queueRoot,) = m.controller.nextSettlementBorrower(0);
+        (, uint256[] memory keys) = m.controller.settlementBorrowers(0, 2);
+        assertEq(queueRoot, root, "setup: the first borrower stays root");
+        assertEq(keys[0], keys[1], "setup: both risk keys round to the same value");
+        assertEq(m.controller.positionOf(root).debtAssets, TIED_VALUE, "setup: root debt equals collateral value");
+        assertGt(m.controller.positionOf(insolvent).debtAssets, TIED_VALUE, "setup: the tied borrower is insolvent");
+        assertFalse(m.controller.hasBadDebt(), "setup: the solvent root passes the bad-debt gate");
+    }
+
+    /// @dev `insolvent` keeps debt on zero collateral, has left the queue, and the gate still sees no bad debt.
+    function _assertDebtLeftOnZeroCollateral(address root, address insolvent) private view {
+        Market storage m = _m();
+        Position memory p = m.core.position(m.id, insolvent);
+        assertEq(p.collateral, 0, "settle took all collateral");
+        assertGt(p.borrowShares, 0, "settle left debt shares");
+        assertGt(m.controller.positionOf(insolvent).debtAssets, 0, "the remaining shares carry debt");
+        assertEq(m.controller.settlementBorrowersCount(), 1, "the zero-collateral borrower left the queue");
+        (address queueRoot,) = m.controller.nextSettlementBorrower(0);
+        assertEq(queueRoot, root, "the solvent root stays");
+        assertFalse(m.controller.hasBadDebt(), "the gate does not see the remaining debt");
     }
 
     // ── Bad debt at the queue root: fallback exit has three distinct outcomes ──
@@ -154,6 +210,50 @@ contract SettlementSafetyTest is LidoLendSetup {
         vm.prank(lender);
         vm.expectRevert(ILidoLendMarketController.SettlementBadDebt.selector);
         m.vault.settle(shares / 100, bs, lender, lender);
+    }
+
+    // ── Tied risk keys: the root check misses an insolvent non-root borrower ──
+
+    /// @dev Pins open finding FZ-17: a personal direct settle takes all collateral of an insolvent non-root borrower
+    ///      and leaves debt that no queue entry or gate tracks. A fix changes this outcome; update this test with the
+    ///      fix.
+    function test_FZ17_tiedKeyPersonalCoreSettle_leavesDebtOnZeroCollateral() public {
+        Market storage m = _m();
+        (address root, address insolvent) = _seedTiedKeys();
+        address supplier = _actor("supplier");
+        _fund(m.loanToken, supplier, 2 * TIED_VALUE);
+        m.coreSupply(supplier, 2 * TIED_VALUE);
+
+        // The fewest borrow shares whose down-rounded value equals the collateral value.
+        MorphoMarket memory mkt = m.core.market(m.id);
+        uint256 cut = Math.mulDiv(
+            TIED_VALUE, uint256(mkt.totalBorrowShares) + 1e6, uint256(mkt.totalBorrowAssets) + 1, Math.Rounding.Ceil
+        );
+        assertLt(cut, m.core.position(m.id, insolvent).borrowShares, "setup: the cut is partial");
+
+        (uint256 seized,) = m.coreSettle(supplier, insolvent, cut, supplier);
+
+        assertEq(seized, TIED_COLLATERAL, "the partial cut seizes all collateral");
+        _assertDebtLeftOnZeroCollateral(root, insolvent);
+    }
+
+    /// @dev Pins open finding FZ-17: a targeted vault settle takes all collateral of an insolvent non-root borrower
+    ///      and leaves debt that no queue entry or gate tracks. A fix changes this outcome; update this test with the
+    ///      fix.
+    function test_FZ17_tiedKeyPersonalVaultSettle_leavesDebtOnZeroCollateral() public {
+        Market storage m = _m();
+        (address root, address insolvent) = _seedTiedKeys();
+        address lender = _actor("lender");
+
+        // A claim a few units above the collateral value. The budgeted cut still seizes everything and stays partial.
+        uint256 shares = Erc4626Math.toShares(m.vault, TIED_VALUE + 4, Math.Rounding.Ceil);
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = insolvent;
+
+        (, uint256 seized,) = m.settle(lender, shares, borrowers, lender);
+
+        assertEq(seized, TIED_COLLATERAL, "the budgeted cut seizes all collateral");
+        _assertDebtLeftOnZeroCollateral(root, insolvent);
     }
 
     /// @dev Withdrawing collateral under open debt may not leave active collateral below the activation

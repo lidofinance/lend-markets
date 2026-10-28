@@ -13,6 +13,8 @@ import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfa
 import {IrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/IrmConfigFactory.sol";
 import {IIrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/interfaces/IIrmConfigFactory.sol";
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
@@ -121,6 +123,9 @@ interface IReadVault {
     function totalSupply() external view returns (uint256);
     function totalAssets() external view returns (uint256);
     function managedSupplyShares() external view returns (uint256);
+    function previewMint(uint256 shares) external view returns (uint256);
+    function previewDeposit(uint256 assets) external view returns (uint256);
+    function deposit(uint256 assets, address receiver) external returns (uint256);
 }
 
 interface IReadProxy {
@@ -263,6 +268,8 @@ abstract contract AcceptanceContext is Test {
     uint256 internal lltv;
     bytes32 internal marketId;
     address internal pauserCommittee;
+    address internal marketSteward;
+    uint256 internal marketFee;
     bool internal enableSettlement;
     bool internal forkProvision;
 
@@ -436,6 +443,21 @@ abstract contract AcceptanceContext is Test {
             : vm.envAddress("ACCEPTANCE_PAUSER_COMMITTEE");
         require(pauserCommittee != address(0), "acceptance: CircuitBreaker pauser committee is zero");
     }
+
+    /// @dev Production acceptance requires the reviewed steward that the activation motion adds. The conventional
+    ///      `fork` run defaults to none, because ActivateMarkets.s.sol adds no steward.
+    function _loadExpectedMarketSteward() internal {
+        marketSteward = forkProvision
+            ? vm.envOr("ACCEPTANCE_MARKET_STEWARD", address(0))
+            : vm.envAddress("ACCEPTANCE_MARKET_STEWARD");
+        require(forkProvision || marketSteward != address(0), "acceptance: market steward is zero");
+    }
+
+    /// @dev Production acceptance requires the reviewed initial fee, zero when the motion sets none. The conventional
+    ///      `fork` run defaults to zero, because ActivateMarkets.s.sol sets no fee.
+    function _loadExpectedMarketFee() internal {
+        marketFee = forkProvision ? vm.envOr("ACCEPTANCE_MARKET_FEE", uint256(0)) : vm.envUint("ACCEPTANCE_MARKET_FEE");
+    }
 }
 
 // ============================================================================
@@ -444,6 +466,13 @@ abstract contract AcceptanceContext is Test {
 
 abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     using MarketParamsLib for MarketParams;
+    using SafeERC20 for IERC20;
+
+    // `LidoLendPreseeder` constants.
+    address internal constant PRESEED_RECIPIENT = address(0xdead);
+    uint256 internal constant MARKET_VIRTUAL_SHARES = 1e6;
+    uint256 internal constant MIN_DEAD_DEPOSIT_SHARES = 1e9;
+    uint256 internal constant MIN_VAULT_ASSET_UNITS = 1e6;
 
     function _assertComponentsDeployed() internal {
         address[11] memory a = [
@@ -716,8 +745,16 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(IReadCurve(curve).owner(), agent, "curve.owner=agent");
         assertEq(IReadCurve(curve).manager(), executor, "curve.manager=executor");
         _assertAddressSetEq(
-            IReadDashboard(dashboard).marketStewards(Id.wrap(marketId)), new address[](0), "market steward"
+            IReadDashboard(dashboard).marketStewards(Id.wrap(marketId)), _expectedMarketStewards(), "market steward"
         );
+    }
+
+    /// @dev The activation motion adds exactly one steward, the reviewed `marketSteward`. An inert market has none, and
+    ///      so has a `fork` run, whose replay adds none.
+    function _expectedMarketStewards() private view returns (address[] memory stewards) {
+        if (!_isMarketActivated() || marketSteward == address(0)) return new address[](0);
+        stewards = new address[](1);
+        stewards[0] = marketSteward;
     }
 
     function _assertLocalBytecode() internal {
@@ -894,8 +931,9 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     function _assertActivated() internal view {
-        (,,,, uint128 lastUpdate,) = IReadCore(core).market(marketId);
+        (,,,, uint128 lastUpdate, uint128 fee) = IReadCore(core).market(marketId);
         assertGt(uint256(lastUpdate), 0, "market not created on core");
+        assertEq(uint256(fee), marketFee, "market fee");
         assertEq(IReadCore(core).marketController(marketId), controller, "controller not bound");
         assertEq(IReadCore(core).isSettlementEnabled(marketId), enableSettlement, "settlement flag");
         assertEq(IReadRouter(router).marketIrm(marketId), curve, "IRM not routed");
@@ -937,18 +975,42 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertTrue(IReadErc4626Book(erc4626Book).paused(), "configured pauser did not pause ERC-4626 exit book");
     }
 
-    /// @dev Mirror of the `LidoLendActivateMarket` EasyTrack motion, run by the executor. The curve config
-    ///      MUST be applied before `createMarket` — its first `borrowRate` ping reverts on an unset config.
+    /// @dev Mirror of the `LidoLendActivateMarket` EasyTrack motion, run by the executor in the motion's call order.
+    ///      The curve config MUST be applied before `createMarket`: its first `borrowRate` ping reverts on an unset
+    ///      config. A disposable steward stands in for the reviewed one. The motion sets a fee only when it is not
+    ///      zero. This mirror's fee is zero, so it makes no `setFee` call.
     function _activate(address testPauserCommittee) internal {
         assertNotEq(testPauserCommittee, address(0), "test pauser committee is zero");
         MarketParams memory p = _params();
         address irmConfig = _expectedIrmConfig();
+        address testSteward = makeAddr("acceptanceMarketSteward");
         vm.startPrank(executor);
         IReadCurve(curve).applyIrmConfig(p, irmConfig);
         IReadRouter(router).setMarketIrm(p, curve);
         IReadFacade(facade).createMarket(p, controller, enableSettlement);
+        IReadDashboard(dashboard).addMarketSteward(Id.wrap(marketId), testSteward);
         IReadCircuitBreaker(circuitBreaker).registerPauser(controller, testPauserCommittee);
         vm.stopPrank();
+        _preseed(p);
+    }
+
+    /// @dev The two calls of `LidoLendPreseeder.preseedMarket`, with its amounts and share check, made by a funded
+    ///      stand-in for the preseeder. Both the market shares and the vault shares go to `PRESEED_RECIPIENT`.
+    function _preseed(MarketParams memory p) private {
+        uint256 marketAssets = (MIN_DEAD_DEPOSIT_SHARES - 1) / MARKET_VIRTUAL_SHARES + 1;
+        uint256 vaultAssets = Math.max(IReadVault(vault).previewMint(MIN_DEAD_DEPOSIT_SHARES), MIN_VAULT_ASSET_UNITS);
+        address preseeder = makeAddr("acceptancePreseeder");
+        deal(loanToken, preseeder, marketAssets + vaultAssets);
+
+        vm.startPrank(preseeder);
+        IERC20(loanToken).forceApprove(core, marketAssets);
+        IMorpho(core).supply(p, 0, MIN_DEAD_DEPOSIT_SHARES, PRESEED_RECIPIENT, "");
+        uint256 requiredVaultShares =
+            Math.max(IReadVault(vault).previewDeposit(MIN_VAULT_ASSET_UNITS), MIN_DEAD_DEPOSIT_SHARES);
+        IERC20(loanToken).forceApprove(vault, vaultAssets);
+        uint256 vaultShares = IReadVault(vault).deposit(vaultAssets, PRESEED_RECIPIENT);
+        vm.stopPrank();
+        assertGe(vaultShares, requiredVaultShares, "preseed: vault shares too low");
     }
 
     function _expectedIrmConfig() private view returns (address irmConfig) {

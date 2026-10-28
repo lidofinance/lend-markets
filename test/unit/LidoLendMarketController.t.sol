@@ -1045,7 +1045,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
         // One wei past the limit needs more supply shares than the position holds -> the core refuses.
         vm.prank(direct);
-        vm.expectRevert();
+        vm.expectRevert(stdError.arithmeticError);
         m.core.withdraw(m.params, reported + 1, 0, direct, direct);
 
         // The limit itself withdraws in full.
@@ -1802,6 +1802,27 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
             (, SettlementSlice memory sliceB) = c2.nextSettlementBorrower(0);
             assertGt(sliceB.remainingBorrowShares, 0, "B above the floor keeps a partial remainder");
         }
+    }
+
+    // ── storage layout ──
+
+    /// @dev `marketId` opens the ERC-7201 namespace. `_instantActivationCallers` closes it at base + 12, after
+    ///      `supplyCap` (1 slot), the packed `isFrozen` and `_guardianSignals` (1 slot), `_activation` (5 slots) and
+    ///      `_settlementQueue` (4 slots). A mapping slot holds no value, so the pin reads one entry of the mapping.
+    function test_storageLayout_firstAndLastFieldAtErc7201Slots() public {
+        address caller = _actor("instantCaller");
+        _m().setInstantActivation(caller, true);
+
+        bytes32 base = _erc7201Slot("lido.lend.storage.LidoLendMarketController");
+        assertEq(vm.load(address(c), base), Id.unwrap(c.marketId()), "marketId at the base slot");
+        bytes32 entry = keccak256(abi.encode(caller, uint256(base) + 12));
+        assertTrue(c.hasInstantActivation(caller), "setup: caller has instant activation");
+        assertEq(vm.load(address(c), entry), bytes32(uint256(1)), "_instantActivationCallers at base + 12");
+    }
+
+    /// @dev ERC-7201 base slot of `namespaceId`, by the formula of the standard.
+    function _erc7201Slot(string memory namespaceId) private pure returns (bytes32) {
+        return keccak256(abi.encode(uint256(keccak256(bytes(namespaceId))) - 1)) & ~bytes32(uint256(0xff));
     }
 }
 

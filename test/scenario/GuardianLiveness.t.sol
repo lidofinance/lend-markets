@@ -216,4 +216,129 @@ contract GuardianLivenessTest is LidoLendSetup {
         m.borrow(borrower, _maxBorrow() / 2);
         assertEq(m.controller.positionOf(borrower).activating, 0, "lot matures after the ban is cleared");
     }
+
+    // ── A ban on matured collateral gates new borrowing only ──
+
+    /// @dev Matures the lot on a quorum of heartbeats, borrows half the capacity, then bans the borrower. Returns the
+    ///      borrow shares.
+    function _borrowThenBan() internal returns (uint256 borrowShares) {
+        Market storage m = _m();
+        m.supplyCollateral(borrower, 100 ether);
+        m.activateCollateral();
+        borrowShares = m.borrow(borrower, _maxBorrow() / 2);
+
+        address[] memory quorumGuardians = new address[](2);
+        quorumGuardians[0] = guardian1;
+        quorumGuardians[1] = guardian2;
+        m.banVia(quorumGuardians, borrower);
+        assertEq(m.controller.positionOf(borrower).active, 100 ether, "setup: lot matured before the ban");
+    }
+
+    function test_BannedBorrower_RepaysThenWithdrawsAllCollateral() public {
+        Market storage m = _m();
+        uint256 borrowShares = _borrowThenBan();
+
+        _fund(m.loanToken, borrower, m.repayAssets(borrowShares));
+        m.repay(borrower, borrowShares);
+        m.withdrawCollateral(borrower, 100 ether, borrower);
+
+        assertEq(m.core.position(m.id, borrower).collateral, 0, "banned borrower withdrew all collateral");
+    }
+
+    function test_BannedBorrower_CanBeLiquidated() public {
+        Market storage m = _m();
+        uint256 borrowShares = _borrowThenBan();
+        m.distress(borrower, 0.9e18);
+
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, m.repayAssets(borrowShares));
+        (uint256 seized,) = m.liquidate(keeper, borrower, 0, borrowShares / 2);
+        assertGt(seized, 0, "keeper seized collateral from the banned borrower");
+    }
+
+    /// @dev A ban is keyed to the borrower, so the supply side is untouched: a lender still withdraws free liquidity.
+    function test_BannedBorrower_LenderExitStaysOpen() public {
+        _borrowThenBan();
+        _m().vaultWithdraw(_actor("lender"), 333 ether);
+    }
+
+    function testRevert_BannedBorrower_BorrowBlocked() public {
+        Market storage m = _m();
+        _borrowThenBan();
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
+        m.core.borrow(m.params, 1 ether, 0, borrower, borrower);
+    }
+
+    // ── Pinned: the stored frontier stalls after a quorum decrease ──
+
+    /// @dev All three guardians report one shared scan. Then guardians 2 and 3 go silent, and guardian 1 reports once
+    ///      more. From then on, each report of guardian 1 starts above the stored frontier, so none recomputes it.
+    ///      Returns the shared scan time, where the frontier stays.
+    function _silenceGuardians2And3() internal returns (uint256 sharedScan) {
+        Market storage m = _m();
+        sharedScan = block.timestamp;
+        m.heartbeatAt(guardian1, sharedScan);
+        m.heartbeatAt(guardian2, sharedScan);
+        m.heartbeatAt(guardian3, sharedScan);
+        assertEq(m.guardianSignals.getQuorumFrontier(), sharedScan, "setup: frontier at the shared scan");
+
+        vm.warp(block.timestamp + 1 minutes);
+        m.heartbeatAt(guardian1, block.timestamp);
+        assertEq(m.guardianSignals.getQuorumFrontier(), sharedScan, "setup: one guardian cannot carry quorum two");
+    }
+
+    /// @dev Pins open finding ll-aud-17: after a quorum decrease, the stored frontier stays behind guardian 1's scan,
+    ///      so the lot waits for a `syncQuorumFrontier` call.
+    ///      A fix changes this outcome; update this test with the fix.
+    function test_LLAUD17_quorumLowered_frontierStallsUntilSync() public {
+        Market storage m = _m();
+        uint256 sharedScan = _silenceGuardians2And3();
+        vm.prank(m.config.admin);
+        m.guardianSignals.setQuorum(1);
+        uint256 unlockTime = _bookLotAndPassUnlockTime();
+
+        // With quorum one the live candidate is the highest report: this scan of guardian 1.
+        uint256 liveCandidate = block.timestamp;
+        m.heartbeatAt(guardian1, liveCandidate);
+        assertGe(liveCandidate, unlockTime, "setup: guardian 1 scanned past the unlock");
+        assertEq(m.guardianSignals.getQuorumFrontier(), sharedScan, "stored frontier stalls at the shared scan");
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.borrow(m.params, _maxBorrow() / 2, 0, borrower, borrower);
+
+        assertEq(m.syncFrontier(), liveCandidate, "sync moves the frontier to the live candidate");
+        m.borrow(borrower, _maxBorrow() / 2);
+        assertEq(m.controller.positionOf(borrower).activating, 0, "lot matures once the frontier is synced");
+    }
+
+    /// @dev Pins open finding ll-aud-17: after the remove-guardian motion, the lot waits for the fallback deadline
+    ///      although guardian 1 scanned past its unlock. A fix changes this outcome; update this test with the fix.
+    function test_LLAUD17_removeGuardianMotion_lotWaitsForFallback() public {
+        Market storage m = _m();
+        uint256 sharedScan = _silenceGuardians2And3();
+        // The motion lowers quorum, then removes a silent guardian.
+        vm.startPrank(m.config.admin);
+        m.guardianSignals.setQuorum(1);
+        m.guardianSignals.removeGuardian(guardian3);
+        vm.stopPrank();
+        uint256 lotStart = block.timestamp;
+        uint256 unlockTime = _bookLotAndPassUnlockTime();
+
+        vm.warp(lotStart + QUORUM_FALLBACK - 1);
+        m.heartbeatAt(guardian1, block.timestamp);
+        assertGt(block.timestamp, unlockTime, "setup: guardian 1 scanned past the unlock");
+        assertEq(m.guardianSignals.getQuorumFrontier(), sharedScan, "stored frontier stalls at the shared scan");
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.borrow(m.params, _maxBorrow() / 2, 0, borrower, borrower);
+
+        vm.warp(lotStart + QUORUM_FALLBACK);
+        m.borrow(borrower, _maxBorrow() / 2);
+        assertEq(m.controller.positionOf(borrower).activating, 0, "fallback deadline matures the lot");
+        assertEq(m.guardianSignals.getQuorumFrontier(), sharedScan, "frontier still stalled at the fallback");
+    }
 }
