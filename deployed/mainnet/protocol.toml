@@ -1,0 +1,27 @@
+[artifact]
+kind = "protocol-deployment"
+deployment = "mainnet"
+chain_id = 1
+config_hash = "0x31863c02bee67d85b5cab182b449c4fc7655ca4d42cafafe3eb47e14ab38d9ef"
+compatibility_hash = "0x52644200ae3b7ae5be5f9721ba9d69a64b3be1a25f6f3260dcb8591671097e4f"
+
+[protocol]
+deployment = "mainnet"
+network = "mainnet"
+chain_id = 1
+config_hash = "0x31863c02bee67d85b5cab182b449c4fc7655ca4d42cafafe3eb47e14ab38d9ef"
+circuit_breaker_artifact = "lido-lend"
+core = "0x026a770badc7126c7252Ef8d407E5b9C56147491"
+owner_facade = "0x85378a1073E8f338e11A97E090E47e2F0FdD3D5a"
+irm_router = "0x81B7cC9523B30429110282d90db2fa90ff443d91"
+adaptive_curve_irm = "0xf6f1565F4fD3d29E6bDAb86764A50BCde381422f"
+irm_config_factory = "0xE7ce129Eb67970C4d71e1456ad50f84B43C35496"
+factory = "0xBe1C1eaBda3eD8a93D3CE3246cf4EeF8111c76C7"
+risk_steward_dashboard = "0xC3C241bC213EF3ba16234A7c689999209cE515D7"
+circuit_breaker = "0xd0A81A130a303237d338A0b5835edcB011Ab3afd"
+reseal_manager = "0x7914b5a1539b97Bd0bbd155757F25FD79A522d24"
+guardian_signals_impl = "0x66aFC8Bb3aB2f01127fDdEb05425bAD77923091f"
+deployed_block = 26291288
+agent = "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
+evm_script_executor = "0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"
+pauser_committee = "0x604B13eD638663AA0C1eEF0c3482e51f228BA2E1"
