@@ -14,9 +14,10 @@ import {Market} from "../setup/Types.sol";
 
 /// @notice Guards the gas envelope of the fallback exit's costliest settlement path: a book where
 ///         every cut is partial, touches a previously untouched borrower, and re-sorts a queue that
-///         keeps all 500 entries. One test asserts the book really produces that path. The other
-///         executes the default-bounded exit under the per-transaction gas budget and requires it
-///         to fit, with a starved call proving the budget binds.
+///         keeps all its entries. One test asserts a 500-borrower book really produces that path.
+///         The others execute the default-bounded exit on books of 500, 2,000 and 5,000 borrowers
+///         under the per-transaction gas budget and require it to fit, with a starved call proving
+///         the budget binds.
 /// @dev    Setup leaves storage warm, which understates what a real transaction pays; run with
 ///         --isolate for real-transaction costs. The fit assertion holds in both modes.
 contract FallbackExitGasBenchmark is BundlerSetup {
@@ -33,11 +34,11 @@ contract FallbackExitGasBenchmark is BundlerSetup {
     }
 
     /// @dev A WETH/wstETH market where the first 100 cuts are each partial, touch a previously
-    ///      untouched borrower, and re-sort through a heap that keeps all 500 entries: 500 borrowers
-    ///      in a 0.49-point LTV band under a 95% liquidation threshold, so one LTV step drops every
-    ///      cut root below all untouched borrowers instead of closing it. The pool is drawn to one
-    ///      WETH of idle liquidity so the exit runs the full three-leg bundle.
-    function _seedPartialRekeyBook() internal returns (Market storage m, uint256 shares) {
+    ///      untouched borrower, and re-sort through a heap that keeps all `borrowers` entries: the
+    ///      borrowers sit in a 0.49-point LTV band under a 95% liquidation threshold, so one LTV step
+    ///      drops every cut root below all untouched borrowers instead of closing it. The pool is
+    ///      drawn to one WETH of idle liquidity so the exit runs the full three-leg bundle.
+    function _seedPartialRekeyBook(uint256 borrowers) internal returns (Market storage m, uint256 shares) {
         LidoLendDeployer.DeployConfig memory cfg = _defaultConfig(address(weth), address(wsteth), address(wsteth));
         cfg.lltv = 0.95e18;
         cfg.activation.maxDelayInflow = 1_000_000_000 ether;
@@ -48,13 +49,13 @@ contract FallbackExitGasBenchmark is BundlerSetup {
         MockPriceOracle(address(m.oracle)).setPrice(1e36);
 
         uint256 total = 1 ether; // idle for the WETH-transfer leg
-        for (uint256 i; i < 500; ++i) {
+        for (uint256 i; i < borrowers; ++i) {
             total += 94 ether + (i % 50) * 0.01 ether;
         }
         _fund(m.loanToken, lender, total);
         shares = m.vaultDeposit(lender, total);
 
-        for (uint256 i; i < 500; ++i) {
+        for (uint256 i; i < borrowers; ++i) {
             address b = address(uint160(0x600000 + i));
             _fund(m.collateralToken, b, 100 ether);
             vm.startPrank(b);
@@ -63,7 +64,7 @@ contract FallbackExitGasBenchmark is BundlerSetup {
             vm.stopPrank();
         }
         m.activateCollateral();
-        for (uint256 i; i < 500; ++i) {
+        for (uint256 i; i < borrowers; ++i) {
             address b = address(uint160(0x600000 + i));
             vm.prank(b);
             m.core.borrow(m.params, 94 ether + (i % 50) * 0.01 ether, 0, b, b);
@@ -77,15 +78,58 @@ contract FallbackExitGasBenchmark is BundlerSetup {
     ///      borrowers, every cut is partial and exactly one LTV step, and the heap keeps its 500
     ///      entries.
     function test_pathShape_partialRekeyBook() public {
-        (Market storage m, uint256 shares) = _seedPartialRekeyBook();
+        (Market storage m, uint256 shares) = _seedPartialRekeyBook(500);
         assertEq(m.controller.settlementBorrowersCount(), 500, "heap holds the book");
 
         vm.prank(lender);
         m.vault.fallbackExit(shares, lender, lender, 100);
 
-        assertEq(m.controller.settlementBorrowersCount(), 500, "no position closed: heap still 500");
-        uint256 touched;
-        for (uint256 i; i < 500; ++i) {
+        assertEq(_touchedByPartialCuts(m, 500), 100, "100 iterations touched 100 distinct borrowers");
+    }
+
+    /// @dev The invariant the default is sized for: the default-bounded exit on the costliest path
+    ///      fits the execution budget of a transaction at the gas cap. The starved rerun proves the
+    ///      budget binds, so the fit assertion cannot pass vacuously.
+    function test_gasCapped_partialRekeyBook_defaultBound() public {
+        _assertDefaultBoundFitsGasCap(500);
+    }
+
+    /// @dev The same invariant on a 2,000-borrower book: a deeper heap makes each re-sort cost more.
+    function test_gasCapped_partialRekeyBook2000_defaultBound() public {
+        _assertDefaultBoundFitsGasCap(2000);
+    }
+
+    /// @dev The same invariant on a 5,000-borrower book.
+    function test_gasCapped_partialRekeyBook5000_defaultBound() public {
+        _assertDefaultBoundFitsGasCap(5000);
+    }
+
+    /// @dev Runs the default-bounded exit on a book of `borrowers` at the gas cap and requires it to
+    ///      fit. The capped run must take the costliest path: one partial cut on each of 50 distinct
+    ///      borrowers, the default bound. A starved rerun must fail.
+    function _assertDefaultBoundFitsGasCap(uint256 borrowers) internal {
+        (Market storage m,) = _seedPartialRekeyBook(borrowers);
+
+        uint256 snap = vm.snapshotState();
+        (bool ok, uint256 budget, uint256 used) = _runCappedExit(m, TX_GAS_CAP);
+        assertTrue(ok, "the default-bounded worst-path exit fits a capped transaction");
+        assertEq(_touchedByPartialCuts(m, borrowers), 50, "the default bound cut 50 distinct borrowers");
+        console2.log("  borrowers", borrowers);
+        console2.log("  execBudget", budget, "used", used);
+        console2.log("  headroom", budget - used);
+        vm.revertToState(snap);
+
+        (bool starved,, uint256 usedStarved) = _runCappedExit(m, 2_000_000 + 21_000);
+        assertFalse(starved, "a starved budget fails, so the budget binds");
+        console2.log("  starved control used", usedStarved);
+    }
+
+    /// @dev Counts the borrowers a settlement cut, and requires the costliest-path shape: the heap
+    ///      keeps every entry, no borrower closed, each touched borrower moved exactly one LTV step,
+    ///      and every other borrower is still in the seeded band.
+    function _touchedByPartialCuts(Market storage m, uint256 borrowers) internal view returns (uint256 touched) {
+        assertEq(m.controller.settlementBorrowersCount(), borrowers, "no position closed: heap keeps the book");
+        for (uint256 i; i < borrowers; ++i) {
             address b = address(uint160(0x600000 + i));
             uint128 bs = m.core.position(m.id, b).borrowShares;
             assertGt(bs, 0, "every cut partial: no borrower closed");
@@ -100,25 +144,6 @@ contract FallbackExitGasBenchmark is BundlerSetup {
                 assertGe(ltvBps, 9_390, "untouched borrower still in the seeded band");
             }
         }
-        assertEq(touched, 100, "100 iterations touched 100 distinct borrowers");
-    }
-
-    /// @dev The invariant the default is sized for: the default-bounded exit on the costliest path
-    ///      fits the execution budget of a transaction at the gas cap. The starved rerun proves the
-    ///      budget binds, so the fit assertion cannot pass vacuously.
-    function test_gasCapped_partialRekeyBook_defaultBound() public {
-        (Market storage m,) = _seedPartialRekeyBook();
-
-        uint256 snap = vm.snapshotState();
-        (bool ok, uint256 budget, uint256 used) = _runCappedExit(m, TX_GAS_CAP);
-        assertTrue(ok, "the default-bounded worst-path exit fits a capped transaction");
-        console2.log("  execBudget", budget, "used", used);
-        console2.log("  headroom", budget - used);
-        vm.revertToState(snap);
-
-        (bool starved,, uint256 usedStarved) = _runCappedExit(m, 2_000_000 + 21_000);
-        assertFalse(starved, "a starved budget fails, so the budget binds");
-        console2.log("  starved control used", usedStarved);
     }
 
     /// @dev One full three-leg exit (settle, unwrap wstETH, forward WETH) at the vault's default

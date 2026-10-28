@@ -41,26 +41,32 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
     function testRevert_pausedControllerIsRejected() external {
         vm.prank(circuitBreaker);
         IReadController(controller).pauseFor(1 days);
-        vm.expectRevert();
+        vm.expectRevert(bytes("controller is paused"));
         this.assertWiring();
     }
 
     function testRevert_wrongCoreOwnerIsRejected() external {
+        address wrongOwner = makeAddr("wrongCoreOwner");
         vm.prank(facade);
-        IMorpho(core).setOwner(makeAddr("wrongCoreOwner"));
-        vm.expectRevert();
+        IMorpho(core).setOwner(wrongOwner);
+        vm.expectRevert(bytes(string.concat("core.owner: ", vm.toString(wrongOwner), " != ", vm.toString(facade))));
         this.assertWiring();
     }
 
+    /// @dev One byte of code passes the code-length check, so the codehash check rejects it. At readiness the
+    ///      deployed code equals the reference build, so the expected hash is the one before the etch.
     function testRevert_wrongFacadeBytecodeIsRejected() external {
+        bytes32 referenceHash = facade.codehash;
         vm.etch(facade, hex"00");
-        vm.expectRevert();
+        vm.expectRevert(_codehashMismatch("facade", referenceHash));
         this.assertComponents();
     }
 
+    /// @dev As for the facade: the codehash check rejects one byte of code.
     function testRevert_wrongCircuitBreakerBytecodeIsRejected() external {
+        bytes32 referenceHash = circuitBreaker.codehash;
         vm.etch(circuitBreaker, hex"00");
-        vm.expectRevert();
+        vm.expectRevert(_codehashMismatch("CircuitBreaker", referenceHash));
         this.assertComponents();
     }
 
@@ -69,7 +75,7 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
         IAccessControl(controller).grantRole(FREEZER_ROLE, agent);
         vm.prank(agent);
         IReadController(controller).freeze();
-        vm.expectRevert();
+        vm.expectRevert(bytes("controller is frozen"));
         this.assertWiring();
     }
 
@@ -79,14 +85,14 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
         IReadController(controller).setInstantActivation(caller, true);
         address[] memory candidates = new address[](1);
         candidates[0] = caller;
-        vm.expectRevert();
+        vm.expectRevert(bytes("unexpected instant-activation caller count: 1 != 0"));
         this.assertInstantActivationCallers(candidates);
     }
 
     function testRevert_unexpectedMarketStewardIsRejected() external {
         vm.prank(executor);
         IReadDashboard(dashboard).addMarketSteward(Id.wrap(marketId), makeAddr("unexpectedSteward"));
-        vm.expectRevert();
+        vm.expectRevert(bytes("unexpected market steward count: 1 != 0"));
         this.assertRoles();
     }
 
@@ -94,19 +100,20 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
     ///      the assertion under test is that a non-zero balance is read and rejected at all.
     function testRevert_nonZeroVaultSupplyIsRejected() external {
         vm.mockCall(vault, abi.encodeWithSignature("totalSupply()"), abi.encode(uint256(1)));
-        vm.expectRevert();
+        vm.expectRevert(bytes("vault.totalSupply: 1 != 0"));
         this.assertZeroState();
     }
 
     function testRevert_nonZeroSettlementQueueIsRejected() external {
         vm.mockCall(controller, abi.encodeWithSignature("settlementBorrowersCount()"), abi.encode(uint256(1)));
-        vm.expectRevert();
+        vm.expectRevert(bytes("controller.settlementBorrowersCount: 1 != 0"));
         this.assertZeroState();
     }
 
     function testRevert_wrongVaultSymbolIsRejected() external {
         vm.mockCall(vault, abi.encodeWithSignature("symbol()"), abi.encode("wrongSymbol"));
-        vm.expectRevert();
+        string memory expectedSymbol = vm.parseTomlString(toml, ".market.vault_symbol");
+        vm.expectRevert(bytes(string.concat("vault.symbol: wrongSymbol != ", expectedSymbol)));
         this.assertConfig();
     }
 
@@ -132,5 +139,10 @@ contract MarketMotionReadinessAcceptance is AcceptanceBase {
 
     function assertRoles() external view {
         _assertRoles();
+    }
+
+    /// @dev The revert data of a failed `assertEq(actual.codehash, expected.codehash, label)` on etched one-byte code.
+    function _codehashMismatch(string memory label, bytes32 expected) private pure returns (bytes memory) {
+        return bytes(string.concat(label, ": ", vm.toString(keccak256(hex"00")), " != ", vm.toString(expected)));
     }
 }

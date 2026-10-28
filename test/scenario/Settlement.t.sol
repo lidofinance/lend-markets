@@ -450,6 +450,40 @@ contract SettlementTest is LidoLendSetup {
         assertEq(_freeLiquidity(m), freeBefore, "settlement preserves positive free liquidity");
     }
 
+    /// @dev At full utilization with `totalBorrowShares > 1e6 * totalBorrowAssets`, the whole debt rounds up to one
+    ///      asset more than the sole lender's supply. The core rejects it with its supply check, not a panic.
+    function testRevert_coreSettle_wholePoolExceedsSoleLenderSupply() public {
+        Market storage m = _m();
+        (address lender, address borrower) = _seedWholePool();
+        uint256 debtShares = m.core.position(m.id, borrower).borrowShares;
+
+        vm.prank(lender);
+        vm.expectRevert(bytes("settlement exceeds supply"));
+        m.core.settle(m.params, debtShares, lender, borrower, lender);
+    }
+
+    /// @dev One share less cancels exactly the borrow assets and burns the lender's whole supply. The last borrow
+    ///      share stays as a dust debt with collateral, so the borrower remains the queue root.
+    function test_coreSettle_wholePoolOneShareLess_leavesDustRoot() public {
+        Market storage m = _m();
+        (address lender, address borrower) = _seedWholePool();
+        MorphoMarket memory pre = m.core.market(m.id);
+        uint256 debtShares = m.core.position(m.id, borrower).borrowShares;
+
+        (, uint256 canceled) = m.coreSettle(lender, borrower, debtShares - 1, lender);
+
+        MorphoMarket memory post = m.core.market(m.id);
+        assertEq(canceled, pre.totalBorrowAssets, "one share less cancels exactly the borrow assets");
+        assertEq(m.core.position(m.id, lender).supplyShares, 0, "the lender's whole supply is burned");
+        assertEq(post.totalSupplyAssets, 0, "supply assets emptied");
+        assertEq(post.totalBorrowAssets, 0, "borrow assets emptied");
+        assertEq(post.totalBorrowShares, 1, "one borrow share is left");
+        assertGt(m.core.position(m.id, borrower).collateral, 0, "the dust debt keeps collateral");
+        (address root,) = m.controller.nextSettlementBorrower(0);
+        assertEq(root, borrower, "the dust borrower stays the queue root");
+        assertEq(m.controller.settlementBorrowersCount(), 1, "the dust borrower stays queued");
+    }
+
     /// @dev Queue ordering remains risk based independently of current settlement eligibility.
     function test_settlementQueue_rootIsTheRiskiest() public {
         Market storage m = _m();
@@ -479,6 +513,30 @@ contract SettlementTest is LidoLendSetup {
 
         (address root,) = m.controller.nextSettlementBorrower(0);
         assertEq(root, risky, "riskiest borrower remains root");
+    }
+
+    /// @dev One block, so no interest. A sole direct lender supplies `BORROW` and the sole borrower takes all of it.
+    ///      A one-share repay costs one asset and the lender withdraws one asset. Then supply assets equal borrow
+    ///      assets B, while borrow shares are `1e6 * (B + 1) - 1`. The root policy allows the whole debt.
+    function _seedWholePool() private returns (address lender, address borrower) {
+        Market storage m = _m();
+        lender = _actor("lender");
+        borrower = _actor("borrower");
+        _fund(m.loanToken, lender, BORROW);
+        m.coreSupply(lender, BORROW);
+        _fund(m.collateralToken, borrower, COLLAT);
+        m.supplyCollateral(borrower, COLLAT);
+        m.activateCollateral();
+        m.borrow(borrower, BORROW);
+        m.repay(borrower, 1);
+        m.coreWithdrawAssets(lender, 1);
+        _setFullCloseRootPolicy();
+
+        MorphoMarket memory mkt = m.core.market(m.id);
+        assertEq(mkt.totalSupplyAssets, mkt.totalBorrowAssets, "setup: full utilization");
+        assertEq(mkt.totalBorrowAssets, BORROW - 1, "setup: the repay cost one asset");
+        assertEq(mkt.totalBorrowShares, CORE_VIRTUAL_SHARES * BORROW - 1, "setup: borrow shares exceed 1e6 per asset");
+        assertEq(mkt.totalSupplyShares, m.core.position(m.id, lender).supplyShares, "setup: sole lender");
     }
 
     function _singleton(address account) private pure returns (address[] memory accounts) {

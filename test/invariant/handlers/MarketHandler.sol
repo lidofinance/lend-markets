@@ -12,12 +12,14 @@ import {Id, MarketParams, Position, Market as MorphoMarket} from "@lido-lend/src
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 
 import {ILidoLendERC4626} from "../../../src/interfaces/ILidoLendERC4626.sol";
+import {ILidoLendMarketController} from "../../../src/interfaces/ILidoLendMarketController.sol";
 import {MockPriceOracle} from "../../setup/Mocks.sol";
 
 /// @notice Handler for the market-solvency invariant. Exposes bounded, defensively-guarded protocol actions
-///         over a small fixed actor set holding instant activation (so supplied collateral is immediately
-///         borrowable). Every action self-bounds and early-returns when there is no room, so the fuzzer
-///         drives long valid sequences. Reads the LIVE oracle price so positions go unhealthy after a crash;
+///         over a small fixed actor set. Most actors hold instant activation (so supplied collateral is immediately
+///         borrowable). The others are delayed actors whose collateral goes through activation (audit T1-C1).
+///         Every action self-bounds and early-returns when there is no room, so the fuzzer drives long valid
+///         sequences. Reads the LIVE oracle price so positions go unhealthy after a crash;
 ///         `liquidate` seizes ALL collateral when underwater to realize bad debt, stressing solvency under
 ///         socialization. (Note: handler state resets per fuzz run, so per-run coverage of the deep
 ///         supply→borrow→crash→liquidate chain is sparse; the bad-debt path is covered deterministically by
@@ -25,6 +27,7 @@ import {MockPriceOracle} from "../../setup/Mocks.sol";
 contract MarketHandler is CommonBase, StdCheats, StdUtils {
     ILidoLend internal immutable CORE;
     ILidoLendERC4626 internal immutable VAULT;
+    ILidoLendMarketController internal immutable CONTROLLER;
     IERC20 internal immutable LOAN;
     IERC20 internal immutable COLLATERAL;
     MarketParams internal params;
@@ -33,20 +36,27 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     address internal immutable ORACLE;
     uint256 internal constant LLTV = 0.8e18;
     uint256 internal constant FLOOR = 10 ether; // minActivationAmount: a debt-bearing position can't drop below it
+    uint256 internal constant MIN_DEPOSIT = 1 ether; // minDepositAmount: the smallest non-instant collateral supply
 
     address[] internal actors;
 
     // Coverage counters (read by `afterInvariant`) — incremented only on a successful action.
     uint256 public supplies;
+    uint256 public withdraws;
+    uint256 public collateralSupplies;
+    uint256 public dustSupplies;
+    uint256 public collateralWithdrawals;
     uint256 public borrows;
     uint256 public repays;
     uint256 public crashes;
     uint256 public liquidations;
-    mapping(address => bool) public liquidated; // victims of a forced seizure (excluded from the floor invariant)
+    // Victims of a forced seizure, excluded from the floor invariant until their debt is cleared (audit T1-C13).
+    mapping(address => bool) public liquidated;
 
     constructor(
         ILidoLend core,
         ILidoLendERC4626 vault,
+        ILidoLendMarketController controller,
         IERC20 loan,
         IERC20 collateral,
         MarketParams memory p,
@@ -57,6 +67,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     ) {
         CORE = core;
         VAULT = vault;
+        CONTROLLER = controller;
         LOAN = loan;
         COLLATERAL = collateral;
         params = p;
@@ -78,6 +89,14 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         deal(address(token), to, token.balanceOf(to) + add); // ADD (deal sets)
     }
 
+    /// @dev Inactive collateral after the hook's maturation sync. With no quorum delay, freeze or ban in this
+    ///      fixture, the activating lot matures once its unlock time has passed.
+    function _inactiveAfterSync(address a) internal view returns (uint256) {
+        ILidoLendMarketController.BorrowerPosition memory d = CONTROLLER.positionOf(a);
+        bool matures = d.activating != 0 && block.timestamp >= d.unlockTime;
+        return d.dust + (matures ? 0 : d.activating);
+    }
+
     function supply(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         amount = bound(amount, 1e18, 1_000_000e18);
@@ -96,6 +115,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         amount = bound(amount, 1, max);
         vm.prank(a);
         VAULT.withdraw(amount, a, a);
+        withdraws++;
     }
 
     function supplyCollateral(uint256 actorSeed, uint256 amount) external {
@@ -107,18 +127,32 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         COLLATERAL.approve(address(CORE), amount);
         CORE.supplyCollateral(params, amount, a, "");
         vm.stopPrank();
+        collateralSupplies++;
+    }
+
+    /// @dev A delayed actor with no pending dust supplies less than `minActivationAmount`, which stays dust.
+    function supplyCollateralDust(uint256 actorSeed, uint256 amount) external {
+        address a = _actor(actorSeed);
+        if (CONTROLLER.hasInstantActivation(a) || CONTROLLER.positionOf(a).dust != 0) return;
+        amount = bound(amount, MIN_DEPOSIT, FLOOR - 1);
+        _mintTo(COLLATERAL, a, amount);
+        vm.startPrank(a);
+        COLLATERAL.approve(address(CORE), amount);
+        CORE.supplyCollateral(params, amount, a, "");
+        vm.stopPrank();
+        dustSupplies++;
     }
 
     function borrow(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         Position memory pos = CORE.position(ID, a);
-        // Borrowing against active collateral below the activation threshold reverts `InsufficientActiveCollateral`
-        // (sub-threshold active collateral has zero capacity); the handler honours that gate (no dust action
-        // here, so raw collateral equals active collateral).
-        if (pos.collateral < FLOOR) return;
+        // Capacity counts active collateral only, and active collateral below the activation threshold has none:
+        // the borrow would revert `InsufficientActiveCollateral`.
+        uint256 active = pos.collateral - _inactiveAfterSync(a);
+        if (active < FLOOR) return;
         MorphoMarket memory mk = CORE.market(ID);
 
-        uint256 maxBorrow = Math.mulDiv(Math.mulDiv(pos.collateral, _price(), 1e36), LLTV, 1e18);
+        uint256 maxBorrow = Math.mulDiv(Math.mulDiv(active, _price(), 1e36), LLTV, 1e18);
         uint256 debt =
             mk.totalBorrowShares == 0 ? 0 : Math.mulDiv(pos.borrowShares, mk.totalBorrowAssets, mk.totalBorrowShares);
         if (maxBorrow <= debt) return;
@@ -159,6 +193,8 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         CORE.repay(params, 0, shares, a, "");
         vm.stopPrank();
         repays++;
+        // A debt-free actor's next debt comes from a voluntary borrow, which must meet the floor again.
+        if (CORE.position(ID, a).borrowShares == 0) liquidated[a] = false;
     }
 
     function withdrawCollateral(uint256 actorSeed, uint256 amount) external {
@@ -175,10 +211,14 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         uint256 minKeep = requiredColl > floorKeep ? requiredColl : floorKeep;
         if (pos.collateral <= minKeep) return;
         uint256 free = (uint256(pos.collateral) - minKeep) * 9 / 10; // 90% margin, clear of the gate
-        if (free == 0) return;
-        amount = bound(amount, 1, free);
+        // With no activation lock, a withdrawal must clear the whole inactive balance. The remainder is then all
+        // active, so the health bound above still holds.
+        uint256 inactive = _inactiveAfterSync(a);
+        if (free == 0 || inactive > free) return;
+        amount = bound(amount, Math.max(inactive, 1), free);
         vm.prank(a);
         CORE.withdrawCollateral(params, amount, a, a);
+        collateralWithdrawals++;
     }
 
     function warp(uint256 dt) external {
@@ -227,6 +267,6 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         CORE.liquidate(params, victim, amount, 0, "");
         vm.stopPrank();
         liquidations++;
-        liquidated[victim] = true;
+        liquidated[victim] = CORE.position(ID, victim).borrowShares != 0;
     }
 }

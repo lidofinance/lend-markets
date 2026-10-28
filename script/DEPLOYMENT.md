@@ -101,11 +101,13 @@ For a deliberately standalone Exit Book rollout, deploy the backbone with `exit_
 
 Activation inputs are runtime EasyTrack motion choices, not deployment artifacts. No separate activation artifact is generated or required. EasyTrack acceptance reads reviewed values and resolved addresses from `deployed/<RUN>/markets/<market-name>.toml`. Deployment creates or reuses an immutable config for the recorded curve parameters. After confirmation, activation applies that config to Adaptive Curve, routes it, creates the market through `LidoLendOwner`, and registers the pauser committee on the protocol CircuitBreaker — `pauser_committee` from the network config, recorded in `protocol.toml`; the Agent stands in when the config sets none. Settlement enablement remains a runtime input.
 
-The EasyTrack factory implementation and its registration are outside this repository; this repository deploys the lending stack, records the immutable inputs, and verifies the result. A production rollout cannot be activated until its governance proposal identifies the reviewed external factory/version and supplies the two runtime inputs to acceptance independently of live contract state:
+The EasyTrack factory implementation and its registration are outside this repository; this repository deploys the lending stack, records the immutable inputs, and verifies the result. A production rollout cannot be activated until its governance proposal identifies the reviewed external factory/version and supplies the runtime inputs to acceptance independently of live contract state. Readiness needs the settlement choice and the pauser committee. Activated-state acceptance also needs the market steward that the motion adds and the initial fee, `0` when the motion sets none:
 
 ```sh
 ACCEPTANCE_ENABLE_SETTLEMENT=true \
 ACCEPTANCE_PAUSER_COMMITTEE=0x... \
+ACCEPTANCE_MARKET_STEWARD=0x... \
+ACCEPTANCE_MARKET_FEE=0 \
 make acceptance-run RUN=mainnet-weth-wsteth MARKET=weth-wsteth
 ```
 
@@ -117,13 +119,14 @@ On a fork or devnet there is no EasyTrack, so `make activate-markets RUN=<run>` 
 
 ```sh
 ACCEPTANCE_ENABLE_SETTLEMENT=true ACCEPTANCE_PAUSER_COMMITTEE=0x... \
+  ACCEPTANCE_MARKET_STEWARD=0x... ACCEPTANCE_MARKET_FEE=0 \
   make acceptance-run RUN=mainnet-weth-wsteth MARKET=weth-wsteth
 ACCEPTANCE_ENABLE_SETTLEMENT=true \
   make acceptance-run-multi RUN=mainnet-weth-wsteth MARKET_A=market-a MARKET_B=market-b
 ```
 
-The multi-market simulation supplies disposable test pausers itself, so only its settlement choice is external.
-The conventional local `deployed/fork` run uses the activation replay's fixed values when these inputs are unset.
+The multi-market simulation supplies disposable test pausers and a disposable steward itself and sets no fee, so only its settlement choice is external.
+The conventional local `deployed/fork` run uses the activation replay's fixed values when these inputs are unset. The replay adds no steward and sets no fee.
 
 Acceptance audits the exact initial-launch role topology. It is not a general audit of a deployment after later governance grants; such a run needs a separately reviewed expected-role input before this suite can support it.
 

@@ -45,6 +45,30 @@ contract ActivationTest is LidoLendSetup {
         m.supplyCollateral(borrower, collat);
     }
 
+    /// @dev 100 ether matured collateral backs a half-capacity loan, then a fresh 20 ether lot starts its timer. At
+    ///      38% of the seed price a keeper seizes exactly the 100 ether active balance. The borrower keeps debt, no
+    ///      active collateral and the whole maturing lot.
+    function _seizeAllActive() internal returns (address borrower) {
+        Market storage m = _m();
+        borrower = _seedLenderAndCollateral(100 ether);
+        m.activateCollateral();
+        m.borrow(borrower, _safeBorrow(100 ether));
+        _fund(m.collateralToken, borrower, 20 ether);
+        m.supplyCollateral(borrower, 20 ether);
+
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 38 / 100);
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1000 ether);
+        m.liquidate(keeper, borrower, 100 ether, 0);
+
+        ILidoLendMarketController.BorrowerPosition memory position = m.controller.positionOf(borrower);
+        assertEq(position.active, 0, "setup: all active collateral seized");
+        assertEq(position.dust, 0, "setup: no dust");
+        assertEq(position.activating, 20 ether, "setup: the lot is untouched");
+        assertLt(block.timestamp, position.unlockTime, "setup: the lot is still maturing");
+        assertGt(position.debtAssets, 0, "setup: debt remains");
+    }
+
     function _ban(address account) internal {
         _flagAs(address(this), account);
     }
@@ -310,6 +334,38 @@ contract ActivationTest is LidoLendSetup {
         assertEq(post.activating, pre.activating, "fresh lot untouched by the seizure");
         assertEq(post.unlockTime, pre.unlockTime, "fresh lot keeps its original timer");
         assertEq(post.active, pre.active - seizeAmt, "active reduced by exactly the seized amount");
+    }
+
+    /// @dev A maturing lot gives no borrow capacity, so a borrower whose active collateral was all seized cannot
+    ///      borrow even one asset unit while it still owes debt.
+    function testRevert_borrow_activeSeizedToZero_maturingLotGivesNoCapacity() public {
+        Market storage m = _m();
+        address borrower = _seizeAllActive();
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.borrow(m.params, 1, 0, borrower, borrower);
+    }
+
+    /// @dev Core health counts the maturing lot, so a further price drop makes the position liquidatable. With
+    ///      active and dust empty, the seizure comes from the activating lot, ignores its timer and keeps its unlock
+    ///      time.
+    function test_liquidation_activeZero_seizesFromMaturingLot() public {
+        Market storage m = _m();
+        address borrower = _seizeAllActive();
+        ILidoLendMarketController.BorrowerPosition memory pre = m.controller.positionOf(borrower);
+
+        // At 25% of the seed price the 20 ether lot no longer covers the debt at LLTV, but it still exceeds it.
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 25 / 100);
+        uint256 seizeAmt = 10 ether;
+        m.liquidate(_actor("keeper"), borrower, seizeAmt, 0); // helper asserts no bad debt
+
+        ILidoLendMarketController.BorrowerPosition memory post = m.controller.positionOf(borrower);
+        assertEq(post.activating, pre.activating - seizeAmt, "seizure taken from the activating lot");
+        assertEq(post.active, 0, "active stays empty");
+        assertEq(post.unlockTime, pre.unlockTime, "the remaining lot keeps its timer");
+        assertLt(block.timestamp, post.unlockTime, "the lot is still maturing");
+        assertGt(post.debtAssets, 0, "debt remains after the partial seizure");
     }
 
     function test_maxLock_preventsRecyclingActivationCapital() public {

@@ -29,8 +29,9 @@ contract VaultConformanceInvariant is LidoLendSetup {
         return 18;
     }
 
-    function _priceAction() internal pure virtual returns (bytes4) {
-        return VaultHandler.crashPrice.selector;
+    function _priceActions() internal pure virtual returns (bytes4[] memory actions) {
+        actions = new bytes4[](1);
+        actions[0] = VaultHandler.crashPrice.selector;
     }
 
     function setUp() public {
@@ -76,7 +77,8 @@ contract VaultConformanceInvariant is LidoLendSetup {
         handler.borrow(1, 25 * loanUnit);
         handler.setSettlementLtv(1, 1);
 
-        bytes4[] memory all = new bytes4[](16);
+        bytes4[] memory priceActions = _priceActions();
+        bytes4[] memory all = new bytes4[](15 + priceActions.length);
         all[0] = VaultHandler.deposit.selector;
         all[1] = VaultHandler.mint.selector;
         all[2] = VaultHandler.withdraw.selector;
@@ -88,11 +90,13 @@ contract VaultConformanceInvariant is LidoLendSetup {
         all[8] = VaultHandler.setSettlementLtv.selector;
         all[9] = VaultHandler.repay.selector;
         all[10] = VaultHandler.warp.selector;
-        all[11] = _priceAction();
-        all[12] = VaultHandler.liquidate.selector;
-        all[13] = VaultHandler.donate.selector;
-        all[14] = VaultHandler.pauseResume.selector;
-        all[15] = VaultHandler.setSupplyCap.selector;
+        all[11] = VaultHandler.liquidate.selector;
+        all[12] = VaultHandler.donate.selector;
+        all[13] = VaultHandler.pauseResume.selector;
+        all[14] = VaultHandler.setSupplyCap.selector;
+        for (uint256 i; i < priceActions.length; i++) {
+            all[15 + i] = priceActions[i];
+        }
         targetSelector(FuzzSelector({addr: address(handler), selectors: all}));
         targetContract(address(handler));
     }
@@ -331,6 +335,23 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.settledUnderBadDebt(), "gate held under the seeded bad-debt state");
     }
 
+    /// @dev Audit T1-C5: a run can end with no successful settle, fallback exit or liquidation, so `afterInvariant`
+    ///      cannot floor them. This drives each one once from the seeded state.
+    function test_SettleFallbackExitAndLiquidationAreReachable() public {
+        uint256 unitShares = _m().vault.convertToShares(10 ** _loanDecimals());
+        handler.settle(0, 1, unitShares); // the seeded borrower carries a personal slice
+        assertEq(handler.settles(), 1, "a successful settle was not reached");
+        handler.fallbackExit(0, unitShares, 0);
+        assertEq(handler.fallbackExits(), 1, "a successful fallback exit was not reached");
+
+        handler.borrow(1, type(uint256).max); // bounded inside the handler to its LLTV capacity
+        handler.crashPrice(0); // bounded to the deepest crash the handler allows
+        handler.liquidate(1, 0);
+        assertEq(handler.liquidations(), 1, "a successful liquidation was not reached");
+        invariant_settleConservesAccounting();
+        invariant_exitPayoutWithinRoundingBounds();
+    }
+
     /// @dev A pause gates the core's settle hook and zeroes the vault's withdrawable amount, so neither the
     ///      targeted settle nor either leg of a fallback exit can serve a request while it holds.
     function invariant_pauseStopsEverySettlePath() public view {
@@ -384,6 +405,8 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.settlementRejectedForPauseWhileResumed(), "pause error surfaced on a resumed market");
     }
 
+    /// @dev Audit T1-C5: logs the counters and fails a run that missed an action every run must reach. Foundry
+    ///      restores the post-setUp state before each run, so the counters are per run and include the setUp calls.
     function afterInvariant() public {
         emit log_named_uint("deposits", handler.deposits());
         emit log_named_uint("withdraws", handler.withdraws());
@@ -426,5 +449,15 @@ contract VaultConformanceInvariant is LidoLendSetup {
         emit log_named_uint("skippedRepays", handler.skippedRepays());
         emit log_named_uint("skippedLiquidations", handler.skippedLiquidations());
         emit log_named_uint("skippedSettlementLtv", handler.skippedSettlementLtv());
+        // Coverage floors. A run makes 250 calls over 16 selectors (17 at six decimals). An action that always counts
+        // then misses a run with odds (1 - 1/17)^250 < 3e-7.
+        //   crashes: each call sets a crashed price, which liquidation and bad debt need.
+        //   pauses: each call pauses or resumes the market.
+        //   caps: each call sets or lifts the supply cap.
+        // Settles, fallback exits and liquidations miss some runs, so they carry no floor here.
+        // `test_SettleFallbackExitAndLiquidationAreReachable` reaches each of them instead.
+        assertGt(handler.crashes(), 0, "coverage: no crash");
+        assertGt(handler.pauses(), 0, "coverage: no pause or resume");
+        assertGt(handler.caps(), 0, "coverage: no supply-cap change");
     }
 }

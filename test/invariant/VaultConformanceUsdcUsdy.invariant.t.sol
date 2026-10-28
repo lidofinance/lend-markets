@@ -5,7 +5,8 @@ import {VaultConformanceInvariant} from "./VaultConformance.invariant.t.sol";
 import {VaultHandler} from "./handlers/VaultHandler.sol";
 
 /// @notice The vault's stateful properties with a six-decimal loan and eighteen-decimal collateral.
-/// @dev Token units match USDC/USDY. Each oracle update increases its current price by 1–100 basis points.
+/// @dev Token units match USDC/USDY. The price grows by 1–100 basis points per update or crashes to 25–90% of the
+///      seed. Audit T1-C6: the crash runs liquidation, bad debt and the bad-debt gate at six-decimal loan units.
 /// forge-config: default.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 256
 /// forge-config: default.invariant.depth = 250
@@ -14,8 +15,10 @@ contract VaultConformanceUsdcUsdyInvariant is VaultConformanceInvariant {
         return 6;
     }
 
-    function _priceAction() internal pure override returns (bytes4) {
-        return VaultHandler.growPrice.selector;
+    function _priceActions() internal pure override returns (bytes4[] memory actions) {
+        actions = new bytes4[](2);
+        actions[0] = VaultHandler.crashPrice.selector;
+        actions[1] = VaultHandler.growPrice.selector;
     }
 
     function test_settle_finalDebtRoundingTransfersNoLoanTokens() public {
