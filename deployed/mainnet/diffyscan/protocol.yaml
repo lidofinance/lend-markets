@@ -1,0 +1,73 @@
+contracts:
+  "0xd0A81A130a303237d338A0b5835edcB011Ab3afd": CircuitBreaker
+  "0xa40Bd2281F54A2D3845F9535b74D2abD946E1911": LidoLend
+  "0x026a770badc7126c7252Ef8d407E5b9C56147491": OssifiableProxy
+  "0x85378a1073E8f338e11A97E090E47e2F0FdD3D5a": LidoLendOwner
+  "0x683eA34c29658fb6cDeCc92Eb4B4e7f766979868": IrmRouter
+  "0x81B7cC9523B30429110282d90db2fa90ff443d91": OssifiableProxy
+  "0xC3C241bC213EF3ba16234A7c689999209cE515D7": RiskStewardDashboard
+  "0xf6f1565F4fD3d29E6bDAb86764A50BCde381422f": AdaptiveCurveIrm
+  "0xE7ce129Eb67970C4d71e1456ad50f84B43C35496": IrmConfigFactory
+  "0x69136Ab2be05194C0b2773f6E2Cb944bCeb1D6b8": LidoLendMarketController
+  "0x8549736900BF3e643D7660E6DfDd09B0FBa2E286": LidoLendERC4626
+  "0x66aFC8Bb3aB2f01127fDdEb05425bAD77923091f": GuardianSignals
+  "0xBe1C1eaBda3eD8a93D3CE3246cf4EeF8111c76C7": LidoLendMarketFactory
+  "0x51AB6bF2c7024655469d1C9aB01ee66652Bf3f18": MorphoExitBook
+  "0x489A554da6D686F6FADA918A8dee0492063e1536": Erc4626ExitBook
+  "0x0056b888E90a1b783311351B54B782dE5de61e87": Bundler3
+  "0x0C6151F0205A6Edf143b42C4f7B4E97a8f099260": EthereumGeneralAdapter1
+  "0xb1A64663B5390Ecf1a582df7e19d0a6753d1B84A": LidoLendVaultAdapter
+explorer_hostname: api.etherscan.io
+explorer_chain_id: 1
+explorer_token_env_var: ETHERSCAN_EXPLORER_TOKEN
+rpc_url_env_var: REMOTE_RPC_URL
+github_repo:
+  url: https://github.com/lidofinance/lido-lend-markets
+  commit: bdf9e5047525c5b6f7489385fd494d53242db9a3
+  relative_root: ""
+dependencies:
+  lib/lido-lend:
+    url: https://github.com/lidofinance/lido-lend
+    commit: 422d589f9d098124249b54b55306884165833207
+    relative_root: ""
+  lib/lido-lend-irm:
+    url: https://github.com/lidofinance/lido-lend-irm
+    commit: 566d31f7dfdf83d07a6593f641f7474c263a7f89
+    relative_root: ""
+  lib/lido-lend-irm/lib/lido-lend:
+    url: https://github.com/lidofinance/lido-lend
+    commit: 422d589f9d098124249b54b55306884165833207
+    relative_root: ""
+  lib/circuit-breaker:
+    url: https://github.com/lidofinance/circuit-breaker
+    commit: b4b2fbc921b3191560a3fc62d502d4bb98ad99e1
+    relative_root: ""
+  lib/openzeppelin-contracts:
+    url: https://github.com/OpenZeppelin/openzeppelin-contracts
+    commit: 5fd1781b1454fd1ef8e722282f86f9293cacf256
+    relative_root: ""
+  lib/openzeppelin-contracts-upgradeable:
+    url: https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable
+    commit: 7bf4727aacdbfaa0f36cbd664654d0c9e1dc52bf
+    relative_root: ""
+  lib/bundler3:
+    url: https://github.com/morpho-org/bundler3
+    commit: 263f75d3662f38133d5fba1b08c7b07847abfb2a
+    relative_root: ""
+  lib/bundler3/lib/morpho-blue:
+    url: https://github.com/morpho-org/morpho-blue
+    commit: 8fd926254dd21bc6e5bf0ac401202a58f0ffa612
+    relative_root: ""
+  lib/bundler3/lib/openzeppelin-contracts:
+    url: https://github.com/OpenZeppelin/openzeppelin-contracts
+    commit: 49cd64565aafa5b8f6863bf60a30ef015861614c
+    relative_root: ""
+  lib/bundler3/lib/permit2:
+    url: https://github.com/Uniswap/permit2
+    commit: 576f549a7351814f112edcc42f3f8472d1712673
+    relative_root: ""
+  lib/bundler3/lib/permit2/lib/solmate:
+    url: https://github.com/rari-capital/solmate
+    commit: 8d910d876f51c3b2585c9109409d601f600e68e1
+    relative_root: ""
+fail_on_bytecode_comparison_error: true
