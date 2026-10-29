@@ -124,6 +124,7 @@ contract AddMarket is Script, ProtocolDeployer {
             input.market.oracle,
             input.market.loanToken,
             input.market.collateralToken,
+            input.market.lltv,
             context.agent
         );
         if (input.recordedOracle != address(0) && input.recordedOracle != input.market.oracle) {

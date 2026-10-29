@@ -78,6 +78,19 @@ make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
 `deploy-protocol` includes exit books when `exit_books = true`. Use `deploy-oracle-usdy` for USDY or
 `deploy-run` for the canonical single-CircuitBreaker, single-WstETH-oracle flow.
 
+`deploy-oracle-nav` deploys a NAV oracle: it builds the adapter its config's `kind` names (`nav-usdy`,
+`nav-centrifuge`) from the config's constructor arguments, puts it behind an `OssifiableProxy` with
+the DAO Agent as admin, and initializes it from the live source with the config's `max_price_above_anchor`,
+`max_price_below_anchor`, `max_anchor_rise_per_year`, `max_anchor_fall_per_year`, `max_anchor_below_mark`, `max_anchor_above_mark`,
+`reanchor_delay` and `reanchor_window`. The deployer initializes as the temporary `DEFAULT_ADMIN_ROLE` holder, grants `MANAGER_ROLE` to
+the EVMScriptExecutor and the Agent, and `PRICE_ACCEPTOR_ROLE` and `DEFAULT_ADMIN_ROLE` to the Agent, and renounces
+in the same broadcast. The artifact under `deployed/<RUN>/oracles/` records the kind, the constructor arguments and
+the eight parameters. `deploy-market`'s preflight refuses the oracle unless the live source already prices inside the
+bounds and the parameters pass the two sizing rules for the market's LLTV, with the parameters as fractions:
+`(1 − max_anchor_below_mark)(1 − max_price_below_anchor) ≥ LLTV × LIF × (1 + max_anchor_above_mark)(1 + max_price_above_anchor)`,
+and
+`reanchor_delay × max_anchor_fall_per_year ≤ max_price_below_anchor × 365 days`.
+
 `deploy-protocol` deploys the backbone and, when `exit_books = true`, the exit books. Markets are not part of
 it: each is its own `deploy-market` run against that backbone, so a run's market set is the sequence of those
 runs and is recorded in `deployed/<RUN>/markets/`.

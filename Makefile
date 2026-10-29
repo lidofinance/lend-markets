@@ -81,7 +81,7 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork test-simulation test-mutation deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-vault-v2 verify-vault-v2 deploy-bundler verify-bundler deploy-exit-books deploy-protocol deploy-market deploy-run deploy-all activate-markets fork-activate deploy-wizard state-mate-config acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop apply-pending pending-stop test-pending test-fork-live test-fork-provision
+.PHONY: help build sizes test test-local test-fork test-simulation test-mutation deploy-oracle deploy-oracle-usdy deploy-oracle-nav deploy-circuit-breaker deploy-guardian deploy-vault-v2 verify-vault-v2 deploy-bundler verify-bundler deploy-exit-books deploy-protocol deploy-market deploy-run deploy-all activate-markets fork-activate deploy-wizard state-mate-config acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop apply-pending pending-stop test-pending test-fork-live test-fork-provision
 
 help:
 	@echo "Targets:"
@@ -94,6 +94,7 @@ help:
 	@echo "  test-mutation forge mutation testing of src/ over the 30-day simulations (slow; needs forge >= 1.8.0,"
 	@echo "                which is NOT the pinned .foundryref toolchain, so install it separately)"
 	@echo "  deploy-oracle CONFIG=<config> RUN=<run> ORACLE=<name>"
+	@echo "  deploy-oracle-nav CONFIG=<config> RUN=<run> ORACLE=<name>  (NAV oracle of the kind its config names)"
 	@echo "  deploy-circuit-breaker CONFIG=<config> RUN=<run>"
 	@echo "  deploy-protocol CONFIG=<config> RUN=<run>  (backbone + exit books; markets are separate)"
 	@echo "  deploy-guardian CONFIG=<config> RUN=<run> GUARDIAN_GROUP=<group>  (before its markets)"
@@ -187,6 +188,11 @@ deploy-oracle-usdy:
 	$(require_deploy_context)
 	@$(DEPLOY_ENV) forge script script/DeployUsdyOracle.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(ORACLE)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployUsdyOracle.s.sol,oracle-$(ORACLE))
+
+deploy-oracle-nav:
+	$(require_deploy_context)
+	@$(DEPLOY_ENV) forge script script/DeployNavOracle.s.sol --sig 'run(string,string)' "$(CONFIG)" "$(ORACLE)" $(DEPLOY_FLAGS)
+	$(call archive_broadcast,DeployNavOracle.s.sol,oracle-$(ORACLE))
 
 deploy-circuit-breaker:
 	$(require_deploy_context)
@@ -308,6 +314,7 @@ deploy-all:
 	  kind=$$(sed -n 's/^[[:space:]]*kind[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' script/config/oracles/$$o.toml); \
 	  case "$$kind" in \
 	    usdy) t=deploy-oracle-usdy ;; \
+	    nav-*) t=deploy-oracle-nav ;; \
 	    wsteth) t=deploy-oracle ;; \
 	    *) echo "ERROR: unknown oracle kind '$$kind' in $$o.toml"; exit 1 ;; \
 	  esac; \
@@ -373,13 +380,14 @@ fork-run:
 deploy-wizard:
 	@printf 'Config [mainnet]: '; read config; config=$${config:-mainnet}; \
 	printf 'Run directory (required): '; read run; test -n "$$run" || { echo 'ERROR: run directory is required'; exit 1; }; \
-	printf 'Step (circuit-breaker, oracle, oracle-usdy, guardian, vault-v2, bundler, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
+	printf 'Step (circuit-breaker, oracle, oracle-usdy, oracle-nav, guardian, vault-v2, bundler, exit-books, protocol, market, full) [full]: '; read step; step=$${step:-full}; \
 	printf 'Resource name (shared by oracle/guardian/market for full; the bundler config for bundler; ignored for circuit-breaker/protocol/exit-books): '; read name; \
 	name=$${name:-weth-wsteth}; \
 	case "$$step" in \
 		circuit-breaker) exec $(MAKE) deploy-circuit-breaker CONFIG="$$config" RUN="$$run" ;; \
 		oracle) exec $(MAKE) deploy-oracle CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		oracle-usdy) exec $(MAKE) deploy-oracle-usdy CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
+		oracle-nav) exec $(MAKE) deploy-oracle-nav CONFIG="$$config" RUN="$$run" ORACLE="$$name" ;; \
 		guardian) exec $(MAKE) deploy-guardian CONFIG="$$config" RUN="$$run" GUARDIAN_GROUP="$$name" ;; \
 		vault-v2) exec $(MAKE) deploy-vault-v2 CONFIG="$$config" RUN="$$run" VAULT="$$name" ADAPTER="$$name" ;; \
 		bundler) exec $(MAKE) deploy-bundler CONFIG="$$config" RUN="$$run" BUNDLER="$$name" ;; \

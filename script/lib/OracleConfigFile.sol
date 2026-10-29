@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 import {Vm} from "forge-std/Vm.sol";
 
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
+import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 
 import {ConfigToml} from "./ConfigToml.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./ArtifactMetadata.sol";
@@ -21,10 +22,28 @@ struct UsdyOracleConfig {
     uint256 maxPrice;
 }
 
+/// @notice One NAV oracle: the adapter kind, its constructor arguments, and the parameters it is initialized with.
+///         `poolId` and `shareClassId` apply to `nav-centrifuge` only.
+struct NavOracleConfig {
+    string kind;
+    address source;
+    uint64 poolId;
+    bytes16 shareClassId;
+    address loanToken;
+    address collateralToken;
+    TrailingAnchorOracleBase.Parameters parameters;
+}
+
 library OracleConfigFile {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
+    string internal constant KIND_NAV_USDY = "nav-usdy";
+    string internal constant KIND_NAV_CENTRIFUGE = "nav-centrifuge";
+
     error ArtifactAlreadyExists(string path);
+    error UnknownOracleKind(string kind);
+    error ShareClassIdNot16Bytes(uint256 length);
+    error ValueOutOfRange(string key, uint256 value);
 
     function readRaw(string memory name) internal view returns (string memory) {
         return vm.readFile(configPath(name));
@@ -32,6 +51,20 @@ library OracleConfigFile {
 
     function hasKey(string memory toml, string memory key) internal view returns (bool) {
         return vm.keyExistsToml(toml, key);
+    }
+
+    /// @notice The config's `kind`, which selects the deployment script and the preflight.
+    function kind(string memory name) internal view returns (string memory) {
+        return ConfigToml.requireString(readRaw(name), ".kind");
+    }
+
+    function isNavKind(string memory value) internal pure returns (bool) {
+        bytes32 h = keccak256(bytes(value));
+        return h == keccak256(bytes(KIND_NAV_USDY)) || h == keccak256(bytes(KIND_NAV_CENTRIFUGE));
+    }
+
+    function isKind(string memory value, string memory expected) internal pure returns (bool) {
+        return keccak256(bytes(value)) == keccak256(bytes(expected));
     }
 
     function readWstEth(string memory name) internal view returns (WstEthOracleConfig memory cfg) {
@@ -52,6 +85,52 @@ library OracleConfigFile {
         // integers are limited to int64.
         cfg.minPrice = ConfigToml.requireUint(toml, ".min_price");
         cfg.maxPrice = ConfigToml.requireUint(toml, ".max_price");
+    }
+
+    function readNav(string memory name) internal view returns (NavOracleConfig memory) {
+        return parseNav(vm.readFile(configPath(name)), "");
+    }
+
+    /// @notice Parses a NAV oracle config, or the `[oracle]` table of its artifact with `prefix = ".oracle"`. Amounts
+    ///         are strings because TOML integers are limited to int64.
+    function parseNav(string memory toml, string memory prefix) internal view returns (NavOracleConfig memory cfg) {
+        cfg.kind = ConfigToml.requireString(toml, string.concat(prefix, ".kind"));
+        if (!isNavKind(cfg.kind)) revert UnknownOracleKind(cfg.kind);
+        cfg.source = ConfigToml.requireAddress(toml, string.concat(prefix, ".source"));
+        cfg.loanToken = ConfigToml.requireAddress(toml, string.concat(prefix, ".loan_token"));
+        cfg.collateralToken = ConfigToml.requireAddress(toml, string.concat(prefix, ".collateral_token"));
+        if (isKind(cfg.kind, KIND_NAV_CENTRIFUGE)) {
+            uint256 poolId = ConfigToml.requireUint(toml, string.concat(prefix, ".pool_id"));
+            if (poolId > type(uint64).max) revert ValueOutOfRange("pool_id", poolId);
+            cfg.poolId = uint64(poolId);
+            bytes memory scId = vm.parseBytes(ConfigToml.requireString(toml, string.concat(prefix, ".share_class_id")));
+            if (scId.length != 16) revert ShareClassIdNot16Bytes(scId.length);
+            cfg.shareClassId = bytes16(scId);
+        }
+        // All eight are required non-zero: the oracle's validator needs both bounds, the delay and the window, a zero
+        // speed would leave the anchor unable to follow the source in that direction, and a zero
+        // `max_anchor_below_mark` or `max_anchor_above_mark` would leave every honest re-anchor under or over the
+        // high-water mark to governance.
+        cfg.parameters.maxPriceAboveAnchor = _requireUint64(toml, string.concat(prefix, ".max_price_above_anchor"));
+        cfg.parameters.maxPriceBelowAnchor = _requireUint64(toml, string.concat(prefix, ".max_price_below_anchor"));
+        cfg.parameters.maxAnchorRisePerYear = _requireUint64(toml, string.concat(prefix, ".max_anchor_rise_per_year"));
+        cfg.parameters.maxAnchorFallPerYear = _requireUint64(toml, string.concat(prefix, ".max_anchor_fall_per_year"));
+        cfg.parameters.maxAnchorBelowMark = _requireUint64(toml, string.concat(prefix, ".max_anchor_below_mark"));
+        cfg.parameters.maxAnchorAboveMark = _requireUint64(toml, string.concat(prefix, ".max_anchor_above_mark"));
+        cfg.parameters.reanchorDelay = _requireUint40(toml, string.concat(prefix, ".reanchor_delay"));
+        cfg.parameters.reanchorWindow = _requireUint40(toml, string.concat(prefix, ".reanchor_window"));
+    }
+
+    function _requireUint64(string memory toml, string memory key) private view returns (uint64) {
+        uint256 value = ConfigToml.requireUint(toml, key);
+        if (value > type(uint64).max) revert ValueOutOfRange(key, value);
+        return uint64(value);
+    }
+
+    function _requireUint40(string memory toml, string memory key) private view returns (uint40) {
+        uint256 value = ConfigToml.requireUint(toml, key);
+        if (value > type(uint40).max) revert ValueOutOfRange(key, value);
+        return uint40(value);
     }
 
     function configPath(string memory name) internal pure returns (string memory) {
@@ -93,6 +172,8 @@ library OracleConfigFile {
             WstEthOracleConfig memory cfg = readWstEth(name);
             artifact = string.concat(artifact, "kind = \"wsteth-rate\"\n");
             artifact = string.concat(artifact, "wsteth = \"", vm.toString(cfg.wstETH), "\"\n");
+        } else if (isNavKind(kind(name))) {
+            artifact = string.concat(artifact, navArtifact(readNav(name)));
         } else {
             UsdyOracleConfig memory cfg = readUsdy(name);
             artifact = string.concat(artifact, "kind = \"usdy-stable\"\n");
@@ -104,6 +185,28 @@ library OracleConfigFile {
             artifact = string.concat(artifact, "max_price = \"", vm.toString(cfg.maxPrice), "\"\n");
         }
         vm.writeFile(path, artifact);
+    }
+
+    /// @notice The NAV oracle's constructor arguments and initial parameters as the body of its artifact's `[oracle]`
+    ///         table, in the keys the config uses, so `parseNav(artifact, ".oracle")` reads them back.
+    function navArtifact(NavOracleConfig memory cfg) internal pure returns (string memory s) {
+        TrailingAnchorOracleBase.Parameters memory p = cfg.parameters;
+        s = string.concat("kind = \"", cfg.kind, "\"\n");
+        s = string.concat(s, "source = \"", vm.toString(cfg.source), "\"\n");
+        if (isKind(cfg.kind, KIND_NAV_CENTRIFUGE)) {
+            s = string.concat(s, "pool_id = \"", vm.toString(uint256(cfg.poolId)), "\"\n");
+            s = string.concat(s, "share_class_id = \"", vm.toString(abi.encodePacked(cfg.shareClassId)), "\"\n");
+        }
+        s = string.concat(s, "loan_token = \"", vm.toString(cfg.loanToken), "\"\n");
+        s = string.concat(s, "collateral_token = \"", vm.toString(cfg.collateralToken), "\"\n");
+        s = string.concat(s, "max_price_above_anchor = \"", vm.toString(uint256(p.maxPriceAboveAnchor)), "\"\n");
+        s = string.concat(s, "max_price_below_anchor = \"", vm.toString(uint256(p.maxPriceBelowAnchor)), "\"\n");
+        s = string.concat(s, "max_anchor_rise_per_year = \"", vm.toString(uint256(p.maxAnchorRisePerYear)), "\"\n");
+        s = string.concat(s, "max_anchor_fall_per_year = \"", vm.toString(uint256(p.maxAnchorFallPerYear)), "\"\n");
+        s = string.concat(s, "max_anchor_below_mark = \"", vm.toString(uint256(p.maxAnchorBelowMark)), "\"\n");
+        s = string.concat(s, "max_anchor_above_mark = \"", vm.toString(uint256(p.maxAnchorAboveMark)), "\"\n");
+        s = string.concat(s, "reanchor_delay = ", vm.toString(uint256(p.reanchorDelay)), "\n");
+        s = string.concat(s, "reanchor_window = ", vm.toString(uint256(p.reanchorWindow)), "\n");
     }
 
     function requireUndeployed(string memory name) internal view {

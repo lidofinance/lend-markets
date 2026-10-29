@@ -145,6 +145,7 @@ Exact role holders and governance paths are in [Privileged Roles](roles.md). Tra
 | Exit requests, fees, source positions, and filler workflow | [Exit Books](exit-books.md) |
 | Privileged capabilities and intended holders | [Privileged Roles](roles.md) |
 | IRM routing, configuration, and rate models | [Lido Lend IRM specification](https://github.com/lidofinance/lido-lend-irm/blob/main/SPECIFICATION.md) |
+| A collateral price that follows its source only near a trailing anchor and lets a larger move through only after a delay | [Trailing Anchor Oracle](trailing-anchor-oracle.md) |
 | WETH/wstETH parameters and oracle assumptions | [WETH / wstETH](markets/eth-steth.md) |
 | USDY-backed stablecoin markets | [USDY / Stablecoin Markets](markets/stables-usdy.md) |
 | Functions, structs, events, errors, and getters | [Generated API reference](README.md#api-reference-generated) |
