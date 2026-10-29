@@ -12,8 +12,8 @@ contracts:
   "0x8549736900BF3e643D7660E6DfDd09B0FBa2E286": LidoLendERC4626
   "0x66aFC8Bb3aB2f01127fDdEb05425bAD77923091f": GuardianSignals
   "0xBe1C1eaBda3eD8a93D3CE3246cf4EeF8111c76C7": LidoLendMarketFactory
-  "0x51AB6bF2c7024655469d1C9aB01ee66652Bf3f18": MorphoExitBook
-  "0x489A554da6D686F6FADA918A8dee0492063e1536": Erc4626ExitBook
+  "0xAd28EFa8f2ef56a68b0Eb6836f4aE1d2D6459Ecd": MorphoExitBook
+  "0x0d2580e4c9b20507eDFAeFC7777d760F12Ad55D4": Erc4626ExitBook
   "0x0056b888E90a1b783311351B54B782dE5de61e87": Bundler3
   "0x0C6151F0205A6Edf143b42C4f7B4E97a8f099260": EthereumGeneralAdapter1
   "0xb1A64663B5390Ecf1a582df7e19d0a6753d1B84A": LidoLendVaultAdapter
@@ -22,8 +22,8 @@ explorer_chain_id: 1
 explorer_token_env_var: ETHERSCAN_EXPLORER_TOKEN
 rpc_url_env_var: REMOTE_RPC_URL
 github_repo:
-  url: https://github.com/lidofinance/lend-product-docs
-  commit: bdf9e5047525c5b6f7489385fd494d53242db9a3
+  url: https://github.com/lidofinance/lend-markets
+  commit: f756655d713d28ac69465515c405de2294420a5e
   relative_root: ""
 dependencies:
   lib/lido-lend:

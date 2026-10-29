@@ -156,8 +156,8 @@ l1:
         decodeEVMScriptCallData: null
         decodeSetErc4626ExitBookAllowedPayload: null
         decodeSetMorphoExitBookAllowedPayload: null
-        erc4626ExitBook: '0x489A554da6D686F6FADA918A8dee0492063e1536'
-        morphoExitBook: '0x51AB6bF2c7024655469d1C9aB01ee66652Bf3f18'
+        erc4626ExitBook: '0x0d2580e4c9b20507eDFAeFC7777d760F12Ad55D4'
+        morphoExitBook: '0xAd28EFa8f2ef56a68b0Eb6836f4aE1d2D6459Ecd'
         trustedCaller: '0x4f29aA4c299e17176b48c41D67ee97aE673d29bC'
     etRegistry:
       name: EasyTrack
