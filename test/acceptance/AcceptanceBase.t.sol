@@ -1081,9 +1081,9 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
         roles[5] = RESUMER_ROLE;
         address[][] memory holders = new address[][](6);
         holders[0] = _arr1(agent);
-        holders[1] = _arr2(executor, agent);
-        holders[2] = _arr1(executor);
-        holders[3] = _arr1(agent);
+        holders[1] = _arr1(executor);
+        holders[2] = new address[](0);
+        holders[3] = new address[](0);
         holders[4] = _arr1(exitBookPauser);
         holders[5] = new address[](0);
         _assertExactEnumerableRoleHolders(book, roles, holders);

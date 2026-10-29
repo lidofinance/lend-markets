@@ -149,10 +149,12 @@ Each Exit Book is a direct, non-upgradeable `AccessControlEnumerable` contract. 
 | Role | Powers | Class | Initial onchain holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke Exit Book roles | C1 | Lido DAO Agent |
-| `ALLOWLIST_MANAGER_ROLE` | allow or deny new requests for a Morpho market or ERC-4626 vault | C3 / C4 | Lido DAO Agent and EVMScriptExecutor, independently |
-| `FEE_MANAGER_ROLE` | set the fee recipient and service share of the priority fee, capped at 25% | C4 | EVMScriptExecutor |
-| `RECOVERER_ROLE` | recover Ether, ERC-20, ERC-721, or ERC-1155 tokens held by the book | C4 | Lido DAO Agent |
+| `ALLOWLIST_MANAGER_ROLE` | allow or deny new requests for a Morpho market or ERC-4626 vault | C3 / C4 | EVMScriptExecutor |
+| `FEE_MANAGER_ROLE` | set the fee recipient and service share of the priority fee, capped at 25% | C4 | no initial holder |
+| `RECOVERER_ROLE` | recover Ether, ERC-20, ERC-721, or ERC-1155 tokens held by the book | C4 | no initial holder |
 | `PAUSER_ROLE` | pause placement and fills across the whole book | C3 | configured Risk Steward Committee, sole initial holder |
 | `RESUMER_ROLE` | resume placement and fills | C4 | no initial holder |
+
+Deployment initializes `feeRecipient` to the Lido DAO Agent and `serviceFee` to zero using a temporary deployer fee-manager grant. Both the deployer's fee-manager and admin grants are revoked before handover completes. Changing fees or recovering funds requires the Agent to grant the corresponding role first.
 
 Delisting one source affects only new requests for that source. Pausing affects placement and fills for every source in the book; cancellation, reads, configuration, recovery, and direct source access remain available. A pause has no automatic expiry. Resume is impossible until the Lido DAO Agent grants `RESUMER_ROLE` to a caller.

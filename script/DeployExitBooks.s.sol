@@ -20,6 +20,8 @@ contract DeployExitBooks is Script, ProtocolDeployer {
     error MissingRole(address book, bytes32 role, address holder);
     error UnexpectedRoleMemberCount(address book, bytes32 role, uint256 expected, uint256 actual);
     error DeployerRetainsAdmin(address book, address deployer);
+    error UnexpectedFeeRecipient(address book, address expected, address actual);
+    error UnexpectedServiceFee(address book, uint256 actual);
 
     function run(string memory config) external returns (address morpho, address erc4626) {
         DeployConfig memory deployConfig = DeployConfigFile.read(config);
@@ -87,14 +89,16 @@ contract DeployExitBooks is Script, ProtocolDeployer {
             if (actualCore != expectedCore) revert UnexpectedCore(expectedCore, actualCore);
         }
         _requireRole(b, b.DEFAULT_ADMIN_ROLE(), agent);
-        _requireRole(b, b.ALLOWLIST_MANAGER_ROLE(), agent);
+        _requireRoleMemberCount(b, b.DEFAULT_ADMIN_ROLE(), 1);
         _requireRole(b, b.ALLOWLIST_MANAGER_ROLE(), executor);
-        _requireRole(b, b.FEE_MANAGER_ROLE(), executor);
-        _requireRoleMemberCount(b, b.FEE_MANAGER_ROLE(), 1);
-        _requireRole(b, b.RECOVERER_ROLE(), agent);
+        _requireRoleMemberCount(b, b.ALLOWLIST_MANAGER_ROLE(), 1);
+        _requireRoleMemberCount(b, b.FEE_MANAGER_ROLE(), 0);
+        _requireRoleMemberCount(b, b.RECOVERER_ROLE(), 0);
         _requireRole(b, b.PAUSER_ROLE(), pauser);
         _requireRoleMemberCount(b, b.PAUSER_ROLE(), 1);
         _requireRoleMemberCount(b, b.RESUMER_ROLE(), 0);
+        if (b.feeRecipient() != agent) revert UnexpectedFeeRecipient(book, agent, b.feeRecipient());
+        if (b.serviceFee() != 0) revert UnexpectedServiceFee(book, b.serviceFee());
         if (b.hasRole(b.DEFAULT_ADMIN_ROLE(), deployer)) revert DeployerRetainsAdmin(book, deployer);
     }
 

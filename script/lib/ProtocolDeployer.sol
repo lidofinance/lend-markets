@@ -139,14 +139,14 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     }
 
     function _handOverExitBook(ExitBookBase book, ExitBookConfig memory cfg, address deployer) private {
-        // EasyTrack and the Agent both need independent allow-list control.
+        // EasyTrack controls the allow-list; the Agent administers role grants.
         book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.evmScriptExecutor);
-        book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.agent);
-        book.grantRole(book.FEE_MANAGER_ROLE(), cfg.evmScriptExecutor);
-        book.grantRole(book.RECOVERER_ROLE(), cfg.agent);
         book.grantRole(book.PAUSER_ROLE(), cfg.pauser);
         // RESUMER_ROLE deliberately starts empty. Governance grants it only when it needs to resume the book.
         book.grantRole(book.DEFAULT_ADMIN_ROLE(), cfg.agent);
+        book.grantRole(book.FEE_MANAGER_ROLE(), deployer);
+        book.setServiceFee(cfg.agent, 0);
+        book.revokeRole(book.FEE_MANAGER_ROLE(), deployer);
         book.revokeRole(book.DEFAULT_ADMIN_ROLE(), deployer);
     }
 }

@@ -112,6 +112,8 @@ Integrated and standalone deployment assign both books' sole initial `PAUSER_ROL
 
 Exit Books are direct, non-upgradeable deployments. Incompatible `Request` layouts require new book deployments; never reinterpret existing request storage.
 
+The Agent is the sole initial admin and fee recipient; the service fee is zero. Only the EVMScriptExecutor initially holds `ALLOWLIST_MANAGER_ROLE`. `FEE_MANAGER_ROLE` and `RECOVERER_ROLE` start empty. Deployment temporarily grants the deployer the fee-manager role to initialize the fee recipient, then revokes that role and its admin role. Governance must grant the corresponding role before changing fees or recovering funds.
+
 If broadcast or verification is interrupted, immediately repeat the same target and arguments with `RESUME=true`. Do not send another transaction from the deployer first: Foundry resumes the saved nonce sequence.
 
 Deploy a shared GuardianSignals instance for an existing run when needed:
