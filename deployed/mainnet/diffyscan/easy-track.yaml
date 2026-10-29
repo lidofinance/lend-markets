@@ -1,34 +1,55 @@
-# TEMPLATE: replace all 8 {{easy-track.<Contract>.address}} placeholders before running.
-# Compare against audited Solidity, not the deployment-script fix commit.
-# OpenZeppelin is vendored in that same audited tree; aliases cover Brownie source paths.
 contracts:
-  "{{easy-track.LidoLendPreseeder.address}}": LidoLendPreseeder
-  "{{easy-track.LidoLendActivateMarket.address}}": LidoLendActivateMarket
-  "{{easy-track.LidoLendCircuitBreakerActions.address}}": LidoLendCircuitBreakerActions
-  "{{easy-track.LidoLendGuardianActions.address}}": LidoLendGuardianActions
-  "{{easy-track.LidoLendMarketManagerActions.address}}": LidoLendMarketManagerActions
-  "{{easy-track.LidoLendRiskStewardActions.address}}": LidoLendRiskStewardActions
-  "{{easy-track.LidoLendApplyIrmConfig.address}}": LidoLendApplyIrmConfig
-  "{{easy-track.LidoLendExitBookActions.address}}": LidoLendExitBookActions
+  "0x3F107d1fbCA49F425321Cb27f6Ef5CbB94a72c41": LidoLendPreseeder
+  "0x17bb2A2B5983D29392A5d31D627D4C8B13383fe6": LidoLendActivateMarket
+  "0x4e89cc970F0DBAE2f8C38C083D5D345B4F9e76b8": LidoLendCircuitBreakerActions
+  "0x9fE41afb2114bF9430D7f9B1Fb65f0a4B9DeF779": LidoLendGuardianActions
+  "0x9D75EaE321976e85e472847AFD21246F1f87dC43": LidoLendMarketManagerActions
+  "0x7276CE5f92911216d41C7b0A9C3575DE873763E9": LidoLendRiskStewardActions
+  "0x5795E73C0c2007ceD7D65cE4FC21c0C09F14C668": LidoLendApplyIrmConfig
+  "0xA30b212c3657fa745feaE4b48B7Eb0A8F429C604": LidoLendExitBookActions
 explorer_hostname: api.etherscan.io
 explorer_chain_id: 1
 explorer_token_env_var: ETHERSCAN_EXPLORER_TOKEN
 rpc_url_env_var: REMOTE_RPC_URL
 github_repo:
   url: https://github.com/lidofinance/easy-track
-  commit: 8685569ae95b663499e525461e37061ca8da3e53
+  commit: 4caa9117435631ef352d263c901fa9e26cfccfb4
   relative_root: ''
 dependencies:
   OpenZeppelin/openzeppelin-contracts@4.3.2:
     url: https://github.com/lidofinance/easy-track
-    commit: 8685569ae95b663499e525461e37061ca8da3e53
+    commit: 4caa9117435631ef352d263c901fa9e26cfccfb4
     relative_root: dependencies/OpenZeppelin/openzeppelin-contracts@4.3.2
   dependencies/OpenZeppelin/openzeppelin-contracts@4.3.2:
     url: https://github.com/lidofinance/easy-track
-    commit: 8685569ae95b663499e525461e37061ca8da3e53
+    commit: 4caa9117435631ef352d263c901fa9e26cfccfb4
     relative_root: dependencies/OpenZeppelin/openzeppelin-contracts@4.3.2
   ./dependencies/OpenZeppelin/openzeppelin-contracts@4.3.2:
     url: https://github.com/lidofinance/easy-track
-    commit: 8685569ae95b663499e525461e37061ca8da3e53
+    commit: 4caa9117435631ef352d263c901fa9e26cfccfb4
     relative_root: dependencies/OpenZeppelin/openzeppelin-contracts@4.3.2
+  contracts/access:
+    url: https://github.com/lidofinance/easy-track
+    commit: 4caa9117435631ef352d263c901fa9e26cfccfb4
+    relative_root: dependencies/OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/access
+  contracts/utils:
+    url: https://github.com/lidofinance/easy-track
+    commit: 4caa9117435631ef352d263c901fa9e26cfccfb4
+    relative_root: dependencies/OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/utils
+  contracts/token:
+    url: https://github.com/lidofinance/easy-track
+    commit: 4caa9117435631ef352d263c901fa9e26cfccfb4
+    relative_root: dependencies/OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/token
+bytecode_comparison:
+  extra_sources:
+    "0x3F107d1fbCA49F425321Cb27f6Ef5CbB94a72c41":
+      - OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/access/AccessControl.sol
+      - OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/access/IAccessControl.sol
+      - OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/utils/Context.sol
+      - OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/utils/Strings.sol
+      - OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/utils/introspection/ERC165.sol
+      - OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/utils/introspection/IERC165.sol
+      - OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/token/ERC20/IERC20.sol
+      - OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/token/ERC20/utils/SafeERC20.sol
+      - OpenZeppelin/openzeppelin-contracts@4.3.2/contracts/utils/Address.sol
 fail_on_bytecode_comparison_error: true
