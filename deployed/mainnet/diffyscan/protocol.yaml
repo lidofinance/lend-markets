@@ -22,20 +22,20 @@ explorer_chain_id: 1
 explorer_token_env_var: ETHERSCAN_EXPLORER_TOKEN
 rpc_url_env_var: REMOTE_RPC_URL
 github_repo:
-  url: https://github.com/lidofinance/lido-lend-markets
+  url: https://github.com/lidofinance/lend-product-docs
   commit: bdf9e5047525c5b6f7489385fd494d53242db9a3
   relative_root: ""
 dependencies:
   lib/lido-lend:
-    url: https://github.com/lidofinance/lido-lend
+    url: https://github.com/lidofinance/lend
     commit: 422d589f9d098124249b54b55306884165833207
     relative_root: ""
   lib/lido-lend-irm:
-    url: https://github.com/lidofinance/lido-lend-irm
+    url: https://github.com/lidofinance/lend-irm
     commit: 566d31f7dfdf83d07a6593f641f7474c263a7f89
     relative_root: ""
   lib/lido-lend-irm/lib/lido-lend:
-    url: https://github.com/lidofinance/lido-lend
+    url: https://github.com/lidofinance/lend
     commit: 422d589f9d098124249b54b55306884165833207
     relative_root: ""
   lib/circuit-breaker:
@@ -67,7 +67,7 @@ dependencies:
     commit: 576f549a7351814f112edcc42f3f8472d1712673
     relative_root: ""
   lib/bundler3/lib/permit2/lib/solmate:
-    url: https://github.com/rari-capital/solmate
+    url: https://github.com/transmissions11/solmate
     commit: 8d910d876f51c3b2585c9109409d601f600e68e1
     relative_root: ""
 fail_on_bytecode_comparison_error: true
