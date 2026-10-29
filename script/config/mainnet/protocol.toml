@@ -8,7 +8,7 @@ circuit_breaker_artifact = "lido-lend"
 exit_books = true
 # Interim committees: Safe 1.4.1, 1-of-1, owned by 0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd. Replaced by the
 # committee Safes before production deployment.
-exit_book_pauser = "0x604B13eD638663AA0C1eEF0c3482e51f228BA2E1"     # Pauser Safe: exit books (differs from deployer/agent/executor)
+exit_book_pauser = "0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E"     # Pauser Safe: exit books
 pauser_committee = "0x604B13eD638663AA0C1eEF0c3482e51f228BA2E1"     # Pauser Safe: CircuitBreaker committee, registered by the activation
 risk_steward = "0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E"         # Risk Steward Committee Safe: appointed per market by the activation motion (state-mate expectation)
 exit_book_max_request_lifetime = 7776000  # 90 days
