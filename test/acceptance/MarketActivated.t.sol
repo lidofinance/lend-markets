@@ -4,8 +4,9 @@ pragma solidity 0.8.36;
 import {AcceptanceBase} from "./AcceptanceBase.t.sol";
 
 /// @notice Acceptance: after the activation motion runs, the market is fully connected, configured, and live.
-///         Skips while the market is inert. Once activated, it verifies the existing state and uses the
-///         independently supplied `ACCEPTANCE_PAUSER_COMMITTEE` as the expected CircuitBreaker pauser.
+///         Skips while the market is inert. Once activated, it verifies the existing state against the
+///         independently supplied motion inputs: `ACCEPTANCE_PAUSER_COMMITTEE` as the expected CircuitBreaker pauser,
+///         `ACCEPTANCE_MARKET_STEWARD` as the only market steward, and `ACCEPTANCE_MARKET_FEE` as the market fee.
 contract MarketActivatedAcceptance is AcceptanceBase {
     function setUp() public override {
         super.setUp();
@@ -13,6 +14,8 @@ contract MarketActivatedAcceptance is AcceptanceBase {
         if (!_isMarketActivated()) vm.skip(true, "acceptance: market is not activated");
         _loadExpectedSettlementChoice();
         _loadExpectedPauserCommittee();
+        _loadExpectedMarketSteward();
+        _loadExpectedMarketFee();
     }
 
     function test_fullyConnectedConfiguredAndLive() external {

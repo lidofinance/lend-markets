@@ -150,6 +150,37 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
         assertEq(m.loanToken.balanceOf(SOLVER), 10 ether, "solver can repay temporary liquidity");
     }
 
+    /// @dev Pins open finding I-D002: one second after a borrow accrued the market, the deployed pair cannot take a
+    ///      deposit or report its total assets. A fix changes this outcome; update this test with the fix.
+    ///      The test is isolated, so each call is its own transaction. Vault V2 caches its total assets for the rest of
+    ///      a transaction.
+    /// forge-config: default.isolate = true
+    function testRevert_ID002_oneSecondAfterBorrow_depositAndTotalAssets() public {
+        uint256 borrowed = 1 ether;
+        _supplyCollateral(BORROWER, _collateralFor(borrowed));
+        _warpPastActivation(m);
+
+        _mintWETH(USER, 11 ether);
+        vm.startPrank(USER);
+        m.loanToken.approve(address(vault2), type(uint256).max);
+        vault2.deposit(10 ether, USER);
+        vm.stopPrank();
+        vm.prank(ALLOCATOR);
+        vault2.allocate(adapterAddr, abi.encode(adapterParams), 10 ether);
+
+        vm.prank(BORROWER);
+        core.borrow(params, borrowed, 0, BORROWER, BORROWER);
+        assertEq(core.market(marketId).lastUpdate, block.timestamp, "borrow accrued the market");
+        vm.warp(block.timestamp + 1);
+
+        vm.prank(USER);
+        vm.expectRevert(bytes(""));
+        vault2.deposit(1 ether, USER);
+
+        vm.expectRevert(bytes(""));
+        vault2.totalAssets();
+    }
+
     /// @dev USER deposits into the vault, the allocator routes it into the Lido market via the adapter, and a
     ///      direct lender supplies straight into the core. Adapter supply is asserted as a delta (the adapter is
     ///      shared), and the direct lender's supply shares are returned for the later fallback settle.

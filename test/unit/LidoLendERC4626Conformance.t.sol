@@ -3,6 +3,7 @@ pragma solidity 0.8.36;
 
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
@@ -267,7 +268,11 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
 
         // One past the cap reverts; exactly the cap succeeds.
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ERC4626Upgradeable.ERC4626ExceededMaxRedeem.selector, alice, capShares + 1, capShares
+            )
+        );
         _v().redeem(capShares + 1, alice, alice);
 
         vm.prank(alice);
@@ -370,11 +375,16 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
         _assertViewsNeverRevert();
 
         _fundApprove(alice, 10 ether);
+        // The vault's own max* gate rejects each flow first: paused, it reports a zero max.
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, alice, 10 ether, 0)
+        );
         _v().deposit(10 ether, alice);
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxWithdraw.selector, alice, 1 ether, 0)
+        );
         _v().withdraw(1 ether, alice, alice);
 
         // A disabled flow makes its max the amount that would not revert: zero.
@@ -400,7 +410,7 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
         vm.prank(bob);
         _v().deposit(headroom, bob);
         vm.prank(bob);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, bob, 1, 0));
         _v().deposit(1, bob);
     }
 }

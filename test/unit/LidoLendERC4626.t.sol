@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {MarketParams, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, MarketParams, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -818,5 +818,32 @@ contract LidoLendERC4626Test is LidoLendSetup {
         vm.prank(minter);
         m.vault.mint(maxShares, minter);
         assertEq(m.vault.balanceOf(minter), maxShares, "minted exactly maxMint");
+    }
+
+    // ── storage layout ──
+
+    /// @dev `marketId` opens the ERC-7201 namespace. `_managedSupplyShares` closes it at base + 8, after `controller`
+    ///      (1 slot), the five-field `_marketParams` (5 slots) and `_loanDecimalsOffset` (1 slot). A field inserted
+    ///      before the last one moves it off that slot.
+    function test_storageLayout_firstAndLastFieldAtErc7201Slots() public {
+        Market storage m = _market();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 10 ether);
+        m.vaultDeposit(lender, 10 ether);
+        assertGt(m.vault.managedSupplyShares(), 0, "setup: managed supply shares are nonzero");
+
+        bytes32 base = _erc7201Slot("lido.lend.storage.LidoLendERC4626");
+        address vault = address(m.vault);
+        assertEq(vm.load(vault, base), Id.unwrap(m.vault.marketId()), "marketId at the base slot");
+        assertEq(
+            uint256(vm.load(vault, bytes32(uint256(base) + 8))),
+            m.vault.managedSupplyShares(),
+            "_managedSupplyShares at base + 8"
+        );
+    }
+
+    /// @dev ERC-7201 base slot of `namespaceId`, by the formula of the standard.
+    function _erc7201Slot(string memory namespaceId) private pure returns (bytes32) {
+        return keccak256(abi.encode(uint256(keccak256(bytes(namespaceId))) - 1)) & ~bytes32(uint256(0xff));
     }
 }

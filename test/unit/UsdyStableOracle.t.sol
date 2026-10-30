@@ -324,4 +324,22 @@ contract UsdyStableOracleTest is Test {
         vm.expectRevert(abi.encodeWithSelector(UsdyStableOracle.PriceOutOfBounds.selector, _expected(getPrice, 1e8)));
         oracle.price();
     }
+
+    // ── storage layout ──
+
+    /// @dev `stableUsdFeed` opens the ERC-7201 namespace at the base slot and `scale` closes it at base + 1.
+    function test_storageLayout_firstAndLastFieldAtErc7201Slots() public view {
+        bytes32 base = _erc7201Slot("lido.lend.storage.UsdyStableOracle");
+        assertEq(
+            vm.load(address(oracle), base),
+            bytes32(uint256(uint160(address(oracle.stableUsdFeed())))),
+            "stableUsdFeed at the base slot"
+        );
+        assertEq(uint256(vm.load(address(oracle), bytes32(uint256(base) + 1))), oracle.scale(), "scale at base + 1");
+    }
+
+    /// @dev ERC-7201 base slot of `namespaceId`, by the formula of the standard.
+    function _erc7201Slot(string memory namespaceId) private pure returns (bytes32) {
+        return keccak256(abi.encode(uint256(keccak256(bytes(namespaceId))) - 1)) & ~bytes32(uint256(0xff));
+    }
 }
