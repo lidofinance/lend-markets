@@ -406,7 +406,7 @@ lint:
 
 # Coverage of the whole suite, fork suites included — they revert without a working fork setup.
 coverage:
-	forge coverage --ir-minimum --report summary
+	forge coverage --report summary
 
 # One snapshot for the whole suite, fork suites included — they revert without a working fork setup, so
 # nothing is silently skipped. No entropy is minted here: foundry seeds one RNG per run, so every suite that falls back to
