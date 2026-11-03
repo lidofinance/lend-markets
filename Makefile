@@ -57,6 +57,7 @@ DEPLOYER_SENDER ?=
 # Testnet branch: contracts stay unverified on the explorer.
 VERIFY ?= false
 RESUME ?= false
+ACTIVATION_ENTRYPOINT ?= run()
 CHAIN_ID ?= $(shell if [ -n "$(RUN)" ] && [ -f "deployed/$(RUN)/protocol.toml" ]; then \
 	awk -F= '/^[[:space:]]*chain_id[[:space:]]*=/{gsub(/[[:space:]]/, "", $$2); print $$2; exit}' "deployed/$(RUN)/protocol.toml"; \
 	else \
@@ -341,7 +342,7 @@ activate-markets:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
 	@test -n "$(EXECUTOR)" || { echo "ERROR: could not read evm_script_executor from deployed/$(RUN)/protocol.toml"; exit 1; }
-	@$(DEPLOY_ENV) forge script script/ActivateMarkets.s.sol --sig 'run()' \
+	@$(DEPLOY_ENV) forge script script/ActivateMarkets.s.sol --sig '$(ACTIVATION_ENTRYPOINT)' \
 		--rpc-url "$(RPC_URL)" --unlocked --sender "$(EXECUTOR)" --broadcast
 
 # state-mate configs for RUN: addresses from its artifacts, expectations from script/config/$(CONFIG)/, proxy
@@ -370,6 +371,11 @@ fork-run:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
 	ARTIFACTS_DIR="$(RUN)" forge test --match-path '$(FORK_PATH)'
+
+# External CI: fork the caller's post-vote RPC, prepare missing/inert markets in an isolated copy, and test.
+.PHONY: test-external
+test-external:
+	python3 tools/run_external_tests.py --config "$(CONFIG)" --run "$(RUN)"
 
 # Convenience only. The normal targets above remain scriptable and CI-friendly.
 deploy-wizard:

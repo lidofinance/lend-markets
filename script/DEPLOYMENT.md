@@ -246,3 +246,37 @@ The driver runs the `deploy-*` targets in the order this document describes — 
 backbone, the guardian registries, the markets, the vault-v2 pair, then `activate-markets` — and finishes with
 `acceptance-run` per market, so provisioning reports success only once the deployed stack verifies against the
 artifacts it wrote.
+
+## External regression CI
+
+`.github/actions/regression-tests` accepts the caller's prepared post-vote `rpc_url`, a lending checkout
+`repository`/`ref`/`path`, and the deployment `config` and artifact `run` (both default to `mainnet`). It installs
+the pinned Foundry toolchain and runs the same entry point available locally (Python 3.11+):
+
+```sh
+make test-external CONFIG=mainnet RUN=mainnet RPC_URL=http://127.0.0.1:8545
+```
+
+The runner forks the supplied node into its own Anvil, copies the selected artifact run into a temporary
+workspace, and prepares the union of `[provision].markets` and recorded `markets/*.toml`:
+
+| State on the supplied fork | Preparation before the fork suites |
+| --- | --- |
+| Only the protocol is deployed | Deploy each missing market stack through `provision-market`, then activate |
+| Market components exist, core market has not been created | Activate through `fork-activate` |
+| Core market already exists | Keep its live state and run tests |
+
+Mixed states are supported in the same run. Activation uses `ActivateMarkets.runPending()` to select only
+markets whose core `lastUpdate` is zero; already-created markets retain their live IRM, settlement and permission
+state. Missing or inconsistent recorded contracts fail setup rather than trigger replacement. An empty market
+set also fails. The normal resumable `ActivateMarkets.run()` entry point remains available for rehearsals.
+
+For a missing market, the existing provisioning script derives its oracle and guardian dependencies from the
+market config. An empty guardian committee uses `GUARDIANS` when provided, otherwise the config's `risk_steward`
+(the current mainnet 1-of-1 choice); other configs retain the provisioning script's test-account fallback.
+
+Once every market exists on the core, `fork-run` executes the lending suites against the prepared local node.
+The output records the upstream block number/hash and each market's initial state. The runner removes its
+temporary artifacts and stops its own Anvil on exit. It does not write to the supplied node or the original
+artifact run. Preparation reuses the fork activation replay; verification of real Easy Track motions and their
+permissions is a separate suite.

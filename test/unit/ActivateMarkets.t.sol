@@ -54,6 +54,10 @@ contract ActivateMarketsHarness is ActivateMarkets {
     function pauserCommittee(string memory protocol) external view returns (address) {
         return _pauserCommittee(protocol);
     }
+
+    function processPending(ActivationInput[] memory markets) external {
+        _processMarkets(markets, true);
+    }
 }
 
 contract MockActivationIrm {
@@ -203,6 +207,69 @@ contract ActivateMarketsTest is Test {
         assertEq(circuitBreaker.getPauser(controller), pauser);
         assertTrue(morphoBook.isMarketAllowed(id));
         assertTrue(erc4626Book.isVaultAllowed(vault));
+    }
+
+    function testFuzz_pendingSelection_preservesEveryAlreadyCreatedMarket(bool firstActive, bool secondActive)
+        external
+    {
+        ActivateMarkets.ActivationInput[] memory inputs = new ActivateMarkets.ActivationInput[](2);
+        MarketParams memory other = market;
+        other.oracle = makeAddr("secondOracle");
+        inputs[0] = ActivateMarkets.ActivationInput("first", controller, vault, market, irmConfig);
+        inputs[1] = ActivateMarkets.ActivationInput(
+            "second", makeAddr("secondController"), makeAddr("secondVault"), other, irmConfig
+        );
+        bool[2] memory active = [firstActive, secondActive];
+        address changedIrm = makeAddr("governanceSelectedIrm");
+        address changedConfig = makeAddr("governanceSelectedConfig");
+        uint256 pending;
+        for (uint256 i; i < 2; ++i) {
+            bytes32 id = Id.unwrap(inputs[i].market.id());
+            if (active[i]) {
+                core.seed(id, inputs[i].controller, false);
+                router.seed(id, changedIrm);
+                irm.seed(id, changedConfig);
+            } else {
+                ++pending;
+            }
+        }
+
+        activation.processPending(inputs);
+
+        assertEq(core.createCalls(), pending);
+        assertEq(router.routeCalls(), pending);
+        assertEq(irm.applyCalls(), pending);
+        assertEq(circuitBreaker.registerCalls(), pending);
+        assertEq(morphoBook.allowCalls(), pending);
+        assertEq(erc4626Book.allowCalls(), pending);
+        for (uint256 i; i < 2; ++i) {
+            bytes32 id = Id.unwrap(inputs[i].market.id());
+            assertEq(core.marketController(id), inputs[i].controller);
+            assertEq(core.isSettlementEnabled(id), !active[i]);
+            assertEq(router.marketIrm(id), active[i] ? changedIrm : address(irm));
+            assertEq(irm.marketCurveConfig(id), active[i] ? changedConfig : irmConfig);
+            assertEq(morphoBook.isMarketAllowed(id), !active[i]);
+            assertEq(erc4626Book.isVaultAllowed(inputs[i].vault), !active[i]);
+        }
+    }
+
+    function testRevert_pendingSelection_checksAllPendingMarketsBeforeBroadcast() external {
+        ActivateMarkets.ActivationInput[] memory inputs = new ActivateMarkets.ActivationInput[](2);
+        MarketParams memory other = market;
+        other.oracle = makeAddr("conflictingOracle");
+        inputs[0] = ActivateMarkets.ActivationInput("first", controller, vault, market, irmConfig);
+        inputs[1] = ActivateMarkets.ActivationInput("second", controller, vault, other, irmConfig);
+        address wrongConfig = makeAddr("wrongConfig");
+        irm.seed(Id.unwrap(other.id()), wrongConfig);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ActivateMarkets.UnexpectedIrmConfig.selector, "second", irmConfig, wrongConfig)
+        );
+        activation.processPending(inputs);
+
+        assertEq(core.createCalls(), 0);
+        assertEq(router.routeCalls(), 0);
+        assertEq(irm.applyCalls(), 0);
     }
 
     function test_resumeActivation_repairsTailAfterMarketCreationAndThenDoesNothing() external {

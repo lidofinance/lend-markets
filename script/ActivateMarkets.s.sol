@@ -113,6 +113,15 @@ contract ActivateMarkets is Script {
     }
 
     function run() external {
+        _run(false);
+    }
+
+    /// @notice Activates only markets not yet created on the core. Already-created markets keep their live state.
+    function runPending() external {
+        _run(true);
+    }
+
+    function _run(bool pendingOnly) internal {
         string memory protocolPath = ProtocolConfigFile.protocolPath();
         string memory protocol = vm.readFile(protocolPath);
         string memory deployment = ArtifactMetadataFile.deployment();
@@ -162,17 +171,29 @@ contract ActivateMarkets is Script {
         address executor = IActivationRouter(bb.router).manager();
         if (msg.sender != executor) revert WrongSender(executor, msg.sender);
 
+        _processMarkets(markets, pendingOnly);
+    }
+
+    function _processMarkets(ActivationInput[] memory markets, bool pendingOnly) internal {
+        // Decide the set once, before broadcasting; activation itself changes the created-state predicate.
+        bool[] memory selected = new bool[](markets.length);
+        for (uint256 i; i < markets.length; ++i) {
+            if (bytes(markets[i].name).length == 0) continue;
+            (,,,, uint128 lastUpdate,) = IActivationCore(bb.core).market(Id.unwrap(markets[i].market.id()));
+            selected[i] = !pendingOnly || lastUpdate == 0;
+        }
+
         // Check every already-completed step before sending the first transaction. A conflicting later market
         // must not leave an earlier one newly activated.
-        for (uint256 i; i < entries.length; ++i) {
-            if (entries[i].isDir || entries[i].isSymlink) continue;
+        for (uint256 i; i < markets.length; ++i) {
+            if (!selected[i]) continue;
             _requireResumable(markets[i]);
         }
 
         // The run directory is the authoritative market set: a market added after the backbone deploy is
         // recorded here but appears in no config.
-        for (uint256 i; i < entries.length; ++i) {
-            if (entries[i].isDir || entries[i].isSymlink) continue;
+        for (uint256 i; i < markets.length; ++i) {
+            if (!selected[i]) continue;
             _activateOne(markets[i]);
         }
     }
