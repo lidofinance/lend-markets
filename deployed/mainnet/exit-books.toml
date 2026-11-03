@@ -2,12 +2,12 @@
 kind = "exit-books-deployment"
 deployment = "mainnet"
 chain_id = 1
-config_hash = "0x31863c02bee67d85b5cab182b449c4fc7655ca4d42cafafe3eb47e14ab38d9ef"
+config_hash = "0x91b639c738e2f2a452787ef130634430fa2434377c624a30c0697d1b0e2a2f16"
 compatibility_hash = "0x52644200ae3b7ae5be5f9721ba9d69a64b3be1a25f6f3260dcb8591671097e4f"
 
 [exit_books]
-morpho = "0x51AB6bF2c7024655469d1C9aB01ee66652Bf3f18"
-erc4626 = "0x489A554da6D686F6FADA918A8dee0492063e1536"
-deployed_block = 26291288
+morpho = "0xAd28EFa8f2ef56a68b0Eb6836f4aE1d2D6459Ecd"
+erc4626 = "0x0d2580e4c9b20507eDFAeFC7777d760F12Ad55D4"
+deployed_block = 26298314
 max_request_lifetime = 7776000
-pauser = "0x604B13eD638663AA0C1eEF0c3482e51f228BA2E1"
+pauser = "0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E"

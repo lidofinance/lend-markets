@@ -41,8 +41,8 @@ deployed:
     - &erc4626WrapperImpl "0x8549736900BF3e643D7660E6DfDd09B0FBa2E286"
     - &circuitBreaker "0xd0A81A130a303237d338A0b5835edcB011Ab3afd"
     - &riskStewardDashboard "0xC3C241bC213EF3ba16234A7c689999209cE515D7"
-    - &morphoExitBook "0x51AB6bF2c7024655469d1C9aB01ee66652Bf3f18"
-    - &erc4626ExitBook "0x489A554da6D686F6FADA918A8dee0492063e1536"
+    - &morphoExitBook "0xAd28EFa8f2ef56a68b0Eb6836f4aE1d2D6459Ecd"
+    - &erc4626ExitBook "0x0d2580e4c9b20507eDFAeFC7777d760F12Ad55D4"
     - &irmRouter "0x81B7cC9523B30429110282d90db2fa90ff443d91"
     - &irmRouterImpl "0x683eA34c29658fb6cDeCc92Eb4B4e7f766979868"
     - &adaptiveCurveIrm "0xf6f1565F4fD3d29E6bDAb86764A50BCde381422f"
@@ -405,7 +405,7 @@ l1:
         *ALLOWLIST_MANAGER_ROLE : [*evmScriptExecutor]
         *FEE_MANAGER_ROLE : []
         *RECOVERER_ROLE : []
-        *PAUSER_ROLE : [*pauserCommittee]
+        *PAUSER_ROLE : [*riskSteward]
         *RESUMER_ROLE : []
     erc4626ExitBook:
       name: Erc4626ExitBook
@@ -459,7 +459,7 @@ l1:
         *ALLOWLIST_MANAGER_ROLE : [*evmScriptExecutor]
         *FEE_MANAGER_ROLE : []
         *RECOVERER_ROLE : []
-        *PAUSER_ROLE : [*pauserCommittee]
+        *PAUSER_ROLE : [*riskSteward]
         *RESUMER_ROLE : []
     irmRouter:
       name: IrmRouter
