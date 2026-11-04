@@ -29,9 +29,6 @@ runs:
         path: ${{ inputs.path }}
         submodules: recursive
         persist-credentials: false
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
     - id: foundry
       shell: bash
       working-directory: ${{ inputs.path }}
@@ -47,6 +44,4 @@ runs:
         CONFIG: ${{ inputs.config }}
         RUN: ${{ inputs.run }}
         TEST_SEED: '1'
-      run: |
-        python3 -m unittest discover -s tools/tests -p test_external_tests.py -v
-        make test-external
+      run: make test-external

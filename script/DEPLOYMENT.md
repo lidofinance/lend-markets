@@ -251,13 +251,13 @@ artifacts it wrote.
 
 `.github/actions/regression-tests` accepts the caller's prepared post-vote `rpc_url`, a lending checkout
 `repository`/`ref`/`path`, and the deployment `config` and artifact `run` (both default to `mainnet`). It installs
-the pinned Foundry toolchain and runs the same entry point available locally (Python 3.11+):
+the pinned Foundry toolchain and runs the same Make → shell → Forge path available locally (requires `jq`):
 
 ```sh
 make test-external CONFIG=mainnet RUN=mainnet RPC_URL=http://127.0.0.1:8545
 ```
 
-The runner forks the supplied node into its own Anvil, copies the selected artifact run into a temporary
+`script/test-external.sh` forks the supplied node into its own Anvil, copies the selected artifact run into a temporary
 workspace, and prepares the union of `[provision].markets` and recorded `markets/*.toml`:
 
 | State on the supplied fork | Preparation before the fork suites |

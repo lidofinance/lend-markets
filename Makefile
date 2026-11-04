@@ -375,7 +375,7 @@ fork-run:
 # External CI: fork the caller's post-vote RPC, prepare missing/inert markets in an isolated copy, and test.
 .PHONY: test-external
 test-external:
-	python3 tools/run_external_tests.py --config "$(CONFIG)" --run "$(RUN)"
+	@bash script/test-external.sh "$(CONFIG)" "$(RUN)"
 
 # Convenience only. The normal targets above remain scriptable and CI-friendly.
 deploy-wizard:
