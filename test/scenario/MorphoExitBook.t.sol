@@ -3,6 +3,7 @@ pragma solidity 0.8.36;
 
 import {stdError} from "forge-std/StdError.sol";
 
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
@@ -262,6 +263,16 @@ contract MorphoExitBookTest is LidoLendSetup {
         vm.stopPrank();
     }
 
+    /// @dev A zero-asset request on an allow-listed market reverts before the book checks the lender's core
+    ///      authorization, so a lender who never authorized the book still gets `ZeroAssets`.
+    function testRevert_place_zeroAssets() public {
+        address lender = _actor("lender");
+
+        vm.prank(lender);
+        vm.expectRevert(ExitBookBase.ZeroAssets.selector);
+        book.placeExitRequest(_m().id, 0, lender, 0, 0, _flat(0), block.timestamp + MAX_LIFETIME);
+    }
+
     // ---
     // G9 — supplied but never authorized the book on Morpho
     // ---
@@ -421,6 +432,30 @@ contract MorphoExitBookTest is LidoLendSetup {
         // Fires on disallow too (the live-market check runs regardless of `allowed`).
         vm.expectRevert(MorphoExitBook.MarketNotCreated.selector);
         book.setMarketAllowed(ghost, false);
+    }
+
+    function test_setMarketAllowed_allow_emitsAndSetsFlag() public {
+        Market storage m = _m();
+        MorphoExitBook fresh = new MorphoExitBook(address(protocol.core), address(this), MAX_LIFETIME);
+        fresh.grantRole(fresh.ALLOWLIST_MANAGER_ROLE(), address(this));
+        assertFalse(fresh.isMarketAllowed(m.id), "a fresh book allows no market");
+
+        vm.expectEmit(true, false, false, true, address(fresh));
+        emit MorphoExitBook.MarketAllowedSet(m.id, true);
+        fresh.setMarketAllowed(m.params, true);
+
+        assertTrue(fresh.isMarketAllowed(m.id), "market allowed");
+    }
+
+    function testRevert_setMarketAllowed_wrongRole() public {
+        address stranger = _actor("stranger");
+        bytes32 role = book.ALLOWLIST_MANAGER_ROLE();
+        MarketParams memory p = _m().params;
+        vm.prank(stranger);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, stranger, role)
+        );
+        book.setMarketAllowed(p, false);
     }
 
     // ---

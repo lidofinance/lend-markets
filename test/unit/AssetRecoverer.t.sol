@@ -7,6 +7,7 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IERC20Errors, IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 
 import {AssetRecoverer} from "../../src/utils/AssetRecoverer.sol";
 import {MockERC20} from "../setup/Mocks.sol";
@@ -103,7 +104,27 @@ contract AssetRecovererTest is Test {
         rec.recoverEther(rejector);
     }
 
+    function test_recoverEther_zeroBalance_emitsZero() public {
+        vm.expectEmit(true, true, true, true, address(rec));
+        emit EtherRecovered(recipient, 0);
+
+        vm.prank(owner);
+        rec.recoverEther(recipient);
+
+        assertEq(recipient.balance, 0, "nothing sent");
+    }
+
     // ── ERC-20 ──
+
+    function testRevert_recoverERC20_amountAboveBalance() public {
+        MockERC20 token = new MockERC20("T", "T", 18);
+        token.mint(address(rec), 1 ether);
+        vm.prank(owner);
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, address(rec), 1 ether, 2 ether)
+        );
+        rec.recoverERC20(address(token), recipient, 2 ether);
+    }
 
     /// @dev Owner recovers a partial ERC-20 amount to a recipient, moving exactly that amount and leaving the rest.
     function test_recoverERC20_toRecipient() public {
@@ -172,7 +193,28 @@ contract AssetRecovererTest is Test {
         rec.recoverERC721(address(nft), address(0), 7);
     }
 
+    /// @dev A token held by someone else cannot be moved: the recoverer is neither its owner nor approved for it.
+    function testRevert_recoverERC721_tokenNotHeld() public {
+        MockERC721 nft = new MockERC721();
+        nft.mint(stranger, 7);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IERC721Errors.ERC721InsufficientApproval.selector, address(rec), 7));
+        rec.recoverERC721(address(nft), recipient, 7);
+    }
+
     // ── ERC-1155 ──
+
+    function test_recoverERC1155_zeroBalance_emitsZero() public {
+        MockERC1155 multi = new MockERC1155();
+
+        vm.expectEmit(true, true, true, true, address(rec));
+        emit ERC1155Recovered(address(multi), 5, recipient, 0);
+
+        vm.prank(owner);
+        rec.recoverERC1155(address(multi), recipient, 5);
+
+        assertEq(multi.balanceOf(recipient, 5), 0, "nothing sent");
+    }
 
     /// @dev Owner recovers the full ERC-1155 balance of an id to a recipient, draining the contract's holding of it.
     function test_recoverERC1155_toRecipient() public {

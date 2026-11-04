@@ -81,6 +81,11 @@ contract LidoLendVaultAdapterTest is Test {
         bundler3.multicall(bundle);
     }
 
+    function testRevert_constructor_zeroBundler3() public {
+        vm.expectRevert(ErrorsLib.ZeroAddress.selector);
+        new LidoLendVaultAdapter(address(0));
+    }
+
     // ── gating and argument pinning ──
 
     function testRevert_fallbackExit_unauthorizedSenderOutsideBundle() public {
