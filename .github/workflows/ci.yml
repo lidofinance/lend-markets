@@ -31,6 +31,9 @@ jobs:
       - name: lint
         run: make lint
 
+      - name: test plan links (TEST_PLAN.md cites existing tests at their current lines)
+        run: make test-plan-check
+
       - name: test (local, excludes test/fork/)
         run: make test-local
 
