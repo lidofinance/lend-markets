@@ -173,6 +173,12 @@ contract ExitBookLibTest is Test {
         h.cancel(id, BOB);
     }
 
+    /// @dev An id never created has no owner, so any nonzero caller fails the owner check.
+    function testRevert_cancel_uncreatedId_notOwner() public {
+        vm.expectRevert(ExitBookLib.NotOwner.selector);
+        h.cancel(42, ALICE);
+    }
+
     /// @dev Cancelling an already-closed request reverts RequestClosed rather than re-cancelling.
     function testRevert_cancel_alreadyClosed() public {
         uint256 id = _add(ALICE, 100 ether);

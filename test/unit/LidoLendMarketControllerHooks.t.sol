@@ -88,6 +88,29 @@ contract LidoLendMarketControllerHooksTest is LidoLendSetup {
         _m().controller.on(_m().id, IBase.HookEvent.Liquidate, data);
     }
 
+    /// @dev A settle payload with no debt cut passes every policy gate, so seizing more than the collateral reaches
+    ///      the position check and reverts PositionAccountingMismatch.
+    function test_settleHook_seizeAboveCollateral_reverts() public {
+        address borrower = _seedBorrower(10 ether);
+        uint256 collat = _m().core.position(_m().id, borrower).collateral;
+
+        bytes memory data = abi.encode(
+            IBase.SettleHookData({
+                caller: address(this),
+                onBehalf: address(this),
+                borrower: borrower,
+                receiver: address(this),
+                supplySharesBurned: 0,
+                borrowAssetsCanceled: 0,
+                borrowSharesCanceled: 0,
+                seizedAssets: collat + 1
+            })
+        );
+        vm.prank(address(_m().core));
+        vm.expectRevert(ILidoLendMarketController.PositionAccountingMismatch.selector);
+        _m().controller.on(_m().id, IBase.HookEvent.Settle, data);
+    }
+
     // ── liquidate zero-seize path (the `seizedAssets != 0` guard's false branch) ──
 
     /// @dev A zero-seize liquidate that repays the whole debt must re-key the borrower to zero debt — i.e. drop it
@@ -209,6 +232,30 @@ contract LidoLendMarketControllerHooksTest is LidoLendSetup {
             })
         );
         _onAsCore(IBase.HookEvent.Settle, data); // no BorrowShareRateExceeded revert
+    }
+
+    /// @dev A cut that cancels the market's whole borrow assets but none of its shares would carry a market under the
+    ///      ceiling far over it: the transition gate rejects it before any policy check.
+    function test_settleHook_crossingRateCeiling_reverts() public {
+        Market storage m = _m();
+        address borrower = _seedBorrower(10 ether);
+        uint256 totalBorrowAssets = m.core.market(m.id).totalBorrowAssets;
+
+        bytes memory data = abi.encode(
+            IBase.SettleHookData({
+                caller: address(this),
+                onBehalf: address(this),
+                borrower: borrower,
+                receiver: address(this),
+                supplySharesBurned: 0,
+                borrowAssetsCanceled: totalBorrowAssets,
+                borrowSharesCanceled: 0,
+                seizedAssets: 0
+            })
+        );
+        vm.prank(address(m.core));
+        vm.expectRevert(ILidoLendMarketController.BorrowShareRateExceeded.selector);
+        m.controller.on(m.id, IBase.HookEvent.Settle, data);
     }
 
     /// @dev req8 — liquidation is exempt: even with the market over the cap, the liquidate hook carries no
