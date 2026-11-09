@@ -1,4 +1,4 @@
-# Mainnet deployment addresses from ../../easy-track/deployed-lido-lend-mainnet.json.
+# Mainnet deployment addresses from ../../easy-track/lido-lend-factories-mainnet.json.
 # Before registration: isEVMScriptFactory=false, evmScriptFactoryPermissions="0x".
 # After enactment: set true and the reviewed permissions from the deployment JSON.
 # Uses the populated abis.json.gz in this directory.
