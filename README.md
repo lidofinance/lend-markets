@@ -1,8 +1,8 @@
 # Lido Lend Markets
 
-Lido Lend is a family of isolated lending markets for established, low-risk looping trades, built on the [`lido-lend`](https://github.com/lidofinance/lido-lend) Morpho Blue fork. Each market is narrow by design, with strong exit paths and conservative controls that limit how quickly new collateral becomes borrowable.
+Lido Lend is a family of isolated lending markets for established looping trades, built on the [`lend`](https://github.com/lidofinance/lend) Morpho Blue fork. Each market is narrow by design, with several exit paths and controls that limit how quickly new collateral becomes borrowable.
 
-The Morpho-style market accounting lives in that core, with the interest-rate model in [`lido-lend-irm`](https://github.com/lidofinance/lido-lend-irm). This repository — Lido Lend Markets — holds everything built on top: the per-market policy and contracts, the specifications, the deployment scripts, and the deployed-address registry.
+The Morpho-style market accounting lives in that core, with the interest-rate model in [`lend-irm`](https://github.com/lidofinance/lend-irm). This repository — Lido Lend Markets — holds everything built on top: the per-market policy and contracts, the specifications, the deployment scripts, and the deployed-address registry.
 
 ## Setup
 
@@ -79,10 +79,10 @@ passed on the Make command line; values from `.env` or the environment do not ch
 Make sets `ARTIFACTS_DIR` and `PREPARE_MARKETS` internally. For other inputs, command-line assignments take
 precedence over exported environment values, then `.env`, then Makefile defaults.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that same version locally. `make test-mutation` is the one target that needs a newer forge than the pin and is therefore never run in CI. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that creates its stack inside Forge from the `RPC_URL` secret), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included through the same Solidity fixture), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that version locally. `make test-mutation` is local only. Workflows under `.github/workflows/` cover build/lint/local and fresh-fork tests (`ci.yml`), coverage (`coverage.yml`), deep fuzz/invariants (`fuzz.yml`) and pending governance actions (`pending-action.yml`).
 Additional workflows check action configuration and compiled contract bytecode sizes.
 
-To run the local pre-commit fmt check, point Git at the bundled hook:
+To run the local pre-commit solhint check, point Git at the bundled hook:
 
 ```sh
 git config core.hooksPath .githooks
@@ -128,7 +128,7 @@ src/
 
 Start with the [system architecture](docs/specs/architecture.md). It contains the runtime and governance maps and links to the controller, guardian, lender-settlement, and Exit Book mechanism specifications.
 
-The vendored core (`lib/lido-lend`, contract `LidoLend`) is the Morpho-compatible market.
+The vendored core (`lib/lend`, contract `LidoLend`) is the Morpho-compatible market.
 
 - Upgradeable behind `OssifiableProxy`, with owner-gated market creation.
 - Preserves upstream `MarketParams`, `Position`, `Market`, and market id derivation.
@@ -148,8 +148,8 @@ Supporting pieces: `GuardianSignals` (shared address bans and activation strikes
 
 ## Fork Notes
 
-The Morpho Blue fork is the vendored `lib/lido-lend` dependency. See `FORK_NOTES.md`, which points to `lib/lido-lend/FORK_NOTES.md` for the fork point and core-level changes.
+The Morpho Blue fork is the vendored `lib/lend` dependency. See `FORK_NOTES.md`, which points to `lib/lend/FORK_NOTES.md` for the fork point and core-level changes.
 
 ## License
 
-Repository source files use SPDX headers. The Morpho Blue fork point is pinned in the `lib/lido-lend` dependency to upstream `main` commit `1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a`, where `src/Morpho.sol` is marked `GPL-2.0-or-later`. See `LICENSE` and `lib/lido-lend/FORK_NOTES.md`.
+Repository source files use SPDX headers. They are GPL-2.0-or-later, except `src/proxy/OssifiableProxy.sol`, imported Lido source under [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html). The Morpho Blue fork point is pinned in the `lib/lend` dependency to upstream `main` commit `1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a`, where `src/Morpho.sol` is marked `GPL-2.0-or-later`. See `LICENSE` and `lib/lend/FORK_NOTES.md`.

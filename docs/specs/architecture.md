@@ -138,13 +138,13 @@ Exact role holders and governance paths are in [Privileged Roles](roles.md). Tra
 
 | Topic | Owning document |
 |---|---|
-| Core accounting, liquidation, settlement, hooks, and fork changes | [Lido Lend core specification](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md) |
+| Core accounting, liquidation, settlement, hooks, and fork changes | [Lido Lend core specification](https://github.com/lidofinance/lend/blob/main/SPECIFICATION.md) |
 | Controller checks, collateral activation, freeze, pause, and debt-rounding guard | [Market Controller Policy](market-controller.md) |
 | Guardian membership, account reports, bans, and scan progress | [Guardian Signals](guardian-signals.md) |
 | Direct and vault settlement, borrower selection, limits, and fallback exits | [Settlement and Lender Exits](lender-settlement.md) |
 | Exit requests, fees, source positions, and filler workflow | [Exit Books](exit-books.md) |
 | Privileged capabilities and intended holders | [Privileged Roles](roles.md) |
-| IRM routing, configuration, and rate models | [Lido Lend IRM specification](https://github.com/lidofinance/lido-lend-irm/blob/main/SPECIFICATION.md) |
+| IRM routing, configuration, and rate models | [Lido Lend IRM specification](https://github.com/lidofinance/lend-irm/blob/main/SPECIFICATION.md) |
 | WETH/wstETH parameters and oracle assumptions | [WETH / wstETH](markets/eth-steth.md) |
 | USDY-backed stablecoin markets | [USDY / Stablecoin Markets](markets/stables-usdy.md) |
 | Functions, structs, events, errors, and getters | [Generated API reference](README.md#api-reference-generated) |

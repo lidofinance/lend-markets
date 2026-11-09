@@ -157,3 +157,7 @@ rehearsal. Production activation remains the reviewed Easy Track motion.
 
 `apply-pending`, `pending-stop` and `test-pending` retain the separate local-Anvil workflow for rehearsing a
 pending governance transaction. `test-pending` passes `PREPARE=false` to verify exactly the post-action state.
+
+## Audit checksums
+
+Run `make audit-checksums` or `make audit-checksums REF=<git-ref>` to compare audited source digests.

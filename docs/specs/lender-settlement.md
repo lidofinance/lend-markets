@@ -32,7 +32,7 @@ Settlement must have been enabled when the market was created; that choice canno
 
 ## Core settlement boundary
 
-The controller quotes an exact borrow-share amount because that is the core settlement input. From the live totals after interest accrual, the core derives the debt cancellation, supply-share burn, and collateral payout. The exact formulas, rounding, checks, state transition, and debt-clearing boundaries are defined in the [LidoLend core specification](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md#settlement).
+The controller quotes an exact borrow-share amount because that is the core settlement input. From the live totals after interest accrual, the core derives the debt cancellation, supply-share burn, and collateral payout. The exact formulas, rounding, checks, state transition, and debt-clearing boundaries are defined in the [LidoLend core specification](https://github.com/lidofinance/lend/blob/main/SPECIFICATION.md#settlement).
 
 Before applying the settlement, the core sends the resolved amounts to the controller. The controller may allow or reject the settlement, but it cannot change those amounts. The core does not check borrower health; the queue and settlement policies below provide that additional policy layer.
 
@@ -297,4 +297,4 @@ The return value `sharesBurned` covers both steps. Every successful call emits o
 - [Market controller](market-controller.md) — hook lifecycle, collateral activation, freeze/pause, and share-rate guard.
 - [LidoLendERC4626 API](api/lido-lend-erc4626.md) — generated vault surface.
 - [LidoLendMarketController API](api/lido-lend-market-controller.md) — generated queue, quote, and policy surface.
-- [Lido Lend core specification](https://github.com/lidofinance/lido-lend/blob/main/SPECIFICATION.md#settlement) — canonical core settlement accounting and trust assumptions.
+- [Lido Lend core specification](https://github.com/lidofinance/lend/blob/main/SPECIFICATION.md#settlement) — canonical core settlement accounting and trust assumptions.

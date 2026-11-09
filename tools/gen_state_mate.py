@@ -270,7 +270,8 @@ def yval(v, ind):
 
 
 def mk(pairs):
-    return [{"args": a, "result": r} for a, r in pairs]
+    # No recorded markets means there are no arguments to check, not a zero-argument call.
+    return [{"args": a, "result": r} for a, r in pairs] or None
 
 
 def camel(text):
@@ -402,14 +403,13 @@ def build(inputs, impls, mode):
 
     books = inputs["exit_books"]
     if books:
-        allowlist_holders = sorted({agent, executor}, key=str.lower)
-        book_acl = {Z32: [agent], R["ALLOWLIST_MANAGER_ROLE"]: allowlist_holders,
-                    R["FEE_MANAGER_ROLE"]: [executor], R["RECOVERER_ROLE"]: [agent],
+        book_acl = {Z32: [agent], R["ALLOWLIST_MANAGER_ROLE"]: [executor],
+                    R["FEE_MANAGER_ROLE"]: [], R["RECOVERER_ROLE"]: [],
                     R["PAUSER_ROLE"]: [net["exit_book_pauser"]], R["RESUMER_ROLE"]: []}
         book_common = {"DEFAULT_ADMIN_ROLE": Z32, "ALLOWLIST_MANAGER_ROLE": R["ALLOWLIST_MANAGER_ROLE"],
                        "FEE_MANAGER_ROLE": R["FEE_MANAGER_ROLE"], "PAUSER_ROLE": R["PAUSER_ROLE"],
                        "RESUMER_ROLE": R["RESUMER_ROLE"], "RECOVERER_ROLE": R["RECOVERER_ROLE"],
-                       "feeRecipient": ZERO, "serviceFee": "0", "paused": False,
+                       "feeRecipient": agent, "serviceFee": "0", "paused": False,
                        "MAX_REQUEST_LIFETIME": s(net["exit_book_max_request_lifetime"])}
         add("morphoExitBook", "MorphoExitBook", books["morpho"],
             dict(book_common, MORPHO=core, isMarketAllowed=mk([([i], replay) for i in ids])), book_acl)

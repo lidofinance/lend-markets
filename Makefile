@@ -81,9 +81,9 @@ test-deployment: ## Solidity deployment scenarios on a Forge fork; RPC_URL, opti
 test-simulation: ## Year-long solvency simulations
 	RUN_SOLVENCY_SIMULATION=true forge test --match-path 'test/simulation/**' -vv
 
-# Outside the pinned toolchain; isolate-mode gas differs. See AGENTS.md before comparing runs.
+# Local only; never run mutation testing in CI.
 test-mutation: ## Mutation testing; requires separate forge >= 1.8.0
-	@forge test --help | grep -q -- '--mutate' || { echo "test-mutation: the local forge ($$(forge --version | head -1)) has no mutation testing; it needs forge >= 1.8.0, which is not the pinned .foundryref toolchain (install it separately, e.g. foundryup -i v1.8.3)"; exit 1; }
+	@forge test --help | grep -q -- '--mutate' || { echo "test-mutation: the local forge ($$(forge --version | head -1)) has no mutation testing; it needs forge >= 1.8.0, which is not the pinned .foundryref toolchain (install the .foundryref version)"; exit 1; }
 	TEST_SEED=1 forge test --mutate src --match-path 'test/simulation/**' --match-test shortRun --mutation-timeout 900
 
 ##@ Formatting and analysis
@@ -115,6 +115,9 @@ solhint: ## Run Solhint (separate install)
 doc: ## Generate API reference from NatSpec
 	forge build --ast
 	python3 tools/gen_api_from_artifacts.py
+
+audit-checksums: ## Compare audited source digests; optional REF=<git-ref>
+	bash tools/audit-checksums.sh $(REF)
 
 ci: build lint test-local ## Build, lint and local tests
 

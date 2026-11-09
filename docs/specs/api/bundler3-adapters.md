@@ -6,7 +6,7 @@ The local Bundler3 integration surface. Every non-constructor action below is ca
 
 ## LidoLendVaultAdapter
 
-Bundler3 adapter for the Lido Lend vault's fallback exit. Users approve their vault shares to this adapter; a bundle can then only ever exit the position of the user who started it.
+Bundler3 adapter for the LidoLend vault's fallback exit. Users approve their vault shares to this adapter; a bundle can then only ever exit the position of the user who started it.
 
 ### Errors
 
@@ -20,7 +20,7 @@ error ExitBelowMinimum(uint256 exitAssets, uint256 minExitAssets);
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `exitAssets` | `uint256` | The exit's total payout in loan tokens: loan tokens paid plus debt cancelled. |
+| `exitAssets` | `uint256` | The exit's total payout in loan tokens: loan tokens paid plus debt canceled. |
 | `minExitAssets` | `uint256` | The caller's minimum total payout. |
 
 The exit pays out less total value than the caller's minimum.
@@ -71,11 +71,11 @@ function fallbackExit(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `vault` | `address` | The Lido Lend vault to exit. |
+| `vault` | `address` | The LidoLend vault to exit. |
 | `shares` | `uint256` | Vault shares to burn. Pass `type(uint256).max` for the initiator's full balance. |
 | `maxIterations` | `uint256` | Cap on settlement-loop iterations; 0 uses the vault default. |
 | `receiver` | `address` | Receives both payout tokens. When it is an adapter, later calls in the bundle must transfer both out of it. |
-| `minExitAssets` | `uint256` | Minimum total payout, in loan tokens: the loan tokens paid plus the debt the settlement cancelled. One minimum covers both parts together, independent of how the payout splits between them. |
+| `minExitAssets` | `uint256` | Minimum total payout, in loan tokens: the loan tokens paid plus the debt the settlement canceled. One minimum covers both parts together, independent of how the payout splits between them. |
 | `minSharesBurned` | `uint256` | Minimum shares the exit must burn. The exit may burn fewer than requested; pass `shares` to require all or nothing. |
 
 Exits vault shares of the bundle initiator through the vault's fallback exit: what free market liquidity covers is paid in loan tokens, the rest is settled for borrower collateral.

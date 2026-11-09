@@ -7,8 +7,7 @@ libs = ["lib"]
 names = true
 sizes = true
 
-# `evm_version = "paris"` is intentionally not set here because Vault V2 uses
-# transient storage and requires a Cancun-compatible EVM during integration tests.
+# Cancun is the minimum EVM target: the contracts use transient storage.
 # via_ir = false is the compile target — contracts must fit the legacy pipeline.
 # optimizer_runs is constrained by deploy size: at 999999 the controller exceeds
 # the EIP-170 24KB limit; at the configured 200 it fits with via_ir = false.
@@ -20,6 +19,9 @@ bytecode_hash = "none"
 # The solvency simulations (test/simulation/) run a whole simulated month or year in one test call. On forge 1.8.3
 # a 30-day forced-exit unwind can exceed the default gas_limit of 1_073_741_824.
 gas_limit = "18446744073709551615"
+# forge 1.8 defaults to isolate = true, which makes every top-level test call its own transaction; the
+# same-transaction activation-inflow tests need the whole test to be one.
+isolate = false
 fs_permissions = [
     { access = "read", path = "./out" },
     { access = "read", path = "./broadcast" },

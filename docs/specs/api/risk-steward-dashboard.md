@@ -4,7 +4,7 @@
 
 Standard inherited role-membership and role-administration functions are not repeated; see [OpenZeppelin AccessControlEnumerable](https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControlEnumerable).
 
-Dashboard-specific external surface: per-market steward management and bounded risk-reduction controls. Access-control membership and administration use the inherited `IAccessControlEnumerable` surface.
+Dashboard-specific external surface: per-market steward management and bounded risk-reduction controls.
 
 ## Events
 
