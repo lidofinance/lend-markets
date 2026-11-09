@@ -6,7 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 
 import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
-import {MarketConfigFile} from "../../script/lib/MarketConfigFile.sol";
+import {MarketConfigFile} from "../../script/legacy/lib/MarketConfigFile.sol";
 
 contract MarketConfigFileHarness {
     function parse(string memory toml)

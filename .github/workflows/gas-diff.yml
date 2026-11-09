@@ -16,12 +16,9 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      # The whole suite is snapshotted, fork suites included: they fork the anvil provisioned once below and
-      # read its run directory, and `FORK_BLOCK` is pinned so base and head see the same chain state and the
-      # diff reflects only the code change. The seeds are held constant for the same reason: TEST_SEED fixes
-      # the seeded oracle price, FOUNDRY_FUZZ_SEED fixes the fuzz/invariant inputs.
-      RPC_URL: http://127.0.0.1:8545
-      ARTIFACTS_DIR: fork
+      # Each suite creates its own Forge fork; both revisions use the same upstream block and seeds.
+      RPC_URL: ${{ secrets.RPC_URL }}
+      ARTIFACTS_DIR: ''
       TEST_SEED: "1"
       FOUNDRY_FUZZ_SEED: "1"
     steps:
@@ -32,18 +29,10 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      # Provisioning is what needs the secret, so the guard lives here. It overrides the job-level RPC_URL with
-      # the upstream archive node for this step only; everything after forks the local anvil it leaves behind.
-      - name: provision a fork deployment
-        env:
-          RPC_URL: ${{ secrets.RPC_URL }}
+      - name: pin upstream fork block
         run: |
-          test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for the gas-diff job"; exit 1; }
-          make provision-fork
-
-      # One block for both snapshot runs, pinned against the provisioned anvil the suites actually fork.
-      - name: pin fork block
-        run: echo "FORK_BLOCK=$(cast block-number --rpc-url "$RPC_URL")" >> "$GITHUB_ENV"
+          test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for snapshots"; exit 1; }
+          echo "FORK_BLOCK=$(cast block-number --rpc-url "$RPC_URL")" >> "$GITHUB_ENV"
 
       # Snapshot the base ref in an isolated worktree so we don't have to swap branches in the
       # main checkout. Submodule pins on the base ref may differ from head.
@@ -78,8 +67,8 @@ jobs:
             2>&1 | tee /tmp/gas-diff.txt
           echo 'has_diff=true' >> "$GITHUB_OUTPUT"
 
-      - name: snapshot (head, push to main)
-        if: github.event_name == 'push'
+      - name: snapshot (head)
+        if: github.event_name != 'pull_request'
         run: |
           forge snapshot --snap /tmp/snap.head 2>&1 | tee /tmp/gas-snapshot.txt
           {

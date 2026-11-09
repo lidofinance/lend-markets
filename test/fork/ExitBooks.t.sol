@@ -47,10 +47,12 @@ abstract contract ExitBooksForkBase is ForkMarketStack {
     function setUp() public {
         _fork();
         _bindRole();
-        _skipUnlessArtifact("exit-books.toml");
-        morphoBook = IMorphoExitBook(_artifactAddr("exit-books.toml", "exit_books.morpho"));
-        erc4626Book = IErc4626ExitBook(_artifactAddr("exit-books.toml", "exit_books.erc4626"));
-        bookPauser = _artifactAddr("exit-books.toml", "exit_books.pauser");
+        if (forkDeployment.books.morpho == address(0) || forkDeployment.books.erc4626 == address(0)) {
+            vm.skip(true, "ExitBooks: no books in this deployment");
+        }
+        morphoBook = IMorphoExitBook(forkDeployment.books.morpho);
+        erc4626Book = IErc4626ExitBook(forkDeployment.books.erc4626);
+        bookPauser = forkDeployment.bookPauser;
         bool booksAllow =
             morphoBook.isMarketAllowed(deployed.id) && erc4626Book.isVaultAllowed(IERC4626(address(deployed.vault)));
         if (!booksAllow) vm.skip(true, "ExitBooks: the run's books do not allow this market yet");

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
+import {HistoricalArtifacts} from "../setup/HistoricalArtifacts.sol";
+
 import {Test} from "forge-std/Test.sol";
 
-import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
-import {DeployConfigFile} from "../../script/lib/DeployConfigFile.sol";
+import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/legacy/lib/ArtifactMetadata.sol";
+import {DeployConfigFile} from "../../script/legacy/lib/DeployConfigFile.sol";
 import {ForkTest} from "../fork/helpers/ForkTest.sol";
-import {ForkStack} from "../fork/helpers/ForkStack.sol";
 
 /// @dev Exposes {ForkTest}'s run binding and artifact readers so they can be exercised without creating an
 ///      RPC fork: everything except `_fork`'s `createSelectFork` + chain-id assertion is pure file IO.
@@ -48,16 +49,6 @@ contract ForkArtifactsHarness is ForkTest {
     }
 }
 
-contract ForkStackRoleHarness is ForkStack {
-    function bindRun(string memory runName) external {
-        _bindRun(runName);
-    }
-
-    function marketForRole(string memory role) external returns (string memory) {
-        return _marketForRole(role);
-    }
-}
-
 contract ForkArtifactsTest is Test {
     bytes32 internal constant MARKET_ID = 0x1111111111111111111111111111111111111111111111111111111111111111;
     bytes32 internal constant CONFIG_HASH = bytes32(uint256(0xCAFE));
@@ -70,11 +61,9 @@ contract ForkArtifactsTest is Test {
     address internal constant RESEAL_MANAGER = address(0x5EA1);
 
     ForkArtifactsHarness internal h;
-    ForkStackRoleHarness internal roles;
 
     function setUp() public {
         h = new ForkArtifactsHarness();
-        roles = new ForkStackRoleHarness();
     }
 
     // ---
@@ -271,7 +260,7 @@ contract ForkArtifactsTest is Test {
         vm.writeFile(
             path,
             string.concat(
-                ArtifactMetadataFile.header(metadata, "oracle"), "\n[oracle]\naddress = \"", vm.toString(ORACLE), "\"\n"
+                HistoricalArtifacts.header(metadata, "oracle"), "\n[oracle]\naddress = \"", vm.toString(ORACLE), "\"\n"
             )
         );
 
@@ -284,84 +273,6 @@ contract ForkArtifactsTest is Test {
             )
         );
         h.artifactAddr("oracles/weth-wsteth.toml", "oracle.address");
-        _cleanup(tag);
-    }
-
-    function testRevert_marketForRole_missingRoleField() public {
-        string memory tag = "missing-role-field";
-        _writeProtocol(tag, "mainnet");
-        string memory dir = _rolesDir(tag);
-        vm.createDir(dir, true);
-        string memory path = string.concat(dir, "/market.toml");
-        vm.writeFile(
-            path,
-            string.concat(
-                ArtifactMetadataFile.header(_metadata(tag), "market-deployment"), "\n[market]\nname = \"market\"\n"
-            )
-        );
-        roles.bindRun(_runName(tag));
-
-        vm.expectRevert(
-            bytes(string.concat("ForkStack: market artifact is missing market.role: ", vm.projectRoot(), "/", path))
-        );
-        roles.marketForRole("weth-wsteth");
-        _cleanup(tag);
-    }
-
-    function testRevert_marketForRole_duplicateRole() public {
-        string memory tag = "duplicate-role";
-        _writeProtocol(tag, "mainnet");
-        string memory dir = _rolesDir(tag);
-        vm.createDir(dir, true);
-        _writeRoleMarket(tag, "first", "weth-wsteth");
-        _writeRoleMarket(tag, "second", "weth-wsteth");
-        roles.bindRun(_runName(tag));
-
-        vm.expectRevert(bytes("ForkStack: multiple markets have role 'weth-wsteth'"));
-        roles.marketForRole("weth-wsteth");
-        _cleanup(tag);
-    }
-
-    function test_marketForRole_returnsUniqueMatch() public {
-        string memory tag = "unique-role";
-        _writeProtocol(tag, "mainnet");
-        string memory dir = _rolesDir(tag);
-        vm.createDir(dir, true);
-        _writeRoleMarket(tag, "eth-market", "weth-wsteth");
-        _writeRoleMarket(tag, "treasury-market", "usdy-usdt");
-        roles.bindRun(_runName(tag));
-
-        assertEq(roles.marketForRole("weth-wsteth"), "eth-market");
-        _cleanup(tag);
-    }
-
-    function testRevert_marketForRole_compatibilityMismatch() public {
-        string memory tag = "role-compatibility";
-        _writeProtocol(tag, "mainnet");
-        string memory dir = _rolesDir(tag);
-        vm.createDir(dir, true);
-        ArtifactMetadata memory metadata = _metadata(tag);
-        metadata.compatibilityHash = bytes32(uint256(0xBAD));
-        string memory path = string.concat(dir, "/market.toml");
-        vm.writeFile(
-            path,
-            string.concat(
-                ArtifactMetadataFile.header(metadata, "market-deployment"),
-                "\n[market]\nname = \"market\"\nrole = \"weth-wsteth\"\n"
-            )
-        );
-        roles.bindRun(_runName(tag));
-
-        string memory absolutePath = string.concat(vm.projectRoot(), "/", path);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ArtifactMetadataFile.ArtifactCompatibilityHashMismatch.selector,
-                absolutePath,
-                _compatibilityHash("mainnet", 1),
-                metadata.compatibilityHash
-            )
-        );
-        roles.marketForRole("weth-wsteth");
         _cleanup(tag);
     }
 
@@ -379,7 +290,7 @@ contract ForkArtifactsTest is Test {
         vm.writeFile(
             string.concat(_runDir(tag), "/markets/weth-wsteth.toml"),
             string.concat(
-                ArtifactMetadataFile.header(_metadata(tag), "market-deployment"),
+                HistoricalArtifacts.header(_metadata(tag), "market-deployment"),
                 "\n[market]\nname = \"weth-wsteth\"\nid = \"",
                 vm.toString(MARKET_ID),
                 "\"\ncontroller = \"",
@@ -391,7 +302,7 @@ contract ForkArtifactsTest is Test {
         vm.writeFile(
             string.concat(_runDir(tag), "/oracles/weth-wsteth.toml"),
             string.concat(
-                ArtifactMetadataFile.header(_metadata(tag), "oracle"),
+                HistoricalArtifacts.header(_metadata(tag), "oracle"),
                 "\n[oracle]\naddress = \"",
                 vm.toString(ORACLE),
                 "\"\n"
@@ -418,7 +329,7 @@ contract ForkArtifactsTest is Test {
         vm.writeFile(
             string.concat(_runDir(tag), "/protocol.toml"),
             string.concat(
-                ArtifactMetadataFile.header(metadata, "protocol-deployment"),
+                HistoricalArtifacts.header(metadata, "protocol-deployment"),
                 "\n[protocol]\ndeployment = \"",
                 protocolDeployment,
                 "\"\nnetwork = \"",
@@ -437,24 +348,6 @@ contract ForkArtifactsTest is Test {
                 CIRCUIT_BREAKER_ARTIFACT,
                 "\"\ncore = \"",
                 vm.toString(CORE),
-                "\"\n"
-            )
-        );
-    }
-
-    function _rolesDir(string memory tag) internal pure returns (string memory) {
-        return string.concat(_runDir(tag), "/markets");
-    }
-
-    function _writeRoleMarket(string memory tag, string memory name, string memory role) internal {
-        vm.writeFile(
-            string.concat(_rolesDir(tag), "/", name, ".toml"),
-            string.concat(
-                ArtifactMetadataFile.header(_metadata(tag), "market-deployment"),
-                "\n[market]\nname = \"",
-                name,
-                "\"\nrole = \"",
-                role,
                 "\"\n"
             )
         );

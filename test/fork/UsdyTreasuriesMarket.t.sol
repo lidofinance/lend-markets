@@ -78,7 +78,9 @@ contract UsdyTreasuriesMarketTest is ForkStack {
         _fork();
         string memory market_ = _marketForRole("usdy-usdt");
         if (bytes(market_).length == 0) return; // not applicable to this deployment
-        if (!_hasExt("usdyBlocklist")) vm.skip(true, "UsdyTreasuries: the network's USDY has no blocklist");
+        if (forkDeployment.usdyBlocklist == address(0)) {
+            vm.skip(true, "UsdyTreasuries: the network's USDY has no blocklist");
+        }
         m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest up front so the sizing/liquidity math below is exact
 
@@ -89,13 +91,13 @@ contract UsdyTreasuriesMarketTest is ForkStack {
 
         USDY = address(m.collateralToken);
         USDT = address(m.loanToken);
-        ONDO_ORACLE = _ext("ondoOracle");
-        USDY_BLOCKLIST = _ext("usdyBlocklist");
+        ONDO_ORACLE = forkDeployment.ondoOracle;
+        USDY_BLOCKLIST = forkDeployment.usdyBlocklist;
 
         // Artifact/market coherence: the bound market must be the USDY-collateral / USDT-loan market the suite
         // targets, not some other market a mis-named artifact pointed at.
-        require(params.loanToken == _ext("usdt"), "UsdyTreasuries: bound loan token is not USDT");
-        require(params.collateralToken == _ext("usdy"), "UsdyTreasuries: bound collateral token is not USDY");
+        require(params.loanToken == forkDeployment.usdt, "UsdyTreasuries: bound loan token is not USDT");
+        require(params.collateralToken == forkDeployment.usdy, "UsdyTreasuries: bound collateral token is not USDY");
 
         // The crash targets must be in-band against the LIVE LLTV (not a hardcoded assumption): opens healthy,
         // the settle band lies strictly inside (LLTV, 1), the liquidate band is underwater.

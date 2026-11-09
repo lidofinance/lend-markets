@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
+import {HistoricalArtifacts} from "../setup/HistoricalArtifacts.sol";
+
 import {Test} from "forge-std/Test.sol";
 
-import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
+import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/legacy/lib/ArtifactMetadata.sol";
 
 contract ArtifactMetadataHarness {
     function artifactsDir(string memory name) external pure returns (string memory) {
@@ -20,10 +22,6 @@ contract ArtifactMetadataHarness {
 
     function requireExact(string memory path, ArtifactMetadata memory expected) external view returns (string memory) {
         return ArtifactMetadataFile.requireExact(path, expected);
-    }
-
-    function requireRunResourcesCompatible(ArtifactMetadata memory expected) external view {
-        ArtifactMetadataFile.requireRunResourcesCompatible(expected);
     }
 }
 
@@ -113,74 +111,6 @@ contract ArtifactMetadataTest is Test {
         _cleanup("missing-config");
     }
 
-    function testRevert_requireRunResourcesCompatible_rejectsPoisonedPreProtocolOracle() external {
-        string memory run = "artifact-metadata-incompatible-resource-unit";
-        string memory dir = string.concat("deployed/", run, "/oracles");
-        if (vm.exists(string.concat("deployed/", run))) vm.removeDir(string.concat("deployed/", run), true);
-        vm.createDir(dir, true);
-        string memory path = string.concat(dir, "/oracle.toml");
-        ArtifactMetadata memory recorded = _metadata(run, 1, 0xCAFE, 0xBEEF);
-        vm.writeFile(path, ArtifactMetadataFile.header(recorded, "oracle"));
-        ArtifactMetadata memory expected = _metadata(run, 1, 0xBAD, 0xBAD);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ArtifactMetadataFile.ArtifactCompatibilityHashMismatch.selector,
-                string.concat(vm.projectRoot(), "/", path),
-                expected.compatibilityHash,
-                recorded.compatibilityHash
-            )
-        );
-        harness.requireRunResourcesCompatible(expected);
-        vm.removeDir(string.concat("deployed/", run), true);
-    }
-
-    function testRevert_requireRunResourcesCompatible_rejectsPoisonedBundler() external {
-        string memory run = "artifact-metadata-incompatible-bundler-unit";
-        string memory runDir = string.concat("deployed/", run);
-        if (vm.exists(runDir)) vm.removeDir(runDir, true);
-        vm.createDir(runDir, true);
-        string memory path = string.concat(runDir, "/bundler.toml");
-        ArtifactMetadata memory recorded = _metadata(run, 1, 0xCAFE, 0xBEEF);
-        vm.writeFile(path, ArtifactMetadataFile.header(recorded, "bundler3-adapters"));
-        ArtifactMetadata memory expected = _metadata(run, 1, 0xBAD, 0xBAD);
-
-        // A run-level file is checked by its constructed path, not a directory-scan entry, so it reports relative.
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ArtifactMetadataFile.ArtifactCompatibilityHashMismatch.selector,
-                path,
-                expected.compatibilityHash,
-                recorded.compatibilityHash
-            )
-        );
-        harness.requireRunResourcesCompatible(expected);
-        vm.removeDir(runDir, true);
-    }
-
-    function testRevert_requireRunResourcesCompatible_rejectsPoisonedCircuitBreaker() external {
-        string memory run = "artifact-metadata-incompatible-circuit-breaker-unit";
-        string memory runDir = string.concat("deployed/", run);
-        string memory dir = string.concat(runDir, "/circuit-breakers");
-        if (vm.exists(runDir)) vm.removeDir(runDir, true);
-        vm.createDir(dir, true);
-        string memory path = string.concat(dir, "/lido-lend.toml");
-        ArtifactMetadata memory recorded = _metadata(run, 1, 0xCAFE, 0xBEEF);
-        vm.writeFile(path, ArtifactMetadataFile.header(recorded, "circuit-breaker"));
-        ArtifactMetadata memory expected = _metadata(run, 1, 0xBAD, 0xBAD);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ArtifactMetadataFile.ArtifactCompatibilityHashMismatch.selector,
-                string.concat(vm.projectRoot(), "/", path),
-                expected.compatibilityHash,
-                recorded.compatibilityHash
-            )
-        );
-        harness.requireRunResourcesCompatible(expected);
-        vm.removeDir(runDir, true);
-    }
-
     function test_artifactsDir_acceptsWhitelistedRunName() external view {
         assertEq(harness.artifactsDir("Run_1.2-test"), "deployed/Run_1.2-test");
     }
@@ -237,7 +167,7 @@ contract ArtifactMetadataTest is Test {
     }
 
     function _write(string memory tag, ArtifactMetadata memory metadata) private returns (string memory path) {
-        return _writeRaw(tag, ArtifactMetadataFile.header(metadata, "dependency"));
+        return _writeRaw(tag, HistoricalArtifacts.header(metadata, "dependency"));
     }
 
     function _writeRaw(string memory tag, string memory artifact) private returns (string memory path) {

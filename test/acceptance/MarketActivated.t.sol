@@ -7,7 +7,7 @@ import {AcceptanceBase} from "./AcceptanceBase.t.sol";
 ///         Skips while the market is inert. Once activated, it verifies the existing state and uses the
 ///         independently supplied `ACCEPTANCE_PAUSER_COMMITTEE` as the expected CircuitBreaker pauser.
 contract MarketActivatedAcceptance is AcceptanceBase {
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
         if (core.code.length == 0) return; // base skipped: no ACCEPTANCE_REGISTRY configured
         if (!_isMarketActivated()) vm.skip(true, "acceptance: market is not activated");

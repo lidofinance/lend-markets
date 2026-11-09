@@ -8,7 +8,7 @@ view of its ABI listed; the ones without an expectation stay `null`.
     RUN=hoodi-testnet-fork CONFIG=hoodi-testnet RPC_URL=http://127.0.0.1:8545 python3 tools/gen_state_mate.py
 
 Emits into script/config/<CONFIG>/state-mate/:
-  post-deploy.yaml           right after deploy-all — markets inert: no controller bound, no IRM routed,
+  post-deploy.yaml           right after the historical deployment — markets inert: no controller bound, no IRM routed,
                              no pauser or steward, allowlists empty; roles, parameters and proxies checked;
   live.yaml                  the live expectation after the activation motions — markets live, IRM routed,
                              settlement on, the pauser committee registered and live, the risk steward
@@ -527,7 +527,7 @@ def main():
     ]
     variants = [
         ("post-deploy.yaml", "post-deploy",
-         "Right after deploy-all: markets inert — no controller bound, no IRM routed, no pauser or steward."),
+         "After deployment: markets inert — no controller bound, no IRM routed, no pauser or steward."),
         ("live.yaml", "live",
          "Live: activated by the activation motions — the risk steward on every market, exit-book allowlists empty."),
         ("post-activation-fork.yaml", "fork",

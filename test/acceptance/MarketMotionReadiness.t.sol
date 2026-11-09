@@ -11,7 +11,7 @@ import {AcceptanceBase, IReadController, IReadDashboard} from "./AcceptanceBase.
 ///         component/role/config is in place AND that the market is not yet bound on the core — i.e. the only
 ///         thing left is governance flipping it on.
 contract MarketMotionReadinessAcceptance is AcceptanceBase {
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
         if (core.code.length == 0) return; // base skipped: no ACCEPTANCE_REGISTRY configured
         if (_isMarketActivated()) vm.skip(true, "acceptance: market is already activated");

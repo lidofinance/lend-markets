@@ -8,13 +8,13 @@ inputs:
     description: Lending repository to check out
     default: lidofinance/lend-markets
   ref:
-    description: Lending revision with matching deployment artifacts and configs
+    description: Lending revision with matching deployment artifacts and Solidity recipes
     default: main
   path:
     description: Checkout directory
     default: lend-markets
   config:
-    description: Deployment configuration under script/config
+    description: Deprecated compatibility input; preparation uses Solidity recipes
     default: mainnet
   run:
     description: Existing protocol artifact run under deployed
@@ -41,7 +41,6 @@ runs:
       working-directory: ${{ inputs.path }}
       env:
         RPC_URL: ${{ inputs.rpc_url }}
-        CONFIG: ${{ inputs.config }}
         RUN: ${{ inputs.run }}
         TEST_SEED: '1'
-      run: make test-external
+      run: make test-fork RUN="$RUN"

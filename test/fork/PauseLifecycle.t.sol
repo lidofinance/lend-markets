@@ -44,7 +44,7 @@ abstract contract PauseLifecycleForkBase is ForkMarketStack {
     function setUp() public {
         _fork();
         _bindRole();
-        circuitBreaker = ICircuitBreaker(_protocol("circuit_breaker"));
+        circuitBreaker = ICircuitBreaker(forkDeployment.protocol.circuitBreaker);
         resealManager = _resealManager();
         STRANGER = _freshActor(deployed, "pause.stranger");
         _seedLenderAndBorrower();

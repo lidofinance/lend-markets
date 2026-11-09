@@ -7,8 +7,8 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {ProtocolDeployer} from "../../script/lib/ProtocolDeployer.sol";
-import {ExitBookConfig} from "../../script/lib/ExitBookConfigFile.sol";
-import {ProtocolConfig, ProtocolDeployment} from "../../script/lib/ProtocolConfigFile.sol";
+import {ExitBookConfig} from "../../script/deployment/ExitBookPlan.sol";
+import {ProtocolConfig, ProtocolDeployment} from "../../script/deployment/ProtocolTypes.sol";
 
 contract CircuitBreakerConfigStub {
     address public immutable ADMIN;

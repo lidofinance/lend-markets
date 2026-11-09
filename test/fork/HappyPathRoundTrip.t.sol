@@ -42,8 +42,8 @@ contract HappyPathRoundTripTest is ForkStack {
 
     function test_happyPath_lendBorrowRepayExit() public {
         // The network config's [external] table and the live market agree on the token wiring.
-        assertEq(address(m.loanToken), _ext("weth"), "market loan token is the configured WETH");
-        assertEq(address(m.collateralToken), _ext("wstEth"), "market collateral is the configured wstETH");
+        assertEq(address(m.loanToken), forkDeployment.weth, "market loan token is the configured WETH");
+        assertEq(address(m.collateralToken), forkDeployment.wstEth, "market collateral is the configured wstETH");
 
         (uint256 depositAssets, uint256 shares) = _lenderDeposits();
         uint256 collateral = _borrowerPostsCollateralAndItMatures();
@@ -167,7 +167,7 @@ contract HappyPathRoundTripTest is ForkStack {
     /// @dev Stake `ethAmount` through the real Lido contracts (submit -> stETH -> wrap) and return the
     ///      resulting wstETH, left in `user`'s wallet.
     function _stakeToWstEth(address user, uint256 ethAmount) internal returns (uint256 wstEthAmount) {
-        IStETH stEth = IStETH(_ext("stEth"));
+        IStETH stEth = IStETH(forkDeployment.stEth);
 
         vm.deal(user, ethAmount);
         vm.startPrank(user);

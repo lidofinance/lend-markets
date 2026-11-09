@@ -49,7 +49,7 @@ UPSTREAM_CHAIN_ID="$(cast chain-id --rpc-url "$RPC_URL")"
 [ "$UPSTREAM_CHAIN_ID" = "$EXPECTED_CHAIN_ID" ] || die "upstream chain id $UPSTREAM_CHAIN_ID != expected $EXPECTED_CHAIN_ID"
 
 if cast chain-id --rpc-url "$RPC_LOCAL" >/dev/null 2>&1; then
-  die "something already answers on $RPC_LOCAL; stop it first (make pending-stop / provision-stop)"
+  die "something already answers on $RPC_LOCAL; stop it first (make pending-stop for a pending-action fork)"
 fi
 
 FORK_ARGS=(--fork-url "$RPC_URL" --chain-id "$EXPECTED_CHAIN_ID" --port 8545 --auto-impersonate)

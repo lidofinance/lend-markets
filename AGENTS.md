@@ -23,23 +23,30 @@
 - `test/scenario/`: end-to-end flows on **freshly deployed** core / controller / vault, on the local
   EVM with mock tokens. Driven through shared helpers; happy path first, then revert and
   edge cases. Pure-library fuzz tests live here too.
-- `test/fork/`: test suite that runs against a forked network, binding to an **already-deployed** protocol —
-  fork suites never deploy what they test. `RPC_URL` is the node to fork and `ARTIFACTS_DIR` names the deploy
-  run under `deployed/<run>/` whose artifacts they read; the run records its own network and chain id, so
-  there is no network selector.
+- `test/fork/`: integrations and fresh-deployment acceptance on `vm.createSelectFork(RPC_URL)`.
+  `make test-fork` prepares a fresh mainnet fixture by default. `make test-fork RUN=<run> PREPARE=false` binds a recorded
+  deployment without preparation; `make test-fork RUN=<run>` prepares its missing/inert WETH/wstETH markets.
+  Only Make command-line `RUN` and `PREPARE` select these modes; environment and `.env` values are ignored.
+  Make sets `ARTIFACTS_DIR` and `PREPARE_MARKETS` internally. No source-node transactions or artifact writes.
+- `test/deployment/`: Solidity deployment scenarios run by CI, selected by the `deployment` Foundry profile.
+  Prepares missing/inert markets inside its own Forge fork using the shared deployment functions;
+  never writes to the source RPC and is excluded from default/local/artifact-backed fork suites.
 - `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
   deployed stack is correctly wired, has the exact initial-launch role topology (direct enumerable-role checks),
   and is either ready for the activation motion or live after it. Expected deployment values and addresses come
   from immutable artifacts under `deployed/<run>/`; reviewed runtime motion choices come from
   `ACCEPTANCE_PAUSER_COMMITTEE` and `ACCEPTANCE_ENABLE_SETTLEMENT`. The suite skips unless
   `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
-- `script/`: deployment scripts; `script/config/<deployment>/` holds each deployment's configs (`mainnet`,
-  `hoodi-testnet`, the provisioning `fork`), laid out like its artifacts: `protocol.toml`, `markets/`, `oracles/`,
-  `guardians/`, `circuit-breaker.toml`, `bundler.toml`, `pending.toml`, `state-mate/`.
-- `deployed/<run>/`: immutable per-run artifacts: `protocol.toml`, `markets/`, `circuit-breakers/`,
-  `guardians/`, `oracles/`, `vaults/`, `adapters/`, optional `exit-books.toml` and `bundler.toml`, and archived
-  transaction records. Read directly by both `test/fork/` (`ARTIFACTS_DIR`) and `test/acceptance/`
-  (`ACCEPTANCE_REGISTRY` -> `protocol.toml`); nothing is composed or prepared in between.
+- `script/deployment/<network>/`: concrete Solidity deployment recipes. Shared `Deploy*Base.s.sol` entrypoints
+  and deployment helpers are reused by fork fixtures. `deploy-script` simulates by default; explicit
+  `BROADCAST=true RUN=<run>` broadcasts and records only after successful receipt checks.
+- `script/deployment/generated/<run>/`: inheritable Solidity dependency addresses generated from recorded results.
+- `script/legacy/`: compatibility readers for historical TOML artifacts. `script/config/` is retained only for
+  historical verification and pending-governance/state-mate rehearsals; new deployments do not read config TOML.
+- `deployed/<run>/`: immutable deployment results: typed `protocol.toml`, `markets/`, optional books/bundler/vaults,
+  and native Forge transaction records. TOML holds output addresses and expected parameters, not deployment inputs.
+  `record-deployment` checks successful Forge receipts and canonical RPC blocks before publishing. Fork and acceptance tests read these
+  results; fresh fork fixtures do not need the directory. Historical Mainnet/Hoodi artifacts remain supported.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).
@@ -52,20 +59,22 @@
 ## Build, Test, And Formatting Commands
 
 - Build: `forge build --force`.
-- All tests (local + fork): `make test`. The fork suites require a working fork setup — `RPC_URL` pointing at
-  the node that HOLDS the deployment and `ARTIFACTS_DIR` naming its run on disk — and revert without it;
-  a fork suite runs or it fails, it never skips.
-- Local fork setup: `make provision-fork RPC_URL=<archive-rpc>` deploys and activates the markets of the test-only
-  `fork` deployment (`script/config/fork/`, a mainnet fork with test-only role holders; `FORK_CONFIG` selects
-  another folder) into `deployed/fork/` and leaves anvil running; a compatible node already on `:8545` is reused
-  without requiring the archive RPC;
-  `make provision-market RUN=<run> RPC_URL=<anvil>` adds one market stack of `CONFIG` to a run already on a local
-  anvil, filling an empty guardians committee from anvil's default accounts in a throw-away config copy;
-  `make provision-stop` tears it down; `make test-fork-provision` does provision -> test-fork and stops the
-  node only when that invocation started it (a reused node is left running). Against a real deploy run,
-  `make fork-run RUN=<run>` is the equivalent.
-- Local suites: `forge test --no-match-path 'test/fork/**'`, or `make test-local` — the RPC-free path.
+- All tests (local + fork): `make test` requires `RPC_URL`; ordinary fork suites prepare their own stack.
+- Fresh mainnet integrations and acceptance: `make test-fork RPC_URL=<archive-rpc>`. No Anvil,
+  shell provisioning or test TOML configs. The fixture has two WETH/wstETH markets, books, bundler and Vault V2;
+  USDY is currently omitted. `FORK_BLOCK` pins the fork.
+- Existing run, without preparation: `make test-fork RUN=<run> PREPARE=false RPC_URL=<rpc>`; historical Mainnet and Hoodi
+  artifacts remain supported. Missing recorded contracts fail rather than trigger redeployment.
+- External regressions: `make test-fork RUN=<run> RPC_URL=<caller-rpc>` prepares absent/inert markets on a
+  private Forge fork of the caller's state. Currently the preparation recipe supports mainnet WETH/wstETH only;
+  unsupported recorded markets fail. Easy Track and its executor are never deployed here.
+- Local suites: `forge test --no-match-path 'test/{fork,deployment}/**'`, or `make test-local` — the RPC-free path.
 - Fork tests only: `forge test --match-path 'test/fork/**'`, or `make test-fork`.
+- Solidity deployment scenarios: `make test-deployment RPC_URL=<mainnet-rpc>` runs deployment-state tests
+  using the common fresh protocol fixture inside Forge; CI invokes this target too.
+  `FORK_BLOCK` optionally pins the input state. No `CONFIG`, `RUN`, artifacts overlay or Anvil is required.
+  The suite does not deploy Easy Track or its executor; activation is replayed as the protocol's existing executor.
+  Acceptance and external Easy Track motion tests retain their independent verification responsibilities.
 - Year-long solvency simulations: `make test-simulation` sets `RUN_SOLVENCY_SIMULATION=true` over
   `test/simulation/`. The 30-day variants of the same suites already run inside `make test-local`; without that
   variable the year-long tests skip. The gas limit they need is set in `foundry.toml`.
@@ -84,18 +93,14 @@
 - Format check for local Solidity files:
   `forge fmt --check src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test`.
 - Do not include `src/proxy/OssifiableProxy.sol` in formatting commands.
-- Writing a fork test: put it under `test/fork/`, extend `helpers/ForkMarketStack.sol` (which extends `ForkStack`
-  and `ForkTest`), pass the market role to its constructor (`contract X is Base("weth-wsteth") {}`), and call
-  `_fork()` then `_bindRole()` first in `setUp`. That binds the run's market for the role into `deployed` (the raw
-  handle the `ForkStack` helpers take) and `market` (the handle the `MarketActions` helpers drive), and marks the
-  test skipped when the run has no such market. `_seedLenderAndBorrower()` is the shared fixture. Read external
-  addresses via `_ext("wstEth")`. `_fork()` forks `RPC_URL` at latest and binds the run named by `ARTIFACTS_DIR`,
-  reverting when either is unset, the run has no `protocol.toml`, the network config it names is missing, or
-  its recorded chain id differs from the forked chain. A role the deployment has no market for skips the
-  suite; everything else reverts. Protocol addresses come from `_protocol("core")`,
-  `_market(name, "controller")`, `_marketId(name)`, or `_artifactAddr("vaults/weth-wsteth.toml", "vault.address")`
-  for the per-resource artifacts; each reverts on a key the run does not define. `FORK_BLOCK` pins a block for
-  replay.
+- Writing a fork test: extend `helpers/ForkMarketStack.sol`, pass a market role in its constructor, and call
+  `_fork()` then `_bindRole()` in `setUp`. Use `deployed` with ForkStack helpers and `market` with MarketActions.
+  Shared preparation lives in `test/setup/ForkFixture.sol` and `MarketPreparation.sol`; suites do not duplicate it.
+  Protocol and dependency addresses are typed fields of `forkDeployment`; historical artifact access is confined
+  to the compatibility loader. Missing optional market roles skip; malformed recorded state fails.
+- Acceptance assertions consume typed expected values. Historical `ACCEPTANCE_REGISTRY` inputs are parsed once;
+  `test/fork/FreshDeploymentAcceptance.t.sol` passes the same expectations directly for fresh fixtures. Record
+  local EVM logs before fixture deployment so non-enumerable instant-activation grants are audited too.
 
 ## Dependency Policy
 
@@ -149,6 +154,7 @@ test/
 ├── invariant/    # L4 — handler-based stateful properties
 ├── simulation/   # seeded months-long solvency simulations on a fresh stack; 30-day variants run in test-local
 ├── fork/         # fork tests vs the deployed protocol, bound from deployed/<ARTIFACTS_DIR>/
+├── deployment/   # typed deployment + preparation on a Forge fork (profile: deployment)
 └── acceptance/   # L3 — mainnet fork vs immutable artifacts under deployed/<run>/
 ```
 
@@ -162,7 +168,7 @@ test/
 - `simulation/<Market>Solvency.t.sol` — seeded 30- and 365-day solvency simulations on a freshly deployed
   stack with the default market config. The driver draws everyday moves by odds and schedules each rare event
   once per run.
-- `fork/<Flow>.t.sol` — integration tests against the deployed protocol. `make test-fork` to run.
+- `fork/<Flow>.t.sol` — integration tests against a fresh Solidity fixture or an explicit recorded deployment. `make test-fork` to run.
 - `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
   addresses and deployment values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
   Activated/readiness runs also require independent reviewed `ACCEPTANCE_PAUSER_COMMITTEE` and

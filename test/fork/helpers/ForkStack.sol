@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {Test} from "forge-std/Test.sol";
-import {Vm} from "forge-std/Vm.sol";
+import {ForkFixture} from "../../setup/ForkFixture.sol";
+import {DeploymentSnapshot, RecordedMarket} from "../../../script/deployment/DeploymentSnapshot.sol";
+import {RecordedDeployment} from "../../../script/deployment/RecordedDeployment.sol";
+import {MarketDeploymentResult} from "../../../script/deployment/DeploymentTypes.sol";
+import {Test, console2} from "forge-std/Test.sol";
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams, Market, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
@@ -27,7 +30,6 @@ import {CollateralActivationConfig} from "../../../src/types/CollateralActivatio
 import {BlockInfoWithHash} from "../../../src/types/GuardianSignalsTypes.sol";
 import {WAD} from "../../../src/libs/Constants.sol";
 import {Approvals} from "../../setup/Approvals.sol";
-import {ForkTest} from "./ForkTest.sol";
 import {IWstETH} from "./ForkTokens.sol";
 
 /// @dev The immutable each deployed oracle exposes for its price source, i.e. what a price mock targets.
@@ -44,11 +46,9 @@ interface IReadNavOracle {
     function getPrice() external view returns (uint256);
 }
 
-/// @notice Shared base for fork suites over an already-deployed, activated market: binds one market from the run's
-///         artifacts, names the privileged actors the run recorded, and drives governance through the deployed
-///         surfaces as their real holders. Deploys nothing; a missing market role or optional artifact skips, any
-///         other inconsistency fails loudly (`"ForkStack: ..."`).
-abstract contract ForkStack is Test, ForkTest {
+/// @notice Drives the same integration scenarios against a fresh Solidity fixture or an explicit recorded run.
+/// @dev Missing optional roles skip; inconsistent recorded deployments fail. Preparation is private to the fork.
+abstract contract ForkStack is Test {
     using MarketParamsLib for MarketParams;
     using SharesMathLib for uint256;
 
@@ -81,6 +81,60 @@ abstract contract ForkStack is Test, ForkTest {
         address oracleSource;
     }
 
+    DeploymentSnapshot internal forkDeployment;
+
+    function _fork() internal virtual {
+        _selectSourceFork();
+        string memory runName = vm.envOr("ARTIFACTS_DIR", string(""));
+        if (bytes(runName).length == 0) {
+            _useDeployment((new ForkFixture()).prepare());
+        } else {
+            DeploymentSnapshot memory result = RecordedDeployment.load(runName);
+            if (vm.envOr("PREPARE_MARKETS", false)) {
+                result.markets = (new ForkFixture()).prepareExisting(result.protocol, result.books, result.markets);
+            }
+            _useDeployment(result);
+        }
+    }
+
+    function _selectSourceFork() internal {
+        string memory rpc = vm.envString("RPC_URL");
+        uint256 pin = vm.envOr("FORK_BLOCK", uint256(0));
+        if (pin == 0) vm.createSelectFork(rpc);
+        else vm.createSelectFork(rpc, pin);
+        console2.log("[fork] block:", block.number);
+    }
+
+    function _useDeployment(DeploymentSnapshot memory result) internal {
+        forkDeployment.protocol = result.protocol;
+        forkDeployment.circuitBreakerPlan = result.circuitBreakerPlan;
+        forkDeployment.bookLifetime = result.bookLifetime;
+        forkDeployment.weth = result.weth;
+        forkDeployment.wstEth = result.wstEth;
+        forkDeployment.stEth = result.stEth;
+        forkDeployment.usdt = result.usdt;
+        forkDeployment.usdy = result.usdy;
+        forkDeployment.ondoOracle = result.ondoOracle;
+        forkDeployment.usdyBlocklist = result.usdyBlocklist;
+        forkDeployment.books = result.books;
+        forkDeployment.bookPauser = result.bookPauser;
+        forkDeployment.bundler = result.bundler;
+        forkDeployment.generalAdapter = result.generalAdapter;
+        forkDeployment.vaultAdapter = result.vaultAdapter;
+        delete forkDeployment.markets;
+        for (uint256 i; i < result.markets.length; ++i) {
+            forkDeployment.markets.push(result.markets[i]);
+        }
+    }
+
+    function _vaultPair(string memory marketName) internal view returns (address vault, address adapter) {
+        for (uint256 i; i < forkDeployment.markets.length; ++i) {
+            if (keccak256(bytes(forkDeployment.markets[i].plan.name)) == keccak256(bytes(marketName))) {
+                return (forkDeployment.markets[i].vaultV2, forkDeployment.markets[i].adapter);
+            }
+        }
+    }
+
     // ---
     // BINDING
     // ---
@@ -88,69 +142,53 @@ abstract contract ForkStack is Test, ForkTest {
     /// @notice The name of the run's market playing `role`; marks the test skipped when the run has none. A run
     ///         recording no markets at all is a broken setup and reverts.
     function _marketForRole(string memory role) internal returns (string memory marketName) {
-        Vm.DirEntry[] memory entries = vm.readDir(string.concat(_runArtifactsDir(), "/markets"));
-        uint256 seen;
-        uint256 matches;
-        bytes32 expected = keccak256(bytes(role));
-        for (uint256 i; i < entries.length; ++i) {
-            if (entries[i].isDir || entries[i].isSymlink) continue;
-            ++seen;
-            string memory artifact = _readCompatibleArtifact(entries[i].path);
-            require(
-                vm.keyExistsToml(artifact, ".market.role"),
-                string.concat("ForkStack: market artifact is missing market.role: ", entries[i].path)
-            );
-            string memory recorded = vm.parseTomlString(artifact, ".market.role");
-            require(
-                bytes(recorded).length != 0,
-                string.concat("ForkStack: market artifact has empty market.role: ", entries[i].path)
-            );
-            if (keccak256(bytes(recorded)) != expected) continue;
-            ++matches;
-            require(matches == 1, string.concat("ForkStack: multiple markets have role '", role, "'"));
-            marketName = vm.parseTomlString(artifact, ".market.name");
+        require(forkDeployment.markets.length != 0, "ForkStack: the bound run records no markets");
+        for (uint256 i; i < forkDeployment.markets.length; ++i) {
+            if (keccak256(bytes(forkDeployment.markets[i].role)) == keccak256(bytes(role))) {
+                return forkDeployment.markets[i].plan.name;
+            }
         }
-        require(seen != 0, "ForkStack: the bound run records no markets");
-        if (matches == 0) vm.skip(true, string.concat("ForkStack: run has no market for role '", role, "'"));
+        vm.skip(true, string.concat("ForkStack: run has no market for role '", role, "'"));
     }
 
     /// @notice Resolve the market recorded as `name` and check it is activated, consistent with its artifacts (id
     ///         and oracle), and live (neither paused nor frozen).
     function _bindMarket(string memory name) internal returns (BoundMarket memory m) {
-        m.name = name;
-        m.core = ILidoLend(_protocol("core"));
-        m.id = Id.wrap(_marketId(name));
-        m.controller = ILidoLendMarketController(_market(name, "controller"));
-        m.vault = ILidoLendERC4626(_market(name, "vault"));
-        m.oracle = IOracle(_market(name, "oracle"));
-        m.guardianSignals = IGuardianSignals(_market(name, "guardian_signals"));
-
-        // `lastUpdate == 0` is a created market whose activation motion has not run: no interest clock yet.
-        require(
-            m.core.market(m.id).lastUpdate != 0,
-            string.concat(
-                "ForkStack: market '",
-                name,
-                "' is not activated on the core; run deploy + activation provisioning (see script/DEPLOYMENT.md)"
-            )
-        );
-
-        m.params = m.core.idToMarketParams(m.id);
-        require(
-            Id.unwrap(m.params.id()) == Id.unwrap(m.id),
-            string.concat("ForkStack: market '", name, "' artifact id does not match core params")
-        );
-        require(
-            address(m.oracle) == m.params.oracle,
-            string.concat("ForkStack: artifact oracle does not match the market's oracle for '", name, "'")
-        );
-
-        m.loanToken = IERC20(m.params.loanToken);
-        m.collateralToken = IERC20(m.params.collateralToken);
-        m.activation = m.controller.collateralActivationConfig();
-
-        _bindOracle(m);
-        _requireLive(m);
+        for (uint256 i; i < forkDeployment.markets.length; ++i) {
+            RecordedMarket memory entry = forkDeployment.markets[i];
+            if (keccak256(bytes(entry.plan.name)) != keccak256(bytes(name))) continue;
+            MarketDeploymentResult memory d = entry.contracts;
+            m.name = name;
+            m.core = ILidoLend(forkDeployment.protocol.core);
+            m.params = d.params;
+            m.id = d.id;
+            m.controller = ILidoLendMarketController(d.controller);
+            m.vault = ILidoLendERC4626(d.vault);
+            m.oracle = IOracle(d.params.oracle);
+            m.guardianSignals = IGuardianSignals(d.guardianSignals);
+            m.loanToken = IERC20(d.params.loanToken);
+            m.collateralToken = IERC20(d.params.collateralToken);
+            m.activation = m.controller.collateralActivationConfig();
+            _bindOracle(m, entry.priceFeedKind);
+            require(Id.unwrap(m.params.id()) == Id.unwrap(m.id), "ForkStack: recorded id differs from params");
+            require(m.core.market(m.id).lastUpdate != 0, "ForkStack: recorded market is not activated");
+            require(
+                keccak256(abi.encode(m.core.idToMarketParams(m.id))) == keccak256(abi.encode(m.params)),
+                "ForkStack: recorded params differ from core"
+            );
+            require(m.core.marketController(m.id) == d.controller, "ForkStack: recorded controller differs from core");
+            require(
+                address(m.vault.LIDO_LEND()) == address(m.core) && address(m.vault.controller()) == d.controller
+                    && Id.unwrap(m.vault.marketId()) == Id.unwrap(m.id),
+                "ForkStack: recorded vault binding differs"
+            );
+            require(
+                address(m.controller.guardianSignals()) == d.guardianSignals, "ForkStack: recorded guardians differ"
+            );
+            _requireLive(m);
+            return m;
+        }
+        revert("ForkStack: unknown market");
     }
 
     /// @notice Assert the bound market is neither paused nor frozen: every suite starts live and halts it itself.
@@ -166,23 +204,22 @@ abstract contract ForkStack is Test, ForkTest {
     }
 
     /// @dev The oracle's kind comes from its artifact, its price source from the deployed oracle's own immutable.
-    function _bindOracle(BoundMarket memory m) private view {
-        string memory relPath = string.concat("oracles/", _marketString(m.name, "oracle_artifact"), ".toml");
-        bytes32 kind = keccak256(bytes(_artifactString(relPath, "oracle.kind")));
+    function _bindOracle(BoundMarket memory m, string memory priceFeedKind) private view {
+        bytes32 kind = keccak256(bytes(priceFeedKind));
         if (kind == keccak256("wsteth-rate")) {
+            require(
+                address(m.loanToken) == forkDeployment.weth && address(m.collateralToken) == forkDeployment.wstEth,
+                "ForkStack: WETH/wstETH token pair mismatch"
+            );
             m.oracleKind = OracleKind.WstEthRate;
             m.oracleSource = IReadWstEthRateOracle(address(m.oracle)).WSTETH();
+            require(m.oracleSource == forkDeployment.wstEth, "ForkStack: price feed source mismatch");
         } else if (kind == keccak256("usdy-stable")) {
             m.oracleKind = OracleKind.UsdyStable;
             m.oracleSource = IReadUsdyStableOracle(address(m.oracle)).USDY_ORACLE();
         } else {
-            revert(string.concat("ForkStack: market '", m.name, "' records an unknown oracle kind"));
+            revert("ForkStack: unknown price feed kind");
         }
-    }
-
-    /// @notice Mark the test skipped when the run does not record the optional artifact at `relPath`.
-    function _skipUnlessArtifact(string memory relPath) internal {
-        if (!_hasArtifact(relPath)) vm.skip(true, string.concat("ForkStack: run has no ", relPath));
     }
 
     // ---
@@ -191,27 +228,27 @@ abstract contract ForkStack is Test, ForkTest {
 
     /// @notice The protocol admin (Lido Agent).
     function _admin() internal view returns (address) {
-        return _protocol("agent");
+        return forkDeployment.protocol.agent;
     }
 
     /// @notice The EasyTrack EVMScriptExecutor, the owner facade's role holder.
     function _executor() internal view returns (address) {
-        return _protocol("evm_script_executor");
+        return forkDeployment.protocol.executor;
     }
 
     /// @notice The reseal manager (Dual Governance): the controller's `PAUSER_ROLE` and sole `RESUMER_ROLE` holder.
     function _resealManager() internal view returns (address) {
-        return _protocol("reseal_manager");
+        return forkDeployment.protocol.resealManager;
     }
 
     /// @notice The owner facade (`LidoLendOwner`), the manager of every controller and the core's owner.
     function _facade() internal view returns (ILidoLendOwner) {
-        return ILidoLendOwner(_protocol("owner_facade"));
+        return ILidoLendOwner(forkDeployment.protocol.ownerFacade);
     }
 
     /// @notice The risk-steward dashboard, the controller's `FREEZER_ROLE` holder.
     function _dashboard() internal view returns (IRiskStewardDashboard) {
-        return IRiskStewardDashboard(_protocol("risk_steward_dashboard"));
+        return IRiskStewardDashboard(forkDeployment.protocol.dashboard);
     }
 
     /// @notice OZ AccessControl's refusal for `account` lacking `role`, for `vm.expectRevert`.

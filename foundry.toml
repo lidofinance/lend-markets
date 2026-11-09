@@ -1,6 +1,7 @@
 [profile.default]
 src = "src"
 test = "test"
+no_match_path = "test/deployment/**"
 out = "out"
 libs = ["lib"]
 names = true
@@ -21,10 +22,12 @@ bytecode_hash = "none"
 gas_limit = "18446744073709551615"
 fs_permissions = [
     { access = "read", path = "./out" },
+    { access = "read", path = "./broadcast" },
     { access = "read", path = "./lib" },
     { access = "read", path = "./script/config" },
     { access = "read", path = "./test/acceptance" },
     { access = "read-write", path = "./deployed" },
+    { access = "read-write", path = "./script/deployment/generated" },
 ]
 
 [profile.default.invariant]
@@ -36,6 +39,10 @@ fail_on_revert = true
 wrap_comments = true
 line_length = 120
 single_line_statement_blocks = "single"
+
+[profile.deployment]
+test = "test/deployment"
+no_match_path = "test/fork/**"
 
 [lint]
 exclude_lints = [

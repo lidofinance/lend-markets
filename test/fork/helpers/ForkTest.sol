@@ -4,8 +4,8 @@ pragma solidity 0.8.36;
 import {CommonBase} from "forge-std/Base.sol";
 import {console2} from "forge-std/Test.sol";
 
-import {ArtifactMetadata, ArtifactMetadataFile} from "../../../script/lib/ArtifactMetadata.sol";
-import {DeployConfigFile} from "../../../script/lib/DeployConfigFile.sol";
+import {ArtifactMetadata, ArtifactMetadataFile} from "../../../script/legacy/lib/ArtifactMetadata.sol";
+import {DeployConfigFile} from "../../../script/legacy/lib/DeployConfigFile.sol";
 
 /// @notice Fork acquisition and artifact access for suites that drive an already-deployed protocol.
 /// @dev `RPC_URL` is the node to fork, `ARTIFACTS_DIR` the deploy run under `deployed/`, and the optional
@@ -25,7 +25,7 @@ abstract contract ForkTest is CommonBase {
     /// @notice Creates the fork and binds the deploy run named by `ARTIFACTS_DIR`.
     /// @dev Must be the first call in `setUp`: a later `createSelectFork` discards state read against the
     ///      previous fork.
-    function _fork() internal {
+    function _fork() internal virtual {
         string memory url = vm.envOr("RPC_URL", string(""));
         require(bytes(url).length != 0, "ForkTest: RPC_URL is unset (see .env.example)");
 
@@ -108,14 +108,14 @@ abstract contract ForkTest is CommonBase {
     }
 
     /// @notice Address at `[external].<key>` in the run's network config.
-    function _ext(string memory key) internal view returns (address) {
+    function _ext(string memory key) internal view virtual returns (address) {
         require(_bound, "ForkTest: _fork() not called");
         string memory toml = _read(_externalsPath);
         return vm.parseTomlAddress(toml, _key(toml, _externalsPath, string.concat("external.", key)));
     }
 
     /// @notice Address at `[protocol].<key>` in the run's `protocol.toml`.
-    function _protocol(string memory key) internal view returns (address) {
+    function _protocol(string memory key) internal view virtual returns (address) {
         return _artifactAddr("protocol.toml", string.concat("protocol.", key));
     }
 

@@ -8,9 +8,9 @@ import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 
 import {Vm} from "forge-std/Vm.sol";
 
-import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
-import {DeployConfigFile} from "./lib/DeployConfigFile.sol";
-import {ProtocolConfigFile} from "./lib/ProtocolConfigFile.sol";
+import {ArtifactMetadata, ArtifactMetadataFile} from "./legacy/lib/ArtifactMetadata.sol";
+import {DeployConfigFile} from "./legacy/lib/DeployConfigFile.sol";
+import {ProtocolConfigFile} from "./legacy/lib/ProtocolConfigFile.sol";
 
 // --- Minimal write surfaces. The IRM submodule's nested `MarketParams` is ABI-identical to the core's, so the
 //     core type matches; the CircuitBreaker pins solc 0.8.34 and cannot be imported here. ---

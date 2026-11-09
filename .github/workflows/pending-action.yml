@@ -89,7 +89,7 @@ jobs:
       - name: fork suites against the applied state
         run: |
           if [ -f "deployed/$ARTIFACTS_RUN/protocol.toml" ]; then
-            make test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR="$ARTIFACTS_RUN" FORK_BLOCK=
+            make test-fork PREPARE=false RPC_URL=http://127.0.0.1:8545 RUN="$ARTIFACTS_RUN" FORK_BLOCK=
           else
             echo "::notice::deployed/$ARTIFACTS_RUN/protocol.toml not in the tree — fork suites skipped (place the run artifacts to enable them)"
           fi

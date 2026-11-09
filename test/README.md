@@ -65,16 +65,15 @@ Limitations:
 
 ## 4. Empty-fork deploy tests (scratch deploy on a fork)
 
-The full deploy path exercised on a fork of the target network that is empty of the protocol but
-has the real external world (real tokens, wstETH, governance contracts): deploy scripts run end to
-end, artifacts are written, markets activate. This is what proves the *deploy tooling*, not the
-contracts.
+Fork fixtures deploy the protocol and WETH/wstETH markets using shared Solidity operations, activate them locally,
+and run integration and acceptance assertions. The source RPC is unchanged; no intermediate artifacts are written.
+The fresh fixture contains two WETH/wstETH markets. Historical USDY regressions remain available with a recorded run.
 
-- **Requires:** an archive RPC of the target network; anvil.
-- **Runs:** on deploy-script changes; as the pre-deploy rehearsal (full dry run of the deploy
-  on a fork, under a scratch run id).
-- **Here:** `make provision-fork` / `make test-fork-provision` (deploys + activates the `fork-*`
-  markets, then runs the fork suites against them).
+- **Requires:** a mainnet archive RPC.
+- **Here:** `make test-fork RPC_URL=<rpc>` for integrations and acceptance;
+  `make test-deployment RPC_URL=<rpc>` for missing/inert/active deployment-state scenarios. CI runs both targets.
+  Fixtures and recorded runs produce one `DeploymentSnapshot`; integration tests do not parse artifact formats.
+  `RecordedDeployment` delegates historical decoding to `script/legacy/`.
 
 ## 5. Live-deployment regression tests (fork against a real run)
 
@@ -91,11 +90,11 @@ belong to state-mate (kind 9) — baking state into these tests would mean rewri
 parameter change. When authoring, mind the asymmetry: a false positive fails loudly and gets
 fixed; a false negative accumulates silently and is the more dangerous of the two.
 
-- **Requires:** `RPC_URL` holding the deployment + `ARTIFACTS_DIR` naming the run under
+- **Requires:** `RPC_URL` holding the deployment + `RUN` naming the run under
   `deployed/<run>/`; `FORK_BLOCK` to pin a block for replay. Reverts (never skips) when the setup
   is missing; only a role with no market in the run skips a suite.
 - **Runs:** after every deploy; on protocol-touching changes.
-- **Here:** `test/fork/` via `make test-fork` / `make fork-run RUN=<run>`.
+- **Here:** `test/fork/` via `make test-fork RUN=<run> PREPARE=false`. `make test-fork` without command-line `RUN` creates a fresh stack; with `RUN` and no `PREPARE=false`, it prepares missing/inert markets before testing.
 
 ## 6. Acceptance tests (deployment verification on a fork)
 
@@ -159,8 +158,8 @@ needs only an address-presence check.
      deploy config — encoded at the multisig boundary, not deeper;
    - an **apply-pending-action make command** forks the live network, applies the transaction, and
      leaves the fork running;
-   - the fork-test setup **reuses that existing fork** (fork-URL passthrough) instead of spawning
-     its own, and the regression suites (kind 5) run over it — they assert the mechanics still
+   - the fork-test setup creates its own Forge fork of that node, preserving the applied change;
+     the regression suites (kind 5) run on that private fork — they assert the mechanics still
      work, not the values;
    - **state-mate runs on the same fork** against the updated config — the value diff is reviewed
      there (for a simple change this is browser-only: edit the field in the state-mate config,
@@ -172,14 +171,14 @@ needs only an address-presence check.
 Role coverage follows the guinea-pig principle: every motion factory is exercised end to end on
 **one** test market; the expected role set is hardcoded as the expectation for *any* market's
 configuration (the factory wires every market identically), and each market is checked against
-that same set. Deploy commands used by tests live next to the tests that use them, so a removed
-test cannot orphan a forgotten deploy path.
+that same set. Deployment operations live in `script/deployment/` and are reused by the shared `test/setup/ForkFixture.sol`.
+Historical compatibility readers retain no deployment or artifact-writing operations.
 
 ## 9. Deploy verification (state-mate / diffyscan / artifact checks)
 
 Non-forge verification layers on a live deployment:
 
-- **artifact sanity** — files appeared, metadata records the chain id and deploy commit, every
+- **artifact sanity** — files appeared, metadata records the chain id and run identity, successful transaction receipts are archived, every
   recorded address has bytecode;
 - **state-mate** — on-chain state vs the intended configuration, from a reviewed YAML config.
   Unlike acceptance it works at **any operational moment**: run it over the
@@ -220,9 +219,9 @@ heartbeat/suspect signals landing on the real registry double as the guardian dr
 | Stage | Gating kinds |
 | --- | --- |
 | Every change (local) | 1 unit · 2 integration · 3 invariant (`make test-local`) |
-| PR / CI merge gate | 1–3 + 4 empty-fork (`test-fork-provision`) + fmt/lint |
+| PR / CI merge gate | 1–3 + 4 empty-fork (`test-fork` + `test-deployment`) + fmt/lint |
 | Dependency pin bump | 1–3 full + submodule gitlink check |
-| Pre-deploy freeze | full `make test` + 4 as the deploy-plan rehearsal + 7 voting (here, triggered from `scripts`) + 8 motion (`easy-track`) |
+| Pre-deploy freeze | full `make test` + `make test-deployment` + 4 as the deploy-plan rehearsal + 7 voting (here, triggered from `scripts`) + 8 motion (`easy-track`) |
 | Deploy day | 6 acceptance readiness → (motions) → 6 activated + multi · 9 deploy verification · 10 drills |
 | Post-deploy / operations | 5 regression against the live run · 9 state-mate after governance actions · 11 off-chain e2e |
 | New market / upgrade | 4 on a fork first, then 5 + 6 + 9 for the new market |
