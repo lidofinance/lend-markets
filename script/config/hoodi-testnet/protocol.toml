@@ -23,7 +23,7 @@ exit_book_max_request_lifetime = 7776000                            # 90 days
 # usdyBlocklist has no hoodi counterpart — the USDY mock carries no blocklist.
 # What a run of this config deploys, in the order the scripts require. Read by `make deploy-all`.
 [provision]
-oracles = ["weth-wsteth", "usdy-usdt", "usdy-usdc"]
+oracles = ["weth-wsteth", "usdt-usdy", "usdc-usdy"]
 guardians = ["shared"]
 markets = ["weth-wsteth", "usdt-usdy", "usdc-usdy"]
 

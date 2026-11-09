@@ -81,8 +81,22 @@ library ProtocolConfigFile {
         internal
         returns (string memory path)
     {
-        ArtifactMetadataFile.ensureArtifactsDir();
-        path = protocolPath();
+        return _writeProtocol(d, metadata, ArtifactMetadataFile.artifactsDir());
+    }
+
+    function writeProtocol(ProtocolDeployment memory d, ArtifactMetadata memory metadata, string memory deployment)
+        internal
+        returns (string memory path)
+    {
+        return _writeProtocol(d, metadata, ArtifactMetadataFile.artifactsDir(deployment));
+    }
+
+    function _writeProtocol(ProtocolDeployment memory d, ArtifactMetadata memory metadata, string memory artifactsDir)
+        private
+        returns (string memory path)
+    {
+        _ensureArtifactsDir(artifactsDir);
+        path = _protocolPath(artifactsDir);
         _requireArtifactAbsent(path);
 
         string memory s = ArtifactMetadataFile.header(metadata, "protocol-deployment");
@@ -143,8 +157,22 @@ library ProtocolConfigFile {
         internal
         returns (string memory path)
     {
-        ArtifactMetadataFile.ensureArtifactsDir();
-        path = exitBooksPath();
+        return _writeExitBooks(d, metadata, ArtifactMetadataFile.artifactsDir());
+    }
+
+    function writeExitBooks(ExitBooksDeployment memory d, ArtifactMetadata memory metadata, string memory deployment)
+        internal
+        returns (string memory path)
+    {
+        return _writeExitBooks(d, metadata, ArtifactMetadataFile.artifactsDir(deployment));
+    }
+
+    function _writeExitBooks(ExitBooksDeployment memory d, ArtifactMetadata memory metadata, string memory artifactsDir)
+        private
+        returns (string memory path)
+    {
+        _ensureArtifactsDir(artifactsDir);
+        path = _exitBooksPath(artifactsDir);
         if (vm.exists(path)) revert ExitBooksAlreadyRecorded();
 
         string memory s = ArtifactMetadataFile.header(metadata, "exit-books-deployment");
@@ -244,7 +272,7 @@ library ProtocolConfigFile {
     }
 
     function protocolPath() internal view returns (string memory) {
-        return string.concat(ArtifactMetadataFile.artifactsDir(), "/protocol.toml");
+        return _protocolPath(ArtifactMetadataFile.artifactsDir());
     }
 
     function marketPath(string memory name) internal view returns (string memory) {
@@ -256,7 +284,7 @@ library ProtocolConfigFile {
     }
 
     function exitBooksPath() internal view returns (string memory) {
-        return string.concat(ArtifactMetadataFile.artifactsDir(), "/exit-books.toml");
+        return _exitBooksPath(ArtifactMetadataFile.artifactsDir());
     }
 
     function _marketSection(MarketDeployment memory d) private pure returns (string memory s) {
@@ -314,10 +342,22 @@ library ProtocolConfigFile {
         s = string.concat(s, _kvQuoted("max_borrow_rate", p.maxBorrowRate));
     }
 
-    function _ensureMarketsDir(string memory artifactsDir) private {
+    function _ensureArtifactsDir(string memory artifactsDir) private {
         if (!vm.exists(artifactsDir)) vm.createDir(artifactsDir, false);
+    }
+
+    function _ensureMarketsDir(string memory artifactsDir) private {
+        _ensureArtifactsDir(artifactsDir);
         string memory dir = _marketsDir(artifactsDir);
         if (!vm.exists(dir)) vm.createDir(dir, false);
+    }
+
+    function _protocolPath(string memory artifactsDir) private pure returns (string memory) {
+        return string.concat(artifactsDir, "/protocol.toml");
+    }
+
+    function _exitBooksPath(string memory artifactsDir) private pure returns (string memory) {
+        return string.concat(artifactsDir, "/exit-books.toml");
     }
 
     function _marketPath(string memory artifactsDir, string memory name) private pure returns (string memory) {

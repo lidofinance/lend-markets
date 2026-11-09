@@ -155,6 +155,6 @@ Each Exit Book is a direct, non-upgradeable `AccessControlEnumerable` contract. 
 | `PAUSER_ROLE` | pause placement and fills across the whole book | C3 | configured Risk Steward Committee, sole initial holder |
 | `RESUMER_ROLE` | resume placement and fills | C4 | no initial holder |
 
-Deployment initializes `feeRecipient` to the Lido DAO Agent and `serviceFee` to zero using a temporary deployer fee-manager grant. Both the deployer's fee-manager and admin grants are revoked before handover completes. Changing fees or recovering funds requires the Agent to grant the corresponding role first.
+Initially, `feeRecipient` is the Lido DAO Agent and `serviceFee` is zero. Changing fees or recovering funds requires the Agent to grant the corresponding role first.
 
 Delisting one source affects only new requests for that source. Pausing affects placement and fills for every source in the book; cancellation, reads, configuration, recovery, and direct source access remain available. A pause has no automatic expiry. Resume is impossible until the Lido DAO Agent grants `RESUMER_ROLE` to a caller.

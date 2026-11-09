@@ -67,7 +67,6 @@ contract DeployConfigFileTest is Test {
     DeployConfigFileHarness internal harness;
 
     function setUp() external {
-        vm.setEnv("ARTIFACTS_DIR", RUN);
         harness = new DeployConfigFileHarness();
     }
 

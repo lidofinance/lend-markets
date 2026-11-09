@@ -1,3 +1,4 @@
+# Historical Hoodi deployment: Exit Book roles and fee recipient predate the current handover policy.
 # state-mate config generated from deployed/hoodi-testnet (network hoodi, chain 560048) by tools/gen_state_mate.py: addresses
 # from the run's artifacts, expected values from script/config/hoodi-testnet/, implementations from the node at generation
 # time. Regenerate after any redeploy.
@@ -597,7 +598,7 @@ l1:
       checks:
         WSTETH: "0x7E99eE3C66636DE415D2d7C880938F2f40f94De4"
         price: null
-    oracleUsdyUsdt:
+    oracleUsdtUsdy:
       name: UsdyStableOracle
       address: "0x53D670DD018A09Af8BfBAdD9817E383fDdf2fb27"
       proxyName: OssifiableProxy
@@ -610,7 +611,7 @@ l1:
         price: null
         scale: null
         stableUsdFeed: "0xeC3785b13b21c226D66B5bC2E82BB2f4226f715e"
-    oracleUsdyUsdc:
+    oracleUsdcUsdy:
       name: UsdyStableOracle
       address: "0x323b989e0056388A1207823bde6706cF3266A8B4"
       proxyName: OssifiableProxy

@@ -16,7 +16,7 @@ exit_book_max_request_lifetime = 31536000  # 365 days
 # guardian resources; vaults are standalone and therefore listed explicitly here. `bundler = true` deploys the
 # bundler stack from this folder's bundler.toml.
 [provision]
-markets = ["weth-wsteth", "usdy-usdt"]
+markets = ["weth-wsteth", "usdt-usdy"]
 vaults = ["weth-wsteth"]
 bundler = true
 

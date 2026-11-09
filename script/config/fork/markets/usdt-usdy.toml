@@ -8,12 +8,12 @@ loan_token = "0xdAC17F958D2ee523a2206206994597C13D831ec7"        # USDT (6 dec)
 collateral_token = "0x96F6eF951840721AdBF46Ac996b59E0235CB985C"  # USDY (18 dec, transfer-gated)
 # Zero resolves the oracle artifact recorded under this name.
 oracle = "0x0000000000000000000000000000000000000000"
-oracle_artifact = "usdy-usdt"
+oracle_artifact = "usdt-usdy"
 lltv = "860000000000000000"  # 0.86 WAD
 supply_cap = "0"
 # Zero resolves the already-deployed registry identified by guardian_group.
 guardian_signals = "0x0000000000000000000000000000000000000000"
-guardian_group = "usdy-usdt"
+guardian_group = "usdt-usdy"
 vault_name = "Lido USDY/USDT Fork Vault"
 vault_symbol = "lidoUSDY-USDT-FORK"
 

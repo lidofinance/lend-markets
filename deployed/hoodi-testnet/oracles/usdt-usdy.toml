@@ -6,7 +6,7 @@ config_hash = "0xf119b4687e4364f297a36ae21775241b92cd6d62a4af2bd0951816df22642f7
 compatibility_hash = "0xb1aca1b38e8049e75719c885675a71e618c63343b44ce68c585352a3e1ac0f50"
 
 [oracle]
-name = "usdy-usdt"
+name = "usdt-usdy"
 address = "0x53D670DD018A09Af8BfBAdD9817E383fDdf2fb27"
 reused = false
 proxy_admin = "0x0534aA41907c9631fae990960bCC72d75fA7cfeD"

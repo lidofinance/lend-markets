@@ -12,6 +12,12 @@ parameters:
   - &wstEth "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
   - &stEth "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
 
+  # Temporary, reviewed 1-of-1 committees; update these expectations when signers change.
+  - &committeeSigner "0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd"
+  - &easyTrackTrustedCaller "0x4f29aA4c299e17176b48c41D67ee97aE673d29bC"
+  - &safeSingleton "0x41675c099f32341bf84bfc5382af534df5c7461a"
+  - &safeFallbackHandler "0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99"
+
 roles:
   - &DEFAULT_ADMIN_ROLE "0x0000000000000000000000000000000000000000000000000000000000000000"
   - &MARKET_CREATOR_ROLE "0xd3065a24ad9e7725d223007135762d2902038999e3e5829146654498a58d9795"
@@ -49,6 +55,15 @@ deployed:
     - &bundler3 "0x0056b888E90a1b783311351B54B782dE5de61e87"
     - &generalAdapter "0x0C6151F0205A6Edf143b42C4f7B4E97a8f099260"
     - &vaultAdapter "0xb1A64663B5390Ecf1a582df7e19d0a6753d1B84A"
+    - &etPreseeder "0x3F107d1fbCA49F425321Cb27f6Ef5CbB94a72c41"
+    - &etActivateMarket "0x17bb2A2B5983D29392A5d31D627D4C8B13383fe6"
+    - &etCircuitBreakerActions "0x4e89cc970F0DBAE2f8C38C083D5D345B4F9e76b8"
+    - &etGuardianActions "0x9fE41afb2114bF9430D7f9B1Fb65f0a4B9DeF779"
+    - &etMarketManagerActions "0x9D75EaE321976e85e472847AFD21246F1f87dC43"
+    - &etRiskStewardActions "0x7276CE5f92911216d41C7b0A9C3575DE873763E9"
+    - &etApplyIrmConfig "0x5795E73C0c2007ceD7D65cE4FC21c0C09F14C668"
+    - &etExitBookActions "0xA30b212c3657fa745feaE4b48B7Eb0A8F429C604"
+    - &etRegistry "0xF0211b7660680B49De1A7E9f25C65660F0a13Fea"
 
 l1:
   rpcUrl: MAINNET_RPC_URL
@@ -509,3 +524,319 @@ l1:
       address: *vaultAdapter
       checks:
         BUNDLER3: *bundler3
+
+    # Easy Track factories are deployed but not registered yet.
+    # After enactment, update registry permissions from the reviewed deployment artifact.
+    etPreseeder:
+      name: LidoLendPreseeder
+      address: *etPreseeder
+      checks:
+        DEFAULT_ADMIN_ROLE: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        ERC20_RECOVERER: '0x13f597c06e2b5f708519d3d1b440f2d0c07e1e26aab6caaf3a4a72df1c7c131d'
+        EXECUTOR_ROLE: '0xd8aa0f3194971a2a116679f7c2090f6939c8d4e01a2a8d7e41d55e5351469e63'
+        PRESEED_RECIPIENT: '0x000000000000000000000000000000000000dEaD'
+        getRoleAdmin:
+        - args:
+          - '0x0000000000000000000000000000000000000000000000000000000000000000'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        - args:
+          - '0x13f597c06e2b5f708519d3d1b440f2d0c07e1e26aab6caaf3a4a72df1c7c131d'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        - args:
+          - '0xd8aa0f3194971a2a116679f7c2090f6939c8d4e01a2a8d7e41d55e5351469e63'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        hasRole:
+        - args:
+          - '0x0000000000000000000000000000000000000000000000000000000000000000'
+          - '0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c'
+          result: true
+        - args:
+          - '0x13f597c06e2b5f708519d3d1b440f2d0c07e1e26aab6caaf3a4a72df1c7c131d'
+          - '0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c'
+          result: true
+        - args:
+          - '0xd8aa0f3194971a2a116679f7c2090f6939c8d4e01a2a8d7e41d55e5351469e63'
+          - '0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977'
+          result: true
+        - args:
+          - '0x0000000000000000000000000000000000000000000000000000000000000000'
+          - '0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977'
+          result: false
+        - args:
+          - '0x13f597c06e2b5f708519d3d1b440f2d0c07e1e26aab6caaf3a4a72df1c7c131d'
+          - '0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977'
+          result: false
+        - args:
+          - '0xd8aa0f3194971a2a116679f7c2090f6939c8d4e01a2a8d7e41d55e5351469e63'
+          - '0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c'
+          result: false
+        lidoLend: '0x026a770badc7126c7252Ef8d407E5b9C56147491'
+        previewPreseed: null
+        supportsInterface:
+        - args:
+          - '0x01ffc9a7'
+          result: true
+        - args:
+          - '0x7965db0b'
+          result: true
+        validatePreseed: null
+      # AccessControl is non-enumerable: scan RoleGranted events and confirm membership on chain.
+      ozNonEnumerableAcl:
+        *DEFAULT_ADMIN_ROLE : [*agent]
+        "0x13f597c06e2b5f708519d3d1b440f2d0c07e1e26aab6caaf3a4a72df1c7c131d": [*agent]
+        "0xd8aa0f3194971a2a116679f7c2090f6939c8d4e01a2a8d7e41d55e5351469e63": [*evmScriptExecutor]
+    etActivateMarket:
+      name: LidoLendActivateMarket
+      address: *etActivateMarket
+      checks:
+        circuitBreaker: '0xd0A81A130a303237d338A0b5835edcB011Ab3afd'
+        configurableIrm: '0xf6f1565F4fD3d29E6bDAb86764A50BCde381422f'
+        createEVMScript: null
+        decodeEVMScriptCallData: null
+        irmRouter: '0x81B7cC9523B30429110282d90db2fa90ff443d91'
+        lidoLend: '0x026a770badc7126c7252Ef8d407E5b9C56147491'
+        lidoLendMarketFactory: '0xBe1C1eaBda3eD8a93D3CE3246cf4EeF8111c76C7'
+        lidoLendOwner: '0x85378a1073E8f338e11A97E090E47e2F0FdD3D5a'
+        lidoLendPreseeder: "0x3F107d1fbCA49F425321Cb27f6Ef5CbB94a72c41"
+        riskStewardDashboard: '0xC3C241bC213EF3ba16234A7c689999209cE515D7'
+        trustedCaller: '0x4f29aA4c299e17176b48c41D67ee97aE673d29bC'
+    etCircuitBreakerActions:
+      name: LidoLendCircuitBreakerActions
+      address: *etCircuitBreakerActions
+      checks:
+        circuitBreaker: '0xd0A81A130a303237d338A0b5835edcB011Ab3afd'
+        createEVMScript: null
+        decodeConfigValuePayload: null
+        decodeEVMScriptCallData: null
+        decodeRegisterPauserPayload: null
+        lidoLend: '0x026a770badc7126c7252Ef8d407E5b9C56147491'
+        trustedCaller: '0x4f29aA4c299e17176b48c41D67ee97aE673d29bC'
+    etGuardianActions:
+      name: LidoLendGuardianActions
+      address: *etGuardianActions
+      checks:
+        createEVMScript: null
+        decodeAddGuardianPayload: null
+        decodeEVMScriptCallData: null
+        decodeRemoveGuardianPayload: null
+        decodeReplaceGuardianPayload: null
+        decodeSetGuardiansQuorumPayload: null
+        decodeSetSuspectWindowPayload: null
+        decodeUnbanAccountsPayload: null
+        lidoLend: '0x026a770badc7126c7252Ef8d407E5b9C56147491'
+        lidoLendOwner: '0x85378a1073E8f338e11A97E090E47e2F0FdD3D5a'
+        trustedCaller: '0x4f29aA4c299e17176b48c41D67ee97aE673d29bC'
+    etMarketManagerActions:
+      name: LidoLendMarketManagerActions
+      address: *etMarketManagerActions
+      checks:
+        createEVMScript: null
+        decodeEVMScriptCallData: null
+        decodeSetCollateralActivationConfigPayload: null
+        decodeSetFeePayload: null
+        decodeSetInstantActivationPayload: null
+        decodeSetSettlementConfigPayload: null
+        decodeSetSupplyCapPayload: null
+        decodeUnfreezeMarketsPayload: null
+        lidoLend: '0x026a770badc7126c7252Ef8d407E5b9C56147491'
+        lidoLendOwner: '0x85378a1073E8f338e11A97E090E47e2F0FdD3D5a'
+        trustedCaller: '0x4f29aA4c299e17176b48c41D67ee97aE673d29bC'
+    etRiskStewardActions:
+      name: LidoLendRiskStewardActions
+      address: *etRiskStewardActions
+      checks:
+        createEVMScript: null
+        decodeEVMScriptCallData: null
+        decodeRiskStewardPayload: null
+        riskStewardDashboard: '0xC3C241bC213EF3ba16234A7c689999209cE515D7'
+        trustedCaller: '0x4f29aA4c299e17176b48c41D67ee97aE673d29bC'
+    etApplyIrmConfig:
+      name: LidoLendApplyIrmConfig
+      address: *etApplyIrmConfig
+      checks:
+        configurableIrm: '0xf6f1565F4fD3d29E6bDAb86764A50BCde381422f'
+        createEVMScript: null
+        decodeEVMScriptCallData: null
+        irmRouter: '0x81B7cC9523B30429110282d90db2fa90ff443d91'
+        lidoLend: '0x026a770badc7126c7252Ef8d407E5b9C56147491'
+        trustedCaller: '0x4f29aA4c299e17176b48c41D67ee97aE673d29bC'
+    etExitBookActions:
+      name: LidoLendExitBookActions
+      address: *etExitBookActions
+      checks:
+        createEVMScript: null
+        decodeEVMScriptCallData: null
+        decodeSetErc4626ExitBookAllowedPayload: null
+        decodeSetMorphoExitBookAllowedPayload: null
+        erc4626ExitBook: '0x0d2580e4c9b20507eDFAeFC7777d760F12Ad55D4'
+        morphoExitBook: '0xAd28EFa8f2ef56a68b0Eb6836f4aE1d2D6459Ecd'
+        trustedCaller: '0x4f29aA4c299e17176b48c41D67ee97aE673d29bC'
+    etRegistry:
+      name: EasyTrack
+      address: *etRegistry
+      checks:
+        CANCEL_ROLE: null
+        DEFAULT_ADMIN_ROLE: null
+        MAX_MOTIONS_LIMIT: null
+        MAX_OBJECTIONS_THRESHOLD: null
+        MIN_MOTION_DURATION: null
+        PAUSE_ROLE: null
+        UNPAUSE_ROLE: null
+        canObjectToMotion: null
+        evmScriptExecutor: '0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977'
+        evmScriptFactories: null
+        evmScriptFactoryPermissions:
+        - args:
+          - "0x17bb2A2B5983D29392A5d31D627D4C8B13383fe6"
+          result: "0x"
+        - args:
+          - "0x4e89cc970F0DBAE2f8C38C083D5D345B4F9e76b8"
+          result: "0x"
+        - args:
+          - "0x9fE41afb2114bF9430D7f9B1Fb65f0a4B9DeF779"
+          result: "0x"
+        - args:
+          - "0x9D75EaE321976e85e472847AFD21246F1f87dC43"
+          result: "0x"
+        - args:
+          - "0x7276CE5f92911216d41C7b0A9C3575DE873763E9"
+          result: "0x"
+        - args:
+          - "0x5795E73C0c2007ceD7D65cE4FC21c0C09F14C668"
+          result: "0x"
+        - args:
+          - "0xA30b212c3657fa745feaE4b48B7Eb0A8F429C604"
+          result: "0x"
+        getEVMScriptFactories: null
+        getMotion: null
+        getMotions: null
+        getRoleAdmin: null
+        governanceToken: null
+        hasRole: null
+        isEVMScriptFactory:
+        - args:
+          - "0x17bb2A2B5983D29392A5d31D627D4C8B13383fe6"
+          result: false
+        - args:
+          - "0x4e89cc970F0DBAE2f8C38C083D5D345B4F9e76b8"
+          result: false
+        - args:
+          - "0x9fE41afb2114bF9430D7f9B1Fb65f0a4B9DeF779"
+          result: false
+        - args:
+          - "0x9D75EaE321976e85e472847AFD21246F1f87dC43"
+          result: false
+        - args:
+          - "0x7276CE5f92911216d41C7b0A9C3575DE873763E9"
+          result: false
+        - args:
+          - "0x5795E73C0c2007ceD7D65cE4FC21c0C09F14C668"
+          result: false
+        - args:
+          - "0xA30b212c3657fa745feaE4b48B7Eb0A8F429C604"
+          result: false
+        motionDuration: null
+        motions: null
+        motionsCountLimit: null
+        objections: null
+        objectionsThreshold: null
+        paused: null
+        supportsInterface: null
+
+    # All privileged Safe committees, including the Easy Track trusted caller.
+    riskStewardSafe:
+      name: Safe
+      address: *riskSteward
+      proxyName: SafeProxy
+      implementation: *safeSingleton
+      proxyChecks: {}
+      storage:
+        - slot: "0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5"
+          expected: *safeFallbackHandler
+          label: fallbackHandler
+        - slot: "0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8"
+          expected: "0x0000000000000000000000000000000000000000"
+          label: guard
+      checks:
+        VERSION: "1.4.1"
+        getChainId: 1
+        getThreshold: 1
+        getOwners: [*committeeSigner]
+        getModulesPaginated:
+          - args: ["0x0000000000000000000000000000000000000001", 100]
+            result: [[], "0x0000000000000000000000000000000000000001"]
+        approvedHashes: null
+        checkNSignatures: null
+        checkSignatures: null
+        domainSeparator: null
+        encodeTransactionData: null
+        getStorageAt: null
+        getTransactionHash: null
+        isModuleEnabled: null
+        isOwner: null
+        nonce: null
+        signedMessages: null
+    pauserCommitteeSafe:
+      name: Safe
+      address: *pauserCommittee
+      proxyName: SafeProxy
+      implementation: *safeSingleton
+      proxyChecks: {}
+      storage:
+        - slot: "0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5"
+          expected: *safeFallbackHandler
+          label: fallbackHandler
+        - slot: "0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8"
+          expected: "0x0000000000000000000000000000000000000000"
+          label: guard
+      checks:
+        VERSION: "1.4.1"
+        getChainId: 1
+        getThreshold: 1
+        getOwners: [*committeeSigner]
+        getModulesPaginated:
+          - args: ["0x0000000000000000000000000000000000000001", 100]
+            result: [[], "0x0000000000000000000000000000000000000001"]
+        approvedHashes: null
+        checkNSignatures: null
+        checkSignatures: null
+        domainSeparator: null
+        encodeTransactionData: null
+        getStorageAt: null
+        getTransactionHash: null
+        isModuleEnabled: null
+        isOwner: null
+        nonce: null
+        signedMessages: null
+    easyTrackTrustedCallerSafe:
+      name: Safe
+      address: *easyTrackTrustedCaller
+      proxyName: SafeProxy
+      implementation: *safeSingleton
+      proxyChecks: {}
+      storage:
+        - slot: "0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5"
+          expected: *safeFallbackHandler
+          label: fallbackHandler
+        - slot: "0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8"
+          expected: "0x0000000000000000000000000000000000000000"
+          label: guard
+      checks:
+        VERSION: "1.4.1"
+        getChainId: 1
+        getThreshold: 1
+        getOwners: [*committeeSigner]
+        getModulesPaginated:
+          - args: ["0x0000000000000000000000000000000000000001", 100]
+            result: [[], "0x0000000000000000000000000000000000000001"]
+        approvedHashes: null
+        checkNSignatures: null
+        checkSignatures: null
+        domainSeparator: null
+        encodeTransactionData: null
+        getStorageAt: null
+        getTransactionHash: null
+        isModuleEnabled: null
+        isOwner: null
+        nonce: null
+        signedMessages: null

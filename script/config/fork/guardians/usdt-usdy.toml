@@ -1,4 +1,4 @@
-# GuardianSignals config for fork provisioning's usdy-usdt group.
+# GuardianSignals config for fork provisioning's usdt-usdy group.
 
 quorum = 1
 suspect_window = 0

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Generate the state-mate configs for a deploy run.
+"""Generate draft state-mate configs for a deploy run.
 
 Addresses come from the run's artifacts under deployed/<RUN>/, expected values from the reviewed configs under
 script/config/<CONFIG>/, and proxy implementations from the node the run lives on. Every contract gets every
 view of its ABI listed; the ones without an expectation stay `null`.
+
+This covers only the contracts added by build(), not the complete deployed stack. It must not replace
+the reviewed deployed/mainnet/state-mate/mainnet.yaml; see script/DEPLOYMENT.md for coverage gaps.
 
     RUN=hoodi-testnet-fork CONFIG=hoodi-testnet RPC_URL=http://127.0.0.1:8545 python3 tools/gen_state_mate.py
 
@@ -290,7 +293,8 @@ def yval(v, ind):
 
 
 def mk(pairs):
-    return [{"args": a, "result": r} for a, r in pairs]
+    # No recorded markets means there are no arguments to check, not a zero-argument call.
+    return [{"args": a, "result": r} for a, r in pairs] or None
 
 
 def camel(text):
@@ -422,14 +426,13 @@ def build(inputs, impls, mode):
 
     books = inputs["exit_books"]
     if books:
-        allowlist_holders = sorted({agent, executor}, key=str.lower)
-        book_acl = {Z32: [agent], R["ALLOWLIST_MANAGER_ROLE"]: allowlist_holders,
-                    R["FEE_MANAGER_ROLE"]: [executor], R["RECOVERER_ROLE"]: [agent],
+        book_acl = {Z32: [agent], R["ALLOWLIST_MANAGER_ROLE"]: [executor],
+                    R["FEE_MANAGER_ROLE"]: [], R["RECOVERER_ROLE"]: [],
                     R["PAUSER_ROLE"]: [net["exit_book_pauser"]], R["RESUMER_ROLE"]: []}
         book_common = {"DEFAULT_ADMIN_ROLE": Z32, "ALLOWLIST_MANAGER_ROLE": R["ALLOWLIST_MANAGER_ROLE"],
                        "FEE_MANAGER_ROLE": R["FEE_MANAGER_ROLE"], "PAUSER_ROLE": R["PAUSER_ROLE"],
                        "RESUMER_ROLE": R["RESUMER_ROLE"], "RECOVERER_ROLE": R["RECOVERER_ROLE"],
-                       "feeRecipient": ZERO, "serviceFee": "0", "paused": False,
+                       "feeRecipient": agent, "serviceFee": "0", "paused": False,
                        "MAX_REQUEST_LIFETIME": s(net["exit_book_max_request_lifetime"])}
         add("morphoExitBook", "MorphoExitBook", books["morpho"],
             dict(book_common, MORPHO=core, isMarketAllowed=mk([([i], replay) for i in ids])), book_acl)

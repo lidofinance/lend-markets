@@ -12,8 +12,7 @@ provisioning `fork`), laid out like the artifacts it produces under `deployed/<r
 - `markets/<market>.toml`: market parameters, vault metadata, role, and artifact references;
 - `circuit-breaker.toml`: the deployment's single CircuitBreaker — immutable bounds and initial pause/heartbeat settings;
 - `oracles/<name>.toml`: oracle inputs; standalone deployment uses the configured DAO Agent as proxy admin;
-- `guardians/<group>.toml`: GuardianSignals guardian set, quorum, and suspect window; proxy admin and
-  `DEFAULT_ADMIN_ROLE` are fixed by the market factory's immutable `ADMIN`;
+- `guardians/<group>.toml`: GuardianSignals guardian set, quorum, and suspect window; proxy admin and `DEFAULT_ADMIN_ROLE` are fixed by the market factory's immutable `ADMIN`;
 - `vaults/<name>.toml` and `adapters/<name>.toml`: an external vault-v2 vault and its Morpho adapter;
 - `bundler.toml`: the WETH / wstETH the general adapter binds; the Bundler3 it dispatches through is deployed with it;
 - `pending.toml`: the multisig action awaiting signatures (`make apply-pending`);
@@ -23,13 +22,7 @@ provisioning `fork`), laid out like the artifacts it produces under `deployed/<r
 
 Set `RPC_URL`, the deployer signer, and `ETHERSCAN_API_KEY` in `.env`. The signer is `DEPLOYER_ACCOUNT` — an encrypted Foundry keystore created with `cast wallet import --interactive <name>`, for which forge prompts for the password — plus `DEPLOYER_SENDER`, its address, passed as `--sender` (forge derives no sender from a keystore). A raw private key is not accepted; a local unlocked node sets `DEPLOYER_SENDER` alone. Deployment targets broadcast and verify by default; use `VERIFY=false` only for networks without a verifier. `RUN` selects `deployed/<RUN>/`; all steps for one deployment must use the same `RUN`. Artifacts are immutable and are not overwritten.
 
-Each artifact header records two deploy-config hashes. `config_hash` is the exact hash of the complete TOML and
-is retained as provenance. `compatibility_hash` is canonical over the protocol identity that existing-protocol
-steps depend on: network, chain id, Agent, EVMScriptExecutor, Reseal Manager, and CircuitBreaker artifact selector. Exit-book fields and the
-test-only `[provision]` plan are excluded from compatibility. Consumers still require the same run name, chain,
-compatibility hash, and governance actors, and `protocol.toml` must agree internally between its artifact header
-and protocol section. Exact hashes may therefore differ between compatible sibling artifacts created before and
-after a standalone configuration extension; that difference is preserved rather than rewritten.
+Each artifact header records two deploy-config hashes. `config_hash` is the exact hash of the complete TOML and is retained as provenance. `compatibility_hash` is canonical over the protocol identity that existing-protocol steps depend on: network, chain id, Agent, EVMScriptExecutor, Reseal Manager, and CircuitBreaker artifact selector. Exit-book fields and the `[provision]` plan are excluded from compatibility. Consumers still require the same run name, chain, compatibility hash, and governance actors, and `protocol.toml` must agree internally between its artifact header and protocol section. Exact hashes may therefore differ between compatible sibling artifacts created before and after a standalone configuration extension; that difference is preserved rather than rewritten.
 
 The run directory contains:
 
@@ -47,14 +40,9 @@ transactions/<step>.json
 ```
 
 A market declares `market.role` — the part it plays, e.g. `weth-wsteth` — which is recorded in its artifact.
-Roles are shared across networks while market names are not, so a consumer names the role it needs rather than
-a network's market. `test/fork/` binds by role and skips a role the deployment has no market for.
+Roles are shared across networks while market names are not, so a consumer names the role it needs rather than a network's market. `test/fork/` binds by role and skips a role the deployment has no market for.
 
-The protocol artifact records the shared permissionless `IrmConfigFactory`, the Reseal Manager, and the single CircuitBreaker bound
-to the core's market factory. Each market artifact contains its resolved addresses, market ID, initial supply cap,
-immutable Adaptive Curve config, activation, settlement, and curve parameters. Current role holders are read directly
-from the deployed enumerable AccessControl contracts; they are not copied into artifacts. Separate
-CircuitBreaker, oracle, and GuardianSignals artifacts contain their resolved configuration.
+The protocol artifact records the shared permissionless `IrmConfigFactory`, the Reseal Manager, and the single CircuitBreaker bound to the core's market factory. Each market artifact contains its resolved addresses, market ID, initial supply cap, immutable Adaptive Curve config, activation, settlement, and curve parameters. Current role holders are read directly from the deployed enumerable AccessControl contracts; they are not copied into artifacts. Separate CircuitBreaker, oracle, and GuardianSignals artifacts contain their resolved configuration.
 
 Deploy the protocol's single CircuitBreaker before the protocol. The script
 fixes the CircuitBreaker's `ADMIN = evm_script_executor`; the remaining immutable bounds and initial settings
@@ -63,13 +51,38 @@ come from `script/config/<config>/circuit-breaker.toml`; `circuit_breaker_artifa
 `RESUMER_ROLE` on those controllers. There are no per-market controller-role arrays: one CircuitBreaker and one
 Reseal Manager serve the core/factory and all of its markets.
 
-Zero `market.oracle` resolves `oracle_artifact`. A zero `market.guardian_signals` resolves the already-recorded
-`guardian_group`; run `deploy-guardian` first. Guardian registries are separate resources, so several markets
-can reference the same group without `deploy-protocol` or `deploy-market` creating it as a side effect.
+Zero `market.oracle` resolves `oracle_artifact`. A zero `market.guardian_signals` resolves the already-recorded `guardian_group`; run `deploy-guardian` first. Guardian registries are separate resources, so several markets can reference the same group without `deploy-protocol` or `deploy-market` creating it as a side effect.
 
-Every market is routed through the protocol's Adaptive Curve IRM singleton. Its market config carries `[curve]`
-parameters; `deploy-market` resolves or deploys the matching immutable config through `IrmConfigFactory` and
-records that address as `market.irm_config`. There is no separate IRM artifact or per-market model selector.
+Every market is routed through the protocol's Adaptive Curve IRM singleton. Its market config carries `[curve]` parameters; `deploy-market` resolves or deploys the matching immutable config through `IrmConfigFactory` and records that address as `market.irm_config`. There is no separate IRM artifact or per-market model selector.
+
+## State Mate
+
+The reviewed mainnet expectations are maintained in
+[`deployed/mainnet/state-mate/mainnet.yaml`](../deployed/mainnet/state-mate/mainnet.yaml), with a shared
+`abis.json.gz` alongside it. This one config covers the protocol, Exit Books, bundler, Easy Track factories
+and registration status, and all three Safe committees (Risk Steward, CircuitBreaker pausers and Easy Track
+trusted caller). The committees currently use a reviewed 1-of-1 signer set; Safe owners, threshold, singleton,
+version, modules, guard and fallback handler are checked explicitly. GuardianSignals committee membership
+and quorum are separate checks to add when its registry is deployed.
+
+Run this file with State Mate against `MAINNET_RPC_URL`, pinning `--block` for a repeatable review. The
+Preseeder's `ozNonEnumerableAcl` requires State Mate with exhaustive role-event scanning and an Etherscan
+API token (`ETHERSCAN_EXPLORER_TOKEN`); isolated `hasRole` calls cannot exclude unexpected role holders.
+Before registration, every lending Easy Track factory must be unregistered with empty permissions. Update
+those expectations to the reviewed permissions after the registration motion.
+
+`make state-mate-config RUN=<run> CONFIG=<config>` generates **draft** checks under
+`script/config/<config>/state-mate/`. It does not reproduce the manually maintained mainnet config. Review
+its output before using it: generation currently omits the market and IRM-config factories, standalone
+GuardianSignals/controller/vault implementation entries, the bundler and adapters, Easy Track and Safes.
+It also omits implementation-initialization checks and some manually pinned values (domain separators,
+role admins, supported interfaces, CircuitBreaker pausables/heartbeat expiry and Exit Book limits).
+Generation also requires every resource named in the config's `[provision]` plan; the current protocol-only
+mainnet deployment cannot use that command until those planned resources exist. Proxy implementation
+addresses are read from RPC during generation and need independent review.
+Do not replace the reviewed config with generated output; preserve its extra expectations. A `null` check
+is explicitly skipped, not verified. Historical Hoodi files retain their original Exit Book handover
+expectations, which differ from the current mainnet policy.
 
 ## Deploy
 
@@ -81,32 +94,21 @@ make deploy-oracle CONFIG=mainnet RUN=mainnet-weth-wsteth ORACLE=weth-wsteth
 make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
 ```
 
-`deploy-protocol` includes exit books when `exit_books = true`. Use `deploy-oracle-usdy` for USDY or
-`deploy-run` for the canonical single-CircuitBreaker, single-WstETH-oracle flow.
+`deploy-protocol` includes exit books when `exit_books = true`. Use `deploy-oracle-usdy` for USDY or `deploy-run` for the canonical single-CircuitBreaker, single-WstETH-oracle flow.
 
-`deploy-protocol` deploys the backbone and, when `exit_books = true`, the exit books. Markets are not part of
-it: each is its own `deploy-market` run against that backbone, so a run's market set is the sequence of those
-runs and is recorded in `deployed/<RUN>/markets/`.
+`deploy-protocol` deploys the backbone and, when `exit_books = true`, the exit books. Markets are not part of it: each is its own `deploy-market` run against that backbone, so a run's market set is the sequence of those runs and is recorded in `deployed/<RUN>/markets/`.
 
-Every artifact a market references is deployed before the market, each by its own step: its oracle and the
-`GuardianSignals` registry of its guardian group. The protocol-wide CircuitBreaker is deployed once before the backbone. The registry
-belongs to a committee rather than to a market — several markets under one committee share one — so it is a
-step, not a side effect of the first market that needs it. It comes after the backbone, which records the
-factory it is created through:
+Every artifact a market references is deployed before the market, each by its own step: its oracle and the `GuardianSignals` registry of its guardian group. The protocol-wide CircuitBreaker is deployed once before the backbone. The registry belongs to a committee rather than to a market — several markets under one committee share one — so it is a step, not a side effect of the first market that needs it. It comes after the backbone, which records the factory it is created through:
 
 ```sh
 make deploy-guardian CONFIG=mainnet RUN=mainnet-weth-wsteth GUARDIAN_GROUP=weth-wsteth
 make deploy-market CONFIG=mainnet RUN=mainnet-weth-wsteth MARKET=weth-wsteth
 ```
 
-The full order is CircuitBreaker, oracles, the protocol, the guardian registries, the
-markets, then anything optional (`deploy-vault-v2`, `deploy-bundler`, `deploy-exit-books`).
+The full order is CircuitBreaker, oracles, the protocol, the guardian registries, the markets, then anything optional (`deploy-vault-v2`, `deploy-bundler`, `deploy-exit-books`).
 
-The checked-in `mainnet` profile is deliberately blocked before value-bearing deployment: governance has not
-yet supplied `exit_book_pauser`, and `guardians/weth-wsteth.toml` still has an empty production committee.
-Unrelated resource scripts can read the profile, but `deploy-protocol` fails on the missing exit-book pauser and
-`deploy-guardian` rejects a quorum larger than the configured committee. Replace both placeholders only with
-reviewed production inputs.
+The checked-in `mainnet` profile is deliberately blocked before value-bearing deployment: governance has not yet supplied `exit_book_pauser`, and `guardians/weth-wsteth.toml` still has an empty production committee.
+Unrelated resource scripts can read the profile, but `deploy-protocol` fails on the missing exit-book pauser and `deploy-guardian` rejects a quorum larger than the configured committee. Replace both placeholders only with reviewed production inputs.
 
 Integrated and standalone deployment assign both books' sole initial `PAUSER_ROLE` to the configured protocol-wide Risk Steward Committee. `RESUMER_ROLE` starts empty. After a pause, the Lido DAO Agent must grant an explicit governance resumer before either book can resume. A per-market pauser must not receive this global authority implicitly.
 
@@ -130,8 +132,7 @@ make deploy-bundler CONFIG=mainnet RUN=mainnet-weth-wsteth
 make deploy-exit-books CONFIG=mainnet RUN=mainnet-weth-wsteth
 ```
 
-`deploy-vault-v2` needs an existing run: the adapter's Morpho and IRM-router immutables come from its
-`protocol.toml`, and the vault is the adapter's own constructor immutable, so both are created in one broadcast.
+`deploy-vault-v2` needs an existing run: the adapter's Morpho and IRM-router immutables come from its `protocol.toml`, and the vault is the adapter's own constructor immutable, so both are created in one broadcast.
 Both are left unconfigured — curator, adapter registration and caps are the vault owner's calls.
 `deploy-bundler` needs an existing run too: it deploys this run's own bundler stack — the stock `Bundler3`
 dispatcher, the vendored `EthereumGeneralAdapter1` bound to the run's core, and the `LidoLendVaultAdapter`, both
@@ -141,26 +142,13 @@ whatever adapters Morpho registers there. Neither adapter holds any protocol rol
 initiator and nothing else.
 `deploy-exit-books` writes `exit-books.toml` without modifying the protocol artifact.
 
-For a deliberately standalone Exit Book rollout, deploy the backbone with `exit_books = false`. The pauser and
-maximum request lifetime may be omitted initially. Once reviewed, add those two fields while leaving
-`exit_books = false`, then run `deploy-exit-books` against the same `RUN`. These fields are parsed even in false
-mode, the nonzero pauser is subject to the same actor-separation checks, and the unchanged compatibility hash
-allows the immutable protocol artifact to be reused. Changing a protocol-identity field requires a new run.
+For a deliberately standalone Exit Book rollout, deploy the backbone with `exit_books = false`. The pauser and maximum request lifetime may be omitted initially. Once reviewed, add those two fields while leaving `exit_books = false`, then run `deploy-exit-books` against the same `RUN`. These fields are parsed even in false mode, the nonzero pauser is subject to the same actor-separation checks, and the unchanged compatibility hash allows the immutable protocol artifact to be reused. Changing a protocol-identity field requires a new run.
 
 ## Activate
 
-Activation inputs are runtime EasyTrack motion choices, not deployment artifacts. No separate activation
-artifact is generated or required. EasyTrack acceptance reads reviewed values and resolved addresses from
-`deployed/<RUN>/markets/<market-name>.toml`. Deployment creates or reuses an immutable config for the recorded
-curve parameters. After confirmation, activation applies that config to Adaptive Curve, routes it,
-creates the market through `LidoLendOwner`, and registers the pauser committee on the protocol
-CircuitBreaker — `pauser_committee` from the network config, recorded in `protocol.toml`; the Agent stands in
-when the config sets none. Settlement enablement remains a runtime input.
+Activation inputs are runtime EasyTrack motion choices, not deployment artifacts. No separate activation artifact is generated or required. EasyTrack acceptance reads reviewed values and resolved addresses from `deployed/<RUN>/markets/<market-name>.toml`. Deployment creates or reuses an immutable config for the recorded curve parameters. After confirmation, activation applies that config to Adaptive Curve, routes it, creates the market through `LidoLendOwner`, and registers the pauser committee on the protocol CircuitBreaker — `pauser_committee` from the network config, recorded in `protocol.toml`; the Agent stands in when the config sets none. Settlement enablement remains a runtime input.
 
-The EasyTrack factory implementation and its registration are outside this repository; this repository deploys
-the lending stack, records the immutable inputs, and verifies the result. A production rollout cannot be activated
-until its governance proposal identifies the reviewed external factory/version and supplies the two runtime inputs
-to acceptance independently of live contract state:
+The EasyTrack factory implementation and its registration are outside this repository; this repository deploys the lending stack, records the immutable inputs, and verifies the result. A production rollout cannot be activated until its governance proposal identifies the reviewed external factory/version and supplies the two runtime inputs to acceptance independently of live contract state:
 
 ```sh
 ACCEPTANCE_ENABLE_SETTLEMENT=true \
@@ -170,11 +158,7 @@ make acceptance-run RUN=mainnet-weth-wsteth MARKET=weth-wsteth
 
 Exit-book allow-listing is a separate governance action after market activation because `setMarketAllowed` rejects an uncreated market. Run activated-state acceptance only after allow-listing completes.
 
-On a fork or devnet there is no EasyTrack, so `make activate-markets RUN=<run>` replays the motion for every
-market recorded in the run, as the impersonated `EVMScriptExecutor` (read from the run's `protocol.toml`). Before
-the first broadcast it parses every market artifact and checks every already-completed step for conflicts. A rerun
-then resumes at the first missing IRM, market, CircuitBreaker, or exit-book action. It is never a substitute for
-the motion on a real network.
+On a fork or devnet there is no EasyTrack, so `make activate-markets RUN=<run>` replays the motion for every market recorded in the run, as the impersonated `EVMScriptExecutor` (read from the run's `protocol.toml`). Before the first broadcast it parses every market artifact and checks every already-completed step for conflicts. A rerun then resumes at the first missing IRM, market, CircuitBreaker, or exit-book action. It is never a substitute for the motion on a real network.
 
 ## Verify
 
@@ -188,8 +172,7 @@ ACCEPTANCE_ENABLE_SETTLEMENT=true \
 The multi-market simulation supplies disposable test pausers itself, so only its settlement choice is external.
 The conventional local `deployed/fork` run uses the activation replay's fixed values when these inputs are unset.
 
-Acceptance audits the exact initial-launch role topology. It is not a general audit of a deployment after later
-governance grants; such a run needs a separately reviewed expected-role input before this suite can support it.
+Acceptance audits the exact initial-launch role topology. It is not a general audit of a deployment after later governance grants; such a run needs a separately reviewed expected-role input before this suite can support it.
 
 The read-only fork suites bind to a run the same way, reading `deployed/<RUN>/` directly:
 
@@ -215,18 +198,10 @@ make test-fork-live                                 # the suites against it; re-
 make provision-stop
 ```
 
-`RPC_URL` is required only when provisioning must start anvil. A node already listening on `:8545` is reused only
-if its chain id matches and it supports Anvil balance and account-impersonation RPCs. `PIN_BLOCK=<n>` pins the
-upstream block for a newly started node and is rejected on reuse, where the requested origin cannot be proved.
-The driver serializes provisioning runs and restores the previous `deployed/fork` if deployment fails. The
-rollback state is either the prior run directory or a file recording that no prior run existed. The artifact
-commit first atomically moves that state into committed trash, then removes the trash; an interruption during
-removal therefore preserves the accepted new run, and the next invocation only finishes the cleanup. Anvil
-ownership is matched by PID, process start time, a per-start ownership token, command, and port.
+`RPC_URL` is required only when provisioning must start anvil. A node already listening on `:8545` is reused only if its chain id matches and it supports Anvil balance and account-impersonation RPCs. `PIN_BLOCK=<n>` pins the upstream block for a newly started node and is rejected on reuse, where the requested origin cannot be proved.
+The driver serializes provisioning runs and restores the previous `deployed/fork` if deployment fails. The rollback state is either the prior run directory or a file recording that no prior run existed. The artifact commit first atomically moves that state into committed trash, then removes the trash; an interruption during removal therefore preserves the accepted new run, and the next invocation only finishes the cleanup. Anvil ownership is matched by PID, process start time, a per-start ownership token, command, and port.
 
-`deploy-vault-v2` verifies its pair through `verify-vault-v2`, a separate target because the pair is created
-with `vm.deployCode` and `forge script --verify` cannot name those creations. A retry first validates the protocol,
-vault and adapter metadata and their immutable cross-links, then submits either address to the explorer.
+`deploy-vault-v2` verifies its pair through `verify-vault-v2`, a separate target because the pair is created with `vm.deployCode` and `forge script --verify` cannot name those creations. A retry first validates the protocol, vault and adapter metadata and their immutable cross-links, then submits either address to the explorer.
 
 A production run is rehearsed market by market on an anvil fork of the network that holds it:
 `make provision-market CONFIG=mainnet RUN=mainnet MARKET=weth-wsteth RPC_URL=http://127.0.0.1:8545` deploys the
@@ -280,3 +255,12 @@ The output records the upstream block number/hash and each market's initial stat
 temporary artifacts and stops its own Anvil on exit. It does not write to the supplied node or the original
 artifact run. Preparation reuses the fork activation replay; verification of real Easy Track motions and their
 permissions is a separate suite.
+
+## Audit checksums
+
+Run `make audit-checksums` (or `make audit-checksums REF=<git-ref>`) to calculate the audited source digests.
+`script/config/mainnet/audit-digests.txt` preserves the report's expected digests and original dependency paths;
+current dependency paths are `lib/lend/` and `lib/lend-irm/`.
+
+Market and price-feed resource names use `<loan-token>-<collateral-token>`. Historical `market.role` identifiers
+remain stable so existing test and integration consumers continue to resolve the same markets.

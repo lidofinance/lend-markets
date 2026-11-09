@@ -1,3 +1,2 @@
-# CODEOWNERS: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
-
-* @lidofinance/staking-projects
+* @lidofinance/lido-lend
+.github @lidofinance/review-gh-workflows

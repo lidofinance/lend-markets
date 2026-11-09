@@ -84,18 +84,17 @@ define archive_broadcast
 	@cp "broadcast/$(1)/$(CHAIN_ID)/run-latest.json" "deployed/$(RUN)/transactions/$(2).json"
 endef
 
-.PHONY: help build sizes test test-local test-fork test-simulation test-mutation deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-vault-v2 verify-vault-v2 deploy-bundler verify-bundler deploy-exit-books deploy-protocol deploy-market deploy-run deploy-all activate-markets fork-activate deploy-wizard state-mate-config acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean provision-fork provision-stop apply-pending pending-stop test-pending test-fork-live test-fork-provision
+.PHONY: help build sizes test test-local test-fork test-simulation test-mutation deploy-oracle deploy-oracle-usdy deploy-circuit-breaker deploy-guardian deploy-vault-v2 verify-vault-v2 deploy-bundler verify-bundler deploy-exit-books deploy-protocol deploy-market deploy-run deploy-all activate-markets fork-activate deploy-wizard state-mate-config acceptance-run acceptance-run-multi fork-run fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc audit-checksums ci clean provision-fork provision-stop apply-pending pending-stop test-pending test-fork-live test-fork-provision
 
 help:
 	@echo "Targets:"
 	@echo "  build         forge build"
-	@echo "  sizes         forge build --sizes"
+	@echo "  sizes         forge build src + Bundler3 anchor --sizes (test harnesses exceed EIP-170 by design)"
 	@echo "  test          all tests, local + fork in one run; fork suites require RPC_URL + ARTIFACTS_DIR"
 	@echo "  test-local    forge test on the local suites only (excludes test/fork/; no RPC)"
 	@echo "  test-fork     forge test on test/fork/ only; the suites revert without the fork setup"
 	@echo "  test-simulation  the year-long solvency simulations (test/simulation/); the 30-day variants run in test-local"
-	@echo "  test-mutation forge mutation testing of src/ over the 30-day simulations (slow; needs forge >= 1.8.0,"
-	@echo "                which is NOT the pinned .foundryref toolchain, so install it separately)"
+	@echo "  test-mutation forge mutation testing of src/ over the 30-day simulations (slow; needs forge >= 1.8.0)"
 	@echo "  deploy-oracle CONFIG=<config> RUN=<run> ORACLE=<name>"
 	@echo "  deploy-circuit-breaker CONFIG=<config> RUN=<run>"
 	@echo "  deploy-protocol CONFIG=<config> RUN=<run>  (backbone + exit books; markets are separate)"
@@ -127,6 +126,8 @@ help:
 	@echo "  slither       slither . (needs slither installed)"
 	@echo "  solhint       solhint 'src/**/*.sol' (needs node + solhint installed)"
 	@echo "  doc           forge build --ast + regenerate docs/specs/api/ from NatSpec"
+	@echo "  audit-checksums [REF=<git-ref>]  keccak256 of the Cyfrin audit scope files, to compare with the report;"
+	@echo "                  files on disk by default, or as committed at REF"
 	@echo "  ci            build + lint + test-local  (mirrors ci.yml's local job)"
 	@echo "  clean         forge clean"
 	@echo "  provision-fork [FORK_CONFIG=fork] [PIN_BLOCK=<n>]"
@@ -141,7 +142,7 @@ build:
 	forge build
 
 sizes:
-	forge build --sizes
+	forge build src script/Bundler3Anchor.sol --sizes
 
 # All tests, local + fork, in one run. The fork suites revert without a working fork setup — RPC_URL and
 # ARTIFACTS_DIR set (see .env.example), that deploy run on disk, and the RPC answering. Use test-local /
@@ -161,13 +162,10 @@ test-fork:
 test-simulation:
 	RUN_SOLVENCY_SIMULATION=true forge test --match-path 'test/simulation/**' -vv
 
-# Outside the pinned toolchain: `--mutate` landed in forge 1.8.0 and `.foundryref` pins 1.7.1, so neither CI nor a
-# standard local setup can run this. It needs a separately installed forge, and a run under 1.8.x is not comparable
-# with a pinned run: isolate mode makes every call its own transaction, which moves gas and the simulation's
-# transaction boundary (`perCallTransactions`). Local only, never in CI. The score counts only the mutants forge
-# evaluates; it skips many.
+# `--mutate` landed in forge 1.8.0. Local only, never in CI. The score counts only the mutants forge evaluates; it
+# skips many.
 test-mutation:
-	@forge test --help | grep -q -- '--mutate' || { echo "test-mutation: the local forge ($$(forge --version | head -1)) has no mutation testing; it needs forge >= 1.8.0, which is not the pinned .foundryref toolchain (install it separately, e.g. foundryup -i v1.8.3)"; exit 1; }
+	@forge test --help | grep -q -- '--mutate' || { echo "test-mutation: the local forge ($$(forge --version | head -1)) has no mutation testing; it needs forge >= 1.8.0 (install the .foundryref version)"; exit 1; }
 	TEST_SEED=1 forge test --mutate src --match-path 'test/simulation/**' --match-test shortRun --mutation-timeout 900
 
 # The helper is deliberately repeated by each target: invoking `make deploy-protocol` directly is as safe as
@@ -202,9 +200,12 @@ deploy-guardian:
 	$(call archive_broadcast,DeployGuardianSignals.s.sol,guardian-$(GUARDIAN_GROUP))
 
 # The vault + its Morpho adapter in one broadcast: the adapter's parent vault is a constructor immutable.
-# Needs an existing run — the adapter's other immutables are that run's core and IRM router.
+# Needs an existing run — the adapter's other immutables are that run's core and IRM router. `forge script` compiles
+# only `src/` and what the script imports, so the pair's artifacts, which vm.deployCode loads, are built from their
+# trigger first.
 deploy-vault-v2:
 	$(require_deploy_context)
+	@forge build test/utils/_VaultV2CompileTriggers.sol
 	@$(DEPLOY_ENV) forge script script/DeployVaultV2.s.sol --sig 'run(string,string,string)' "$(CONFIG)" "$(VAULT)" "$(ADAPTER)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployVaultV2.s.sol,vault-v2-$(VAULT))
 	@test "$(VERIFY)" = "false" || $(MAKE) verify-vault-v2 RUN="$(RUN)" VAULT="$(VAULT)" ADAPTER="$(ADAPTER)"
@@ -235,9 +236,11 @@ verify-vault-v2:
 			"$$(key $$A vault)" "$$(key $$A morpho)" "$$(key $$A adaptive_curve_irm)")"
 
 # This run's own bundler stack over an existing run: a fresh Bundler3 dispatcher, the general adapter bound to it
-# and to the run's core, and the vault adapter bound to it.
+# and to the run's core, and the vault adapter bound to it. `forge script` compiles only `src/` and what the script
+# imports, so Bundler3, which vm.deployCode loads, is built from its anchor first, together with the general adapter.
 deploy-bundler:
 	$(require_deploy_context)
+	@forge build script/Bundler3Anchor.sol src/adapters/EthereumGeneralAdapter1.sol
 	@$(DEPLOY_ENV) forge script script/DeployBundler.s.sol --sig 'run(string)' "$(CONFIG)" $(DEPLOY_FLAGS)
 	$(call archive_broadcast,DeployBundler.s.sol,bundler)
 	@test "$(VERIFY)" = "false" || $(MAKE) verify-bundler RUN="$(RUN)" CONFIG="$(CONFIG)"
@@ -431,6 +434,9 @@ solhint:
 doc:
 	forge build --ast
 	python3 tools/gen_api_from_artifacts.py
+
+audit-checksums:
+	bash tools/audit-checksums.sh $(REF)
 
 ci: build lint test-local
 
