@@ -28,8 +28,7 @@ unexport DOTENV_OVERRIDE_VARS
 unexport $(addprefix _DOTENV_ORIGIN_,$(DOTENV_OVERRIDE_VARS))
 unexport $(addprefix _DOTENV_VALUE_,$(DOTENV_OVERRIDE_VARS))
 
-# Expanding exported helpers/defaults would read legacy TOML even for help or Solidity scripts.
-# Explicit inputs from the environment or .env still propagate to recursive make.
+# Avoid evaluating legacy TOML defaults while exporting the environment.
 unexport capture_exported_value restore_exported_value
 unexport $(foreach variable,EXECUTOR,$(if $(filter undefined,$(origin $(variable))),$(variable)))
 
@@ -165,7 +164,6 @@ export-deployment: ## Export address provider: SCRIPT=<export.s.sol> RUN=<run>
 	forge script "$(SCRIPT)" --sig 'run(string)' "$(RUN)"
 	forge fmt "script/deployment/generated/$(RUN)"
 
-# Historical governance rehearsals still use the recorded TOML deployment.
 CONFIG ?= mainnet
 MARKET ?= weth-wsteth
 PIN_BLOCK ?=

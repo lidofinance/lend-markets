@@ -27,7 +27,6 @@ struct VaultV2Addresses {
     address adapter;
 }
 
-/// @notice Shared periphery construction for scripts and fork fixtures.
 abstract contract PeripheryDeployment is CommonBase {
     function _deployBundler(ProtocolAddresses memory p, BundlerPlan memory plan)
         internal

@@ -8,7 +8,6 @@ import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol
 import {DeployConfigFile} from "./lib/DeployConfigFile.sol";
 import {MarketConfigFile} from "./lib/MarketConfigFile.sol";
 
-/// @notice Compatibility reader for results recorded before Solidity deployment recipes.
 library LegacyDeployment {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 

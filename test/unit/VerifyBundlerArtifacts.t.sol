@@ -15,7 +15,6 @@ contract VerifyBundlerArtifactsHarness is VerifyBundlerArtifacts {
     }
 }
 
-/// @notice Historical bundler artifacts must identify the intended deployment and core.
 contract VerifyBundlerArtifactsTest is Test {
     address internal constant AGENT = address(0xA11);
     address internal constant EXECUTOR = address(0xE11);

@@ -24,8 +24,6 @@ import {MarketPreparation} from "./MarketPreparation.sol";
 
 import {DeploymentSnapshot, RecordedMarket} from "../../script/deployment/DeploymentSnapshot.sol";
 
-/// @notice An in-process mainnet fixture using the same deployment operations as the broadcast scripts.
-/// @dev No network transactions, artifact writes, or external governance protocol deployments.
 contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparation, DeployWethWsteth {
     function prepare() external returns (DeploymentSnapshot memory) {
         return _prepareFixture(true);
@@ -35,7 +33,6 @@ contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparati
         return _prepareFixture(false);
     }
 
-    /// @notice Prepare an existing mainnet protocol in the caller's private Forge fork.
     /// @dev Recorded markets are authoritative; absent primary market uses the reviewed Solidity recipe.
     function prepareExisting(
         ProtocolAddresses memory p,
@@ -88,7 +85,6 @@ contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparati
             exitBooks: books
         });
         for (uint256 i; i < markets.length; ++i) {
-            // A new market may reuse a prior market's reviewed guardian group and canonical price feed.
             if (markets[i].contracts.controller == address(0)) {
                 for (uint256 j; j < i; ++j) {
                     if (markets[i].plan.market.oracle == address(0)) {
@@ -107,7 +103,6 @@ contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparati
         }
     }
 
-    /// @dev Extend this list when another required WETH/wstETH market is reviewed; orchestration stays unchanged.
     function _requiredMarkets() internal pure virtual returns (RecordedMarket[] memory markets) {
         markets = new RecordedMarket[](1);
         address[] memory guardians = new address[](1);

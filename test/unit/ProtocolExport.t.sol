@@ -28,7 +28,6 @@ contract ProtocolExportTest is Test {
         assertEq(keccak256(bytes(vm.readFile(firstPath))), firstContent);
         assertTrue(vm.contains(vm.readFile(firstPath), "p.chainId = 1;"));
         assertTrue(vm.contains(vm.readFile(secondPath), "p.chainId = 560048;"));
-        // Exit books never appear in the protocol address provider.
         assertFalse(vm.contains(vm.readFile(firstPath), "p.morphoBook ="));
         _clean(first);
         _clean(second);

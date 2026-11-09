@@ -33,7 +33,7 @@ contract DeployWethWsteth is DeployMarketBase, MainnetProtocol {
         return _wethWstethPlan(new address[](0));
     }
 
-    /// @dev Economic parameters remain draft; the committee must be supplied explicitly by the concrete deployment.
+    /// @dev Draft economic parameters; review before broadcasting.
     function _wethWstethPlan(address[] memory guardians) internal pure returns (MarketPlan memory plan) {
         plan.name = "weth-wsteth";
         plan.guardianGroup = keccak256("weth-wsteth");

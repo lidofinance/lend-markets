@@ -6,7 +6,6 @@ import {ProtocolDeployer} from "../lib/ProtocolDeployer.sol";
 import {ProtocolConfig, ProtocolDeployment as Backbone} from "./ProtocolTypes.sol";
 import {ProtocolAddresses, ProtocolPlan, CircuitBreakerPlan} from "./DeploymentTypes.sol";
 
-/// @notice Shared protocol creation for broadcast scripts and in-process fork fixtures.
 abstract contract ProtocolDeployment is CommonBase, ProtocolDeployer {
     error MissingProtocolGovernance();
 

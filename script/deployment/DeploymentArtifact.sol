@@ -4,7 +4,6 @@ pragma solidity 0.8.36;
 import {Vm} from "forge-std/Vm.sol";
 import {DeploymentHeader, DeploymentSchema} from "./DeploymentRecord.sol";
 
-/// @notice Immutable deployment results; inputs remain in Solidity scripts.
 library DeploymentArtifact {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 

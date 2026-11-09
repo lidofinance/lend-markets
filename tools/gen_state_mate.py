@@ -1,32 +1,12 @@
 #!/usr/bin/env python3
-"""Generate the state-mate configs for a deploy run.
+"""Generate State Mate drafts from run artifacts, reviewed configs and RPC proxy addresses.
 
-Addresses come from the run's artifacts under deployed/<RUN>/, expected values from the reviewed configs under
-script/config/<CONFIG>/, and proxy implementations from the node the run lives on. Every contract gets every
-view of its ABI listed; the ones without an expectation stay `null`.
+Required: RUN, RPC_URL. CONFIG defaults to RUN; OUT_DIR defaults to
+script/config/<CONFIG>/state-mate; ABI_DIR defaults to out/.
+GUARDIAN_DELEGATES accepts guardian=delegate pairs separated by commas.
 
-    RUN=hoodi-testnet-fork CONFIG=hoodi-testnet RPC_URL=http://127.0.0.1:8545 python3 tools/gen_state_mate.py
-
-Emits into script/config/<CONFIG>/state-mate/:
-  post-deploy.yaml           right after the historical deployment — markets inert: no controller bound, no IRM routed,
-                             no pauser or steward, allowlists empty; roles, parameters and proxies checked;
-  live.yaml                  the live expectation after the activation motions — markets live, IRM routed,
-                             settlement on, the pauser committee registered and live, the risk steward
-                             (`risk_steward` in the network config) appointed on every market, exit-book
-                             allowlists still empty; the pending-action workflow checks it against the
-                             fork with script/config/<CONFIG>/pending.toml applied;
-  post-activation-fork.yaml  the same run checked on the fork, where the activation replay
-                             (ActivateMarkets.s.sol) allowlists the exit books and appoints no steward;
-  abis.json.gz               ABIs from forge's out/, keyed chainId:address, so unverified contracts need no
-                             explorer. Existing entries are kept.
-
-The emitted `rpcUrl` is the env var `<NETWORK>_RPC_URL` (e.g. MAINNET_RPC_URL, HOODI_RPC_URL) state-mate reads.
-A fork rehearsal run as the live deployer from its live nonce records the addresses the live run will get, so
-the config generated from it is ready before the live deploy.
-
-Env: RUN and RPC_URL (required), CONFIG (the deployment folder; default RUN), GUARDIAN_DELEGATES
-("guardian=delegate,..." pins the delegates), OUT_DIR (default: script/config/<CONFIG>/state-mate),
-ABI_DIR (default: forge out/).
+Writes post-deploy.yaml, live.yaml, post-activation-fork.yaml and abis.json.gz.
+Coverage is partial; preserve additional expectations in manually maintained configs.
 """
 import glob
 import gzip

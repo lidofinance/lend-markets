@@ -56,7 +56,7 @@ struct VaultV2Record {
     VaultV2Addresses addresses;
 }
 
-/// @dev Named ABI schemas let Foundry read/write typed artifacts without field-by-field config parsers.
+/// @dev Named schemas preserve struct field names in TOML serialization.
 library DeploymentSchema {
     string internal constant DEPLOYMENTHEADER =
         "DeploymentHeader(uint256 version,string run,string kind,string name,uint256 chainId,address sender,uint256 blockNumber)";

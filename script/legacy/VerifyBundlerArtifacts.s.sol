@@ -6,13 +6,11 @@ import {Script} from "forge-std/Script.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "./lib/ArtifactMetadata.sol";
 import {DeployConfigFile} from "./lib/DeployConfigFile.sol";
 
-/// @notice Read-only compatibility validation for historical TOML artifacts.
 contract VerifyBundlerArtifacts is Script {
     error ProtocolDeploymentMismatch(string expected, string actual);
     error RecordedNameMismatch(string expected, string actual);
     error RecordedMorphoMismatch(address expected, address actual);
 
-    /// @notice Validates the immutable artifact before an explorer verification retry.
     /// @dev No RPC state is needed: the verification command independently selects the artifact's recorded chain.
     function validateArtifacts(string memory bundlerName) external view {
         _validateArtifacts(ArtifactMetadataFile.deployment(), bundlerName);

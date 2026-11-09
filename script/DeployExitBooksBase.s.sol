@@ -6,7 +6,6 @@ import {ProtocolDeployer} from "./lib/ProtocolDeployer.sol";
 import {ExitBookConfig} from "./deployment/ExitBookPlan.sol";
 import {ExitBookAddresses} from "./deployment/DeploymentTypes.sol";
 
-/// @notice Deploys exit books independently from protocol and market creation.
 import {DeploymentArtifact} from "./deployment/DeploymentArtifact.sol";
 import {DeploymentHeader, DeploymentSchema, ExitBooksRecord} from "./deployment/DeploymentRecord.sol";
 

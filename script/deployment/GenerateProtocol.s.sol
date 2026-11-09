@@ -7,7 +7,7 @@ import {ProtocolRecord, DeploymentSchema} from "./DeploymentRecord.sol";
 import {ProtocolAddresses} from "./DeploymentTypes.sol";
 import {ArtifactMetadataFile} from "../legacy/lib/ArtifactMetadata.sol";
 
-/// @notice Exports a recorded protocol into Solidity; deployment execution never reads the source TOML.
+/// @notice Exports protocol addresses as an inheritable Solidity contract.
 contract GenerateProtocol is Script {
     function run(string memory runName) external returns (string memory output) {
         string memory runDir = ArtifactMetadataFile.artifactsDir(runName);

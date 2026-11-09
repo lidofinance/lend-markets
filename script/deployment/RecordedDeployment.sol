@@ -105,7 +105,6 @@ library RecordedDeployment {
             }
             d.markets[next++] = market;
         }
-        // The currently supported network recipes use WETH/wstETH. Other token pairs require their own fixture.
         if (block.chainid == 1) {
             if (d.weth == address(0)) d.weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
             if (d.wstEth == address(0)) d.wstEth = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;

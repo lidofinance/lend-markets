@@ -26,7 +26,6 @@ interface IDeploymentController {
     function supplyCap() external view returns (uint256);
 }
 
-/// @notice Shared construction and binding of market components. Callers supply addresses and typed parameters.
 abstract contract MarketDeployment {
     using MarketParamsLib for MarketParams;
 
@@ -118,8 +117,7 @@ abstract contract MarketDeployment {
         }
     }
 
-    /// @dev Initial configuration and role topology must match before activation. Live markets use identity checks
-    /// only.
+    /// @dev Enforces launch parameters and roles before activation.
     function _checkInertMarket(ProtocolAddresses memory p, MarketPlan memory plan, MarketDeploymentResult memory d)
         internal
         view

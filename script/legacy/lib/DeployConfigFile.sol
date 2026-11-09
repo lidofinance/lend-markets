@@ -3,7 +3,6 @@ pragma solidity 0.8.36;
 
 import {Vm} from "forge-std/Vm.sol";
 
-/// @notice Identity checks and config paths for historical artifacts.
 library DeployConfigFile {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     error RegistryCompatibilityHashMismatch(bytes32 expected, bytes32 actual);

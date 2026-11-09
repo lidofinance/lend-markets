@@ -44,7 +44,7 @@ interface IPreparationVaultBook {
     function setVaultAllowed(address vault, bool allowed) external;
 }
 
-/// @notice Prepares lending state locally. Easy Track motions and their permissions are exercised separately.
+/// @dev Activates via impersonation; does not validate Easy Track motion permissions.
 abstract contract MarketPreparation is Test, MarketDeployment {
     uint256 internal constant MIN_SEED_SHARES = 1e9;
     uint256 internal constant MIN_SEED_ASSETS = 1e6;
@@ -59,7 +59,7 @@ abstract contract MarketPreparation is Test, MarketDeployment {
     ) internal returns (MarketDeploymentResult memory d) {
         d = existing;
         if (d.controller == address(0)) {
-            // A partially supplied record is broken input, not permission to deploy a replacement.
+            // Only a fully empty record permits deployment.
             require(keccak256(abi.encode(d)) == keccak256(abi.encode(_emptyMarket())), "Partial market record");
             d = _deployMarket(p, plan);
         } else {
@@ -75,7 +75,7 @@ abstract contract MarketPreparation is Test, MarketDeployment {
             _checkPriceFeed(p, plan);
         }
         if (ILidoLend(p.core).market(d.id).lastUpdate != 0) {
-            // Market creation alone is not a completed activation. Never repair an existing active market.
+            // Validate active markets without changing their governance state.
             require(
                 ILidoLend(p.core).position(d.id, SEED_RECIPIENT).supplyShares >= MIN_SEED_SHARES, "Missing core seed"
             );
