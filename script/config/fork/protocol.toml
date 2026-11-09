@@ -1,5 +1,4 @@
-# Local mainnet-fork provisioning only (`make provision-fork`, run `fork`). Production deployments use
-# mainnet/protocol.toml with the real committee.
+# Local fork only; contains test role holders.
 network = "mainnet"
 chain_id = 1
 
@@ -12,15 +11,11 @@ exit_books = true
 exit_book_pauser = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 exit_book_max_request_lifetime = 31536000  # 365 days
 
-# Test-only composition consumed by script/provision-fork.sh. Market configs still name their own oracle and
-# guardian resources; vaults are standalone and therefore listed explicitly here. `bundler = true` deploys the
-# bundler stack from this folder's bundler.toml.
 [provision]
 markets = ["weth-wsteth", "usdt-usdy"]
 vaults = ["weth-wsteth"]
 bundler = true
 
-# External addresses used by fork tests.
 [external]
 weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 stEth = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"

@@ -27,7 +27,6 @@ library BundlerConfigFile {
     // CONFIG
     // ---
 
-    /// @notice The bundler config of deployment `config`: one stack per deployment, so the file carries no name.
     function read(string memory config) internal view returns (BundlerConfig memory cfg) {
         return parse(vm.readFile(configPath(config)));
     }

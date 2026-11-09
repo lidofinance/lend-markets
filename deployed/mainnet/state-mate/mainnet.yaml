@@ -1,6 +1,4 @@
-# Single manually maintained state-mate config for deployed/mainnet (chain 1).
-# Update this file as deployment progresses, using the deployment artifacts and reviewed configuration.
-# Current stage: core deployed; no markets created, no IRM routed, no pauser or steward appointed.
+# Mainnet: protocol deployed; market activation and factory registration pending.
 
 parameters:
   - &agent "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
@@ -12,7 +10,7 @@ parameters:
   - &wstEth "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
   - &stEth "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
 
-  # Temporary, reviewed 1-of-1 committees; update these expectations when signers change.
+  # Temporary 1-of-1 committees.
   - &committeeSigner "0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd"
   - &easyTrackTrustedCaller "0x4f29aA4c299e17176b48c41D67ee97aE673d29bC"
   - &safeSingleton "0x41675c099f32341bf84bfc5382af534df5c7461a"
@@ -743,7 +741,6 @@ l1:
         paused: null
         supportsInterface: null
 
-    # All privileged Safe committees, including the Easy Track trusted caller.
     riskStewardSafe:
       name: Safe
       address: *riskSteward

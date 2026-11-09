@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Deploys one market stack of a deployment — its oracle, its guardian registry and the inert market — onto a
-# local anvil that already holds the run, for the market rehearsal of a production run. The production guardians
-# config has no committee until governance supplies one; the rehearsal fills it from anvil's default accounts
-# in a throw-away copy of the config, so nothing under script/config/<config>/ changes and no test address can
-# reach a production deploy. The steps are the ordinary deploy targets, resumable through deploy-step.sh.
+# Deploy a market on local Anvil; fill empty committees in a temporary config copy.
 #
 #   bash script/provision-market.sh <config> <run> <market> [oracle] [guardian-group]
 #

@@ -10,17 +10,12 @@ import {BundlerConfig, BundlerConfigFile} from "./lib/BundlerConfigFile.sol";
 import {DeployConfig, DeployConfigFile} from "./lib/DeployConfigFile.sol";
 import {ProtocolConfigFile} from "./lib/ProtocolConfigFile.sol";
 
-/// @notice Deploys this run's own bundler stack — the stock `Bundler3` dispatcher, the vendored
-///         `EthereumGeneralAdapter1` bound to the run's core, and the `LidoLendVaultAdapter`, the two adapters
-///         bound to that dispatcher — and records them as `bundler.toml`. Both upstream contracts pin solc 0.8.28,
-///         so they are created from their `out/` artifacts. Acceptance re-checks the adapters' immutables.
+/// @dev Bundler3 and the general adapter require solc 0.8.28 and are deployed from compiled artifacts.
 contract DeployBundler is Script {
     error ProtocolDeploymentMismatch(string expected, string actual);
     error RecordedNameMismatch(string expected, string actual);
     error RecordedMorphoMismatch(address expected, address actual);
 
-    /// @param config The deployment whose configs are read (`script/config/<config>/`); its `bundler.toml` names
-    ///        the tokens, and the artifact records the deployment as the stack's name.
     function run(string memory config)
         external
         returns (address bundler3, address generalAdapter, address vaultAdapter)

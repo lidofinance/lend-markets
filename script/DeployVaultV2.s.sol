@@ -22,7 +22,6 @@ contract DeployVaultV2 is Script {
     error ProtocolIrmRouterNotContract(address irmRouter);
     error RecordedNameMismatch(string expected, string actual);
 
-    /// @param config The deployment whose configs are read (`script/config/<config>/`).
     function run(string memory config, string memory vaultName, string memory adapterName)
         external
         returns (address vault, address adapter)

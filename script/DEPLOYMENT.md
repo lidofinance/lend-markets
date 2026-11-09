@@ -57,32 +57,19 @@ Every market is routed through the protocol's Adaptive Curve IRM singleton. Its 
 
 ## State Mate
 
-The reviewed mainnet expectations are maintained in
-[`deployed/mainnet/state-mate/mainnet.yaml`](../deployed/mainnet/state-mate/mainnet.yaml), with a shared
-`abis.json.gz` alongside it. This one config covers the protocol, Exit Books, bundler, Easy Track factories
-and registration status, and all three Safe committees (Risk Steward, CircuitBreaker pausers and Easy Track
-trusted caller). The committees currently use a reviewed 1-of-1 signer set; Safe owners, threshold, singleton,
-version, modules, guard and fallback handler are checked explicitly. GuardianSignals committee membership
-and quorum are separate checks to add when its registry is deployed.
+[`deployed/mainnet/state-mate/mainnet.yaml`](../deployed/mainnet/state-mate/mainnet.yaml) covers the protocol,
+Exit Books, bundler, Easy Track and three Safe committees, currently 1-of-1. Its ABI cache is in the same folder.
+Run against `MAINNET_RPC_URL` with `--block` pinned. Preseeder ACL checks require State Mate with exhaustive
+role-event scanning and `ETHERSCAN_EXPLORER_TOKEN`.
 
-Run this file with State Mate against `MAINNET_RPC_URL`, pinning `--block` for a repeatable review. The
-Preseeder's `ozNonEnumerableAcl` requires State Mate with exhaustive role-event scanning and an Etherscan
-API token (`ETHERSCAN_EXPLORER_TOKEN`); isolated `hasRole` calls cannot exclude unexpected role holders.
-Before registration, every lending Easy Track factory must be unregistered with empty permissions. Update
-those expectations to the reviewed permissions after the registration motion.
+The config expects unregistered lending factories with empty permissions. Update those expectations after
+registration and add GuardianSignals membership/quorum checks when its registry is deployed. `null` means skipped.
 
-`make state-mate-config RUN=<run> CONFIG=<config>` generates **draft** checks under
-`script/config/<config>/state-mate/`. It does not reproduce the manually maintained mainnet config. Review
-its output before using it: generation currently omits the market and IRM-config factories, standalone
-GuardianSignals/controller/vault implementation entries, the bundler and adapters, Easy Track and Safes.
-It also omits implementation-initialization checks and some manually pinned values (domain separators,
-role admins, supported interfaces, CircuitBreaker pausables/heartbeat expiry and Exit Book limits).
-Generation also requires every resource named in the config's `[provision]` plan; the current protocol-only
-mainnet deployment cannot use that command until those planned resources exist. Proxy implementation
-addresses are read from RPC during generation and need independent review.
-Do not replace the reviewed config with generated output; preserve its extra expectations. A `null` check
-is explicitly skipped, not verified. Historical Hoodi files retain their original Exit Book handover
-expectations, which differ from the current mainnet policy.
+`make state-mate-config RUN=<run> CONFIG=<config>` writes partial drafts under
+`script/config/<config>/state-mate/` and requires every resource in `[provision]`. It omits factories, standalone
+implementations, bundler/adapters, Easy Track, Safes and some manual parameter checks. Proxy implementations
+are taken from RPC. Do not use generated output to replace the reviewed mainnet config.
+Historical Hoodi configs retain their original Exit Book roles and fee recipient.
 
 ## Deploy
 

@@ -116,7 +116,7 @@ contract ActivateMarkets is Script {
         _run(false);
     }
 
-    /// @notice Activates only markets not yet created on the core. Already-created markets keep their live state.
+    /// @notice Activates uncreated markets; preserves existing markets.
     function runPending() external {
         _run(true);
     }
@@ -175,7 +175,7 @@ contract ActivateMarkets is Script {
     }
 
     function _processMarkets(ActivationInput[] memory markets, bool pendingOnly) internal {
-        // Decide the set once, before broadcasting; activation itself changes the created-state predicate.
+        // Snapshot the pending set before activation changes it.
         bool[] memory selected = new bool[](markets.length);
         for (uint256 i; i < markets.length; ++i) {
             if (bytes(markets[i].name).length == 0) continue;

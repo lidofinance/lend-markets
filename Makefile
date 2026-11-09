@@ -31,11 +31,7 @@ unexport $(addprefix _DOTENV_VALUE_,$(DOTENV_OVERRIDE_VARS))
 FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test
 FORK_PATH := test/fork/**
 
-# Deployment workflow. `CONFIG` names the deployment whose configs are read from `script/config/$(CONFIG)/`
-# (laid out like the artifacts: protocol.toml, markets/, oracles/, guardians/, circuit-breaker.toml, bundler.toml).
-# `RUN` is the sole artifact identity: every deploy target writes below `deployed/$(RUN)/` by passing it as
-# ARTIFACTS_DIR; a rehearsal deploys CONFIG under another RUN. RPC credentials stay in `.env`; the command line carries
-# only the non-secret deployment choices.
+# CONFIG selects inputs; RUN selects deployed/<run>/ artifacts.
 CONFIG ?= mainnet
 FORK_CONFIG ?= fork
 RUN ?=
@@ -348,8 +344,6 @@ activate-markets:
 	@$(DEPLOY_ENV) forge script script/ActivateMarkets.s.sol --sig '$(ACTIVATION_ENTRYPOINT)' \
 		--rpc-url "$(RPC_URL)" --unlocked --sender "$(EXECUTOR)" --broadcast
 
-# state-mate configs for RUN: addresses from its artifacts, expectations from script/config/$(CONFIG)/, proxy
-# implementations from the node at RPC_URL. Written into script/config/$(CONFIG)/state-mate/.
 state-mate-config:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL (the node the run lives on)"; exit 1; }
@@ -443,11 +437,7 @@ ci: build lint test-local
 clean:
 	forge clean
 
-# Deploy + activate the fork markets on a local anvil fork of the network FORK_CONFIG names, leaving
-# `deployed/fork/` for the fork suites to bind to. Every step is an ordinary deploy target; only the final
-# activation is a script rather than a governance motion. FORK_CONFIG defaults to `fork`, the provisioning
-# deployment's own config folder, keeping test-only role holders out of the production configs. RPC_URL is the upstream archive node when the driver starts anvil; deploy steps target the
-# local node in either mode.
+# RPC_URL is upstream; deployment and activation target local Anvil.
 provision-fork:
 	@PROVISION_RESULT_FILE="$(PROVISION_RESULT_FILE)" PROVISION_REQUEST_TOKEN="$(PROVISION_REQUEST_TOKEN)" \
 		bash script/provision-fork.sh "$(RPC_URL)" "$(FORK_CONFIG)" "$(PIN_BLOCK)"
@@ -455,10 +445,7 @@ provision-fork:
 provision-stop:
 	bash script/provision-fork.sh stop
 
-# One market stack of CONFIG — oracle, guardian registry, inert market — onto a local anvil that already holds RUN:
-# the market rehearsal of a production run. A guardians config without a committee is filled from anvil's default
-# accounts in a throw-away copy of the config (GUARDIANS overrides the list); nothing under script/config/ changes.
-# RPC_URL is the local node and must answer the anvil RPCs.
+# Empty committees use test accounts in a temporary config copy; RPC_URL must be Anvil.
 provision-market:
 	@test -n "$(RUN)" || { echo "ERROR: set RUN (the run deployed on the local node)"; exit 1; }
 	RPC_URL="$(RPC_URL)" DEPLOYER_SENDER="$(DEPLOYER_SENDER)" GUARDIANS="$(GUARDIANS)" \

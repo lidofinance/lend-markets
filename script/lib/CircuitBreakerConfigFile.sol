@@ -21,8 +21,6 @@ library CircuitBreakerConfigFile {
 
     error ArtifactAlreadyExists(string path);
 
-    /// @notice The deployment's CircuitBreaker config: one per deployment,
-    /// `script/config/<config>/circuit-breaker.toml`. The artifact keeps the name `circuit_breaker_artifact` selects.
     function read(string memory config) internal view returns (CircuitBreakerConfig memory cfg) {
         string memory toml = vm.readFile(configPath(config));
         cfg.minPauseDuration = ConfigToml.requireUint(toml, ".min_pause_duration");

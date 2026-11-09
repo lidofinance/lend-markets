@@ -6,11 +6,8 @@
 #   bash script/provision-fork.sh check                             # is the run live on the local anvil?
 #   bash script/provision-fork.sh stop                              # stop the anvil a previous run started
 #
-# `config` is the provisioning deployment (its configs live under script/config/<config>/) and selects the
-# network to fork: its chain_id is what the upstream must report and what anvil is started with. `block` pins the upstream block anvil forks from; without it anvil
-# forks the tip and a run is not reproducible. When no compatible anvil is already
-# running, the upstream comes from the argument or RPC_URL and must be an archive node, not the local anvil.
-# Deploy steps always receive the local anvil URL on the command line.
+# CONFIG selects script/config/<config>/; BLOCK pins the upstream fork.
+# Deploy steps target local Anvil.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
