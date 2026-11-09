@@ -12,12 +12,6 @@ pauser_committee = "0x604B13eD638663AA0C1eEF0c3482e51f228BA2E1"
 risk_steward = "0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E"
 exit_book_max_request_lifetime = 7776000  # 90 days
 
-# What a run of this config deploys, in the order the scripts require. Read by `make deploy-all`.
-[provision]
-oracles = ["weth-wsteth"]
-guardians = ["weth-wsteth"]
-markets = ["weth-wsteth"]
-
 [external]
 weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 stEth = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"

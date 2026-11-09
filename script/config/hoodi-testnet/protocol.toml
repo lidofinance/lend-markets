@@ -2,7 +2,7 @@
 # The real Hoodi governance stack holds the governance roles (Aragon Agent /
 # EasyTrack EVMScriptExecutor / Dual Governance ResealManager, docs.lido.fi), so activation and
 # management run as EasyTrack motions. Mock USDY / NAV / stable feeds are already deployed on Hoodi and
-# reused. Their addresses are set in the oracle/market configs.
+# reused. Their addresses are recorded in the oracle/market artifacts.
 # Exit books deploy with the protocol with EMPTY source allowlists (rollout is a separate step).
 network = "hoodi"
 chain_id = 560048
@@ -21,12 +21,6 @@ exit_book_max_request_lifetime = 7776000                            # 90 days
 # Externals for the fork suites (`_ext`). config_hash is provenance only; artifact compatibility is
 # checked on compatibility_hash (network, chain_id, agent, executor, reseal_manager, cb artifact).
 # usdyBlocklist has no hoodi counterpart — the USDY mock carries no blocklist.
-# What a run of this config deploys, in the order the scripts require. Read by `make deploy-all`.
-[provision]
-oracles = ["weth-wsteth", "usdt-usdy", "usdc-usdy"]
-guardians = ["shared"]
-markets = ["weth-wsteth", "usdt-usdy", "usdc-usdy"]
-
 [external]
 weth = "0xE69a5c6dd88cA798b93c3C92fc50c51Fd5305eB4"
 stEth = "0x3508A952176b3c15387C97BE809eaffB1982176a"

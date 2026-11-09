@@ -134,7 +134,9 @@ library RecordedDeployment {
                 bytes(r.role).length != 0 && keccak256(bytes(r.plan.name)) == keccak256(bytes(name)),
                 "Market identity mismatch"
             );
+            market.deployedBlock = r.header.blockNumber;
             market.priceFeedKind = "wsteth-rate";
+            market.priceFeed.wstEth = r.plan.market.collateralToken;
             market.role = r.role;
             market.plan = r.plan;
             market.contracts = r.addresses;

@@ -64,6 +64,10 @@ library LegacyDeployment {
             ),
             m
         );
+        require(
+            vm.parseTomlAddress(cb, ".circuit_breaker.address") == d.protocol.circuitBreaker,
+            "Historical circuit breaker mismatch"
+        );
         d.circuitBreakerPlan.minPauseDuration = vm.parseTomlUint(cb, ".circuit_breaker.min_pause_duration");
         d.circuitBreakerPlan.maxPauseDuration = vm.parseTomlUint(cb, ".circuit_breaker.max_pause_duration");
         d.circuitBreakerPlan.minHeartbeatInterval = vm.parseTomlUint(cb, ".circuit_breaker.min_heartbeat_interval");
@@ -87,6 +91,11 @@ library LegacyDeployment {
             vm.parseTomlAddress(a, ".market.factory") == vm.parseTomlAddress(p, ".protocol.factory"),
             "Historical market factory mismatch"
         );
+        require(
+            vm.parseTomlAddress(a, ".market.irm") == vm.parseTomlAddress(p, ".protocol.irm_router"),
+            "Historical market router mismatch"
+        );
+        entry.deployedBlock = vm.parseTomlUint(a, ".market.deployed_block");
         entry.role = vm.parseTomlString(a, ".market.role");
         entry.plan.name = vm.parseTomlString(a, ".market.name");
         (entry.plan.market, entry.plan.wrapper, entry.plan.curve) = MarketConfigFile.parse(a);
@@ -102,6 +111,17 @@ library LegacyDeployment {
         require(
             vm.parseTomlAddress(feed, ".oracle.address") == entry.plan.market.oracle, "Historical price feed mismatch"
         );
+        if (vm.keyExistsToml(feed, ".oracle.wsteth")) {
+            entry.priceFeed.wstEth = vm.parseTomlAddress(feed, ".oracle.wsteth");
+        }
+        if (vm.keyExistsToml(feed, ".oracle.usdy_oracle")) {
+            entry.priceFeed.usdySource = vm.parseTomlAddress(feed, ".oracle.usdy_oracle");
+            entry.priceFeed.feed = vm.parseTomlAddress(feed, ".oracle.feed");
+            entry.priceFeed.loanToken = vm.parseTomlAddress(feed, ".oracle.loan_token");
+            entry.priceFeed.collateralToken = vm.parseTomlAddress(feed, ".oracle.collateral_token");
+            entry.priceFeed.minPrice = vm.parseTomlUint(feed, ".oracle.min_price");
+            entry.priceFeed.maxPrice = vm.parseTomlUint(feed, ".oracle.max_price");
+        }
         entry.priceFeedKind = vm.parseTomlString(feed, ".oracle.kind");
         require(
             bytes(entry.role).length != 0 && keccak256(bytes(entry.plan.name)) == keccak256(bytes(name)),
@@ -125,10 +145,37 @@ library LegacyDeployment {
         entry.contracts.irmConfig = vm.parseTomlAddress(a, ".market.irm_config");
         string memory v = string.concat(dir, "/vaults/", name, ".toml");
         string memory adapter = string.concat(dir, "/adapters/", name, ".toml");
-        if (vm.exists(v) && vm.exists(adapter) && !vm.keyExistsToml(vm.readFile(v), ".header.version")) {
-            entry.vaultV2 = vm.parseTomlAddress(ArtifactMetadataFile.requireCompatible(v, m), ".vault.address");
-            entry.adapter = vm.parseTomlAddress(ArtifactMetadataFile.requireCompatible(adapter, m), ".adapter.address");
+        if (vm.exists(v) && !vm.keyExistsToml(vm.readFile(v), ".header.version")) {
+            _loadVault(entry, v, adapter, m, core);
+        } else {
+            require(!vm.exists(adapter), "Historical adapter without vault");
         }
+    }
+
+    function _loadVault(
+        RecordedMarket memory entry,
+        string memory vaultPath,
+        string memory adapterPath,
+        ArtifactMetadata memory m,
+        address core
+    ) private view {
+        string memory v = ArtifactMetadataFile.requireCompatible(vaultPath, m);
+        string memory a = ArtifactMetadataFile.requireCompatible(adapterPath, m);
+        bytes32 name = keccak256(bytes(entry.plan.name));
+        require(
+            keccak256(bytes(vm.parseTomlString(v, ".vault.name"))) == name
+                && keccak256(bytes(vm.parseTomlString(a, ".adapter.name"))) == name
+                && keccak256(bytes(vm.parseTomlString(a, ".adapter.vault_artifact"))) == name,
+            "Historical vault identity mismatch"
+        );
+        entry.vaultV2 = vm.parseTomlAddress(v, ".vault.address");
+        entry.adapter = vm.parseTomlAddress(a, ".adapter.address");
+        require(vm.parseTomlAddress(a, ".adapter.vault") == entry.vaultV2, "Historical adapter vault mismatch");
+        require(vm.parseTomlAddress(a, ".adapter.morpho") == core, "Historical adapter core mismatch");
+        require(
+            vm.parseTomlAddress(a, ".adapter.adaptive_curve_irm") == entry.contracts.params.irm,
+            "Historical adapter router mismatch"
+        );
     }
 
     function _optionalExternal(string memory config, string memory name) private view returns (address) {

@@ -9,7 +9,19 @@ import {
     ExitBookAddresses
 } from "./DeploymentTypes.sol";
 
+struct PriceFeedRecord {
+    address wstEth;
+    address usdySource;
+    address feed;
+    address loanToken;
+    address collateralToken;
+    uint256 minPrice;
+    uint256 maxPrice;
+}
+
 struct RecordedMarket {
+    uint256 deployedBlock;
+    PriceFeedRecord priceFeed;
     string priceFeedKind;
     string role;
     MarketPlan plan;

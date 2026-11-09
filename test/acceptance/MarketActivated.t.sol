@@ -13,6 +13,8 @@ contract MarketActivatedAcceptance is AcceptanceBase {
         if (!_isMarketActivated()) vm.skip(true, "acceptance: market is not activated");
         _loadExpectedSettlementChoice();
         _loadExpectedPauserCommittee();
+        _loadExpectedSteward();
+        _loadExpectedFunding();
     }
 
     function test_fullyConnectedConfiguredAndLive() external {
@@ -23,6 +25,7 @@ contract MarketActivatedAcceptance is AcceptanceBase {
         _assertRoles();
         _assertRoleHolderCompleteness();
         _assertActivated();
+        _assertActivationFunding();
         _assertExitBooksAllowed();
     }
 

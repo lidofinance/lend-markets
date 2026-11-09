@@ -136,27 +136,73 @@ Verify an inert or activated deployment independently:
 
 ```sh
 make acceptance-run RUN=<run> MARKET=<name> RPC_URL=<deployment-rpc> \
-  ACCEPTANCE_PAUSER_COMMITTEE=<reviewed-address> ACCEPTANCE_ENABLE_SETTLEMENT=true
+  ACCEPTANCE_PAUSER_COMMITTEE=<reviewed-address> ACCEPTANCE_ENABLE_SETTLEMENT=true \
+  ACCEPTANCE_STEWARD=<reviewed-steward-or-zero-address> \
+  ACCEPTANCE_FEE=<approved-fee-in-wad> \
+  ACCEPTANCE_MIN_CORE_SEED_SHARES=<reviewed-core-share-threshold> \
+  ACCEPTANCE_MIN_VAULT_SEED_SHARES=<reviewed-vault-share-threshold>
 make acceptance-run-multi RUN=<run> MARKET_A=<first> MARKET_B=<second> RPC_URL=<deployment-rpc> \
   ACCEPTANCE_ENABLE_SETTLEMENT=true
 ```
 
 Acceptance checks initial-launch wiring, exact role sets, bytecode and recorded parameters. It is not an audit
-of later governance role changes. Readiness and activated suites choose their applicable state; the two-market
+of later governance role changes. Activated checks require `ACCEPTANCE_STEWARD`; use the zero address only when the reviewed motion appoints no steward.
+Activated checks also require `ACCEPTANCE_FEE` and positive `ACCEPTANCE_MIN_CORE_SEED_SHARES` /
+`ACCEPTANCE_MIN_VAULT_SEED_SHARES`. Approve these values from the motion and preseed calculation before running;
+they are not inferred from live balances. Fee is compared exactly; both seed balances at `0x000000000000000000000000000000000000dEaD`
+must meet the reviewed share thresholds. These are share units, not loan-token amounts; the current Preseeder
+requires at least `1000000000` locked shares in each position. Transaction-level funding amounts remain part
+of the Easy Track motion replay and receipt checks.
+Readiness and activated suites choose their applicable state; the two-market
 suite rehearses sequential activation. It does not publish those transactions.
 
 ## Historical compatibility
 
 `script/legacy/` holds the readers and verification helpers for existing artifacts. Historical configs under
-`script/config/` are retained for those readers and pending-governance/state-mate rehearsals, not for new
+`script/config/` are retained for those readers and pending-governance rehearsals, not for new
 Solidity deployment. New-format market results can be added to an existing historical protocol run.
 
-`fork-activate`, `activate-markets` and `state-mate-config` are historical TOML tools. They are not part of the
-new deployment path. For new runs use fork preparation for integration tests and acceptance for the activation
-rehearsal. Production activation remains the reviewed Easy Track motion.
+For integration tests use `make test-fork RUN=<run>`; preparation happens inside the private Forge fork.
+Production activation remains the reviewed Easy Track motion.
 
 `apply-pending`, `pending-stop` and `test-pending` retain the separate local-Anvil workflow for rehearsing a
 pending governance transaction. `test-pending` passes `PREPARE=false` to verify exactly the post-action state.
+
+## State Mate drafts
+
+`make state-mate-config RUN=<run> MARKET=<market> RPC_URL=<rpc>` generates one draft:
+`deployed/<run>/state-mate/generated/markets/<market>.yaml`, plus the generated ABI cache.
+It checks the selected market and its bindings on shared contracts. Other markets and shared pauser counts
+are outside its scope. The reviewed per-market config lives at `deployed/<run>/state-mate/markets/<market>.yaml`;
+the common protocol config remains separate.
+
+The Solidity `RecordedDeployment` reader supplies addresses and parameters for both historical and typed
+artifacts. No market-config overlay is read. `OUT_DIR` changes the draft root.
+
+Without `STATE_MATE_ACTIVATION`, the selected market is expected to be inert. To generate its activated state,
+pass `STATE_MATE_ACTIVATION=<reviewed.json>` containing its motion values:
+
+```json
+{
+  "<market-name>": {
+    "fee": "100000000000000000",
+    "pauser": "<reviewed-pauser-address>",
+    "steward": "<reviewed-steward-address-or-zero-address>",
+    "enableSettlement": true,
+    "allowExitBooks": true
+  }
+}
+```
+
+`fee` is an integer WAD ratio; the example means 10%. Entries for other markets do not affect the selected
+market. Generate each market separately: one can be live while another remains inert.
+Regeneration replaces only that market's draft. The old generator's `post-deploy.yaml`, `live.yaml` and
+`post-activation-fork.yaml` outputs under `OUT_DIR` are removed only when their generated-file header is present.
+Manually maintained files are not overwritten or removed.
+
+Review and merge the draft into the maintained market configuration, including the separately reviewed Safe
+checks. Proxy implementation addresses come from RPC for ABI lookup; validate them against the audited
+deployment. `FORK_BLOCK` pins both the export and implementation reads.
 
 ## Audit checksums
 

@@ -57,11 +57,6 @@ library ArtifactMetadataFile {
         }
     }
 
-    /// @dev `ARTIFACTS_DIR` must be one directory name below `deployed/`.
-    function artifactsDir() internal view returns (string memory dir) {
-        return artifactsDir(vm.envString("ARTIFACTS_DIR"));
-    }
-
     function artifactsDir(string memory name) internal pure returns (string memory dir) {
         bytes memory raw = bytes(name);
         if (raw.length == 0) revert InvalidArtifactsDir(name);
@@ -75,9 +70,5 @@ library ArtifactMetadataFile {
             if (!valid) revert InvalidArtifactsDir(name);
         }
         return string.concat("deployed/", name);
-    }
-
-    function deployment() internal view returns (string memory) {
-        return vm.envString("ARTIFACTS_DIR");
     }
 }

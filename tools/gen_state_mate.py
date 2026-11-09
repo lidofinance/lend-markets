@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Generate State Mate drafts from run artifacts, reviewed configs and RPC proxy addresses.
+"""Generate State Mate drafts using the same recorded-deployment reader as Forge tests.
 
-Required: RUN, RPC_URL. CONFIG defaults to RUN; OUT_DIR defaults to
-script/config/<CONFIG>/state-mate; ABI_DIR defaults to out/.
+Required: RUN, MARKET, RPC_URL. Optional STATE_MATE_ACTIVATION supplies reviewed
+motion parameters as JSON. Without it, the selected market is expected to be inert.
+OUT_DIR defaults to deployed/<RUN>/state-mate/generated; ABI_DIR defaults to out/.
 GUARDIAN_DELEGATES accepts guardian=delegate pairs separated by commas.
-
-Writes post-deploy.yaml, live.yaml, post-activation-fork.yaml and abis.json.gz.
 Coverage is partial; preserve additional expectations in manually maintained configs.
 """
-import glob
+import re
 import gzip
 import json
 import os
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 ABI_DIR = os.environ.get("ABI_DIR", os.path.join(ROOT, "out"))
 RUN = os.environ.get("RUN")
-CONFIG = os.environ.get("CONFIG") or RUN
-OUT_DIR = os.environ.get("OUT_DIR") or (os.path.join(ROOT, "script", "config", CONFIG, "state-mate") if CONFIG else None)
+MARKET = os.environ.get("MARKET")
+OUT_DIR = os.environ.get("OUT_DIR") or (os.path.join(ROOT, "deployed", RUN, "state-mate", "generated") if RUN else None)
 RPC = os.environ.get("RPC_URL")
 
 ZERO = "0x0000000000000000000000000000000000000000"
@@ -28,20 +28,13 @@ Z32 = "0x" + "0" * 64
 SHARE_DECIMALS = 18
 
 R = {
-    "MARKET_CREATOR_ROLE": "0xd3065a24ad9e7725d223007135762d2902038999e3e5829146654498a58d9795",
-    "FEE_MANAGER_ROLE": "0x6c0757dc3e6b28b2580c03fd9e96c274acf4f99d91fbec9b418fa1d70604ff1c",
-    "MARKET_MANAGER_ROLE": "0x959ec338079b71742207829b3534c23a2ddd8bcc180652a0ea6677af748b5fed",
-    "GUARDIAN_MANAGER_ROLE": "0xb3afbb2c56b38273bac1b7b0b06fc410454e2570313eb67ef81dfaef813acd18",
     "MANAGER_ROLE": "0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08",
     "PAUSER_ROLE": "0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a",
     "RESUMER_ROLE": "0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3",
     "FREEZER_ROLE": "0x92de27771f92d6942691d73358b3a4673e4880de8356f8f2cf452be87e02d363",
     "UNFREEZER_ROLE": "0x3e02eaefb22229c9fa4ecb927d4a3b0bd2d30b1af650a970c5a95ba1f96906ea",
-    "STEWARD_ADMIN_ROLE": "0x4aadd87f245821b0ca19440acc61321fad3b1dd387bc52b706900941926fbce8",
     "ACCESS_LIMITER_ROLE": "0xfc5f5b5f0f3f8995740cf969e82c673b6edb5075d8813046f28c6058bdd58de0",
     "ACCESS_RESTORER_ROLE": "0x2185faf57ed59187a53d561a36691febce26676457b65b4553aa732fd2c9d195",
-    "ALLOWLIST_MANAGER_ROLE": "0x8f951261ef278c1584c41b9b68518433e1baeac2a60d977f71ca9fe81511cc2f",
-    "RECOVERER_ROLE": "0xb3e25b5404b87e5a838579cb5d7481d61ad96ee284d38ec1e97c07ba64e7f6fc",
 }
 
 # Struct fields in ABI order, with the config key each one is read from.
@@ -64,155 +57,103 @@ SETTLEMENT_FIELDS = [
 ]
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# Minimal TOML reader — the artifacts and configs use sections, scalars and string arrays only.
-# ---------------------------------------------------------------------------------------------------------------
-def _strip_comment(line):
-    out, quoted = [], False
-    for ch in line:
-        if ch == '"':
-            quoted = not quoted
-        elif ch == "#" and not quoted:
-            break
-        out.append(ch)
-    return "".join(out)
-
-
-def _scalar(text):
-    text = text.strip()
-    if text.startswith('"') and text.endswith('"'):
-        return text[1:-1]
-    if text in ("true", "false"):
-        return text == "true"
-    if text.lstrip("-").isdigit():
-        return int(text)
-    raise ValueError("unsupported TOML value: %r" % text)
-
-
-def _split_array(body):
-    items, current, quoted = [], [], False
-    for ch in body:
-        if ch == '"':
-            quoted = not quoted
-        if ch == "," and not quoted:
-            items.append("".join(current))
-            current = []
-        else:
-            current.append(ch)
-    items.append("".join(current))
-    return [_scalar(item) for item in items if item.strip()]
-
-
-def toml_load(path):
-    data, section, pending = {"": {}}, "", None
-    for raw in open(path):
-        line = _strip_comment(raw).strip()
-        if pending is not None:
-            pending += " " + line
-            if "]" in line:
-                key, body = pending.split("=", 1)
-                data[section][key.strip()] = _split_array(body.strip()[1:-1])
-                pending = None
-            continue
-        if not line:
-            continue
-        if line.startswith("["):
-            section = line.strip("[]").strip()
-            data.setdefault(section, {})
-            continue
-        key, _, value = line.partition("=")
-        value = value.strip()
-        if value.startswith("[") and not value.endswith("]"):
-            pending = line
-            continue
-        if value.startswith("["):
-            data[section][key.strip()] = _split_array(value[1:-1])
-        else:
-            data[section][key.strip()] = _scalar(value)
-    return data
-
-
 def s(value):
     """Uint expectation: state-mate compares large numbers as strings."""
     return str(value)
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# Inputs
-# ---------------------------------------------------------------------------------------------------------------
 def die(message):
-    sys.exit("generate.py: " + message)
+    sys.exit("gen_state_mate.py: " + message)
 
 
-def run_path(*parts):
-    return os.path.join(ROOT, "deployed", RUN, *parts)
-
-
-def config_path(*parts):
-    return os.path.join(ROOT, "script", "config", CONFIG, *parts)
+def snake_fields(value):
+    return {re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower(): item for key, item in value.items()}
 
 
 def read_inputs():
-    if not RUN:
-        die("set RUN to the deploy run under deployed/")
-    if not RPC:
-        die("set RPC_URL to the node the run's contracts live on")
-    if not os.path.isfile(run_path("protocol.toml")):
-        die("deployed/%s/protocol.toml is missing" % RUN)
-    if not os.path.isfile(config_path("protocol.toml")):
-        die("script/config/%s/protocol.toml is missing (set CONFIG to the deployment the run was made from)" % CONFIG)
+    if not RUN or not MARKET or not RPC:
+        die("set RUN, MARKET and RPC_URL")
+    command = ["forge", "script", "script/deployment/ExportDeployment.s.sol", "--sig", "run(string)",
+               RUN, "--rpc-url", RPC, "--json"]
+    if os.environ.get("FORK_BLOCK"):
+        command += ["--fork-block-number", os.environ["FORK_BLOCK"]]
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+    if result.returncode:
+        die("deployment export failed: " + result.stderr.replace(RPC, "<RPC_URL>"))
+    output = json.loads(result.stdout)
+    if not output["success"]:
+        die("deployment export reverted")
+    # Decode the ABI string return; Forge's formatted `returns` field escapes JSON for terminal display.
+    encoded = bytes.fromhex(output["returned"].removeprefix("0x"))
+    offset = int.from_bytes(encoded[:32], "big")
+    length = int.from_bytes(encoded[offset:offset + 32], "big")
+    snapshot = json.loads(encoded[offset + 32:offset + 32 + length])
+    return snapshot_inputs(snapshot)
 
-    protocol = toml_load(run_path("protocol.toml"))["protocol"]
-    network = toml_load(config_path("protocol.toml"))
-    net, provision = network[""], network.get("provision", {})
 
-    def by_provision(kind, key):
-        names = provision.get(key) or sorted(
-            os.path.basename(p)[:-5] for p in glob.glob(run_path(kind, "*.toml")))
-        missing = [n for n in names if not os.path.isfile(run_path(kind, n + ".toml"))]
-        if missing:
-            die("deployed/%s/%s/ lacks %s" % (RUN, kind, ", ".join(missing)))
-        return names
-
-    markets = []
-    for name in by_provision("markets", "markets"):
-        artifact = toml_load(run_path("markets", name + ".toml"))
-        config = toml_load(config_path("markets", name + ".toml"))
-        markets.append({"name": name, "artifact": artifact["market"], "config": config})
-
-    guardians = []
-    for name in by_provision("guardians", "guardians"):
-        artifact = toml_load(run_path("guardians", name + ".toml"))["guardian_signals"]
-        config = toml_load(config_path("guardians", name + ".toml"))[""]
-        guardians.append({"name": name, "artifact": artifact, "config": config})
-
-    oracles = []
-    for name in by_provision("oracles", "oracles"):
-        artifact = toml_load(run_path("oracles", name + ".toml"))["oracle"]
-        config = toml_load(config_path("oracles", name + ".toml"))[""]
-        oracles.append({"name": name, "artifact": artifact, "config": config})
-
-    cb_name = protocol["circuit_breaker_artifact"]
-    circuit_breaker = {
-        "artifact": toml_load(run_path("circuit-breakers", cb_name + ".toml"))["circuit_breaker"],
-        "config": toml_load(config_path("circuit-breaker.toml"))[""],
-    }
-
-    exit_books = None
-    if os.path.isfile(run_path("exit-books.toml")):
-        exit_books = toml_load(run_path("exit-books.toml"))["exit_books"]
-
-    return {
-        "protocol": protocol, "network": net, "markets": markets, "guardians": guardians,
-        "oracles": oracles, "circuit_breaker": circuit_breaker, "exit_books": exit_books,
-    }
+def snapshot_inputs(d):
+    protocol = snake_fields(d["protocol"])
+    protocol["risk_steward_dashboard"] = protocol.pop("dashboard")
+    protocol["evm_script_executor"] = protocol.pop("executor")
+    markets, guardians, oracles = [], {}, {}
+    selected = [entry for entry in d["markets"] if entry["plan"]["name"] == MARKET]
+    if len(selected) != 1:
+        die("MARKET must select exactly one recorded market")
+    for entry in selected:
+        plan, contracts = entry["plan"], entry["contracts"]
+        params = snake_fields(plan["market"])
+        activation = snake_fields(params.pop("activation_config"))
+        settlement = snake_fields(params.pop("settlement_config"))
+        artifact = dict(params, id=contracts["id"], controller=contracts["controller"], vault=contracts["vault"],
+                        irm=contracts["params"]["irm"], irm_config=contracts["irmConfig"], role=entry["role"],
+                        vault_name=plan["wrapper"]["name"], vault_symbol=plan["wrapper"]["symbol"])
+        markets.append({"name": plan["name"], "artifact": artifact,
+                        "config": {"market": params, "activation": activation, "settlement": settlement}})
+        registry = contracts["guardianSignals"]
+        guardian = {"name": plan["name"], "artifact": {"address": registry}, "config": snake_fields(plan["committee"])}
+        if registry in guardians and guardians[registry]["config"] != guardian["config"]:
+            die("conflicting recorded guardian parameters: " + registry)
+        guardians[registry] = guardian
+        feed = entry["priceFeed"]
+        config = {"kind": entry["priceFeedKind"], "wsteth": feed["wstEth"], "usdy_oracle": feed["usdySource"],
+                  "feed": feed["feed"], "min_price": feed["minPrice"], "max_price": feed["maxPrice"]}
+        address = contracts["params"]["oracle"]
+        if address in oracles and oracles[address]["config"] != config:
+            die("conflicting recorded price-feed parameters: " + address)
+        oracles[address] = {"name": plan["name"], "artifact": {"address": address}, "config": config}
+    motions = None
+    if os.environ.get("STATE_MATE_ACTIVATION"):
+        with open(os.environ["STATE_MATE_ACTIVATION"]) as handle:
+            motions = json.load(handle)
+        if not isinstance(motions, dict) or MARKET not in motions:
+            die("STATE_MATE_ACTIVATION must contain the selected market")
+        for market in markets:
+            motion = motions[market["name"]]
+            if set(motion) != {"fee", "pauser", "steward", "enableSettlement", "allowExitBooks"}:
+                die("each motion requires fee, pauser, steward, enableSettlement and allowExitBooks")
+            for key in ("pauser", "steward"):
+                if not isinstance(motion[key], str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", motion[key]):
+                    die("invalid motion " + key)
+            if motion["pauser"].lower() == ZERO or type(motion["fee"]) not in (str, int):
+                die("invalid motion pauser or fee")
+            if not str(motion["fee"]).isdigit() or not 0 <= int(motion["fee"]) <= 10**18:
+                die("fee must be an integer WAD ratio")
+            if any(type(motion[key]) is not bool for key in ("enableSettlement", "allowExitBooks")):
+                die("motion switches must be JSON booleans")
+            market["motion"] = motion
+    return {"protocol": protocol, "markets": markets,
+            "guardians": list(guardians.values()), "oracles": list(oracles.values()),
+            "exit_books": d["books"] if d["books"]["morpho"].lower() != ZERO else None,
+            "motions": motions}
 
 
 def cast_call(address, signature):
-    result = subprocess.run(["cast", "call", address, signature, "--rpc-url", RPC],
-                            capture_output=True, text=True)
+    command = ["cast", "call", address, signature, "--rpc-url", RPC]
+    if os.environ.get("FORK_BLOCK"):
+        command += ["--block", os.environ["FORK_BLOCK"]]
+    result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
-        die("cast call %s %s failed: %s" % (address, signature, result.stderr.strip()))
+        die("cast call %s %s failed: %s" % (address, signature, result.stderr.strip().replace(RPC, "<RPC_URL>")))
     return result.stdout.strip()
 
 
@@ -248,7 +189,7 @@ def yval(v, ind):
     if isinstance(v, int):
         return " %d" % v
     if isinstance(v, str):
-        return ' "%s"' % v
+        return " " + json.dumps(v)
     if isinstance(v, list) and v and isinstance(v[0], dict):
         out = "\n"
         for e in v:
@@ -282,19 +223,15 @@ def camel(text):
 # Checks
 # ---------------------------------------------------------------------------------------------------------------
 def build(inputs, impls, mode):
-    """`mode`: "post-deploy" — markets inert; "live" — activated by the EasyTrack motions; "fork" — activated by
-    the fork replay (ActivateMarkets.s.sol), which allowlists the exit books and appoints no market steward."""
-    live = mode != "post-deploy"
-    replay = mode == "fork"
-    protocol, net = inputs["protocol"], inputs["network"]
-    agent, executor, reseal = net["agent"], net["evm_script_executor"], net["reseal_manager"]
-    committee = net.get("pauser_committee") or agent
+    """Check the selected market and its bindings on shared contracts."""
+    live = mode == "live"
+    protocol = inputs["protocol"]
+    agent, reseal = protocol["agent"], protocol["reseal_manager"]
     core, facade, router = protocol["core"], protocol["owner_facade"], protocol["irm_router"]
     adaptive, dashboard, cb = protocol["adaptive_curve_irm"], protocol["risk_steward_dashboard"], protocol["circuit_breaker"]
     markets = inputs["markets"]
     ids = [m["artifact"]["id"] for m in markets]
     controllers = [m["artifact"]["controller"] for m in markets]
-    lltvs = sorted({s(m["config"]["market"]["lltv"]) for m in markets})
 
     contracts = []
 
@@ -313,28 +250,17 @@ def build(inputs, impls, mode):
         return {"loanToken": a["loan_token"], "collateralToken": a["collateral_token"], "oracle": a["oracle"],
                 "irm": a["irm"], "lltv": s(a["lltv"])}
 
-    # `market(id)`: the totals and the clock move with use, so only the fee is pinned (zero: the activation
-    # motion sets none); before activation the market does not exist and everything is zero.
-    market_state = ({"totalSupplyAssets": None, "totalSupplyShares": None, "totalBorrowAssets": None,
-                     "totalBorrowShares": None, "lastUpdate": None, "fee": "0"} if live else
-                    {"totalSupplyAssets": "0", "totalSupplyShares": "0", "totalBorrowAssets": "0",
-                     "totalBorrowShares": "0", "lastUpdate": "0", "fee": "0"})
+    def market_state(market):
+        return {"totalSupplyAssets": None if live else "0", "totalSupplyShares": None if live else "0",
+                "totalBorrowAssets": None if live else "0", "totalBorrowShares": None if live else "0",
+                "lastUpdate": None if live else "0", "fee": s(market["motion"]["fee"]) if live else "0"}
+
     add("core", "LidoLend", core, {
-        "owner": facade, "feeRecipient": agent, "isInitialized": True,
-        "isSettlementEnabled": mk([([i], live) for i in ids]),
+        "isSettlementEnabled": mk([([m["artifact"]["id"]], m["motion"]["enableSettlement"] if live else False) for m in markets]),
         "marketController": mk([([ids[i]], controllers[i] if live else ZERO) for i in range(len(ids))]),
         "idToMarketParams": mk([([m["artifact"]["id"]], market_params(m)) for m in markets]),
-        "market": mk([([i], market_state) for i in ids]),
-        "isIrmEnabled": mk([([router], live)]),
-        "isLltvEnabled": mk([([lltv], live) for lltv in lltvs]),
+        "market": mk([([m["artifact"]["id"]], market_state(m)) for m in markets]),
     }, impl=impls[core])
-
-    add("ownerFacade", "LidoLendOwner", facade, {
-        "LIDO_LEND": core, "DEFAULT_ADMIN_ROLE": Z32,
-        "MARKET_CREATOR_ROLE": R["MARKET_CREATOR_ROLE"], "FEE_MANAGER_ROLE": R["FEE_MANAGER_ROLE"],
-        "MARKET_MANAGER_ROLE": R["MARKET_MANAGER_ROLE"], "GUARDIAN_MANAGER_ROLE": R["GUARDIAN_MANAGER_ROLE"],
-    }, {Z32: [agent], R["MARKET_CREATOR_ROLE"]: [executor], R["FEE_MANAGER_ROLE"]: [executor],
-        R["MARKET_MANAGER_ROLE"]: [executor], R["GUARDIAN_MANAGER_ROLE"]: [executor]})
 
     delegates = {}
     for pair in filter(None, os.environ.get("GUARDIAN_DELEGATES", "").split(",")):
@@ -356,29 +282,16 @@ def build(inputs, impls, mode):
             {Z32: [agent], R["MANAGER_ROLE"]: [facade], R["ACCESS_RESTORER_ROLE"]: [facade],
              R["ACCESS_LIMITER_ROLE"]: []}, impl=impls[registry])
 
-    cb_config = inputs["circuit_breaker"]["config"]
     add("circuitBreaker", "CircuitBreaker", cb, {
-        "ADMIN": executor,
-        "pauseDuration": s(cb_config["initial_pause_duration"]),
-        "heartbeatInterval": s(cb_config["initial_heartbeat_interval"]),
-        "MIN_PAUSE_DURATION": s(cb_config["min_pause_duration"]),
-        "MAX_PAUSE_DURATION": s(cb_config["max_pause_duration"]),
-        "MIN_HEARTBEAT_INTERVAL": s(cb_config["min_heartbeat_interval"]),
-        "MAX_HEARTBEAT_INTERVAL": s(cb_config["max_heartbeat_interval"]),
-        "getPauser": mk([([c], committee if live else ZERO) for c in controllers]),
-        "getPausableCount": mk([([committee], len(controllers) if live else 0)]),
-        "isPauserLive": mk([([committee], live)]),
+        "getPauser": mk([([m["artifact"]["controller"]], m["motion"]["pauser"] if live else ZERO) for m in markets]),
+        "isPauserLive": mk([([m["motion"]["pauser"]], True) for m in markets]) if live else None,
     })
 
-    dashboard_checks = {
-        "LIDO_LEND": core, "DEFAULT_ADMIN_ROLE": Z32, "STEWARD_ADMIN_ROLE": R["STEWARD_ADMIN_ROLE"],
-    }
-    if mode == "live" and net.get("risk_steward"):
-        dashboard_checks["marketStewards"] = mk([([i], [net["risk_steward"]]) for i in ids])
-    elif mode == "post-deploy":
-        dashboard_checks["marketStewards"] = mk([([i], []) for i in ids])
-    add("riskStewardDashboard", "RiskStewardDashboard", dashboard, dashboard_checks,
-        {Z32: [agent], R["STEWARD_ADMIN_ROLE"]: [executor]})
+    add("riskStewardDashboard", "RiskStewardDashboard", dashboard, {
+        "marketStewards": mk([
+            ([m["artifact"]["id"]], [m["motion"]["steward"]]
+             if live and m["motion"]["steward"].lower() != ZERO else []) for m in markets]),
+    })
 
     for market in markets:
         artifact, config, label = market["artifact"], market["config"], camel(market["artifact"]["role"])
@@ -403,35 +316,27 @@ def build(inputs, impls, mode):
 
     books = inputs["exit_books"]
     if books:
-        book_acl = {Z32: [agent], R["ALLOWLIST_MANAGER_ROLE"]: [executor],
-                    R["FEE_MANAGER_ROLE"]: [], R["RECOVERER_ROLE"]: [],
-                    R["PAUSER_ROLE"]: [net["exit_book_pauser"]], R["RESUMER_ROLE"]: []}
-        book_common = {"DEFAULT_ADMIN_ROLE": Z32, "ALLOWLIST_MANAGER_ROLE": R["ALLOWLIST_MANAGER_ROLE"],
-                       "FEE_MANAGER_ROLE": R["FEE_MANAGER_ROLE"], "PAUSER_ROLE": R["PAUSER_ROLE"],
-                       "RESUMER_ROLE": R["RESUMER_ROLE"], "RECOVERER_ROLE": R["RECOVERER_ROLE"],
-                       "feeRecipient": agent, "serviceFee": "0", "paused": False,
-                       "MAX_REQUEST_LIFETIME": s(net["exit_book_max_request_lifetime"])}
-        add("morphoExitBook", "MorphoExitBook", books["morpho"],
-            dict(book_common, MORPHO=core, isMarketAllowed=mk([([i], replay) for i in ids])), book_acl)
-        add("erc4626ExitBook", "Erc4626ExitBook", books["erc4626"],
-            dict(book_common, isVaultAllowed=mk([([m["artifact"]["vault"]], replay) for m in markets])), book_acl)
+        add("morphoExitBook", "MorphoExitBook", books["morpho"], {
+            "isMarketAllowed": mk([([m["artifact"]["id"]], m["motion"]["allowExitBooks"] if live else False) for m in markets]),
+        })
+        add("erc4626ExitBook", "Erc4626ExitBook", books["erc4626"], {
+            "isVaultAllowed": mk([([m["artifact"]["vault"]], m["motion"]["allowExitBooks"] if live else False) for m in markets]),
+        })
 
     add("irmRouter", "IrmRouter", router, {
-        "owner": agent, "manager": executor, "MORPHO": core, "isInitialized": True,
         "marketIrm": mk([([i], adaptive if live else ZERO) for i in ids]),
     }, impl=impls[router])
     add("adaptiveCurveIrm", "AdaptiveCurveIrm", adaptive, {
-        "owner": agent, "manager": executor, "ROUTER": router,
         "marketCurveConfig": mk([([m["artifact"]["id"]], m["artifact"]["irm_config"] if live else ZERO)
                                  for m in markets]),
     })
 
     for oracle in inputs["oracles"]:
         artifact, config = oracle["artifact"], oracle["config"]
-        if config["kind"] == "wsteth":
+        if config["kind"] == "wsteth-rate":
             add("oracle" + camel(oracle["name"]), "WstEthRateOracle", artifact["address"],
                 {"WSTETH": config["wsteth"]}, impl=impls[artifact["address"]])
-        elif config["kind"] == "usdy":
+        elif config["kind"] == "usdy-stable":
             add("oracle" + camel(oracle["name"]), "UsdyStableOracle", artifact["address"],
                 {"USDY_ORACLE": config["usdy_oracle"], "stableUsdFeed": config["feed"],
                  "MIN_PRICE": s(config["min_price"]), "MAX_PRICE": s(config["max_price"])},
@@ -478,10 +383,21 @@ def emit(name, header, contracts, proxy_admin, chain, rpc_env):
             lines.append("      ozAcl:")
             for role, holders in ozacl.items():
                 lines.append('        "%s": [%s]' % (role, ", ".join('"%s"' % h for h in holders)))
-    os.makedirs(OUT_DIR, exist_ok=True)
     path = os.path.join(OUT_DIR, name)
-    open(path, "w").write("\n".join(lines) + "\n")
+    if os.path.exists(path) and not generated_draft(path):
+        die("refusing to overwrite a manually maintained config: " + path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=os.path.dirname(path), delete=False) as handle:
+        handle.write("\n".join(lines) + "\n")
+        temporary = handle.name
+    os.replace(temporary, path)
     return path
+
+
+def generated_draft(path):
+    with open(path) as handle:
+        first_line = handle.readline()
+    return first_line.startswith(("# State Mate draft from ", "# state-mate config generated from "))
 
 
 def main():
@@ -499,30 +415,26 @@ def main():
     store = json.load(gzip.open(store_path, "rt")) if os.path.isfile(store_path) else {}
 
     header = [
-        "state-mate config generated from deployed/%s (network %s, chain %d) by tools/gen_state_mate.py: addresses"
-        % (RUN, protocol["network"], chain),
-        "from the run's artifacts, expected values from script/config/%s/, implementations from the node at generation"
-        % CONFIG,
-        "time. Regenerate after any redeploy.",
+        "State Mate draft from deployed/%s, chain %d, using RecordedDeployment." % (RUN, chain),
+        "Expected deployment parameters come from recorded artifacts; motion choices come from STATE_MATE_ACTIVATION.",
+        "Proxy implementation addresses come from RPC at generation time; review them against audited deployments.",
+        "Coverage is partial. Merge with the reviewed configuration; do not overwrite manual checks.",
     ]
-    variants = [
-        ("post-deploy.yaml", "post-deploy",
-         "After deployment: markets inert — no controller bound, no IRM routed, no pauser or steward."),
-        ("live.yaml", "live",
-         "Live: activated by the activation motions — the risk steward on every market, exit-book allowlists empty."),
-        ("post-activation-fork.yaml", "fork",
-         "Fork activation replay: exit-book allowlists filled, no market steward."),
-    ]
-    for name, mode, note in variants:
-        contracts = build(inputs, impls, mode)
-        for _, abi_name, addr, impl, _, _ in contracts:
-            store["%d:%s" % (chain, (impl or addr).lower())] = {"name": abi_name, "abi": load_abi(abi_name)}
-        emit(name, header + [note], contracts, inputs["network"]["agent"], chain,
-             protocol["network"].upper().replace("-", "_") + "_RPC_URL")
-
+    mode = "live" if inputs["motions"] is not None else "post-deploy"
+    note = "Selected market activated with reviewed motion inputs." if mode == "live" else "Selected market inert."
+    contracts = build(inputs, impls, mode)
+    for _, abi_name, addr, impl, _, _ in contracts:
+        store["%d:%s" % (chain, (impl or addr).lower())] = {"name": abi_name, "abi": load_abi(abi_name)}
+    path = emit(os.path.join("markets", MARKET + ".yaml"), header + [note], contracts,
+                inputs["protocol"]["agent"], chain, "RPC_URL")
     with gzip.open(store_path, "wt") as handle:
         json.dump(store, handle)
-    print("emitted %d configs into %s; ABI store entries: %d" % (len(variants), OUT_DIR, len(store)))
+    # Retire only outputs owned by the old generator. Other markets and reviewed configs stay intact.
+    for name in ("post-deploy.yaml", "live.yaml", "post-activation-fork.yaml"):
+        old = os.path.join(OUT_DIR, name)
+        if os.path.isfile(old) and generated_draft(old):
+            os.unlink(old)
+    print("emitted %s (%s); ABI store entries: %d" % (path, mode, len(store)))
 
 
 if __name__ == "__main__":

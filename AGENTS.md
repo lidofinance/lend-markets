@@ -28,7 +28,9 @@
   deployed stack is correctly wired, has the exact initial-launch role topology (direct enumerable-role checks),
   and is either ready for the activation motion or live after it. Expected deployment values and addresses come
   from immutable artifacts under `deployed/<run>/`; reviewed runtime motion choices come from
-  `ACCEPTANCE_PAUSER_COMMITTEE` and `ACCEPTANCE_ENABLE_SETTLEMENT`. The suite skips unless
+  `ACCEPTANCE_PAUSER_COMMITTEE` and `ACCEPTANCE_ENABLE_SETTLEMENT`; activated checks additionally require
+  `ACCEPTANCE_STEWARD`, `ACCEPTANCE_FEE`, `ACCEPTANCE_MIN_CORE_SEED_SHARES` and
+  `ACCEPTANCE_MIN_VAULT_SEED_SHARES`. The suite skips unless
   `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
 - `script/deployment/<network>/`: concrete Solidity deployment recipes. Shared `Deploy*Base.s.sol` entrypoints
   and deployment helpers are reused by fork fixtures. `deploy-script` simulates by default; explicit
@@ -148,7 +150,8 @@ test/
 - `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
   addresses and deployment values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
   Activated/readiness runs also require independent reviewed `ACCEPTANCE_PAUSER_COMMITTEE` and
-  `ACCEPTANCE_ENABLE_SETTLEMENT` motion inputs. Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`);
+  `ACCEPTANCE_ENABLE_SETTLEMENT` motion inputs; activated checks also require `ACCEPTANCE_STEWARD`, `ACCEPTANCE_FEE`,
+  `ACCEPTANCE_MIN_CORE_SEED_SHARES` and `ACCEPTANCE_MIN_VAULT_SEED_SHARES`. Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`);
   skips without an artifact. It audits launch state, not role changes made by later governance. See
   `script/DEPLOYMENT.md`.
 

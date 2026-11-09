@@ -4,9 +4,10 @@
 
 # Make normally lets an included file replace exported environment variables. Preserve the public inputs so
 # precedence is consistently: command line > exported environment > .env > defaults.
-DOTENV_OVERRIDE_VARS := SCRIPT ARTIFACTS_CONFIG ACTIVATION_ENTRYPOINT PREPARE_MARKETS CONFIG RUN MARKET MARKET_A MARKET_B PIN_BLOCK RPC_URL DEPLOYER_ACCOUNT DEPLOYER_SENDER ETHERSCAN_API_KEY VERIFY RESUME EXECUTOR ARTIFACTS_DIR \
+DOTENV_OVERRIDE_VARS := SCRIPT ARTIFACTS_CONFIG PREPARE_MARKETS CONFIG RUN MARKET MARKET_A MARKET_B PIN_BLOCK RPC_URL DEPLOYER_ACCOUNT DEPLOYER_SENDER ETHERSCAN_API_KEY VERIFY RESUME ARTIFACTS_DIR \
 	FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED ACCEPTANCE_RPC_URL ACCEPTANCE_REGISTRY ACCEPTANCE_PAUSER_COMMITTEE \
-	ACCEPTANCE_ENABLE_SETTLEMENT
+	ACCEPTANCE_ENABLE_SETTLEMENT ACCEPTANCE_STEWARD ACCEPTANCE_FEE ACCEPTANCE_MIN_CORE_SEED_SHARES \
+	ACCEPTANCE_MIN_VAULT_SEED_SHARES STATE_MATE_ACTIVATION OUT_DIR ABI_DIR GUARDIAN_DELEGATES
 
 define capture_exported_value
 _DOTENV_ORIGIN_$(1) := $$(origin $(1))
@@ -28,16 +29,15 @@ unexport DOTENV_OVERRIDE_VARS
 unexport $(addprefix _DOTENV_ORIGIN_,$(DOTENV_OVERRIDE_VARS))
 unexport $(addprefix _DOTENV_VALUE_,$(DOTENV_OVERRIDE_VARS))
 
-# Avoid evaluating legacy TOML defaults while exporting the environment.
+# Keep Make helper definitions out of the environment.
 unexport capture_exported_value restore_exported_value
-unexport $(foreach variable,EXECUTOR,$(if $(filter undefined,$(origin $(variable))),$(variable)))
 
 FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces \
 	src/oracle src/libs src/periphery src/utils script test
 
 .PHONY: help build sizes test test-local test-fork test-deployment test-simulation test-mutation \
 	deploy-script record-deployment export-deployment fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean \
-	activate-markets fork-activate state-mate-config acceptance-run acceptance-run-multi \
+	state-mate-config acceptance-run acceptance-run-multi \
 	apply-pending pending-stop test-pending
 
 help: ## List commands; deployment details are in script/DEPLOYMENT.md
@@ -170,38 +170,11 @@ export-deployment: ## Export address provider: SCRIPT=<export.s.sol> RUN=<run>
 CONFIG ?= mainnet
 MARKET ?= weth-wsteth
 PIN_BLOCK ?=
-ACTIVATION_ENTRYPOINT ?= run()
-EXECUTOR ?= $(shell if [ -n "$(RUN)" ] && [ -f "deployed/$(RUN)/protocol.toml" ]; then \
-	awk -F= '/^[[:space:]]*evm_script_executor[[:space:]]*=/{gsub(/[[:space:]\"]/, "", $$2); print $$2; exit}' "deployed/$(RUN)/protocol.toml"; \
-	fi)
-DEPLOY_ENV = ARTIFACTS_DIR="$(RUN)"
-
-##@ Artifact verification and fork activation
-# Fork only: fund and impersonate the EVMScriptExecutor on the local node, then replay the activation motion
-# for every market in the run. Markets must be activated before the fork suites can bind them.
-fork-activate: ## Historical TOML run: impersonate executor and activate on Anvil
-	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
-	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL (the local node)"; exit 1; }
-	@test -n "$(EXECUTOR)" || { echo "ERROR: could not read evm_script_executor from deployed/$(RUN)/protocol.toml"; exit 1; }
-	@cast rpc anvil_setBalance "$(EXECUTOR)" 0x8AC7230489E80000 --rpc-url "$(RPC_URL)" >/dev/null \
-	  || { echo "ERROR: $(RPC_URL) is not an Anvil node (anvil_setBalance failed)"; exit 1; }
-	@cast rpc anvil_impersonateAccount "$(EXECUTOR)" --rpc-url "$(RPC_URL)" >/dev/null \
-	  || { echo "ERROR: cannot impersonate $(EXECUTOR)"; exit 1; }
-	$(MAKE) activate-markets RUN="$(RUN)" RPC_URL="$(RPC_URL)"
-
-activate-markets: ## Historical TOML run: replay activation as unlocked executor on Anvil
-	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
-	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	@test -n "$(EXECUTOR)" || { echo "ERROR: could not read evm_script_executor from deployed/$(RUN)/protocol.toml"; exit 1; }
-	@$(DEPLOY_ENV) forge script script/ActivateMarkets.s.sol --sig '$(ACTIVATION_ENTRYPOINT)' \
-		--rpc-url "$(RPC_URL)" --unlocked --sender "$(EXECUTOR)" --broadcast
-
-# state-mate configs for RUN: addresses from its artifacts, expectations from script/config/$(CONFIG)/, proxy
-# implementations from the node at RPC_URL. Written into script/config/$(CONFIG)/state-mate/.
-state-mate-config: ## Historical TOML run: generate state-mate config; CONFIG RUN RPC_URL
-	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
-	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL (the node the run lives on)"; exit 1; }
-	RUN="$(RUN)" CONFIG="$(CONFIG)" RPC_URL="$(RPC_URL)" python3 tools/gen_state_mate.py
+##@ Artifact verification
+# Drafts use the common Solidity reader; reviewed motion choices are separate from deployment parameters.
+state-mate-config: ## Generate one market draft: RUN MARKET RPC_URL [STATE_MATE_ACTIVATION=<reviewed.json>]
+	@test -n "$(RUN)" -a -n "$(MARKET)" -a -n "$(RPC_URL)" || { echo 'RUN, MARKET and RPC_URL are required'; exit 1; }
+	python3 tools/gen_state_mate.py
 
 acceptance-run: ## Verify one market: RUN MARKET RPC_URL
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
