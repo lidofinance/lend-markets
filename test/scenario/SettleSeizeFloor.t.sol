@@ -7,7 +7,7 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
-import {SettlementQuote, SettlementSlice} from "../../src/types/SettlementTypes.sol";
+import {SettlementConfig, SettlementQuote, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
@@ -218,6 +218,66 @@ contract SettleSeizeFloorTest is LidoLendSetup {
         assertEq(collateralSeized, 0, "the settle leg cut nothing");
         assertEq(m.loanToken.balanceOf(receiver), liquidAssets, "and the receiver keeps the liquid payout");
         assertEq(m.vault.balanceOf(lender), m.vault.totalSupply(), "the unsettled tail stays with the lender");
+    }
+
+    // ---
+    // AN UNAVAILABLE QUEUE ROOT STOPS THE FALLBACK SETTLE LEG
+    // ---
+
+    /// @dev When the queue root has no executable cut,
+    ///      `fallbackExit` stops at it and reverts `NothingSettled` in a fully borrowed market, although a borrower
+    ///      behind the root has an executable personal cut. A fix changes this outcome; update this test with the
+    ///      fix.
+    function testRevert_unavailableRoot_blocksFallbackExitPastExecutableBorrower() public {
+        Market storage m = protocol.markets[0];
+        address root = _seedUnavailableRootInFullyBorrowedMarket();
+        uint256 shares = m.vault.balanceOf(lender);
+
+        (address queueRoot, SettlementSlice memory rootSlice) = m.controller.nextSettlementBorrower(0);
+        assertEq(queueRoot, root, "setup: the new borrower is the queue root");
+        assertNotEq(queueRoot, borrower, "setup: the executable borrower is behind the root");
+        assertEq(rootSlice.borrowShares, 0, "setup: the root cut buys no collateral unit");
+        assertEq(m.controller.maxWithdrawableAssets(address(m.vault)), 0, "setup: no liquid leg");
+        SettlementQuote memory quote = m.controller.settlementFor(borrower, 0);
+        assertGt(quote.personal.borrowShares, 0, "setup: the borrower behind the root has an executable cut");
+
+        vm.prank(lender);
+        vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
+        m.vault.fallbackExit(shares, receiver, lender, 0);
+    }
+
+    /// @dev Control for LMLLEVFALLBACK01: in the same state a targeted settle reaches the borrower behind the root.
+    function test_unavailableRoot_targetedSettleStillCuts() public {
+        Market storage m = protocol.markets[0];
+        _seedUnavailableRootInFullyBorrowedMarket();
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = borrower;
+        uint128 borrowSharesBefore = m.core.position(m.id, borrower).borrowShares;
+
+        (uint256 sharesBurned, uint256 collateralSeized,) =
+            m.settle(lender, m.vault.balanceOf(lender) / 10, borrowers, receiver);
+
+        assertGt(sharesBurned, 0, "the targeted settle burns lender shares");
+        assertGt(collateralSeized, 0, "and seizes collateral");
+        assertLt(m.core.position(m.id, borrower).borrowShares, borrowSharesBefore, "and cuts the borrower");
+    }
+
+    /// @dev The settlement policy under test: a one-loan-asset root slice and nothing else. At this price that slice
+    ///      buys no collateral unit. A new root with no personal LTV then borrows all free liquidity.
+    function _seedUnavailableRootInFullyBorrowedMarket() internal returns (address root) {
+        Market storage m = protocol.markets[0];
+        m.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 0, sliceFloorAssets: 1, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        );
+
+        root = _actor("unavailableRoot");
+        _fund(m.collateralToken, root, 60 ether);
+        m.supplyCollateral(root, 60 ether);
+        m.activateCollateral();
+        m.accrueInterest();
+        CoreMarket memory cm = m.core.market(m.id);
+        // About 50 loan assets against 60 collateral units: 70% LTV, and a higher key than the first borrower.
+        m.borrow(root, cm.totalSupplyAssets - cm.totalBorrowAssets);
     }
 
     // ---

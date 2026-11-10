@@ -114,6 +114,67 @@ contract ExitFeeVault is ERC4626Fees {
     }
 }
 
+/// @dev A vault that holds `RECOVERER_ROLE` on the book and, once armed, calls `recoverERC20` from inside
+///      `withdraw`, after the assets reach the book. It models a callback that runs a matured recovery mid-fill.
+contract RecoveringVault is ERC4626 {
+    ExitBookBase internal _book;
+    address internal _recoverTo;
+    uint256 internal _recoverAmount;
+
+    constructor(IERC20 asset_) ERC20("Recovering Vault", "rvAST") ERC4626(asset_) {}
+
+    function armRecovery(ExitBookBase book_, address recoverTo, uint256 amount) external {
+        _book = book_;
+        _recoverTo = recoverTo;
+        _recoverAmount = amount;
+    }
+
+    function withdraw(uint256 assets, address receiver, address owner) public override returns (uint256 shares) {
+        shares = super.withdraw(assets, receiver, owner);
+        if (_recoverAmount != 0) _book.recoverERC20(asset(), _recoverTo, _recoverAmount);
+    }
+}
+
+/// @dev An asset that calls `hook.onTransferTo()` after each transfer to `trigger`.
+contract CallbackAsset is ERC20 {
+    address internal _trigger;
+    FeeRotationHook internal _hook;
+
+    constructor() ERC20("Callback Asset", "CBA") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function setHook(address trigger, FeeRotationHook hook) external {
+        _trigger = trigger;
+        _hook = hook;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        super._update(from, to, value);
+        if (to == _trigger && address(_hook) != address(0)) _hook.onTransferTo();
+    }
+}
+
+/// @dev Holds `FEE_MANAGER_ROLE` and sets the new fee terms when the asset calls it. It models a callback that runs
+///      a matured fee update mid-fill.
+contract FeeRotationHook {
+    ExitBookBase internal immutable BOOK;
+    address internal immutable NEW_RECIPIENT;
+    uint256 internal immutable NEW_FEE;
+
+    constructor(ExitBookBase book_, address newRecipient, uint256 newFee) {
+        BOOK = book_;
+        NEW_RECIPIENT = newRecipient;
+        NEW_FEE = newFee;
+    }
+
+    function onTransferTo() external {
+        BOOK.setServiceFee(NEW_RECIPIENT, NEW_FEE);
+    }
+}
+
 /// @notice Unit coverage for exact, asset-denominated ERC-4626 exits and their payout split.
 contract ExitBookFeeSplitTest is Test {
     uint256 internal constant WAD = 1e18;
@@ -898,6 +959,77 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(asset.balanceOf(filler), fillerAssetsBefore);
         assertEq(asset.balanceOf(feeRecipient), serviceAssetsBefore);
         assertEq(asset.balanceOf(address(book)), bookAssetsBefore);
+    }
+
+    /// @dev A recovery that runs inside the source withdrawal
+    ///      lowers the measured output, so the fill reverts with `AssetsOutMismatch` and rolls back in full.
+    function testRevert_recoveryDuringWithdraw_assetsOutMismatchRollsBack() public {
+        RecoveringVault source = new RecoveringVault(IERC20(address(asset)));
+        (uint256 id, uint256 lenderShares) =
+            _depositAndPlace(IERC4626(address(source)), 100 ether, 100 ether, lender, 0, _zeroRamp());
+        uint256 strayBalance = 7 ether;
+        uint256 recovered = 5 ether;
+        address recoverTo = makeAddr("recoverTo");
+        asset.mint(address(book), strayBalance);
+        book.grantRole(book.RECOVERER_ROLE(), address(source));
+        source.armRecovery(book, recoverTo, recovered);
+        bytes32 requestBefore = keccak256(abi.encode(book.getExitRequest(id)));
+
+        vm.prank(filler);
+        vm.expectRevert(
+            abi.encodeWithSelector(ExitBookBase.AssetsOutMismatch.selector, 100 ether, 100 ether - recovered)
+        );
+        book.fillExitRequest(id, 100 ether, filler);
+
+        assertEq(keccak256(abi.encode(book.getExitRequest(id))), requestBefore, "request rolled back");
+        assertEq(source.balanceOf(lender), lenderShares, "lender shares rolled back");
+        assertEq(asset.balanceOf(address(source)), 100 ether, "source assets rolled back");
+        assertEq(asset.balanceOf(address(book)), strayBalance, "book keeps its stray balance");
+        assertEq(asset.balanceOf(recoverTo), 0, "recovery rolled back");
+        assertEq(asset.balanceOf(lender), 0, "lender paid nothing");
+    }
+
+    /// @dev A callback asset lets a fee update run between the
+    ///      service-cut calculation and its transfer, so the new recipient gets the cut at the old rate and the old
+    ///      recipient gets nothing. A fix changes this outcome; update this test with the fix.
+    function test_feeUpdateInRewardCallback_newRecipientGetsOldRateCut() public {
+        CallbackAsset callbackAsset = new CallbackAsset();
+        MockVault source = new MockVault(IERC20(address(callbackAsset)));
+        book.setVaultAllowed(IERC4626(address(source)), true);
+        uint256 oldFee = book.MAX_SERVICE_FEE();
+        uint256 newFee = 0.01e18;
+        address newRecipient = makeAddr("newRecipient");
+        book.setServiceFee(feeRecipient, oldFee);
+
+        uint256 assets = 100 ether;
+        callbackAsset.mint(lender, assets);
+        vm.startPrank(lender);
+        callbackAsset.approve(address(source), assets);
+        source.deposit(assets, lender);
+        source.approve(address(book), type(uint256).max);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(source)), assets, receiver, 0, 0, _flatRamp(0.08e18), block.timestamp + 30 days
+        );
+        vm.stopPrank();
+
+        FeeRotationHook hook = new FeeRotationHook(book, newRecipient, newFee);
+        book.grantRole(book.FEE_MANAGER_ROLE(), address(hook));
+        callbackAsset.setHook(rewardRecipient, hook);
+
+        Split memory oldTerms = _expectedSplit(assets, 0.08e18, oldFee);
+        vm.prank(filler);
+        book.fillExitRequest(id, assets, rewardRecipient);
+
+        assertEq(book.feeRecipient(), newRecipient, "setup: the callback rotated the recipient");
+        assertEq(book.serviceFee(), newFee, "setup: the callback lowered the fee");
+        assertEq(callbackAsset.balanceOf(receiver), oldTerms.receiverAssets, "receiver payout");
+        assertEq(callbackAsset.balanceOf(rewardRecipient), oldTerms.fillerReward, "filler reward at the old rate");
+        assertEq(callbackAsset.balanceOf(newRecipient), oldTerms.serviceCut, "new recipient gets the old-rate cut");
+        assertEq(callbackAsset.balanceOf(feeRecipient), 0, "old recipient gets nothing");
+    }
+
+    function _flatRamp(uint256 rate) internal pure returns (PriorityRamp memory) {
+        return PriorityRamp({startRate: rate, endRate: rate, rampStart: 0, rampEnd: 0});
     }
 
     function test_priorityRamp_holdLinearPlateau() public {

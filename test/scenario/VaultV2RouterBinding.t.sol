@@ -70,9 +70,9 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
         return protocol.markets[0];
     }
 
-    /// @dev Pins open finding I-D002: one second after the last accrual of a borrowed market, the Vault V2 cannot
+    /// @dev One second after the last accrual of a borrowed market, the Vault V2 cannot
     ///      report, take or pay out assets. A fix changes this outcome; update this test with the fix.
-    function testRevert_ID002_oneSecondStale_vaultEntryPoints() public {
+    function testRevert_oneSecondStale_vaultEntryPoints() public {
         _warpOneSecondPastAccrual();
 
         vm.expectRevert(bytes(""));
@@ -89,7 +89,7 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
 
     /// @dev Control: a core accrual in the same block makes the market current, so the adapter skips the IRM and the
     ///      same calls go through.
-    function test_ID002_accrueFirst_vaultEntryPointsWork() public {
+    function test_accrueFirst_vaultEntryPointsWork() public {
         Market storage m = _m();
         _warpOneSecondPastAccrual();
         m.accrueInterest();
@@ -102,9 +102,9 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
         assertEq(m.loanToken.balanceOf(address(vault2)), idleBefore - 1 ether, "idle moved by deposit and withdraw");
     }
 
-    /// @dev Pins open finding I-D002: a controller pause rejects every core accrual, so the Vault V2's idle assets
+    /// @dev A controller pause rejects every core accrual, so the Vault V2's idle assets
     ///      stay frozen for the whole pause. A fix changes this outcome; update this test with the fix.
-    function testRevert_ID002_pausedMarket_idleWithdrawFrozen() public {
+    function testRevert_pausedMarket_idleWithdrawFrozen() public {
         Market storage m = _m();
         m.pause(7 days);
         _warpOneSecondPastAccrual();
@@ -120,7 +120,7 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
 
     /// @dev Binding the adapter to the routed adaptive-curve IRM, as upstream expects, does not help. Every Lido market
     ///      names the router as its IRM, so the adapter refuses the allocation.
-    function testRevert_ID002_adapterBoundToCurve_allocateIrmMismatch() public {
+    function testRevert_adapterBoundToCurve_allocateIrmMismatch() public {
         Market storage m = _m();
         address curve = address(IrmRouter(m.irm).marketIrm(IrmId.wrap(Id.unwrap(m.id))));
         assertNotEq(curve, address(0), "setup: market routed to a curve");

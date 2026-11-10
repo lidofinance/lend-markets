@@ -845,6 +845,52 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertEq(uint8(request.status), uint8(ExitStatus.Open), "underbacked tail remains open");
     }
 
+    /// @dev After bad debt collapses the supply price, a placement above
+    ///      the live backing reverts, so no request can promise assets the position does not hold.
+    function testRevert_collapsedSupplyPrice_placeAboveBacking_insufficientBacking() public {
+        address lender = _actor("lender");
+        uint256 liveBacking = _collapseSupplyPrice(lender);
+
+        vm.prank(lender);
+        vm.expectRevert(MorphoExitBook.InsufficientBacking.selector);
+        book.placeExitRequest(_m().id, liveBacking + 1, lender, 0, 0, _flat(0), block.timestamp + MAX_LIFETIME);
+        assertEq(book.lastRequestId(), 0, "no request created");
+    }
+
+    /// @dev A request placed at a collapsed supply price is asset
+    ///      denominated, so its fill pays the receiver the exact requested assets, not zero.
+    function test_collapsedSupplyPrice_requestPaysExactAssets() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        address receiver = _actor("receiver");
+        uint256 liveBacking = _collapseSupplyPrice(lender);
+        uint256 id = _place(lender, liveBacking, receiver, 0, _flat(0));
+        uint256 receiverBefore = m.loanToken.balanceOf(receiver);
+
+        _fillAndAssert(id, liveBacking, _actor("filler"));
+
+        assertEq(m.loanToken.balanceOf(receiver) - receiverBefore, liveBacking, "receiver gets the exact assets");
+        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "request filled");
+    }
+
+    /// @dev The borrower takes all of a 100-token supply, the price falls by 1e9, and a full-collateral liquidation
+    ///      writes off almost all the debt. Returns the lender's live backing.
+    function _collapseSupplyPrice(address lender) internal returns (uint256 liveBacking) {
+        Market storage m = _m();
+        uint256 supplied = 100 ether;
+        _lenderSupply(lender, supplied);
+        address borrower = _actor("borrower");
+        _borrowOut(borrower, supplied);
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 1e9);
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1 ether);
+        m.liquidateBadDebt(keeper, borrower, m.core.position(m.id, borrower).collateral, 0);
+
+        liveBacking = _positionAssets(lender);
+        assertGt(liveBacking, 0, "setup: some backing is left");
+        assertLt(liveBacking, supplied / 1e6, "setup: supply price collapsed");
+    }
+
     function test_externalSelfSupplyThenFill_preservesLenderAssets() public {
         Market storage m = _m();
         address lender = _actor("lender");

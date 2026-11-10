@@ -2,10 +2,15 @@
 pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
+import {IOwnerManager} from "@lido-lend-irm/src/common/IOwnerManager.sol";
 
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
+import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {ProtocolDeployer} from "../../script/lib/ProtocolDeployer.sol";
 import {ExitBookConfig} from "../../script/lib/ExitBookConfigFile.sol";
 import {ProtocolConfig, ProtocolDeployment} from "../../script/lib/ProtocolConfigFile.sol";
@@ -98,6 +103,41 @@ contract ProtocolDeployerTest is Test {
         assertFalse(facade.hasRole(role, address(deployer)));
     }
 
+    /// @dev After the backbone deploy, the deployer keeps no
+    ///      authority. The Agent holds every upgrade, ownership and default-admin path, and the EVMScriptExecutor
+    ///      holds the manager paths.
+    function test_deployBackbone_deployerKeepsNoAuthority() external {
+        address agent = makeAddr("agent");
+        ProtocolDeployment memory deployment = deployer.deployBackbone(
+            ProtocolConfig({
+                agent: agent,
+                evmScriptExecutor: executor,
+                circuitBreaker: address(new CircuitBreakerConfigStub(executor)),
+                resealManager: makeAddr("resealManager")
+            })
+        );
+
+        assertEq(OssifiableProxy(payable(deployment.core)).proxy__getAdmin(), agent, "core proxy admin");
+        assertEq(OssifiableProxy(payable(deployment.irmRouter)).proxy__getAdmin(), agent, "router proxy admin");
+        assertEq(ILidoLend(deployment.core).owner(), deployment.ownerFacade, "core owner");
+        assertEq(IOwnerManager(deployment.irmRouter).owner(), agent, "router owner");
+        assertEq(IOwnerManager(deployment.irmRouter).manager(), executor, "router manager");
+        assertEq(IOwnerManager(deployment.adaptiveCurveIrm).owner(), agent, "adaptive IRM owner");
+        assertEq(IOwnerManager(deployment.adaptiveCurveIrm).manager(), executor, "adaptive IRM manager");
+        assertEq(LidoLendMarketFactory(deployment.factory).ADMIN(), agent, "factory admin");
+
+        LidoLendOwner facade = LidoLendOwner(deployment.ownerFacade);
+        _assertSoleMember(address(facade), facade.DEFAULT_ADMIN_ROLE(), agent);
+        _assertSoleMember(address(facade), facade.MARKET_CREATOR_ROLE(), executor);
+        _assertSoleMember(address(facade), facade.MARKET_MANAGER_ROLE(), executor);
+        _assertSoleMember(address(facade), facade.GUARDIAN_MANAGER_ROLE(), executor);
+        _assertSoleMember(address(facade), facade.FEE_MANAGER_ROLE(), executor);
+
+        RiskStewardDashboard dashboard = RiskStewardDashboard(deployment.riskStewardDashboard);
+        _assertSoleMember(address(dashboard), dashboard.DEFAULT_ADMIN_ROLE(), agent);
+        _assertSoleMember(address(dashboard), dashboard.STEWARD_ADMIN_ROLE(), executor);
+    }
+
     function test_deployExitBooks_assignsPauserAndLeavesResumerEmpty() external {
         address pauser = makeAddr("exitBookPauser");
 
@@ -148,6 +188,13 @@ contract ProtocolDeployerTest is Test {
             core: address(0xC0DE),
             maxRequestLifetime: 365 days
         });
+    }
+
+    function _assertSoleMember(address target, bytes32 role, address member) private view {
+        IAccessControlEnumerable access = IAccessControlEnumerable(target);
+        assertEq(access.getRoleMemberCount(role), 1, "one role member");
+        assertEq(access.getRoleMember(role, 0), member, "role member");
+        assertFalse(access.hasRole(role, address(deployer)), "deployer holds no role");
     }
 
     function _assertExitBookPauseRoles(ExitBookBase book, address pauser) private view {

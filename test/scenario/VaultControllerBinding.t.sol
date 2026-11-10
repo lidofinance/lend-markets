@@ -7,7 +7,21 @@ import {MockERC20} from "../setup/Mocks.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
-import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+
+/// @dev Not the controller the core runs for the market: it only reports the market id and a fixed deposit limit.
+contract ControllerStub {
+    uint256 public constant STUB_MAX_DEPOSIT = 123;
+    Id public immutable marketId;
+
+    constructor(Id marketId_) {
+        marketId = marketId_;
+    }
+
+    function maxDeposit() external pure returns (uint256) {
+        return STUB_MAX_DEPOSIT;
+    }
+}
 
 /// @notice W4: `LidoLendERC4626.initialize` must reject a controller that governs a different market than the
 ///         vault's, so a vault cannot be bound to a mismatched controller.
@@ -45,5 +59,21 @@ contract VaultControllerBindingTest is LidoLendSetup {
         Market storage m = protocol.markets[0];
         address vault = _deployVault(m.params, address(m.controller));
         assertEq(address(ILidoLendERC4626(vault).controller()), address(m.controller), "matching controller bound");
+    }
+
+    /// @dev `initialize` accepts any controller that reports the
+    ///      vault's market id, also one that is not the controller the core registered, and the vault then reads
+    ///      its limits from it. A fix changes this outcome; update this test with the fix.
+    function test_initializeAcceptsNonCanonicalController_vaultReadsItsLimits() public {
+        Market storage m = protocol.markets[0];
+        ControllerStub stub = new ControllerStub(m.id);
+
+        ILidoLendERC4626 vault = ILidoLendERC4626(_deployVault(m.params, address(stub)));
+
+        assertEq(address(vault.controller()), address(stub), "the vault binds the stub");
+        assertNotEq(m.core.marketController(m.id), address(stub), "the core runs another controller");
+        assertEq(m.core.marketController(m.id), address(m.controller), "setup: the core runs the market controller");
+        assertEq(vault.maxDeposit(address(this)), stub.STUB_MAX_DEPOSIT(), "the vault reads the stub deposit limit");
+        assertNotEq(vault.maxDeposit(address(this)), m.controller.maxDeposit(), "and not the core controller limit");
     }
 }

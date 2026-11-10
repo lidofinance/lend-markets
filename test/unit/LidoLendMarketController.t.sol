@@ -1161,6 +1161,28 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertGt(d.queueRootSliceAssets, 0, "dashboard reports the root-policy slice");
     }
 
+    /// @dev `positionOf` shows a lot past its unlock time as
+    ///      activating until a hook syncs it; after a borrow hook it shows the lot as active. A fix changes this
+    /// outcome; update this test with the fix.
+    function test_positionOf_reportsMaturedLotActivatingUntilHook() public {
+        Market storage m = _m();
+        uint256 collat = 100 ether;
+        (, address borrower) = _seedBorrower(1000 ether, collat, 0); // warps past the max activation delay
+
+        ILidoLendMarketController.BorrowerPosition memory stale = c.positionOf(borrower);
+        assertGt(stale.unlockTime, 0, "setup: the lot has a timer");
+        assertLe(stale.unlockTime, block.timestamp, "setup: the unlock time has passed");
+        assertEq(stale.activating, collat, "the matured lot still shows as activating");
+        assertEq(stale.active, 0, "active is understated");
+
+        m.borrow(borrower, 1 ether); // the borrow hook syncs the lot
+
+        ILidoLendMarketController.BorrowerPosition memory synced = c.positionOf(borrower);
+        assertEq(synced.activating, 0, "the hook matured the lot");
+        assertEq(synced.active, collat, "the lot shows as active");
+        assertEq(synced.unlockTime, 0, "the timer is cleared");
+    }
+
     /// @dev `positionOf` reflects a banned borrower and a personal settlement LTV opt-in.
     function test_positionOf_reflectsBanAndSettleLtv() public {
         Market storage m = _m();

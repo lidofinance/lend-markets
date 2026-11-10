@@ -150,12 +150,12 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
         assertEq(m.loanToken.balanceOf(SOLVER), 10 ether, "solver can repay temporary liquidity");
     }
 
-    /// @dev Pins open finding I-D002: one second after a borrow accrued the market, the deployed pair cannot take a
+    /// @dev One second after a borrow accrued the market, the deployed pair cannot take a
     ///      deposit or report its total assets. A fix changes this outcome; update this test with the fix.
     ///      The test is isolated, so each call is its own transaction. Vault V2 caches its total assets for the rest of
     ///      a transaction.
     /// forge-config: default.isolate = true
-    function testRevert_ID002_oneSecondAfterBorrow_depositAndTotalAssets() public {
+    function testRevert_oneSecondAfterBorrow_depositAndTotalAssets() public {
         uint256 borrowed = 1 ether;
         _supplyCollateral(BORROWER, _collateralFor(borrowed));
         _warpPastActivation(m);

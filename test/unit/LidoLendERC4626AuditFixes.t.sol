@@ -540,4 +540,79 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         assertEq(m.vault.totalAssets(), assetsBefore, "credit never counts as backing");
         _assertManagedLeCore(m);
     }
+
+    // ── round-trip rounding: an entrant can burn one core share of incumbent backing ──
+
+    /// @dev A deposit and an immediate redeem of the same assets at a
+    ///      rounding boundary mints `floor` core supply shares and burns `ceil` core supply shares, so the managed
+    ///      backing of the incumbent holders falls by one core share. A fix changes this outcome; update this test
+    ///      with the fix.
+    function test_roundTripAtRoundingBoundary_burnsOneIncumbentCoreShare() public {
+        Market storage m = _market();
+        (address incumbent, uint256 incumbentShares) = _seedRoundTripMarket(100 ether, 30 days);
+        address entrant = _actor("entrant");
+
+        // `totalAssets + 1` assets mint exactly `totalSupply + 1` vault shares, so the redeem returns the whole entry.
+        uint256 entry = m.vault.totalAssets() + 1;
+        MorphoMarket memory mk = m.core.market(m.id);
+        uint256 mintedCore = SharesMathLib.toSharesDown(entry, mk.totalSupplyAssets, mk.totalSupplyShares);
+        uint256 burnedCore = SharesMathLib.toSharesUp(entry, mk.totalSupplyAssets, mk.totalSupplyShares);
+        assertEq(burnedCore, mintedCore + 1, "setup: the entry is not a whole number of core shares");
+        uint256 managedBefore = m.vault.managedSupplyShares();
+        uint256 incumbentBefore = m.vault.previewRedeem(incumbentShares);
+
+        _fund(m.loanToken, entrant, entry);
+        uint256 entrantShares = m.vaultDeposit(entrant, entry);
+        assertEq(m.vault.managedSupplyShares(), managedBefore + mintedCore, "the deposit mints floor core shares");
+        uint256 paid = m.vaultRedeem(entrant, entrantShares);
+
+        assertEq(paid, entry, "the redeem returns the whole entry");
+        assertEq(m.vault.managedSupplyShares(), managedBefore - 1, "the round trip burns one incumbent core share");
+        assertLe(m.vault.previewRedeem(incumbentShares), incumbentBefore, "the incumbent claim does not rise");
+        _assertManagedLeCore(m);
+    }
+
+    /// @dev Any deposit and immediate redeem takes at most one core share of managed backing, and at most one loan
+    ///      unit from the incumbent's redeem value.
+    function testFuzz_roundTrip_incumbentLossAtMostOneCoreShare(uint256 incumbentAssets, uint256 entry, uint256 elapsed)
+        public
+    {
+        Market storage m = _market();
+        incumbentAssets = bound(incumbentAssets, 60 ether, 1_000_000 ether);
+        elapsed = bound(elapsed, 0, 365 days);
+        (, uint256 incumbentShares) = _seedRoundTripMarket(incumbentAssets, elapsed);
+        entry = bound(entry, 1e6, 1_000_000 ether);
+
+        uint256 managedBefore = m.vault.managedSupplyShares();
+        uint256 incumbentBefore = m.vault.previewRedeem(incumbentShares);
+
+        address entrant = _actor("entrant");
+        uint256 entrantShares = _depositFor(m, entrant, entry);
+        vm.prank(entrant);
+        m.vault.redeem(entrantShares, entrant, entrant);
+
+        assertLe(managedBefore, m.vault.managedSupplyShares() + 1, "at most one core share lost");
+        assertLe(incumbentBefore, m.vault.previewRedeem(incumbentShares) + 1, "at most one loan unit lost");
+        _assertManagedLeCore(m);
+    }
+
+    /// @dev An incumbent lender and a 50-unit borrow, then `elapsed` of interest, so the core supply index is not a
+    ///      whole number of shares per asset.
+    function _seedRoundTripMarket(uint256 incumbentAssets, uint256 elapsed)
+        internal
+        returns (address incumbent, uint256 incumbentShares)
+    {
+        Market storage m = _market();
+        incumbent = _actor("incumbent");
+        _fund(m.loanToken, incumbent, incumbentAssets);
+        incumbentShares = m.vaultDeposit(incumbent, incumbentAssets);
+
+        // 1000 collateral units are worth at least 300 loan units at any seeded price, so a 50-unit borrow is safe.
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 1_000 ether);
+        m.supplyCollateral(borrower, 1_000 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 50 ether);
+        m.warpAndAccrue(elapsed);
+    }
 }

@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {ArtifactMetadata} from "../../script/lib/ArtifactMetadata.sol";
 import {CircuitBreakerConfig, CircuitBreakerConfigFile} from "../../script/lib/CircuitBreakerConfigFile.sol";
+import {DeployConfigFile} from "../../script/lib/DeployConfigFile.sol";
 
 contract CircuitBreakerConfigFileHarness {
     function writeDeployed(
@@ -20,6 +21,14 @@ contract CircuitBreakerConfigFileHarness {
 
     function readDeployed(string memory name, ArtifactMetadata memory metadata) external view returns (address) {
         return CircuitBreakerConfigFile.readDeployed(name, metadata);
+    }
+
+    function profileFor(string memory deployConfig) external view returns (CircuitBreakerConfig memory) {
+        return CircuitBreakerConfigFile.read(DeployConfigFile.read(deployConfig).circuitBreakerArtifact);
+    }
+
+    function profileName(string memory deployConfig) external view returns (string memory) {
+        return DeployConfigFile.read(deployConfig).circuitBreakerArtifact;
     }
 }
 
@@ -68,5 +77,25 @@ contract CircuitBreakerConfigFileTest is Test {
         vm.expectRevert(abi.encodeWithSelector(CircuitBreakerConfigFile.ArtifactAlreadyExists.selector, path));
         harness.writeDeployed(name, circuitBreaker, admin, 123, cfg, metadata);
         vm.removeDir(dir, true);
+    }
+
+    /// @dev The mainnet deploy config selects the
+    ///      "lido-lend" circuit-breaker profile, which sets a 60-second minimum pause and a 5-minute initial pause.
+    ///      A fix changes this outcome; update this test with the fix.
+    function test_mainnetProfile_pausesExpireAfterFiveMinutes() external view {
+        _assertLidoLendProfile("mainnet");
+    }
+
+    /// @dev The hoodi deploy config selects the same
+    ///      "lido-lend" profile as mainnet. A fix changes this outcome; update this test with the fix.
+    function test_hoodiProfile_pausesExpireAfterFiveMinutes() external view {
+        _assertLidoLendProfile("hoodi");
+    }
+
+    function _assertLidoLendProfile(string memory deployConfig) private view {
+        assertEq(harness.profileName(deployConfig), "lido-lend", "circuit-breaker profile");
+        CircuitBreakerConfig memory cfg = harness.profileFor(deployConfig);
+        assertEq(cfg.minPauseDuration, 60, "min pause duration");
+        assertEq(cfg.initialPauseDuration, 5 minutes, "initial pause duration");
     }
 }

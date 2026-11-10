@@ -834,6 +834,8 @@ contract GuardianSignalsTest is Test {
     }
 
     /// @dev A never-latched derived ban lapses when prune drops the surviving flags below quorum.
+    /// @dev A never-latched derived ban lapses when prune
+    ///      drops the count below quorum. A fix changes this outcome; update this test with the fix.
     function test_prune_derivedBan_lapsesWhenBelowQuorum() public {
         gs.setQuorum(3);
         _flag(GUARDIAN_1, BOB);
@@ -847,6 +849,44 @@ contract GuardianSignalsTest is Test {
 
         assertFalse(gs.isBanned(MARKET, BOB), "pruned below quorum -> derived ban lapses");
         assertEq(_flagCount(BOB), 1, "the stale flag was pruned");
+    }
+
+    /// @dev A removed guardian's flag still counts, so one current
+    ///      guardian's flag reaches quorum 2 and latches the ban. Prune then drops the stale flag, but the ban stays.
+    ///      A fix changes this outcome; update this test with the fix.
+    function test_removedGuardianStaleFlag_latchesBan() public {
+        _flag(GUARDIAN_1, BOB);
+        gs.removeGuardian(GUARDIAN_1);
+        assertFalse(gs.isBanned(MARKET, BOB), "setup: one flag is below quorum 2");
+
+        vm.expectEmit(true, true, false, false, address(gs));
+        emit Banned(MARKET, BOB);
+        _flag(GUARDIAN_2, BOB);
+        assertTrue(gs.isBanned(MARKET, BOB), "the stale flag helps latch the ban");
+
+        vm.prank(CLEANER);
+        gs.prune(MARKET, BOB);
+        assertTrue(gs.isBanned(MARKET, BOB), "prune does not lift the latched ban");
+        assertEq(_flagCount(BOB), 1, "only the current guardian's flag remains");
+    }
+
+    /// @dev After `replaceGuardian` the old guardian's flag still
+    ///      counts, so one current guardian's flag reaches quorum 2 and latches the ban. Prune then drops the stale
+    ///      flag, but the ban stays. A fix changes this outcome; update this test with the fix.
+    function test_replacedGuardianStaleFlag_latchesBan() public {
+        _flag(GUARDIAN_1, BOB);
+        gs.replaceGuardian(GUARDIAN_1, address(0xBEEF));
+        assertFalse(gs.isBanned(MARKET, BOB), "setup: one flag is below quorum 2");
+
+        vm.expectEmit(true, true, false, false, address(gs));
+        emit Banned(MARKET, BOB);
+        _flag(GUARDIAN_2, BOB);
+        assertTrue(gs.isBanned(MARKET, BOB), "the stale flag helps latch the ban");
+
+        vm.prank(CLEANER);
+        gs.prune(MARKET, BOB);
+        assertTrue(gs.isBanned(MARKET, BOB), "prune does not lift the latched ban");
+        assertEq(_flagCount(BOB), 1, "only the current guardian's flag remains");
     }
 
     /// @dev A derived ban whose surviving flags still meet quorum after prune is latched (made permanent).

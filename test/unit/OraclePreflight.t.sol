@@ -72,6 +72,13 @@ contract WstEthRateMock {
     }
 }
 
+/// @dev Stateless, so `vm.etch` can place it at the wstETH address in a checked-in oracle config.
+contract FixedWstEthRateMock {
+    function getStETHByWstETH(uint256 amount) external pure returns (uint256) {
+        return amount * 1.217 ether / 1 ether;
+    }
+}
+
 contract DecimalsMock {
     uint8 public immutable decimals;
 
@@ -163,6 +170,22 @@ contract OraclePreflightTest is Test {
         wstEth.setRate(0);
         vm.expectRevert(OraclePreflight.OraclePriceIsZero.selector);
         harness.validateWstEth(_config(), oracle, address(wstEth));
+    }
+
+    /// @dev The full preflight on the mainnet wstETH
+    ///      oracle config accepts a 6-decimal loan token, and the price stays in 18-decimal ETH units. A fix changes
+    ///      this outcome; update this test with the fix.
+    function test_wstEthPreflightWithSixDecimalLoan_acceptsEthUnitPrice() external {
+        address configuredWstEth = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+        vm.etch(configuredWstEth, address(new FixedWstEthRateMock()).code);
+        address wstEthOracle =
+            address(new OssifiableProxy(address(new WstEthRateOracle(configuredWstEth)), admin, bytes("")));
+        DecimalsMock sixDecimalLoan = new DecimalsMock(6);
+
+        harness.validate("weth-wsteth", wstEthOracle, address(sixDecimalLoan), configuredWstEth, admin);
+
+        // ETH per wstETH (1.217) at the 1e36 scale for an 18-decimal loan. A 6-decimal ETH unit would need 1.217e24.
+        assertEq(IOracleForTest(wstEthOracle).price(), 1.217e36, "price in 18-decimal loan units");
     }
 
     function _config() private view returns (WstEthOracleConfig memory) {

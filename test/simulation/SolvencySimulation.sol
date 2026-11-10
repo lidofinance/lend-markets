@@ -451,6 +451,58 @@ abstract contract SolvencySimulation is SolvencyActions {
     /// @dev lender-settlement.md "A rounded root check can miss an insolvent borrower". With 1e25 collateral, one key
     ///      unit is 1e7 borrow shares: about 10 loan units at the opening rate of 1e-6 asset per share.
     function test_tiedRiskKey_shortfallWithinOneKeyUnit() public {
+        _seedTiedRiskKey();
+        _checkQueueRoot();
+    }
+
+    /// @dev When a solvent root ties on the rounded risk key with an
+    ///      insolvent borrower, a lender exit closes the solvent root, and the later write-off of the hidden bad debt
+    ///      falls on the lenders that stay. A fix changes this outcome; update this test with the fix.
+    ///      `maxIterations = 1` stops the settle leg before it tries the insolvent borrower as the next root.
+    function test_tiedRiskKey_rootExitLeavesHiddenLossToRemainingLenders() public {
+        (address root, address tied) = _seedTiedRiskKey();
+        Market storage m = _m();
+        address exiter = lenders[0];
+        address stayer = lenders[1];
+
+        // The stayer's claim is below the tied borrower's debt, so after the exiter takes all free liquidity, the
+        // rest of its claim still covers the full close of the root.
+        uint256 stayerDeposit = 5000;
+        _mintLoan(stayer, stayerDeposit);
+        uint256 stayerShares = m.vaultDeposit(stayer, stayerDeposit);
+        m.vaultRedeem(exiter, m.vault.maxRedeem(exiter));
+
+        (,, uint256 seized,) = m.fallbackExit(exiter, m.vault.balanceOf(exiter), exiter, 1);
+
+        assertGt(seized, 0, "the exit seized root collateral");
+        assertEq(m.core.position(m.id, root).borrowShares, 0, "the solvent root closes in full");
+        (address newRoot,) = m.controller.nextSettlementBorrower(0);
+        assertEq(newRoot, tied, "the tied borrower is the root now");
+        assertTrue(m.controller.hasBadDebt(), "and it carries bad debt");
+        MorphoMarket memory mk = m.core.market(m.id);
+        assertEq(
+            m.core.position(m.id, address(m.vault)).supplyShares,
+            mk.totalSupplyShares,
+            "setup: the vault is the only supplier"
+        );
+
+        uint256 vaultShares = m.vault.totalSupply();
+        uint256 stayerBefore = m.vault.previewRedeem(stayerShares);
+        uint256 bad = _writeOff(keepers[0], tied);
+
+        assertGt(bad, 0, "the liquidation writes off debt");
+        assertLt(m.vault.previewRedeem(stayerShares), stayerBefore, "the stayer loses value");
+        assertApproxEqAbs(
+            stayerBefore - m.vault.previewRedeem(stayerShares),
+            Math.mulDiv(bad, stayerShares, vaultShares),
+            2,
+            "the stayer loses its pro-rata part of the write-off"
+        );
+    }
+
+    /// @dev Audit FZ-18 setup: two borrowers tie on the rounded risk key. The root is solvent at exactly its debt, and
+    ///      the tied borrower is short by about one key unit of debt.
+    function _seedTiedRiskKey() internal returns (address root, address tied) {
         _setUpSimulation(_shortCounts());
         Market storage m = _m();
         _mintLoan(lenders[0], 1000 * unit);
@@ -460,8 +512,8 @@ abstract contract SolvencySimulation is SolvencyActions {
         uint256 collateral = 1e25;
         uint256 rootShares = 1000 * 1e7;
         uint256 tiedShares = rootShares + 1e7 - 1;
-        address root = borrowers[0]; // instant activation: index 0 of every fourth borrower
-        address tied = borrowers[4];
+        root = borrowers[0]; // instant activation: index 0 of every fourth borrower
+        tied = borrowers[4];
         _mintCollateral(root, collateral);
         _mintCollateral(tied, collateral);
         m.supplyCollateralInstant(root, root, collateral);
@@ -487,7 +539,6 @@ abstract contract SolvencySimulation is SolvencyActions {
         assertEq(queued[0], root, "setup: the first borrower is not the root");
         assertEq(keys[0], keys[1], "setup: the keys do not tie");
         assertFalse(m.controller.hasBadDebt(), "setup: the root carries bad debt");
-        _checkQueueRoot();
     }
 
     /// @dev `_checkLenders` as a call of its own, so a test can catch its failure.

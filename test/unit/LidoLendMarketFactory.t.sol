@@ -62,6 +62,72 @@ contract MarketFactoryCompatibleProxy is OssifiableProxy {
     }
 }
 
+/// @dev Not a `GuardianSignals` and not a proxy. It returns the reviewed answer for each getter that the factory
+///      reads, and nothing more.
+contract CounterfeitGuardianSignals {
+    bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+    bytes32 public constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
+    bytes32 public constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
+
+    address internal immutable _admin;
+    address internal immutable _lidoLendOwner;
+    uint256 internal immutable _quorum;
+    uint256 internal immutable _suspectWindow;
+    address[] internal _guardians;
+
+    constructor(
+        address admin,
+        address lidoLendOwner,
+        address[] memory guardians,
+        uint256 quorum,
+        uint256 suspectWindow
+    ) {
+        _admin = admin;
+        _lidoLendOwner = lidoLendOwner;
+        _guardians = guardians;
+        _quorum = quorum;
+        _suspectWindow = suspectWindow;
+    }
+
+    function proxy__getAdmin() external view returns (address) {
+        return _admin;
+    }
+
+    function getQuorum() external view returns (uint256) {
+        return _quorum;
+    }
+
+    function getSuspectWindow() external view returns (uint256) {
+        return _suspectWindow;
+    }
+
+    function getGuardianCount() external view returns (uint256) {
+        return _guardians.length;
+    }
+
+    function isGuardian(address account) external view returns (bool) {
+        for (uint256 i; i < _guardians.length; ++i) {
+            if (_guardians[i] == account) return true;
+        }
+        return false;
+    }
+
+    function getRoleMemberCount(bytes32 role) external pure returns (uint256) {
+        return role == ACCESS_LIMITER_ROLE ? 0 : 1;
+    }
+
+    function hasRole(bytes32 role, address account) external view returns (bool) {
+        if (role == DEFAULT_ADMIN_ROLE) return account == _admin;
+        if (role == MANAGER_ROLE || role == ACCESS_RESTORER_ROLE) return account == _lidoLendOwner;
+        return false;
+    }
+
+    function getRoleAdmin(bytes32) external pure returns (bytes32) {
+        return DEFAULT_ADMIN_ROLE;
+    }
+}
+
 contract LidoLendMarketFactoryRoleValidationTest is Test {
     using MarketParamsLib for MarketParams;
 
@@ -737,6 +803,48 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
 
         assertEq(address(LidoLendERC4626(secondVault).controller()), controller, "controller");
         assertEq(Id.unwrap(LidoLendERC4626(secondVault).marketId()), Id.unwrap(marketId), "market id");
+    }
+
+    /// @dev A
+    ///      contract that is not `GuardianSignals` but returns the reviewed value from each getter the factory reads
+    ///      passes guardian validation, and the factory binds a new controller to it. A fix changes this outcome;
+    ///      update this test with the fix.
+    function test_counterfeitRegistrySpoofsGetters_passesValidation() external {
+        LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
+        address counterfeit = address(
+            new CounterfeitGuardianSignals(
+                controllerAdmin, address(lidoLendOwner), spec.guardians, spec.quorum, spec.suspectWindow
+            )
+        );
+        vm.expectRevert(bytes(""));
+        OssifiableProxy(payable(counterfeit)).proxy__getImplementation();
+
+        factory.validateGuardianSignals(counterfeit, spec);
+
+        LidoLendMarketFactory.MarketSpec memory counterfeitSpec = marketSpec;
+        counterfeitSpec.guardianSignals = counterfeit;
+        (Id counterfeitMarketId, address counterfeitController) = factory.deployMarketController(counterfeitSpec);
+
+        assertEq(Id.unwrap(counterfeitMarketId), Id.unwrap(marketId), "same market id");
+        assertEq(LidoLendMarketController(counterfeitController).guardianSignals(), counterfeit, "controller binds it");
+        factory.validateMarketController(counterfeitController, marketId, counterfeit);
+    }
+
+    /// @dev Before the market exists on the core, two controllers for
+    ///      the same market id with different activation configs both pass controller validation. A fix changes
+    ///      this outcome; update this test with the fix.
+    function test_twoControllersSameMarketBeforeCreate_bothPassValidation() external {
+        address otherController = _otherControllerForSameMarket();
+        assertEq(core.market(marketId).lastUpdate, 0, "setup: market not created");
+        assertNotEq(otherController, controller, "setup: distinct controllers");
+        assertEq(
+            LidoLendMarketController(otherController).collateralActivationConfig().minActivationDelay,
+            LidoLendMarketController(controller).collateralActivationConfig().minActivationDelay + 1,
+            "setup: activation configs differ"
+        );
+
+        factory.validateMarketController(controller, marketId, guardianSignals);
+        factory.validateMarketController(otherController, marketId, guardianSignals);
     }
 
     function _createMarket(address marketController) private {

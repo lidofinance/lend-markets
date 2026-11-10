@@ -4,7 +4,9 @@ pragma solidity 0.8.36;
 import {Id, MarketParams, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {stdError} from "forge-std/StdError.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
@@ -818,6 +820,34 @@ contract LidoLendERC4626Test is LidoLendSetup {
         vm.prank(minter);
         m.vault.mint(maxShares, minter);
         assertEq(m.vault.balanceOf(minter), maxShares, "minted exactly maxMint");
+    }
+
+    /// @dev On a six-decimal market with supply, a finite cap near
+    ///      `type(uint256).max` makes `maxMint` overflow when it converts the headroom to shares, so every `mint`
+    ///      reverts. A zero cap restores `mint`. A fix changes this outcome; update this test with the fix.
+    function testRevert_extremeFiniteCap_sixDecimals_maxMintOverflowsAndMintReverts() public {
+        Market storage m = _deploySixDecimalMarket();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 2e6);
+        m.vaultDeposit(lender, 1e6);
+        m.setSupplyCap(type(uint256).max - 1);
+
+        uint256 headroom = m.vault.maxDeposit(lender);
+        assertEq(headroom, type(uint256).max - 1 - 1e6, "setup: finite headroom below the unlimited value");
+        assertEq(m.vault.decimals() - IERC20Metadata(address(m.loanToken)).decimals(), 12, "setup: share offset");
+
+        vm.expectRevert(stdError.arithmeticError);
+        m.vault.maxMint(lender);
+
+        vm.prank(lender);
+        m.loanToken.approve(address(m.vault), 1e6);
+        vm.prank(lender);
+        vm.expectRevert(stdError.arithmeticError);
+        m.vault.mint(1e18, lender);
+
+        m.setSupplyCap(0);
+        assertEq(m.vault.maxMint(lender), type(uint256).max, "a zero cap reports unlimited mint");
+        m.vaultMint(lender, 1e18);
     }
 
     // ── storage layout ──

@@ -17,7 +17,7 @@ import {MockPriceOracle} from "../../setup/Mocks.sol";
 
 /// @notice Handler for the market-solvency invariant. Exposes bounded, defensively-guarded protocol actions
 ///         over a small fixed actor set. Most actors hold instant activation (so supplied collateral is immediately
-///         borrowable). The others are delayed actors whose collateral goes through activation (audit T1-C1).
+///         borrowable). The others are delayed actors whose collateral goes through activation.
 ///         Every action self-bounds and early-returns when there is no room, so the fuzzer drives long valid
 ///         sequences. Reads the LIVE oracle price so positions go unhealthy after a crash;
 ///         `liquidate` seizes ALL collateral when underwater to realize bad debt, stressing solvency under
@@ -50,7 +50,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     uint256 public repays;
     uint256 public crashes;
     uint256 public liquidations;
-    // Victims of a forced seizure, excluded from the floor invariant until their debt is cleared (audit T1-C13).
+    // Victims of a forced seizure, excluded from the floor invariant until their debt is cleared.
     mapping(address => bool) public liquidated;
 
     constructor(

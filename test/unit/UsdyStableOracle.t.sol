@@ -41,6 +41,34 @@ contract MockChainlinkFeed {
     }
 }
 
+/// @dev Chainlink aggregator stub whose answer, decimals, and round ids can change after `initialize`, like a proxy
+///      that moves to a new aggregator.
+contract SettableDecimalsFeed {
+    int256 public answer;
+    uint8 public decimals;
+    uint80 public roundId = 1;
+    uint80 public answeredInRound = 1;
+
+    constructor(int256 answer_, uint8 decimals_) {
+        answer = answer_;
+        decimals = decimals_;
+    }
+
+    function setAnswer(int256 answer_, uint8 decimals_) external {
+        answer = answer_;
+        decimals = decimals_;
+    }
+
+    function setRound(uint80 roundId_, uint80 answeredInRound_) external {
+        roundId = roundId_;
+        answeredInRound = answeredInRound_;
+    }
+
+    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
+        return (roundId, answer, block.timestamp, block.timestamp, answeredInRound);
+    }
+}
+
 /// @dev Loan stablecoin stub: only `decimals()` is read by the oracle to size SCALE (USDC-like, 6 dec).
 contract MockLoanToken {
     function decimals() external pure returns (uint8) {
@@ -225,6 +253,49 @@ contract UsdyStableOracleTest is Test {
         feed.setUpdatedAt(1); // ancient round
         vm.warp(10_000_000);
         assertEq(oracle.price(), _expected(1.08e18, 1e8), "stale feed answer used without a staleness check");
+    }
+
+    /// @dev `price()` uses an incomplete round (`answeredInRound <
+    ///      roundId`) as is. A fix changes this outcome; update this test with the fix.
+    function test_incompleteRound_isUsedAsIs() public {
+        SettableDecimalsFeed roundFeed = new SettableDecimalsFeed(0.99e8, 8);
+        UsdyStableOracle o = _deploy(address(usdy), address(roundFeed), address(loan));
+        usdy.setPrice(1.08e18);
+        roundFeed.setRound(5, 4);
+
+        assertEq(o.price(), _expected(1.08e18, 0.99e8), "incomplete round answer used");
+    }
+
+    /// @dev The feed drops from 8 to 7 decimals after `initialize`,
+    ///      and the cached `scale` returns ten times the correct price, which `MAX_PRICE` still accepts. A fix
+    ///      changes this outcome; update this test with the fix.
+    function test_feedDecimalsDrop_cachedScaleReturnsTenfoldPriceAtMax() public {
+        SettableDecimalsFeed decimalsFeed = new SettableDecimalsFeed(1.1e8, 8);
+        UsdyStableOracle o = _deploy(address(usdy), address(decimalsFeed), address(loan));
+        usdy.setPrice(1.1e18);
+        // NAV $1.10 over a $1.10 stablecoin is 1 USDY per loan token: 1e6 loan units per 1e18 USDY units, scaled 1e36.
+        uint256 correctPrice = 1e6 * 1e36 / 1e18;
+        assertEq(o.price(), correctPrice, "setup: 8-decimal answer prices correctly");
+
+        decimalsFeed.setAnswer(1.1e7, 7);
+
+        assertEq(o.price(), 10 * correctPrice, "cached scale returns ten times the price");
+        assertEq(o.price(), MAX_PRICE, "the tenfold price sits on the inclusive upper bound");
+    }
+
+    /// @dev The feed rises from 8 to 9 decimals after
+    ///      `initialize`, and the cached `scale` returns a tenth of the correct price, which the band rejects. A fix
+    ///      changes this outcome; update this test with the fix.
+    function testRevert_feedDecimalsRise_cachedScalePriceOutOfBounds() public {
+        SettableDecimalsFeed decimalsFeed = new SettableDecimalsFeed(1.1e8, 8);
+        UsdyStableOracle o = _deploy(address(usdy), address(decimalsFeed), address(loan));
+        usdy.setPrice(1.1e18);
+        uint256 correctPrice = 1e6 * 1e36 / 1e18;
+
+        decimalsFeed.setAnswer(1.1e9, 9);
+
+        vm.expectRevert(abi.encodeWithSelector(UsdyStableOracle.PriceOutOfBounds.selector, correctPrice / 10));
+        o.price();
     }
 
     /// @dev A zero feed answer is the realistic failure (an un-updated / stale-outage round). The

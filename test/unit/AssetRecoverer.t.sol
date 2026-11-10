@@ -7,6 +7,7 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {AssetRecoverer} from "../../src/utils/AssetRecoverer.sol";
 import {MockERC20} from "../setup/Mocks.sol";
@@ -205,5 +206,42 @@ contract AssetRecovererTest is Test {
         vm.prank(owner);
         vm.expectRevert(AssetRecoverer.ZeroRecipient.selector);
         rec.recoverERC1155(address(multi), address(0), 5);
+    }
+
+    // ── zero token address ──
+    // Foundry `expectRevert` reports these empty reverts as a call to a non-contract address and does not match
+    // empty data, so the ERC-721 and ERC-1155 tests use a low-level call and check the data.
+
+    /// @dev `recoverERC20` with token `address(0)` reverts with the
+    ///      generic `SafeERC20FailedOperation`, not a zero-token error. A fix changes this outcome; update this test
+    ///      with the fix.
+    function testRevert_recoverERC20_zeroToken_safeErc20FailedOperation() public {
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(0)));
+        rec.recoverERC20(address(0), recipient, 1 ether);
+    }
+
+    /// @dev `recoverERC721` with token `address(0)` reverts on the
+    ///      compiler's code check with no data. The report says this path is a silent no-op; it is not. A fix
+    ///      changes this outcome; update this test with the fix.
+    function testRevert_recoverERC721_zeroToken_emptyRevert() public {
+        vm.prank(owner);
+        (bool success, bytes memory revertData) =
+            address(rec).call(abi.encodeCall(AssetRecoverer.recoverERC721, (address(0), recipient, 7)));
+
+        assertFalse(success, "zero token reverts, not a silent no-op");
+        assertEq(revertData, "", "code-check revert has no data");
+    }
+
+    /// @dev `recoverERC1155` with token `address(0)` reverts because
+    ///      `balanceOf` returns no data to decode, and the revert has no data. A fix changes this outcome; update this
+    ///      test with the fix.
+    function testRevert_recoverERC1155_zeroToken_emptyRevert() public {
+        vm.prank(owner);
+        (bool success, bytes memory revertData) =
+            address(rec).call(abi.encodeCall(AssetRecoverer.recoverERC1155, (address(0), recipient, 5)));
+
+        assertFalse(success, "zero token reverts");
+        assertEq(revertData, "", "decode revert has no data");
     }
 }

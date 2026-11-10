@@ -384,10 +384,10 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
         _expectSettlementBadDebt(m, actors.tailSupplier, actors.nonRoot, cutShares);
     }
 
-    /// @dev Pins open finding F4-C05: a supplier with no settleable supply at the start of a transaction borrows the
+    /// @dev A supplier with no settleable supply at the start of a transaction borrows the
     ///      free liquidity, cuts the root by its whole root-policy slice, and repays in the same transaction. A fix
     ///      changes this outcome; update this test with the fix.
-    function test_F4C05_sameTxBorrowRootCutRepay_bypassesLenderTail() public {
+    function test_sameTxBorrowRootCutRepay_bypassesLenderTail() public {
         Actors memory actors = _seed();
         Market storage m = _m();
         address supplier = actors.liquidSupplier;

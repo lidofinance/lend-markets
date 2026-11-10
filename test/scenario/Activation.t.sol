@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
+import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
@@ -432,5 +437,173 @@ contract ActivationTest is LidoLendSetup {
         );
         vm.prank(borrower);
         m.core.supplyCollateral(m.params, amount, borrower, "");
+    }
+
+    // ---
+    // KNOWN FINDINGS
+    // ---
+
+    /// @dev A guardian ban on an instant-activation router does not
+    ///      remove its grant, so the router still lands collateral as active for a fresh borrower, and that
+    ///      borrower borrows at once. Only the router itself cannot borrow. A fix changes this outcome; update this
+    ///      test with the fix.
+    function test_bannedRouter_landsFreshBorrowerCollateralActive() public {
+        Market storage m = _m();
+        address router = _actor("router");
+        m.setInstantActivation(router, true);
+        _ban(router);
+        assertTrue(protocol.guardianSignals.isBanned(m.id, router), "setup: router is banned");
+        assertTrue(m.controller.hasInstantActivation(router), "the ban keeps the instant grant");
+
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        m.vaultDeposit(lender, 1000 ether);
+
+        address fresh = _actor("fresh");
+        uint256 collat = 100 ether;
+        _fund(m.collateralToken, router, collat);
+        m.supplyCollateralInstant(router, fresh, collat); // helper asserts nothing enters the timer
+
+        ILidoLendMarketController.BorrowerPosition memory position = m.controller.positionOf(fresh);
+        assertEq(position.active, collat, "the banned router's supply lands active");
+        assertEq(position.activating, 0, "no lot on the timer");
+
+        uint256 startTime = block.timestamp;
+        m.borrow(fresh, _safeBorrow(collat));
+        assertEq(block.timestamp, startTime, "the fresh borrower borrows with no delay");
+
+        vm.prank(router);
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
+        m.core.borrow(m.params, 1 ether, 0, router, router);
+    }
+
+    /// @dev A freeze does not stop an instant-activation router, so
+    ///      collateral it supplies during the freeze is active on unfreeze and backs a borrow with no delay. A fix
+    ///      changes this outcome; update this test with the fix.
+    function test_instantSupplyDuringFreeze_isActiveOnUnfreeze() public {
+        Market storage m = _m();
+        address router = _actor("router");
+        m.setInstantActivation(router, true);
+
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        m.vaultDeposit(lender, 1000 ether);
+
+        m.freeze();
+        address fresh = _actor("fresh");
+        uint256 collat = 100 ether;
+        _fund(m.collateralToken, router, collat);
+        m.supplyCollateralInstant(router, fresh, collat);
+        m.unfreeze();
+
+        assertEq(m.controller.positionOf(fresh).active, collat, "the frozen-time supply is active on unfreeze");
+        uint256 startTime = block.timestamp;
+        m.borrow(fresh, _safeBorrow(collat));
+        assertEq(block.timestamp, startTime, "the fresh borrower borrows with no delay after unfreeze");
+    }
+
+    /// @dev With no activating lock, an instant supply and an equal
+    ///      withdrawal drain the throttled lot, so it becomes active in the same block and backs a borrow. A fix
+    ///      changes this outcome; update this test with the fix.
+    function test_instantSupplyThenWithdraw_laundersThrottledLot() public {
+        Market storage m = _m();
+        uint256 lot = 100 ether;
+        address router = _actor("router");
+        m.setInstantActivation(router, true);
+        address bob = _seedLenderAndCollateral(lot); // lot enters the timer
+        uint256 startTime = block.timestamp;
+        assertEq(m.controller.positionOf(bob).activating, lot, "setup: the lot is throttled");
+        assertEq(m.controller.positionOf(bob).active, 0, "setup: no active collateral");
+
+        _fund(m.collateralToken, router, lot);
+        m.supplyCollateralInstant(router, bob, lot);
+        m.withdrawCollateral(bob, lot, bob); // drains the activating bucket, not the instant amount
+
+        ILidoLendMarketController.BorrowerPosition memory position = m.controller.positionOf(bob);
+        assertEq(position.activating, 0, "throttled bucket drained");
+        assertEq(position.active, lot, "the throttled lot is now active");
+        assertEq(position.unlockTime, 0, "the timer is cleared");
+        assertEq(block.timestamp, startTime, "no time elapsed");
+
+        m.borrow(bob, _safeBorrow(lot));
+    }
+
+    /// @dev Inside a non-zero activating lock the same round trip
+    ///      draws the instant amount from active, so the throttled lot stays on its timer and gives no borrow
+    ///      capacity. A fix changes this outcome; update this test with the fix.
+    function test_launderInsideLock_drawsFromActive() public {
+        Market storage m = _m();
+        uint256 lot = 100 ether;
+        CollateralActivationConfig memory cfg = m.controller.collateralActivationConfig();
+        cfg.activatingLockDuration = 1 hours;
+        m.setActivationConfig(cfg);
+        address router = _actor("router");
+        m.setInstantActivation(router, true);
+        address bob = _seedLenderAndCollateral(lot);
+
+        _fund(m.collateralToken, router, lot);
+        m.supplyCollateralInstant(router, bob, lot);
+        m.withdrawCollateral(bob, lot, bob);
+
+        ILidoLendMarketController.BorrowerPosition memory position = m.controller.positionOf(bob);
+        assertEq(position.activating, lot, "the throttled lot stays on its timer");
+        assertEq(position.active, 0, "the withdrawal took the instant amount");
+
+        vm.prank(bob);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.borrow(m.params, 1, 0, bob, bob);
+    }
+
+    /// @dev One transaction that splits 50 lots of 200 ether over
+    ///      fresh addresses gives the first lot the ramp-floor delay for one lot and the last lot the max delay. After
+    ///      one hour the first address borrows and the last cannot. A fix changes this outcome; update this test with
+    ///      the fix.
+    function test_splitAcrossAddresses_underThrottlesEarlyLots() public {
+        Market storage m = _m();
+        uint256 lots = 50;
+        uint256 lot = 200 ether; // lots * lot == maxDelayInflow
+        CollateralActivationConfig memory cfg = m.controller.collateralActivationConfig();
+        assertEq(lots * lot, cfg.maxDelayInflow, "setup: the split sums to the inflow cap");
+
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        m.vaultDeposit(lender, 1000 ether);
+
+        Splitter splitter = new Splitter();
+        _fund(m.collateralToken, address(splitter), lots * lot);
+        uint256 startTime = block.timestamp;
+        splitter.run(m.core, m.params, m.collateralToken, lots, lot);
+
+        address first = splitter.addressFor(1);
+        address last = splitter.addressFor(lots);
+        uint256 firstDelay = m.controller.positionOf(first).unlockTime - startTime;
+        uint256 lastDelay = m.controller.positionOf(last).unlockTime - startTime;
+
+        uint256 expectedFirstDelay = uint256(cfg.minActivationDelay)
+            + (uint256(cfg.maxActivationDelay) - cfg.minActivationDelay) * lot / cfg.maxDelayInflow;
+        assertEq(firstDelay, expectedFirstDelay, "the first lot freezes the ramp floor for one lot");
+        assertEq(lastDelay, cfg.maxActivationDelay, "the last lot freezes the max delay");
+
+        vm.warp(startTime + 1 hours);
+        m.borrow(first, _safeBorrow(lot));
+
+        vm.prank(last);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.borrow(m.params, 1, 0, last, last);
+    }
+}
+
+/// @dev Supplies `lots` lots of `lot` collateral for fresh addresses in one transaction, so the market inflow rises
+///      from lot to lot.
+contract Splitter {
+    function run(ILidoLend core, MarketParams calldata params, IERC20 collateral, uint256 lots, uint256 lot) external {
+        collateral.approve(address(core), lots * lot);
+        for (uint256 i = 1; i <= lots; ++i) {
+            core.supplyCollateral(params, lot, addressFor(i), "");
+        }
+    }
+
+    function addressFor(uint256 i) public pure returns (address) {
+        return address(uint160(0xA0000 + i));
     }
 }

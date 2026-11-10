@@ -52,9 +52,9 @@ contract RiskStewardDashboardScenarioTest is LidoLendSetup {
         dashboard.increaseActivationDelays(market.id, 15 minutes, 3 hours, 3 hours);
     }
 
-    /// @dev Pins open finding I-M005: a governance motion writes a whole config fixed at its creation, so it undoes
+    /// @dev A governance motion writes a whole config fixed at its creation, so it undoes
     ///      every steward tightening made inside its window. A fix changes this outcome; update this test with the fix.
-    function test_IM005_absoluteConfigMotion_undoesInWindowStewardTightening() public {
+    function test_absoluteConfigMotion_undoesInWindowStewardTightening() public {
         Market storage market = protocol.markets[0];
         CollateralActivationConfig memory created = market.controller.collateralActivationConfig();
         CollateralActivationConfig memory motionConfig = created;

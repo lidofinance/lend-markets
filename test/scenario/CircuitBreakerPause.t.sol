@@ -278,9 +278,9 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
 
     // ── Open findings ──
 
-    /// @dev Pins open finding I-M003: through the C-10-OQ-1 re-arm route, the admin chains maximum pauses with no
+    /// @dev Through the re-arm route, the admin chains maximum pauses with no
     ///      gap, one admin action per pause. A fix changes this outcome; update this test with the fix.
-    function test_IM003_adminRearmAtResume_chainsBackToBackMaxPauses() public {
+    function test_adminRearmAtResume_chainsBackToBackMaxPauses() public {
         uint256 maxPause = circuitBreaker.MAX_PAUSE_DURATION();
         assertEq(maxPause, profile.maxPauseDuration, "setup: profile bound");
         vm.prank(executor);
@@ -299,9 +299,9 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         _a().core.accrueInterest(_a().params);
     }
 
-    /// @dev Pins open finding I-M003: the Reseal Manager's controller roles turn a bounded CircuitBreaker pause into
+    /// @dev The Reseal Manager's controller roles turn a bounded CircuitBreaker pause into
     ///      an indefinite one in one step. A fix changes this outcome; update this test with the fix.
-    function test_IM003_resealRoles_turnCbPauseIndefinite() public {
+    function test_resealRoles_turnCbPauseIndefinite() public {
         Market storage a = _a();
         _pauseA();
 

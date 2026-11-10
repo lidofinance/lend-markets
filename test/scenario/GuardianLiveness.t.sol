@@ -289,10 +289,10 @@ contract GuardianLivenessTest is LidoLendSetup {
         assertEq(m.guardianSignals.getQuorumFrontier(), sharedScan, "setup: one guardian cannot carry quorum two");
     }
 
-    /// @dev Pins open finding ll-aud-17: after a quorum decrease, the stored frontier stays behind guardian 1's scan,
+    /// @dev After a quorum decrease, the stored frontier stays behind guardian 1's scan,
     ///      so the lot waits for a `syncQuorumFrontier` call.
     ///      A fix changes this outcome; update this test with the fix.
-    function test_LLAUD17_quorumLowered_frontierStallsUntilSync() public {
+    function test_quorumLowered_frontierStallsUntilSync() public {
         Market storage m = _m();
         uint256 sharedScan = _silenceGuardians2And3();
         vm.prank(m.config.admin);
@@ -314,9 +314,9 @@ contract GuardianLivenessTest is LidoLendSetup {
         assertEq(m.controller.positionOf(borrower).activating, 0, "lot matures once the frontier is synced");
     }
 
-    /// @dev Pins open finding ll-aud-17: after the remove-guardian motion, the lot waits for the fallback deadline
+    /// @dev After the remove-guardian motion, the lot waits for the fallback deadline
     ///      although guardian 1 scanned past its unlock. A fix changes this outcome; update this test with the fix.
-    function test_LLAUD17_removeGuardianMotion_lotWaitsForFallback() public {
+    function test_removeGuardianMotion_lotWaitsForFallback() public {
         Market storage m = _m();
         uint256 sharedScan = _silenceGuardians2And3();
         // The motion lowers quorum, then removes a silent guardian.

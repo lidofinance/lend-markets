@@ -65,10 +65,10 @@ contract DeployVaultV2Test is Test {
         vm.removeDir(ArtifactMetadataFile.artifactsDir(run), true);
     }
 
-    /// @dev Pins open finding K4-C1: the script leaves every Vault V2 timelock at zero, so a named curator can
+    /// @dev The script leaves every Vault V2 timelock at zero, so a named curator can
     ///      submit and execute each curator action in one transaction. A fix changes this outcome; update this
     ///      test with the fix.
-    function test_K4C1_deployVaultV2_leavesTimelocksAtZero() external {
+    function test_deployVaultV2_leavesTimelocksAtZero() external {
         IVaultV2 vault = _deployVaultAsScript();
         bytes4[18] memory timelocked = [
             IVaultV2.setIsAllocator.selector,
@@ -95,9 +95,9 @@ contract DeployVaultV2Test is Test {
         }
     }
 
-    /// @dev Pins open finding K4-C1: the script sets no Vault V2 gate, so anyone can deposit and hold shares from
+    /// @dev The script sets no Vault V2 gate, so anyone can deposit and hold shares from
     ///      the deploy block. A fix changes this outcome; update this test with the fix.
-    function test_K4C1_deployVaultV2_setsNoGates() external {
+    function test_deployVaultV2_setsNoGates() external {
         IVaultV2 vault = _deployVaultAsScript();
         assertEq(vault.receiveSharesGate(), address(0), "receiveSharesGate");
         assertEq(vault.sendSharesGate(), address(0), "sendSharesGate");
@@ -105,9 +105,9 @@ contract DeployVaultV2Test is Test {
         assertEq(vault.sendAssetsGate(), address(0), "sendAssetsGate");
     }
 
-    /// @dev Pins open finding K4-C1: the script leaves every adapter timelock at zero, so a named curator can burn
+    /// @dev The script leaves every adapter timelock at zero, so a named curator can burn
     ///      the adapter's market shares in one transaction. A fix changes this outcome; update this test with the fix.
-    function test_K4C1_deployVaultV2_leavesAdapterTimelocksAtZero() external {
+    function test_deployVaultV2_leavesAdapterTimelocksAtZero() external {
         IVaultV2 vault = _deployVaultAsScript();
         IMorphoMarketV1AdapterV2 adapter = IMorphoMarketV1AdapterV2(
             vm.deployCode(

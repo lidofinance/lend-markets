@@ -541,6 +541,21 @@ contract LidoLendOwnerTest is Test {
         assertEq(core.feeRecipient(), recipient, "fee recipient set");
     }
 
+    /// @dev The facade accepts the zero address as the fee recipient
+    ///      and the core stores it. A fix changes this outcome; update this test with the fix.
+    function test_setFeeRecipient_zeroAddressAccepted() public {
+        _grant(facade.FEE_MANAGER_ROLE(), FEE_MGR);
+        vm.prank(FEE_MGR);
+        facade.setFeeRecipient(address(0x1234)); // the core rejects a no-op set, so move off zero first
+
+        vm.expectEmit(true, true, true, true, address(core));
+        emit SetFeeRecipient(address(0));
+        vm.prank(FEE_MGR);
+        facade.setFeeRecipient(address(0));
+
+        assertEq(core.feeRecipient(), address(0), "zero fee recipient stored");
+    }
+
     /// @notice Setting the fee recipient without the role reverts at the facade's gate.
     function testRevert_setFeeRecipient_withoutRole() public {
         bytes32 role = facade.FEE_MANAGER_ROLE();

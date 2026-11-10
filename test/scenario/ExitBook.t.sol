@@ -12,6 +12,7 @@ import {IMorpho, Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
+import {ExitBookLib} from "../../src/libs/ExitBookLib.sol";
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {Request, ExitStatus, PriorityRamp} from "../../src/types/ExitBookTypes.sol";
@@ -391,6 +392,69 @@ contract ExitBookTest is Test, LidoLendDeployer {
         assertEq(
             uint8(vaultBook.getExitRequest(id).status), uint8(ExitStatus.Filled), "freeze leaves lender exits open"
         );
+    }
+
+    /// @dev The priority-fee ramp runs on during a source pause, so
+    ///      the first fill after the pause pays the end rate although no fill was possible before. A fix changes this
+    ///      outcome; update this test with the fix.
+    function test_sourcePause_rampAdvances_fillAfterPausePaysEndRate() public {
+        address lender = _actor("lender");
+        address filler = _actor("filler");
+        uint256 assets = 10 ether;
+        _depositToVault(lender, assets);
+        PriorityRamp memory ramp = PriorityRamp({startRate: 0.01e18, endRate: 0.08e18, rampStart: 0, rampEnd: 2 days});
+        uint256 id = _place(lender, assets, lender, 0, ramp);
+
+        uint256 pauseStart = block.timestamp;
+        LidoLendMarketController controller = LidoLendMarketController(d.controllerProxy);
+        controller.grantRole(controller.PAUSER_ROLE(), address(this));
+        controller.pauseFor(3 days);
+
+        vm.prank(filler);
+        vm.expectRevert(abi.encodeWithSelector(ERC4626.ERC4626ExceededMaxWithdraw.selector, lender, assets, 0));
+        vaultBook.fillExitRequest(id, assets, filler);
+
+        vm.warp(pauseStart + 3 days);
+        assertFalse(controller.isPaused(), "setup: pause is over");
+        uint256 endFee = assets * ramp.endRate / WAD;
+        uint256 lenderBefore = loan.balanceOf(lender);
+
+        vm.prank(filler);
+        vaultBook.fillExitRequest(id, assets, filler);
+
+        assertEq(loan.balanceOf(lender) - lenderBefore, assets - endFee, "lender pays the end rate");
+        assertLt(assets - endFee, assets - assets * ramp.startRate / WAD, "more than the rate at zero fillable time");
+    }
+
+    /// @dev A request whose deadline passes during a source pause
+    ///      expires without one fillable second; it stays open and the lender keeps its shares. A fix changes this
+    ///      outcome; update this test with the fix.
+    function testRevert_deadlinePassesDuringSourcePause_requestExpired() public {
+        address lender = _actor("lender");
+        address filler = _actor("filler");
+        uint256 assets = 10 ether;
+        uint256 shares = _depositToVault(lender, assets);
+        vm.startPrank(lender);
+        IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 id =
+            vaultBook.placeExitRequest(IERC4626(d.vault), assets, lender, 0, 0, _flat(0), block.timestamp + 1 days);
+        vm.stopPrank();
+
+        LidoLendMarketController controller = LidoLendMarketController(d.controllerProxy);
+        controller.grantRole(controller.PAUSER_ROLE(), address(this));
+        controller.pauseFor(2 days);
+        vm.warp(block.timestamp + 2 days);
+        assertFalse(controller.isPaused(), "setup: pause is over");
+        assertGt(block.timestamp, vaultBook.getExitRequest(id).deadline, "setup: deadline passed in the pause");
+
+        vm.prank(filler);
+        vm.expectRevert(ExitBookLib.RequestExpired.selector);
+        vaultBook.fillExitRequest(id, assets, filler);
+
+        Request memory request = vaultBook.getExitRequest(id);
+        assertEq(uint8(request.status), uint8(ExitStatus.Open), "request stays open");
+        assertEq(request.assetsRemaining, assets, "nothing filled");
+        assertEq(IVaultLike(d.vault).balanceOf(lender), shares, "lender keeps its shares");
     }
 
     // ---

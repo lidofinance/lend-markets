@@ -1,18 +1,35 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {stdError} from "forge-std/StdError.sol";
+
 import {IIrm} from "@lido-lend/src/interfaces/IIrm.sol";
-import {Id, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
+import {Id, Market as MorphoMarket, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {ErrorsLib} from "@lido-lend/src/libraries/ErrorsLib.sol";
 import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
+import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
+import {AdaptiveCurveConfig} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveConfig.sol";
 import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
+import {ErrorsLib as IrmErrorsLib} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/ErrorsLib.sol";
+import {AdaptiveCurveIrmLib} from "@lido-lend-irm/src/adaptive-curve-irm/libraries/periphery/AdaptiveCurveIrmLib.sol";
+import {OwnerManagerErrors} from "@lido-lend-irm/src/common/OwnerManagerErrors.sol";
+import {LinearKinkConfig} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkConfig.sol";
+import {LinearKinkIrm} from "@lido-lend-irm/src/linear-kink-irm/LinearKinkIrm.sol";
+import {LinearKinkParams} from "@lido-lend-irm/src/linear-kink-irm/interfaces/ILinearKinkTypes.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {IrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/IrmConfigFactory.sol";
 import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
 import {IIrm as IrmIIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.sol";
-import {Id as IrmId, MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
+import {
+    Id as IrmId,
+    Market as IrmMarket,
+    MarketParams as IrmMarketParams
+} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
@@ -49,6 +66,46 @@ contract MutableCurveConfig {
     }
 }
 
+/// @dev A rate model that returns a flat rate. When armed, its next `borrowRate` call supplies `flashAssets` to the
+///      core before it returns, so the supply lands inside the accrual that called it. `exit` withdraws all its shares.
+contract ReentrantSupplyIrm {
+    using MarketParamsLib for MarketParams;
+
+    ILidoLend public immutable CORE;
+    uint256 public immutable RATE;
+    MarketParams internal params;
+    uint256 public flashAssets;
+
+    constructor(ILidoLend core, MarketParams memory marketParams, uint256 rate) {
+        CORE = core;
+        params = marketParams;
+        RATE = rate;
+    }
+
+    function arm(uint256 assets) external {
+        flashAssets = assets;
+    }
+
+    function borrowRateView(MarketParams memory, MorphoMarket memory) external view returns (uint256) {
+        return RATE;
+    }
+
+    function borrowRate(MarketParams memory, MorphoMarket memory) external returns (uint256) {
+        uint256 assets = flashAssets;
+        if (assets != 0) {
+            flashAssets = 0;
+            IERC20(params.loanToken).approve(address(CORE), assets);
+            CORE.supply(params, assets, 0, address(this), "");
+        }
+        return RATE;
+    }
+
+    function exit() external returns (uint256 assets) {
+        uint256 shares = CORE.position(params.id(), address(this)).supplyShares;
+        (assets,) = CORE.withdraw(params, 0, shares, address(this), address(this));
+    }
+}
+
 /// @notice Curve configs that the adaptive IRM accepts but that can stop a live market. A config is applied the way
 ///         the Easy Track motion applies it: accrue under the old curve, then `applyIrmConfig`, in one transaction.
 ///         Every repair that accrues first fails with the same error as the market. Only the IRM owner's direct
@@ -59,6 +116,7 @@ contract MutableCurveConfig {
 contract IrmConfigRiskTest is LidoLendSetup {
     using MarketActions for Market;
     using MathLib for uint256;
+    using SharesMathLib for uint256;
 
     /// @dev The validation ceiling for the rate at target, 10000/yr, per second.
     int256 internal constant CEILING_RATE_AT_TARGET = int256(10_000 ether) / int256(365 days);
@@ -98,9 +156,9 @@ contract IrmConfigRiskTest is LidoLendSetup {
 
     // ── ll-aud-01: a validated ceiling config overflows accrual ──
 
-    /// @dev Pins open finding ll-aud-01: a factory-valid ceiling config makes accrual overflow, and every repair that
+    /// @dev A factory-valid ceiling config makes accrual overflow, and every repair that
     ///      accrues first reverts too. A fix changes this outcome; update this test with the fix.
-    function test_LLAUD01_ceilingConfig_overflowsAccrual_onlyDirectOwnerApplyRecovers() public {
+    function test_ceilingConfig_overflowsAccrual_onlyDirectOwnerApplyRecovers() public {
         Market storage m = _m();
         _seedFullUtilization(1e27);
         address ceilingConfig = factory.getOrDeployAdaptiveCurveConfig(_ceilingCurve());
@@ -119,9 +177,9 @@ contract IrmConfigRiskTest is LidoLendSetup {
 
     // ── ll-aud-02: a mutable config changes rates without a motion ──
 
-    /// @dev Pins open finding ll-aud-02: the admin of a non-factory config raises the market rate after the motion,
+    /// @dev The admin of a non-factory config raises the market rate after the motion,
     ///      with no new motion. A fix changes this outcome; update this test with the fix.
-    function test_LLAUD02_mutableConfig_adminRepricesWithoutMotion() public {
+    function test_mutableConfig_adminRepricesWithoutMotion() public {
         Market storage m = _m();
         _seedFullUtilization(200 ether);
         MutableCurveConfig config = new MutableCurveConfig(configAdmin, _flatCurve(FLAT_STEEPNESS));
@@ -149,10 +207,10 @@ contract IrmConfigRiskTest is LidoLendSetup {
         assertEq(address(_irm().marketCurveConfig(_irmId())), address(config), "binding unchanged");
     }
 
-    /// @dev Pins open finding ll-aud-02: the admin of a non-factory config makes its getter revert, which halts every
+    /// @dev The admin of a non-factory config makes its getter revert, which halts every
     ///      accruing action and every repair that accrues first. A fix changes this outcome; update this test with
     ///      the fix.
-    function test_LLAUD02_revertingGetter_haltsAccrual_onlyDirectOwnerApplyRecovers() public {
+    function test_revertingGetter_haltsAccrual_onlyDirectOwnerApplyRecovers() public {
         _seedFullUtilization(200 ether);
         MutableCurveConfig config = new MutableCurveConfig(configAdmin, _flatCurve(FLAT_STEEPNESS));
         this.applyConfigLikeMotion(address(config));
@@ -165,6 +223,205 @@ contract IrmConfigRiskTest is LidoLendSetup {
         _assertAccruingActionsRevert(err);
         _assertAccrueFirstRepairsRevert(err, address(config));
         _assertDirectOwnerApplyRecovers();
+    }
+
+    // ── A reentrant IRM supplies inside accrual ──
+
+    /// @dev A routed IRM that supplies inside `borrowRate` makes the
+    ///      core charge one interval twice, and the IRM withdraws more than it supplied. A fix changes this outcome;
+    ///      update this test with the fix.
+    function test_reentrantIrmSupplyInAccrual_chargesIntervalTwice() public {
+        Market storage m = _m();
+        _seedFullUtilization(500 ether);
+        _fund(m.loanToken, lender, 500 ether);
+        m.vaultDeposit(lender, 500 ether);
+        assertEq(m.core.market(m.id).fee, 0, "setup: no protocol fee");
+
+        uint256 rate = uint256(0.5e18) / 365 days;
+        uint256 flash = 1_000 ether;
+        ReentrantSupplyIrm model = new ReentrantSupplyIrm(m.core, m.params, rate);
+        IrmRouter(m.irm).setMarketIrm(_irmParams(), IrmIIrm(address(model)));
+        _fund(m.loanToken, address(model), flash);
+
+        uint256 elapsed = 30 days;
+        vm.warp(block.timestamp + elapsed);
+        MorphoMarket memory before = m.core.market(m.id);
+        uint256 growth = rate.wTaylorCompounded(elapsed);
+        uint256 nestedInterest = uint256(before.totalBorrowAssets).wMulDown(growth);
+        uint256 modelShares = flash.toSharesDown(before.totalSupplyAssets + nestedInterest, before.totalSupplyShares);
+        uint256 outerInterest = (before.totalBorrowAssets + nestedInterest).wMulDown(growth);
+
+        model.arm(flash);
+        m.core.accrueInterest(m.params);
+
+        MorphoMarket memory afterAccrual = m.core.market(m.id);
+        assertEq(
+            afterAccrual.totalBorrowAssets,
+            before.totalBorrowAssets + nestedInterest + outerInterest,
+            "borrowers pay the interval twice"
+        );
+        assertEq(
+            afterAccrual.totalSupplyAssets,
+            before.totalSupplyAssets + nestedInterest + flash + outerInterest,
+            "the second charge goes to the supply that includes the flash"
+        );
+        assertEq(m.core.position(m.id, address(model)).supplyShares, modelShares, "flash supply priced after leg 1");
+
+        uint256 expectedOut = modelShares.toAssetsDown(afterAccrual.totalSupplyAssets, afterAccrual.totalSupplyShares);
+        uint256 out = model.exit();
+        assertEq(out, expectedOut, "model withdraws its share of the second charge");
+        assertGt(out, flash, "model takes out more than it put in");
+    }
+
+    // ── ApplyIrmConfig does not validate parameters ──
+
+    /// @dev `applyIrmConfig` binds a curve that the
+    ///      `AdaptiveCurveConfig` constructor rejects, accrual then overflows, and only the owner's direct apply
+    ///      recovers. A fix changes this outcome; update this test with the fix.
+    function test_invalidCurveParams_acceptedByApply_haltAccrual() public {
+        _seedFullUtilization(200 ether);
+        AdaptiveCurveParams memory invalid = _flatCurve(-1e18);
+
+        vm.expectRevert(bytes(IrmErrorsLib.INVALID_CURVE_STEEPNESS));
+        new AdaptiveCurveConfig(invalid);
+
+        MutableCurveConfig config = new MutableCurveConfig(configAdmin, invalid);
+        this.applyConfigLikeMotion(address(config));
+        assertEq(address(_irm().marketCurveConfig(_irmId())), address(config), "invalid config bound");
+
+        vm.warp(block.timestamp + 1 days);
+        bytes memory err = stdError.arithmeticError;
+        _assertAccruingActionsRevert(err);
+        _assertAccrueFirstRepairsRevert(err, address(config));
+        _assertDirectOwnerApplyRecovers();
+    }
+
+    // ── Market creation needs the curve config first ──
+
+    /// @dev `createMarket` on an adaptive route with no curve config
+    ///      reverts, and it succeeds once the config is applied. A fix changes this outcome; update this test with the
+    ///      fix.
+    function test_createMarket_adaptiveRouteWithoutConfig_reverts() public {
+        Market storage m = _m();
+        MarketParams memory params = m.params;
+        params.lltv = 0.5e18;
+        IrmMarketParams memory irmParams = _toIrmParams(params);
+        AdaptiveCurveIrm adaptive = new AdaptiveCurveIrm(m.irm, address(this), address(this));
+        IrmRouter(m.irm).setMarketIrm(irmParams, IrmIIrm(address(adaptive)));
+        Id id = MarketParamsLib.id(params);
+
+        vm.expectRevert(bytes(IrmErrorsLib.CONFIG_NOT_SET));
+        m.core.createMarket(params);
+        assertEq(m.core.market(id).lastUpdate, 0, "no market created");
+
+        adaptive.applyIrmConfig(irmParams, flatConfig);
+        m.core.createMarket(params);
+
+        assertEq(m.core.market(id).lastUpdate, block.timestamp, "market created");
+        assertEq(adaptive.rateAtTarget(IrmId.wrap(Id.unwrap(id))), FLAT_RATE_AT_TARGET, "creation seeds the rate");
+    }
+
+    // ── The periphery library reads a stale adaptive config ──
+
+    /// @dev After the router moves a market to a linear-kink model,
+    ///      `AdaptiveCurveIrmLib.borrowRateView` still prices it from the old adaptive config. A fix changes this
+    ///      outcome; update this test with the fix.
+    function test_adaptiveLibAfterReroute_returnsStaleRate() public {
+        Market storage m = _m();
+        _seedFullUtilization(200 ether);
+        AdaptiveCurveIrm adaptive = _irm();
+
+        LinearKinkParams memory kink = LinearKinkParams({
+            optimalUtilization: 0.8e18,
+            baseRate: uint64(uint256(1e16) / 365 days),
+            slope1: uint64(uint256(3e16) / 365 days),
+            slope2: uint64(uint256(5e17) / 365 days)
+        });
+        LinearKinkIrm linear = new LinearKinkIrm(address(this), address(this));
+        linear.applyIrmConfig(_irmParams(), address(new LinearKinkConfig(kink)));
+        IrmRouter(m.irm).setMarketIrm(_irmParams(), IrmIIrm(address(linear)));
+
+        MorphoMarket memory market = m.core.market(m.id);
+        assertEq(market.lastUpdate, block.timestamp, "setup: the reroute accrued, so no adaptation is pending");
+        int256 frozenRateAtTarget = adaptive.rateAtTarget(_irmId());
+        assertGt(frozenRateAtTarget, 0, "setup: the adaptive model priced the market");
+        uint256 liveRate = uint256(kink.baseRate) + kink.slope1 + kink.slope2;
+        assertEq(IIrm(m.irm).borrowRateView(m.params, market), liveRate, "router prices the kink at 100%");
+
+        uint256 libRate = AdaptiveCurveIrmLib.borrowRateView(
+            Id.unwrap(m.id), abi.decode(abi.encode(market), (IrmMarket)), address(adaptive)
+        );
+        assertEq(libRate, _fullUseRate(4e18, frozenRateAtTarget), "library prices the old adaptive curve");
+        assertNotEq(libRate, liveRate, "library rate differs from the live route");
+    }
+
+    // ── Idle checkpoints change the stored adaptive rate ──
+
+    /// @dev Two identical idle markets that accrue on different
+    ///      schedules end the same interval with different `rateAtTarget`. A fix changes this outcome; update this
+    ///      test with the fix.
+    function test_idleAccrualSchedule_changesRateAtTarget() public {
+        Market storage daily = _m();
+        Market storage once = _addMarket(daily.config);
+        assertEq(daily.core.market(daily.id).lastUpdate, once.core.market(once.id).lastUpdate, "setup: same start");
+        assertEq(daily.core.market(daily.id).totalBorrowAssets, 0, "setup: daily market is idle");
+        assertEq(once.core.market(once.id).totalBorrowAssets, 0, "setup: once market is idle");
+
+        for (uint256 day; day < 10; ++day) {
+            vm.warp(block.timestamp + 1 days);
+            daily.accrueInterest();
+        }
+        once.accrueInterest();
+
+        assertEq(daily.core.market(daily.id).lastUpdate, once.core.market(once.id).lastUpdate, "same end");
+        int256 dailyRate = _adaptiveOf(daily).rateAtTarget(IrmId.wrap(Id.unwrap(daily.id)));
+        int256 onceRate = _adaptiveOf(once).rateAtTarget(IrmId.wrap(Id.unwrap(once.id)));
+        int256 minRateAtTarget = int256(1e15) / int256(365 days);
+        int256 initialRateAtTarget = int256(4e16) / int256(365 days);
+        assertGt(onceRate, minRateAtTarget, "setup: decay stays above the floor");
+        assertLt(onceRate, initialRateAtTarget, "setup: idle market decays");
+        assertNotEq(dailyRate, onceRate, "checkpoint schedule changes the stored rate");
+    }
+
+    // ── Ownership moves in one step ──
+
+    /// @dev `IrmRouter.transferOwnership` moves ownership at once,
+    ///      with no acceptance step, so the old owner cannot undo a wrong target. A fix changes this outcome; update
+    ///      this test with the fix.
+    function test_irmRouterTransferOwnership_singleStep() public {
+        IrmRouter router = IrmRouter(_m().irm);
+        address wrongTarget = makeAddr("wrongTarget");
+
+        router.transferOwnership(wrongTarget);
+
+        assertEq(router.owner(), wrongTarget, "ownership moved without acceptance");
+        vm.expectRevert(bytes(OwnerManagerErrors.NOT_OWNER));
+        router.transferOwnership(address(this));
+        vm.expectRevert(bytes(OwnerManagerErrors.NOT_OWNER));
+        router.setManager(address(this));
+    }
+
+    // ── A direct apply does not accrue first ──
+
+    /// @dev A direct `applyIrmConfig` with no accrual first makes the next
+    ///      accrual price the whole elapsed window at the new curve. A fix changes this outcome; update this test with
+    ///      the fix.
+    function test_directApplyWithoutAccrue_pricesElapsedWindowAtNewCurve() public {
+        Market storage m = _m();
+        _seedFullUtilization(200 ether);
+        this.applyConfigLikeMotion(flatConfig);
+
+        uint256 elapsed = 10 days;
+        vm.warp(block.timestamp + elapsed);
+        MorphoMarket memory before = m.core.market(m.id);
+        _irm().applyIrmConfig(_irmParams(), factory.getOrDeployAdaptiveCurveConfig(_flatCurve(50e18)));
+        m.accrueInterest();
+
+        uint256 newRate = _fullUseRate(50e18, FLAT_RATE_AT_TARGET);
+        uint256 oldRate = _fullUseRate(FLAT_STEEPNESS, FLAT_RATE_AT_TARGET);
+        uint256 expected = uint256(before.totalBorrowAssets).wMulDown(newRate.wTaylorCompounded(elapsed));
+        assertEq(m.core.market(m.id).totalBorrowAssets, before.totalBorrowAssets + expected, "new curve prices window");
+        assertGt(expected, uint256(before.totalBorrowAssets).wMulDown(oldRate.wTaylorCompounded(elapsed)), "not old");
     }
 
     // ── shared assertions ──
@@ -313,13 +570,20 @@ contract IrmConfigRiskTest is LidoLendSetup {
     }
 
     function _irmParams() internal view returns (IrmMarketParams memory) {
-        Market storage m = _m();
+        return _toIrmParams(_m().params);
+    }
+
+    function _toIrmParams(MarketParams memory params) internal pure returns (IrmMarketParams memory) {
         return IrmMarketParams({
-            loanToken: m.params.loanToken,
-            collateralToken: m.params.collateralToken,
-            oracle: m.params.oracle,
-            irm: m.params.irm,
-            lltv: m.params.lltv
+            loanToken: params.loanToken,
+            collateralToken: params.collateralToken,
+            oracle: params.oracle,
+            irm: params.irm,
+            lltv: params.lltv
         });
+    }
+
+    function _adaptiveOf(Market storage m) internal view returns (AdaptiveCurveIrm) {
+        return AdaptiveCurveIrm(address(IrmRouter(m.irm).marketIrm(IrmId.wrap(Id.unwrap(m.id)))));
     }
 }

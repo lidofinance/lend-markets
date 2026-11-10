@@ -354,9 +354,9 @@ contract PauseLifecycleTest is LidoLendSetup {
 
     // ── I-M003: debt compounds while the pause blocks every cure ──
 
-    /// @dev Pins open finding I-M003: a borrower healthy at the pause start becomes liquidatable from 21 days of
+    /// @dev A borrower healthy at the pause start becomes liquidatable from 21 days of
     ///      interest alone, with no way to cure. A fix changes this outcome; update this test with the fix.
-    function test_IM003_pause21dAtFullUse_healthyBorrowerLiquidatedAtResume() public {
+    function test_pause21dAtFullUse_healthyBorrowerLiquidatedAtResume() public {
         Market storage m = _m();
         _seedFullUtilization();
         uint256 price = m.oracle.price();
@@ -369,9 +369,9 @@ contract PauseLifecycleTest is LidoLendSetup {
         m.liquidate(keeper, borrower, 0, m.core.position(m.id, borrower).borrowShares);
     }
 
-    /// @dev Pins open finding I-M003: a 60-day pause, the CircuitBreaker maximum, turns a healthy borrower into bad
+    /// @dev A 60-day pause, the CircuitBreaker maximum, turns a healthy borrower into bad
     ///      debt from interest alone. A fix changes this outcome; update this test with the fix.
-    function test_IM003_pause60dAtFullUse_badDebtAtResume() public {
+    function test_pause60dAtFullUse_badDebtAtResume() public {
         Market storage m = _m();
         _seedFullUtilization();
         uint256 price = m.oracle.price();
@@ -384,9 +384,9 @@ contract PauseLifecycleTest is LidoLendSetup {
         m.liquidateBadDebt(keeper, borrower, m.core.position(m.id, borrower).collateral, 0);
     }
 
-    /// @dev Pins open finding I-M003: the owner's `setFee` accrues through a pause, so it books interest and mints fee
+    /// @dev The owner's `setFee` accrues through a pause, so it books interest and mints fee
     ///      shares while users stay locked out. A fix changes this outcome; update this test with the fix.
-    function test_IM003_ownerSetFeeWhilePaused_accruesAndMintsFeeShares() public {
+    function test_ownerSetFeeWhilePaused_accruesAndMintsFeeShares() public {
         Market storage m = _m();
         address feeRecipient = _actor("feeRecipient");
         m.core.setFeeRecipient(feeRecipient);
@@ -417,9 +417,9 @@ contract PauseLifecycleTest is LidoLendSetup {
         assertEq(post.fee, 0.2e18, "new fee stored");
     }
 
-    /// @dev Pins open finding I-M003: during a pause only the IRM owner's direct `applyIrmConfig` can reprice, since
+    /// @dev During a pause only the IRM owner's direct `applyIrmConfig` can reprice, since
     ///      the router's switch accrues first. A fix changes this outcome; update this test with the fix.
-    function test_IM003_irmRepairWhilePaused_onlyDirectOwnerApplyReprices() public {
+    function test_irmRepairWhilePaused_onlyDirectOwnerApplyReprices() public {
         Market storage m = _m();
         _seedFullUtilization();
         MorphoMarket memory atPause = m.core.market(m.id);

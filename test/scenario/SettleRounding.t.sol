@@ -211,6 +211,52 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         assertEq(borrowBefore - core.position(id, BORROWER).borrowShares, borrowCut, "exact borrow shares canceled");
     }
 
+    /// @dev With a fee and borrow and supply indices far apart,
+    ///      the smallest executable borrow-share cut lowers total borrow assets by exactly the cut's debt rounded up,
+    ///      so the cut moves no debt onto the borrowers that stay.
+    function test_minimumCutAfterFeeAccrual_movesNoDebtToOtherBorrowers() public {
+        vm.startPrank(core.owner());
+        core.setFeeRecipient(address(0xFEE));
+        core.setFee(params, 0.25e18);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 30 days);
+        core.accrueInterest(params);
+
+        Market memory m = core.market(id);
+        // Fee shares grow the supply side only, so one borrow share is now worth more than one supply share.
+        assertGt(
+            (uint256(m.totalBorrowAssets) + 1) * (uint256(m.totalSupplyShares) + 1e6),
+            (uint256(m.totalSupplyAssets) + 1) * (uint256(m.totalBorrowShares) + 1e6) * 105 / 100,
+            "setup: the borrow index is more than 5% above the supply index"
+        );
+        assertFalse(controller.hasBadDebt(), "setup: the root is solvent");
+
+        // At a price of 1.2 a cut must be worth two loan assets rounded down to seize one collateral unit.
+        uint256 cut = SharesMathLib.toSharesUp(2, m.totalBorrowAssets, m.totalBorrowShares);
+        assertEq(SharesMathLib.toAssetsDown(cut, m.totalBorrowAssets, m.totalBorrowShares), 2, "setup: minimum cut");
+        uint256 cutDebt = SharesMathLib.toAssetsUp(cut, m.totalBorrowAssets, m.totalBorrowShares);
+        uint256 fillerShares = core.position(id, FILLER).borrowShares;
+        uint256 fillerDebtBefore = SharesMathLib.toAssetsUp(fillerShares, m.totalBorrowAssets, m.totalBorrowShares);
+        uint256 lenderBefore = core.position(id, LENDER).supplyShares;
+
+        vm.prank(LENDER);
+        (, uint256 debtCanceled,,) = core.settle(params, cut, LENDER, BORROWER, RECEIVER);
+
+        Market memory post = core.market(id);
+        assertEq(debtCanceled, cutDebt, "the cut cancels its debt rounded up");
+        assertEq(m.totalBorrowAssets - post.totalBorrowAssets, cutDebt, "total borrow assets fall by that debt");
+        assertLe(
+            SharesMathLib.toAssetsUp(fillerShares, post.totalBorrowAssets, post.totalBorrowShares),
+            fillerDebtBefore,
+            "the other borrower's debt does not rise"
+        );
+        assertGe(
+            lenderBefore - core.position(id, LENDER).supplyShares,
+            SharesMathLib.toSharesUp(cutDebt, m.totalSupplyAssets, m.totalSupplyShares),
+            "the lender burns supply worth at least the canceled debt"
+        );
+    }
+
     function testRevert_zeroBorrowShares() public {
         vm.prank(LENDER);
         vm.expectRevert(bytes("settlement slice too small"));
