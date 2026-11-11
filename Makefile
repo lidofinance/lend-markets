@@ -35,7 +35,9 @@ unexport capture_exported_value restore_exported_value
 FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces \
 	src/oracle src/libs src/periphery src/utils script test
 
-.PHONY: help build sizes deploy test test-local test-fork test-deployment test-simulation test-mutation \
+DEPLOYMENT_ANCHORS := script/Bundler3Anchor.sol script/CircuitBreakerAnchor.sol script/VaultV2Anchor.sol
+
+.PHONY: help build build-deps sizes deploy test test-local test-fork test-deployment test-simulation test-mutation \
 	fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc test-plan test-plan-check audit-checksums ci clean \
 	acceptance-run acceptance-run-multi \
 	apply-pending pending-stop test-pending
@@ -107,7 +109,14 @@ build: ## Compile contracts
 	forge build
 
 sizes: ## Compile and report deployed-contract sizes
-	forge build src script/Bundler3Anchor.sol script/CircuitBreakerAnchor.sol script/VaultV2Anchor.sol --sizes
+	forge build src $(DEPLOYMENT_ANCHORS) --sizes
+
+# forge test omits script-only dependencies loaded through vm.deployCode.
+build-deps:
+	forge build $(DEPLOYMENT_ANCHORS)
+
+test test-local test-fork test-deployment test-simulation test-mutation coverage snapshot snapshot-diff \
+acceptance-run acceptance-run-multi: build-deps
 
 test: ## Local + fresh-fork suites; RPC_URL required
 	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge test
@@ -156,7 +165,7 @@ lint: ## Run Forge lint
 	forge lint
 
 coverage: ## Coverage including fresh-fork suites; RPC_URL required
-	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge coverage --ir-minimum --report summary
+	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge coverage --report summary
 
 # -vv exposes TEST_SEED and FORK_BLOCK for replay; pin FOUNDRY_FUZZ_SEED for invariant counters too.
 snapshot: ## Gas snapshot including fresh-fork suites; RPC_URL required

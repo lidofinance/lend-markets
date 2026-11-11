@@ -813,7 +813,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     function _deployExpectedCircuitBreaker() private returns (address expected) {
-        bytes memory creationCode = vm.getCode("out/CircuitBreaker.sol/CircuitBreaker.json");
+        bytes memory creationCode = vm.getCode("CircuitBreaker.sol:CircuitBreaker");
         bytes memory initCode = abi.encodePacked(
             creationCode,
             abi.encode(

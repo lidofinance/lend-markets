@@ -1,6 +1,8 @@
 name: ci
 
 on:
+  push:
+    branches: [refactor/solidity-deployment, main, develop]
   workflow_dispatch:
 
 permissions:
@@ -23,10 +25,8 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      # Only src and the Bundler3 anchor: test harnesses and handlers exceed EIP-170 by design, and the
-      # tests deploy Bundler3 from the artifact the anchor produces.
       - name: build (with sizes)
-        run: forge build src script/Bundler3Anchor.sol --sizes
+        run: make sizes
 
       - name: lint
         run: make lint

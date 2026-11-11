@@ -17,7 +17,7 @@ inputs:
     description: Deprecated compatibility input; preparation uses Solidity recipes
     default: mainnet
   run:
-    description: Existing protocol artifact run under deployed
+    description: Recorded deployment under script/deployment/<run>/artifacts
     default: mainnet
 runs:
   using: composite
@@ -33,7 +33,7 @@ runs:
       shell: bash
       working-directory: ${{ inputs.path }}
       run: echo "version=$(head -n 1 .foundryref)" >> "$GITHUB_OUTPUT"
-    - uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0
+    - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
       with:
         version: ${{ steps.foundry.outputs.version }}
     - name: Prepare deployment and run regression tests

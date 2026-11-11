@@ -1,12 +1,16 @@
 name: fuzz
 
-# Heavy fuzz/invariant suite. Runs on demand.
-# Kept off the PR path because high run counts slow down feedback.
+# Heavy fuzz/invariant suite.
 on:
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   fuzz:
@@ -21,9 +25,8 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      # The bundler suites deploy Bundler3 from the artifact this anchor produces; forge test does not build script/.
-      - name: build Bundler3 anchor
-        run: forge build script/Bundler3Anchor.sol
+      - name: build deployment dependencies
+        run: make build-deps
 
       - name: deep fuzz (10000 runs)
         env:
