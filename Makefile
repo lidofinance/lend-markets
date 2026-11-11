@@ -36,7 +36,7 @@ FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/co
 	src/oracle src/libs src/periphery src/utils script test
 
 .PHONY: help build sizes test test-local test-fork test-deployment test-simulation test-mutation \
-	fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean \
+	fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc test-plan test-plan-check ci clean \
 	acceptance-run acceptance-run-multi \
 	apply-pending pending-stop test-pending
 
@@ -115,6 +115,12 @@ solhint: ## Run Solhint (separate install)
 doc: ## Generate API reference from NatSpec
 	forge build --ast
 	python3 tools/gen_api_from_artifacts.py
+
+test-plan: ## Relink TEST_PLAN.md to current tests and contract members
+	python3 tools/test_plan_links.py
+
+test-plan-check: ## Check TEST_PLAN.md links and test references
+	python3 tools/test_plan_links.py --check
 
 audit-checksums: ## Compare audited source digests; optional REF=<git-ref>
 	bash tools/audit-checksums.sh $(REF)

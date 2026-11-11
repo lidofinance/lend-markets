@@ -5,17 +5,23 @@ import {Test, stdError} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Id, IMorpho} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {IGuardianSignalsView} from "../../src/interfaces/IGuardianSignalsView.sol";
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig, SettlementSlice, SettlementQuote} from "../../src/types/SettlementTypes.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
+import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 import {WAD, BPS} from "../../src/libs/Constants.sol";
 import {LidoLendDeployer} from "../../script/lib/LidoLendDeployer.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -90,6 +96,108 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function test_constructor_zeroCoreReverts() public {
         vm.expectRevert(ILidoLendMarketController.ZeroAddress.selector);
         new LidoLendMarketController(IMorpho(address(0)));
+    }
+
+    function testRevert_initialize_zeroAdmin() public {
+        _expectInitializeZeroAddress(address(0), address(_m().guardianSignals));
+    }
+
+    function testRevert_initialize_zeroGuardianSignals() public {
+        _expectInitializeZeroAddress(address(this), address(0));
+    }
+
+    function testRevert_initialize_invalidActivationConfig() public {
+        Market storage m = _m();
+        CollateralActivationConfig memory activation = m.config.activation;
+        activation.minActivationAmount = 0;
+        _expectInitializeRevert(
+            address(this),
+            address(m.guardianSignals),
+            activation,
+            m.config.settlementConfig,
+            abi.encodeWithSelector(CollateralActivationLib.ZeroMinActivationAmount.selector)
+        );
+    }
+
+    function testRevert_initialize_invalidSettlementConfig() public {
+        Market storage m = _m();
+        SettlementConfig memory settlement = m.config.settlementConfig;
+        settlement.sliceFloorBps = uint16(BPS + 1);
+        _expectInitializeRevert(
+            address(this),
+            address(m.guardianSignals),
+            m.config.activation,
+            settlement,
+            abi.encodeWithSelector(SettlementQueueLib.SettlementConfigOutOfRange.selector)
+        );
+    }
+
+    function _expectInitializeZeroAddress(address admin, address guardianSignals) internal {
+        Market storage m = _m();
+        _expectInitializeRevert(
+            admin,
+            guardianSignals,
+            m.config.activation,
+            m.config.settlementConfig,
+            abi.encodeWithSelector(ILidoLendMarketController.ZeroAddress.selector)
+        );
+    }
+
+    /// @dev `initialize` runs in the proxy constructor, so its revert surfaces from the proxy deployment.
+    function _expectInitializeRevert(
+        address admin,
+        address guardianSignals,
+        CollateralActivationConfig memory activation,
+        SettlementConfig memory settlement,
+        bytes memory revertData
+    ) internal {
+        Market storage m = _m();
+        LidoLendMarketController impl = new LidoLendMarketController(IMorpho(address(m.core)));
+        bytes memory initData = abi.encodeCall(
+            LidoLendMarketController.initialize,
+            (m.id, admin, m.config.supplyCap, IGuardianSignalsView(guardianSignals), activation, settlement)
+        );
+        vm.expectRevert(revertData);
+        new OssifiableProxy(address(impl), address(this), initData);
+    }
+
+    function testRevert_initialize_bareImplementation() public {
+        Market storage m = _m();
+        LidoLendMarketController impl = new LidoLendMarketController(IMorpho(address(m.core)));
+        IGuardianSignalsView guardianSignals = IGuardianSignalsView(address(m.guardianSignals));
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        impl.initialize(
+            m.id, address(this), m.config.supplyCap, guardianSignals, m.config.activation, m.config.settlementConfig
+        );
+    }
+
+    function testRevert_initialize_twice() public {
+        Market storage m = _m();
+        IGuardianSignalsView guardianSignals = IGuardianSignalsView(address(m.guardianSignals));
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        c.initialize(
+            m.id, address(this), m.config.supplyCap, guardianSignals, m.config.activation, m.config.settlementConfig
+        );
+    }
+
+    /// @dev The initial cap is announced like a later `setSupplyCap`, with the deployer as the account.
+    function test_initialize_emitsSupplyCapSet() public {
+        Market storage m = _m();
+        LidoLendMarketController impl = new LidoLendMarketController(IMorpho(address(m.core)));
+        bytes memory initData = abi.encodeCall(
+            LidoLendMarketController.initialize,
+            (
+                m.id,
+                address(this),
+                500 ether,
+                IGuardianSignalsView(address(m.guardianSignals)),
+                m.config.activation,
+                m.config.settlementConfig
+            )
+        );
+        vm.expectEmit(true, false, false, true);
+        emit ILidoLendMarketController.SupplyCapSet(500 ether, address(this));
+        new OssifiableProxy(address(impl), address(this), initData);
     }
 
     /// @dev Lender liquidity + a borrower with matured collateral and an open borrow.
@@ -194,6 +302,15 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     /// @dev `resume` while the market is not paused reverts `PausedExpected`.
     function testRevert_resume_whenNotPaused() public {
+        vm.expectRevert(PausableUntil.PausedExpected.selector);
+        c.resume();
+    }
+
+    /// @dev A finite pause that has run out is no longer a pause, so there is nothing to resume.
+    function testRevert_resume_afterFinitePauseExpired() public {
+        c.pauseFor(1 days);
+        vm.warp(block.timestamp + 1 days);
+        assertFalse(c.isPaused(), "setup: the pause has expired");
         vm.expectRevert(PausableUntil.PausedExpected.selector);
         c.resume();
     }
@@ -310,6 +427,125 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         m.core.borrow(m.params, 10 ether, 0, borrower, borrower); // succeeds immediately
     }
 
+    /// @dev The grant is keyed on the caller: a granted borrower's collateral supplied by an ungranted operator
+    ///      enters the timer and backs no borrow yet.
+    function test_instantActivation_grantedOwnerUngrantedCaller_entersTimer() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        m.vaultDeposit(lender, 1000 ether);
+        address borrower = _actor("borrower");
+        address operator = _actor("operator");
+        c.setInstantActivation(borrower, true);
+        _fund(m.collateralToken, operator, 100 ether);
+
+        m.supplyCollateralOnBehalf(operator, borrower, 100 ether);
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.borrow(m.params, 1 ether, 0, borrower, borrower);
+    }
+
+    /// @dev The other side of the caller key: a granted operator's supply for an ungranted borrower lands active,
+    ///      and the borrower borrows its full capacity at once.
+    function test_instantActivation_grantedCallerUngrantedOwner_landsActiveAndBorrows() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        m.vaultDeposit(lender, 1000 ether);
+        address borrower = _actor("borrower");
+        address operator = _actor("operator");
+        c.setInstantActivation(operator, true);
+        assertFalse(c.hasInstantActivation(borrower), "borrower holds no grant");
+        _fund(m.collateralToken, operator, 100 ether);
+
+        m.supplyCollateralInstant(operator, borrower, 100 ether);
+        assertEq(c.positionOf(borrower).active, 100 ether, "the whole supply is active");
+
+        uint256 capacity = _maxBorrow(m, 100 ether);
+        m.borrow(borrower, capacity);
+        assertEq(m.loanToken.balanceOf(borrower), capacity, "borrower received the loan with no wait");
+    }
+
+    // ── LLTV capacity boundaries ──
+
+    /// @dev Borrow capacity is `floor(floor(active * price / 1e36) * lltv / WAD)`: a fresh borrower borrows exactly
+    ///      that, one wei more reverts at the hook.
+    function test_borrow_exactLltvCapacity_passesOneWeiAboveReverts() public {
+        Market storage m = _m();
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, 0);
+        uint256 capacity = _maxBorrow(m, 100 ether);
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.borrow(m.params, capacity + 1, 0, borrower, borrower);
+
+        m.borrow(borrower, capacity);
+    }
+
+    /// @dev With debt `D`, the least collateral left that still covers it is
+    ///      `ceil(ceil(D * WAD / lltv) * 1e36 / price)`: withdrawing down to it passes, one wei more reverts.
+    function test_withdrawCollateral_exactLltvCapacity_passesOneWeiAboveReverts() public {
+        Market storage m = _m();
+        uint256 collat = 100 ether;
+        (, address borrower) = _seedBorrower(1000 ether, collat, _maxBorrow(m, collat) / 2);
+
+        uint256 debt = _debtOf(m, borrower);
+        uint256 minValue = Math.ceilDiv(debt * WAD, m.params.lltv);
+        uint256 minCollateral = Math.ceilDiv(minValue * 1e36, m.oracle.price());
+        uint256 withdrawable = collat - minCollateral;
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.withdrawCollateral(m.params, withdrawable + 1, borrower, borrower);
+
+        m.withdrawCollateral(borrower, withdrawable, borrower);
+    }
+
+    /// @dev The controller leaves no margin under the core's liquidation threshold: a position withdrawn to its
+    ///      boundary is healthy in that block and liquidatable once a second of interest accrues.
+    function test_withdrawCollateral_toLltvBoundary_liquidatableOnceInterestAccrues() public {
+        Market storage m = _m();
+        uint256 collat = 100 ether;
+        (, address borrower) = _seedBorrower(1000 ether, collat, _maxBorrow(m, collat) / 2);
+        uint256 minCollateral =
+            Math.ceilDiv(Math.ceilDiv(_debtOf(m, borrower) * WAD, m.params.lltv) * 1e36, m.oracle.price());
+        m.withdrawCollateral(borrower, collat - minCollateral, borrower);
+        assertGe(_maxBorrow(m, minCollateral), _debtOf(m, borrower), "boundary position is healthy");
+
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1000 ether);
+        vm.prank(keeper);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+
+        vm.prank(keeper);
+        vm.expectRevert(bytes("position is healthy"));
+        m.core.liquidate(m.params, borrower, 1, 0, "");
+
+        vm.warp(block.timestamp + 1);
+        m.accrueInterest();
+        assertGt(_debtOf(m, borrower), _maxBorrow(m, minCollateral), "a second of interest crosses the threshold");
+
+        (uint256 seized,) = m.liquidate(keeper, borrower, 1 ether, 0);
+        assertEq(seized, 1 ether, "the keeper seized the requested collateral");
+    }
+
+    /// @dev The controller's capacity formula, recomputed from the oracle price and the market LLTV.
+    function _maxBorrow(Market storage m, uint256 active) internal view returns (uint256) {
+        return Math.mulDiv(Math.mulDiv(active, m.oracle.price(), 1e36), m.params.lltv, WAD);
+    }
+
+    /// @dev Borrower debt in loan assets, rounded up as the controller and the core round it.
+    function _debtOf(Market storage m, address borrower) internal view returns (uint256) {
+        uint256 shares = m.core.position(m.id, borrower).borrowShares;
+        return Math.mulDiv(
+            shares,
+            m.core.market(m.id).totalBorrowAssets + SharesMathLib.VIRTUAL_ASSETS,
+            m.core.market(m.id).totalBorrowShares + SharesMathLib.VIRTUAL_SHARES,
+            Math.Rounding.Ceil
+        );
+    }
+
     // ── setter role-gating ──
 
     /// @dev `freeze` without `FREEZER_ROLE` reverts `AccessControlUnauthorizedAccount`.
@@ -408,6 +644,17 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertTrue(c.hasInstantActivation(borrower), "granted");
         c.setInstantActivation(borrower, false);
         assertFalse(c.hasInstantActivation(borrower), "revoked");
+    }
+
+    function test_setInstantActivation_emitsInstantActivationSet() public {
+        address borrower = _actor("borrower");
+        vm.expectEmit(true, false, false, true, address(c));
+        emit ILidoLendMarketController.InstantActivationSet(borrower, true);
+        c.setInstantActivation(borrower, true);
+
+        vm.expectEmit(true, false, false, true, address(c));
+        emit ILidoLendMarketController.InstantActivationSet(borrower, false);
+        c.setInstantActivation(borrower, false);
     }
 
     function testRevert_setInstantActivationFalse_wrongRole() public {
@@ -666,6 +913,13 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(c.getResumeSinceTimestamp(), block.timestamp, "resume timestamp moved to now");
     }
 
+    function test_pauseFor_indefinite_emitsPausedInfinitely() public {
+        uint256 inf = c.PAUSE_INFINITELY();
+        vm.expectEmit(false, false, false, true, address(c));
+        emit PausableUntil.Paused(inf);
+        c.pauseFor(inf);
+    }
+
     /// @dev A finite pause parks the resume timestamp at now + duration (the non-infinite emit branch).
     function test_pauseFor_finite_resumeTimestamp() public {
         c.pauseFor(1 hours);
@@ -881,6 +1135,30 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         vm.prank(lender);
         vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, lender, 1, 0));
         m.vault.deposit(1, lender);
+    }
+
+    /// @dev The hook reads the total after the core accrues: a direct core supply that fits the stored total is
+    ///      rejected once a year of interest carries the accrued total past the cap.
+    function testRevert_supplyCap_directCoreSupply_accruedInterestPassesCap() public {
+        Market storage m = _m();
+        uint256 cap = 100 ether;
+        (address lender,) = _seedBorrower(99 ether, 1000 ether, 90 ether);
+        c.setSupplyCap(cap);
+
+        vm.warp(block.timestamp + 365 days);
+        uint256 stored = m.core.market(m.id).totalSupplyAssets;
+        uint256 accrued = m.accruedMarket().totalSupplyAssets;
+        assertLe(stored + 1 ether, cap, "the stored total alone admits the supply");
+        assertGt(accrued, cap, "accrued interest passes the cap");
+
+        _fund(m.loanToken, lender, 1 ether);
+        vm.prank(lender);
+        m.loanToken.approve(address(m.core), 1 ether);
+        vm.prank(lender);
+        vm.expectRevert(
+            abi.encodeWithSelector(ILidoLendMarketController.SupplyCapExceeded.selector, cap, accrued + 1 ether)
+        );
+        m.core.supply(m.params, 1 ether, 0, lender, "");
     }
 
     /// @dev Scenario 3: fill to the cap, let interest carry the total above it (deposits blocked), then a
@@ -1136,6 +1414,31 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         uint256 shares = _m().core.position(_m().id, borrower).borrowShares;
         _m().repay(borrower, shares);
         assertEq(c.settlementBorrowersCount(), 0, "queue empties when debt clears");
+    }
+
+    /// @dev The queue keys on raw collateral, so a top-up re-keys an indebted borrower lower at once, before the
+    ///      new lot matures.
+    function test_supplyCollateral_topUp_dropsQueueKey() public {
+        Market storage m = _m();
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, _maxBorrow(m, 100 ether) / 2);
+        (, uint256[] memory keysBefore) = c.settlementBorrowers(0, 1);
+
+        _fund(m.collateralToken, borrower, 100 ether);
+        m.supplyCollateral(borrower, 100 ether);
+
+        (, uint256[] memory keysAfter) = c.settlementBorrowers(0, 1);
+        assertLt(keysAfter[0], keysBefore[0], "a top-up lowers the borrower's risk key");
+    }
+
+    function test_withdrawCollateral_withDebt_raisesQueueKey() public {
+        Market storage m = _m();
+        (, address borrower) = _seedBorrower(1000 ether, 100 ether, _maxBorrow(m, 100 ether) / 2);
+        (, uint256[] memory keysBefore) = c.settlementBorrowers(0, 1);
+
+        m.withdrawCollateral(borrower, 25 ether, borrower);
+
+        (, uint256[] memory keysAfter) = c.settlementBorrowers(0, 1);
+        assertGt(keysAfter[0], keysBefore[0], "a debt-bearing withdraw raises the borrower's risk key");
     }
 
     /// @dev `positionOf` dashboard: every field recomputed independently from the seeded position. The sole borrower
@@ -1872,6 +2175,25 @@ contract PausableUntilTest is Test {
         p.pauseUntil(block.timestamp + 1 hours);
         vm.expectRevert(PausableUntil.ResumedExpected.selector);
         p.pauseUntil(block.timestamp + 2 hours);
+    }
+
+    /// @dev The window is inclusive: a target equal to now pauses for this second and resumes the next.
+    function test_pauseUntil_now_pausesForThatSecond() public {
+        vm.expectEmit(address(p));
+        emit PausableUntil.Paused(1);
+        p.pauseUntil(block.timestamp);
+        assertTrue(p.isPaused(), "paused at the target second");
+        assertEq(p.getResumeSinceTimestamp(), block.timestamp + 1, "resumes the second after");
+
+        vm.warp(block.timestamp + 1);
+        assertFalse(p.isPaused(), "resumed the second after the target");
+    }
+
+    /// @dev Only `PAUSE_INFINITELY` itself means forever: any other duration past the end of time overflows.
+    function testRevert_pauseFor_durationOverflows() public {
+        uint256 duration = p.PAUSE_INFINITELY() - 1;
+        vm.expectRevert(stdError.arithmeticError);
+        p.pauseForExternal(duration);
     }
 
     // ── views ──

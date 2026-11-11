@@ -2,6 +2,7 @@
 pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
@@ -234,6 +235,16 @@ contract LidoLendOwnerTest is Test {
         facade.createMarket(p);
     }
 
+    /// @notice The controlled overload is gated by the same role.
+    function testRevert_createMarketControlled_withoutRole() public {
+        MarketParams memory p = _params(1);
+        ControllerMock controller = new ControllerMock(p.id());
+        bytes32 role = facade.MARKET_CREATOR_ROLE();
+        vm.expectRevert(_unauthorized(CREATOR, role));
+        vm.prank(CREATOR);
+        facade.createMarket(p, address(controller), true);
+    }
+
     /// @notice A foreign role cannot create markets: the fee manager is rejected at the facade's gate.
     function testRevert_createMarket_wrongRole() public {
         _grant(facade.FEE_MANAGER_ROLE(), FEE_MGR);
@@ -266,6 +277,24 @@ contract LidoLendOwnerTest is Test {
 
         assertEq(core.marketController(id), address(controller), "controller bound");
         assertTrue(core.isSettlementEnabled(id), "settlement enabled");
+    }
+
+    function test_createMarket_controlled_settlementDisabled() public {
+        _grant(facade.MARKET_CREATOR_ROLE(), CREATOR);
+        MarketParams memory p = _params(3);
+        Id id = p.id();
+        ControllerMock controller = new ControllerMock(id);
+
+        vm.recordLogs();
+        vm.prank(CREATOR);
+        facade.createMarket(p, address(controller), false);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(logs[i].topics[0] != EnableSettlement.selector, "no EnableSettlement");
+        }
+        assertEq(core.marketController(id), address(controller), "controller bound");
+        assertFalse(core.isSettlementEnabled(id), "settlement left disabled");
     }
 
     // ---
@@ -394,6 +423,17 @@ contract LidoLendOwnerTest is Test {
         assertEq(g2.lastUnbanAccount(), address(0xBADD), "market 2 unban account");
     }
 
+    function test_unbanGuardianSignals_emptyList_isNoop() public {
+        (,,,, OwnerGuardianSignalsMock g1, OwnerGuardianSignalsMock g2) = _createManagedMarkets();
+        _grant(facade.GUARDIAN_MANAGER_ROLE(), CREATOR);
+
+        vm.prank(CREATOR);
+        facade.unbanGuardianSignals(new Id[](0), address(0xBADD));
+
+        assertEq(g1.unbanCalls(), 0, "market 1 untouched");
+        assertEq(g2.unbanCalls(), 0, "market 2 untouched");
+    }
+
     function test_replaceGuardian_dispatchesByMarketId() public {
         (MarketParams memory p1, MarketParams memory p2,,, OwnerGuardianSignalsMock g1, OwnerGuardianSignalsMock g2) =
             _createManagedMarkets();
@@ -477,6 +517,33 @@ contract LidoLendOwnerTest is Test {
         vm.expectRevert(expected);
         vm.prank(CREATOR);
         facade.unbanGuardianSignals(ids, address(1));
+    }
+
+    /// @notice Every other per-market lever resolves the controller first, so a market without one reverts too.
+    function testRevert_unknownMarket_everyOtherMarketLever() public {
+        _grant(facade.MARKET_MANAGER_ROLE(), CREATOR);
+        _grant(facade.GUARDIAN_MANAGER_ROLE(), CREATOR);
+        Id id = _params(999).id();
+        bytes memory expected = abi.encodeWithSelector(ILidoLendOwner.UnknownMarket.selector, id);
+        CollateralActivationConfig memory activation;
+        SettlementConfig memory settlement;
+
+        vm.startPrank(CREATOR);
+        vm.expectRevert(expected);
+        facade.unfreezeMarket(id);
+        vm.expectRevert(expected);
+        facade.setMarketCollateralActivationConfig(id, activation);
+        vm.expectRevert(expected);
+        facade.setMarketSettlementConfig(id, settlement);
+        vm.expectRevert(expected);
+        facade.setInstantActivation(id, address(1), true);
+        vm.expectRevert(expected);
+        facade.removeGuardian(id, address(1));
+        vm.expectRevert(expected);
+        facade.setGuardiansQuorum(id, 1);
+        vm.expectRevert(expected);
+        facade.setGuardiansSuspectWindow(id, 1);
+        vm.stopPrank();
     }
 
     // ---

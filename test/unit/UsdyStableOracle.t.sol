@@ -3,6 +3,8 @@ pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
@@ -153,6 +155,17 @@ contract UsdyStableOracleTest is Test {
         new OssifiableProxy(
             impl, address(this), abi.encodeCall(UsdyStableOracle.initialize, (address(feed), address(0)))
         );
+    }
+
+    function testRevert_initialize_bareImplementation() public {
+        UsdyStableOracle impl = new UsdyStableOracle(address(usdy), MIN_PRICE, MAX_PRICE);
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        impl.initialize(address(feed), address(loan));
+    }
+
+    function testRevert_initialize_twice() public {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        oracle.initialize(address(feed), address(loan));
     }
 
     // ── views ──
