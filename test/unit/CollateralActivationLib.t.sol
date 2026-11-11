@@ -99,6 +99,18 @@ contract ActivationHarness {
         return _total[borrower] - $.sync(false, borrower, opinion);
     }
 
+    /// @dev Sync of a frozen market, with the quorum frontier at the current time.
+    function syncFrozen(address borrower) external returns (uint256) {
+        GuardiansOpinion memory opinion = GuardiansOpinion({
+            banned: false,
+            strikeCount: 0,
+            suspectCount: 0,
+            suspectExpiryTimestamp: 0,
+            quorumFrontierTimestamp: block.timestamp
+        });
+        return _total[borrower] - $.sync(true, borrower, opinion);
+    }
+
     /// @dev Sync with an explicit quorum-frontier timestamp (and no surcharge), to exercise the gate.
     function syncWithQuorum(address borrower, uint40 quorumTimestamp) external returns (uint256) {
         GuardiansOpinion memory opinion = GuardiansOpinion({
@@ -1211,5 +1223,219 @@ contract ActivationInflowCrossTxTest is Test {
         // reversible. The prior 100 stays (decays, never reverses).
         h.withdraw(B, 150 ether);
         assertEq(h.currentInflow(), priorInflow, "over-withdraw reversed only the same-tx contribution");
+    }
+
+    /// @dev Two seizures of 30 ether take more than this transaction's 50 ether contribution. The second one
+    ///      reverses only the 20 ether that are left of it.
+    function test_twoSeizuresPastContribution_reverseOnlyThisTxContribution() public {
+        uint256 priorInflow = h.currentInflow();
+        h.deposit(B, 50 ether);
+
+        h.seize(B, 30 ether);
+        h.seize(B, 30 ether);
+
+        assertEq(h.currentInflow(), priorInflow, "only the 50 ether of this transaction are reversed");
+    }
+}
+
+/// @notice Comparison edges and formulas of `CollateralActivationLib`. Each expected number comes from the config.
+contract CollateralActivationLibBoundaryTest is Test {
+    ActivationHarness internal h;
+    address internal constant B = address(0xB0B);
+
+    function setUp() public {
+        vm.warp(1_000_000);
+        h = new ActivationHarness();
+        h.setConfig(_config());
+    }
+
+    function _config() internal pure returns (CollateralActivationConfig memory) {
+        return CollateralActivationConfig({
+            minActivationDelay: 1 minutes,
+            maxActivationDelay: 1 hours,
+            activatingLockDuration: 0,
+            maxDelayInflow: 10_000 ether,
+            minActivationAmount: 10 ether,
+            minDepositAmount: 0,
+            maxGuardiansQuorumDelay: 1 days,
+            delayPerStrike: 1 hours,
+            delayPerSuspect: 30 minutes
+        });
+    }
+
+    function _opinion(uint256 strikes, uint256 suspects, uint256 suspectExpiry)
+        internal
+        pure
+        returns (GuardiansOpinion memory)
+    {
+        return GuardiansOpinion({
+            banned: false,
+            strikeCount: strikes,
+            suspectCount: suspects,
+            suspectExpiryTimestamp: suspectExpiry,
+            quorumFrontierTimestamp: 0
+        });
+    }
+
+    /// @dev Each duration bound is inclusive: a value of exactly seven days passes.
+    function test_setConfig_durationsAtSevenDays_accepted() public {
+        CollateralActivationConfig memory cfg = _config();
+        cfg.maxActivationDelay = 7 days;
+        cfg.maxGuardiansQuorumDelay = 0;
+        cfg.activatingLockDuration = 7 days;
+        cfg.delayPerStrike = 7 days;
+        cfg.delayPerSuspect = 7 days;
+
+        h.setConfig(cfg);
+
+        (, uint40 maxActivationDelay) = h.delays();
+        assertEq(maxActivationDelay, 7 days, "the config is stored");
+    }
+
+    /// @dev A nonzero quorum fallback must be longer than the delay cap. A shorter one reverts.
+    function testRevert_setConfig_quorumFallbackBelowDelayCap() public {
+        CollateralActivationConfig memory cfg = _config();
+        cfg.maxGuardiansQuorumDelay = 1 hours - 1;
+
+        vm.expectRevert(CollateralActivationLib.InvalidMaxGuardiansQuorumDelay.selector);
+        h.setConfig(cfg);
+    }
+
+    /// @dev A freeze stops maturation: a lot past its unlock time stays inactive in a frozen market.
+    function test_sync_frozenMarket_lotPastUnlockStays() public {
+        h.deposit(B, 100 ether);
+        vm.warp(block.timestamp + 1 days);
+
+        assertEq(h.syncFrozen(B), 0, "frozen: the lot stays");
+        assertEq(h.sync(B, 0), 100 ether, "not frozen: the lot is active");
+    }
+
+    /// @dev The surcharge is `strikeCount * delayPerStrike` plus `suspectCount * delayPerSuspect`.
+    function test_getUnlockTime_strikeAndSuspectSurchargesAdd() public {
+        h.deposit(B, 100 ether);
+        uint256 lotStart = block.timestamp;
+
+        uint256 plain = h.getUnlockTime(B, _opinion(0, 0, 0));
+        uint256 surcharged = h.getUnlockTime(B, _opinion(3, 2, lotStart + 1));
+
+        assertEq(surcharged - plain, 3 * 1 hours + 2 * 30 minutes, "three strikes and two suspect reports");
+    }
+
+    /// @dev The suspect surcharge applies only to a lot that starts before the expiry of the snapshot.
+    function test_getUnlockTime_lotAtSuspectExpiry_getsNoSuspectSurcharge() public {
+        h.deposit(B, 100 ether);
+        uint256 lotStart = block.timestamp;
+        uint256 plain = h.getUnlockTime(B, _opinion(0, 0, 0));
+
+        assertEq(h.getUnlockTime(B, _opinion(0, 2, lotStart)), plain, "expiry at the lot start: no surcharge");
+        assertEq(h.getUnlockTime(B, _opinion(0, 2, lotStart + 1)) - plain, 2 * 30 minutes, "expiry after the lot start");
+    }
+
+    /// @dev The delay is linear in the inflow. Half of `maxDelayInflow` gives the middle of the delay range.
+    function test_deposit_halfOfMaxDelayInflow_getsMidpointDelay() public {
+        h.deposit(B, 5_000 ether);
+
+        uint256 delay = h.getUnlockTime(B, _opinion(0, 0, 0)) - block.timestamp;
+        assertEq(delay, 1 minutes + (1 hours - 1 minutes) / 2, "midpoint of one minute and one hour");
+    }
+
+    /// @dev The inflow decays linearly to zero over `maxActivationDelay`.
+    function test_inflow_halfOfMaxActivationDelayElapsed_halves() public {
+        h.deposit(B, 10_000 ether);
+
+        vm.warp(block.timestamp + 30 minutes);
+
+        assertEq(h.currentInflow(), 5_000 ether, "half of the inflow is left after half of the window");
+    }
+
+    /// @dev The unlock time and the quorum frontier are inclusive: a lot matures in the unlock second when the
+    ///      frontier is at the unlock time.
+    function test_sync_atUnlockTimeWithFrontierAtUnlock_matures() public {
+        h.deposit(B, 100 ether);
+        uint256 unlockTime = h.getUnlockTime(B, _opinion(0, 0, 0));
+
+        vm.warp(unlockTime - 1);
+        assertEq(h.syncWithQuorum(B, uint40(unlockTime)), 0, "one second early: the lot stays");
+
+        vm.warp(unlockTime);
+        assertEq(h.syncWithQuorum(B, uint40(unlockTime)), 100 ether, "the unlock second: the lot is active");
+    }
+
+    /// @dev With no quorum scan, a lot waits for `activatingStart + maxGuardiansQuorumDelay`. That second is inclusive.
+    function test_sync_noQuorumScan_maturesAtFallbackDeadline() public {
+        h.deposit(B, 100 ether);
+        uint256 lotStart = block.timestamp;
+        assertEq(h.syncWithQuorum(B, 0), 0, "before the unlock time: the lot stays");
+
+        vm.warp(lotStart + 1 days - 1);
+        assertEq(h.syncWithQuorum(B, 0), 0, "one second before the fallback deadline: the lot stays");
+
+        vm.warp(lotStart + 1 days);
+        assertEq(h.syncWithQuorum(B, 0), 100 ether, "the fallback deadline: the lot is active");
+    }
+
+    /// @dev A top-up restarts the timer only when it extends the deadline. Here a lower delay cap gives the top-up a
+    ///      deadline before the current one, so the lot keeps its unlock time.
+    function test_topUp_deadlineBeforeCurrentOne_keepsTimer() public {
+        h.deposit(B, 10_000 ether);
+        uint256 unlockTime = h.getUnlockTime(B, _opinion(0, 0, 0));
+        assertEq(unlockTime, block.timestamp + 1 hours, "setup: the lot has the one-hour delay cap");
+
+        vm.warp(block.timestamp + 50 minutes);
+        h.setMaxActivationDelay(2 minutes);
+        h.deposit(B, 10 ether);
+
+        assertEq(h.getUnlockTime(B, _opinion(0, 0, 0)), unlockTime, "the unlock time does not move");
+    }
+
+    /// @dev Each forced seizure reverses its part of the same-transaction inflow.
+    function test_seize_twoPartialSeizuresInOneTransaction_reverseBoth() public {
+        h.deposit(B, 100 ether);
+
+        h.seize(B, 30 ether);
+        h.seize(B, 30 ether);
+
+        assertEq(h.currentInflow(), 40 ether, "the inflow of the 40 ether that stay");
+    }
+
+    /// @dev Two deposits of one borrower in one transaction add up, and a full withdrawal reverses both.
+    function test_withdraw_afterTwoDepositsInOneTransaction_reversesBoth() public {
+        h.deposit(B, 30 ether);
+        h.deposit(B, 30 ether);
+
+        h.withdraw(B, 60 ether);
+
+        assertEq(h.currentInflow(), 0, "no inflow is left");
+    }
+
+    /// @dev The inactive balance is the sum of the dust and the activating lot.
+    function test_sync_dustAndActivatingLot_bothCountAsInactive() public {
+        h.deposit(B, 20 ether);
+        h.deposit(B, 5 ether);
+        (, uint256 activating, uint256 dust) = h.bucketsOf(B);
+        assertEq(activating, 20 ether, "setup: the lot");
+        assertEq(dust, 5 ether, "setup: the dust");
+
+        assertEq(h.syncWithQuorum(B, 0), 0, "no collateral is active");
+    }
+
+    /// @dev A seizure that takes dust and activating collateral reports their sum in `CollateralDrained`.
+    function test_seize_dustAndActivatingLot_eventCarriesTheSum() public {
+        h.deposit(B, 20 ether);
+        h.deposit(B, 5 ether);
+
+        vm.recordLogs();
+        h.seize(B, 25 ether);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 found;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == CollateralActivationLib.CollateralDrained.selector) {
+                (uint256 amount,) = abi.decode(logs[i].data, (uint256, CollateralActivationLib.Position));
+                assertEq(amount, 25 ether, "dust plus activating");
+                found++;
+            }
+        }
+        assertEq(found, 1, "one CollateralDrained");
     }
 }
