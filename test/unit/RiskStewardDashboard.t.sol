@@ -357,12 +357,15 @@ contract RiskStewardDashboardTest is Test {
         dashboard.addMarketSteward(marketId, address(0));
     }
 
+    /// @dev A repeated `addMarketSteward` call by `STEWARD_ADMIN_ROLE` emits no event. The setup already appoints
+    ///      `steward`.
     function test_addMarketSteward_reAddEmitsNothing() public {
         vm.recordLogs();
         dashboard.addMarketSteward(marketId, steward);
         assertEq(vm.getRecordedLogs().length, 0, "no event on a no-op re-add");
     }
 
+    /// @dev A `removeMarketSteward` call by `STEWARD_ADMIN_ROLE` for an address that is not a steward emits no event.
     function test_removeMarketSteward_nonStewardEmitsNothing() public {
         vm.recordLogs();
         dashboard.removeMarketSteward(marketId, address(0xBEEF));
@@ -376,6 +379,7 @@ contract RiskStewardDashboardTest is Test {
         assertFalse(dashboard.isMarketSteward(marketId, steward), "steward removed");
     }
 
+    /// @dev A `revokeInstantActivation` call by a market steward emits `InstantActivationRevoked`.
     function test_revokeInstantActivation_emitsEvent() public {
         address caller = address(0xCA11E7);
         vm.expectEmit(true, true, false, true);
@@ -385,11 +389,15 @@ contract RiskStewardDashboardTest is Test {
         assertFalse(controller.instantActivation(caller), "controller revoke called");
     }
 
+    /// @dev Same issue as `test_constructor_zeroCoreReverts` in `test/unit/LidoLendMarketController.t.sol`; this test
+    ///      covers a zero admin in the `RiskStewardDashboard` constructor.
     function test_constructor_zeroAdminReverts() public {
         vm.expectRevert(IRiskStewardDashboard.ZeroAddress.selector);
         new RiskStewardDashboard(address(0), ILidoLend(address(core)));
     }
 
+    /// @dev Same issue as `test_constructor_zeroCoreReverts` in `test/unit/LidoLendMarketController.t.sol`; this test
+    ///      covers a zero core in the `RiskStewardDashboard` constructor.
     function test_constructor_zeroCoreReverts() public {
         vm.expectRevert(IRiskStewardDashboard.ZeroAddress.selector);
         new RiskStewardDashboard(address(this), ILidoLend(address(0)));
@@ -435,10 +443,8 @@ contract RiskStewardDashboardRealControllerTest is LidoLendSetup {
         market.controller.grantRole(market.controller.MANAGER_ROLE(), address(dashboard));
     }
 
-    /// @dev The dashboard does not check that the new floor is at
-    ///      most the new cap, so a floor above the cap passes its tighten-only guard and reverts in the controller
-    ///      with `InvalidActivationDelays`. The config stays unchanged. A fix changes this outcome; update this test
-    ///      with the fix.
+    /// @dev A floor above the new cap passes the dashboard tighten-only guard and reverts in the controller with
+    ///      `InvalidActivationDelays`. Only a market steward can make this call.
     function testRevert_increaseActivationDelays_floorAboveCap_downstreamError() public {
         Market storage market = protocol.markets[0];
         CollateralActivationConfig memory before = market.controller.collateralActivationConfig();

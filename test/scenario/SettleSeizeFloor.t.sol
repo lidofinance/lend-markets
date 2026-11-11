@@ -109,6 +109,9 @@ contract SettleSeizeFloorTest is LidoLendSetup {
     /// @dev A budget worth two loan assets funds a one-loan-asset cut (budget -> supply assets -> borrow shares
     ///      floors twice), which seizes nothing at this price. The library reports it as unavailable rather
     ///      than a nonzero cut the core would reject.
+    /// @dev Same issue as `test_fallbackExit_dustRootPartialFillsUntilDustIsRepaid` in
+    ///      `test/scenario/SettleVaultBorrowAnchor.t.sol`; this test shows that a budget-shrunk cut below the seizure
+    ///      floor reads as unavailable.
     function test_settlementSlice_budgetShrunkCutBelowSeizureFloor_isUnavailable() public view {
         Market storage m = protocol.markets[0];
         CoreMarket memory cm = m.core.market(m.id);
@@ -192,6 +195,9 @@ contract SettleSeizeFloorTest is LidoLendSetup {
 
     /// @dev `fallbackExit` documents budget exhaustion as a partial fill. With the boundary tail reported as an
     ///      unavailable cut the settle loop breaks on it, so the liquid leg that already paid out survives.
+    /// @dev Same issue as `test_fallbackExit_dustRootPartialFillsUntilDustIsRepaid` in
+    ///      `test/scenario/SettleVaultBorrowAnchor.t.sol`; this test reaches the zero-collateral cut by the budget
+    ///      instead of a dust root.
     function test_fallbackExit_boundaryTail_partialFillsLiquidLeg() public {
         Market storage m = protocol.markets[0];
 
@@ -224,10 +230,18 @@ contract SettleSeizeFloorTest is LidoLendSetup {
     // AN UNAVAILABLE QUEUE ROOT STOPS THE FALLBACK SETTLE LEG
     // ---
 
-    /// @dev When the queue root has no executable cut,
-    ///      `fallbackExit` stops at it and reverts `NothingSettled` in a fully borrowed market, although a borrower
-    ///      behind the root has an executable personal cut. A fix changes this outcome; update this test with the
-    ///      fix.
+    /// @dev Known issue: when the queue root has no executable cut, `fallbackExit` stops at it and reverts
+    ///      `NothingSettled` in a fully borrowed market. This occurs although a borrower behind the root has an
+    ///      executable cut.
+    ///      Root cause: `nextSettlementBorrower` quotes only `peekRoot()`, and `settlementSlice` returns zero borrow
+    ///      shares when the cut seizes no whole collateral unit. `fallbackExit` reads a zero cut as the end of its
+    ///      settle loop and never tries another borrower.
+    ///      Same cause: any root whose cut rounds to zero collateral. Examples are a small `sliceFloorAssets` at a
+    ///      price above `ORACLE_PRICE_SCALE` and a dust-debt root. A zero oracle price and a
+    ///      root with no policy or personal slice also stop the loop. The root holds the block for every lender and
+    ///      every repeated exit while its cut stays unavailable. With free liquidity the call partial-fills on its
+    ///      liquid leg instead of a revert.
+    ///      A fix changes this outcome; update this test with it.
     function testRevert_unavailableRoot_blocksFallbackExitPastExecutableBorrower() public {
         Market storage m = protocol.markets[0];
         address root = _seedUnavailableRootInFullyBorrowedMarket();
@@ -246,7 +260,8 @@ contract SettleSeizeFloorTest is LidoLendSetup {
         m.vault.fallbackExit(shares, receiver, lender, 0);
     }
 
-    /// @dev Control for LMLLEVFALLBACK01: in the same state a targeted settle reaches the borrower behind the root.
+    /// @dev Same issue as `testRevert_unavailableRoot_blocksFallbackExitPastExecutableBorrower`; this control shows
+    ///      that a targeted `settle` in the same state still reaches the borrower behind the root.
     function test_unavailableRoot_targetedSettleStillCuts() public {
         Market storage m = protocol.markets[0];
         _seedUnavailableRootInFullyBorrowedMarket();

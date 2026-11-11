@@ -394,9 +394,14 @@ contract ExitBookTest is Test, LidoLendDeployer {
         );
     }
 
-    /// @dev The priority-fee ramp runs on during a source pause, so
-    ///      the first fill after the pause pays the end rate although no fill was possible before. A fix changes this
-    ///      outcome; update this test with the fix.
+    /// @dev Known issue: the priority-fee ramp runs on during a source pause. The first fill after the pause pays the
+    ///      end rate, although no fill was possible before.
+    ///      Root cause: `ExitBookBase._priorityFeeRate` measures elapsed time from `createdAt` on the wall clock.
+    ///      `ExitBookLib.requireFillable` checks `deadline` against `block.timestamp`. Neither subtracts the time in
+    ///      which a fill was impossible.
+    ///      Same cause: a controller pause by the circuit breaker or the reseal manager, or a pause of the exit book
+    ///      itself, in either book. The ramp can reach `endRate`, and the deadline can pass with no fillable second.
+    ///      A fix changes this outcome; update this test with it.
     function test_sourcePause_rampAdvances_fillAfterPausePaysEndRate() public {
         address lender = _actor("lender");
         address filler = _actor("filler");
@@ -426,9 +431,8 @@ contract ExitBookTest is Test, LidoLendDeployer {
         assertLt(assets - endFee, assets - assets * ramp.startRate / WAD, "more than the rate at zero fillable time");
     }
 
-    /// @dev A request whose deadline passes during a source pause
-    ///      expires without one fillable second; it stays open and the lender keeps its shares. A fix changes this
-    ///      outcome; update this test with the fix.
+    /// @dev Same issue as `test_sourcePause_rampAdvances_fillAfterPausePaysEndRate`; this test shows that a deadline
+    ///      inside the pause expires the request, which stays open while the lender keeps its shares.
     function testRevert_deadlinePassesDuringSourcePause_requestExpired() public {
         address lender = _actor("lender");
         address filler = _actor("filler");

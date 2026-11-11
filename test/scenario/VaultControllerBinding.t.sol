@@ -61,9 +61,9 @@ contract VaultControllerBindingTest is LidoLendSetup {
         assertEq(address(ILidoLendERC4626(vault).controller()), address(m.controller), "matching controller bound");
     }
 
-    /// @dev `initialize` accepts any controller that reports the
-    ///      vault's market id, also one that is not the controller the core registered, and the vault then reads
-    ///      its limits from it. A fix changes this outcome; update this test with the fix.
+    /// @dev `initialize` accepts any controller that reports the vault's market id, and the vault reads its limits
+    ///      from it. The account that deploys a vault chooses its controller in `initialize`. Any account can deploy
+    ///      such a vault.
     function test_initializeAcceptsNonCanonicalController_vaultReadsItsLimits() public {
         Market storage m = protocol.markets[0];
         ControllerStub stub = new ControllerStub(m.id);

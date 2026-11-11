@@ -154,6 +154,8 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
     ///      deposit or report its total assets. A fix changes this outcome; update this test with the fix.
     ///      The test is isolated, so each call is its own transaction. Vault V2 caches its total assets for the rest of
     ///      a transaction.
+    /// @dev Same issue as `testRevert_oneSecondStale_vaultEntryPoints` in `test/scenario/VaultV2RouterBinding.t.sol`;
+    ///      this test shows the revert on the deployed Vault V2 and adapter.
     /// forge-config: default.isolate = true
     function testRevert_oneSecondAfterBorrow_depositAndTotalAssets() public {
         uint256 borrowed = 1 ether;

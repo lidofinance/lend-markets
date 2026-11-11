@@ -208,6 +208,14 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         vault = factory.deployERC4626Wrapper(controller, marketParams, _erc4626WrapperSpec());
     }
 
+    /// @dev Fixed issue: the factory accepted a zero admin, a zero circuit breaker, and market tokens with no code.
+    ///      Root cause: the old constructor and `_validateMarketSpec` did not check these inputs. Now: the constructor
+    ///      reverts on a zero admin, circuit breaker, or reseal manager, and on one address for both emergency roles.
+    ///      `_validateMarketSpec` reverts with `NotContract` when the loan token, collateral token, oracle, or
+    ///      registry has no code.
+    ///      Same cause: each market spec input on its own, through `deployMarketController` or
+    ///      `deployMarketComponents`. The constructor still does not check that the circuit breaker or the reseal
+    ///      manager has code.
     function testRevert_constructor_rejectsZeroAdmin() external {
         LidoLendMarketFactory.Implementations memory implementations = _implementations();
         LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(circuitBreaker);
@@ -216,6 +224,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         new LidoLendMarketFactory(implementations, dependencies, address(0));
     }
 
+    /// @dev Same issue as `testRevert_constructor_rejectsZeroAdmin`; this test covers a zero circuit breaker.
     function testRevert_constructor_rejectsZeroCircuitBreaker() external {
         LidoLendMarketFactory.Implementations memory implementations = _implementations();
         LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(address(0));
@@ -242,6 +251,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         new LidoLendMarketFactory(implementations, dependencies, controllerAdmin);
     }
 
+    /// @dev Same issue as `testRevert_constructor_rejectsZeroAdmin`; this test covers a loan token with no code.
     function testRevert_deployMarketController_rejectsCodelessLoanToken() external {
         LidoLendMarketFactory.MarketSpec memory spec = marketSpec;
         spec.loanToken = makeAddr("codelessLoanToken");
@@ -479,6 +489,9 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.validateGuardianSignals(guardianSignals, _guardianSpec());
     }
 
+    /// @dev A proxy with other runtime code over the real implementation passes `validateGuardianSignals`, because no
+    ///      check reads the code hash. Only the core owner can make a market live on such a registry. At launch the
+    ///      owner is the owner facade, which requires `MARKET_CREATOR_ROLE` for `createMarket`.
     function test_validateGuardianSignals_acceptsCompatibleProxyWithDifferentRuntimeCodehash() external {
         LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
         address registryAddress = address(
@@ -559,6 +572,14 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.validateGuardianSignals(guardianSignals, spec);
     }
 
+    /// @dev Fixed issue: `AddMarket` accepted a reused guardian registry with extra role holders, and they gained power
+    ///      over the new market.
+    ///      Root cause: the old reuse check only proved that the expected holders had their roles. It did not count
+    ///      the holders of each role. Now: `_validateGuardianSignals` requires `ADMIN` as the sole default admin and
+    ///      the owner facade as the sole manager and sole access restorer. It requires zero access limiters and
+    ///      `DEFAULT_ADMIN_ROLE` as the admin of each of these roles.
+    ///      Same cause: a reused registry whose role holders or role admins differ from the factory topology. Each
+    ///      difference now makes validation revert.
     function testRevert_validateGuardianSignals_unexpectedHolderOfEveryKnownRole() external {
         GuardianSignals registry = GuardianSignals(guardianSignals);
         bytes32[] memory roles = new bytes32[](4);
@@ -638,6 +659,8 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.validateGuardianSignals(guardianSignals, _guardianSpec());
     }
 
+    /// @dev Same issue as `testRevert_validateGuardianSignals_unexpectedHolderOfEveryKnownRole`; this test adds an
+    ///      access limiter to a fresh factory registry, where that role must stay empty.
     function testRevert_validateGuardianSignals_unexpectedAccessLimiter() external {
         LidoLendMarketFactory.GuardianSpec memory spec = _otherGuardianSpec();
         address registryAddress = factory.deployGuardianSignals(spec, keccak256("other"));
@@ -805,10 +828,9 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         assertEq(Id.unwrap(LidoLendERC4626(secondVault).marketId()), Id.unwrap(marketId), "market id");
     }
 
-    /// @dev A
-    ///      contract that is not `GuardianSignals` but returns the reviewed value from each getter the factory reads
-    ///      passes guardian validation, and the factory binds a new controller to it. A fix changes this outcome;
-    ///      update this test with the fix.
+    /// @dev A contract that is not `GuardianSignals` passes `validateGuardianSignals` when its getters return the
+    ///      reviewed values. Only the core owner can make a market live on such a registry. At launch the owner is
+    ///      the owner facade, which requires `MARKET_CREATOR_ROLE` for `createMarket`.
     function test_counterfeitRegistrySpoofsGetters_passesValidation() external {
         LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
         address counterfeit = address(
@@ -830,9 +852,9 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.validateMarketController(counterfeitController, marketId, counterfeit);
     }
 
-    /// @dev Before the market exists on the core, two controllers for
-    ///      the same market id with different activation configs both pass controller validation. A fix changes
-    ///      this outcome; update this test with the fix.
+    /// @dev Before `createMarket`, two controllers for one market id with different activation configs both pass
+    ///      controller validation. Only the core owner selects the controller, through `createMarket`. At launch the
+    ///      owner is the owner facade, which requires `MARKET_CREATOR_ROLE` for `createMarket`.
     function test_twoControllersSameMarketBeforeCreate_bothPassValidation() external {
         address otherController = _otherControllerForSameMarket();
         assertEq(core.market(marketId).lastUpdate, 0, "setup: market not created");

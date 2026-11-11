@@ -240,8 +240,18 @@ contract SettlementTest is LidoLendSetup {
         assertEq(_freeLiquidity(m), 0, "settlement preserves the zero-liquidity state");
     }
 
-    /// @dev Targeted settlement is allowed by a positive personal LTV even though the request is fully serviceable
-    ///      from free liquidity. It consumes no loan assets and preserves the market's free-liquidity amount.
+    /// @dev Targeted settlement is allowed by a positive personal LTV while the market has free liquidity. It
+    ///      consumes no loan assets and preserves the market's free-liquidity amount.
+    /// @dev Specified behaviour: settlement can run while the market has free liquidity, as `lender-settlement.md`
+    ///      states. A personal cut needs the borrower's own settlement LTV. A root-policy cut needs supplier supply
+    ///      above the free liquidity.
+    ///      Root cause: `_handleSettle` allows a personal settlement-LTV cut with no liquidity check. For a larger
+    ///      root-policy cut, `_settleableSupplyAssets` allows the part of the `onBehalf` supply above the market free
+    ///      liquidity.
+    ///      Same cause: a vault `settle` or a direct core `settle` of any borrower that set a personal settlement LTV,
+    ///      at any liquidity. Any supplier whose supply exceeds free liquidity can cut the queue root up to that excess
+    ///      while idle funds stay. A large direct supplier is an example. Repeated calls use what remains of that
+    ///      excess. Each other large supplier has its own excess.
     function test_settle_withPersonalLtv_ignoresFreeLiquidity() public {
         Market storage m = _m();
         TargetedState memory state;
@@ -308,6 +318,14 @@ contract SettlementTest is LidoLendSetup {
 
     /// @dev Root status alone never authorizes targeted settlement. With free liquidity and no positive personal
     ///      slice the controller returns a zero targeted quote and the vault reverts atomically.
+    /// @dev Fixed issue: vault `settle` and `fallbackExit` succeeded and emitted their events with zero amounts when
+    ///      no borrower was cut.
+    ///      Root cause: both exits emitted their event after the settle loop, and nothing checked that the loop spent
+    ///      any budget. Now: `settle` reverts with `NothingSettled` when the budget is untouched, and `fallbackExit`
+    ///      reverts with it when neither leg burns shares.
+    ///      Same cause: a borrower list with no personal settlement LTV, and borrowers with no debt. A queue root with
+    ///      no executable cut also has this cause. A paused or fully borrowed market, where the liquid leg pays
+    ///      nothing, has the same effect.
     function testRevert_settle_rootWithoutPersonalLtv_settlesNothing() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -359,6 +377,8 @@ contract SettlementTest is LidoLendSetup {
     /// @dev The controller, not core, caps automatic root settlement by the concrete supplier's live illiquid tail.
     ///      The exact tail succeeds while a one-asset-wei larger cut reverts, even with positive market liquidity,
     ///      multiple suppliers, and accrued non-round supply/borrow conversions.
+    /// @dev Same behaviour as `test_settle_withPersonalLtv_ignoresFreeLiquidity`; this test shows that a root-policy
+    ///      cut up to the supplier's settleable supply passes while free liquidity stays in the market.
     function test_coreSettle_rootPolicy_enforcesExactLenderTailBoundary() public {
         Market storage m = _m();
         TailBoundaryState memory state = _seedTailBoundary();

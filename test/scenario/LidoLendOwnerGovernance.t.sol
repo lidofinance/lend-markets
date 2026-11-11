@@ -239,9 +239,15 @@ contract LidoLendOwnerGovernanceTest is LidoLendSetup {
         return feeAmount.toSharesDown(state.totalSupplyAssets + interest - feeAmount, state.totalSupplyShares);
     }
 
-    /// @dev `setFeeRecipient` does not accrue first, so the next
-    ///      accrual mints the whole fee of the window before the switch to the new recipient and none to the old
-    ///      one. A fix changes this outcome; update this test with the fix.
+    /// @dev Known issue: `setFeeRecipient` does not accrue first. The next accrual then mints the whole fee of the
+    ///      window before the switch to the new recipient and none to the old one.
+    ///      Root cause: `LidoLend.setFeeRecipient` writes `feeRecipient` with no `_accrueInterest` call.
+    ///      `_accrueInterest` mints the fee shares to whoever is the recipient at accrual time. `LidoLend.setFee`
+    ///      accrues first.
+    ///      Same cause: each market of the core has its own open window, and the new recipient gets all of them. A
+    ///      switch and a switch back before the next accrual leave the middle recipient with nothing. The path through
+    ///      `LidoLendOwner.setFeeRecipient` is the same.
+    ///      A fix changes this outcome; update this test with the fix.
     function test_setFeeRecipient_mintsOpenWindowFeeToNewRecipient() public {
         Market storage market = protocol.markets[0];
         address oldRecipient = _actor("oldRecipient");
@@ -266,9 +272,8 @@ contract LidoLendOwnerGovernanceTest is LidoLendSetup {
         assertEq(market.core.position(market.id, oldRecipient).supplyShares, oldShares, "old recipient gets none");
     }
 
-    /// @dev The facade sets the fee recipient to the zero address,
-    ///      and the next accrual mints the fee shares to the zero address. A fix changes this outcome; update this
-    ///      test with the fix.
+    /// @dev After a zero fee recipient is set, the next accrual mints the fee shares to the zero address. Only
+    ///      `FEE_MANAGER_ROLE` can set the fee recipient.
     function test_zeroFeeRecipient_mintsFeeSharesToZero() public {
         Market storage market = protocol.markets[0];
         facade.grantRole(facade.FEE_MANAGER_ROLE(), address(this));

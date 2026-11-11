@@ -214,6 +214,15 @@ contract VaultConformanceInvariant is LidoLendSetup {
     /// @dev For settlement claim `C` and consumed core shares `q`, the burn is exactly
     ///      `ceil(requestedVaultShares * q / C)`. A partial fill therefore burns less than one additional raw vault
     ///      share; when `q == C`, it burns exactly `requestedVaultShares`.
+    /// @dev Known issue: one `settle` or `fallbackExit` call burns `ceil(shares * settled / budget)` vault shares.
+    ///      Its budget is floored, so an oversized request burns at a higher rate than the cuts need.
+    ///      Root cause: each call sizes its own budget with `_settlementSupplyShares`, which floors
+    ///      `previewRedeem(shares)` into core supply shares. Each call then rounds its own burn up, and no residual
+    ///      carries to the next call.
+    ///      Same cause: targeted `settle` calls, `fallbackExit` calls, and a mix of both. Each call still pays out no
+    ///      more than the `previewRedeem` value of the shares it burns. The core supply shares per vault share of the
+    ///      remaining holders do not decrease.
+    ///      A fix changes this outcome; update this test with it.
     function invariant_settlementRounding() public view {
         assertFalse(handler.settlementBurnMismatch(), "settlement burn matched its declared rounding");
         assertFalse(handler.fullSettlementBurnMismatch(), "full settlement fill burned the full request");

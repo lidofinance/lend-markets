@@ -162,8 +162,8 @@ contract GuardianLivenessTest is LidoLendSetup {
         assertEq(m.controller.positionOf(borrower).activating, 0, "fallback matured the lot without scan evidence");
     }
 
-    /// @dev The frontier is a monotonic ratchet: a permissionless sync never lowers it, even when the live
-    ///      candidate would be lower because the quorum was raised afterwards.
+    /// @dev The stored frontier never moves backward, even when a `MANAGER_ROLE` quorum or membership change lowers
+    ///      the live candidate. `guardian-signals.md` specifies this ratchet.
     function test_SyncFrontier_NeverMovesBackwards() public {
         Market storage m = _m();
         uint256 unlockTime = _bookLotAndPassUnlockTime();
@@ -289,9 +289,9 @@ contract GuardianLivenessTest is LidoLendSetup {
         assertEq(m.guardianSignals.getQuorumFrontier(), sharedScan, "setup: one guardian cannot carry quorum two");
     }
 
-    /// @dev After a quorum decrease, the stored frontier stays behind guardian 1's scan,
-    ///      so the lot waits for a `syncQuorumFrontier` call.
-    ///      A fix changes this outcome; update this test with the fix.
+    /// @dev After `MANAGER_ROLE` lowers the quorum, the stored frontier stays behind guardian 1's scan. The lot waits
+    ///      until any caller runs `syncQuorumFrontier`, a guardian at or below the stored frontier sends a crossing
+    ///      heartbeat, or the fallback deadline passes.
     function test_quorumLowered_frontierStallsUntilSync() public {
         Market storage m = _m();
         uint256 sharedScan = _silenceGuardians2And3();
@@ -314,8 +314,9 @@ contract GuardianLivenessTest is LidoLendSetup {
         assertEq(m.controller.positionOf(borrower).activating, 0, "lot matures once the frontier is synced");
     }
 
-    /// @dev After the remove-guardian motion, the lot waits for the fallback deadline
-    ///      although guardian 1 scanned past its unlock. A fix changes this outcome; update this test with the fix.
+    /// @dev After the remove-guardian motion, the stored frontier stays behind guardian 1's scan. With no
+    ///      `syncQuorumFrontier` call, the lot waits for the fallback deadline. Only `MANAGER_ROLE` can remove a
+    ///      guardian.
     function test_removeGuardianMotion_lotWaitsForFallback() public {
         Market storage m = _m();
         uint256 sharedScan = _silenceGuardians2And3();

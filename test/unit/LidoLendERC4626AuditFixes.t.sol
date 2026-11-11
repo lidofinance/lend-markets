@@ -134,6 +134,13 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
 
     /// @dev A core credit AFTER a deposit does not move the share price: `totalAssets` is unchanged and a later
     ///      victim deposit mints exactly its pre-credit preview.
+    /// @dev Fixed issue: anyone could supply to the core on behalf of the vault and raise the share price without new
+    ///      vault shares. This could make a later deposit mint zero shares.
+    ///      Root cause: `LidoLend.supply` accepts any `onBehalf` with no authorization, and the old `totalAssets`
+    ///      valued the whole core supply position of the vault. Now: `totalAssets` values only
+    ///      `_managedSupplyShares`, which only vault deposits, withdrawals and settlements change. `_deposit`
+    ///      reverts with `ZeroSharesMinted` or `ZeroCoreSupplySharesMinted` when either mint rounds to zero.
+    ///      Same cause: a credit before or after the first deposit, and a credit that sandwiches a `deposit` or `mint`.
     function test_donationAfterFirstDeposit_doesNotMoveSharePrice() public {
         Market storage m = _market();
         _depositFor(m, _actor("lender"), 100 ether);
@@ -152,10 +159,12 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         _assertManagedLeCore(m);
     }
 
-    /// @dev The exact WETH boundary from the finding: k = 10 ** offset = 1 (18-decimal loan token), attacker
+    /// @dev The exact WETH boundary: k = 10 ** offset = 1 (18-decimal loan token), attacker
     ///      seeds one raw unit then credits D = 2u. Pre-fix the victim's u-asset deposit minted
     ///      floor(2·k·u/(D+2)) = 0 shares; post-fix the credit is uncounted, so the victim mints its full
     ///      uninflated preview (u shares at the ~1:1 virgin ratio).
+    /// @dev Same issue as `test_donationAfterFirstDeposit_doesNotMoveSharePrice`; this test replays the exact
+    ///      zero-share boundary on an 18-decimal token with no share offset.
     function test_wethBoundary_D2u_victimStillMintsShares() public {
         Market storage m = _market();
         uint256 u = 10 ether;
@@ -180,6 +189,7 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
     /// @dev Core fee shares minted directly to the vault are not managed backing. A deposit that triggers their
     ///      accrual therefore receives the same shares and post-deposit claim as a control deposit made after an
     ///      explicit accrual; the entrant cannot capture fees earned before entry.
+    ///      The vault gets fee shares only when the core owner sets it as the fee recipient.
     function test_pendingFeeShares_doNotTransferValueToEntrant() public {
         Market storage m = _market();
         _depositFor(m, _actor("incumbent"), 1_000 ether);
@@ -225,6 +235,8 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
     /// @dev Even if a legitimate share price ever grew enough to floor a tiny deposit to zero shares (here via
     ///      a year of accrued interest, no donation involved), the vault rejects it rather than pocketing the
     ///      assets for existing holders.
+    /// @dev This test covers the `ZeroSharesMinted` guard from the fix in
+    ///      `test_donationAfterFirstDeposit_doesNotMoveSharePrice`. Here the share price rises by interest alone.
     function testRevert_deposit_zeroSharesMinted() public {
         Market storage m = _market();
         _depositFor(m, _actor("lender"), 100 ether);
@@ -543,10 +555,15 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
 
     // ── round-trip rounding: an entrant can burn one core share of incumbent backing ──
 
-    /// @dev A deposit and an immediate redeem of the same assets at a
-    ///      rounding boundary mints `floor` core supply shares and burns `ceil` core supply shares, so the managed
-    ///      backing of the incumbent holders falls by one core share. A fix changes this outcome; update this test
-    ///      with the fix.
+    /// @dev Known issue: a deposit and an immediate redeem use the same assets at a rounding boundary. The redeem burns
+    ///      one more core supply share than the deposit minted. The managed backing of the incumbent holders thus falls
+    ///      by one core share.
+    ///      Root cause: `_deposit` adds the `toSharesDown` result of `LIDO_LEND.supply` to `_managedSupplyShares`.
+    ///      `_withdraw` subtracts the `toSharesUp` result of `LIDO_LEND.withdraw`. The vault share math does not see
+    ///      this core rounding, so the incumbents absorb the one-share gap.
+    ///      Same cause: `deposit` or `mint` followed by `redeem` or `withdraw`, and a deposit followed by the liquid
+    ///      leg of `fallbackExit`. Each round trip takes at most one core share.
+    ///      A fix changes this outcome; update this test with it.
     function test_roundTripAtRoundingBoundary_burnsOneIncumbentCoreShare() public {
         Market storage m = _market();
         (address incumbent, uint256 incumbentShares) = _seedRoundTripMarket(100 ether, 30 days);
@@ -574,6 +591,8 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
 
     /// @dev Any deposit and immediate redeem takes at most one core share of managed backing, and at most one loan
     ///      unit from the incumbent's redeem value.
+    /// @dev Same issue as `test_roundTripAtRoundingBoundary_burnsOneIncumbentCoreShare`; this test fuzzes the entry,
+    ///      the incumbent size and the elapsed interest to bound the loss.
     function testFuzz_roundTrip_incumbentLossAtMostOneCoreShare(uint256 incumbentAssets, uint256 entry, uint256 elapsed)
         public
     {

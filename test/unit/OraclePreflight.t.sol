@@ -172,9 +172,8 @@ contract OraclePreflightTest is Test {
         harness.validateWstEth(_config(), oracle, address(wstEth));
     }
 
-    /// @dev The full preflight on the mainnet wstETH
-    ///      oracle config accepts a 6-decimal loan token, and the price stays in 18-decimal ETH units. A fix changes
-    ///      this outcome; update this test with the fix.
+    /// @dev `OraclePreflight.validate` does not check the loan token against a wstETH oracle config. The deployer
+    ///      chooses this pairing in the market config. A 6-decimal ETH-unit loan token gets a price 1e12 too high.
     function test_wstEthPreflightWithSixDecimalLoan_acceptsEthUnitPrice() external {
         address configuredWstEth = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
         vm.etch(configuredWstEth, address(new FixedWstEthRateMock()).code);

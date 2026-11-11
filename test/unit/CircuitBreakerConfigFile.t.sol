@@ -79,15 +79,22 @@ contract CircuitBreakerConfigFileTest is Test {
         vm.removeDir(dir, true);
     }
 
-    /// @dev The mainnet deploy config selects the
-    ///      "lido-lend" circuit-breaker profile, which sets a 60-second minimum pause and a 5-minute initial pause.
-    ///      A fix changes this outcome; update this test with the fix.
+    /// @dev Specified behaviour: a committee pause of a market controller ends when the breaker pause duration
+    ///      expires. The mainnet profile starts that duration at five minutes. The breaker admin can change it from
+    ///      60 seconds to 60 days.
+    ///      `roles.md` states that a pause ends when its duration expires and that the Reseal Manager can extend it.
+    ///      Root cause: `script/config/circuit-breakers/lido-lend.toml` sets `initial_pause_duration = 300` and
+    ///      `min_pause_duration = 60`. The `mainnet`, `hoodi`, and `fork-mainnet` deploy configs all select this file.
+    ///      `DeployCircuitBreaker` passes these values to the `CircuitBreaker` constructor, and `CircuitBreaker.pause`
+    ///      uses `pauseDuration` for each pause.
+    ///      Same cause: a pause of any controller on the shared breaker ends after the same pause duration. The pause
+    ///      is single use, so the committee cannot pause that controller again until the admin registers it again.
     function test_mainnetProfile_pausesExpireAfterFiveMinutes() external view {
         _assertLidoLendProfile("mainnet");
     }
 
-    /// @dev The hoodi deploy config selects the same
-    ///      "lido-lend" profile as mainnet. A fix changes this outcome; update this test with the fix.
+    /// @dev Same behaviour as `test_mainnetProfile_pausesExpireAfterFiveMinutes`; this test shows that the Hoodi deploy
+    ///      config selects the same "lido-lend" profile.
     function test_hoodiProfile_pausesExpireAfterFiveMinutes() external view {
         _assertLidoLendProfile("hoodi");
     }

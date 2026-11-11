@@ -183,9 +183,19 @@ contract SuspectDelayTest is LidoLendSetup {
 
     // ── a stale count that does reach a lot ──
 
-    /// @dev The snapshot shares one expiry, taken from its newest report. A report that lapses while a newer one
-    ///      is still live therefore keeps counting, and the borrower is charged for two reports with one live.
-    ///      The overcharge is not cosmetic: the lot is still locked at the unlock time one report justifies.
+    /// @dev Known issue: the snapshot shares one expiry, taken from its newest report. A report that lapses while a
+    ///      newer one is still live keeps counting, so the borrower pays for two reports with one live. The lot is
+    ///      still locked at the unlock time that one report justifies.
+    ///      Root cause: `getOpinion` returns the cached `suspectCount` and an expiry from the cached
+    ///      `suspectReportedAt`. Both come from the last `_snapshotSuspects` call, and `getOpinion` does not recount
+    ///      live reports. Only `suspect`, an `unsuspect` that prunes or clears a report, and a `prune` that drops a
+    ///      removed guardian's report rebuild the snapshot.
+    ///      Same cause: the stale count reaches each reader of `getOpinion`: the collateral-supply,
+    ///      collateral-withdraw and borrow hooks and `positionOf`. It applies to each lot that starts before the
+    ///      snapshot expiry, also a lot already on the timer. Each further lapsed report under one live report adds
+    ///      one more `delayPerSuspect`. While the suspect window does not grow, the cached count never undercounts
+    ///      live reports, so the error only makes delays longer.
+    ///      A fix changes this outcome; update this test with the fix.
     function test_staleCount_lapsedReportUnderALiveOne_delaysTheLot() public {
         _suspect(guardian1);
         vm.warp(block.timestamp + SUSPECT_WINDOW - 1 days);

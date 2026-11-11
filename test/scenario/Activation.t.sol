@@ -341,6 +341,57 @@ contract ActivationTest is LidoLendSetup {
         assertEq(post.active, pre.active - seizeAmt, "active reduced by exactly the seized amount");
     }
 
+    /// @dev The liquidate and settle hooks do not call `sync`, so `seize` reads the stored buckets. A lot that is
+    ///      past its unlock time but has no `sync` yet still counts as activating. `seize` then takes the uncovered
+    ///      part from dust first and from that lot second. After a `sync`, the same seizure takes only active
+    ///      collateral and keeps the dust.
+    function test_liquidation_maturedLotWithoutSync_seizesDustBeforeTheLot() public {
+        Market storage m = _m();
+        address borrower = _seedLenderAndCollateral(100 ether);
+        m.activateCollateral();
+        m.borrow(borrower, _safeBorrow(100 ether));
+
+        // A 20 ether lot starts its timer, then a 5 ether deposit below the activation threshold lands as dust.
+        _fund(m.collateralToken, borrower, 25 ether);
+        m.supplyCollateral(borrower, 20 ether);
+        m.supplyCollateral(borrower, 5 ether);
+        m.activateCollateral();
+
+        ILidoLendMarketController.BorrowerPosition memory pre = m.controller.positionOf(borrower);
+        assertEq(pre.active, 100 ether, "setup: active collateral");
+        assertEq(pre.activating, 20 ether, "setup: the lot has no sync yet");
+        assertEq(pre.dust, 5 ether, "setup: dust");
+        assertGe(block.timestamp, pre.unlockTime, "setup: the lot is past its unlock time");
+
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1000 ether);
+        vm.prank(keeper);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+        uint256 seizeAmt = 110 ether; // 10 ether more than the stored active balance
+        uint256 snapshot = vm.snapshotState();
+
+        // No sync: the 10 ether above the stored active balance comes from 5 ether dust, then 5 ether of the lot.
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 38 / 100);
+        vm.prank(keeper);
+        m.core.liquidate(m.params, borrower, seizeAmt, 0, "");
+        ILidoLendMarketController.BorrowerPosition memory stored = m.controller.positionOf(borrower);
+        assertEq(stored.dust, 0, "no sync: the seizure takes all dust");
+        assertEq(stored.activating, 15 ether, "no sync: the seizure takes the rest from the lot");
+        assertEq(stored.active, 0, "no sync: no active collateral remains");
+
+        // Sync first: a one-unit borrow matures the lot, so the 120 ether active balance covers the seizure.
+        vm.revertToState(snapshot);
+        vm.prank(borrower);
+        m.core.borrow(m.params, 1, 0, borrower, borrower);
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 38 / 100);
+        vm.prank(keeper);
+        m.core.liquidate(m.params, borrower, seizeAmt, 0, "");
+        ILidoLendMarketController.BorrowerPosition memory synced = m.controller.positionOf(borrower);
+        assertEq(synced.dust, 5 ether, "sync first: the dust stays");
+        assertEq(synced.activating, 0, "sync first: the lot is active");
+        assertEq(synced.active, 10 ether, "sync first: the seizure takes only active collateral");
+    }
+
     /// @dev A maturing lot gives no borrow capacity, so a borrower whose active collateral was all seized cannot
     ///      borrow even one asset unit while it still owes debt.
     function testRevert_borrow_activeSeizedToZero_maturingLotGivesNoCapacity() public {
@@ -443,10 +494,8 @@ contract ActivationTest is LidoLendSetup {
     // KNOWN FINDINGS
     // ---
 
-    /// @dev A guardian ban on an instant-activation router does not
-    ///      remove its grant, so the router still lands collateral as active for a fresh borrower, and that
-    ///      borrower borrows at once. Only the router itself cannot borrow. A fix changes this outcome; update this
-    ///      test with the fix.
+    /// @dev A guardian ban on an instant-activation caller does not remove its grant. Only `MANAGER_ROLE` can enable
+    ///      such a caller, and no caller is enabled at launch.
     function test_bannedRouter_landsFreshBorrowerCollateralActive() public {
         Market storage m = _m();
         address router = _actor("router");
@@ -477,9 +526,7 @@ contract ActivationTest is LidoLendSetup {
         m.core.borrow(m.params, 1 ether, 0, router, router);
     }
 
-    /// @dev A freeze does not stop an instant-activation router, so
-    ///      collateral it supplies during the freeze is active on unfreeze and backs a borrow with no delay. A fix
-    ///      changes this outcome; update this test with the fix.
+    /// @dev A freeze does not stop an instant supply. Only a caller that `MANAGER_ROLE` enables can make this supply.
     function test_instantSupplyDuringFreeze_isActiveOnUnfreeze() public {
         Market storage m = _m();
         address router = _actor("router");
@@ -502,9 +549,8 @@ contract ActivationTest is LidoLendSetup {
         assertEq(block.timestamp, startTime, "the fresh borrower borrows with no delay after unfreeze");
     }
 
-    /// @dev With no activating lock, an instant supply and an equal
-    ///      withdrawal drain the throttled lot, so it becomes active in the same block and backs a borrow. A fix
-    ///      changes this outcome; update this test with the fix.
+    /// @dev With no activating lock, an instant supply and an equal withdrawal make a throttled lot active in the same
+    ///      block. Only a caller that `MANAGER_ROLE` enables can make the instant supply.
     function test_instantSupplyThenWithdraw_laundersThrottledLot() public {
         Market storage m = _m();
         uint256 lot = 100 ether;
@@ -528,9 +574,8 @@ contract ActivationTest is LidoLendSetup {
         m.borrow(bob, _safeBorrow(lot));
     }
 
-    /// @dev Inside a non-zero activating lock the same round trip
-    ///      draws the instant amount from active, so the throttled lot stays on its timer and gives no borrow
-    ///      capacity. A fix changes this outcome; update this test with the fix.
+    /// @dev Inside a nonzero activating lock, the same round trip draws from active collateral, so the lot stays
+    ///      throttled.
     function test_launderInsideLock_drawsFromActive() public {
         Market storage m = _m();
         uint256 lot = 100 ether;
@@ -554,10 +599,15 @@ contract ActivationTest is LidoLendSetup {
         m.core.borrow(m.params, 1, 0, bob, bob);
     }
 
-    /// @dev One transaction that splits 50 lots of 200 ether over
-    ///      fresh addresses gives the first lot the ramp-floor delay for one lot and the last lot the max delay. After
-    ///      one hour the first address borrows and the last cannot. A fix changes this outcome; update this test with
-    ///      the fix.
+    /// @dev Specified behaviour: one transaction can split 50 lots of 200 ether over fresh addresses. Then the first
+    ///      lot gets the ramp-floor delay for one lot, and the last lot gets the max delay. After one hour the first
+    ///      address borrows and the last cannot.
+    ///      Root cause: `credit` freezes each lot's `activatingDelay` from the market inflow at that lot's own deposit.
+    ///      A later deposit raises the inflow but never the frozen delay of another position. `market-controller.md`
+    ///      states that a lot keeps the base delay quoted at its start.
+    ///      Same cause: the split works with any lot at or above `minActivationAmount` and any number of addresses. It
+    ///      works in one transaction or across several transactions and blocks. Splits within one address gain
+    ///      nothing, because its lots share one timer. A guardian ban still blocks the borrow.
     function test_splitAcrossAddresses_underThrottlesEarlyLots() public {
         Market storage m = _m();
         uint256 lots = 50;

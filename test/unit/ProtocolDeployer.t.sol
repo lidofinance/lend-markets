@@ -103,9 +103,8 @@ contract ProtocolDeployerTest is Test {
         assertFalse(facade.hasRole(role, address(deployer)));
     }
 
-    /// @dev After the backbone deploy, the deployer keeps no
-    ///      authority. The Agent holds every upgrade, ownership and default-admin path, and the EVMScriptExecutor
-    ///      holds the manager paths.
+    /// @dev `_deployBackbone` gives all authority to the Agent, the owner facade, and the EVMScriptExecutor, and the
+    ///      deployer keeps none. The owner facade owns the core.
     function test_deployBackbone_deployerKeepsNoAuthority() external {
         address agent = makeAddr("agent");
         ProtocolDeployment memory deployment = deployer.deployBackbone(

@@ -170,6 +170,12 @@ contract CollateralActivationLibTest is Test {
     ///         whole inactive balance (dust plus activating) in the same tx undoes that bump entirely — the
     ///         all-or-nothing rule means the flash-loaned amount cannot leave without also taking the dust top-up
     ///         with it, so nothing is left behind to keep throttled or otherwise.
+    /// @dev Fixed issue: a same-transaction supply and partial withdrawal left a sub-threshold remainder as dust that
+    ///      the market inflow still counted. `credit` then computed the delay of later lots from that inflated inflow.
+    ///      Root cause: `debit` drained part of `activating`, reversed the inflow of the drained part only, and then
+    ///      demoted the remainder to dust. Now: after the lock, `debit` must clear the whole inactive balance, and it
+    ///      reverses the full same-transaction activating inflow. No path demotes activating collateral to dust.
+    ///      Same cause: the fix stops repeated flash-funded cycles in one transaction and cycles over many borrowers.
     function test_flashDepositDustWithdraw_doesNotInflateThrottle() public {
         h.setMinActivationAmount(1 ether); // raise the threshold so a sub-threshold dust deposit is possible
 
@@ -218,6 +224,8 @@ contract CollateralActivationLibTest is Test {
 
     /// @notice Only one unresolved dust lot is allowed per borrower: once dust is pending, a second sub-threshold
     ///         supply reverts instead of accumulating.
+    /// @dev Same issue as `test_seize_residualActivatingKeepsTimer`; this test shows that a second sub-threshold
+    ///      deposit onto dust reverts with `DustNotResolved`.
     function testRevert_deposit_ontoDust_belowThreshold() public {
         h.setMinActivationAmount(10 ether);
         h.deposit(address(0xB1), 1 ether); // one dust lot is allowed
@@ -283,6 +291,11 @@ contract CollateralActivationLibTest is Test {
         assertEq(dust, 1, "with no floor a one-wei deposit is accepted as dust");
     }
 
+    /// @dev Fixed issue: a small instant deposit landed as untimed dust and gave no borrow capacity.
+    ///      Root cause: `credit` checked the dust threshold before the instant flag. Now: `credit` checks the instant
+    ///      flag first, so an instant deposit of any size counts as active at once. It skips the `minDepositAmount`
+    ///      floor, the dust bucket, the inflow and the timer.
+    ///      Same cause: the fix also covers an instant deposit onto existing dust, which now leaves that dust as it is.
     function test_instantDeposit_bypassesMinDepositAmount() public {
         CollateralActivationConfig memory cfg = _baseConfig();
         cfg.minActivationAmount = 10 ether;
@@ -432,6 +445,7 @@ contract CollateralActivationLibTest is Test {
 
     /// @notice A withdrawal covering the whole inactive balance (`dust + activating`) clears both buckets and the
     ///         timer, and reverses the activating portion's same-tx inflow contribution.
+    /// @dev Same issue as `test_flashDepositDustWithdraw_doesNotInflateThrottle`; this test checks the drained amount.
     function test_withdraw_fullInactive_clearsBucketsTimerAndInflow() public {
         h.setMinActivationAmount(10 ether);
         h.deposit(address(0xB1), 10 ether); // A = 10
@@ -788,8 +802,15 @@ contract CollateralActivationLibTest is Test {
         assertEq(activating, 8 ether, "activating covers the tail");
     }
 
-    /// @notice A seizure that leaves a sub-threshold activating remainder no longer demotes it to dust: the
-    ///         remainder stays activating and matures on its original timer.
+    /// @dev Fixed issue: `debit` demoted a sub-threshold activating remainder to dust but `seize` did not, and the
+    ///      demotion could push dust past `minActivationAmount`.
+    ///      Root cause: `debit` folded a sub-threshold remainder into dust with no bound on the sum. `seize` skipped
+    ///      that fold, and `credit` added a sub-threshold deposit to existing dust. Now: no path demotes activating
+    ///      collateral to dust, so a seizure remainder of any size stays activating and matures on its original timer.
+    ///      `credit` reverts with `DustNotResolved` when a deposit onto dust stays below the threshold.
+    ///      Same cause: the fix covers a liquidation or settle remainder and a third-party deposit onto a borrower's
+    ///      dust that stays below the threshold. It also covers any seize, deposit and withdraw order that stacked dust
+    ///      above the threshold.
     function test_seize_residualActivatingKeepsTimer() public {
         h.setMinActivationAmount(10 ether);
         h.deposit(address(0xB1), 10 ether); // A = 10, timer quoted now
@@ -1106,6 +1127,12 @@ contract CollateralActivationLibTest is Test {
         );
     }
 
+    /// @dev Fixed issue: `CollateralDrained` fired on drains that moved nothing, and it carried no amount.
+    ///      Root cause: `_drain` emitted on its only exit path, whatever the buckets held. Now: `seize` returns early
+    ///      when active collateral covers the amount, and it emits only a nonzero drained amount. `debit` returns
+    ///      early when the inactive balance is zero.
+    ///      Same cause: the fix covers liquidation and settle through `seize`, and a withdrawal through `debit`, on a
+    ///      position that holds only active collateral.
     function test_drain_noopEmitsNothing() public {
         address borrower = address(0xD1);
         h.depositInstant(borrower, 100 ether); // active collateral, no un-matured buckets to drain
@@ -1122,6 +1149,7 @@ contract CollateralActivationLibTest is Test {
         }
     }
 
+    /// @dev Same issue as `test_drain_noopEmitsNothing`; a real drain emits one event with the drained amount.
     function test_drain_emitsDrainedAmount() public {
         address borrower = address(0xD2);
         h.deposit(borrower, 100 ether); // activating bucket

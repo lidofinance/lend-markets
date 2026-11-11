@@ -190,6 +190,14 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
     }
 
     /// @dev A partial cut cancels exact borrow shares. The lender pays for the up-rounded debt amount.
+    /// @dev Fixed issue: core `settle` rounded the canceled borrow shares up in the borrower's favour. A cut thus
+    ///      removed less debt from the market than the shares it canceled were worth.
+    ///      Root cause: the old `LidoLend.settle` accepted supply shares as an anchor. On that anchor it valued them
+    ///      down into `borrowAssetsCanceled` and converted that amount up into canceled borrow shares. Now: `settle`
+    ///      takes `borrowShares` as its only anchor. It charges their debt with `toAssetsUp` and burns supplier shares
+    ///      with `toSharesUp` on that debt.
+    ///      Same cause: vault `settle`, `fallbackExit`, and a direct core `settle` by any supplier all run this core
+    ///      function, so the fix covers each of them.
     function test_borrowAnchored_partialCut_lenderBearsRounding() public {
         Market memory m = core.market(id);
         uint256 borrowBefore = core.position(id, BORROWER).borrowShares;
@@ -214,6 +222,8 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
     /// @dev With a fee and borrow and supply indices far apart,
     ///      the smallest executable borrow-share cut lowers total borrow assets by exactly the cut's debt rounded up,
     ///      so the cut moves no debt onto the borrowers that stay.
+    /// @dev Same issue as `test_borrowAnchored_partialCut_lenderBearsRounding`; this test adds a fee-bearing market
+    ///      and the smallest executable cut.
     function test_minimumCutAfterFeeAccrual_movesNoDebtToOtherBorrowers() public {
         vm.startPrank(core.owner());
         core.setFeeRecipient(address(0xFEE));

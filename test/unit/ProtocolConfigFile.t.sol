@@ -249,10 +249,17 @@ contract ProtocolConfigFileTest is Test {
         });
     }
 
-    /// @dev `IrmConfigFactory` deploys with CREATE,
-    ///      so a call by another party before the reviewed call moves the reviewed config away from the address
-    ///      predicted from the factory nonce, and the predicted address holds the other party's params. A fix
-    ///      changes this outcome; update this test with the fix.
+    /// @dev Known issue: a call by another party before the reviewed call moves the reviewed IRM config away from the
+    ///      address that `AddMarket` records. The recorded address then holds the other party's params.
+    ///      Root cause: `IrmConfigFactory` deploys configs with `CREATE`, so each address follows a factory nonce that
+    ///      any caller can advance. `AddMarket.run` writes the config address from the simulation into the market
+    ///      artifact and does not check it after broadcast.
+    ///      Same cause: a front-run through `getOrDeployAdaptiveCurveConfig` or `getOrDeployLinearKinkConfig` with any
+    ///      new params. Two `AddMarket` runs that overlap race the same way.
+    ///      `ActivateMarkets` then applies the recorded config with `applyIrmConfig`. The acceptance suite compares
+    ///      the params of the recorded config with the reviewed curve params. A front-run with the reviewed params
+    ///      returns the same address and does no harm.
+    ///      A fix changes this outcome; update this test with it.
     function test_strangerDeploysFirst_movesReviewedConfigFromPredictedAddress() external {
         IrmConfigFactory factory = new IrmConfigFactory();
         AdaptiveCurveParams memory reviewed = _curve(0.9 ether);

@@ -70,8 +70,16 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
         return protocol.markets[0];
     }
 
-    /// @dev One second after the last accrual of a borrowed market, the Vault V2 cannot
-    ///      report, take or pay out assets. A fix changes this outcome; update this test with the fix.
+    /// @dev Known issue: one second after the last accrual of a borrowed market, the Vault V2 cannot report, take or
+    ///      pay out assets.
+    ///      Root cause: `DeployVaultV2` passes the IrmRouter as the `adaptiveCurveIrm` of the upstream
+    ///      `MorphoMarketV1AdapterV2`. Its `expectedSupplyAssets` calls `rateAtTarget` on that address whenever the
+    ///      market has debt and time has passed since the last core accrual. The router has no such function, so
+    ///      `realAssets` reverts, and so does every Vault V2 path through `accrueInterestView`.
+    ///      Same cause: `deposit`, `mint`, `withdraw`, `redeem`, `totalAssets`, the previews, `allocate`, and the fee
+    ///      and rate setters that accrue first. One such market in the adapter blocks the whole vault. It happens in
+    ///      any block after a borrow or accrual, with no attacker.
+    ///      A fix changes this outcome; update this test with it.
     function testRevert_oneSecondStale_vaultEntryPoints() public {
         _warpOneSecondPastAccrual();
 
@@ -89,6 +97,7 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
 
     /// @dev Control: a core accrual in the same block makes the market current, so the adapter skips the IRM and the
     ///      same calls go through.
+    /// @dev Same issue as `testRevert_oneSecondStale_vaultEntryPoints`.
     function test_accrueFirst_vaultEntryPointsWork() public {
         Market storage m = _m();
         _warpOneSecondPastAccrual();

@@ -113,6 +113,9 @@ contract VaultSettlementRedemptionTest is LidoLendSetup {
         _assertPayout(before);
     }
 
+    /// @dev This test covers the payout bound that `invariant_settlementRounding` in
+    ///      `test/invariant/VaultConformance.invariant.t.sol` states. One `settle` call pays out no more than the
+    ///      redeem value of the shares it burns.
     function testFuzz_settle_payoutFitsRedeem(uint256 shareSeed, bool bothBorrowers) public {
         Market storage m = protocol.markets[0];
         ExitSnapshot memory before = _snapshot();

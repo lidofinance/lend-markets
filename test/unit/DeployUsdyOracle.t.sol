@@ -37,9 +37,12 @@ contract DeployUsdyNavMock {
 }
 
 contract DeployUsdyOracleTest is Test {
-    /// @dev The deploy path
-    ///      initializes the `UsdyStableOracle` proxy in the same call that creates it, so a later `initialize` by a
-    ///      stranger reverts and the configured feed stays bound.
+    /// @dev A stranger cannot call `initialize` on a deployed `UsdyStableOracle` proxy and bind another feed or
+    ///      another loan token. `DeployUsdyOracle.run` passes the init data to `_behindProxy`, so the proxy is
+    ///      initialized in the call that creates it. A later `initialize` reverts with `InvalidInitialization`.
+    ///      `initialize` itself has no caller check. The other initializable proxies from
+    ///      `LidoLendPrimitives._behindProxy` and `LidoLendMarketFactory` also get their init data at creation. The
+    ///      `WstEthRateOracle` proxy gets empty data, and it has no initializer.
     function testRevert_strangerInitializeAfterDeploy_invalidInitialization() external {
         address feed = address(new DeployUsdyDecimalsMock(8));
         address strangerFeed = address(new DeployUsdyDecimalsMock(8));

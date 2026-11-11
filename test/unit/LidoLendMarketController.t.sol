@@ -55,6 +55,12 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         return protocol.markets[0];
     }
 
+    /// @dev Fixed issue: the controller had no getter and no event for its guardian registry. A monitor could not read
+    ///      the registry of a controller through the ABI or the logs.
+    ///      Root cause: the registry lived only in private storage, and `initialize` emitted nothing about it. Now:
+    ///      `initialize` emits `GuardianSignalsSet`, and `guardianSignals` returns the bound registry. The fix covers
+    ///      controllers from the deploy scripts and from `LidoLendMarketFactory`, because both paths call the same
+    ///      `initialize`.
     function test_initialize_emitsGuardianSignalsSet() public {
         MockERC20 loanToken = new MockERC20("Loan2", "LN2", 18);
         MockERC20 collateralToken = new MockERC20("Coll2", "CL2", 18);
@@ -78,6 +84,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertGe(found, 1, "GuardianSignalsSet emitted at initialization");
     }
 
+    /// @dev Fixed issue: markets launched with no supply cap.
+    ///      Root cause: `initialize` took no cap, so a cap needed a later `setSupplyCap` call. Now: `initialize` takes
+    ///      `supplyCap_`, and the factory `MarketSpec` carries `supplyCap`. A zero value still means no cap.
+    ///      Same cause: deposits of any size in the gap between launch and the cap call, through the vault or a direct
+    ///      core `supply`. The fix stops them when the market config sets a non-zero cap.
     function test_deployConfig_initializesSupplyCap() public {
         DeployConfig memory cfg = _defaultConfig(address(loan), address(collateral), address(collateral));
         cfg.supplyCap = 500 ether;
@@ -87,6 +98,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(market.controller.supplyCap(), cfg.supplyCap, "configured supply cap");
     }
 
+    /// @dev Fixed issue: the controller accepted the zero address for the core, the admin, and the guardian registry.
+    ///      A zero admin left the controller with no role admin. A zero registry made each guardian read revert.
+    ///      Root cause: the constructor and `initialize` had no zero-address checks. Now: the constructor reverts with
+    ///      `ZeroAddress` on a zero core, and `initialize` reverts on a zero admin or guardian registry.
+    ///      Same cause: the `RiskStewardDashboard` constructor also rejects a zero admin or core.
     function test_constructor_zeroCoreReverts() public {
         vm.expectRevert(ILidoLendMarketController.ZeroAddress.selector);
         new LidoLendMarketController(IMorpho(address(0)));
@@ -919,7 +935,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── views ──
 
-    /// @dev The controller exposes the guardian-signals registry it was wired with at deploy.
+    /// @dev Same issue as `test_initialize_emitsGuardianSignalsSet`; this test reads the bound registry through the
+    ///      getter.
     function test_guardianSignals_returnsWiredRegistry() public view {
         Market storage m = _m();
         assertEq(m.controller.guardianSignals(), address(m.guardianSignals), "controller exposes its registry");
@@ -1161,9 +1178,15 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertGt(d.queueRootSliceAssets, 0, "dashboard reports the root-policy slice");
     }
 
-    /// @dev `positionOf` shows a lot past its unlock time as
-    ///      activating until a hook syncs it; after a borrow hook it shows the lot as active. A fix changes this
-    /// outcome; update this test with the fix.
+    /// @dev Known issue: `positionOf` shows a lot past its unlock time as activating until a hook syncs it. After a
+    ///      borrow hook it shows the lot as active.
+    ///      Root cause: `positionOf` reads the stored buckets through `CollateralActivationLib.getActivationState` and
+    ///      does not run the maturity check of `CollateralActivationLib.sync`. Only the supply-collateral,
+    ///      withdraw-collateral, and borrow hooks call `sync`.
+    ///      Same cause: `positionOf` also understates `active` and reports a past `unlockTime` for the lot. Any reader
+    ///      of `positionOf`, such as a front end or a keeper bot, sees the stale split. The liquidate and settle hooks
+    ///      call `seize` on the stored split with no `sync`.
+    ///      A fix changes this outcome; update this test with the fix.
     function test_positionOf_reportsMaturedLotActivatingUntilHook() public {
         Market storage m = _m();
         uint256 collat = 100 ether;

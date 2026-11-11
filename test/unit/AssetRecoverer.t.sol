@@ -212,18 +212,16 @@ contract AssetRecovererTest is Test {
     // Foundry `expectRevert` reports these empty reverts as a call to a non-contract address and does not match
     // empty data, so the ERC-721 and ERC-1155 tests use a low-level call and check the data.
 
-    /// @dev `recoverERC20` with token `address(0)` reverts with the
-    ///      generic `SafeERC20FailedOperation`, not a zero-token error. A fix changes this outcome; update this test
-    ///      with the fix.
+    /// @dev `recoverERC20` with a token that has no code reverts with `SafeERC20FailedOperation`, not a zero-token
+    ///      error. Only the recoverer can make this call, which is `RECOVERER_ROLE` in the exit books.
     function testRevert_recoverERC20_zeroToken_safeErc20FailedOperation() public {
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(0)));
         rec.recoverERC20(address(0), recipient, 1 ether);
     }
 
-    /// @dev `recoverERC721` with token `address(0)` reverts on the
-    ///      compiler's code check with no data. The report says this path is a silent no-op; it is not. A fix
-    ///      changes this outcome; update this test with the fix.
+    /// @dev `recoverERC721` with a token that has no code reverts on the compiler code check with no data. Only the
+    ///      recoverer can make this call.
     function testRevert_recoverERC721_zeroToken_emptyRevert() public {
         vm.prank(owner);
         (bool success, bytes memory revertData) =
@@ -233,9 +231,8 @@ contract AssetRecovererTest is Test {
         assertEq(revertData, "", "code-check revert has no data");
     }
 
-    /// @dev `recoverERC1155` with token `address(0)` reverts because
-    ///      `balanceOf` returns no data to decode, and the revert has no data. A fix changes this outcome; update this
-    ///      test with the fix.
+    /// @dev `recoverERC1155` with a token that has no code reverts with no data, because `balanceOf` returns no data
+    ///      to decode. Only the recoverer can make this call.
     function testRevert_recoverERC1155_zeroToken_emptyRevert() public {
         vm.prank(owner);
         (bool success, bytes memory revertData) =

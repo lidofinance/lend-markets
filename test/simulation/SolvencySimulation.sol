@@ -455,10 +455,17 @@ abstract contract SolvencySimulation is SolvencyActions {
         _checkQueueRoot();
     }
 
-    /// @dev When a solvent root ties on the rounded risk key with an
-    ///      insolvent borrower, a lender exit closes the solvent root, and the later write-off of the hidden bad debt
-    ///      falls on the lenders that stay. A fix changes this outcome; update this test with the fix.
-    ///      `maxIterations = 1` stops the settle leg before it tries the insolvent borrower as the next root.
+    /// @dev Known issue: a solvent root can tie on the rounded risk key with an insolvent borrower. Then a lender exit
+    ///      closes the solvent root. The later write-off of the hidden bad debt falls on the lenders that stay.
+    ///      Root cause: `_handleSettle` runs `_isBadDebt` only on `peekRoot()`, and the heap orders borrowers by
+    ///      `_riskKey`, which is `borrowShares * 1e18 / collateral` rounded down. Two LTVs inside one key unit tie.
+    ///      `MaxHeapLib` does not swap equal keys, so the node already above stays above. A solvent root can thus
+    ///      hide an insolvent borrower, and `hasBadDebt` also reports false.
+    ///      Same cause: a `fallbackExit` root cut, a vault `settle` of any borrower with a personal settlement LTV,
+    ///      and a direct core `settle` by any supplier. Each exit before the insolvent borrower becomes the root
+    ///      leaves its share of the loss to the lenders that stay.
+    ///      A fix changes this outcome; update this test with it.
+    /// @dev `maxIterations = 1` stops the settle leg before it tries the insolvent borrower as the next root.
     function test_tiedRiskKey_rootExitLeavesHiddenLossToRemainingLenders() public {
         (address root, address tied) = _seedTiedRiskKey();
         Market storage m = _m();

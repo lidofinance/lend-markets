@@ -431,6 +431,13 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── asset-native requests ──
 
+    /// @dev Fixed issue: an exit request on a vault with high-decimal shares lost part of the position value to the
+    ///      filler.
+    ///      Root cause: the old `placeExitRequest` stored a price snapshot, the rounded value of `1e18` raw shares, and
+    ///      each fill scaled it across the filled shares. Now: the request stores a fixed asset amount, and each fill
+    ///      withdraws exactly that amount at the live share price.
+    ///      Same cause: any vault where `1e18` raw shares round to a coarse value, and split fills. `MorphoExitBook`
+    ///      stored the same snapshot of `WAD` supply shares and now stores assets too.
     function test_place_storesAssetRequestAndEmits() public {
         uint256 assets = 100 ether;
         uint256 minFillAssets = 10 ether;
@@ -696,6 +703,8 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(asset.balanceOf(address(book)), 0, "book balance rolled back");
     }
 
+    /// @dev Same issue as `test_place_storesAssetRequestAndEmits`; this test shows that yield after placement lowers
+    ///      the share burn and the fill still pays the exact assets.
     function test_fill_afterYieldBurnsLiveSharesAndStillPaysExactAssets() public {
         (uint256 id,) = _depositAndPlace(200 ether, 100 ether, lender, 0, _zeroRamp());
         uint256 sharesAtPlacement = vault.previewWithdraw(100 ether);
@@ -769,6 +778,13 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(_status(id), uint8(ExitStatus.Filled));
     }
 
+    /// @dev Fixed issue: after a front-run fill, the rest of a filler deposit stayed in the market as idle liquidity
+    ///      that others could withdraw.
+    ///      Root cause: the old `fillExitRequest` supplied the full filler deposit before it sized the fill from the
+    ///      live remainder. Now: `fillExitRequest` takes no filler assets, and a fill above `assetsRemaining` reverts
+    ///      with `FillExceedsRemaining`.
+    ///      Same cause: a partial fill by another filler before this fill, in either book. The fill now reverts, and
+    ///      the filler keeps its assets.
     function testRevert_fill_frontRunReducedRemainderRejectsWithoutTouchingExecutor() public {
         (uint256 id,) = _lenderPlace(100 ether, _zeroRamp());
         vm.prank(address(0xB));
@@ -808,6 +824,13 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── externally prepared liquidity ──
 
+    /// @dev Fixed issue: a filler deposit into a donation-sensitive vault could mint zero shares, and the fill still
+    ///      succeeded.
+    ///      Root cause: the old `fillExitRequest` deposited filler assets into the source with no minimum share output.
+    ///      Now: `fillExitRequest` takes no assets from the filler and mints nothing to the filler. It only withdraws
+    ///      the exact request assets from the owner.
+    ///      Same cause: share-price inflation before the fill in the ERC-4626 book. The old Morpho path also set no
+    ///      minimum share output. A filler that needs liquidity now deposits in a separate call that it controls.
     function test_fill_doesNotUseExecutorAssetsWhenSourceIsLiquid() public {
         (uint256 id,) = _lenderPlace(100 ether, _zeroRamp());
         asset.mint(filler, 50 ether);
@@ -840,6 +863,8 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(_status(id), uint8(ExitStatus.Filled));
     }
 
+    /// @dev Same issue as `testRevert_fill_frontRunReducedRemainderRejectsWithoutTouchingExecutor`; this test shows
+    ///      that low source liquidity reverts the fill and leaves the filler assets untouched.
     function testRevert_fill_insufficientSourceLiquidityDoesNotUseExecutorAssets() public {
         LiquidityCappedVault source = new LiquidityCappedVault(IERC20(address(asset)));
         (uint256 id,) = _depositAndPlace(IERC4626(address(source)), 100 ether, 100 ether, lender, 0, _zeroRamp());
@@ -961,8 +986,9 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(asset.balanceOf(address(book)), bookAssetsBefore);
     }
 
-    /// @dev A recovery that runs inside the source withdrawal
-    ///      lowers the measured output, so the fill reverts with `AssetsOutMismatch` and rolls back in full.
+    /// @dev A recovery by `RECOVERER_ROLE` inside the source withdrawal lowers the measured proceeds, and
+    ///      `fillExitRequest` reverts with `AssetsOutMismatch`. Here the vault holds the role and recovers 5 of 7 stray
+    ///      tokens.
     function testRevert_recoveryDuringWithdraw_assetsOutMismatchRollsBack() public {
         RecoveringVault source = new RecoveringVault(IERC20(address(asset)));
         (uint256 id, uint256 lenderShares) =
@@ -989,9 +1015,8 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(asset.balanceOf(lender), 0, "lender paid nothing");
     }
 
-    /// @dev A callback asset lets a fee update run between the
-    ///      service-cut calculation and its transfer, so the new recipient gets the cut at the old rate and the old
-    ///      recipient gets nothing. A fix changes this outcome; update this test with the fix.
+    /// @dev A `setServiceFee` call by `FEE_MANAGER_ROLE` inside a fill sends the cut at the old rate to the new
+    ///      recipient. Here a reward-recipient hook holds the role.
     function test_feeUpdateInRewardCallback_newRecipientGetsOldRateCut() public {
         CallbackAsset callbackAsset = new CallbackAsset();
         MockVault source = new MockVault(IERC20(address(callbackAsset)));

@@ -32,6 +32,13 @@ contract RiskStewardDashboardScenarioTest is LidoLendSetup {
         market.controller.grantRole(market.controller.MANAGER_ROLE(), address(dashboard));
     }
 
+    /// @dev Fixed issue: `increaseActivationDelays` reverted on a valid cap increase when the quorum fallback was set.
+    ///      Root cause: the old `increaseActivationDelays` wrote the new floor and cap but kept the old
+    ///      `maxGuardiansQuorumDelay`. `setConfig` requires a nonzero fallback above the cap, so a cap at or above the
+    ///      fallback reverted. Now: `increaseActivationDelays` takes a new `maxGuardiansQuorumDelay` and writes all
+    ///      three delays in one config update.
+    ///      Same cause: any cap raise that reaches the old fallback, on any market with a nonzero fallback. A steward
+    ///      can now raise the fallback with the cap.
     function test_increaseActivationDelays_raisesQuorumFallbackAtomically() public {
         Market storage market = protocol.markets[0];
 

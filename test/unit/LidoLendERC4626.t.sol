@@ -349,6 +349,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
     /// @dev Pausing collapses withdrawable liquidity to zero. A positive-value fallback exit therefore cannot use
     ///      the internal liquid leg; with no settleable borrower it reverts instead of silently returning a no-op.
+    /// @dev Same issue as `testRevert_settle_rootWithoutPersonalLtv_settlesNothing` in
+    ///      `test/scenario/Settlement.t.sol`; this test covers `fallbackExit` when a pause leaves no liquid leg.
     function testRevert_fallbackExit_doesNotNoopPositiveValueShares_whenPaused() public {
         Market storage m = _market();
         address lender = _actor("paused-lender");
@@ -822,9 +824,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
         assertEq(m.vault.balanceOf(minter), maxShares, "minted exactly maxMint");
     }
 
-    /// @dev On a six-decimal market with supply, a finite cap near
-    ///      `type(uint256).max` makes `maxMint` overflow when it converts the headroom to shares, so every `mint`
-    ///      reverts. A zero cap restores `mint`. A fix changes this outcome; update this test with the fix.
+    /// @dev A finite cap near `type(uint256).max` makes `maxMint` overflow on a six-decimal market with supply, so
+    ///      every `mint` reverts. Only the deployer and `MANAGER_ROLE` can set such a cap.
     function testRevert_extremeFiniteCap_sixDecimals_maxMintOverflowsAndMintReverts() public {
         Market storage m = _deploySixDecimalMarket();
         address lender = _actor("lender");

@@ -144,8 +144,12 @@ contract UsdyStableOracleTest is Test {
         new UsdyStableOracle(address(0), MIN_PRICE, MAX_PRICE);
     }
 
-    /// @dev A zero lower bound is rejected: it would admit a fully collapsed price, the fail-open case the
-    ///      band exists to close.
+    /// @dev Fixed issue: a zero oracle price let a liquidator seize collateral and repay no debt.
+    ///      Root cause: `price()` had no lower bound, so it could return zero. Now: the constructor takes a price band
+    ///      and reverts with `InvalidPriceBounds` on a zero `MIN_PRICE`. `price()` reverts with `PriceOutOfBounds`
+    ///      below `MIN_PRICE`, so it never returns zero.
+    ///      Same cause: a `mulDiv` result that rounds to zero under a very large feed answer, and any collapsed price
+    ///      below the band. The fix stops each of them in `liquidate`, `settle`, and the core health check.
     function testRevert_constructor_zeroMinPrice() public {
         vm.expectRevert(abi.encodeWithSelector(UsdyStableOracle.InvalidPriceBounds.selector, 0, MAX_PRICE));
         new UsdyStableOracle(address(usdy), 0, MAX_PRICE);
@@ -245,9 +249,13 @@ contract UsdyStableOracleTest is Test {
 
     // ── documented no-guard behaviour (NatSpec L26-27: intentionally matches Morpho's stock oracle) ──
 
-    /// @dev Current behaviour: `price()` reads only the feed's `answer`, with no on-chain staleness check on
-    ///      `updatedAt`/`answeredInRound`, so an old round is used as-is. Adding a staleness bound would be an
-    ///      explicit behaviour change; this pins the present contract.
+    /// @dev Specified behaviour: `price()` returns the answer of an old feed round when the result stays inside the
+    ///      band. The NatSpec of `UsdyStableOracle` states that the oracle has no staleness check.
+    ///      Root cause: `UsdyStableOracle.price` reads only `answer` from `latestRoundData` and drops `roundId`,
+    ///      `updatedAt`, and `answeredInRound`. `USDY_ORACLE.getPrice` gives no timestamp.
+    ///      Same cause: a feed that stops updating, an incomplete round, and a NAV that is not updated. A stale price
+    ///      above the true price lets a borrower borrow or withdraw collateral past the true limit. A stale price below
+    ///      it lets a keeper liquidate or settle a healthy borrower.
     function test_staleFeed_isUsedAsIs() public {
         usdy.setPrice(1.08e18);
         feed.setUpdatedAt(1); // ancient round
@@ -255,8 +263,8 @@ contract UsdyStableOracleTest is Test {
         assertEq(oracle.price(), _expected(1.08e18, 1e8), "stale feed answer used without a staleness check");
     }
 
-    /// @dev `price()` uses an incomplete round (`answeredInRound <
-    ///      roundId`) as is. A fix changes this outcome; update this test with the fix.
+    /// @dev Same behaviour as `test_staleFeed_isUsedAsIs`; this test uses an incomplete round with `answeredInRound`
+    ///      below `roundId`.
     function test_incompleteRound_isUsedAsIs() public {
         SettableDecimalsFeed roundFeed = new SettableDecimalsFeed(0.99e8, 8);
         UsdyStableOracle o = _deploy(address(usdy), address(roundFeed), address(loan));
@@ -266,9 +274,15 @@ contract UsdyStableOracleTest is Test {
         assertEq(o.price(), _expected(1.08e18, 0.99e8), "incomplete round answer used");
     }
 
-    /// @dev The feed drops from 8 to 7 decimals after `initialize`,
-    ///      and the cached `scale` returns ten times the correct price, which `MAX_PRICE` still accepts. A fix
-    ///      changes this outcome; update this test with the fix.
+    /// @dev Known issue: the feed drops from 8 to 7 decimals after `initialize`. The cached `scale` then returns ten
+    ///      times the correct price, which `MAX_PRICE` still accepts.
+    ///      Root cause: `initialize` computes `scale` once from `stableUsdFeed.decimals()` and the loan-token decimals.
+    ///      `price()` never reads either value again, and no function updates `scale`.
+    ///      Same cause: a drop of k feed decimals multiplies the price by 10^k, and a rise divides it by 10^k. A new
+    ///      aggregator with other decimals behind the feed proxy has the same effect. An overprice inside the band lets
+    ///      borrowers borrow against inflated collateral. An underprice inside the band lets keepers liquidate or
+    ///      settle healthy borrowers. A result outside the band halts each price-dependent action.
+    ///      A fix changes this outcome; update this test with the fix.
     function test_feedDecimalsDrop_cachedScaleReturnsTenfoldPriceAtMax() public {
         SettableDecimalsFeed decimalsFeed = new SettableDecimalsFeed(1.1e8, 8);
         UsdyStableOracle o = _deploy(address(usdy), address(decimalsFeed), address(loan));
@@ -283,9 +297,8 @@ contract UsdyStableOracleTest is Test {
         assertEq(o.price(), MAX_PRICE, "the tenfold price sits on the inclusive upper bound");
     }
 
-    /// @dev The feed rises from 8 to 9 decimals after
-    ///      `initialize`, and the cached `scale` returns a tenth of the correct price, which the band rejects. A fix
-    ///      changes this outcome; update this test with the fix.
+    /// @dev Same issue as `test_feedDecimalsDrop_cachedScaleReturnsTenfoldPriceAtMax`; a rise to 9 decimals returns a
+    ///      tenth of the correct price, which the band rejects.
     function testRevert_feedDecimalsRise_cachedScalePriceOutOfBounds() public {
         SettableDecimalsFeed decimalsFeed = new SettableDecimalsFeed(1.1e8, 8);
         UsdyStableOracle o = _deploy(address(usdy), address(decimalsFeed), address(loan));
@@ -344,9 +357,10 @@ contract UsdyStableOracleTest is Test {
         assertEq(oracle.price(), MAX_PRICE, "price at the upper edge is accepted");
     }
 
-    /// @dev One NAV wei below the lower edge reverts with the offending value, so a mis-scaled or collapsing
+    /// @dev Same issue as `testRevert_constructor_zeroMinPrice`; this test shows the `price()` floor.
+    ///      One NAV wei below the lower edge reverts with the offending value, so a mis-scaled or collapsing
     ///      NAV source fails closed instead of repricing every position. At a $1.00 feed one NAV wei is 1e6 of
-    ///      returned price, so this is the smallest out-of-band price the sources can produce.
+    ///      returned price, so this is the out-of-band price nearest to the lower edge that the sources can produce.
     function testRevert_price_belowMinPrice() public {
         uint256 nav = 0.5e18 - 1; // MIN_PRICE is exactly nav 0.5e18
         usdy.setPrice(nav);
