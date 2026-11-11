@@ -71,7 +71,6 @@ contract VaultControllerBindingTest is LidoLendSetup {
         ILidoLendERC4626 vault = ILidoLendERC4626(_deployVault(m.params, address(stub)));
 
         assertEq(address(vault.controller()), address(stub), "the vault binds the stub");
-        assertNotEq(m.core.marketController(m.id), address(stub), "the core runs another controller");
         assertEq(m.core.marketController(m.id), address(m.controller), "setup: the core runs the market controller");
         assertEq(vault.maxDeposit(address(this)), stub.STUB_MAX_DEPOSIT(), "the vault reads the stub deposit limit");
         assertNotEq(vault.maxDeposit(address(this)), m.controller.maxDeposit(), "and not the core controller limit");

@@ -59,6 +59,18 @@ contract RiskStewardDashboardScenarioTest is LidoLendSetup {
         dashboard.increaseActivationDelays(market.id, 15 minutes, 3 hours, 3 hours);
     }
 
+    /// @dev A floor above the new cap passes the dashboard tighten-only guard and reverts in the controller with
+    ///      `InvalidActivationDelays`. Only a market steward can make this call.
+    function testRevert_increaseActivationDelays_floorAboveCap_downstreamError() public {
+        Market storage market = protocol.markets[0];
+        CollateralActivationConfig memory before = market.controller.collateralActivationConfig();
+        uint40 heldCap = before.maxActivationDelay;
+
+        vm.prank(STEWARD);
+        vm.expectRevert(CollateralActivationLib.InvalidActivationDelays.selector);
+        dashboard.increaseActivationDelays(market.id, heldCap + 1, heldCap, before.maxGuardiansQuorumDelay);
+    }
+
     /// @dev A governance motion writes a whole config fixed at its creation, so it undoes
     ///      every steward tightening made inside its window. A fix changes this outcome; update this test with the fix.
     function test_absoluteConfigMotion_undoesInWindowStewardTightening() public {

@@ -286,6 +286,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
     /// @dev `applyIrmConfig` does not validate curve parameters, so an invalid custom config halts accrual. Only the
     ///      IRM owner or manager can apply a config.
     function test_invalidCurveParams_acceptedByApply_haltAccrual() public {
+        Market storage m = _m();
         _seedFullUtilization(200 ether);
         AdaptiveCurveParams memory invalid = _flatCurve(-1e18);
 
@@ -297,6 +298,12 @@ contract IrmConfigRiskTest is LidoLendSetup {
         assertEq(address(_irm().marketCurveConfig(_irmId())), address(config), "invalid config bound");
 
         vm.warp(block.timestamp + 1 days);
+        // The negative steepness gives a negative rate, and the cast to `uint256` wraps it near 2^256.
+        assertEq(
+            IIrm(m.params.irm).borrowRateView(m.params, m.core.market(m.id)),
+            _fullUseRate(-1e18, FLAT_RATE_AT_TARGET),
+            "setup: the invalid curve returns a wrapped negative rate"
+        );
         bytes memory err = stdError.arithmeticError;
         _assertAccruingActionsRevert(err);
         _assertAccrueFirstRepairsRevert(err, address(config));
@@ -345,6 +352,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
     function test_adaptiveLibAfterReroute_returnsStaleRate() public {
         Market storage m = _m();
         _seedFullUtilization(200 ether);
+        this.applyConfigLikeMotion(flatConfig);
         AdaptiveCurveIrm adaptive = _irm();
 
         LinearKinkParams memory kink = LinearKinkParams({
@@ -359,15 +367,14 @@ contract IrmConfigRiskTest is LidoLendSetup {
 
         MorphoMarket memory market = m.core.market(m.id);
         assertEq(market.lastUpdate, block.timestamp, "setup: the reroute accrued, so no adaptation is pending");
-        int256 frozenRateAtTarget = adaptive.rateAtTarget(_irmId());
-        assertGt(frozenRateAtTarget, 0, "setup: the adaptive model priced the market");
+        assertEq(adaptive.rateAtTarget(_irmId()), FLAT_RATE_AT_TARGET, "setup: the old model keeps the flat rate");
         uint256 liveRate = uint256(kink.baseRate) + kink.slope1 + kink.slope2;
         assertEq(IIrm(m.irm).borrowRateView(m.params, market), liveRate, "router prices the kink at 100%");
 
         uint256 libRate = AdaptiveCurveIrmLib.borrowRateView(
             Id.unwrap(m.id), abi.decode(abi.encode(market), (IrmMarket)), address(adaptive)
         );
-        assertEq(libRate, _fullUseRate(4e18, frozenRateAtTarget), "library prices the old adaptive curve");
+        assertEq(libRate, _fullUseRate(FLAT_STEEPNESS, FLAT_RATE_AT_TARGET), "library prices the old adaptive curve");
         assertNotEq(libRate, liveRate, "library rate differs from the live route");
     }
 
@@ -395,13 +402,15 @@ contract IrmConfigRiskTest is LidoLendSetup {
         once.accrueInterest();
 
         assertEq(daily.core.market(daily.id).lastUpdate, once.core.market(once.id).lastUpdate, "same end");
+        IrmId onceId = IrmId.wrap(Id.unwrap(once.id));
         int256 dailyRate = _adaptiveOf(daily).rateAtTarget(IrmId.wrap(Id.unwrap(daily.id)));
-        int256 onceRate = _adaptiveOf(once).rateAtTarget(IrmId.wrap(Id.unwrap(once.id)));
-        int256 minRateAtTarget = int256(1e15) / int256(365 days);
-        int256 initialRateAtTarget = int256(4e16) / int256(365 days);
-        assertGt(onceRate, minRateAtTarget, "setup: decay stays above the floor");
-        assertLt(onceRate, initialRateAtTarget, "setup: idle market decays");
-        assertNotEq(dailyRate, onceRate, "checkpoint schedule changes the stored rate");
+        int256 onceRate = _adaptiveOf(once).rateAtTarget(onceId);
+        AdaptiveCurveParams memory curve = _adaptiveOf(once).marketCurveConfig(onceId).getCurveParams();
+        assertGt(onceRate, curve.minRateAtTarget, "setup: decay stays above the floor");
+        assertLt(onceRate, curve.initialRateAtTarget, "setup: idle market decays");
+        // Each daily `wExp` step overstates the decay factor by about 0.05%, and ten steps compound. The 0.1% bound
+        // holds for the default `adjustmentSpeed`.
+        assertGt(dailyRate - onceRate, onceRate / 1000, "daily checkpoints leave the stored rate over 0.1% higher");
     }
 
     // ── Ownership moves in one step ──
@@ -441,14 +450,28 @@ contract IrmConfigRiskTest is LidoLendSetup {
         uint256 elapsed = 10 days;
         vm.warp(block.timestamp + elapsed);
         MorphoMarket memory before = m.core.market(m.id);
-        _irm().applyIrmConfig(_irmParams(), factory.getOrDeployAdaptiveCurveConfig(_flatCurve(50e18)));
-        m.accrueInterest();
-
+        address steepConfig = factory.getOrDeployAdaptiveCurveConfig(_flatCurve(50e18));
         uint256 newRate = _fullUseRate(50e18, FLAT_RATE_AT_TARGET);
         uint256 oldRate = _fullUseRate(FLAT_STEEPNESS, FLAT_RATE_AT_TARGET);
-        uint256 expected = uint256(before.totalBorrowAssets).wMulDown(newRate.wTaylorCompounded(elapsed));
-        assertEq(m.core.market(m.id).totalBorrowAssets, before.totalBorrowAssets + expected, "new curve prices window");
-        assertGt(expected, uint256(before.totalBorrowAssets).wMulDown(oldRate.wTaylorCompounded(elapsed)), "not old");
+        uint256 atOldCurve = uint256(before.totalBorrowAssets).wMulDown(oldRate.wTaylorCompounded(elapsed));
+        uint256 atNewCurve = uint256(before.totalBorrowAssets).wMulDown(newRate.wTaylorCompounded(elapsed));
+        assertGt(atNewCurve, atOldCurve, "setup: the new curve charges more");
+
+        uint256 snapshot = vm.snapshotState();
+        this.applyConfigLikeMotion(steepConfig);
+        m.accrueInterest();
+        assertEq(
+            m.core.market(m.id).totalBorrowAssets,
+            before.totalBorrowAssets + atOldCurve,
+            "control: accrue first, and the old curve prices the window"
+        );
+        assertTrue(vm.revertToState(snapshot), "snapshot restored");
+
+        _irm().applyIrmConfig(_irmParams(), steepConfig);
+        m.accrueInterest();
+        assertEq(
+            m.core.market(m.id).totalBorrowAssets, before.totalBorrowAssets + atNewCurve, "new curve prices window"
+        );
     }
 
     // ── shared assertions ──

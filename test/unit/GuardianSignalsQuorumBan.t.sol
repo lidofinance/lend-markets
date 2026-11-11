@@ -96,16 +96,16 @@ contract GuardianSignalsQuorumBanTest is Test {
         assertFalse(gs.isBanned(MARKET, BOB), "unban clears flags -> no residual derived ban");
     }
 
-    /// @dev Asserts that no recorded log from the registry is a `Banned` or `Unbanned` event, and returns the number
-    ///      of registry logs with topic `topic0`.
-    function _assertNoBanEventsAndCount(bytes32 topic0) internal returns (uint256 count) {
+    /// @dev Asserts that the registry emitted exactly one recorded log, and that its topic is `topic0`.
+    function _assertOnlyRegistryLog(bytes32 topic0) internal {
         Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 count;
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter != address(gs)) continue;
-            assertNotEq(logs[i].topics[0], IGuardianSignals.Banned.selector, "no Banned event");
-            assertNotEq(logs[i].topics[0], IGuardianSignals.Unbanned.selector, "no Unbanned event");
-            if (logs[i].topics[0] == topic0) ++count;
+            assertEq(logs[i].topics[0], topic0, "unexpected registry event");
+            ++count;
         }
+        assertEq(count, 1, "one registry event");
     }
 
     /// @dev Known issue: `setQuorum` turns a derived ban on and off with only a `QuorumSet` event, never `Banned` or
@@ -126,12 +126,12 @@ contract GuardianSignalsQuorumBanTest is Test {
         vm.recordLogs();
         gs.setQuorum(2);
         assertTrue(gs.isBanned(MARKET, BOB), "lowering the quorum bans");
-        assertEq(_assertNoBanEventsAndCount(IGuardianSignals.QuorumSet.selector), 1, "only QuorumSet");
+        _assertOnlyRegistryLog(IGuardianSignals.QuorumSet.selector);
 
         vm.recordLogs();
         gs.setQuorum(3);
         assertFalse(gs.isBanned(MARKET, BOB), "raising the quorum unbans");
-        assertEq(_assertNoBanEventsAndCount(IGuardianSignals.QuorumSet.selector), 1, "only QuorumSet");
+        _assertOnlyRegistryLog(IGuardianSignals.QuorumSet.selector);
     }
 
     /// @dev Same issue as `test_setQuorumFlipsDerivedBan_emitsNoBanEvent`; a `prune` lapse emits only `FlagPruned`.
@@ -146,6 +146,6 @@ contract GuardianSignalsQuorumBanTest is Test {
         vm.recordLogs();
         gs.prune(MARKET, BOB);
         assertFalse(gs.isBanned(MARKET, BOB), "prune lets the derived ban lapse");
-        assertEq(_assertNoBanEventsAndCount(IGuardianSignals.FlagPruned.selector), 1, "one FlagPruned");
+        _assertOnlyRegistryLog(IGuardianSignals.FlagPruned.selector);
     }
 }

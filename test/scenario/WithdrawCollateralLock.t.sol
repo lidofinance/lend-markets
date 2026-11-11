@@ -229,7 +229,9 @@ contract WithdrawCollateralLockTest is LidoLendSetup {
         uint256 renewedDeadline = block.timestamp + lockDuration;
 
         vm.warp(firstDeadline + lockDuration);
-        assertGt(renewedDeadline, block.timestamp, "the deadline moved past the first deadline plus one lock");
+        assertEq(
+            market.controller.positionOf(victim).unlockTime, renewedDeadline, "the second top-up restarts the timer"
+        );
 
         uint256 total = 100 ether + 2 * topUp;
         vm.prank(victim);

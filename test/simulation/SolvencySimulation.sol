@@ -471,18 +471,32 @@ abstract contract SolvencySimulation is SolvencyActions {
         Market storage m = _m();
         address exiter = lenders[0];
         address stayer = lenders[1];
+        assertGt(
+            _debtUp(tied),
+            Math.mulDiv(m.core.position(m.id, tied).collateral, _price(), ORACLE_SCALE),
+            "setup: the tied borrower is short before the exit"
+        );
 
-        // The stayer's claim is below the tied borrower's debt, so after the exiter takes all free liquidity, the
-        // rest of its claim still covers the full close of the root.
-        uint256 stayerDeposit = 5000;
+        // The stayer deposits one unit less than the tied borrower's debt. The exiter then redeems all free
+        // liquidity. The rest of the exiter's claim equals the root's debt, so the close of the root burns it all.
+        uint256 stayerDeposit = _debtUp(tied) - 1;
         _mintLoan(stayer, stayerDeposit);
         uint256 stayerShares = m.vaultDeposit(stayer, stayerDeposit);
         m.vaultRedeem(exiter, m.vault.maxRedeem(exiter));
+        uint256 stayerBefore = m.vault.previewRedeem(stayerShares);
+
+        // Control: the exiter stays, so the write-off also lowers the exiter's claim.
+        uint256 beforeExit = vm.snapshotState();
+        _writeOff(keepers[0], tied);
+        uint256 lossWithoutExit = stayerBefore - m.vault.previewRedeem(stayerShares);
+        vm.revertToState(beforeExit);
 
         (,, uint256 seized,) = m.fallbackExit(exiter, m.vault.balanceOf(exiter), exiter, 1);
 
         assertGt(seized, 0, "the exit seized root collateral");
         assertEq(m.core.position(m.id, root).borrowShares, 0, "the solvent root closes in full");
+        assertEq(m.vault.balanceOf(exiter), 0, "the exiter holds no claim on the market");
+        assertEq(m.vault.totalSupply(), stayerShares, "the stayer is the only lender left");
         (address newRoot,) = m.controller.nextSettlementBorrower(0);
         assertEq(newRoot, tied, "the tied borrower is the root now");
         assertTrue(m.controller.hasBadDebt(), "and it carries bad debt");
@@ -493,18 +507,11 @@ abstract contract SolvencySimulation is SolvencyActions {
             "setup: the vault is the only supplier"
         );
 
-        uint256 vaultShares = m.vault.totalSupply();
-        uint256 stayerBefore = m.vault.previewRedeem(stayerShares);
         uint256 bad = _writeOff(keepers[0], tied);
+        uint256 lossWithExit = stayerBefore - m.vault.previewRedeem(stayerShares);
 
-        assertGt(bad, 0, "the liquidation writes off debt");
-        assertLt(m.vault.previewRedeem(stayerShares), stayerBefore, "the stayer loses value");
-        assertApproxEqAbs(
-            stayerBefore - m.vault.previewRedeem(stayerShares),
-            Math.mulDiv(bad, stayerShares, vaultShares),
-            2,
-            "the stayer loses its pro-rata part of the write-off"
-        );
+        assertApproxEqAbs(lossWithExit, bad, 2, "the stayer takes the whole write-off");
+        assertGt(lossWithExit, lossWithoutExit, "the exit moves the exiter's part of the loss to the stayer");
     }
 
     /// @dev Audit FZ-18 setup: two borrowers tie on the rounded risk key. The root is solvent at exactly its debt, and

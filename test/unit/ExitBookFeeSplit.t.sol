@@ -16,6 +16,8 @@ import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {ExitBookLib} from "../../src/libs/ExitBookLib.sol";
 import {Request, PriorityRamp, ExitStatus} from "../../src/types/ExitBookTypes.sol";
 
+import {CallbackERC20, ITokenTransferHook} from "../setup/Mocks.sol";
+
 contract MockAsset is ERC20 {
     error TransferBlocked(address recipient);
 
@@ -135,31 +137,9 @@ contract RecoveringVault is ERC4626 {
     }
 }
 
-/// @dev An asset that calls `hook.onTransferTo()` after each transfer to `trigger`.
-contract CallbackAsset is ERC20 {
-    address internal _trigger;
-    FeeRotationHook internal _hook;
-
-    constructor() ERC20("Callback Asset", "CBA") {}
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-
-    function setHook(address trigger, FeeRotationHook hook) external {
-        _trigger = trigger;
-        _hook = hook;
-    }
-
-    function _update(address from, address to, uint256 value) internal override {
-        super._update(from, to, value);
-        if (to == _trigger && address(_hook) != address(0)) _hook.onTransferTo();
-    }
-}
-
 /// @dev Holds `FEE_MANAGER_ROLE` and sets the new fee terms when the asset calls it. It models a callback that runs
 ///      a matured fee update mid-fill.
-contract FeeRotationHook {
+contract FeeRotationHook is ITokenTransferHook {
     ExitBookBase internal immutable BOOK;
     address internal immutable NEW_RECIPIENT;
     uint256 internal immutable NEW_FEE;
@@ -170,7 +150,7 @@ contract FeeRotationHook {
         NEW_FEE = newFee;
     }
 
-    function onTransferTo() external {
+    function onTokenTransfer(address, uint256) external {
         BOOK.setServiceFee(NEW_RECIPIENT, NEW_FEE);
     }
 }
@@ -1018,7 +998,7 @@ contract ExitBookFeeSplitTest is Test {
     /// @dev A `setServiceFee` call by `FEE_MANAGER_ROLE` inside a fill sends the cut at the old rate to the new
     ///      recipient. Here a reward-recipient hook holds the role.
     function test_feeUpdateInRewardCallback_newRecipientGetsOldRateCut() public {
-        CallbackAsset callbackAsset = new CallbackAsset();
+        CallbackERC20 callbackAsset = new CallbackERC20("Callback Asset", "CBA", 18);
         MockVault source = new MockVault(IERC20(address(callbackAsset)));
         book.setVaultAllowed(IERC4626(address(source)), true);
         uint256 oldFee = book.MAX_SERVICE_FEE();
@@ -1039,16 +1019,16 @@ contract ExitBookFeeSplitTest is Test {
 
         FeeRotationHook hook = new FeeRotationHook(book, newRecipient, newFee);
         book.grantRole(book.FEE_MANAGER_ROLE(), address(hook));
-        callbackAsset.setHook(rewardRecipient, hook);
+        callbackAsset.setHookedReceiver(address(hook));
 
         Split memory oldTerms = _expectedSplit(assets, 0.08e18, oldFee);
         vm.prank(filler);
-        book.fillExitRequest(id, assets, rewardRecipient);
+        book.fillExitRequest(id, assets, address(hook));
 
         assertEq(book.feeRecipient(), newRecipient, "setup: the callback rotated the recipient");
         assertEq(book.serviceFee(), newFee, "setup: the callback lowered the fee");
         assertEq(callbackAsset.balanceOf(receiver), oldTerms.receiverAssets, "receiver payout");
-        assertEq(callbackAsset.balanceOf(rewardRecipient), oldTerms.fillerReward, "filler reward at the old rate");
+        assertEq(callbackAsset.balanceOf(address(hook)), oldTerms.fillerReward, "filler reward at the old rate");
         assertEq(callbackAsset.balanceOf(newRecipient), oldTerms.serviceCut, "new recipient gets the old-rate cut");
         assertEq(callbackAsset.balanceOf(feeRecipient), 0, "old recipient gets nothing");
     }

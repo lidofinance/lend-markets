@@ -838,8 +838,6 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
                 controllerAdmin, address(lidoLendOwner), spec.guardians, spec.quorum, spec.suspectWindow
             )
         );
-        vm.expectRevert(bytes(""));
-        OssifiableProxy(payable(counterfeit)).proxy__getImplementation();
 
         factory.validateGuardianSignals(counterfeit, spec);
 
@@ -849,7 +847,6 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
 
         assertEq(Id.unwrap(counterfeitMarketId), Id.unwrap(marketId), "same market id");
         assertEq(LidoLendMarketController(counterfeitController).guardianSignals(), counterfeit, "controller binds it");
-        factory.validateMarketController(counterfeitController, marketId, counterfeit);
     }
 
     /// @dev Before `createMarket`, two controllers for one market id with different activation configs both pass

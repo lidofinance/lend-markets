@@ -585,7 +585,7 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
 
         assertEq(paid, entry, "the redeem returns the whole entry");
         assertEq(m.vault.managedSupplyShares(), managedBefore - 1, "the round trip burns one incumbent core share");
-        assertLe(m.vault.previewRedeem(incumbentShares), incumbentBefore, "the incumbent claim does not rise");
+        assertEq(m.vault.previewRedeem(incumbentShares), incumbentBefore, "one core share is below one loan unit");
         _assertManagedLeCore(m);
     }
 

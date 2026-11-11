@@ -80,23 +80,26 @@ contract CircuitBreakerConfigFileTest is Test {
     }
 
     /// @dev Specified behaviour: a committee pause of a market controller ends when the breaker pause duration
-    ///      expires. The mainnet profile starts that duration at five minutes. The breaker admin can change it from
-    ///      60 seconds to 60 days.
-    ///      `roles.md` states that a pause ends when its duration expires and that the Reseal Manager can extend it.
+    ///      expires. The `mainnet` deploy config selects the "lido-lend" profile for that duration.
+    ///      The profile starts the pause duration at five minutes and sets its lower limit to 60 seconds.
     ///      Root cause: `script/config/circuit-breakers/lido-lend.toml` sets `initial_pause_duration = 300` and
-    ///      `min_pause_duration = 60`. The `mainnet`, `hoodi`, and `fork-mainnet` deploy configs all select this file.
-    ///      `DeployCircuitBreaker` passes these values to the `CircuitBreaker` constructor, and `CircuitBreaker.pause`
-    ///      uses `pauseDuration` for each pause.
-    ///      Same cause: a pause of any controller on the shared breaker ends after the same pause duration. The pause
-    ///      is single use, so the committee cannot pause that controller again until the admin registers it again.
-    function test_mainnetProfile_pausesExpireAfterFiveMinutes() external view {
+    ///      `min_pause_duration = 60`. `DeployCircuitBreaker` passes these values to the `CircuitBreaker` constructor.
+    ///      This test reads the config files only. `test_cbPause_pausesOnlyRegisteredController_forExactDuration`
+    ///      shows the expiry on a deployed breaker.
+    function test_mainnetDeployConfig_selectsLidoLendProfile_fiveMinutePause() external view {
         _assertLidoLendProfile("mainnet");
     }
 
-    /// @dev Same behaviour as `test_mainnetProfile_pausesExpireAfterFiveMinutes`; this test shows that the Hoodi deploy
-    ///      config selects the same "lido-lend" profile.
-    function test_hoodiProfile_pausesExpireAfterFiveMinutes() external view {
+    /// @dev Same behaviour as `test_mainnetDeployConfig_selectsLidoLendProfile_fiveMinutePause`; this test shows that
+    ///      the Hoodi deploy config selects the same "lido-lend" profile.
+    function test_hoodiDeployConfig_selectsLidoLendProfile_fiveMinutePause() external view {
         _assertLidoLendProfile("hoodi");
+    }
+
+    /// @dev Same behaviour as `test_mainnetDeployConfig_selectsLidoLendProfile_fiveMinutePause`; this test shows that
+    ///      the fork deploy config selects the same "lido-lend" profile.
+    function test_forkMainnetDeployConfig_selectsLidoLendProfile_fiveMinutePause() external view {
+        _assertLidoLendProfile("fork-mainnet");
     }
 
     function _assertLidoLendProfile(string memory deployConfig) private view {

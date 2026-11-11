@@ -8,7 +8,7 @@ import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {OraclePreflight} from "../../script/lib/OraclePreflight.sol";
-import {WstEthOracleConfig, UsdyOracleConfig} from "../../script/lib/OracleConfigFile.sol";
+import {OracleConfigFile, WstEthOracleConfig, UsdyOracleConfig} from "../../script/lib/OracleConfigFile.sol";
 
 contract OraclePreflightHarness {
     function validate(string memory name, address oracle, address loanToken, address collateralToken, address admin)
@@ -175,7 +175,7 @@ contract OraclePreflightTest is Test {
     /// @dev `OraclePreflight.validate` does not check the loan token against a wstETH oracle config. The deployer
     ///      chooses this pairing in the market config. A 6-decimal ETH-unit loan token gets a price 1e12 too high.
     function test_wstEthPreflightWithSixDecimalLoan_acceptsEthUnitPrice() external {
-        address configuredWstEth = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+        address configuredWstEth = OracleConfigFile.readWstEth("weth-wsteth").wstETH;
         vm.etch(configuredWstEth, address(new FixedWstEthRateMock()).code);
         address wstEthOracle =
             address(new OssifiableProxy(address(new WstEthRateOracle(configuredWstEth)), admin, bytes("")));
@@ -183,8 +183,9 @@ contract OraclePreflightTest is Test {
 
         harness.validate("weth-wsteth", wstEthOracle, address(sixDecimalLoan), configuredWstEth, admin);
 
-        // ETH per wstETH (1.217) at the 1e36 scale for an 18-decimal loan. A 6-decimal ETH unit would need 1.217e24.
-        assertEq(IOracleForTest(wstEthOracle).price(), 1.217e36, "price in 18-decimal loan units");
+        // 1 wstETH is 1.217 ETH: 1.217e6 units of the 6-decimal loan for 1e18 collateral units, at the 1e36 scale.
+        uint256 sixDecimalPrice = 1.217e6 * 1e36 / 1e18;
+        assertEq(IOracleForTest(wstEthOracle).price(), 1e12 * sixDecimalPrice, "accepted price is 1e12 too high");
     }
 
     function _config() private view returns (WstEthOracleConfig memory) {

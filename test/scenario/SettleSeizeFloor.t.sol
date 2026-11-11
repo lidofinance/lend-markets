@@ -244,14 +244,9 @@ contract SettleSeizeFloorTest is LidoLendSetup {
     ///      A fix changes this outcome; update this test with it.
     function testRevert_unavailableRoot_blocksFallbackExitPastExecutableBorrower() public {
         Market storage m = protocol.markets[0];
-        address root = _seedUnavailableRootInFullyBorrowedMarket();
+        _seedUnavailableRootInFullyBorrowedMarket();
         uint256 shares = m.vault.balanceOf(lender);
 
-        (address queueRoot, SettlementSlice memory rootSlice) = m.controller.nextSettlementBorrower(0);
-        assertEq(queueRoot, root, "setup: the new borrower is the queue root");
-        assertNotEq(queueRoot, borrower, "setup: the executable borrower is behind the root");
-        assertEq(rootSlice.borrowShares, 0, "setup: the root cut buys no collateral unit");
-        assertEq(m.controller.maxWithdrawableAssets(address(m.vault)), 0, "setup: no liquid leg");
         SettlementQuote memory quote = m.controller.settlementFor(borrower, 0);
         assertGt(quote.personal.borrowShares, 0, "setup: the borrower behind the root has an executable cut");
 
@@ -279,13 +274,13 @@ contract SettleSeizeFloorTest is LidoLendSetup {
 
     /// @dev The settlement policy under test: a one-loan-asset root slice and nothing else. At this price that slice
     ///      buys no collateral unit. A new root with no personal LTV then borrows all free liquidity.
-    function _seedUnavailableRootInFullyBorrowedMarket() internal returns (address root) {
+    function _seedUnavailableRootInFullyBorrowedMarket() internal {
         Market storage m = protocol.markets[0];
         m.setSettlementConfig(
             SettlementConfig({sliceFloorBps: 0, sliceFloorAssets: 1, fullCutBelowCollateral: 0, ltvStepBps: 0})
         );
 
-        root = _actor("unavailableRoot");
+        address root = _actor("unavailableRoot");
         _fund(m.collateralToken, root, 60 ether);
         m.supplyCollateral(root, 60 ether);
         m.activateCollateral();
@@ -293,6 +288,12 @@ contract SettleSeizeFloorTest is LidoLendSetup {
         CoreMarket memory cm = m.core.market(m.id);
         // About 50 loan assets against 60 collateral units: 70% LTV, and a higher key than the first borrower.
         m.borrow(root, cm.totalSupplyAssets - cm.totalBorrowAssets);
+
+        (address queueRoot, SettlementSlice memory rootSlice) = m.controller.nextSettlementBorrower(0);
+        assertEq(queueRoot, root, "setup: the new borrower is the queue root");
+        assertNotEq(queueRoot, borrower, "setup: the executable borrower is behind the root");
+        assertEq(rootSlice.borrowShares, 0, "setup: the root cut buys no collateral unit");
+        assertEq(m.controller.maxWithdrawableAssets(address(m.vault)), 0, "setup: no liquid leg");
     }
 
     // ---

@@ -9,10 +9,6 @@ import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol
 import {IRiskStewardDashboard} from "../../src/interfaces/IRiskStewardDashboard.sol";
 import {ILidoLendMarketConfigurator} from "../../src/interfaces/ILidoLendMarketConfigurator.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
-import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
-import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
-import {Market} from "../setup/Types.sol";
-import {MockERC20} from "../setup/Mocks.sol";
 
 /// @dev Minimal controller stub: stores the config and lets the dashboard read-modify-write it. Local to this
 ///      file (no shared configurator mock exists in `test/setup/Mocks.sol`; the scenario suite drives the real
@@ -423,42 +419,5 @@ contract RiskStewardDashboardTest is Test {
         vm.prank(steward);
         vm.expectRevert(abi.encodeWithSelector(IRiskStewardDashboard.UnknownMarket.selector, unknownMarketId));
         dashboard.freezeMarket(unknownMarketId);
-    }
-}
-
-/// @dev Dashboard over a real controller, for the downstream config validation the mock controller does not run.
-contract RiskStewardDashboardRealControllerTest is LidoLendSetup {
-    RiskStewardDashboard internal dashboard;
-    address internal steward = address(0x57E);
-
-    function setUp() public {
-        MockERC20 loan = new MockERC20("Loan", "LOAN", 18);
-        MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
-        _deployProtocol(_defaultConfig(address(loan), address(collateral), address(collateral)));
-        Market storage market = protocol.markets[0];
-
-        dashboard = new RiskStewardDashboard(address(this), market.core);
-        dashboard.grantRole(dashboard.STEWARD_ADMIN_ROLE(), address(this));
-        dashboard.addMarketSteward(market.id, steward);
-        market.controller.grantRole(market.controller.MANAGER_ROLE(), address(dashboard));
-    }
-
-    /// @dev A floor above the new cap passes the dashboard tighten-only guard and reverts in the controller with
-    ///      `InvalidActivationDelays`. Only a market steward can make this call.
-    function testRevert_increaseActivationDelays_floorAboveCap_downstreamError() public {
-        Market storage market = protocol.markets[0];
-        CollateralActivationConfig memory before = market.controller.collateralActivationConfig();
-        uint40 newMax = before.maxActivationDelay; // held: passes the tighten-only guard
-        uint40 newMin = newMax + 1; // raised: passes the tighten-only guard, but is above the cap
-
-        vm.prank(steward);
-        vm.expectRevert(CollateralActivationLib.InvalidActivationDelays.selector);
-        dashboard.increaseActivationDelays(market.id, newMin, newMax, before.maxGuardiansQuorumDelay);
-
-        assertEq(
-            keccak256(abi.encode(market.controller.collateralActivationConfig())),
-            keccak256(abi.encode(before)),
-            "config unchanged"
-        );
     }
 }

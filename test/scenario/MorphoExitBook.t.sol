@@ -864,7 +864,6 @@ contract MorphoExitBookTest is LidoLendSetup {
         vm.prank(lender);
         vm.expectRevert(MorphoExitBook.InsufficientBacking.selector);
         book.placeExitRequest(_m().id, liveBacking + 1, lender, 0, 0, _flat(0), block.timestamp + MAX_LIFETIME);
-        assertEq(book.lastRequestId(), 0, "no request created");
     }
 
     /// @dev Fixed issue: a Morpho exit request placed at a collapsed supply price stored a zero price, and each fill
@@ -889,22 +888,25 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "request filled");
     }
 
-    /// @dev The borrower takes all of a 100-token supply, the price falls by 1e9, and a full-collateral liquidation
-    ///      writes off almost all the debt. Returns the lender's live backing.
+    /// @dev The borrower takes all of a 100-token supply, the price falls by 1e13, and a full-collateral liquidation
+    ///      writes off almost all the debt. One `WAD` of supply shares is then worth zero assets. Returns the
+    ///      lender's live backing.
     function _collapseSupplyPrice(address lender) internal returns (uint256 liveBacking) {
         Market storage m = _m();
         uint256 supplied = 100 ether;
         _lenderSupply(lender, supplied);
         address borrower = _actor("borrower");
         _borrowOut(borrower, supplied);
-        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 1e9);
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 1e13);
         address keeper = _actor("keeper");
         _fund(m.loanToken, keeper, 1 ether);
         m.liquidateBadDebt(keeper, borrower, m.core.position(m.id, borrower).collateral, 0);
 
         liveBacking = _positionAssets(lender);
         assertGt(liveBacking, 0, "setup: some backing is left");
-        assertLt(liveBacking, supplied / 1e6, "setup: supply price collapsed");
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
+            MorphoBalancesLib.expectedMarketBalances(m.core, m.params);
+        assertEq(WAD.toAssetsDown(totalSupplyAssets, totalSupplyShares), 0, "setup: one WAD of shares is worth zero");
     }
 
     function test_externalSelfSupplyThenFill_preservesLenderAssets() public {

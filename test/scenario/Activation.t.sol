@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
-import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
-
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
@@ -365,15 +360,12 @@ contract ActivationTest is LidoLendSetup {
 
         address keeper = _actor("keeper");
         _fund(m.loanToken, keeper, 1000 ether);
-        vm.prank(keeper);
-        m.loanToken.approve(address(m.core), type(uint256).max);
         uint256 seizeAmt = 110 ether; // 10 ether more than the stored active balance
         uint256 snapshot = vm.snapshotState();
 
         // No sync: the 10 ether above the stored active balance comes from 5 ether dust, then 5 ether of the lot.
         MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 38 / 100);
-        vm.prank(keeper);
-        m.core.liquidate(m.params, borrower, seizeAmt, 0, "");
+        m.liquidate(keeper, borrower, seizeAmt, 0);
         ILidoLendMarketController.BorrowerPosition memory stored = m.controller.positionOf(borrower);
         assertEq(stored.dust, 0, "no sync: the seizure takes all dust");
         assertEq(stored.activating, 15 ether, "no sync: the seizure takes the rest from the lot");
@@ -384,8 +376,7 @@ contract ActivationTest is LidoLendSetup {
         vm.prank(borrower);
         m.core.borrow(m.params, 1, 0, borrower, borrower);
         MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 38 / 100);
-        vm.prank(keeper);
-        m.core.liquidate(m.params, borrower, seizeAmt, 0, "");
+        m.liquidate(keeper, borrower, seizeAmt, 0);
         ILidoLendMarketController.BorrowerPosition memory synced = m.controller.positionOf(borrower);
         assertEq(synced.dust, 5 ether, "sync first: the dust stays");
         assertEq(synced.activating, 0, "sync first: the lot is active");
@@ -517,9 +508,7 @@ contract ActivationTest is LidoLendSetup {
         assertEq(position.active, collat, "the banned router's supply lands active");
         assertEq(position.activating, 0, "no lot on the timer");
 
-        uint256 startTime = block.timestamp;
         m.borrow(fresh, _safeBorrow(collat));
-        assertEq(block.timestamp, startTime, "the fresh borrower borrows with no delay");
 
         vm.prank(router);
         vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
@@ -544,9 +533,7 @@ contract ActivationTest is LidoLendSetup {
         m.unfreeze();
 
         assertEq(m.controller.positionOf(fresh).active, collat, "the frozen-time supply is active on unfreeze");
-        uint256 startTime = block.timestamp;
         m.borrow(fresh, _safeBorrow(collat));
-        assertEq(block.timestamp, startTime, "the fresh borrower borrows with no delay after unfreeze");
     }
 
     /// @dev With no activating lock, an instant supply and an equal withdrawal make a throttled lot active in the same
@@ -557,7 +544,6 @@ contract ActivationTest is LidoLendSetup {
         address router = _actor("router");
         m.setInstantActivation(router, true);
         address bob = _seedLenderAndCollateral(lot); // lot enters the timer
-        uint256 startTime = block.timestamp;
         assertEq(m.controller.positionOf(bob).activating, lot, "setup: the lot is throttled");
         assertEq(m.controller.positionOf(bob).active, 0, "setup: no active collateral");
 
@@ -569,7 +555,6 @@ contract ActivationTest is LidoLendSetup {
         assertEq(position.activating, 0, "throttled bucket drained");
         assertEq(position.active, lot, "the throttled lot is now active");
         assertEq(position.unlockTime, 0, "the timer is cleared");
-        assertEq(block.timestamp, startTime, "no time elapsed");
 
         m.borrow(bob, _safeBorrow(lot));
     }
@@ -599,7 +584,7 @@ contract ActivationTest is LidoLendSetup {
         m.core.borrow(m.params, 1, 0, bob, bob);
     }
 
-    /// @dev Specified behaviour: one transaction can split 50 lots of 200 ether over fresh addresses. Then the first
+    /// @dev Specified behaviour: one caller can split 50 lots of 200 ether over fresh addresses. Then the first
     ///      lot gets the ramp-floor delay for one lot, and the last lot gets the max delay. After one hour the first
     ///      address borrows and the last cannot.
     ///      Root cause: `credit` freezes each lot's `activatingDelay` from the market inflow at that lot's own deposit.
@@ -619,13 +604,15 @@ contract ActivationTest is LidoLendSetup {
         _fund(m.loanToken, lender, 1000 ether);
         m.vaultDeposit(lender, 1000 ether);
 
-        Splitter splitter = new Splitter();
-        _fund(m.collateralToken, address(splitter), lots * lot);
+        address funder = _actor("funder");
+        _fund(m.collateralToken, funder, lots * lot);
         uint256 startTime = block.timestamp;
-        splitter.run(m.core, m.params, m.collateralToken, lots, lot);
+        for (uint256 i = 1; i <= lots; ++i) {
+            m.supplyCollateralOnBehalf(funder, _splitAddress(i), lot);
+        }
 
-        address first = splitter.addressFor(1);
-        address last = splitter.addressFor(lots);
+        address first = _splitAddress(1);
+        address last = _splitAddress(lots);
         uint256 firstDelay = m.controller.positionOf(first).unlockTime - startTime;
         uint256 lastDelay = m.controller.positionOf(last).unlockTime - startTime;
 
@@ -641,19 +628,8 @@ contract ActivationTest is LidoLendSetup {
         vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
         m.core.borrow(m.params, 1, 0, last, last);
     }
-}
 
-/// @dev Supplies `lots` lots of `lot` collateral for fresh addresses in one transaction, so the market inflow rises
-///      from lot to lot.
-contract Splitter {
-    function run(ILidoLend core, MarketParams calldata params, IERC20 collateral, uint256 lots, uint256 lot) external {
-        collateral.approve(address(core), lots * lot);
-        for (uint256 i = 1; i <= lots; ++i) {
-            core.supplyCollateral(params, lot, addressFor(i), "");
-        }
-    }
-
-    function addressFor(uint256 i) public pure returns (address) {
+    function _splitAddress(uint256 i) internal pure returns (address) {
         return address(uint160(0xA0000 + i));
     }
 }

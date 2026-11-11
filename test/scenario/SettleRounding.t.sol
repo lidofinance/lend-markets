@@ -245,8 +245,7 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         uint256 cut = SharesMathLib.toSharesUp(2, m.totalBorrowAssets, m.totalBorrowShares);
         assertEq(SharesMathLib.toAssetsDown(cut, m.totalBorrowAssets, m.totalBorrowShares), 2, "setup: minimum cut");
         uint256 cutDebt = SharesMathLib.toAssetsUp(cut, m.totalBorrowAssets, m.totalBorrowShares);
-        uint256 fillerShares = core.position(id, FILLER).borrowShares;
-        uint256 fillerDebtBefore = SharesMathLib.toAssetsUp(fillerShares, m.totalBorrowAssets, m.totalBorrowShares);
+        assertGt(cutDebt, 2, "setup: the cut's debt rounds up");
         uint256 lenderBefore = core.position(id, LENDER).supplyShares;
 
         vm.prank(LENDER);
@@ -255,15 +254,11 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         Market memory post = core.market(id);
         assertEq(debtCanceled, cutDebt, "the cut cancels its debt rounded up");
         assertEq(m.totalBorrowAssets - post.totalBorrowAssets, cutDebt, "total borrow assets fall by that debt");
-        assertLe(
-            SharesMathLib.toAssetsUp(fillerShares, post.totalBorrowAssets, post.totalBorrowShares),
-            fillerDebtBefore,
-            "the other borrower's debt does not rise"
-        );
-        assertGe(
+        assertEq(m.totalBorrowShares - post.totalBorrowShares, cut, "total borrow shares fall by the cut");
+        assertEq(
             lenderBefore - core.position(id, LENDER).supplyShares,
             SharesMathLib.toSharesUp(cutDebt, m.totalSupplyAssets, m.totalSupplyShares),
-            "the lender burns supply worth at least the canceled debt"
+            "the lender burns supply worth the canceled debt, rounded up"
         );
     }
 

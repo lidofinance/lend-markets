@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {IIrm} from "@lido-lend/src/interfaces/IIrm.sol";
 import {Id, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
@@ -13,7 +12,7 @@ import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {MockERC20} from "../setup/Mocks.sol";
-import {Market} from "../setup/Types.sol";
+import {IrmKind, Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 
 /// @notice End-to-end governance flows through one stable owner facade into two real market controllers and
@@ -29,6 +28,8 @@ contract LidoLendOwnerGovernanceTest is LidoLendSetup {
     LidoLendOwner internal facade;
 
     function setUp() public {
+        // A constant borrow rate, so the fee tests derive interest from `fixedBorrowRate` and not from the IRM.
+        irmKind = IrmKind.Fixed;
         MockERC20 loan1 = new MockERC20("Loan 1", "LOAN1", 18);
         MockERC20 collateral1 = new MockERC20("Collateral 1", "COLL1", 18);
         MockERC20 loan2 = new MockERC20("Loan 2", "LOAN2", 18);
@@ -232,9 +233,8 @@ contract LidoLendOwnerGovernanceTest is LidoLendSetup {
     /// @dev Fee shares the next accrual mints for the open window, from the core fee formula.
     function _pendingFeeShares(Market storage market) internal view returns (uint256) {
         MorphoMarket memory state = market.core.market(market.id);
-        uint256 rate = IIrm(market.params.irm).borrowRateView(market.params, state);
-        uint256 interest =
-            uint256(state.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(block.timestamp - state.lastUpdate));
+        uint256 interest = uint256(state.totalBorrowAssets)
+            .wMulDown(fixedBorrowRate.wTaylorCompounded(block.timestamp - state.lastUpdate));
         uint256 feeAmount = interest.wMulDown(state.fee);
         return feeAmount.toSharesDown(state.totalSupplyAssets + interest - feeAmount, state.totalSupplyShares);
     }

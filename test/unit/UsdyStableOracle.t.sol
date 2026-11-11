@@ -2,6 +2,7 @@
 pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
@@ -185,6 +186,16 @@ contract UsdyStableOracleTest is Test {
         new OssifiableProxy(
             impl, address(this), abi.encodeCall(UsdyStableOracle.initialize, (address(feed), address(0)))
         );
+    }
+
+    /// @dev A second `initialize` from any caller reverts, so the bound feed stays.
+    function testRevert_initialize_alreadyInitialized() public {
+        address otherFeed = address(new MockChainlinkFeed());
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        oracle.initialize(otherFeed, address(loan));
+
+        assertEq(address(oracle.stableUsdFeed()), address(feed), "bound feed kept");
     }
 
     // ── views ──
