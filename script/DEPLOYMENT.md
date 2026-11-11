@@ -127,6 +127,8 @@ Several markets share one protocol. Extend the typed required-market list when a
 Preparation impersonates the executor inside Forge. Real Easy Track factory, preseed and motion flows remain
 integration tests of the Easy Track repository. External callers run `make test-fork RUN="$RUN"`
 against their post-vote RPC after supplying and registering a Solidity description; this never changes that source node.
+The regression action starts Anvil at the caller's post-vote block with `--fork-state-by-number` for Hardhat
+compatibility, runs the Forge suites against Anvil, and stops it on exit.
 Callers using the old TOML export must migrate before using this branch.
 
 Verify an inert or activated deployment independently:

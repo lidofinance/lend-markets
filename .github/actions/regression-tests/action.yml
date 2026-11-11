@@ -43,4 +43,22 @@ runs:
         RPC_URL: ${{ inputs.rpc_url }}
         RUN: ${{ inputs.run }}
         TEST_SEED: '1'
-      run: make test-fork RUN="$RUN"
+      run: |
+        fork_block=$(cast block-number --rpc-url "$RPC_URL")
+        anvil --fork-url "$RPC_URL" --fork-block-number "$fork_block" \
+          --fork-state-by-number --accounts 0 --no-mining \
+          --host 127.0.0.1 --port 18545 --silent \
+          > "$RUNNER_TEMP/lido-lend-anvil.log" 2>&1 &
+        anvil_pid=$!
+        trap 'kill "$anvil_pid" 2>/dev/null || true; wait "$anvil_pid" 2>/dev/null || true' EXIT
+        export RPC_URL=http://127.0.0.1:18545
+        for i in {1..60}; do
+          kill -0 "$anvil_pid" 2>/dev/null || { echo "::error::Anvil exited before startup"; exit 1; }
+          if [[ $(cast block-number --rpc-url "$RPC_URL" 2>/dev/null) == "$fork_block" ]]; then
+            make test-fork RUN="$RUN"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "::error::Anvil fork was not ready after 60 seconds"
+        exit 1
