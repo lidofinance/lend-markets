@@ -6,6 +6,7 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
@@ -453,6 +454,29 @@ contract LidoLendERC4626Test is LidoLendSetup {
         _market().vault.settle(0, bs, address(this), address(this));
     }
 
+    function testRevert_settle_zeroReceiver() public {
+        address[] memory bs = new address[](1);
+        bs[0] = _actor("b");
+        vm.expectRevert(ILidoLendERC4626.ZeroAddress.selector);
+        _market().vault.settle(1 ether, bs, address(0), address(this));
+    }
+
+    /// @dev Over a 6-decimal loan token one vault share is worth 1e-12 of a token, so it redeems to no core
+    ///      supply shares and funds no cut.
+    function testRevert_settle_zeroMorphoSupplyShares() public {
+        Market storage m = _deploySixDecimalMarket();
+        address owner = _actor("owner");
+        _fund(m.loanToken, owner, 100e6);
+        m.vaultDeposit(owner, 100e6);
+        assertEq(m.vault.previewRedeem(1), 0, "one share redeems to nothing");
+        address[] memory bs = new address[](1);
+        bs[0] = _actor("b");
+
+        vm.prank(owner);
+        vm.expectRevert(ILidoLendERC4626.ZeroMorphoSupplyShares.selector);
+        m.vault.settle(1, bs, owner, owner);
+    }
+
     // ── settle: liquidity-neutral and personal-LTV-gated ──
 
     function test_settle_liquidityNeutral() public {
@@ -617,6 +641,30 @@ contract LidoLendERC4626Test is LidoLendSetup {
         assertGt(sharesBurned, 0, "settle burned shares");
     }
 
+    /// @dev The burn is spent from the caller's allowance after the cuts, so a caller without one reverts the whole
+    ///      settle, reporting the shares the owner's own settle burns.
+    function testRevert_settle_onBehalfWithoutAllowance() public {
+        Market storage m = _market();
+        (address lender, address borrower) = _distress(m, 100 ether, 20 ether, 0.22e36);
+        vm.prank(borrower);
+        m.controller.setSettlementLtv(0.5e18);
+        address[] memory bs = new address[](1);
+        bs[0] = borrower;
+        uint256 shares = m.vault.balanceOf(lender);
+
+        uint256 snapshot = vm.snapshotState();
+        vm.prank(lender);
+        (uint256 sharesBurned,,) = m.vault.settle(shares, bs, lender, lender);
+        vm.revertToState(snapshot);
+
+        address caller = _actor("caller");
+        vm.prank(caller);
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, caller, 0, sharesBurned)
+        );
+        m.vault.settle(shares, bs, lender, lender);
+    }
+
     // ── initialize guards ──
 
     function testRevert_initialize_zeroController() public {
@@ -643,6 +691,19 @@ contract LidoLendERC4626Test is LidoLendSetup {
         new LidoLendERC4626(address(0));
     }
 
+    function testRevert_initialize_bareImplementation() public {
+        Market storage m = _market();
+        LidoLendERC4626 impl = new LidoLendERC4626(address(m.core));
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        impl.initialize(m.params, address(m.controller), "Vault", "VLT");
+    }
+
+    function testRevert_initialize_twice() public {
+        Market storage m = _market();
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        LidoLendERC4626(address(m.vault)).initialize(m.params, address(m.controller), "Vault", "VLT");
+    }
+
     // ── views ──
 
     function test_maxWithdraw_cappedByFreeLiquidity() public {
@@ -659,6 +720,50 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
         // Free liquidity = totalSupply - totalBorrow = 100 - 20 = 80; the 100-asset position caps to it.
         assertEq(m.vault.maxWithdraw(lender), 80 ether, "maxWithdraw == free liquidity (100 - 20)");
+    }
+
+    function test_withdraw_exactlyMaxWithdrawUnderLiquidityCap_passesOneMoreReverts() public {
+        Market storage m = _market();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 100 ether);
+        m.vaultDeposit(lender, 100 ether);
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 1_000 ether);
+        m.supplyCollateral(borrower, 1_000 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 90 ether);
+
+        uint256 cap = m.vault.maxWithdraw(lender);
+        assertEq(cap, 10 ether, "capped by the free liquidity");
+
+        vm.prank(lender);
+        vm.expectRevert(
+            abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxWithdraw.selector, lender, cap + 1, cap)
+        );
+        m.vault.withdraw(cap + 1, lender, lender);
+
+        m.vaultWithdraw(lender, cap);
+    }
+
+    function test_redeem_onBehalf_spendsAllowanceForRedeemedShares() public {
+        Market storage m = _market();
+        address owner = _actor("owner");
+        address caller = _actor("caller");
+        address receiver = _actor("receiver");
+        _fund(m.loanToken, owner, 100 ether);
+        uint256 shares = m.vaultDeposit(owner, 100 ether);
+        vm.prank(owner);
+        m.vault.approve(caller, shares);
+
+        uint256 redeemed = shares / 3;
+        uint256 expectedAssets = m.vault.previewRedeem(redeemed);
+        vm.prank(caller);
+        uint256 assets = m.vault.redeem(redeemed, receiver, owner);
+
+        assertEq(assets, expectedAssets, "pays previewRedeem");
+        assertEq(m.loanToken.balanceOf(receiver), expectedAssets, "receiver paid");
+        assertEq(m.vault.balanceOf(owner), shares - redeemed, "owner's shares burned");
+        assertEq(m.vault.allowance(owner, caller), shares - redeemed, "allowance spent by the redeemed shares");
     }
 
     function test_fallbackExit_pureRedeem_matchesPreviewRedeem() public {

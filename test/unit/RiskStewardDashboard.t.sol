@@ -107,6 +107,15 @@ contract RiskStewardDashboardTest is Test {
         dashboard.addMarketSteward(marketId, steward);
     }
 
+    function test_constructor_onlyAdminHoldsAdminRole() public {
+        address admin = makeAddr("dashboardAdmin");
+        RiskStewardDashboard fresh = new RiskStewardDashboard(admin, ILidoLend(address(core)));
+        bytes32 adminRole = fresh.DEFAULT_ADMIN_ROLE();
+        assertEq(fresh.getRoleMemberCount(adminRole), 1, "one admin");
+        assertEq(fresh.getRoleMember(adminRole, 0), admin, "the admin passed in");
+        assertEq(fresh.getRoleMemberCount(fresh.STEWARD_ADMIN_ROLE()), 0, "no steward admin yet");
+    }
+
     // ---
     // Stewards
     // ---
@@ -268,6 +277,20 @@ contract RiskStewardDashboardTest is Test {
         dashboard.increaseActivationDelays(unknownMarketId, 5 minutes, 2 hours, 1 days);
     }
 
+    /// @dev The other levers that read the controller revert the same way.
+    function testRevert_unknownMarket_everyOtherConfigLever() public {
+        dashboard.addMarketSteward(unknownMarketId, steward);
+        bytes memory expected = abi.encodeWithSelector(IRiskStewardDashboard.UnknownMarket.selector, unknownMarketId);
+        vm.startPrank(steward);
+        vm.expectRevert(expected);
+        dashboard.increaseActivatingLockDuration(unknownMarketId, 2 hours);
+        vm.expectRevert(expected);
+        dashboard.increaseMinDepositAmount(unknownMarketId, 2 ether);
+        vm.expectRevert(expected);
+        dashboard.revokeInstantActivation(unknownMarketId, address(0xCAFE));
+        vm.stopPrank();
+    }
+
     // ---
     // increaseActivatingLockDuration
     // ---
@@ -289,6 +312,18 @@ contract RiskStewardDashboardTest is Test {
         vm.prank(steward);
         vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
         dashboard.increaseActivatingLockDuration(marketId, 30 minutes);
+    }
+
+    function test_increaseActivatingLockDuration_equalDuration_accepted() public {
+        vm.prank(steward);
+        dashboard.increaseActivatingLockDuration(marketId, 1 hours);
+        assertEq(controller.collateralActivationConfig().activatingLockDuration, 1 hours, "lock duration held");
+    }
+
+    function testRevert_increaseActivatingLockDuration_notSteward() public {
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
+        dashboard.increaseActivatingLockDuration(marketId, 2 hours);
     }
 
     // ---

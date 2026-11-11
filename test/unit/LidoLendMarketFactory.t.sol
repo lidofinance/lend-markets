@@ -2,6 +2,7 @@
 pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
@@ -12,6 +13,7 @@ import {LidoLend} from "@lido-lend/src/LidoLend.sol";
 import {IIrmRouter} from "@lido-lend-irm/src/irm-router/interfaces/IIrmRouter.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
+import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
@@ -409,6 +411,44 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         }
     }
 
+    /// @dev The factory must not still administer a controller it validates. Only a factory whose admin is its own
+    ///      address passes the sole-admin check while holding that role, so this is the setup that reaches the check.
+    function testRevert_validateMarketController_factoryStillAdministers() external {
+        address selfAdmin = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
+        LidoLendMarketFactory selfAdministered = new LidoLendMarketFactory(
+            LidoLendMarketFactory.Implementations({
+                controller: factory.CONTROLLER_IMPL(),
+                erc4626Wrapper: factory.ERC4626_WRAPPER_IMPL(),
+                guardianSignals: factory.GUARDIAN_SIGNALS_IMPL()
+            }),
+            LidoLendMarketFactory.Dependencies({
+                lidoLend: factory.LIDO_LEND(),
+                irmRouter: factory.IRM_ROUTER(),
+                lidoLendOwner: factory.LIDO_LEND_OWNER(),
+                circuitBreaker: factory.CIRCUIT_BREAKER(),
+                resealManager: factory.RESEAL_MANAGER(),
+                riskStewardDashboard: factory.RISK_STEWARD_DASHBOARD()
+            }),
+            selfAdmin
+        );
+        assertEq(address(selfAdministered), selfAdmin, "setup: the factory is its own admin");
+
+        LidoLendMarketController c = LidoLendMarketController(controller);
+        bytes32 defaultAdminRole = c.DEFAULT_ADMIN_ROLE();
+        vm.startPrank(controllerAdmin);
+        OssifiableProxy(payable(controller)).proxy__changeAdmin(selfAdmin);
+        c.grantRole(defaultAdminRole, selfAdmin);
+        c.renounceRole(defaultAdminRole, controllerAdmin);
+        vm.stopPrank();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.UnexpectedRole.selector, controller, defaultAdminRole, selfAdmin
+            )
+        );
+        selfAdministered.validateMarketController(controller, marketId, guardianSignals);
+    }
+
     function test_validateGuardianSignals_acceptsExactRoleSets() external view {
         factory.validateGuardianSignals(guardianSignals, _guardianSpec());
     }
@@ -737,6 +777,182 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
 
         assertEq(address(LidoLendERC4626(secondVault).controller()), controller, "controller");
         assertEq(Id.unwrap(LidoLendERC4626(secondVault).marketId()), Id.unwrap(marketId), "market id");
+    }
+
+    function test_deployMarketComponents_lltvJustBelowWad_accepted() external {
+        LidoLendMarketFactory.MarketSpec memory spec = _marketSpec(guardianSignals);
+        spec.lltv = 1e18 - 1;
+        Id expectedId = MarketParams({
+            loanToken: spec.loanToken,
+            collateralToken: spec.collateralToken,
+            oracle: spec.oracle,
+            irm: address(router),
+            lltv: spec.lltv
+        }).id();
+
+        (Id deployedId, address deployedController,) = factory.deployMarketComponents(spec, _erc4626WrapperSpec());
+
+        assertEq(Id.unwrap(deployedId), Id.unwrap(expectedId), "market id over lltv WAD - 1");
+        factory.validateMarketController(deployedController, expectedId, guardianSignals);
+    }
+
+    function test_deployMarketController_standalone_emitsOnlyControllerDeployed() external {
+        vm.recordLogs();
+        (Id deployedId, address deployedController) = factory.deployMarketController(_marketSpec(guardianSignals));
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        uint256 controllerEvents;
+        for (uint256 i; i < logs.length; ++i) {
+            bytes32 topic = logs[i].topics[0];
+            assertTrue(topic != LidoLendMarketFactory.ERC4626WrapperDeployed.selector, "no wrapper event");
+            assertTrue(topic != LidoLendMarketFactory.MarketComponentsDeployed.selector, "no components event");
+            if (topic == LidoLendMarketFactory.MarketControllerDeployed.selector) {
+                assertEq(logs[i].topics[1], Id.unwrap(deployedId), "market id");
+                assertEq(logs[i].topics[2], bytes32(uint256(uint160(deployedController))), "controller");
+                assertEq(logs[i].topics[3], bytes32(uint256(uint160(guardianSignals))), "registry");
+                controllerEvents++;
+            }
+        }
+        assertEq(controllerEvents, 1, "one MarketControllerDeployed");
+    }
+
+    /// @dev The wrapper's metadata and caller fix its address, so the same wrapper twice has nowhere to go. A
+    ///      `CREATE2` collision reverts with no return data, so there is no selector to match.
+    function testRevert_deployERC4626Wrapper_identicalWrapperCollides() external {
+        vm.expectRevert();
+        factory.deployERC4626Wrapper(controller, marketParams, _erc4626WrapperSpec());
+    }
+
+    function test_deployERC4626Wrapper_standalone_emitsWrapperDeployed() external {
+        LidoLendMarketFactory.ERC4626WrapperSpec memory spec =
+            LidoLendMarketFactory.ERC4626WrapperSpec({name: "Second Loan Vault", symbol: "lidoLOAN2"});
+
+        vm.recordLogs();
+        address secondVault = factory.deployERC4626Wrapper(controller, marketParams, spec);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        uint256 wrapperEvents;
+        for (uint256 i; i < logs.length; ++i) {
+            bytes32 topic = logs[i].topics[0];
+            assertTrue(topic != LidoLendMarketFactory.MarketComponentsDeployed.selector, "no components event");
+            if (topic == LidoLendMarketFactory.ERC4626WrapperDeployed.selector) {
+                assertEq(logs[i].topics[1], Id.unwrap(marketId), "market id");
+                assertEq(logs[i].topics[2], bytes32(uint256(uint160(controller))), "controller");
+                assertEq(logs[i].topics[3], bytes32(uint256(uint160(secondVault))), "wrapper");
+                wrapperEvents++;
+            }
+        }
+        assertEq(wrapperEvents, 1, "one ERC4626WrapperDeployed");
+    }
+
+    /// @dev The registry's own `initialize` and `setSuspectWindow` reject a bad spec inside the deployment.
+    function testRevert_deployGuardianSignals_invalidSpec() external {
+        LidoLendMarketFactory.GuardianSpec memory duplicate = _guardianSpec();
+        duplicate.guardians[1] = guardianA;
+        vm.expectRevert(IGuardianSignals.AlreadyGuardian.selector);
+        factory.deployGuardianSignals(duplicate, keccak256("invalid"));
+
+        LidoLendMarketFactory.GuardianSpec memory badQuorum = _guardianSpec();
+        badQuorum.quorum = 3;
+        vm.expectRevert(IGuardianSignals.BadQuorum.selector);
+        factory.deployGuardianSignals(badQuorum, keccak256("invalid"));
+
+        LidoLendMarketFactory.GuardianSpec memory oversizedWindow = _guardianSpec();
+        oversizedWindow.suspectWindow = GuardianSignals(guardianSignals).MAX_SUSPECT_WINDOW() + 1;
+        vm.expectRevert(IGuardianSignals.SuspectWindowTooHigh.selector);
+        factory.deployGuardianSignals(oversizedWindow, keccak256("invalid"));
+    }
+
+    function test_deployGuardianSignals_sameSaltOtherCaller_landsElsewhere() external {
+        address otherCaller = makeAddr("otherCaller");
+        vm.prank(otherCaller);
+        address otherRegistry = factory.deployGuardianSignals(_guardianSpec(), keccak256("primary"));
+
+        assertTrue(otherRegistry != guardianSignals, "a caller-scoped salt gives another address");
+        factory.validateGuardianSignals(otherRegistry, _guardianSpec());
+    }
+
+    function testRevert_validateMarketController_rejectsResumerSubstitution() external {
+        LidoLendMarketController c = LidoLendMarketController(controller);
+        address unexpectedResumer = makeAddr("unexpectedResumer");
+        bytes32 resumerRole = c.RESUMER_ROLE();
+
+        vm.startPrank(controllerAdmin);
+        c.grantRole(resumerRole, unexpectedResumer);
+        c.revokeRole(resumerRole, resealManager);
+        vm.stopPrank();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(LidoLendMarketFactory.MissingRole.selector, controller, resumerRole, resealManager)
+        );
+        factory.validateMarketController(controller, marketId, guardianSignals);
+    }
+
+    function testRevert_validateERC4626Wrapper_suppliedControllerFailsBinding() external {
+        address otherCore = makeAddr("otherCore");
+        address foreignController = address(new MarketFactoryControllerBindingStub(otherCore, marketId));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.LidoLendMismatch.selector, foreignController, address(core), otherCore
+            )
+        );
+        factory.validateERC4626Wrapper(vault, foreignController, marketParams);
+
+        address otherController = _otherControllerForSameMarket();
+        _createMarket(controller);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.RegisteredControllerMismatch.selector, marketId, controller, otherController
+            )
+        );
+        factory.validateERC4626Wrapper(vault, otherController, marketParams);
+    }
+
+    /// @dev A factory whose admin is its own address passes every other check on a registry it administers, then
+    ///      fails the last one.
+    function testRevert_validateGuardianSignals_factoryStillAdministers() external {
+        address selfAdmin = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
+        LidoLendMarketFactory selfAdministered =
+            new LidoLendMarketFactory(_implementations(), _dependencies(circuitBreaker), selfAdmin);
+        assertEq(address(selfAdministered), selfAdmin, "setup: the factory is its own admin");
+
+        GuardianSignals registry = GuardianSignals(guardianSignals);
+        bytes32 defaultAdminRole = registry.DEFAULT_ADMIN_ROLE();
+        vm.startPrank(controllerAdmin);
+        OssifiableProxy(payable(guardianSignals)).proxy__changeAdmin(selfAdmin);
+        registry.grantRole(defaultAdminRole, selfAdmin);
+        registry.renounceRole(defaultAdminRole, controllerAdmin);
+        vm.stopPrank();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LidoLendMarketFactory.UnexpectedRole.selector, guardianSignals, defaultAdminRole, selfAdmin
+            )
+        );
+        selfAdministered.validateGuardianSignals(guardianSignals, _guardianSpec());
+    }
+
+    function test_views_readBackConstructorArguments() external {
+        LidoLendMarketFactory.Implementations memory implementations = LidoLendMarketFactory.Implementations({
+            controller: address(new LidoLendMarketController(IMorpho(address(core)))),
+            erc4626Wrapper: address(new LidoLendERC4626(address(core))),
+            guardianSignals: address(new GuardianSignals())
+        });
+        LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(circuitBreaker);
+        address admin = makeAddr("factoryAdmin");
+
+        LidoLendMarketFactory fresh = new LidoLendMarketFactory(implementations, dependencies, admin);
+
+        assertEq(fresh.CONTROLLER_IMPL(), implementations.controller, "CONTROLLER_IMPL");
+        assertEq(fresh.ERC4626_WRAPPER_IMPL(), implementations.erc4626Wrapper, "ERC4626_WRAPPER_IMPL");
+        assertEq(fresh.GUARDIAN_SIGNALS_IMPL(), implementations.guardianSignals, "GUARDIAN_SIGNALS_IMPL");
+        assertEq(fresh.LIDO_LEND(), dependencies.lidoLend, "LIDO_LEND");
+        assertEq(fresh.IRM_ROUTER(), dependencies.irmRouter, "IRM_ROUTER");
+        assertEq(fresh.CIRCUIT_BREAKER(), dependencies.circuitBreaker, "CIRCUIT_BREAKER");
+        assertEq(fresh.RESEAL_MANAGER(), dependencies.resealManager, "RESEAL_MANAGER");
+        assertEq(fresh.LIDO_LEND_OWNER(), dependencies.lidoLendOwner, "LIDO_LEND_OWNER");
+        assertEq(fresh.RISK_STEWARD_DASHBOARD(), dependencies.riskStewardDashboard, "RISK_STEWARD_DASHBOARD");
+        assertEq(fresh.ADMIN(), admin, "ADMIN");
     }
 
     function _createMarket(address marketController) private {
