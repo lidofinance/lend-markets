@@ -40,9 +40,10 @@ recorded artifacts instead:
 make test-fork RUN=<run> PREPARE=false RPC_URL=<network-rpc>
 ```
 
-Deployment parameters are Solidity scripts under `script/deployment/<network>/`. `make deploy-script SCRIPT=<file>`
-simulates; explicit `BROADCAST=true RUN=<run>` broadcasts and records successful results. See
-[deployment instructions](script/DEPLOYMENT.md) for signer inputs, artifacts and acceptance checks.
+Deployment parameters and dependency addresses live in Solidity files under `script/deployment/<network>/`.
+Run `forge script <recipe.s.sol> --rpc-url <rpc>` to simulate; add `--broadcast` to deploy. Results and State Mate
+configurations are maintained manually. See [deployment instructions](script/DEPLOYMENT.md) for signer inputs,
+artifacts and acceptance checks.
 
 Format Solidity:
 

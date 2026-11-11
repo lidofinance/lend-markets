@@ -33,45 +33,6 @@ library DeploymentArtifact {
         }
     }
 
-    function header(string memory kind, string memory name, address sender)
-        internal
-        view
-        returns (DeploymentHeader memory h)
-    {
-        requireName(name);
-        h = DeploymentHeader({
-            version: 1,
-            run: vm.envOr("DEPLOYMENT_RUN", string("")),
-            kind: kind,
-            name: name,
-            chainId: block.chainid,
-            sender: sender,
-            blockNumber: block.number
-        });
-        if (bytes(h.run).length != 0) require(!vm.exists(path(h)), "Deployment artifact already exists");
-    }
-
-    function requireProtocol(uint256 chainId, address core, bool required) internal view {
-        require(block.chainid == chainId && core.code.length != 0, "Deployment protocol is not live on this chain");
-        string memory runName = vm.envOr("DEPLOYMENT_RUN", string(""));
-        if (bytes(runName).length == 0) return;
-        string memory file = string.concat(directory(runName), "/protocol.toml");
-        if (!vm.exists(file)) {
-            require(!required, "Record the protocol before deploying dependent resources");
-            return;
-        }
-        string memory recorded = vm.readFile(file);
-        bool current = vm.keyExistsToml(recorded, ".header.version");
-        require(
-            vm.parseTomlAddress(recorded, current ? ".addresses.core" : ".protocol.core") == core,
-            "Selected run belongs to another protocol"
-        );
-        require(
-            vm.parseTomlUint(recorded, current ? ".header.chainId" : ".protocol.chain_id") == chainId,
-            "Selected run belongs to another chain"
-        );
-    }
-
     function path(DeploymentHeader memory h) internal pure returns (string memory) {
         string memory dir = directory(h.run);
         requireName(h.name);

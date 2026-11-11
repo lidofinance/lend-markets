@@ -6,23 +6,15 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketDeployment} from "./deployment/MarketDeployment.sol";
 import {ProtocolAddresses, MarketPlan, MarketDeploymentResult} from "./deployment/DeploymentTypes.sol";
 
-import {DeploymentArtifact} from "./deployment/DeploymentArtifact.sol";
-import {DeploymentHeader, DeploymentSchema, MarketRecord} from "./deployment/DeploymentRecord.sol";
-
 abstract contract DeployMarketBase is Script, MarketDeployment {
-    function run() external returns (MarketDeploymentResult memory deployed, string memory artifact) {
+    function run() external returns (MarketDeploymentResult memory deployed) {
         ProtocolAddresses memory p = _deploymentProtocol();
-        DeploymentArtifact.requireProtocol(p.chainId, p.core, true);
         MarketPlan memory plan = _deploymentPlan();
-        DeploymentHeader memory h = DeploymentArtifact.header("market", plan.name, msg.sender);
         _checkPlan(p, plan);
         vm.startBroadcast();
         deployed = _deployMarket(p, plan);
         vm.stopBroadcast();
-        artifact = vm.serializeJsonType(
-            DeploymentSchema.MARKETRECORD,
-            abi.encode(MarketRecord({header: h, core: p.core, role: plan.name, plan: plan, addresses: deployed}))
-        );
+
         console2.log("market:", plan.name);
         console2.logBytes32(Id.unwrap(deployed.id));
         console2.log("controller:", deployed.controller);

@@ -24,12 +24,10 @@ gas_limit = "18446744073709551615"
 isolate = false
 fs_permissions = [
     { access = "read", path = "./out" },
-    { access = "read", path = "./broadcast" },
     { access = "read", path = "./lib" },
     { access = "read", path = "./script/config" },
     { access = "read", path = "./test/acceptance" },
     { access = "read-write", path = "./deployed" },
-    { access = "read-write", path = "./script/deployment/generated" },
 ]
 
 [profile.default.invariant]

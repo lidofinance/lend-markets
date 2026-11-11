@@ -7,7 +7,7 @@ import {OssifiableProxy} from "../../../src/proxy/OssifiableProxy.sol";
 import {CollateralActivationConfig} from "../../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../../src/types/SettlementTypes.sol";
 import {DeployMarketBase} from "../../DeployMarketBase.s.sol";
-import {Protocol as MainnetProtocol} from "../generated/mainnet/Protocol.sol";
+import {Protocol as MainnetProtocol} from "./Protocol.sol";
 import {ProtocolAddresses, MarketPlan} from "../DeploymentTypes.sol";
 
 interface IPriceFeedProxyView {

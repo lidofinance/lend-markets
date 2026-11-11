@@ -2,7 +2,7 @@
 pragma solidity 0.8.36;
 
 import {DeployBundlerBase} from "../../DeployBundlerBase.s.sol";
-import {Protocol as MainnetProtocol} from "../generated/mainnet/Protocol.sol";
+import {Protocol as MainnetProtocol} from "./Protocol.sol";
 import {ProtocolAddresses} from "../DeploymentTypes.sol";
 import {BundlerPlan} from "../PeripheryDeployment.sol";
 

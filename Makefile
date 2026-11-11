@@ -4,10 +4,10 @@
 
 # Make normally lets an included file replace exported environment variables. Preserve the public inputs so
 # precedence is consistently: command line > exported environment > .env > defaults.
-DOTENV_OVERRIDE_VARS := SCRIPT ARTIFACTS_CONFIG PREPARE_MARKETS CONFIG RUN MARKET MARKET_A MARKET_B PIN_BLOCK RPC_URL DEPLOYER_ACCOUNT DEPLOYER_SENDER ETHERSCAN_API_KEY VERIFY RESUME ARTIFACTS_DIR \
+DOTENV_OVERRIDE_VARS := ARTIFACTS_CONFIG PREPARE_MARKETS CONFIG RUN MARKET MARKET_A MARKET_B PIN_BLOCK RPC_URL ARTIFACTS_DIR \
 	FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED ACCEPTANCE_RPC_URL ACCEPTANCE_REGISTRY ACCEPTANCE_PAUSER_COMMITTEE \
 	ACCEPTANCE_ENABLE_SETTLEMENT ACCEPTANCE_STEWARD ACCEPTANCE_FEE ACCEPTANCE_MIN_CORE_SEED_SHARES \
-	ACCEPTANCE_MIN_VAULT_SEED_SHARES STATE_MATE_ACTIVATION OUT_DIR ABI_DIR GUARDIAN_DELEGATES
+	ACCEPTANCE_MIN_VAULT_SEED_SHARES
 
 define capture_exported_value
 _DOTENV_ORIGIN_$(1) := $$(origin $(1))
@@ -36,8 +36,8 @@ FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/co
 	src/oracle src/libs src/periphery src/utils script test
 
 .PHONY: help build sizes test test-local test-fork test-deployment test-simulation test-mutation \
-	deploy-script record-deployment export-deployment fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean \
-	state-mate-config acceptance-run acceptance-run-multi \
+	fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc ci clean \
+	acceptance-run acceptance-run-multi \
 	apply-pending pending-stop test-pending
 
 help: ## List commands; deployment details are in script/DEPLOYMENT.md
@@ -124,58 +124,12 @@ ci: build lint test-local ## Build, lint and local tests
 clean: ## Remove Forge build output
 	forge clean
 
-##@ Solidity deployment
 RUN ?=
 RPC_URL ?=
-DEPLOYER_ACCOUNT ?=
-DEPLOYER_SENDER ?=
-VERIFY ?= false
-RESUME ?= false
-
-# Broadcasting is opt-in on the command line; an old .env cannot submit transactions.
-deploy-script: ## SCRIPT=<path.s.sol>; simulate by default, BROADCAST=true RUN=<run> to deploy and record
-	@test -n "$(SCRIPT)" || { echo 'SCRIPT is required'; exit 1; }
-	@test -n "$(RPC_URL)" || { echo 'RPC_URL is required'; exit 1; }
-	@case "$(VERIFY):$(RESUME)" in true:true|true:false|false:true|false:false) ;; *) echo 'VERIFY and RESUME must be true or false'; exit 1 ;; esac
-ifeq ($(origin BROADCAST),command line)
-	@case "$(BROADCAST)" in true|false) ;; *) echo 'BROADCAST must be true or false'; exit 1 ;; esac
-endif
-ifeq ($(origin BROADCAST):$(BROADCAST),command line:true)
-	@test -n "$(RUN)" || { echo 'RUN is required for broadcast'; exit 1; }
-	@test -n "$(DEPLOYER_SENDER)" || { echo 'DEPLOYER_SENDER is required for broadcast'; exit 1; }
-	@test "$(VERIFY)" = false || test -n "$(ETHERSCAN_API_KEY)" || { echo 'ETHERSCAN_API_KEY is required for verification'; exit 1; }
-	@forge build --skip test
-	@DEPLOYMENT_RUN="$(RUN)" forge script "$(SCRIPT)" --rpc-url "$(RPC_URL)" \
-		--sender "$(DEPLOYER_SENDER)" $(if $(DEPLOYER_ACCOUNT),--account "$(DEPLOYER_ACCOUNT)",--unlocked) \
-		--broadcast $(if $(filter true,$(VERIFY)),--verify,) $(if $(filter true,$(RESUME)),--resume,) -vv
-	$(MAKE) record-deployment SCRIPT="$(SCRIPT)" RUN="$(RUN)"
-else
-	@test "$(RESUME)" = false || { echo 'RESUME requires BROADCAST=true'; exit 1; }
-	@test "$(VERIFY)" = false || { echo 'VERIFY requires BROADCAST=true'; exit 1; }
-	@forge build --skip test
-	@DEPLOYMENT_RUN= forge script "$(SCRIPT)" --rpc-url "$(RPC_URL)" $(if $(DEPLOYER_SENDER),--sender "$(DEPLOYER_SENDER)",) -vv
-endif
-
-record-deployment: ## Validate and record a completed broadcast: SCRIPT RUN RPC_URL
-	@test -n "$(RUN)" -a -n "$(SCRIPT)" -a -n "$(RPC_URL)" || { echo 'SCRIPT, RUN and RPC_URL are required'; exit 1; }
-	@forge script script/deployment/RecordDeployment.s.sol --rpc-url "$(RPC_URL)" \
-		--sig 'run(string,string)' "$(RUN)" "$(SCRIPT)"
-
-export-deployment: ## Export address provider: SCRIPT=<export.s.sol> RUN=<run>
-	@test -n "$(RUN)" || { echo 'RUN is required'; exit 1; }
-	@test -n "$(SCRIPT)" || { echo 'SCRIPT is required'; exit 1; }
-	forge script "$(SCRIPT)" --sig 'run(string)' "$(RUN)"
-	forge fmt "script/deployment/generated/$(RUN)"
-
 CONFIG ?= mainnet
 MARKET ?= weth-wsteth
 PIN_BLOCK ?=
 ##@ Artifact verification
-# Drafts use the common Solidity reader; reviewed motion choices are separate from deployment parameters.
-state-mate-config: ## Generate one market draft: RUN MARKET RPC_URL [STATE_MATE_ACTIVATION=<reviewed.json>]
-	@test -n "$(RUN)" -a -n "$(MARKET)" -a -n "$(RPC_URL)" || { echo 'RUN, MARKET and RPC_URL are required'; exit 1; }
-	python3 tools/gen_state_mate.py
-
 acceptance-run: ## Verify one market: RUN MARKET RPC_URL
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(MARKET)" || { echo "ERROR: set MARKET"; exit 1; }

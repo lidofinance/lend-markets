@@ -8,7 +8,7 @@ Easy Track motion. This repository does not deploy Easy Track or its executor.
 
 - `DeployProtocolBase` / `ProtocolDeployment`: protocol backbone and a new or reused CircuitBreaker.
 - `DeployMarketBase` / `MarketDeployment`: one market, with a new or reused price feed and guardian registry.
-  Several market scripts can inherit the same generated protocol address provider.
+  Several market scripts can inherit the same manually maintained protocol address provider.
 - `DeployExitBooksBase`: exit books, independently of protocol and market deployment.
 - `DeployBundlerBase` and `DeployVaultV2Base` / `PeripheryDeployment`: optional periphery.
 
@@ -21,87 +21,63 @@ activation/settlement parameters and IRM curve are Solidity values; no config fi
 
 A new market needs one concrete `.s.sol` file inheriting `DeployMarketBase`, implementing `_deploymentProtocol`,
 `_deploymentPlan`, `_deployPriceFeed` and `_checkPriceFeed`. The WETH/wstETH script demonstrates these hooks.
-`plan.name` names both its artifact and its integration-test role. Set `plan.market.oracle` or
+`plan.name` identifies the market and its integration-test role. Set `plan.market.oracle` or
 `plan.market.guardianSignals` to reuse a reviewed deployment; zero creates that resource. Reused contracts are
 validated before market deployment. Set `ProtocolPlan.circuitBreaker` to reuse a CircuitBreaker.
 
-## Simulate, broadcast, record
+## Simulate and broadcast
+
+Run the concrete recipe directly with Forge. Build first: the shared deployment helpers use compiled artifacts
+for dependencies with a different Solidity version.
 
 ```sh
-make deploy-script SCRIPT=script/deployment/mainnet/DeployProtocol.s.sol RPC_URL=<rpc>
+forge build
+forge script script/deployment/mainnet/DeployProtocol.s.sol --rpc-url <rpc> --sender <deployer> -vv
+forge script script/deployment/mainnet/DeployWethWsteth.s.sol --rpc-url <rpc> --sender <deployer> -vv
+forge script script/deployment/mainnet/DeployExitBooks.s.sol --rpc-url <rpc> --sender <deployer> -vv
 ```
 
-This simulates only. `DEPLOYER_SENDER=<address>` can select the simulation sender. No deployment artifact is
-published by a simulation. Forge keeps its normal dry-run transaction report under `broadcast/`.
+Without `--broadcast`, Forge simulates. Each script returns its typed deployment result and Forge keeps its
+native transaction report under `broadcast/`.
 
-Broadcast is enabled only by an explicit Make command-line argument:
+For a reviewed deployment, import a keystore with `cast wallet import --interactive <name>` and run:
 
 ```sh
-make deploy-script SCRIPT=script/deployment/mainnet/DeployProtocol.s.sol \
-  RUN=<run> RPC_URL=<rpc> BROADCAST=true \
-  DEPLOYER_SENDER=<address> DEPLOYER_ACCOUNT=<encrypted-keystore>
+forge script <network-recipe.s.sol> --rpc-url <rpc> \
+  --sender <deployer> --account <keystore> --broadcast -vv
 ```
 
-Import a keystore using `cast wallet import --interactive <name>`. Forge prompts for its password. An unlocked
-local node can use `DEPLOYER_SENDER` with an empty `DEPLOYER_ACCOUNT`. Raw private keys are not Make inputs.
-`VERIFY=true` enables Forge explorer verification and requires `ETHERSCAN_API_KEY`. Contracts created through
-`vm.deployCode` may require explicit `forge verify-contract` with their Solidity constructor arguments; the
-record contains the addresses and inputs. `RESUME=true` resumes Forge's pending broadcast without rerunning the
-simulation. Resume the same script, run, chain and sender; do not start another broadcast of that script while
-one is pending.
-
-After a successful broadcast, Make invokes `record-deployment`. It checks the native Forge report's chain,
-run identity, transaction count, successful receipts and canonical receipt blocks against the RPC, rejects failed/pending transactions, and checks
-that the recorded contracts have code. Only then does it archive the report and write the result. If recording
-was interrupted after the broadcast completed, retry it without sending transactions:
-
-```sh
-make record-deployment SCRIPT=<same-script.s.sol> RUN=<same-run> RPC_URL=<rpc>
-```
-
-An existing deployment result is never overwritten. Keep the native broadcast report for retries. The recording
-check establishes transaction completion; run acceptance tests separately for full wiring, bytecode, parameters
-and role-topology verification.
+Add `--verify` with `ETHERSCAN_API_KEY` configured for explorer verification. Contracts created through
+`vm.deployCode` may need a separate `forge verify-contract` with their constructor arguments. Use `--resume`
+only for the same pending broadcast, script, chain and sender. An unlocked local node uses `--unlocked`
+instead of `--account`.
 
 ## Results and dependency addresses
 
-`deployed/<run>/` contains results, not deployment inputs:
+Maintain `script/deployment/<network>/Protocol.sol` and `ExitBooks.sol` by hand after verifying the native
+Forge receipts and deployed addresses. The Mainnet and Hoodi files contain existing dependency addresses;
+concrete recipes import the appropriate provider. A new deployment needs its own reviewed provider before
+it is reused by markets or periphery. No generator or deployment config parser runs in the deployment path.
+
+The scripts do not write or export application artifacts. Preserve the successful Forge broadcast report,
+check chain, receipt status, block hashes and deployed code, then record the addresses and reviewed parameters
+in `deployed/<run>/` manually when artifact-backed tests are needed. Do not replace existing deployment history.
+
+The readers accept historical TOML and the typed records defined in `DeploymentRecord.sol`. The typed layout is:
 
 ```text
-protocol.toml                 # typed addresses and protocol plan
-markets/<name>.toml            # typed addresses, market plan and committee
-exit-books.toml                # independent books and their plan, when deployed
+protocol.toml                  # protocol addresses and plan
+markets/<name>.toml             # market addresses, plan and committee
+exit-books.toml                # optional books and their plan
 bundler.toml                   # optional bundler and its token inputs
-vaults/<name>.toml             # optional Vault V2 + adapter and their inputs
-transactions/<kind>-<name>.json # native Forge broadcast report, including receipts
+vaults/<name>.toml              # optional Vault V2 and adapter
+transactions/<kind>-<name>.json # reviewed native Forge report
 ```
 
-Each TOML has a versioned header with run, chain, sender, resource identity and the simulation's starting block.
-There are no config hashes, config inheritance or resource-name lookups. Foundry serializes typed structs and
-reads them back with a named ABI schema. The starting block bounds historical event scans; actual transaction
-blocks and hashes are in the archived receipts.
-
-Generate the inheritable protocol provider after recording the protocol:
-
-```sh
-make export-deployment SCRIPT=script/deployment/GenerateProtocol.s.sol RUN=<run>
-```
-
-It writes `script/deployment/generated/<run>/Protocol.sol`. Import this provider in the concrete market, book
-or periphery script. It contains addresses as Solidity values; deployment does not parse TOML to resolve them.
-The selected run's recorded core/chain are checked before a dependent broadcast to prevent writing results
-under an unrelated protocol. Books may also be recorded independently in their own run.
-
-```sh
-make deploy-script SCRIPT=<network-market.s.sol> RUN=<run> RPC_URL=<rpc> \
-  BROADCAST=true DEPLOYER_SENDER=<address> DEPLOYER_ACCOUNT=<keystore>
-make deploy-script SCRIPT=<network-exit-books.s.sol> RUN=<run> RPC_URL=<rpc> \
-  BROADCAST=true DEPLOYER_SENDER=<address> DEPLOYER_ACCOUNT=<keystore>
-make export-deployment SCRIPT=script/deployment/GenerateExitBooks.s.sol RUN=<run>
-```
-
-Both exporters also read historical TOML artifacts. Neither exporter silently selects mainnet. Update the
-concrete script's import when using a different run; a preceding simulation does not change dependency addresses.
+Typed records include a versioned header with run, kind, name, chain, sender and block number. Use a block no
+later than the deployment transactions for event scans. Copy parameters from the reviewed recipe and addresses
+from successful receipts; acceptance tests verify them against the chain. Fresh fork tests use the shared
+Solidity deployment functions directly and do not require these files.
 
 ## Fork and acceptance checks
 
@@ -168,41 +144,12 @@ Production activation remains the reviewed Easy Track motion.
 `apply-pending`, `pending-stop` and `test-pending` retain the separate local-Anvil workflow for rehearsing a
 pending governance transaction. `test-pending` passes `PREPARE=false` to verify exactly the post-action state.
 
-## State Mate drafts
+## State Mate
 
-`make state-mate-config RUN=<run> MARKET=<market> RPC_URL=<rpc>` generates one draft:
-`deployed/<run>/state-mate/generated/markets/<market>.yaml`, plus the generated ABI cache.
-It checks the selected market and its bindings on shared contracts. Other markets and shared pauser counts
-are outside its scope. The reviewed per-market config lives at `deployed/<run>/state-mate/markets/<market>.yaml`;
-the common protocol config remains separate.
-
-The Solidity `RecordedDeployment` reader supplies addresses and parameters for both historical and typed
-artifacts. No market-config overlay is read. `OUT_DIR` changes the draft root.
-
-Without `STATE_MATE_ACTIVATION`, the selected market is expected to be inert. To generate its activated state,
-pass `STATE_MATE_ACTIVATION=<reviewed.json>` containing its motion values:
-
-```json
-{
-  "<market-name>": {
-    "fee": "100000000000000000",
-    "pauser": "<reviewed-pauser-address>",
-    "steward": "<reviewed-steward-address-or-zero-address>",
-    "enableSettlement": true,
-    "allowExitBooks": true
-  }
-}
-```
-
-`fee` is an integer WAD ratio; the example means 10%. Entries for other markets do not affect the selected
-market. Generate each market separately: one can be live while another remains inert.
-Regeneration replaces only that market's draft. The old generator's `post-deploy.yaml`, `live.yaml` and
-`post-activation-fork.yaml` outputs under `OUT_DIR` are removed only when their generated-file header is present.
-Manually maintained files are not overwritten or removed.
-
-Review and merge the draft into the maintained market configuration, including the separately reviewed Safe
-checks. Proxy implementation addresses come from RPC for ABI lookup; validate them against the audited
-deployment. `FORK_BLOCK` pins both the export and implementation reads.
+Maintain protocol and per-market State Mate configurations by hand under `deployed/<run>/state-mate/`.
+Keep market-specific checks in `markets/<market>.yaml` and shared protocol checks in the protocol configuration.
+Review addresses, proxy implementations, Safe membership and thresholds, initial roles and approved motion
+parameters before running State Mate. Each market configuration must reflect that market's activation state.
 
 ## Audit checksums
 

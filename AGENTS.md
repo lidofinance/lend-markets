@@ -33,15 +33,14 @@
   `ACCEPTANCE_MIN_VAULT_SEED_SHARES`. The suite skips unless
   `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
 - `script/deployment/<network>/`: concrete Solidity deployment recipes. Shared `Deploy*Base.s.sol` entrypoints
-  and deployment helpers are reused by fork fixtures. `deploy-script` simulates by default; explicit
-  `BROADCAST=true RUN=<run>` broadcasts and records only after successful receipt checks.
-- `script/deployment/generated/<run>/`: inheritable Solidity dependency addresses generated from recorded results.
+  and deployment helpers are reused by fork fixtures. Run recipes directly with `forge script`; `--broadcast`
+  submits transactions. Network-specific `Protocol.sol` and `ExitBooks.sol` hold manually maintained dependency addresses.
 - `script/legacy/`: compatibility readers for historical TOML artifacts. `script/config/` is retained only for
   historical verification and pending-governance/state-mate rehearsals; new deployments do not read config TOML.
 - `deployed/<run>/`: immutable deployment results: typed `protocol.toml`, `markets/`, optional books/bundler/vaults,
   and native Forge transaction records. TOML holds output addresses and expected parameters, not deployment inputs.
-  `record-deployment` checks successful Forge receipts and canonical RPC blocks before publishing. Fork and acceptance tests read these
-  results; fresh fork fixtures do not need the directory. Historical Mainnet/Hoodi artifacts remain supported.
+  Record results manually after checking successful Forge receipts, canonical RPC blocks and deployed code. Fork and
+  acceptance tests read these results; fresh fork fixtures do not need the directory. Historical Mainnet/Hoodi artifacts remain supported.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).

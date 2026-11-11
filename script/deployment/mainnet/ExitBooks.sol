@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {ExitBookAddresses} from "../../DeploymentTypes.sol";
+import {ExitBookAddresses} from "../DeploymentTypes.sol";
 
-// Generated from deployed/mainnet; regenerate instead of editing addresses.
 abstract contract ExitBooks {
     function _exitBooks() internal pure returns (ExitBookAddresses memory books) {
         books.chainId = 1;

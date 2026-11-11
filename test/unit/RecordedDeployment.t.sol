@@ -4,7 +4,6 @@ pragma solidity 0.8.36;
 import {Vm} from "forge-std/Vm.sol";
 import {Test} from "forge-std/Test.sol";
 import {DeployConfigFile} from "../../script/legacy/lib/DeployConfigFile.sol";
-import {ExportDeployment} from "../../script/deployment/ExportDeployment.s.sol";
 import {RecordedDeployment} from "../../script/deployment/RecordedDeployment.sol";
 import {DeploymentSnapshot} from "../../script/deployment/DeploymentSnapshot.sol";
 import {DeploymentArtifact} from "../../script/deployment/DeploymentArtifact.sol";
@@ -371,27 +370,23 @@ contract RecordedDeploymentTest is Test {
         );
     }
 
-    function test_export_preservesNestedHistoricalMarketParameters() public {
+    function test_load_preservesNestedHistoricalMarketParameters() public {
         vm.chainId(560048);
         vm.etch(vm.parseTomlAddress(vm.readFile("deployed/hoodi-testnet/protocol.toml"), ".protocol.core"), hex"00");
-        string memory json = (new ExportDeployment()).run("hoodi-testnet");
-        assertEq(vm.parseJsonUint(json, ".protocol.chainId"), 560048);
+        DeploymentSnapshot memory d = RecordedDeployment.load("hoodi-testnet");
+        assertEq(d.protocol.chainId, 560048);
         uint256 stableFeeds;
-        for (uint256 i; i < 3; ++i) {
-            string memory key = string.concat(".markets[", vm.toString(i), "]");
-            if (
-                keccak256(bytes(vm.parseJsonString(json, string.concat(key, ".priceFeedKind"))))
-                    == keccak256("usdy-stable")
-            ) {
-                assertGt(vm.parseJsonUint(json, string.concat(key, ".priceFeed.minPrice")), 0);
+        for (uint256 i; i < d.markets.length; ++i) {
+            if (keccak256(bytes(d.markets[i].priceFeedKind)) == keccak256("usdy-stable")) {
+                assertGt(d.markets[i].priceFeed.minPrice, 0);
                 ++stableFeeds;
             }
         }
         assertEq(stableFeeds, 2);
     }
 
-    function test_export_preservesTypedMarketParameters() public {
-        string memory run = "reader-export-unit";
+    function test_load_preservesTypedMarketParameters() public {
+        string memory run = "reader-parameters-unit";
         _protocol(run);
         MarketRecord memory r = _market(run, "first", "primary");
         r.plan.market.activationConfig.maxActivationDelay = 8 hours;
@@ -399,9 +394,9 @@ contract RecordedDeploymentTest is Test {
         vm.writeToml(
             vm.serializeJsonType(DeploymentSchema.MARKETRECORD, abi.encode(r)), DeploymentArtifact.path(r.header)
         );
-        string memory json = (new ExportDeployment()).run(run);
-        assertEq(vm.parseJsonUint(json, ".markets[0].plan.market.activationConfig.maxActivationDelay"), 8 hours);
-        assertEq(vm.parseJsonAddress(json, ".markets[0].priceFeed.wstEth"), address(0x1234));
+        DeploymentSnapshot memory d = RecordedDeployment.load(run);
+        assertEq(d.markets[0].plan.market.activationConfig.maxActivationDelay, 8 hours);
+        assertEq(d.markets[0].priceFeed.wstEth, address(0x1234));
         vm.removeDir(DeploymentArtifact.directory(run), true);
     }
 

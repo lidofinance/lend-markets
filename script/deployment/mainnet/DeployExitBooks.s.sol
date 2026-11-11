@@ -3,7 +3,7 @@ pragma solidity 0.8.36;
 
 import {DeployExitBooksBase} from "../../DeployExitBooksBase.s.sol";
 import {ExitBookConfig} from "../ExitBookPlan.sol";
-import {Protocol as MainnetProtocol} from "../generated/mainnet/Protocol.sol";
+import {Protocol as MainnetProtocol} from "./Protocol.sol";
 import {ProtocolAddresses} from "../DeploymentTypes.sol";
 
 contract DeployExitBooks is DeployExitBooksBase, MainnetProtocol {

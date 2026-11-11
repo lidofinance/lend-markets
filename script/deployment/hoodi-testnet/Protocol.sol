@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {ProtocolAddresses} from "../../DeploymentTypes.sol";
+import {ProtocolAddresses} from "../DeploymentTypes.sol";
 
-// Generated from deployed/hoodi-testnet; regenerate instead of editing addresses.
 abstract contract Protocol {
     function _protocolAddresses() internal pure returns (ProtocolAddresses memory p) {
         p.chainId = 560048;
