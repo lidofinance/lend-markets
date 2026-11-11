@@ -15,8 +15,8 @@ Easy Track motion. This repository does not deploy Easy Track or its executor.
 These operations are also used by fork fixtures. Production contracts under `src/` and pinned dependencies are
 unchanged. The old TOML-driven deployment entrypoints and `deploy-all` shell driver have been removed.
 
-`mainnet/DeployWethWsteth.s.sol` still has an empty production committee and draft economic parameters. Supply
-reviewed values in the concrete script before deploying. Guardian membership, quorum, tokens, price feed,
+`mainnet/DeployWethWsteth.s.sol` uses the WETH/wstETH launch parameters and the Risk Steward as its sole guardian.
+The three APR-dependent rates still need the approved launch snapshot. Guardian membership, quorum, tokens, price feed,
 activation/settlement parameters and IRM curve are Solidity values; no config file is read to construct them.
 
 A new market needs one concrete `.s.sol` file inheriting `DeployMarketBase`, implementing `_deploymentProtocol`,

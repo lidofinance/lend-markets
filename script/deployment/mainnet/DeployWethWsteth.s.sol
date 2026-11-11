@@ -29,8 +29,9 @@ contract DeployWethWsteth is DeployMarketBase, MainnetProtocol {
     }
 
     function _deploymentPlan() internal pure virtual override returns (MarketPlan memory) {
-        // Reviewed production committee addresses must be supplied before deployment.
-        return _wethWstethPlan(new address[](0));
+        address[] memory guardians = new address[](1);
+        guardians[0] = 0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E;
+        return _wethWstethPlan(guardians);
     }
 
     /// @dev Draft economic parameters; review before broadcasting.
@@ -39,17 +40,18 @@ contract DeployWethWsteth is DeployMarketBase, MainnetProtocol {
         plan.guardianGroup = keccak256("weth-wsteth");
         plan.market.loanToken = WETH;
         plan.market.collateralToken = WSTETH;
-        plan.market.lltv = 0.95e18;
+        plan.market.lltv = 0.98e18;
+        plan.market.supplyCap = 5_000 ether;
         plan.market.activationConfig = CollateralActivationConfig({
-            minActivationDelay: 10 minutes,
-            maxActivationDelay: 2 hours,
-            maxDelayInflow: 10_000 ether,
+            minActivationDelay: 2 hours,
+            maxActivationDelay: 8 hours,
+            maxDelayInflow: 1_000 ether,
             minDepositAmount: 1 ether,
             activatingLockDuration: 0,
             minActivationAmount: 10 ether,
-            maxGuardiansQuorumDelay: 36 hours,
-            delayPerStrike: 2 hours,
-            delayPerSuspect: 2 hours
+            maxGuardiansQuorumDelay: 48 hours,
+            delayPerStrike: 4 hours,
+            delayPerSuspect: 4 hours
         });
         plan.market.settlementConfig = SettlementConfig({
             sliceFloorBps: 100, sliceFloorAssets: 10 ether, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
