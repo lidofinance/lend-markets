@@ -1,28 +1,26 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {WethWstethMarket} from "../../script/deployment/mainnet/WethWstethMarket.sol";
-import {Protocol as MainnetProtocol} from "../../script/deployment/mainnet/Protocol.sol";
+import {WethWstethMarket} from "../../script/deployment/mainnet/DeployWethWsteth.s.sol";
+import {DeployProtocol} from "../../script/deployment/mainnet/DeployProtocol.s.sol";
 import {ProtocolDeployment} from "../../script/deployment/ProtocolDeployment.sol";
 import {
     ProtocolAddresses,
-    ProtocolPlan,
-    MarketPlan,
+    ProtocolParameters,
+    MarketParameters,
     MarketDeploymentResult,
     MarketActivation,
-    ExitBookAddresses
-} from "../../script/deployment/DeploymentTypes.sol";
-import {ExitBookConfig} from "../../script/deployment/ExitBookPlan.sol";
-import {
-    PeripheryDeployment,
-    BundlerPlan,
+    ExitBookAddresses,
+    ExitBookConfig,
+    BundlerParameters,
     BundlerAddresses,
-    VaultV2Plan,
-    VaultV2Addresses
-} from "../../script/deployment/PeripheryDeployment.sol";
+    VaultV2Parameters,
+    VaultV2Addresses,
+    DeploymentSnapshot,
+    RecordedMarket
+} from "../../script/deployment/DeploymentTypes.sol";
+import {PeripheryDeployment} from "../../script/deployment/PeripheryDeployment.sol";
 import {MarketPreparation} from "./MarketPreparation.sol";
-
-import {DeploymentSnapshot, RecordedMarket} from "../../script/deployment/DeploymentSnapshot.sol";
 
 contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparation, WethWstethMarket {
     function prepare() external returns (DeploymentSnapshot memory) {
@@ -43,11 +41,12 @@ contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparati
         _checkProtocol(p);
         for (uint256 i; i < recorded.length; ++i) {
             require(
-                recorded[i].plan.market.loanToken == WETH && recorded[i].plan.market.collateralToken == WSTETH,
+                recorded[i].parameters.market.loanToken == WETH
+                    && recorded[i].parameters.market.collateralToken == WSTETH,
                 "ForkFixture: recorded market has no preparation recipe"
             );
             require(
-                bytes(recorded[i].role).length != 0 && bytes(recorded[i].plan.name).length != 0,
+                bytes(recorded[i].role).length != 0 && bytes(recorded[i].parameters.name).length != 0,
                 "Missing market identity"
             );
             for (uint256 j; j < i; ++j) {
@@ -55,7 +54,7 @@ contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparati
                     keccak256(bytes(recorded[i].role)) != keccak256(bytes(recorded[j].role)), "Duplicate market role"
                 );
                 require(
-                    keccak256(bytes(recorded[i].plan.name)) != keccak256(bytes(recorded[j].plan.name)),
+                    keccak256(bytes(recorded[i].parameters.name)) != keccak256(bytes(recorded[j].parameters.name)),
                     "Duplicate market name"
                 );
             }
@@ -87,19 +86,19 @@ contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparati
         for (uint256 i; i < markets.length; ++i) {
             if (markets[i].contracts.controller == address(0)) {
                 for (uint256 j; j < i; ++j) {
-                    if (markets[i].plan.market.oracle == address(0)) {
-                        markets[i].plan.market.oracle = markets[j].contracts.params.oracle;
+                    if (markets[i].parameters.market.oracle == address(0)) {
+                        markets[i].parameters.market.oracle = markets[j].contracts.params.oracle;
                     }
                     if (
-                        markets[i].plan.market.guardianSignals == address(0)
-                            && markets[i].plan.guardianGroup == markets[j].plan.guardianGroup
-                            && keccak256(abi.encode(markets[i].plan.committee))
-                                == keccak256(abi.encode(markets[j].plan.committee))
-                    ) markets[i].plan.market.guardianSignals = markets[j].contracts.guardianSignals;
+                        markets[i].parameters.market.guardianSignals == address(0)
+                            && markets[i].parameters.guardianGroup == markets[j].parameters.guardianGroup
+                            && keccak256(abi.encode(markets[i].parameters.committee))
+                                == keccak256(abi.encode(markets[j].parameters.committee))
+                    ) markets[i].parameters.market.guardianSignals = markets[j].contracts.guardianSignals;
                 }
             }
             markets[i].priceFeedKind = "wsteth-rate";
-            markets[i].contracts = _prepareMarket(p, markets[i].plan, markets[i].contracts, activation);
+            markets[i].contracts = _prepareMarket(p, markets[i].parameters, markets[i].contracts, activation);
         }
     }
 
@@ -108,17 +107,17 @@ contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparati
         address[] memory guardians = new address[](1);
         guardians[0] = 0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E;
         markets[0].role = "weth-wsteth";
-        markets[0].plan = _wethWstethPlan(guardians);
+        markets[0].parameters = _wethWstethParameters(guardians);
     }
 
     function _prepareFixture(bool activateMarkets) private returns (DeploymentSnapshot memory d) {
-        ProtocolPlan memory protocolPlan = MainnetProtocol.plan();
-        d.circuitBreakerPlan = protocolPlan.circuitBreakerPlan;
+        ProtocolParameters memory protocolParameters = (new DeployProtocol()).parameters();
+        d.circuitBreakerParameters = protocolParameters.circuitBreakerParameters;
         d.bookLifetime = 365 days;
         d.weth = WETH;
         d.wstEth = WSTETH;
         d.stEth = STETH;
-        d.protocol = _deployProtocol(protocolPlan, address(this));
+        d.protocol = _deployProtocol(protocolParameters, address(this));
         d.bookPauser = makeAddr("fork.exitBookPauser");
         d.books.chainId = block.chainid;
         (d.books.morpho, d.books.erc4626) = _deployExitBooks(
@@ -138,33 +137,34 @@ contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparati
             pauser: d.protocol.agent, steward: d.protocol.agent, enableSettlement: true, exitBooks: d.books
         });
         for (uint256 i; i < d.markets.length; ++i) {
-            MarketPlan memory plan = _wethWstethPlan(guardians);
-            plan.name = i == 0 ? "weth-wsteth" : "weth-wsteth-secondary";
-            plan.market.lltv = i == 0 ? 0.945e18 : 0.94e18;
+            MarketParameters memory parameters = _wethWstethParameters(guardians);
+            parameters.name = i == 0 ? "weth-wsteth" : "weth-wsteth-secondary";
+            parameters.market.lltv = i == 0 ? 0.945e18 : 0.94e18;
             // Fixture choices preserve the scenarios' liquidation/settlement and guardian timing boundaries.
-            plan.market.activationConfig.maxGuardiansQuorumDelay = 0;
-            plan.market.activationConfig.delayPerSuspect = 0;
-            plan.market.settlementConfig.sliceFloorAssets = 0;
-            plan.committee.suspectWindow = 0;
-            plan.curve.initialRateAtTarget = 1_268_391_679;
-            plan.curve.maxRateAtTarget = 63_419_583_967;
-            plan.curve.maxBorrowRate = 0;
+            parameters.market.activationConfig.maxGuardiansQuorumDelay = 0;
+            parameters.market.activationConfig.delayPerSuspect = 0;
+            parameters.market.settlementConfig.sliceFloorAssets = 0;
+            parameters.committee.suspectWindow = 0;
+            parameters.curve.initialRateAtTarget = 1_268_391_679;
+            parameters.curve.maxRateAtTarget = 63_419_583_967;
+            parameters.curve.maxBorrowRate = 0;
             if (i != 0) {
-                plan.market.oracle = d.markets[0].contracts.params.oracle;
-                plan.market.guardianSignals = d.markets[0].contracts.guardianSignals;
+                parameters.market.oracle = d.markets[0].contracts.params.oracle;
+                parameters.market.guardianSignals = d.markets[0].contracts.guardianSignals;
             }
             MarketDeploymentResult memory empty;
             d.markets[i].priceFeedKind = "wsteth-rate";
-            d.markets[i].role = plan.name;
-            d.markets[i].contracts =
-                activateMarkets ? _prepareMarket(d.protocol, plan, empty, activation) : _deployMarket(d.protocol, plan);
-            d.markets[i].plan = plan;
+            d.markets[i].role = parameters.name;
+            d.markets[i].contracts = activateMarkets
+                ? _prepareMarket(d.protocol, parameters, empty, activation)
+                : _deployMarket(d.protocol, parameters);
+            d.markets[i].parameters = parameters;
         }
         VaultV2Addresses memory vault =
-            _deployVaultV2(d.protocol, VaultV2Plan({name: "weth-wsteth", owner: d.protocol.agent, asset: WETH}));
+            _deployVaultV2(d.protocol, VaultV2Parameters({name: "weth-wsteth", owner: d.protocol.agent, asset: WETH}));
         d.markets[0].vaultV2 = vault.vault;
         d.markets[0].adapter = vault.adapter;
-        BundlerAddresses memory bundler = _deployBundler(d.protocol, BundlerPlan({weth: WETH, wstEth: WSTETH}));
+        BundlerAddresses memory bundler = _deployBundler(d.protocol, BundlerParameters({weth: WETH, wstEth: WSTETH}));
         d.bundler = bundler.bundler;
         d.generalAdapter = bundler.generalAdapter;
         d.vaultAdapter = bundler.vaultAdapter;

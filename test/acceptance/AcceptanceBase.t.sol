@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {MarketPlan, CircuitBreakerPlan} from "../../script/deployment/DeploymentTypes.sol";
+import {
+    MarketParameters,
+    CircuitBreakerParameters,
+    DeploymentSnapshot,
+    RecordedMarket,
+    PriceFeedRecord
+} from "../../script/deployment/DeploymentTypes.sol";
 import {RecordedDeployment} from "../../script/deployment/RecordedDeployment.sol";
-import {DeploymentSnapshot, RecordedMarket, PriceFeedRecord} from "../../script/deployment/DeploymentSnapshot.sol";
+
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {Id, IMorpho, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
@@ -288,8 +294,8 @@ abstract contract AcceptanceContext is Test {
     uint256 internal expectedQuorum;
     uint256 internal expectedSuspectWindow;
 
-    MarketPlan internal expectedMarketPlan;
-    CircuitBreakerPlan internal expectedCircuitBreaker;
+    MarketParameters internal expectedMarketParameters;
+    CircuitBreakerParameters internal expectedCircuitBreaker;
     address internal expectedIrmConfigAddress;
     address internal expectedBundlerWeth;
     address internal expectedBundlerWstEth;
@@ -324,7 +330,7 @@ abstract contract AcceptanceContext is Test {
     function _loadMarket(string memory market) internal {
         DeploymentSnapshot memory d = RecordedDeployment.load(recordedRun);
         for (uint256 i; i < d.markets.length; ++i) {
-            if (keccak256(bytes(d.markets[i].plan.name)) != keccak256(bytes(market))) continue;
+            if (keccak256(bytes(d.markets[i].parameters.name)) != keccak256(bytes(market))) continue;
             _bindTypedDeployment(d, i, pauserCommittee, enableSettlement, address(0));
             // Recorded deployments require historical log scans, unlike in-process fresh fixtures.
             useLocalDeploymentLogs = false;
@@ -366,22 +372,22 @@ abstract contract AcceptanceContext is Test {
         expectedBundlerWeth = d.weth;
         expectedBundlerWstEth = d.wstEth;
         expectedBundlerCore = d.protocol.core;
-        expectedMarketPlan = entry.plan;
-        expectedCircuitBreaker = d.circuitBreakerPlan;
+        expectedMarketParameters = entry.parameters;
+        expectedCircuitBreaker = d.circuitBreakerParameters;
         expectedIrmConfigAddress = entry.contracts.irmConfig;
         oracle = entry.contracts.params.oracle;
         guardianSignals = entry.contracts.guardianSignals;
         controller = entry.contracts.controller;
         vault = entry.contracts.vault;
         marketId = Id.unwrap(entry.contracts.id);
-        loanToken = entry.plan.market.loanToken;
-        collateralToken = entry.plan.market.collateralToken;
-        lltv = entry.plan.market.lltv;
+        loanToken = entry.parameters.market.loanToken;
+        collateralToken = entry.parameters.market.collateralToken;
+        lltv = entry.parameters.market.lltv;
         rAdmin = d.protocol.agent;
         rProxyAdmin = d.protocol.agent;
-        expectedGuardians = entry.plan.committee.guardians;
-        expectedQuorum = entry.plan.committee.quorum;
-        expectedSuspectWindow = entry.plan.committee.suspectWindow;
+        expectedGuardians = entry.parameters.committee.guardians;
+        expectedQuorum = entry.parameters.committee.quorum;
+        expectedSuspectWindow = entry.parameters.committee.suspectWindow;
         expectedPriceFeed = entry.priceFeed;
         if (
             expectedPriceFeed.wstEth == address(0)
@@ -613,68 +619,72 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     function _assertConfig() internal view {
-        assertEq(IReadController(controller).supplyCap(), expectedMarketPlan.market.supplyCap, "supplyCap");
+        assertEq(IReadController(controller).supplyCap(), expectedMarketParameters.market.supplyCap, "supplyCap");
 
         CollateralActivationConfig memory c = IReadController(controller).collateralActivationConfig();
         assertEq(
             uint256(c.minActivationDelay),
-            uint256(expectedMarketPlan.market.activationConfig.minActivationDelay),
+            uint256(expectedMarketParameters.market.activationConfig.minActivationDelay),
             "minDelay"
         );
         assertEq(
             uint256(c.maxActivationDelay),
-            uint256(expectedMarketPlan.market.activationConfig.maxActivationDelay),
+            uint256(expectedMarketParameters.market.activationConfig.maxActivationDelay),
             "maxDelay"
         );
         assertEq(
             uint256(c.maxDelayInflow),
-            uint256(expectedMarketPlan.market.activationConfig.maxDelayInflow),
+            uint256(expectedMarketParameters.market.activationConfig.maxDelayInflow),
             "maxDelayInflow"
         );
         assertEq(
             uint256(c.activatingLockDuration),
-            uint256(expectedMarketPlan.market.activationConfig.activatingLockDuration),
+            uint256(expectedMarketParameters.market.activationConfig.activatingLockDuration),
             "lockDur"
         );
         assertEq(
             uint256(c.minActivationAmount),
-            uint256(expectedMarketPlan.market.activationConfig.minActivationAmount),
+            uint256(expectedMarketParameters.market.activationConfig.minActivationAmount),
             "minAmt"
         );
         assertEq(
             uint256(c.minDepositAmount),
-            uint256(expectedMarketPlan.market.activationConfig.minDepositAmount),
+            uint256(expectedMarketParameters.market.activationConfig.minDepositAmount),
             "minDeposit"
         );
         assertEq(
             uint256(c.maxGuardiansQuorumDelay),
-            uint256(expectedMarketPlan.market.activationConfig.maxGuardiansQuorumDelay),
+            uint256(expectedMarketParameters.market.activationConfig.maxGuardiansQuorumDelay),
             "qDelay"
         );
         assertEq(
-            uint256(c.delayPerStrike), uint256(expectedMarketPlan.market.activationConfig.delayPerStrike), "perStrike"
+            uint256(c.delayPerStrike),
+            uint256(expectedMarketParameters.market.activationConfig.delayPerStrike),
+            "perStrike"
         );
         assertEq(
             uint256(c.delayPerSuspect),
-            uint256(expectedMarketPlan.market.activationConfig.delayPerSuspect),
+            uint256(expectedMarketParameters.market.activationConfig.delayPerSuspect),
             "perSuspect"
         );
 
         SettlementConfig memory s = IReadController(controller).settlementConfig();
         assertEq(
-            uint256(s.sliceFloorBps), uint256(expectedMarketPlan.market.settlementConfig.sliceFloorBps), "sliceBps"
+            uint256(s.sliceFloorBps),
+            uint256(expectedMarketParameters.market.settlementConfig.sliceFloorBps),
+            "sliceBps"
         );
         assertEq(
             uint256(s.sliceFloorAssets),
-            uint256(expectedMarketPlan.market.settlementConfig.sliceFloorAssets),
+            uint256(expectedMarketParameters.market.settlementConfig.sliceFloorAssets),
             "sliceAssets"
         );
         assertEq(
             uint256(s.fullCutBelowCollateral),
-            uint256(expectedMarketPlan.market.settlementConfig.fullCutBelowCollateral),
+            uint256(expectedMarketParameters.market.settlementConfig.fullCutBelowCollateral),
             "fullCut"
         );
-        assertEq(uint256(s.ltvStepBps), uint256(expectedMarketPlan.market.settlementConfig.ltvStepBps), "ltvStep");
+        assertEq(uint256(s.ltvStepBps), uint256(expectedMarketParameters.market.settlementConfig.ltvStepBps), "ltvStep");
 
         address irmConfig = _expectedIrmConfig();
         _assertCurveParams(ICurveConfig(irmConfig).getCurveParams());
@@ -692,8 +702,8 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     ///      The offset closes the gap up to 18, and is zero for a loan token already at or above it.
     function _assertVaultIdentity() internal view {
         IReadVault deployedVault = IReadVault(vault);
-        assertEq(deployedVault.name(), expectedMarketPlan.wrapper.name, "vault.name");
-        assertEq(deployedVault.symbol(), expectedMarketPlan.wrapper.symbol, "vault.symbol");
+        assertEq(deployedVault.name(), expectedMarketParameters.wrapper.name, "vault.name");
+        assertEq(deployedVault.symbol(), expectedMarketParameters.wrapper.symbol, "vault.symbol");
 
         uint256 loanDecimals = uint256(IReadDecimals(loanToken).decimals());
         assertEq(uint256(deployedVault.decimals()), Math.max(18, loanDecimals), "vault.decimals");
@@ -701,7 +711,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
     /// @dev The per-market curve params used by the activation simulation.
     function _expectedCurveParams() internal view returns (AdaptiveCurveParams memory) {
-        return expectedMarketPlan.curve;
+        return expectedMarketParameters.curve;
     }
 
     function _assertCurveParams(AdaptiveCurveParams memory cp) internal view {

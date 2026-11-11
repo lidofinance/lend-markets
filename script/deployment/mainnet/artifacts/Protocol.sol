@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {ProtocolAddresses, ProtocolPlan, CircuitBreakerPlan} from "../DeploymentTypes.sol";
+import {ProtocolAddresses, CircuitBreakerParameters} from "../../DeploymentTypes.sol";
 
 library Protocol {
     function addresses() internal pure returns (ProtocolAddresses memory p) {
@@ -19,12 +19,8 @@ library Protocol {
         p.executor = 0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977;
     }
 
-    function plan() internal pure returns (ProtocolPlan memory p) {
-        p.chainId = 1;
-        p.agent = 0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c;
-        p.executor = 0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977;
-        p.resealManager = 0x7914b5a1539b97Bd0bbd155757F25FD79A522d24;
-        p.circuitBreakerPlan = CircuitBreakerPlan({
+    function circuitBreakerParameters() internal pure returns (CircuitBreakerParameters memory) {
+        return CircuitBreakerParameters({
             minPauseDuration: 5 days,
             maxPauseDuration: 60 days,
             minHeartbeatInterval: 30 days,

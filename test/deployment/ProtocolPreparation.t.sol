@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {ForkFixture} from "../setup/ForkFixture.sol";
-import {DeploymentSnapshot, RecordedMarket} from "../../script/deployment/DeploymentSnapshot.sol";
+import {DeploymentSnapshot, RecordedMarket} from "../../script/deployment/DeploymentTypes.sol";
 
 contract TwoRequiredMarketsFixture is ForkFixture {
     function _requiredMarkets() internal pure override returns (RecordedMarket[] memory markets) {
@@ -13,9 +13,9 @@ contract TwoRequiredMarketsFixture is ForkFixture {
         markets = new RecordedMarket[](2);
         markets[0] = base[0];
         markets[1].role = "additional-weth-wsteth";
-        markets[1].plan = _wethWstethPlan(base[0].plan.committee.guardians);
-        markets[1].plan.name = "additional-weth-wsteth";
-        markets[1].plan.market.lltv = 0.93e18;
+        markets[1].parameters = _wethWstethParameters(base[0].parameters.committee.guardians);
+        markets[1].parameters.name = "additional-weth-wsteth";
+        markets[1].parameters.market.lltv = 0.93e18;
     }
 }
 

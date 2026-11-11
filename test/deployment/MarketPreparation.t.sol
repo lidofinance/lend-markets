@@ -5,12 +5,13 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
-import {WethWstethMarket} from "../../script/deployment/mainnet/WethWstethMarket.sol";
+import {WethWstethMarket} from "../../script/deployment/mainnet/DeployWethWsteth.s.sol";
 import {
     ProtocolAddresses,
-    MarketPlan,
+    MarketParameters,
     MarketDeploymentResult,
-    MarketActivation
+    MarketActivation,
+    DeploymentSnapshot
 } from "../../script/deployment/DeploymentTypes.sol";
 import {
     MarketPreparation,
@@ -19,7 +20,7 @@ import {
     IPreparationOwner
 } from "../setup/MarketPreparation.sol";
 import {ForkFixture} from "../setup/ForkFixture.sol";
-import {DeploymentSnapshot} from "../../script/deployment/DeploymentSnapshot.sol";
+
 import {ForkStack} from "../fork/helpers/ForkStack.sol";
 
 contract IncorrectPriceFeed {
@@ -30,10 +31,26 @@ contract IncorrectPriceFeed {
     }
 }
 
+contract UnexpectedPriceFeedProxy {
+    address private immutable ADMIN;
+
+    constructor(address admin) {
+        ADMIN = admin;
+    }
+
+    function proxy__getAdmin() external view returns (address) {
+        return ADMIN;
+    }
+
+    function proxy__getImplementation() external pure returns (address) {
+        return address(0);
+    }
+}
+
 contract MarketPreparationTest is ForkStack, MarketPreparation, WethWstethMarket {
     BoundMarket internal m;
     ProtocolAddresses internal protocolAddresses;
-    MarketPlan internal plan;
+    MarketParameters internal parameters;
     MarketDeploymentResult internal deployment;
     MarketActivation internal activation;
 
@@ -43,7 +60,7 @@ contract MarketPreparationTest is ForkStack, MarketPreparation, WethWstethMarket
         _useDeployment(d);
         m = _bindMarket(_marketForRole("weth-wsteth"));
         protocolAddresses = d.protocol;
-        plan = d.markets[0].plan;
+        parameters = d.markets[0].parameters;
         deployment = d.markets[0].contracts;
         activation = MarketActivation({
             pauser: d.protocol.agent, steward: d.protocol.agent, enableSettlement: true, exitBooks: d.books
@@ -54,7 +71,7 @@ contract MarketPreparationTest is ForkStack, MarketPreparation, WethWstethMarket
         _setSupplyCap(m, 123 ether);
         bytes32 beforeMarket = keccak256(abi.encode(m.core.market(m.id)));
         uint256 beforeNonce = vm.getNonce(address(this));
-        MarketDeploymentResult memory prepared = _prepareMarket(protocolAddresses, plan, deployment, activation);
+        MarketDeploymentResult memory prepared = _prepareMarket(protocolAddresses, parameters, deployment, activation);
         assertEq(keccak256(abi.encode(prepared)), keccak256(abi.encode(deployment)));
         assertEq(keccak256(abi.encode(m.core.market(m.id))), beforeMarket);
         assertEq(vm.getNonce(address(this)), beforeNonce);
@@ -62,7 +79,7 @@ contract MarketPreparationTest is ForkStack, MarketPreparation, WethWstethMarket
     }
 
     function test_prepareInertMarket_reusesSharedDependencies() public {
-        MarketPlan memory next = plan;
+        MarketParameters memory next = parameters;
         next.market.oracle = deployment.params.oracle;
         next.market.guardianSignals = deployment.guardianSignals;
         next.market.lltv = 0.935e18;
@@ -90,15 +107,15 @@ contract MarketPreparationTest is ForkStack, MarketPreparation, WethWstethMarket
         this.prepareRecorded(broken);
     }
 
-    function testRevert_recordDoesNotMatchMarketPlan() public {
-        MarketPlan memory wrong = plan;
+    function testRevert_recordDoesNotMatchMarketParameters() public {
+        MarketParameters memory wrong = parameters;
         wrong.market.lltv = 0.9e18;
-        vm.expectRevert("Market LLTV differs from plan");
-        this.preparePlan(wrong, deployment);
+        vm.expectRevert("Market LLTV differs from parameters");
+        this.prepareParameters(wrong, deployment);
     }
 
     function testRevert_unseededCreatedMarketIsNotRepaired() public {
-        MarketPlan memory next = plan;
+        MarketParameters memory next = parameters;
         next.market.oracle = deployment.params.oracle;
         next.market.guardianSignals = deployment.guardianSignals;
         next.market.lltv = 0.93e18;
@@ -110,52 +127,94 @@ contract MarketPreparationTest is ForkStack, MarketPreparation, WethWstethMarket
         IPreparationOwner(protocolAddresses.ownerFacade).createMarket(incomplete.params, incomplete.controller, true);
         vm.stopPrank();
         vm.expectRevert("Missing core seed");
-        this.preparePlan(next, incomplete);
+        this.prepareParameters(next, incomplete);
     }
 
     function testRevert_unconfiguredCommitteeCannotDeploy() public {
-        MarketPlan memory unconfigured = _wethWstethPlan(new address[](0));
+        MarketParameters memory unconfigured = _wethWstethParameters(new address[](0));
         MarketDeploymentResult memory empty;
         vm.expectRevert(MissingCommittee.selector);
-        this.preparePlan(unconfigured, empty);
+        this.prepareParameters(unconfigured, empty);
     }
 
-    function testRevert_inertCurveDiffersFromReviewedPlan() public {
-        MarketPlan memory next = plan;
+    function testRevert_inertCurveDiffersFromReviewedParameters() public {
+        MarketParameters memory next = parameters;
         next.market.oracle = deployment.params.oracle;
         next.market.guardianSignals = deployment.guardianSignals;
         next.market.lltv = 0.92e18;
         MarketDeploymentResult memory inert = _deployMarket(protocolAddresses, next);
         next.curve.initialRateAtTarget += 1;
-        vm.expectRevert("Inert curve differs from plan");
-        this.preparePlan(next, inert);
+        vm.expectRevert("Inert curve differs from parameters");
+        this.prepareParameters(next, inert);
     }
 
-    function testRevert_inertActivationDiffersFromReviewedPlan() public {
-        MarketPlan memory next = plan;
+    function testRevert_inertActivationDiffersFromReviewedParameters() public {
+        MarketParameters memory next = parameters;
         next.market.oracle = deployment.params.oracle;
         next.market.guardianSignals = deployment.guardianSignals;
         next.market.lltv = 0.92e18;
         MarketDeploymentResult memory inert = _deployMarket(protocolAddresses, next);
         next.market.activationConfig.minActivationDelay += 1;
-        vm.expectRevert("Inert activation differs from plan");
-        this.preparePlan(next, inert);
+        vm.expectRevert("Inert activation differs from parameters");
+        this.prepareParameters(next, inert);
     }
 
     function testRevert_reusedPriceFeedHasDifferentImplementation() public {
         address implementation = address(new IncorrectPriceFeed());
-        MarketPlan memory next = plan;
+        MarketParameters memory next = parameters;
         next.market.oracle = address(new OssifiableProxy(implementation, protocolAddresses.agent, ""));
         MarketDeploymentResult memory empty;
         vm.expectRevert(abi.encodeWithSelector(PriceFeedCodeMismatch.selector, implementation));
-        this.preparePlan(next, empty);
+        this.prepareParameters(next, empty);
+    }
+
+    function testRevert_reusedPriceFeedHasWrongAdmin() public {
+        MarketParameters memory next = parameters;
+        address wrongAdmin = makeAddr("wrong.priceFeedAdmin");
+        address implementation = OssifiableProxy(payable(deployment.params.oracle)).proxy__getImplementation();
+        next.market.oracle = address(new OssifiableProxy(implementation, wrongAdmin, ""));
+        MarketDeploymentResult memory empty;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IncompatibleDependency.selector, bytes32("priceFeed.admin"), protocolAddresses.agent, wrongAdmin
+            )
+        );
+        this.prepareParameters(next, empty);
+    }
+
+    function testRevert_reusedPriceFeedHasWrongProxyCode() public {
+        MarketParameters memory next = parameters;
+        next.market.oracle = address(new UnexpectedPriceFeedProxy(protocolAddresses.agent));
+        MarketDeploymentResult memory empty;
+        vm.expectRevert(abi.encodeWithSelector(PriceFeedCodeMismatch.selector, next.market.oracle));
+        this.prepareParameters(next, empty);
+    }
+
+    function testRevert_reusedPriceFeedHasZeroPrice() public {
+        MarketParameters memory next = parameters;
+        next.market.oracle = deployment.params.oracle;
+        vm.mockCall(WSTETH, abi.encodeWithSignature("getStETHByWstETH(uint256)", 1e36), abi.encode(uint256(0)));
+        MarketDeploymentResult memory empty;
+        vm.expectRevert("Price feed is zero");
+        this.prepareParameters(next, empty);
+    }
+
+    function testRevert_reusedPriceFeedHasWrongCollateral() public {
+        MarketParameters memory next = parameters;
+        next.market.oracle = deployment.params.oracle;
+        next.market.collateralToken = WETH;
+        MarketDeploymentResult memory empty;
+        vm.expectRevert(
+            abi.encodeWithSelector(IncompatibleDependency.selector, bytes32("collateralToken"), WSTETH, WETH)
+        );
+        this.prepareParameters(next, empty);
     }
 
     function test_prepareMarket_withoutOptionalExitBooks() public {
         ProtocolAddresses memory p = protocolAddresses;
         MarketActivation memory withoutBooks = activation;
         delete withoutBooks.exitBooks;
-        MarketPlan memory next = plan;
+        MarketParameters memory next = parameters;
         next.market.oracle = deployment.params.oracle;
         next.market.guardianSignals = deployment.guardianSignals;
         next.market.lltv = 0.92e18;
@@ -167,7 +226,7 @@ contract MarketPreparationTest is ForkStack, MarketPreparation, WethWstethMarket
 
     function testFuzz_prepareAdditionalMarket_preservesActiveMarket(uint64 rawLltv) public {
         bytes32 initialMarket = keccak256(abi.encode(m.core.market(m.id)));
-        MarketPlan memory next = plan;
+        MarketParameters memory next = parameters;
         next.market.oracle = deployment.params.oracle;
         next.market.guardianSignals = deployment.guardianSignals;
         next.market.lltv = bound(uint256(rawLltv), 0.5e18, 0.939e18);
@@ -194,10 +253,10 @@ contract MarketPreparationTest is ForkStack, MarketPreparation, WethWstethMarket
     }
 
     function prepareRecorded(MarketDeploymentResult memory recorded) external {
-        _prepareMarket(protocolAddresses, plan, recorded, activation);
+        _prepareMarket(protocolAddresses, parameters, recorded, activation);
     }
 
-    function preparePlan(MarketPlan memory input, MarketDeploymentResult memory recorded) external {
+    function prepareParameters(MarketParameters memory input, MarketDeploymentResult memory recorded) external {
         _prepareMarket(protocolAddresses, input, recorded, activation);
     }
 

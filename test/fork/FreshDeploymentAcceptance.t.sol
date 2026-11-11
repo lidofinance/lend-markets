@@ -4,7 +4,7 @@ pragma solidity 0.8.36;
 import {Id, Position, IMorpho} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {ForkFixture} from "../setup/ForkFixture.sol";
-import {DeploymentSnapshot} from "../../script/deployment/DeploymentSnapshot.sol";
+import {DeploymentSnapshot} from "../../script/deployment/DeploymentTypes.sol";
 import {MarketMotionReadinessAcceptance} from "../acceptance/MarketMotionReadiness.t.sol";
 import {MarketActivatedAcceptance} from "../acceptance/MarketActivated.t.sol";
 

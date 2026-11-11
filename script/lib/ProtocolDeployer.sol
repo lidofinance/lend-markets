@@ -19,8 +19,7 @@ import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {LidoLendPrimitives} from "./LidoLendPrimitives.sol";
-import {ProtocolConfig, ProtocolAddresses} from "../deployment/DeploymentTypes.sol";
-import {ExitBookConfig} from "../deployment/ExitBookPlan.sol";
+import {ProtocolConfig, ProtocolAddresses, ExitBookConfig} from "../deployment/DeploymentTypes.sol";
 
 interface ICircuitBreakerConfig {
     function ADMIN() external view returns (address);

@@ -3,9 +3,8 @@ pragma solidity 0.8.36;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {ProtocolDeployer} from "../../lib/ProtocolDeployer.sol";
-import {ExitBookConfig} from "../ExitBookPlan.sol";
-import {ExitBookAddresses} from "../DeploymentTypes.sol";
-import {ExitBookPlan} from "./ExitBookPlan.sol";
+import {ExitBookConfig, ExitBookAddresses, ProtocolAddresses} from "../DeploymentTypes.sol";
+import {Protocol as MainnetProtocol} from "./artifacts/Protocol.sol";
 import {DeploymentOutput} from "../DeploymentOutput.sol";
 
 contract DeployExitBooks is Script, ProtocolDeployer {
@@ -13,13 +12,22 @@ contract DeployExitBooks is Script, ProtocolDeployer {
     error MissingGovernanceActor();
 
     function run() external returns (ExitBookAddresses memory books) {
-        (uint256 chainId, ExitBookConfig memory plan) = ExitBookPlan.get();
-        _requireChainId(chainId);
-        if (plan.core.code.length == 0) revert CoreNotContract(plan.core);
-        if (plan.agent == address(0) || plan.evmScriptExecutor == address(0)) revert MissingGovernanceActor();
-        books.chainId = chainId;
+        ProtocolAddresses memory p = MainnetProtocol.addresses();
+        ExitBookConfig memory parameters = ExitBookConfig({
+            agent: p.agent,
+            evmScriptExecutor: p.executor,
+            pauser: 0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E,
+            core: p.core,
+            maxRequestLifetime: 90 days
+        });
+        _requireChainId(p.chainId);
+        if (parameters.core.code.length == 0) revert CoreNotContract(parameters.core);
+        if (parameters.agent == address(0) || parameters.evmScriptExecutor == address(0)) {
+            revert MissingGovernanceActor();
+        }
+        books.chainId = p.chainId;
         vm.startBroadcast();
-        (books.morpho, books.erc4626) = _deployExitBooks(plan, msg.sender);
+        (books.morpho, books.erc4626) = _deployExitBooks(parameters, msg.sender);
         vm.stopBroadcast();
 
         vm.serializeAddress("exit-books", "morpho", books.morpho);

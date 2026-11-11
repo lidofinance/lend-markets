@@ -4,7 +4,7 @@ pragma solidity 0.8.36;
 import {Test} from "forge-std/Test.sol";
 
 import {RecordedDeployment} from "../../script/deployment/RecordedDeployment.sol";
-import {DeploymentSnapshot} from "../../script/deployment/DeploymentSnapshot.sol";
+import {DeploymentSnapshot} from "../../script/deployment/DeploymentTypes.sol";
 
 import {AddLendFactoriesOmnibus} from "../../script/vote/AddLendFactoriesOmnibus.sol";
 import {CallsScriptBuilder} from "../../script/vote/CallsScriptBuilder.sol";

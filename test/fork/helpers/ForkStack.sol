@@ -2,9 +2,13 @@
 pragma solidity 0.8.36;
 
 import {ForkFixture} from "../../setup/ForkFixture.sol";
-import {DeploymentSnapshot, RecordedMarket} from "../../../script/deployment/DeploymentSnapshot.sol";
+import {
+    DeploymentSnapshot,
+    RecordedMarket,
+    MarketDeploymentResult
+} from "../../../script/deployment/DeploymentTypes.sol";
 import {RecordedDeployment} from "../../../script/deployment/RecordedDeployment.sol";
-import {MarketDeploymentResult} from "../../../script/deployment/DeploymentTypes.sol";
+
 import {Test, console2} from "forge-std/Test.sol";
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
@@ -107,15 +111,11 @@ abstract contract ForkStack is Test {
 
     function _useDeployment(DeploymentSnapshot memory result) internal {
         forkDeployment.protocol = result.protocol;
-        forkDeployment.circuitBreakerPlan = result.circuitBreakerPlan;
+        forkDeployment.circuitBreakerParameters = result.circuitBreakerParameters;
         forkDeployment.bookLifetime = result.bookLifetime;
         forkDeployment.weth = result.weth;
         forkDeployment.wstEth = result.wstEth;
         forkDeployment.stEth = result.stEth;
-        forkDeployment.usdt = result.usdt;
-        forkDeployment.usdy = result.usdy;
-        forkDeployment.ondoOracle = result.ondoOracle;
-        forkDeployment.usdyBlocklist = result.usdyBlocklist;
         forkDeployment.books = result.books;
         forkDeployment.bookPauser = result.bookPauser;
         forkDeployment.bundler = result.bundler;
@@ -129,7 +129,7 @@ abstract contract ForkStack is Test {
 
     function _vaultPair(string memory marketName) internal view returns (address vault, address adapter) {
         for (uint256 i; i < forkDeployment.markets.length; ++i) {
-            if (keccak256(bytes(forkDeployment.markets[i].plan.name)) == keccak256(bytes(marketName))) {
+            if (keccak256(bytes(forkDeployment.markets[i].parameters.name)) == keccak256(bytes(marketName))) {
                 return (forkDeployment.markets[i].vaultV2, forkDeployment.markets[i].adapter);
             }
         }
@@ -145,7 +145,7 @@ abstract contract ForkStack is Test {
         require(forkDeployment.markets.length != 0, "ForkStack: the bound run records no markets");
         for (uint256 i; i < forkDeployment.markets.length; ++i) {
             if (keccak256(bytes(forkDeployment.markets[i].role)) == keccak256(bytes(role))) {
-                return forkDeployment.markets[i].plan.name;
+                return forkDeployment.markets[i].parameters.name;
             }
         }
         vm.skip(true, string.concat("ForkStack: run has no market for role '", role, "'"));
@@ -156,7 +156,7 @@ abstract contract ForkStack is Test {
     function _bindMarket(string memory name) internal returns (BoundMarket memory m) {
         for (uint256 i; i < forkDeployment.markets.length; ++i) {
             RecordedMarket memory entry = forkDeployment.markets[i];
-            if (keccak256(bytes(entry.plan.name)) != keccak256(bytes(name))) continue;
+            if (keccak256(bytes(entry.parameters.name)) != keccak256(bytes(name))) continue;
             MarketDeploymentResult memory d = entry.contracts;
             m.name = name;
             m.core = ILidoLend(forkDeployment.protocol.core);

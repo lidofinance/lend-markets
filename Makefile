@@ -154,7 +154,7 @@ pending-stop: ## Stop the pending-action fork
 	bash script/pending-action.sh stop
 
 # Full pre-signing validation: apply the pending action, then run the fork suites against the
-# resulting state. RUN selects script/deployment/<run>/Deployment.sol.
+# resulting state. RUN selects script/deployment/<run>/artifacts/Deployment.sol.
 test-pending: ## Apply pending action and run fork suites: CONFIG RUN RPC_URL
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	$(MAKE) apply-pending CONFIG="$(CONFIG)" RPC_URL="$(RPC_URL)" PIN_BLOCK="$(PIN_BLOCK)"

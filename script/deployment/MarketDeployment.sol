@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
+import {CommonBase} from "forge-std/Base.sol";
+import {console2} from "forge-std/console2.sol";
+import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
@@ -10,7 +13,9 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
-import {ProtocolAddresses, MarketPlan, MarketDeploymentResult} from "./DeploymentTypes.sol";
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
+import {DeploymentOutput} from "./DeploymentOutput.sol";
+import {ProtocolAddresses, MarketParameters, MarketDeploymentResult} from "./DeploymentTypes.sol";
 
 interface IDeploymentManager {
     function manager() external view returns (address);
@@ -26,7 +31,12 @@ interface IDeploymentController {
     function supplyCap() external view returns (uint256);
 }
 
-abstract contract MarketDeployment {
+interface IPriceFeedProxyView {
+    function proxy__getAdmin() external view returns (address);
+    function proxy__getImplementation() external view returns (address);
+}
+
+abstract contract MarketDeployment is CommonBase {
     using MarketParamsLib for MarketParams;
 
     error WrongChain(uint256 expected, uint256 actual);
@@ -34,6 +44,7 @@ abstract contract MarketDeployment {
     error IncompatibleDependency(bytes32 field, address expected, address actual);
     error MissingCommittee();
     error InvalidMarketRecord();
+    error PriceFeedCodeMismatch(address component);
 
     function _checkProtocol(ProtocolAddresses memory p) internal view {
         if (block.chainid != p.chainId) revert WrongChain(p.chainId, block.chainid);
@@ -58,38 +69,39 @@ abstract contract MarketDeployment {
         _same("circuitBreaker.admin", p.executor, IDeploymentCircuitBreaker(p.circuitBreaker).ADMIN());
     }
 
-    function _checkPlan(ProtocolAddresses memory p, MarketPlan memory plan) internal view {
+    function _checkParameters(ProtocolAddresses memory p, MarketParameters memory parameters) internal view {
         _checkProtocol(p);
-        _requireCode(plan.market.loanToken);
-        _requireCode(plan.market.collateralToken);
-        if (plan.committee.guardians.length == 0 || plan.committee.quorum == 0) revert MissingCommittee();
-        if (plan.market.oracle != address(0)) _checkPriceFeed(p, plan);
-        if (plan.market.guardianSignals != address(0)) {
-            LidoLendMarketFactory(p.factory).validateGuardianSignals(plan.market.guardianSignals, plan.committee);
+        _requireCode(parameters.market.loanToken);
+        _requireCode(parameters.market.collateralToken);
+        if (parameters.committee.guardians.length == 0 || parameters.committee.quorum == 0) revert MissingCommittee();
+        if (parameters.market.oracle != address(0)) _checkPriceFeed(p, parameters);
+        if (parameters.market.guardianSignals != address(0)) {
+            LidoLendMarketFactory(p.factory)
+                .validateGuardianSignals(parameters.market.guardianSignals, parameters.committee);
         }
     }
 
-    function _deployMarket(ProtocolAddresses memory p, MarketPlan memory plan)
+    function _deployMarket(ProtocolAddresses memory p, MarketParameters memory parameters)
         internal
         returns (MarketDeploymentResult memory d)
     {
-        _checkPlan(p, plan);
-        if (plan.market.oracle == address(0)) plan.market.oracle = _deployPriceFeed(p, plan);
-        _checkPriceFeed(p, plan);
+        _checkParameters(p, parameters);
+        if (parameters.market.oracle == address(0)) parameters.market.oracle = _deployPriceFeed(p, parameters);
+        _checkPriceFeed(p, parameters);
         LidoLendMarketFactory f = LidoLendMarketFactory(p.factory);
-        if (plan.market.guardianSignals == address(0)) {
-            plan.market.guardianSignals = f.deployGuardianSignals(plan.committee, plan.guardianGroup);
+        if (parameters.market.guardianSignals == address(0)) {
+            parameters.market.guardianSignals = f.deployGuardianSignals(parameters.committee, parameters.guardianGroup);
         }
-        d.guardianSignals = plan.market.guardianSignals;
-        d.irmConfig = IIrmConfigFactory(p.irmConfigFactory).getOrDeployAdaptiveCurveConfig(plan.curve);
+        d.guardianSignals = parameters.market.guardianSignals;
+        d.irmConfig = IIrmConfigFactory(p.irmConfigFactory).getOrDeployAdaptiveCurveConfig(parameters.curve);
         d.params = MarketParams({
-            loanToken: plan.market.loanToken,
-            collateralToken: plan.market.collateralToken,
-            oracle: plan.market.oracle,
+            loanToken: parameters.market.loanToken,
+            collateralToken: parameters.market.collateralToken,
+            oracle: parameters.market.oracle,
             irm: p.irmRouter,
-            lltv: plan.market.lltv
+            lltv: parameters.market.lltv
         });
-        (d.id, d.controller, d.vault) = f.deployMarketComponents(plan.market, plan.wrapper);
+        (d.id, d.controller, d.vault) = f.deployMarketComponents(parameters.market, parameters.wrapper);
         _checkMarket(p, d);
     }
 
@@ -118,42 +130,91 @@ abstract contract MarketDeployment {
     }
 
     /// @dev Enforces launch parameters and roles before activation.
-    function _checkInertMarket(ProtocolAddresses memory p, MarketPlan memory plan, MarketDeploymentResult memory d)
-        internal
-        view
-    {
+    function _checkInertMarket(
+        ProtocolAddresses memory p,
+        MarketParameters memory parameters,
+        MarketDeploymentResult memory d
+    ) internal view {
         LidoLendMarketFactory factory = LidoLendMarketFactory(p.factory);
-        factory.validateGuardianSignals(d.guardianSignals, plan.committee);
+        factory.validateGuardianSignals(d.guardianSignals, parameters.committee);
         factory.validateMarketController(d.controller, d.id, d.guardianSignals);
         factory.validateERC4626Wrapper(d.vault, d.controller, d.params);
         ILidoLendMarketController controller = ILidoLendMarketController(d.controller);
         require(
             keccak256(abi.encode(controller.collateralActivationConfig()))
-                == keccak256(abi.encode(plan.market.activationConfig)),
-            "Inert activation differs from plan"
+                == keccak256(abi.encode(parameters.market.activationConfig)),
+            "Inert activation differs from parameters"
         );
         require(
-            keccak256(abi.encode(controller.settlementConfig())) == keccak256(abi.encode(plan.market.settlementConfig)),
-            "Inert settlement differs from plan"
+            keccak256(abi.encode(controller.settlementConfig()))
+                == keccak256(abi.encode(parameters.market.settlementConfig)),
+            "Inert settlement differs from parameters"
         );
-        require(IDeploymentController(d.controller).supplyCap() == plan.market.supplyCap, "Inert cap differs from plan");
+        require(
+            IDeploymentController(d.controller).supplyCap() == parameters.market.supplyCap,
+            "Inert cap differs from parameters"
+        );
         require(
             keccak256(abi.encode(IAdaptiveCurveConfig(d.irmConfig).getCurveParams()))
-                == keccak256(abi.encode(plan.curve)),
-            "Inert curve differs from plan"
+                == keccak256(abi.encode(parameters.curve)),
+            "Inert curve differs from parameters"
         );
         IERC20Metadata vault = IERC20Metadata(d.vault);
         require(
-            keccak256(bytes(vault.name())) == keccak256(bytes(plan.wrapper.name)), "Inert vault name differs from plan"
+            keccak256(bytes(vault.name())) == keccak256(bytes(parameters.wrapper.name)),
+            "Inert vault name differs from parameters"
         );
         require(
-            keccak256(bytes(vault.symbol())) == keccak256(bytes(plan.wrapper.symbol)),
-            "Inert vault symbol differs from plan"
+            keccak256(bytes(vault.symbol())) == keccak256(bytes(parameters.wrapper.symbol)),
+            "Inert vault symbol differs from parameters"
         );
     }
 
-    function _deployPriceFeed(ProtocolAddresses memory p, MarketPlan memory plan) internal virtual returns (address);
-    function _checkPriceFeed(ProtocolAddresses memory p, MarketPlan memory plan) internal view virtual;
+    function _deployPriceFeed(ProtocolAddresses memory p, MarketParameters memory parameters)
+        internal
+        virtual
+        returns (address)
+    {
+        return address(new OssifiableProxy(_deployPriceFeedImplementation(parameters), p.agent, ""));
+    }
+
+    function _checkPriceFeedProxy(address priceFeed, address admin, bytes32 implementationCodeHash) internal view {
+        _requireCode(priceFeed);
+        IPriceFeedProxyView proxy = IPriceFeedProxyView(priceFeed);
+        _same("priceFeed.admin", admin, proxy.proxy__getAdmin());
+        if (priceFeed.codehash != keccak256(type(OssifiableProxy).runtimeCode)) {
+            revert PriceFeedCodeMismatch(priceFeed);
+        }
+        address implementation = proxy.proxy__getImplementation();
+        if (implementation.codehash != implementationCodeHash) revert PriceFeedCodeMismatch(implementation);
+        require(IOracle(priceFeed).price() != 0, "Price feed is zero");
+    }
+
+    function _reportMarket(string memory directory, address core, string memory name, MarketDeploymentResult memory d)
+        internal
+    {
+        vm.serializeBytes32(name, "market_id", Id.unwrap(d.id));
+        vm.serializeAddress(name, "core", core);
+        vm.serializeAddress(name, "loan_token", d.params.loanToken);
+        vm.serializeAddress(name, "collateral_token", d.params.collateralToken);
+        vm.serializeAddress(name, "irm", d.params.irm);
+        vm.serializeAddress(name, "controller", d.controller);
+        vm.serializeAddress(name, "vault", d.vault);
+        vm.serializeAddress(name, "price_feed", d.params.oracle);
+        vm.serializeAddress(name, "guardian_signals", d.guardianSignals);
+        DeploymentOutput.write(directory, name, vm.serializeAddress(name, "irm_config", d.irmConfig));
+
+        console2.log("market:", name);
+        console2.logBytes32(Id.unwrap(d.id));
+        console2.log("controller:", d.controller);
+        console2.log("vault:", d.vault);
+        console2.log("price feed:", d.params.oracle);
+        console2.log("guardian registry:", d.guardianSignals);
+        console2.log("IRM config:", d.irmConfig);
+    }
+
+    function _deployPriceFeedImplementation(MarketParameters memory parameters) internal virtual returns (address);
+    function _checkPriceFeed(ProtocolAddresses memory p, MarketParameters memory parameters) internal view virtual;
 
     function _requireCode(address account) internal view {
         if (account.code.length == 0) revert MissingCode(account);

@@ -27,7 +27,7 @@
 - `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
   deployed stack is correctly wired, has the exact initial-launch role topology (direct enumerable-role checks),
   and is either ready for the activation motion or live after it. Expected deployment values and addresses come
-  from `script/deployment/<run>/Deployment.sol`; reviewed runtime motion choices come from
+  from `script/deployment/<run>/artifacts/Deployment.sol`; reviewed runtime motion choices come from
   `ACCEPTANCE_PAUSER_COMMITTEE` and `ACCEPTANCE_ENABLE_SETTLEMENT`; activated checks additionally require
   `ACCEPTANCE_STEWARD`, `ACCEPTANCE_FEE`, `ACCEPTANCE_MIN_CORE_SEED_SHARES` and
   `ACCEPTANCE_MIN_VAULT_SEED_SHARES`. The suite skips unless
@@ -36,9 +36,9 @@
   entrypoints own broadcast boundaries; fork fixtures reuse deployment functions and parameter providers directly.
   Run entrypoints with `forge script`; `--broadcast` also writes flat address lists under `deployed/<network>/`
   (`protocol.toml`, `markets/<name>.toml`, `exit-books.toml`, `bundler.toml`). These lists are written before transaction confirmation; verify receipts.
-  Network-specific `Protocol.sol` holds
-  manually maintained dependency addresses and protocol parameters; `ExitBookPlan.sol` holds book parameters.
-- `script/deployment/<run>/Deployment.sol`: a Solidity library providing `snapshot()` for
+  New deployment parameters are defined in the concrete scripts. `artifacts/` inside each network directory holds
+  manually maintained recorded addresses and expected values; mainnet protocol, exit books and bundler have separate files.
+- `script/deployment/<run>/artifacts/Deployment.sol`: a Solidity library providing `snapshot()` for
   existing deployments and external CI states. It returns the same typed `DeploymentSnapshot` used by fresh fixtures.
   Register each run in `RecordedDeployment.load`; descriptions compile with the tests.
 - `script/config/`: historical files and pending-governance/state-mate inputs. Deployment/test code reads no TOML.
@@ -134,7 +134,7 @@ test/
 ├── scenario/     # L2 — end-to-end flows on a freshly deployed stack (local EVM, mock tokens)
 ├── invariant/    # L4 — handler-based stateful properties
 ├── simulation/   # seeded months-long solvency simulations on a fresh stack; 30-day variants run in test-local
-├── fork/         # fork tests vs the deployed protocol, bound from script/deployment/<run>/Deployment.sol
+├── fork/         # fork tests vs the deployed protocol, bound from script/deployment/<run>/artifacts/Deployment.sol
 ├── deployment/   # typed deployment + preparation on a Forge fork (profile: deployment)
 └── acceptance/   # L3 — fork vs a Solidity deployment description
 ```
@@ -151,7 +151,7 @@ test/
   once per run.
 - `fork/<Flow>.t.sol` — integration tests against a fresh Solidity fixture or an explicit recorded deployment. `make test-fork` to run.
 - `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
-  addresses and expected values from `script/deployment/<run>/Deployment.sol` (`ACCEPTANCE_RUN` selects the run).
+  addresses and expected values from `script/deployment/<run>/artifacts/Deployment.sol` (`ACCEPTANCE_RUN` selects the run).
   Activated/readiness runs also require independent reviewed `ACCEPTANCE_PAUSER_COMMITTEE` and
   `ACCEPTANCE_ENABLE_SETTLEMENT` motion inputs; activated checks also require `ACCEPTANCE_STEWARD`, `ACCEPTANCE_FEE`,
   `ACCEPTANCE_MIN_CORE_SEED_SHARES` and `ACCEPTANCE_MIN_VAULT_SEED_SHARES`. Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`);

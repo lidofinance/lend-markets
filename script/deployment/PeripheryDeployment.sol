@@ -3,52 +3,37 @@ pragma solidity 0.8.36;
 
 import {CommonBase} from "forge-std/Base.sol";
 import {LidoLendVaultAdapter} from "../../src/adapters/LidoLendVaultAdapter.sol";
-import {ProtocolAddresses} from "./DeploymentTypes.sol";
-
-struct BundlerPlan {
-    address weth;
-    address wstEth;
-}
-
-struct BundlerAddresses {
-    address bundler;
-    address generalAdapter;
-    address vaultAdapter;
-}
-
-struct VaultV2Plan {
-    string name;
-    address owner;
-    address asset;
-}
-
-struct VaultV2Addresses {
-    address vault;
-    address adapter;
-}
+import {
+    ProtocolAddresses,
+    BundlerParameters,
+    BundlerAddresses,
+    VaultV2Parameters,
+    VaultV2Addresses
+} from "./DeploymentTypes.sol";
 
 abstract contract PeripheryDeployment is CommonBase {
-    function _deployBundler(ProtocolAddresses memory p, BundlerPlan memory plan)
+    function _deployBundler(ProtocolAddresses memory p, BundlerParameters memory parameters)
         internal
         returns (BundlerAddresses memory d)
     {
         _checkPeripheryProtocol(p);
-        require(plan.weth.code.length != 0 && plan.wstEth.code.length != 0, "Missing bundler token");
+        require(parameters.weth.code.length != 0 && parameters.wstEth.code.length != 0, "Missing bundler token");
         // The upstream dependencies pin a different compiler from the lending contracts.
         d.bundler = vm.deployCode("Bundler3.sol:Bundler3");
         d.generalAdapter = vm.deployCode(
-            "EthereumGeneralAdapter1.sol:EthereumGeneralAdapter1", abi.encode(d.bundler, p.core, plan.weth, plan.wstEth)
+            "EthereumGeneralAdapter1.sol:EthereumGeneralAdapter1",
+            abi.encode(d.bundler, p.core, parameters.weth, parameters.wstEth)
         );
         d.vaultAdapter = address(new LidoLendVaultAdapter(d.bundler));
     }
 
-    function _deployVaultV2(ProtocolAddresses memory p, VaultV2Plan memory plan)
+    function _deployVaultV2(ProtocolAddresses memory p, VaultV2Parameters memory parameters)
         internal
         returns (VaultV2Addresses memory d)
     {
         _checkPeripheryProtocol(p);
-        require(plan.owner != address(0) && plan.asset.code.length != 0, "Invalid vault owner or asset");
-        d.vault = vm.deployCode("VaultV2.sol:VaultV2", abi.encode(plan.owner, plan.asset));
+        require(parameters.owner != address(0) && parameters.asset.code.length != 0, "Invalid vault owner or asset");
+        d.vault = vm.deployCode("VaultV2.sol:VaultV2", abi.encode(parameters.owner, parameters.asset));
         d.adapter = vm.deployCode(
             "MorphoMarketV1AdapterV2.sol:MorphoMarketV1AdapterV2", abi.encode(d.vault, p.core, p.irmRouter)
         );

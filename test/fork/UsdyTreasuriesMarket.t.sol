@@ -12,6 +12,7 @@ import {IRWADynamicOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
 import {IERC20NoReturn} from "./helpers/ForkTokens.sol";
+import {RecordedMarket} from "../../script/deployment/DeploymentTypes.sol";
 
 interface IUsdyBlocklist {
     function owner() external view returns (address);
@@ -44,7 +45,7 @@ contract UsdyTreasuriesMarketTest is ForkStack {
     MarketParams internal params;
     Id internal marketId;
 
-    // Real mainnet external addresses, resolved from the run's network config.
+    // Token addresses and dependencies of the selected market.
     address internal USDY; // 18 dec, transfer-gated
     address internal USDT; // 6 dec, nonstandard (no-return approve/transfer)
     address internal ONDO_ORACLE; // USDY NAV source, getPrice() scaled by 1e18
@@ -78,8 +79,15 @@ contract UsdyTreasuriesMarketTest is ForkStack {
         _fork();
         string memory market_ = _marketForRole("usdy-usdt");
         if (bytes(market_).length == 0) return; // not applicable to this deployment
-        if (forkDeployment.usdyBlocklist == address(0)) {
-            vm.skip(true, "UsdyTreasuries: the network's USDY has no blocklist");
+        RecordedMarket memory expected;
+        for (uint256 i; i < forkDeployment.markets.length; ++i) {
+            if (keccak256(bytes(forkDeployment.markets[i].parameters.name)) == keccak256(bytes(market_))) {
+                expected = forkDeployment.markets[i];
+                break;
+            }
+        }
+        if (expected.collateralBlocklist == address(0)) {
+            vm.skip(true, "UsdyTreasuries: the market's collateral has no blocklist");
         }
         m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest up front so the sizing/liquidity math below is exact
@@ -91,13 +99,21 @@ contract UsdyTreasuriesMarketTest is ForkStack {
 
         USDY = address(m.collateralToken);
         USDT = address(m.loanToken);
-        ONDO_ORACLE = forkDeployment.ondoOracle;
-        USDY_BLOCKLIST = forkDeployment.usdyBlocklist;
+        ONDO_ORACLE = expected.priceFeed.usdySource;
+        USDY_BLOCKLIST = expected.collateralBlocklist;
 
-        // Artifact/market coherence: the bound market must be the USDY-collateral / USDT-loan market the suite
-        // targets, not some other market a mis-named artifact pointed at.
-        require(params.loanToken == forkDeployment.usdt, "UsdyTreasuries: bound loan token is not USDT");
-        require(params.collateralToken == forkDeployment.usdy, "UsdyTreasuries: bound collateral token is not USDY");
+        require(
+            params.loanToken == expected.parameters.market.loanToken,
+            "UsdyTreasuries: loan token differs from parameters"
+        );
+        require(
+            params.collateralToken == expected.parameters.market.collateralToken,
+            "UsdyTreasuries: collateral token differs from parameters"
+        );
+        require(
+            m.oracleKind == OracleKind.UsdyStable && m.oracleSource == ONDO_ORACLE,
+            "UsdyTreasuries: NAV source differs from parameters"
+        );
 
         // The crash targets must be in-band against the LIVE LLTV (not a hardcoded assumption): opens healthy,
         // the settle band lies strictly inside (LLTV, 1), the liquidate band is underwater.

@@ -27,8 +27,8 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
         _bindRole();
         string memory second;
         for (uint256 i; i < forkDeployment.markets.length; ++i) {
-            if (keccak256(bytes(forkDeployment.markets[i].plan.name)) != keccak256(bytes(deployed.name))) {
-                second = forkDeployment.markets[i].plan.name;
+            if (keccak256(bytes(forkDeployment.markets[i].parameters.name)) != keccak256(bytes(deployed.name))) {
+                second = forkDeployment.markets[i].parameters.name;
                 break;
             }
         }

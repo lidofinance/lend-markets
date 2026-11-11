@@ -3,24 +3,28 @@ pragma solidity 0.8.36;
 
 import {CommonBase} from "forge-std/Base.sol";
 import {ProtocolDeployer} from "../lib/ProtocolDeployer.sol";
-import {ProtocolAddresses, ProtocolPlan, CircuitBreakerPlan, ProtocolConfig} from "./DeploymentTypes.sol";
+import {ProtocolAddresses, ProtocolParameters, CircuitBreakerParameters, ProtocolConfig} from "./DeploymentTypes.sol";
 
 abstract contract ProtocolDeployment is CommonBase, ProtocolDeployer {
     error MissingProtocolGovernance();
 
-    function _deployProtocol(ProtocolPlan memory plan, address deployer) internal returns (ProtocolAddresses memory p) {
-        _requireChainId(plan.chainId);
-        if (plan.agent == address(0) || plan.executor == address(0) || plan.resealManager == address(0)) {
-            revert MissingProtocolGovernance();
-        }
-        address circuitBreaker = plan.circuitBreaker;
+    function _deployProtocol(ProtocolParameters memory parameters, address deployer)
+        internal
+        returns (ProtocolAddresses memory p)
+    {
+        _requireChainId(parameters.chainId);
+        if (
+            parameters.agent == address(0) || parameters.executor == address(0)
+                || parameters.resealManager == address(0)
+        ) revert MissingProtocolGovernance();
+        address circuitBreaker = parameters.circuitBreaker;
         if (circuitBreaker == address(0)) {
-            CircuitBreakerPlan memory c = plan.circuitBreakerPlan;
+            CircuitBreakerParameters memory c = parameters.circuitBreakerParameters;
             // The upstream dependency pins solc 0.8.34.
             circuitBreaker = vm.deployCode(
                 "CircuitBreaker.sol:CircuitBreaker",
                 abi.encode(
-                    plan.executor,
+                    parameters.executor,
                     c.minPauseDuration,
                     c.maxPauseDuration,
                     c.minHeartbeatInterval,
@@ -32,10 +36,10 @@ abstract contract ProtocolDeployment is CommonBase, ProtocolDeployer {
         }
         p = _deployBackbone(
             ProtocolConfig({
-                agent: plan.agent,
-                evmScriptExecutor: plan.executor,
+                agent: parameters.agent,
+                evmScriptExecutor: parameters.executor,
                 circuitBreaker: circuitBreaker,
-                resealManager: plan.resealManager
+                resealManager: parameters.resealManager
             }),
             deployer
         );

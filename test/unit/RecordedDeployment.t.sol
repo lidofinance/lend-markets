@@ -5,9 +5,9 @@ import {Test} from "forge-std/Test.sol";
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 import {RecordedDeployment} from "../../script/deployment/RecordedDeployment.sol";
-import {DeploymentSnapshot} from "../../script/deployment/DeploymentSnapshot.sol";
-import {Protocol as MainnetProtocol} from "../../script/deployment/mainnet/Protocol.sol";
-import {Deployment as HoodiDeployment} from "../../script/deployment/hoodi-testnet/Deployment.sol";
+import {DeploymentSnapshot} from "../../script/deployment/DeploymentTypes.sol";
+import {Protocol as MainnetProtocol} from "../../script/deployment/mainnet/artifacts/Protocol.sol";
+import {Deployment as HoodiDeployment} from "../../script/deployment/hoodi-testnet/artifacts/Deployment.sol";
 
 contract RecordedDeploymentHarness {
     function load(string memory run) external view returns (DeploymentSnapshot memory) {

@@ -15,7 +15,7 @@ on:
         description: "state-mate config file name under script/config/<config>/state-mate/"
         default: "live.yaml"
       deployment_run:
-        description: "run under script/deployment/ containing Deployment.sol for the fork suites"
+        description: "run under script/deployment/ containing artifacts/Deployment.sol for the fork suites"
         default: "hoodi-testnet"
 
 permissions:

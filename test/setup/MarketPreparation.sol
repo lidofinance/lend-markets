@@ -10,7 +10,7 @@ import {IRiskStewardDashboard} from "../../src/interfaces/IRiskStewardDashboard.
 import {MarketDeployment} from "../../script/deployment/MarketDeployment.sol";
 import {
     ProtocolAddresses,
-    MarketPlan,
+    MarketParameters,
     MarketDeploymentResult,
     MarketActivation,
     ExitBookAddresses
@@ -53,7 +53,7 @@ abstract contract MarketPreparation is Test, MarketDeployment {
 
     function _prepareMarket(
         ProtocolAddresses memory p,
-        MarketPlan memory plan,
+        MarketParameters memory parameters,
         MarketDeploymentResult memory existing,
         MarketActivation memory activation
     ) internal returns (MarketDeploymentResult memory d) {
@@ -61,18 +61,20 @@ abstract contract MarketPreparation is Test, MarketDeployment {
         if (d.controller == address(0)) {
             // Only a fully empty record permits deployment.
             require(keccak256(abi.encode(d)) == keccak256(abi.encode(_emptyMarket())), "Partial market record");
-            d = _deployMarket(p, plan);
+            d = _deployMarket(p, parameters);
         } else {
             _checkMarket(p, d);
-            _same("market.loanToken", plan.market.loanToken, d.params.loanToken);
-            _same("market.collateralToken", plan.market.collateralToken, d.params.collateralToken);
-            require(plan.market.lltv == d.params.lltv, "Market LLTV differs from plan");
-            if (plan.market.oracle != address(0)) _same("market.priceFeed", plan.market.oracle, d.params.oracle);
-            if (plan.market.guardianSignals != address(0)) {
-                _same("market.guardians", plan.market.guardianSignals, d.guardianSignals);
+            _same("market.loanToken", parameters.market.loanToken, d.params.loanToken);
+            _same("market.collateralToken", parameters.market.collateralToken, d.params.collateralToken);
+            require(parameters.market.lltv == d.params.lltv, "Market LLTV differs from parameters");
+            if (parameters.market.oracle != address(0)) {
+                _same("market.priceFeed", parameters.market.oracle, d.params.oracle);
             }
-            plan.market.oracle = d.params.oracle;
-            _checkPriceFeed(p, plan);
+            if (parameters.market.guardianSignals != address(0)) {
+                _same("market.guardians", parameters.market.guardianSignals, d.guardianSignals);
+            }
+            parameters.market.oracle = d.params.oracle;
+            _checkPriceFeed(p, parameters);
         }
         if (ILidoLend(p.core).market(d.id).lastUpdate != 0) {
             // Validate active markets without changing their governance state.
@@ -84,7 +86,7 @@ abstract contract MarketPreparation is Test, MarketDeployment {
             require(IPreparationPauser(p.circuitBreaker).getPauser(d.controller) != address(0), "Missing pauser");
             return d;
         }
-        _checkInertMarket(p, plan, d);
+        _checkInertMarket(p, parameters, d);
         _activatePreparedMarket(p, d, activation);
     }
 

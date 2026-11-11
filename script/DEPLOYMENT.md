@@ -7,15 +7,16 @@ Easy Track motion. This repository does not deploy Easy Track or its executor.
 ## Scripts and shared operations
 
 - `ProtocolDeployment` / `ProtocolDeployer`: protocol backbone and a new or reused CircuitBreaker.
-- `MarketDeployment`: market creation and dependency validation.
-- `mainnet/WethWstethMarket.sol`: WETH/wstETH parameters and price-feed deployment/validation, shared with tests.
+- `MarketDeployment`: market creation, price-feed proxy deployment/validation and address output.
+- `WethWstethMarket` at the start of `mainnet/DeployWethWsteth.s.sol`: shared WETH/wstETH parameters and price-feed functions.
 - `ProtocolDeployer._deployExitBooks`: independent exit-book deployment.
 - `PeripheryDeployment`: bundler and Vault V2 helpers.
 
 The concrete `.s.sol` files inherit `Script` and the shared operations they use. Only these entrypoints contain
-`run()` and `startBroadcast`/`stopBroadcast`. Fork fixtures inherit shared operations, not runnable scripts.
-`mainnet/Protocol.sol` supplies protocol addresses and deployment parameters; `mainnet/ExitBookPlan.sol` supplies
-exit-book parameters. These libraries contain data functions and require no inheritance.
+`run()` and `startBroadcast`/`stopBroadcast`. Fork fixtures inherit the shared recipe class; only the runnable class inherits `Script` and exposes `run()`.
+`mainnet/artifacts/Protocol.sol` supplies recorded protocol addresses. New protocol parameters are defined
+at the start of `mainnet/DeployProtocol.s.sol`.
+`mainnet/DeployExitBooks.s.sol` defines the exit-book parameters directly; shared types live in `DeploymentTypes.sol`.
 
 These operations are also used by fork fixtures. Production contracts under `src/` and pinned dependencies are
 unchanged. The old TOML-driven deployment entrypoints and `deploy-all` shell driver have been removed.
@@ -24,12 +25,12 @@ unchanged. The old TOML-driven deployment entrypoints and `deploy-all` shell dri
 The three APR-dependent rates still need the approved launch snapshot. Guardian membership, quorum, tokens, price feed,
 activation/settlement parameters and IRM curve are Solidity values; no config file is read to construct them.
 
-A new market needs a reusable recipe inheriting `MarketDeployment`, with a typed plan and implementations of
-`_deployPriceFeed` and `_checkPriceFeed`, plus a small `.s.sol` entrypoint that supplies protocol addresses and
+A new market needs a reusable recipe inheriting `MarketDeployment`, with typed parameters and implementations of
+`_deployPriceFeedImplementation` and `_checkPriceFeed`, and a small runnable class in the same `.s.sol` file that supplies protocol addresses and
 calls `_deployMarket` inside its broadcast boundary. Tests use the reusable recipe directly.
-`plan.name` identifies the market and its integration-test role. Set `plan.market.oracle` or
-`plan.market.guardianSignals` to reuse a reviewed deployment; zero creates that resource. Reused contracts are
-validated before market deployment. Set `ProtocolPlan.circuitBreaker` to reuse a CircuitBreaker.
+`parameters.name` identifies the market and its integration-test role. Set `parameters.market.oracle` or
+`parameters.market.guardianSignals` to reuse a reviewed deployment; zero creates that resource. Reused contracts are
+validated before market deployment. Set `ProtocolParameters.circuitBreaker` to reuse a CircuitBreaker.
 
 ## Simulate and broadcast
 
@@ -60,13 +61,15 @@ instead of `--account`.
 
 ## Results and dependency addresses
 
-Maintain dependency addresses in `script/deployment/<network>/Protocol.sol` by hand after checking the
-successful Forge receipts and deployed code. Both new and existing deployments use Solidity descriptions.
+Maintain dependency addresses in `script/deployment/<network>/artifacts/Protocol.sol` by hand after checking the
+successful Forge receipts and deployed code. `ExitBooks.sol` and `Bundler.sol` in the same folder hold their
+recorded addresses. New deployment inputs stay in the scripts; recorded expectations stay in `artifacts/`.
 
-`script/deployment/<run>/Deployment.sol` provides `snapshot()`, returning a `DeploymentSnapshot`:
+`script/deployment/<run>/artifacts/Deployment.sol` provides `snapshot()`, returning a `DeploymentSnapshot`:
 protocol addresses, expected parameters, optional books/bundler/vaults and the recorded markets. Mainnet and
 Hoodi descriptions are checked in. Add a market's actual addresses and deployment block after deployment;
-keep its approved parameters in its Solidity recipe. Do not infer expected values from the contracts being tested.
+keep its approved parameters in its Solidity recipe. Each market carries its price-feed sources and optional
+collateral blocklist; token addresses belong to its market parameters. Do not infer expected values from the contracts being tested.
 
 With `--broadcast`, the four entrypoints write flat address lists under `deployed/<network>/`:
 `protocol.toml`, `markets/<market>.toml`, `exit-books.toml` or `bundler.toml`. Market output also includes its ID.
@@ -78,7 +81,7 @@ confirmation and can exist even if submission fails. Check the native Forge rece
 copying addresses into the Solidity description. Existing TOML files remain unchanged; deployment and test inputs
 are Solidity only. Output uses standard `serializeAddress` / `writeToml`, without schemas or config hashes.
 
-For an external CI run, supply the same `Deployment.sol` under `script/deployment/<run>/`, with the actual
+For an external CI run, supply the same `Deployment.sol` under `script/deployment/<run>/artifacts/`, with the actual
 addresses and expected parameters of the caller's prepared state. Then run `make test-fork RUN=<run>` against
 its RPC. Register the run in `RecordedDeployment.load` with an import and a call to its `snapshot()` function.
 The description is a Solidity library, compiled with the tests. Unknown runs, the wrong chain and missing core code fail.
@@ -104,7 +107,7 @@ mainnet WETH/wstETH; USDY is omitted from the fresh fixture. Other chains/pairs 
 | Recorded state | Preparation inside the Forge fork |
 | --- | --- |
 | Protocol only | Deploy the required missing market, activate and preseed |
-| Inert market | Validate identity, initial roles and plan, then activate and preseed |
+| Inert market | Validate identity, initial roles and parameters, then activate and preseed |
 | Active market | Validate identity and seed/route/pauser setup; preserve live parameters and balances |
 | Missing code at a recorded address | Fail without replacing the deployment |
 
