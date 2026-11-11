@@ -85,7 +85,7 @@ abstract contract ForkStack is Test {
 
     function _fork() internal virtual {
         _selectSourceFork();
-        string memory runName = vm.envOr("ARTIFACTS_DIR", string(""));
+        string memory runName = vm.envOr("DEPLOYMENT_RUN", string(""));
         if (bytes(runName).length == 0) {
             _useDeployment((new ForkFixture()).prepare());
         } else {

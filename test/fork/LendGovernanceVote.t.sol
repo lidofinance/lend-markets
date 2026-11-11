@@ -83,19 +83,14 @@ contract LendGovernanceVoteFork is Test {
     bytes[] internal permissions;
 
     function setUp() public {
-        if (bytes(vm.envOr("ARTIFACTS_DIR", string(""))).length == 0) {
+        if (bytes(vm.envOr("DEPLOYMENT_RUN", string(""))).length == 0) {
             vm.skip(true, "governance vote requires an existing Hoodi deployment");
-        }
-        string memory artifact =
-            vm.readFile(string.concat("deployed/", vm.envString("ARTIFACTS_DIR"), "/protocol.toml"));
-        if (vm.keyExistsToml(artifact, ".header.version")) {
-            vm.skip(true, "vote rehearsal requires historical Hoodi artifacts");
         }
         uint256 pin = vm.envOr("FORK_BLOCK", uint256(0));
         if (pin == 0) vm.createSelectFork(vm.envString("RPC_URL"));
         else vm.createSelectFork(vm.envString("RPC_URL"), pin);
         if (block.chainid != 560048) vm.skip(true, "hoodi governance only");
-        DeploymentSnapshot memory d = RecordedDeployment.load(vm.envString("ARTIFACTS_DIR"));
+        DeploymentSnapshot memory d = RecordedDeployment.load(vm.envString("DEPLOYMENT_RUN"));
         if (d.protocol.agent != AGENT) vm.skip(true, "run is not governed by the Hoodi DAO");
         ownerFacade = d.protocol.ownerFacade;
         irmRouter = d.protocol.irmRouter;

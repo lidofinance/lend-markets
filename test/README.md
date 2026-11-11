@@ -51,27 +51,27 @@ The fresh fixture contains two WETH/wstETH markets. Historical USDY regressions 
 - **Requires:** a mainnet archive RPC.
 - **Here:** `make test-fork RPC_URL=<rpc>` for integrations and acceptance;
   `make test-deployment RPC_URL=<rpc>` for missing/inert/active deployment-state scenarios. CI runs both targets.
-  Fixtures and recorded runs produce one `DeploymentSnapshot`; integration tests do not parse artifact formats.
-  `RecordedDeployment` delegates historical decoding to `script/legacy/`.
+  Fixtures and recorded Solidity descriptions produce one `DeploymentSnapshot`.
+  `RecordedDeployment` selects the corresponding library under `script/deployment/<run>/Deployment.sol`.
 
 ## 5. Live-deployment regression tests (fork against a real run)
 
-Flow tests bound to an **already-deployed** protocol: fork the network that holds it, read the run's immutable artifacts, and drive real flows against the live state. Never deploys what it tests. This is the regression net for "the deployed protocol still behaves" — after code changes or governance actions.
+Flow tests bound to an **already-deployed** protocol: fork the network that holds it, read the run's Solidity description, and drive real flows against the live state. Never deploys what it tests. This is the regression net for "the deployed protocol still behaves" — after code changes or governance actions.
 
-These suites check **functional correctness, not state values**: they take addresses from the artifacts, read parameters off the chain, and assert *relative* behavior (read a value, act, assert the delta) plus *relational* validity (`minActivationDelay < maxActivationDelay` and the like), so a degenerate on-chain configuration still trips them. Absolute parameter assertions belong to state-mate (kind 9) — baking state into these tests would mean rewriting them on every parameter change. When authoring, mind the asymmetry: a false positive fails loudly and gets fixed; a false negative accumulates silently and is the more dangerous of the two.
+These suites check **functional correctness, not state values**: they take addresses from the Solidity description, read parameters off the chain, and assert *relative* behavior (read a value, act, assert the delta) plus *relational* validity (`minActivationDelay < maxActivationDelay` and the like), so a degenerate on-chain configuration still trips them. Absolute parameter assertions belong to state-mate (kind 9) — baking state into these tests would mean rewriting them on every parameter change. When authoring, mind the asymmetry: a false positive fails loudly and gets fixed; a false negative accumulates silently and is the more dangerous of the two.
 
 - **Requires:** `RPC_URL` holding the deployment + `RUN` naming the run under
-  `deployed/<run>/`; `FORK_BLOCK` to pin a block for replay. Reverts (never skips) when the setup
+  `script/deployment/<run>/Deployment.sol`; `FORK_BLOCK` to pin a block for replay. Reverts (never skips) when the setup
   is missing; absent market roles, optional components or network-specific preconditions can skip a suite.
 - **Runs:** after every deploy; on protocol-touching changes.
 - **Here:** `test/fork/` via `make test-fork RUN=<run> PREPARE=false`. `make test-fork` without command-line `RUN` creates a fresh stack; with `RUN` and no `PREPARE=false`, it prepares missing/inert markets before testing.
 
 ## 6. Acceptance tests (deployment verification on a fork)
 
-Assert the deployed stack is exactly what the plan intended: wiring, the full initial role topology (direct enumerable-role checks), and its state relative to the activation motion — **readiness** mode before the motion, **activated** mode after it, plus a multi-market activation simulation. Expected addresses come from the immutable artifacts; the reviewed motion inputs (pauser committee, settlement flag) come from the environment so a wrong artifact cannot vouch for itself. Acceptance is a **post-deploy-only** gate: it also asserts the virgin state (no positions taken, nothing borrowed yet), so it cannot be re-run meaningfully once the protocol is in use.
+Assert the deployed stack is exactly what the plan intended: wiring, the full initial role topology (direct enumerable-role checks), and its state relative to the activation motion — **readiness** mode before the motion, **activated** mode after it, plus a multi-market activation simulation. Expected addresses come from the Solidity description; the reviewed motion inputs (pauser committee, settlement flag) come from the environment so the deployment description cannot vouch for the motion inputs. Acceptance is a **post-deploy-only** gate: it also asserts the virgin state (no positions taken, nothing borrowed yet), so it cannot be re-run meaningfully once the protocol is in use.
 Audits launch state only — not later governance changes; the operational counterpart is state-mate (kind 9).
 
-- **Requires:** fork RPC + `deployed/<run>/protocol.toml` (`ACCEPTANCE_REGISTRY`) + `ACCEPTANCE_PAUSER_COMMITTEE` + `ACCEPTANCE_ENABLE_SETTLEMENT`; activated checks also require `ACCEPTANCE_STEWARD`, `ACCEPTANCE_FEE`,
+- **Requires:** fork RPC + `script/deployment/<run>/Deployment.sol` (`ACCEPTANCE_RUN`) + `ACCEPTANCE_PAUSER_COMMITTEE` + `ACCEPTANCE_ENABLE_SETTLEMENT`; activated checks also require `ACCEPTANCE_STEWARD`, `ACCEPTANCE_FEE`,
   `ACCEPTANCE_MIN_CORE_SEED_SHARES` and `ACCEPTANCE_MIN_VAULT_SEED_SHARES`.
 - **Runs:** on deploy day — readiness before the activation motion (a gate on starting it), activated + multi after enactment; again for every added market.
 - **Here:** `test/acceptance/` via `make acceptance-run RUN=<run> MARKET=<m>` / `make acceptance-run-multi RUN=<run> MARKET_A=<a> MARKET_B=<b>`.
@@ -119,7 +119,7 @@ Role coverage follows the guinea-pig principle: every motion factory is exercise
 **one** test market; the expected role set is hardcoded as the expectation for *any* market's
 configuration (the factory wires every market identically), and each market is checked against
 that same set. Deployment operations live in `script/deployment/` and are reused by the shared `test/setup/ForkFixture.sol`.
-Historical compatibility readers retain no deployment or artifact-writing operations.
+Deployment and test inputs are Solidity; historical TOML files are retained without runtime readers.
 
 ## 9. Deploy verification (state-mate / diffyscan / artifact checks)
 

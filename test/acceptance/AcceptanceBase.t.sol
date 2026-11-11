@@ -2,7 +2,6 @@
 pragma solidity 0.8.36;
 
 import {MarketPlan, CircuitBreakerPlan} from "../../script/deployment/DeploymentTypes.sol";
-import {DeploymentArtifact} from "../../script/deployment/DeploymentArtifact.sol";
 import {RecordedDeployment} from "../../script/deployment/RecordedDeployment.sol";
 import {DeploymentSnapshot, RecordedMarket, PriceFeedRecord} from "../../script/deployment/DeploymentSnapshot.sol";
 import {Test} from "forge-std/Test.sol";
@@ -217,8 +216,6 @@ interface IReadCircuitBreaker {
 abstract contract AcceptanceContext is Test {
     using MarketParamsLib for MarketParams;
 
-    error RegistryPathMismatch(string expected, string actual);
-
     // role ids
     bytes32 internal constant DEFAULT_ADMIN_ROLE = 0x00;
     bytes32 internal constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
@@ -309,20 +306,11 @@ abstract contract AcceptanceContext is Test {
     ActivationCandidate[] internal localActivationCandidates;
 
     function setUp() public virtual {
-        string memory regPath = vm.envOr("ACCEPTANCE_REGISTRY", string(""));
-        if (bytes(regPath).length == 0) {
-            vm.skip(true, "acceptance: set ACCEPTANCE_REGISTRY to protocol.toml");
+        recordedRun = vm.envOr("ACCEPTANCE_RUN", string(""));
+        if (bytes(recordedRun).length == 0) {
+            vm.skip(true, "acceptance: set ACCEPTANCE_RUN");
             return;
         }
-        string memory registry = vm.readFile(regPath);
-        recordedRun = vm.parseTomlString(
-            registry, vm.keyExistsToml(registry, ".header.version") ? ".header.run" : ".protocol.deployment"
-        );
-        string memory expectedPath = string.concat(DeploymentArtifact.directory(recordedRun), "/protocol.toml");
-        if (
-            keccak256(bytes(regPath)) != keccak256(bytes(expectedPath))
-                && keccak256(bytes(regPath)) != keccak256(bytes(string.concat(vm.projectRoot(), "/", expectedPath)))
-        ) revert RegistryPathMismatch(expectedPath, regPath);
         string memory rpc = vm.envOr("ACCEPTANCE_RPC_URL", string(""));
         if (bytes(rpc).length != 0) {
             uint256 pin = vm.envOr("FORK_BLOCK", uint256(0));
@@ -334,7 +322,6 @@ abstract contract AcceptanceContext is Test {
     }
 
     function _loadMarket(string memory market) internal {
-        DeploymentArtifact.requireName(market);
         DeploymentSnapshot memory d = RecordedDeployment.load(recordedRun);
         for (uint256 i; i < d.markets.length; ++i) {
             if (keccak256(bytes(d.markets[i].plan.name)) != keccak256(bytes(market))) continue;

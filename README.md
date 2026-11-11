@@ -34,7 +34,7 @@ make test-deployment RPC_URL=<mainnet-archive-rpc>         # deployment-state sc
 ```
 
 `FORK_BLOCK=<block>` pins the source block. To exercise an existing deployment without preparing it, bind its
-recorded artifacts instead:
+a recorded Solidity deployment description instead:
 
 ```sh
 make test-fork RUN=<run> PREPARE=false RPC_URL=<network-rpc>
@@ -43,7 +43,7 @@ make test-fork RUN=<run> PREPARE=false RPC_URL=<network-rpc>
 Deployment parameters and dependency addresses live in Solidity files under `script/deployment/<network>/`.
 Run `forge script <recipe.s.sol> --rpc-url <rpc>` to simulate; add `--broadcast` to deploy. Results and State Mate
 configurations are maintained manually. See [deployment instructions](script/DEPLOYMENT.md) for signer inputs,
-artifacts and acceptance checks.
+Solidity deployment descriptions and acceptance checks.
 
 Format Solidity:
 
@@ -77,7 +77,7 @@ Environment variables are documented in `.env.example`. Copy it to `.env` and se
 use a fresh stack by default. Explicit `make test-fork RUN=<run>` prepares missing/inert markets in an existing
 deployment; add `PREPARE=false` to test it without preparation. `RUN` and `PREPARE` select these modes only when
 passed on the Make command line; values from `.env` or the environment do not change the mode.
-Make sets `ARTIFACTS_DIR` and `PREPARE_MARKETS` internally. For other inputs, command-line assignments take
+Make sets `DEPLOYMENT_RUN` and `PREPARE_MARKETS` internally. For other inputs, command-line assignments take
 precedence over exported environment values, then `.env`, then Makefile defaults.
 
 CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that version locally. `make test-mutation` is local only. Workflows under `.github/workflows/` cover build/lint/local and fresh-fork tests (`ci.yml`), coverage (`coverage.yml`), deep fuzz/invariants (`fuzz.yml`) and pending governance actions (`pending-action.yml`).

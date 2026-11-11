@@ -6,6 +6,7 @@ import {ProtocolDeployer} from "../../lib/ProtocolDeployer.sol";
 import {ExitBookConfig} from "../ExitBookPlan.sol";
 import {ExitBookAddresses} from "../DeploymentTypes.sol";
 import {ExitBookPlan} from "./ExitBookPlan.sol";
+import {DeploymentOutput} from "../DeploymentOutput.sol";
 
 contract DeployExitBooks is Script, ProtocolDeployer {
     error CoreNotContract(address core);
@@ -20,6 +21,11 @@ contract DeployExitBooks is Script, ProtocolDeployer {
         vm.startBroadcast();
         (books.morpho, books.erc4626) = _deployExitBooks(plan, msg.sender);
         vm.stopBroadcast();
+
+        vm.serializeAddress("exit-books", "morpho", books.morpho);
+        DeploymentOutput.write(
+            "deployed/mainnet", "exit-books", vm.serializeAddress("exit-books", "erc4626", books.erc4626)
+        );
 
         console2.log("Morpho exit book:", books.morpho);
         console2.log("ERC4626 exit book:", books.erc4626);

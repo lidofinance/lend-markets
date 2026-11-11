@@ -20,28 +20,31 @@
   `make test-fork` prepares a fresh mainnet fixture by default. `make test-fork RUN=<run> PREPARE=false` binds a recorded
   deployment without preparation; `make test-fork RUN=<run>` prepares its missing/inert WETH/wstETH markets.
   Only Make command-line `RUN` and `PREPARE` select these modes; environment and `.env` values are ignored.
-  Make sets `ARTIFACTS_DIR` and `PREPARE_MARKETS` internally. No source-node transactions or artifact writes.
+  Make sets `DEPLOYMENT_RUN` and `PREPARE_MARKETS` internally. No source-node transactions or artifact writes.
 - `test/deployment/`: Solidity deployment scenarios run by CI, selected by the `deployment` Foundry profile.
   Prepares missing/inert markets inside its own Forge fork using the shared deployment functions;
-  never writes to the source RPC and is excluded from default/local/artifact-backed fork suites.
+  never writes to the source RPC and is excluded from default/local/recorded-deployment fork suites.
 - `test/acceptance/`: verification of an **already-deployed** protocol on a mainnet fork — asserts the
   deployed stack is correctly wired, has the exact initial-launch role topology (direct enumerable-role checks),
   and is either ready for the activation motion or live after it. Expected deployment values and addresses come
-  from immutable artifacts under `deployed/<run>/`; reviewed runtime motion choices come from
+  from `script/deployment/<run>/Deployment.sol`; reviewed runtime motion choices come from
   `ACCEPTANCE_PAUSER_COMMITTEE` and `ACCEPTANCE_ENABLE_SETTLEMENT`; activated checks additionally require
   `ACCEPTANCE_STEWARD`, `ACCEPTANCE_FEE`, `ACCEPTANCE_MIN_CORE_SEED_SHARES` and
   `ACCEPTANCE_MIN_VAULT_SEED_SHARES`. The suite skips unless
-  `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
+  `ACCEPTANCE_RUN` selects that run.
 - `script/deployment/<network>/`: concrete Solidity deployment entrypoints and reusable recipes. Only the `.s.sol`
   entrypoints own broadcast boundaries; fork fixtures reuse deployment functions and parameter providers directly.
-  Run entrypoints with `forge script`; `--broadcast` submits transactions. Network-specific `Protocol.sol` holds
+  Run entrypoints with `forge script`; `--broadcast` also writes flat address lists under `deployed/<network>/`
+  (`protocol.toml`, `markets/<name>.toml`, `exit-books.toml`, `bundler.toml`). These lists are written before transaction confirmation; verify receipts.
+  Network-specific `Protocol.sol` holds
   manually maintained dependency addresses and protocol parameters; `ExitBookPlan.sol` holds book parameters.
-- `script/legacy/`: compatibility readers for historical TOML artifacts. `script/config/` is retained only for
-  historical verification and pending-governance/state-mate rehearsals; new deployments do not read config TOML.
-- `deployed/<run>/`: immutable deployment results: typed `protocol.toml`, `markets/`, optional books/bundler/vaults,
-  and native Forge transaction records. TOML holds output addresses and expected parameters, not deployment inputs.
-  Record results manually after checking successful Forge receipts, canonical RPC blocks and deployed code. Fork and
-  acceptance tests read these results; fresh fork fixtures do not need the directory. Historical Mainnet/Hoodi artifacts remain supported.
+- `script/deployment/<run>/Deployment.sol`: a Solidity library providing `snapshot()` for
+  existing deployments and external CI states. It returns the same typed `DeploymentSnapshot` used by fresh fixtures.
+  Register each run in `RecordedDeployment.load`; descriptions compile with the tests.
+- `script/config/`: historical files and pending-governance/state-mate inputs. Deployment/test code reads no TOML.
+- `deployed/<run>/`: retained deployment history, native Forge transaction records, State Mate and Diffyscan configs.
+  Existing TOML files are preserved but are not inputs to deployment or Forge tests. Record new addresses and approved
+  parameters manually in Solidity after checking successful receipts, canonical RPC blocks and deployed code.
 - `lib/`: pinned git submodules. Treat as vendored dependencies.
 - `docs/specs/`: per-contract specifications (see Specifications section).
 - `STYLE_GUIDE.md`: Solidity style guide (naming, structure, comments, fork conventions).
@@ -56,7 +59,7 @@
   shell provisioning or test TOML configs. The fixture has two WETH/wstETH markets, books, bundler and Vault V2;
   USDY is currently omitted. `FORK_BLOCK` pins the fork.
 - Existing run, without preparation: `make test-fork RUN=<run> PREPARE=false RPC_URL=<rpc>`; historical Mainnet and Hoodi
-  artifacts remain supported. Missing recorded contracts fail rather than trigger redeployment.
+  deployments have Solidity descriptions. Missing recorded contracts fail rather than trigger redeployment.
 - External regressions: `make test-fork RUN=<run> RPC_URL=<caller-rpc>` prepares absent/inert markets on a
   private Forge fork of the caller's state. Currently the preparation recipe supports mainnet WETH/wstETH only;
   unsupported recorded markets fail. Easy Track and its executor are never deployed here.
@@ -85,9 +88,9 @@
 - Writing a fork test: extend `helpers/ForkMarketStack.sol`, pass a market role in its constructor, and call
   `_fork()` then `_bindRole()` in `setUp`. Use `deployed` with ForkStack helpers and `market` with MarketActions.
   Shared preparation lives in `test/setup/ForkFixture.sol` and `MarketPreparation.sol`; suites do not duplicate it.
-  Protocol and dependency addresses are typed fields of `forkDeployment`; historical artifact access is confined
-  to the compatibility loader. Missing optional market roles skip; malformed recorded state fails.
-- Acceptance assertions consume typed expected values. Historical `ACCEPTANCE_REGISTRY` inputs are parsed once;
+  Protocol and dependency addresses are typed fields of `forkDeployment`, supplied by Solidity descriptions.
+  Missing optional market roles skip; malformed recorded state fails.
+- Acceptance assertions consume typed expected values from the Solidity description selected by `ACCEPTANCE_RUN`;
   `test/fork/FreshDeploymentAcceptance.t.sol` passes the same expectations directly for fresh fixtures. Record
   local EVM logs before fixture deployment so non-enumerable instant-activation grants are audited too.
 
@@ -131,9 +134,9 @@ test/
 ├── scenario/     # L2 — end-to-end flows on a freshly deployed stack (local EVM, mock tokens)
 ├── invariant/    # L4 — handler-based stateful properties
 ├── simulation/   # seeded months-long solvency simulations on a fresh stack; 30-day variants run in test-local
-├── fork/         # fork tests vs the deployed protocol, bound from deployed/<ARTIFACTS_DIR>/
+├── fork/         # fork tests vs the deployed protocol, bound from script/deployment/<run>/Deployment.sol
 ├── deployment/   # typed deployment + preparation on a Forge fork (profile: deployment)
-└── acceptance/   # L3 — mainnet fork vs immutable artifacts under deployed/<run>/
+└── acceptance/   # L3 — fork vs a Solidity deployment description
 ```
 
 - `unit/<Contract>.t.sol` — single contract or pure library in isolation; **flat, one file per
@@ -148,11 +151,11 @@ test/
   once per run.
 - `fork/<Flow>.t.sol` — integration tests against a fresh Solidity fixture or an explicit recorded deployment. `make test-fork` to run.
 - `acceptance/<Flow>.t.sol` — verification of the **already-deployed** protocol on a mainnet fork; live
-  addresses and deployment values from `deployed/<run>/` (`ACCEPTANCE_REGISTRY` points to `protocol.toml`).
+  addresses and expected values from `script/deployment/<run>/Deployment.sol` (`ACCEPTANCE_RUN` selects the run).
   Activated/readiness runs also require independent reviewed `ACCEPTANCE_PAUSER_COMMITTEE` and
   `ACCEPTANCE_ENABLE_SETTLEMENT` motion inputs; activated checks also require `ACCEPTANCE_STEWARD`, `ACCEPTANCE_FEE`,
   `ACCEPTANCE_MIN_CORE_SEED_SHARES` and `ACCEPTANCE_MIN_VAULT_SEED_SHARES`. Run with `ACCEPTANCE_RPC_URL=$RPC_URL` (or `--fork-url`);
-  skips without an artifact. It audits launch state, not role changes made by later governance. See
+  skips without `ACCEPTANCE_RUN`. It audits launch state, not role changes made by later governance. See
   `script/DEPLOYMENT.md`.
 
 ### Setup Infra (`test/setup/`)

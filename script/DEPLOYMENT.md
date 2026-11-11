@@ -60,30 +60,29 @@ instead of `--account`.
 
 ## Results and dependency addresses
 
-Maintain dependency addresses in `script/deployment/<network>/Protocol.sol` by hand after verifying the native
-Forge receipts and deployed addresses. The Mainnet recipes use the existing Mainnet protocol addresses.
-Historical Hoodi addresses remain in its recorded artifacts. A new deployment needs its own reviewed provider before
-it is reused by markets or periphery. No generator or deployment config parser runs in the deployment path.
+Maintain dependency addresses in `script/deployment/<network>/Protocol.sol` by hand after checking the
+successful Forge receipts and deployed code. Both new and existing deployments use Solidity descriptions.
 
-The scripts do not write or export application artifacts. Preserve the successful Forge broadcast report,
-check chain, receipt status, block hashes and deployed code, then record the addresses and reviewed parameters
-in `deployed/<run>/` manually when artifact-backed tests are needed. Do not replace existing deployment history.
+`script/deployment/<run>/Deployment.sol` provides `snapshot()`, returning a `DeploymentSnapshot`:
+protocol addresses, expected parameters, optional books/bundler/vaults and the recorded markets. Mainnet and
+Hoodi descriptions are checked in. Add a market's actual addresses and deployment block after deployment;
+keep its approved parameters in its Solidity recipe. Do not infer expected values from the contracts being tested.
 
-The readers accept historical TOML and the typed records defined in `DeploymentRecord.sol`. The typed layout is:
+With `--broadcast`, the four entrypoints write flat address lists under `deployed/<network>/`:
+`protocol.toml`, `markets/<market>.toml`, `exit-books.toml` or `bundler.toml`. Market output also includes its ID.
+Existing files are not overwritten; dry runs and tests do not write these lists. For another run, set the output
+directory explicitly in its concrete recipe.
 
-```text
-protocol.toml                  # protocol addresses and plan
-markets/<name>.toml             # market addresses, plan and committee
-exit-books.toml                # optional books and their plan
-bundler.toml                   # optional bundler and its token inputs
-vaults/<name>.toml              # optional Vault V2 and adapter
-transactions/<kind>-<name>.json # reviewed native Forge report
-```
+Forge executes `run()` before sending transactions. The address list is therefore written before broadcast
+confirmation and can exist even if submission fails. Check the native Forge receipts and deployed code before
+copying addresses into the Solidity description. Existing TOML files remain unchanged; deployment and test inputs
+are Solidity only. Output uses standard `serializeAddress` / `writeToml`, without schemas or config hashes.
 
-Typed records include a versioned header with run, kind, name, chain, sender and block number. Use a block no
-later than the deployment transactions for event scans. Copy parameters from the reviewed recipe and addresses
-from successful receipts; acceptance tests verify them against the chain. Fresh fork tests use the shared
-Solidity deployment functions directly and do not require these files.
+For an external CI run, supply the same `Deployment.sol` under `script/deployment/<run>/`, with the actual
+addresses and expected parameters of the caller's prepared state. Then run `make test-fork RUN=<run>` against
+its RPC. Register the run in `RecordedDeployment.load` with an import and a call to its `snapshot()` function.
+The description is a Solidity library, compiled with the tests. Unknown runs, the wrong chain and missing core code fail.
+The caller must supply Solidity; a directory of TOML artifacts is no longer a test input.
 
 ## Fork and acceptance checks
 
@@ -96,9 +95,9 @@ make test-deployment RPC_URL=<mainnet-archive-rpc>
 
 Without command-line `RUN`, `test-fork` creates a fresh protocol, two WETH/wstETH markets, books, bundler and
 Vault V2 inside each suite's Forge fork. No Anvil, artifact directory or shell provisioning is required.
-With `RUN`, it reads recorded results, prepares missing/inert markets, and tests the resulting private state.
+With `RUN`, it reads the Solidity description, prepares missing/inert markets, and tests the resulting private state.
 With `PREPARE=false`, it tests existing state without preparing it. `RUN` and `PREPARE` from `.env` or the
-shell environment do not select the mode. Make sets `ARTIFACTS_DIR` and `PREPARE_MARKETS` internally.
+shell environment do not select the mode. Make sets `DEPLOYMENT_RUN` and `PREPARE_MARKETS` internally.
 `FORK_BLOCK=<block>` optionally pins the source state. The fresh and preparation recipes currently support
 mainnet WETH/wstETH; USDY is omitted from the fresh fixture. Other chains/pairs need a concrete fixture recipe.
 
@@ -111,8 +110,9 @@ mainnet WETH/wstETH; USDY is omitted from the fresh fixture. Other chains/pairs 
 
 Several markets share one protocol. Extend the typed required-market list when another market is reviewed.
 Preparation impersonates the executor inside Forge. Real Easy Track factory, preseed and motion flows remain
-integration tests of the Easy Track repository. The external regression action calls `make test-fork RUN="$RUN"`
-against its caller's post-vote RPC; it never changes that source node.
+integration tests of the Easy Track repository. External callers run `make test-fork RUN="$RUN"`
+against their post-vote RPC after supplying and registering a Solidity description; this never changes that source node.
+Callers using the old TOML export must migrate before using this branch.
 
 Verify an inert or activated deployment independently:
 
@@ -138,14 +138,7 @@ of the Easy Track motion replay and receipt checks.
 Readiness and activated suites choose their applicable state; the two-market
 suite rehearses sequential activation. It does not publish those transactions.
 
-## Historical compatibility
-
-`script/legacy/` holds the readers and verification helpers for existing artifacts. Historical configs under
-`script/config/` are retained for those readers and pending-governance rehearsals, not for new
-Solidity deployment. New-format market results can be added to an existing historical protocol run.
-
-For integration tests use `make test-fork RUN=<run>`; preparation happens inside the private Forge fork.
-Production activation remains the reviewed Easy Track motion.
+## Pending governance
 
 `apply-pending`, `pending-stop` and `test-pending` retain the separate local-Anvil workflow for rehearsing a
 pending governance transaction. `test-pending` passes `PREPARE=false` to verify exactly the post-action state.

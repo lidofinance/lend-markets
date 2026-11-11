@@ -6,6 +6,7 @@ import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {Protocol as MainnetProtocol} from "./Protocol.sol";
 import {WethWstethMarket} from "./WethWstethMarket.sol";
 import {ProtocolAddresses, MarketPlan, MarketDeploymentResult} from "../DeploymentTypes.sol";
+import {DeploymentOutput} from "../DeploymentOutput.sol";
 
 contract DeployWethWsteth is Script, WethWstethMarket {
     function run() external returns (MarketDeploymentResult memory deployed) {
@@ -16,6 +17,19 @@ contract DeployWethWsteth is Script, WethWstethMarket {
         vm.startBroadcast();
         deployed = _deployMarket(p, plan);
         vm.stopBroadcast();
+
+        vm.serializeBytes32(plan.name, "market_id", Id.unwrap(deployed.id));
+        vm.serializeAddress(plan.name, "core", p.core);
+        vm.serializeAddress(plan.name, "loan_token", deployed.params.loanToken);
+        vm.serializeAddress(plan.name, "collateral_token", deployed.params.collateralToken);
+        vm.serializeAddress(plan.name, "irm", deployed.params.irm);
+        vm.serializeAddress(plan.name, "controller", deployed.controller);
+        vm.serializeAddress(plan.name, "vault", deployed.vault);
+        vm.serializeAddress(plan.name, "price_feed", deployed.params.oracle);
+        vm.serializeAddress(plan.name, "guardian_signals", deployed.guardianSignals);
+        DeploymentOutput.write(
+            "deployed/mainnet/markets", plan.name, vm.serializeAddress(plan.name, "irm_config", deployed.irmConfig)
+        );
 
         console2.log("market:", plan.name);
         console2.logBytes32(Id.unwrap(deployed.id));

@@ -4,8 +4,8 @@
 
 # Make normally lets an included file replace exported environment variables. Preserve the public inputs so
 # precedence is consistently: command line > exported environment > .env > defaults.
-DOTENV_OVERRIDE_VARS := ARTIFACTS_CONFIG PREPARE_MARKETS CONFIG RUN MARKET MARKET_A MARKET_B PIN_BLOCK RPC_URL ARTIFACTS_DIR \
-	FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED ACCEPTANCE_RPC_URL ACCEPTANCE_REGISTRY ACCEPTANCE_PAUSER_COMMITTEE \
+DOTENV_OVERRIDE_VARS := PREPARE_MARKETS CONFIG RUN MARKET MARKET_A MARKET_B PIN_BLOCK RPC_URL DEPLOYMENT_RUN \
+	FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED ACCEPTANCE_RPC_URL ACCEPTANCE_RUN ACCEPTANCE_PAUSER_COMMITTEE \
 	ACCEPTANCE_ENABLE_SETTLEMENT ACCEPTANCE_STEWARD ACCEPTANCE_FEE ACCEPTANCE_MIN_CORE_SEED_SHARES \
 	ACCEPTANCE_MIN_VAULT_SEED_SHARES
 
@@ -51,7 +51,7 @@ sizes: ## Compile and report contract sizes
 	forge build --sizes
 
 test: ## Local + fresh-fork suites; RPC_URL required
-	ARTIFACTS_DIR= PREPARE_MARKETS=false forge test
+	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge test
 
 test-local: ## Local suites; no RPC
 	forge test --no-match-path 'test/{fork,deployment}/**'
@@ -63,15 +63,15 @@ ifeq ($(origin RUN),command line)
 	@test -n "$(RPC_URL)" || { echo 'ERROR: RPC_URL is required'; exit 1; }
 ifeq ($(origin PREPARE),command line)
 	@case "$(PREPARE)" in true|false) ;; *) echo 'ERROR: PREPARE must be true or false'; exit 1 ;; esac
-	ARTIFACTS_DIR="$(RUN)" PREPARE_MARKETS="$(PREPARE)" forge test --match-path 'test/fork/**'
+	DEPLOYMENT_RUN="$(RUN)" PREPARE_MARKETS="$(PREPARE)" forge test --match-path 'test/fork/**'
 else
-	ARTIFACTS_DIR="$(RUN)" PREPARE_MARKETS=true forge test --match-path 'test/fork/**'
+	DEPLOYMENT_RUN="$(RUN)" PREPARE_MARKETS=true forge test --match-path 'test/fork/**'
 endif
 else
 ifeq ($(origin PREPARE),command line)
 	@echo 'ERROR: PREPARE requires an explicit RUN=<run>'; exit 1
 endif
-	ARTIFACTS_DIR= PREPARE_MARKETS=false forge test --match-path 'test/fork/**'
+	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge test --match-path 'test/fork/**'
 endif
 
 test-deployment: ## Solidity deployment scenarios on a Forge fork; RPC_URL, optional FORK_BLOCK
@@ -97,14 +97,14 @@ lint: ## Run Forge lint
 	forge lint
 
 coverage: ## Coverage including fresh-fork suites; RPC_URL required
-	ARTIFACTS_DIR= PREPARE_MARKETS=false forge coverage --ir-minimum --report summary
+	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge coverage --ir-minimum --report summary
 
 # -vv exposes TEST_SEED and FORK_BLOCK for replay; pin FOUNDRY_FUZZ_SEED for invariant counters too.
 snapshot: ## Gas snapshot including fresh-fork suites; RPC_URL required
 snapshot-diff: ## Compare snapshot; use the same TEST_SEED
 snapshot-diff: SNAP_FLAGS := --diff
 snapshot snapshot-diff:
-	ARTIFACTS_DIR= PREPARE_MARKETS=false forge snapshot $(SNAP_FLAGS) -vv
+	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge snapshot $(SNAP_FLAGS) -vv
 
 slither: ## Run Slither (separate install)
 	slither .
@@ -129,19 +129,19 @@ RPC_URL ?=
 CONFIG ?= mainnet
 MARKET ?= weth-wsteth
 PIN_BLOCK ?=
-##@ Artifact verification
+##@ Deployment verification
 acceptance-run: ## Verify one market: RUN MARKET RPC_URL
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(MARKET)" || { echo "ERROR: set MARKET"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/protocol.toml" MARKET="$(MARKET)" forge test --match-path 'test/acceptance/*' --no-match-contract MultiMarketActivationSimulation -vvv
+	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_RUN="$(RUN)" MARKET="$(MARKET)" forge test --match-path 'test/acceptance/*' --no-match-contract MultiMarketActivationSimulation -vvv
 
 acceptance-run-multi: ## Verify two markets: RUN MARKET_A MARKET_B RPC_URL
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	@test -n "$(MARKET_A)" || { echo "ERROR: set MARKET_A"; exit 1; }
 	@test -n "$(MARKET_B)" || { echo "ERROR: set MARKET_B"; exit 1; }
 	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_REGISTRY="deployed/$(RUN)/protocol.toml" MARKET="$(MARKET_A)" MARKET_A="$(MARKET_A)" MARKET_B="$(MARKET_B)" forge test --match-contract MultiMarketActivationSimulation -vvv
+	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_RUN="$(RUN)" MARKET="$(MARKET_A)" MARKET_A="$(MARKET_A)" MARKET_B="$(MARKET_B)" forge test --match-contract MultiMarketActivationSimulation -vvv
 
 ##@ Pending governance action
 # Pending multisig action: fork the live network, apply the transaction(s) from
@@ -154,7 +154,7 @@ pending-stop: ## Stop the pending-action fork
 	bash script/pending-action.sh stop
 
 # Full pre-signing validation: apply the pending action, then run the fork suites against the
-# resulting state. RUN names the live run's artifacts under deployed/<run>/.
+# resulting state. RUN selects script/deployment/<run>/Deployment.sol.
 test-pending: ## Apply pending action and run fork suites: CONFIG RUN RPC_URL
 	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
 	$(MAKE) apply-pending CONFIG="$(CONFIG)" RPC_URL="$(RPC_URL)" PIN_BLOCK="$(PIN_BLOCK)"

@@ -26,7 +26,7 @@ jobs:
       - name: coverage (including in-process fork setup)
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
-          ARTIFACTS_DIR: ''
+          DEPLOYMENT_RUN: ''
         run: |
           test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for coverage"; exit 1; }
           forge coverage --ir-minimum --report summary --report lcov --report-file lcov.info

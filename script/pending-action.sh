@@ -115,4 +115,4 @@ if [ "$APPLIED" -eq 0 ]; then
 else
   log "$APPLIED transaction(s) applied — fork with the pending state is up on $RPC_LOCAL"
 fi
-log "next: make test-fork RPC_URL=$RPC_LOCAL ARTIFACTS_DIR=<run> FORK_BLOCK= ; stop with: make pending-stop"
+log "next: make test-fork RPC_URL=$RPC_LOCAL RUN=<run> PREPARE=false FORK_BLOCK= ; stop with: make pending-stop"

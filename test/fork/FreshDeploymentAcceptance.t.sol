@@ -12,7 +12,7 @@ contract FreshMarketReadinessAcceptance is MarketMotionReadinessAcceptance {
     bytes private fixtureRecord;
 
     function setUp() public override {
-        if (bytes(vm.envOr("ARTIFACTS_DIR", string(""))).length != 0) {
+        if (bytes(vm.envOr("DEPLOYMENT_RUN", string(""))).length != 0) {
             vm.skip(true, "use acceptance-run for a recorded deployment");
         }
         uint256 pin = vm.envOr("FORK_BLOCK", uint256(0));
@@ -35,7 +35,7 @@ contract FreshMarketActivatedAcceptance is MarketActivatedAcceptance {
     bytes private fixtureRecord;
 
     function setUp() public override {
-        if (bytes(vm.envOr("ARTIFACTS_DIR", string(""))).length != 0) {
+        if (bytes(vm.envOr("DEPLOYMENT_RUN", string(""))).length != 0) {
             vm.skip(true, "use acceptance-run for a recorded deployment");
         }
         uint256 pin = vm.envOr("FORK_BLOCK", uint256(0));

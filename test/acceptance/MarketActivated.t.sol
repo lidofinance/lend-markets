@@ -9,7 +9,7 @@ import {AcceptanceBase} from "./AcceptanceBase.t.sol";
 contract MarketActivatedAcceptance is AcceptanceBase {
     function setUp() public virtual override {
         super.setUp();
-        if (core.code.length == 0) return; // base skipped: no ACCEPTANCE_REGISTRY configured
+        if (core.code.length == 0) return; // base skipped: no ACCEPTANCE_RUN configured
         if (!_isMarketActivated()) vm.skip(true, "acceptance: market is not activated");
         _loadExpectedSettlementChoice();
         _loadExpectedPauserCommittee();

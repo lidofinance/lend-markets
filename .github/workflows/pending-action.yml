@@ -14,8 +14,8 @@ on:
       state_mate_config:
         description: "state-mate config file name under script/config/<config>/state-mate/"
         default: "live.yaml"
-      artifacts_run:
-        description: "run under deployed/ for the fork suites (skipped when absent)"
+      deployment_run:
+        description: "run under script/deployment/ containing Deployment.sol for the fork suites"
         default: "hoodi-testnet"
 
 permissions:
@@ -56,7 +56,7 @@ jobs:
     env:
       CONFIG: ${{ inputs.config }}
       STATE_MATE_CONFIG: ${{ inputs.state_mate_config }}
-      ARTIFACTS_RUN: ${{ inputs.artifacts_run }}
+      DEPLOYMENT_RUN: ${{ inputs.deployment_run }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -95,11 +95,7 @@ jobs:
 
       - name: fork suites against the applied state
         run: |
-          if [ -f "deployed/$ARTIFACTS_RUN/protocol.toml" ]; then
-            make test-fork PREPARE=false RPC_URL=http://127.0.0.1:8545 RUN="$ARTIFACTS_RUN" FORK_BLOCK=
-          else
-            echo "::notice::deployed/$ARTIFACTS_RUN/protocol.toml not in the tree — fork suites skipped (place the run artifacts to enable them)"
-          fi
+          make test-fork PREPARE=false RPC_URL=http://127.0.0.1:8545 RUN="$DEPLOYMENT_RUN" FORK_BLOCK=
 
       - name: stop the fork
         if: always()
