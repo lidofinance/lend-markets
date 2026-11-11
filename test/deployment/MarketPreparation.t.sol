@@ -5,7 +5,7 @@ import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
-import {DeployWethWsteth} from "../../script/deployment/mainnet/DeployWethWsteth.s.sol";
+import {WethWstethMarket} from "../../script/deployment/mainnet/WethWstethMarket.sol";
 import {
     ProtocolAddresses,
     MarketPlan,
@@ -30,7 +30,7 @@ contract IncorrectPriceFeed {
     }
 }
 
-contract MarketPreparationTest is ForkStack, MarketPreparation, DeployWethWsteth {
+contract MarketPreparationTest is ForkStack, MarketPreparation, WethWstethMarket {
     BoundMarket internal m;
     ProtocolAddresses internal protocolAddresses;
     MarketPlan internal plan;

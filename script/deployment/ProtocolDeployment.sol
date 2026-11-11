@@ -3,8 +3,7 @@ pragma solidity 0.8.36;
 
 import {CommonBase} from "forge-std/Base.sol";
 import {ProtocolDeployer} from "../lib/ProtocolDeployer.sol";
-import {ProtocolConfig, ProtocolDeployment as Backbone} from "./ProtocolTypes.sol";
-import {ProtocolAddresses, ProtocolPlan, CircuitBreakerPlan} from "./DeploymentTypes.sol";
+import {ProtocolAddresses, ProtocolPlan, CircuitBreakerPlan, ProtocolConfig} from "./DeploymentTypes.sol";
 
 abstract contract ProtocolDeployment is CommonBase, ProtocolDeployer {
     error MissingProtocolGovernance();
@@ -31,7 +30,7 @@ abstract contract ProtocolDeployment is CommonBase, ProtocolDeployer {
                 )
             );
         }
-        Backbone memory d = _deployBackbone(
+        p = _deployBackbone(
             ProtocolConfig({
                 agent: plan.agent,
                 evmScriptExecutor: plan.executor,
@@ -40,19 +39,5 @@ abstract contract ProtocolDeployment is CommonBase, ProtocolDeployer {
             }),
             deployer
         );
-        p = ProtocolAddresses({
-            chainId: plan.chainId,
-            core: d.core,
-            factory: d.factory,
-            ownerFacade: d.ownerFacade,
-            irmRouter: d.irmRouter,
-            adaptiveCurveIrm: d.adaptiveCurveIrm,
-            irmConfigFactory: d.irmConfigFactory,
-            dashboard: d.riskStewardDashboard,
-            circuitBreaker: d.circuitBreaker,
-            resealManager: d.resealManager,
-            agent: d.agent,
-            executor: d.evmScriptExecutor
-        });
     }
 }

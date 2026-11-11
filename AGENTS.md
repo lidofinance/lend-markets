@@ -32,9 +32,10 @@
   `ACCEPTANCE_STEWARD`, `ACCEPTANCE_FEE`, `ACCEPTANCE_MIN_CORE_SEED_SHARES` and
   `ACCEPTANCE_MIN_VAULT_SEED_SHARES`. The suite skips unless
   `ACCEPTANCE_REGISTRY` points at its `protocol.toml`.
-- `script/deployment/<network>/`: concrete Solidity deployment recipes. Shared `Deploy*Base.s.sol` entrypoints
-  and deployment helpers are reused by fork fixtures. Run recipes directly with `forge script`; `--broadcast`
-  submits transactions. Network-specific `Protocol.sol` and `ExitBooks.sol` hold manually maintained dependency addresses.
+- `script/deployment/<network>/`: concrete Solidity deployment entrypoints and reusable recipes. Only the `.s.sol`
+  entrypoints own broadcast boundaries; fork fixtures reuse deployment functions and parameter providers directly.
+  Run entrypoints with `forge script`; `--broadcast` submits transactions. Network-specific `Protocol.sol` holds
+  manually maintained dependency addresses and protocol parameters; `ExitBookPlan.sol` holds book parameters.
 - `script/legacy/`: compatibility readers for historical TOML artifacts. `script/config/` is retained only for
   historical verification and pending-governance/state-mate rehearsals; new deployments do not read config TOML.
 - `deployed/<run>/`: immutable deployment results: typed `protocol.toml`, `markets/`, optional books/bundler/vaults,

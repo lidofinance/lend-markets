@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {ProtocolAddresses} from "../DeploymentTypes.sol";
+import {ProtocolAddresses, ProtocolPlan, CircuitBreakerPlan} from "../DeploymentTypes.sol";
 
-abstract contract Protocol {
-    function _protocolAddresses() internal pure returns (ProtocolAddresses memory p) {
+library Protocol {
+    function addresses() internal pure returns (ProtocolAddresses memory p) {
         p.chainId = 1;
         p.core = 0x026a770badc7126c7252Ef8d407E5b9C56147491;
         p.factory = 0xBe1C1eaBda3eD8a93D3CE3246cf4EeF8111c76C7;
@@ -17,5 +17,20 @@ abstract contract Protocol {
         p.resealManager = 0x7914b5a1539b97Bd0bbd155757F25FD79A522d24;
         p.agent = 0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c;
         p.executor = 0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977;
+    }
+
+    function plan() internal pure returns (ProtocolPlan memory p) {
+        p.chainId = 1;
+        p.agent = 0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c;
+        p.executor = 0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977;
+        p.resealManager = 0x7914b5a1539b97Bd0bbd155757F25FD79A522d24;
+        p.circuitBreakerPlan = CircuitBreakerPlan({
+            minPauseDuration: 5 days,
+            maxPauseDuration: 60 days,
+            minHeartbeatInterval: 30 days,
+            maxHeartbeatInterval: 1095 days,
+            initialPauseDuration: 21 days,
+            initialHeartbeatInterval: 365 days
+        });
     }
 }

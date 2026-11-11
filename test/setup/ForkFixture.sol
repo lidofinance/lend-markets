@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {DeployWethWsteth} from "../../script/deployment/mainnet/DeployWethWsteth.s.sol";
+import {WethWstethMarket} from "../../script/deployment/mainnet/WethWstethMarket.sol";
+import {Protocol as MainnetProtocol} from "../../script/deployment/mainnet/Protocol.sol";
 import {ProtocolDeployment} from "../../script/deployment/ProtocolDeployment.sol";
 import {
     ProtocolAddresses,
     ProtocolPlan,
-    CircuitBreakerPlan,
     MarketPlan,
     MarketDeploymentResult,
     MarketActivation,
@@ -24,7 +24,7 @@ import {MarketPreparation} from "./MarketPreparation.sol";
 
 import {DeploymentSnapshot, RecordedMarket} from "../../script/deployment/DeploymentSnapshot.sol";
 
-contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparation, DeployWethWsteth {
+contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparation, WethWstethMarket {
     function prepare() external returns (DeploymentSnapshot memory) {
         return _prepareFixture(true);
     }
@@ -112,21 +112,7 @@ contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparati
     }
 
     function _prepareFixture(bool activateMarkets) private returns (DeploymentSnapshot memory d) {
-        ProtocolPlan memory protocolPlan = ProtocolPlan({
-            chainId: 1,
-            agent: 0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c,
-            executor: 0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977,
-            resealManager: 0x7914b5a1539b97Bd0bbd155757F25FD79A522d24,
-            circuitBreaker: address(0),
-            circuitBreakerPlan: CircuitBreakerPlan({
-                minPauseDuration: 5 days,
-                maxPauseDuration: 60 days,
-                minHeartbeatInterval: 30 days,
-                maxHeartbeatInterval: 1095 days,
-                initialPauseDuration: 21 days,
-                initialHeartbeatInterval: 365 days
-            })
-        });
+        ProtocolPlan memory protocolPlan = MainnetProtocol.plan();
         d.circuitBreakerPlan = protocolPlan.circuitBreakerPlan;
         d.bookLifetime = 365 days;
         d.weth = WETH;

@@ -5,6 +5,13 @@ import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 
+struct ProtocolConfig {
+    address agent;
+    address evmScriptExecutor;
+    address circuitBreaker;
+    address resealManager;
+}
+
 struct ProtocolAddresses {
     uint256 chainId;
     address core;

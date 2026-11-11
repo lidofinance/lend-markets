@@ -1,21 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {DeployExitBooksBase} from "../../DeployExitBooksBase.s.sol";
+import {Script, console2} from "forge-std/Script.sol";
+import {ProtocolDeployer} from "../../lib/ProtocolDeployer.sol";
 import {ExitBookConfig} from "../ExitBookPlan.sol";
-import {Protocol as MainnetProtocol} from "./Protocol.sol";
-import {ProtocolAddresses} from "../DeploymentTypes.sol";
+import {ExitBookAddresses} from "../DeploymentTypes.sol";
+import {ExitBookPlan} from "./ExitBookPlan.sol";
 
-contract DeployExitBooks is DeployExitBooksBase, MainnetProtocol {
-    function _exitBookPlan() internal pure override returns (uint256 chainId, ExitBookConfig memory plan) {
-        ProtocolAddresses memory p = _protocolAddresses();
-        chainId = p.chainId;
-        plan = ExitBookConfig({
-            agent: p.agent,
-            evmScriptExecutor: p.executor,
-            pauser: 0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E,
-            core: p.core,
-            maxRequestLifetime: 90 days
-        });
+contract DeployExitBooks is Script, ProtocolDeployer {
+    error CoreNotContract(address core);
+    error MissingGovernanceActor();
+
+    function run() external returns (ExitBookAddresses memory books) {
+        (uint256 chainId, ExitBookConfig memory plan) = ExitBookPlan.get();
+        _requireChainId(chainId);
+        if (plan.core.code.length == 0) revert CoreNotContract(plan.core);
+        if (plan.agent == address(0) || plan.evmScriptExecutor == address(0)) revert MissingGovernanceActor();
+        books.chainId = chainId;
+        vm.startBroadcast();
+        (books.morpho, books.erc4626) = _deployExitBooks(plan, msg.sender);
+        vm.stopBroadcast();
+
+        console2.log("Morpho exit book:", books.morpho);
+        console2.log("ERC4626 exit book:", books.erc4626);
     }
 }

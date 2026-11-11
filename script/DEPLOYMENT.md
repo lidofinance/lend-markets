@@ -1,16 +1,21 @@
 # Deployment
 
-Deployment inputs live in concrete Solidity scripts under `script/deployment/<network>/`. A script inherits a
-shared deployment base and supplies typed parameters. Markets are deployed inert; activation remains a separate
+Deployment inputs live in concrete Solidity scripts under `script/deployment/<network>/`. Each runnable script controls its own broadcast boundary and calls
+shared deployment functions with typed parameters. Markets are deployed inert; activation remains a separate
 Easy Track motion. This repository does not deploy Easy Track or its executor.
 
 ## Scripts and shared operations
 
-- `DeployProtocolBase` / `ProtocolDeployment`: protocol backbone and a new or reused CircuitBreaker.
-- `DeployMarketBase` / `MarketDeployment`: one market, with a new or reused price feed and guardian registry.
-  Several market scripts can inherit the same manually maintained protocol address provider.
-- `DeployExitBooksBase`: exit books, independently of protocol and market deployment.
-- `DeployBundlerBase` and `DeployVaultV2Base` / `PeripheryDeployment`: optional periphery.
+- `ProtocolDeployment` / `ProtocolDeployer`: protocol backbone and a new or reused CircuitBreaker.
+- `MarketDeployment`: market creation and dependency validation.
+- `mainnet/WethWstethMarket.sol`: WETH/wstETH parameters and price-feed deployment/validation, shared with tests.
+- `ProtocolDeployer._deployExitBooks`: independent exit-book deployment.
+- `PeripheryDeployment`: bundler and Vault V2 helpers.
+
+The concrete `.s.sol` files inherit `Script` and the shared operations they use. Only these entrypoints contain
+`run()` and `startBroadcast`/`stopBroadcast`. Fork fixtures inherit shared operations, not runnable scripts.
+`mainnet/Protocol.sol` supplies protocol addresses and deployment parameters; `mainnet/ExitBookPlan.sol` supplies
+exit-book parameters. These libraries contain data functions and require no inheritance.
 
 These operations are also used by fork fixtures. Production contracts under `src/` and pinned dependencies are
 unchanged. The old TOML-driven deployment entrypoints and `deploy-all` shell driver have been removed.
@@ -19,8 +24,9 @@ unchanged. The old TOML-driven deployment entrypoints and `deploy-all` shell dri
 The three APR-dependent rates still need the approved launch snapshot. Guardian membership, quorum, tokens, price feed,
 activation/settlement parameters and IRM curve are Solidity values; no config file is read to construct them.
 
-A new market needs one concrete `.s.sol` file inheriting `DeployMarketBase`, implementing `_deploymentProtocol`,
-`_deploymentPlan`, `_deployPriceFeed` and `_checkPriceFeed`. The WETH/wstETH script demonstrates these hooks.
+A new market needs a reusable recipe inheriting `MarketDeployment`, with a typed plan and implementations of
+`_deployPriceFeed` and `_checkPriceFeed`, plus a small `.s.sol` entrypoint that supplies protocol addresses and
+calls `_deployMarket` inside its broadcast boundary. Tests use the reusable recipe directly.
 `plan.name` identifies the market and its integration-test role. Set `plan.market.oracle` or
 `plan.market.guardianSignals` to reuse a reviewed deployment; zero creates that resource. Reused contracts are
 validated before market deployment. Set `ProtocolPlan.circuitBreaker` to reuse a CircuitBreaker.
@@ -54,9 +60,9 @@ instead of `--account`.
 
 ## Results and dependency addresses
 
-Maintain `script/deployment/<network>/Protocol.sol` and `ExitBooks.sol` by hand after verifying the native
-Forge receipts and deployed addresses. The Mainnet and Hoodi files contain existing dependency addresses;
-concrete recipes import the appropriate provider. A new deployment needs its own reviewed provider before
+Maintain dependency addresses in `script/deployment/<network>/Protocol.sol` by hand after verifying the native
+Forge receipts and deployed addresses. The Mainnet recipes use the existing Mainnet protocol addresses.
+Historical Hoodi addresses remain in its recorded artifacts. A new deployment needs its own reviewed provider before
 it is reused by markets or periphery. No generator or deployment config parser runs in the deployment path.
 
 The scripts do not write or export application artifacts. Preserve the successful Forge broadcast report,

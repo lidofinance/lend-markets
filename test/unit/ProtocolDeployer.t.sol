@@ -8,7 +8,7 @@ import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {ProtocolDeployer} from "../../script/lib/ProtocolDeployer.sol";
 import {ExitBookConfig} from "../../script/deployment/ExitBookPlan.sol";
-import {ProtocolConfig, ProtocolDeployment} from "../../script/deployment/ProtocolTypes.sol";
+import {ProtocolConfig, ProtocolAddresses} from "../../script/deployment/DeploymentTypes.sol";
 
 contract CircuitBreakerConfigStub {
     address public immutable ADMIN;
@@ -19,7 +19,7 @@ contract CircuitBreakerConfigStub {
 }
 
 contract ProtocolDeployerHarness is ProtocolDeployer {
-    function deployBackbone(ProtocolConfig memory cfg) external returns (ProtocolDeployment memory) {
+    function deployBackbone(ProtocolConfig memory cfg) external returns (ProtocolAddresses memory) {
         return _deployBackbone(cfg, address(this));
     }
 
@@ -74,7 +74,7 @@ contract ProtocolDeployerTest is Test {
             resealManager: makeAddr("resealManager")
         });
 
-        ProtocolDeployment memory deployment = deployer.deployBackbone(cfg);
+        ProtocolAddresses memory deployment = deployer.deployBackbone(cfg);
 
         assertEq(ILidoLend(deployment.core).feeRecipient(), agent);
     }
@@ -88,7 +88,7 @@ contract ProtocolDeployerTest is Test {
             resealManager: makeAddr("resealManager")
         });
 
-        ProtocolDeployment memory deployment = deployer.deployBackbone(cfg);
+        ProtocolAddresses memory deployment = deployer.deployBackbone(cfg);
         LidoLendOwner facade = LidoLendOwner(deployment.ownerFacade);
         bytes32 role = facade.FEE_MANAGER_ROLE();
 
