@@ -34,7 +34,9 @@
   `ACCEPTANCE_RUN` selects that run.
 - `script/deployment/<network>/`: concrete Solidity deployment entrypoints and reusable recipes. Only the `.s.sol`
   entrypoints own broadcast boundaries; fork fixtures reuse deployment functions and parameter providers directly.
-  Run entrypoints with `forge script`; `--broadcast` also writes flat address lists under `deployed/<network>/`
+  Run one entrypoint with `make deploy SCRIPT=<path> RPC_URL=<rpc> DEPLOYER_SENDER=<sender>` or `forge script`.
+  Make simulates by default; only command-line `BROADCAST=true` with `DEPLOYER_ACCOUNT=<keystore>` sends transactions.
+  `--broadcast` also writes flat address lists under `deployed/<network>/`
   (`protocol.toml`, `markets/<name>.toml`, `exit-books.toml`, `bundler.toml`). These lists are written before transaction confirmation; verify receipts.
   New deployment parameters are defined in the concrete scripts. `artifacts/` inside each network directory holds
   manually maintained recorded addresses and expected values; mainnet protocol, exit books and bundler have separate files.

@@ -4,7 +4,7 @@
 
 # Make normally lets an included file replace exported environment variables. Preserve the public inputs so
 # precedence is consistently: command line > exported environment > .env > defaults.
-DOTENV_OVERRIDE_VARS := PREPARE_MARKETS CONFIG RUN MARKET MARKET_A MARKET_B PIN_BLOCK RPC_URL DEPLOYMENT_RUN \
+DOTENV_OVERRIDE_VARS := SCRIPT DEPLOYER_SENDER DEPLOYER_ACCOUNT PREPARE_MARKETS CONFIG RUN MARKET MARKET_A MARKET_B PIN_BLOCK RPC_URL DEPLOYMENT_RUN \
 	FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED ACCEPTANCE_RPC_URL ACCEPTANCE_RUN ACCEPTANCE_PAUSER_COMMITTEE \
 	ACCEPTANCE_ENABLE_SETTLEMENT ACCEPTANCE_STEWARD ACCEPTANCE_FEE ACCEPTANCE_MIN_CORE_SEED_SHARES \
 	ACCEPTANCE_MIN_VAULT_SEED_SHARES
@@ -35,20 +35,79 @@ unexport capture_exported_value restore_exported_value
 FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces \
 	src/oracle src/libs src/periphery src/utils script test
 
-.PHONY: help build sizes test test-local test-fork test-deployment test-simulation test-mutation \
-	fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc test-plan test-plan-check ci clean \
+.PHONY: help build sizes deploy test test-local test-fork test-deployment test-simulation test-mutation \
+	fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc test-plan test-plan-check audit-checksums ci clean \
 	acceptance-run acceptance-run-multi \
 	apply-pending pending-stop test-pending
 
-help: ## List commands; deployment details are in script/DEPLOYMENT.md
-	@awk 'BEGIN { FS = ":.*## " } /^##@/ { printf "\n%s\n", substr($$0, 5); next } /^[a-z][a-z0-9-]*:.*## / { printf "  %-23s %s\n", $$1, $$2 }' Makefile
+help: ## List commands and their inputs
+	@echo 'Build and checks:'
+	@echo '  build                forge build (contracts, scripts and tests)'
+	@echo '  sizes                deployed-contract sizes; excludes test and deployment harnesses'
+	@echo '  fmt / fmt-check      format local Solidity / check formatting'
+	@echo '  lint                 forge lint'
+	@echo '  clean                remove Forge build output'
+	@echo ''
+	@echo 'Deployment (one script):'
+	@echo '  deploy SCRIPT=<path.s.sol> RPC_URL=<rpc> DEPLOYER_SENDER=<address>'
+	@echo '                       builds and simulates; parameters and output paths come from the Solidity recipe'
+	@echo '                       add BROADCAST=true DEPLOYER_ACCOUNT=<keystore> to send transactions'
+	@echo '                       BROADCAST must be on the command line; environment/.env cannot enable it'
+	@echo '                       verification and resume: direct forge options, see script/DEPLOYMENT.md'
+	@echo ''
+	@echo 'Tests:'
+	@echo '  test                 local + fresh mainnet-fork suites; RPC_URL required'
+	@echo '  test-local           unit, scenario, invariant and 30-day simulations; no RPC'
+	@echo '  test-fork RPC_URL=<rpc>                         fresh mainnet fixture inside Forge'
+	@echo '  test-fork RUN=<run> RPC_URL=<rpc>               prepare missing/inert markets on a private fork'
+	@echo '  test-fork RUN=<run> PREPARE=false RPC_URL=<rpc>  check recorded state without preparation'
+	@echo '                       RUN/PREPARE are command-line selectors; optional FORK_BLOCK pins the fork'
+	@echo '  test-deployment      Solidity deployment scenarios; RPC_URL, optional FORK_BLOCK'
+	@echo '  test-simulation      365-day solvency simulations'
+	@echo '  test-mutation        local mutation testing of src/; requires forge >= 1.8.0'
+	@echo '  acceptance-run       RUN=<run> MARKET=<market> RPC_URL=<rpc>'
+	@echo '  acceptance-run-multi RUN=<run> MARKET_A=<a> MARKET_B=<b> RPC_URL=<rpc>'
+	@echo '                       reviewed ACCEPTANCE_* inputs are listed in script/DEPLOYMENT.md'
+	@echo '  ci                   build + lint + test-local'
+	@echo ''
+	@echo 'Reports and documentation:'
+	@echo '  coverage             coverage including fresh-fork suites; RPC_URL required'
+	@echo '  snapshot             gas snapshot including fork suites; RPC_URL required'
+	@echo '  snapshot-diff        compare with .gas-snapshot; use the same TEST_SEED and FORK_BLOCK'
+	@echo '  doc                  regenerate docs/specs/api/ from NatSpec'
+	@echo '  test-plan            update TEST_PLAN.md file, test and contract-member links'
+	@echo '  test-plan-check      check TEST_PLAN.md links and test references'
+	@echo '  audit-checksums      audited-source digests; optional REF=<git-ref>'
+	@echo '  slither / solhint    optional analyzers; require separate installation'
+	@echo ''
+	@echo 'Pending governance:'
+	@echo '  apply-pending        CONFIG=<config> RPC_URL=<rpc> [PIN_BLOCK=<block>]; apply on local Anvil'
+	@echo '  test-pending         CONFIG=<config> RUN=<run> RPC_URL=<rpc>; apply then test without preparation'
+	@echo '  pending-stop         stop the pending-action Anvil fork'
+
+##@ Deployment
+deploy: ## One script: SCRIPT RPC_URL DEPLOYER_SENDER; BROADCAST=true DEPLOYER_ACCOUNT=<keystore> to send
+	@test -n "$(SCRIPT)" && test -f "$(SCRIPT)" || { echo 'ERROR: set SCRIPT to an existing .s.sol file'; exit 1; }
+	@test -n "$(RPC_URL)" || { echo 'ERROR: RPC_URL is required'; exit 1; }
+	@test -n "$(DEPLOYER_SENDER)" || { echo 'ERROR: DEPLOYER_SENDER is required'; exit 1; }
+	@set -eu; set --; \
+	if [ "$(origin BROADCAST)" = 'command line' ]; then \
+	  case "$(BROADCAST)" in \
+	    true) test -n "$(DEPLOYER_ACCOUNT)" || { echo 'ERROR: DEPLOYER_ACCOUNT is required for broadcast'; exit 1; }; \
+	          set -- --account "$(DEPLOYER_ACCOUNT)" --broadcast ;; \
+	    false) ;; \
+	    *) echo 'ERROR: BROADCAST must be true or false'; exit 1 ;; \
+	  esac; \
+	fi; \
+	forge build; \
+	forge script "$(SCRIPT)" --rpc-url "$(RPC_URL)" --sender "$(DEPLOYER_SENDER)" "$$@"
 
 ##@ Build and tests
 build: ## Compile contracts
 	forge build
 
-sizes: ## Compile and report contract sizes
-	forge build --sizes
+sizes: ## Compile and report deployed-contract sizes
+	forge build src script/Bundler3Anchor.sol script/CircuitBreakerAnchor.sol script/VaultV2Anchor.sol --sizes
 
 test: ## Local + fresh-fork suites; RPC_URL required
 	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge test

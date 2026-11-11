@@ -34,6 +34,18 @@ validated before market deployment. Set `ProtocolParameters.circuitBreaker` to r
 
 ## Simulate and broadcast
 
+`make deploy` builds and runs one concrete script. It simulates unless `BROADCAST=true` is passed explicitly
+on the Make command line; environment and `.env` values cannot enable broadcasting.
+
+```sh
+make deploy SCRIPT=script/deployment/mainnet/DeployWethWsteth.s.sol \
+  RPC_URL=<rpc> DEPLOYER_SENDER=<deployer>
+make deploy SCRIPT=script/deployment/mainnet/DeployWethWsteth.s.sol \
+  RPC_URL=<rpc> DEPLOYER_SENDER=<deployer> BROADCAST=true DEPLOYER_ACCOUNT=<keystore>
+```
+
+The recipe controls its parameters and output paths. For additional Forge options, call the script directly.
+
 Run the concrete recipe directly with Forge. Build first: the shared deployment helpers use compiled artifacts
 for dependencies with a different Solidity version.
 
