@@ -40,6 +40,7 @@ contract MultiMarketActivationSimulation is AcceptanceBase {
         _loadMarket(marketA);
         pauserCommittee = pauserA;
         _assertActivated();
+        _assertRoles();
         _assertExitBooksAllowed();
     }
 

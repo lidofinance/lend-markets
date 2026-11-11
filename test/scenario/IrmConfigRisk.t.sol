@@ -106,8 +106,8 @@ contract ReentrantSupplyIrm {
     }
 }
 
-/// @notice Curve configs that the adaptive IRM accepts but that can stop a live market. A config is applied the way
-///         the Easy Track motion applies it: accrue under the old curve, then `applyIrmConfig`, in one transaction.
+/// @notice Curve configs that the adaptive IRM accepts but that can stop a live market. The tests apply a config in
+///         one transaction: accrue under the old curve, then `applyIrmConfig`.
 ///         Every repair that accrues first fails with the same error as the market. Only the IRM owner's direct
 ///         `applyIrmConfig` does not accrue, so only it restores accrual.
 ///
@@ -154,7 +154,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
         return protocol.markets[0];
     }
 
-    // ── ll-aud-01: a validated ceiling config overflows accrual ──
+    // ── A validated ceiling config overflows accrual ──
 
     /// @dev Known issue: a factory-valid ceiling config makes accrual overflow, and every repair that accrues first
     ///      reverts too. Lender exits stop with the market. Without an upgrade of the core proxy or the router proxy,
@@ -172,7 +172,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
         Market storage m = _m();
         _seedFullUtilization(1e27);
         address ceilingConfig = factory.getOrDeployAdaptiveCurveConfig(_ceilingCurve());
-        this.applyConfigLikeMotion(ceilingConfig);
+        this.accrueThenApplyConfig(ceilingConfig);
 
         vm.warp(block.timestamp + 7 days);
         uint256 rate = _fullUseRate(CEILING_STEEPNESS, CEILING_RATE_AT_TARGET);
@@ -181,25 +181,25 @@ contract IrmConfigRiskTest is LidoLendSetup {
 
         bytes memory err = bytes(ErrorsLib.MAX_UINT128_EXCEEDED);
         _assertAccruingActionsRevert(err);
-        _assertAccrueFirstRepairsRevert(err, ceilingConfig);
+        _assertAccrueFirstRepairsRevert(err);
         _assertDirectOwnerApplyRecovers();
     }
 
-    // ── ll-aud-02: a mutable config changes rates without a motion ──
+    // ── A mutable config changes rates after it is bound ──
 
-    /// @dev The admin of a non-factory config raises the market rate after the motion,
-    ///      with no new motion. A fix changes this outcome; update this test with the fix.
-    function test_mutableConfig_adminRepricesWithoutMotion() public {
+    /// @dev The admin of a non-factory config raises the market rate after the IRM binds the config. The IRM owner
+    ///      makes no new `applyIrmConfig` call. A fix changes this outcome; update this test with the fix.
+    function test_mutableConfig_adminRepricesAfterBinding() public {
         Market storage m = _m();
         _seedFullUtilization(200 ether);
         MutableCurveConfig config = new MutableCurveConfig(configAdmin, _flatCurve(FLAT_STEEPNESS));
-        this.applyConfigLikeMotion(address(config));
+        this.accrueThenApplyConfig(address(config));
 
         vm.warp(block.timestamp + 1 days);
         assertEq(
             IIrm(m.params.irm).borrowRateView(m.params, m.core.market(m.id)),
             _fullUseRate(FLAT_STEEPNESS, FLAT_RATE_AT_TARGET),
-            "setup: the motion's curve prices the market"
+            "setup: the bound curve prices the market"
         );
 
         vm.prank(configAdmin);
@@ -214,7 +214,6 @@ contract IrmConfigRiskTest is LidoLendSetup {
             before.totalBorrowAssets + uint256(before.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(1 days)),
             "the admin's curve priced the day"
         );
-        assertEq(address(_irm().marketCurveConfig(_irmId())), address(config), "binding unchanged");
     }
 
     /// @dev A mutable config whose getter reverts halts accrual and each repair that accrues first. Only the IRM
@@ -222,7 +221,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
     function test_revertingGetter_haltsAccrual_onlyDirectOwnerApplyRecovers() public {
         _seedFullUtilization(200 ether);
         MutableCurveConfig config = new MutableCurveConfig(configAdmin, _flatCurve(FLAT_STEEPNESS));
-        this.applyConfigLikeMotion(address(config));
+        this.accrueThenApplyConfig(address(config));
 
         vm.prank(configAdmin);
         config.setBroken(true);
@@ -230,7 +229,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
 
         bytes memory err = abi.encodeWithSelector(MutableCurveConfig.ConfigBroken.selector);
         _assertAccruingActionsRevert(err);
-        _assertAccrueFirstRepairsRevert(err, address(config));
+        _assertAccrueFirstRepairsRevert(err);
         _assertDirectOwnerApplyRecovers();
     }
 
@@ -294,7 +293,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
         new AdaptiveCurveConfig(invalid);
 
         MutableCurveConfig config = new MutableCurveConfig(configAdmin, invalid);
-        this.applyConfigLikeMotion(address(config));
+        this.accrueThenApplyConfig(address(config));
         assertEq(address(_irm().marketCurveConfig(_irmId())), address(config), "invalid config bound");
 
         vm.warp(block.timestamp + 1 days);
@@ -306,7 +305,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
         );
         bytes memory err = stdError.arithmeticError;
         _assertAccruingActionsRevert(err);
-        _assertAccrueFirstRepairsRevert(err, address(config));
+        _assertAccrueFirstRepairsRevert(err);
         _assertDirectOwnerApplyRecovers();
     }
 
@@ -352,7 +351,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
     function test_adaptiveLibAfterReroute_returnsStaleRate() public {
         Market storage m = _m();
         _seedFullUtilization(200 ether);
-        this.applyConfigLikeMotion(flatConfig);
+        this.accrueThenApplyConfig(flatConfig);
         AdaptiveCurveIrm adaptive = _irm();
 
         LinearKinkParams memory kink = LinearKinkParams({
@@ -445,7 +444,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
     function test_directApplyWithoutAccrue_pricesElapsedWindowAtNewCurve() public {
         Market storage m = _m();
         _seedFullUtilization(200 ether);
-        this.applyConfigLikeMotion(flatConfig);
+        this.accrueThenApplyConfig(flatConfig);
 
         uint256 elapsed = 10 days;
         vm.warp(block.timestamp + elapsed);
@@ -458,7 +457,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
         assertGt(atNewCurve, atOldCurve, "setup: the new curve charges more");
 
         uint256 snapshot = vm.snapshotState();
-        this.applyConfigLikeMotion(steepConfig);
+        this.accrueThenApplyConfig(steepConfig);
         m.accrueInterest();
         assertEq(
             m.core.market(m.id).totalBorrowAssets,
@@ -515,21 +514,19 @@ contract IrmConfigRiskTest is LidoLendSetup {
         m.core.accrueInterest(m.params);
     }
 
-    /// @dev The motion-shaped repair and a router switch to a working model both accrue under the bound config
-    ///      first, so both revert with `err` and the binding stays.
-    function _assertAccrueFirstRepairsRevert(bytes memory err, address boundConfig) internal {
+    /// @dev An accrue-then-apply repair and a router switch to a working model both accrue under the bound config
+    ///      first, so both revert with `err`.
+    function _assertAccrueFirstRepairsRevert(bytes memory err) internal {
         Market storage m = _m();
         IrmMarketParams memory irmParams = _irmParams();
 
         vm.expectRevert(err);
-        this.applyConfigLikeMotion(flatConfig);
+        this.accrueThenApplyConfig(flatConfig);
 
         AdaptiveCurveIrm replacement = new AdaptiveCurveIrm(m.irm, address(this), address(this));
         replacement.applyIrmConfig(irmParams, flatConfig);
         vm.expectRevert(err);
         IrmRouter(m.irm).setMarketIrm(irmParams, IrmIIrm(address(replacement)));
-
-        assertEq(address(_irm().marketCurveConfig(_irmId())), boundConfig, "binding unchanged");
     }
 
     /// @dev The owner's direct apply reads only the new config and does not accrue. The next accrual prices the
@@ -552,9 +549,10 @@ contract IrmConfigRiskTest is LidoLendSetup {
 
     // ── helpers ──
 
-    /// @dev The Easy Track `ApplyIrmConfig` script order: accrue under the old curve, then apply, atomically. External,
-    ///      so a revert of the whole script can be expected.
-    function applyConfigLikeMotion(address config) external {
+    /// @dev Accrues under the old curve, then applies `config`. External, so a test can expect a revert of both steps.
+    ///      This order copies the Easy Track `ApplyIrmConfig` script from another repository. This repository cannot
+    ///      check the copy against that source.
+    function accrueThenApplyConfig(address config) external {
         Market storage m = _m();
         m.core.accrueInterest(m.params);
         _irm().applyIrmConfig(_irmParams(), config);

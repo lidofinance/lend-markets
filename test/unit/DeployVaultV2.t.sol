@@ -65,11 +65,11 @@ contract DeployVaultV2Test is Test {
         vm.removeDir(ArtifactMetadataFile.artifactsDir(run), true);
     }
 
-    /// @dev The script leaves every Vault V2 timelock at zero, so a named curator can
-    ///      submit and execute each curator action in one transaction. A fix changes this outcome; update this
-    ///      test with the fix.
-    function test_deployVaultV2_leavesTimelocksAtZero() external {
-        IVaultV2 vault = _deployVaultAsScript();
+    /// @dev A new vault of the pinned upstream vault-v2 has every timelock at zero. A named curator can then submit
+    ///      and execute each curator action in one transaction. `script/DeployVaultV2.s.sol` relies on this default.
+    ///      This test does not run the script.
+    function test_pinnedVaultV2_newVaultHasZeroTimelocks() external {
+        IVaultV2 vault = _deployVault();
         bytes4[18] memory timelocked = [
             IVaultV2.setIsAllocator.selector,
             IVaultV2.setReceiveSharesGate.selector,
@@ -95,20 +95,21 @@ contract DeployVaultV2Test is Test {
         }
     }
 
-    /// @dev The script sets no Vault V2 gate, so anyone can deposit and hold shares from
-    ///      the deploy block. A fix changes this outcome; update this test with the fix.
-    function test_deployVaultV2_setsNoGates() external {
-        IVaultV2 vault = _deployVaultAsScript();
+    /// @dev A new vault of the pinned upstream vault-v2 has no gate, so anyone can deposit and hold shares.
+    ///      `script/DeployVaultV2.s.sol` relies on this default. This test does not run the script.
+    function test_pinnedVaultV2_newVaultHasNoGates() external {
+        IVaultV2 vault = _deployVault();
         assertEq(vault.receiveSharesGate(), address(0), "receiveSharesGate");
         assertEq(vault.sendSharesGate(), address(0), "sendSharesGate");
         assertEq(vault.receiveAssetsGate(), address(0), "receiveAssetsGate");
         assertEq(vault.sendAssetsGate(), address(0), "sendAssetsGate");
     }
 
-    /// @dev The script leaves every adapter timelock at zero, so a named curator can burn
-    ///      the adapter's market shares in one transaction. A fix changes this outcome; update this test with the fix.
-    function test_deployVaultV2_leavesAdapterTimelocksAtZero() external {
-        IVaultV2 vault = _deployVaultAsScript();
+    /// @dev A new adapter of the pinned upstream vault-v2 has every timelock at zero. A named curator can then burn
+    ///      the adapter's market shares in one transaction. `script/DeployVaultV2.s.sol` relies on this default.
+    ///      This test does not run the script.
+    function test_pinnedVaultV2_newAdapterHasZeroTimelocks() external {
+        IVaultV2 vault = _deployVault();
         IMorphoMarketV1AdapterV2 adapter = IMorphoMarketV1AdapterV2(
             vm.deployCode(
                 "MorphoMarketV1AdapterV2.sol:MorphoMarketV1AdapterV2", abi.encode(address(vault), CORE, IRM_ROUTER)
@@ -126,9 +127,9 @@ contract DeployVaultV2Test is Test {
         }
     }
 
-    /// @dev `run` needs a deploy config and a live protocol, so a unit test cannot drive it. This deploys from the
-    ///      same artifact with the same constructor arguments, and the script configures nothing after it.
-    function _deployVaultAsScript() private returns (IVaultV2) {
+    /// @dev Deploys the pinned upstream `VaultV2` from its `out/` artifact. `DeployVaultV2.run` reads `ARTIFACTS_DIR`
+    ///      from the environment and needs a live protocol, so a unit test cannot drive it.
+    function _deployVault() private returns (IVaultV2) {
         MockERC20 asset = new MockERC20("Asset", "AST", 18);
         return IVaultV2(vm.deployCode("VaultV2.sol:VaultV2", abi.encode(AGENT, address(asset))));
     }

@@ -2,6 +2,7 @@
 pragma solidity 0.8.36;
 
 import {Id, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Erc4626Math} from "../setup/Erc4626Math.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -11,8 +12,8 @@ import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 
 /// @notice L2 isolation of two markets on one core that share the loan token and the collateral token. The core
 ///         holds the tokens of both markets in one balance. Bad debt in market A must not move market B's totals,
-///         must not stop B's lenders, and must not let the pooled loan balance fall below the free liquidity of both
-///         markets.
+///         must not stop B's lenders, must not touch B's collateral, and must leave the pooled loan balance equal to
+///         the free liquidity of both markets.
 contract SharedTokenMarketsTest is LidoLendSetup {
     using MarketActions for Market;
 
@@ -68,12 +69,15 @@ contract SharedTokenMarketsTest is LidoLendSetup {
     }
 
     /// @dev After A's bad debt, B's borrower repays and B's lender redeems every share for the value it had before.
+    ///      The keeper seizes only A's half of the pooled collateral, and B's borrower withdraws its own half.
     function test_badDebtInMarketA_marketBLenderExitsFullValue() public {
         Market storage b = _b();
         uint256 shares = b.vault.balanceOf(lenderB);
         uint256 valueBefore = Erc4626Math.toAssets(b.vault, shares, Math.Rounding.Floor);
 
         _drainA(2500);
+        assertEq(b.collateralToken.balanceOf(address(b.core)), COLLAT, "the core still holds B's collateral");
+        assertEq(b.core.position(b.id, borrowerB).collateral, COLLAT, "B borrower collateral unchanged");
         uint256 debtShares = b.core.position(b.id, borrowerB).borrowShares;
         _fund(b.loanToken, borrowerB, b.repayAssets(debtShares));
         b.repay(borrowerB, debtShares);
@@ -81,21 +85,18 @@ contract SharedTokenMarketsTest is LidoLendSetup {
 
         assertEq(assets, valueBefore, "B lender exits at its full value");
         assertEq(b.vault.balanceOf(lenderB), 0, "B lender holds no shares");
+        b.withdrawCollateral(borrowerB, COLLAT, borrowerB);
     }
 
-    /// @dev For any crash deep enough to leave bad debt in A, the pooled loan balance still covers the free liquidity
-    ///      of both markets.
-    function testFuzz_badDebtInMarketA_pooledBalanceCoversFreeLiquidity(uint256 crashBps) public {
+    /// @dev For any crash deep enough to leave bad debt in A, the pooled loan balance equals the free liquidity of
+    ///      both markets.
+    function testFuzz_badDebtInMarketA_pooledBalanceEqualsFreeLiquidity(uint256 crashBps) public {
         // At most 80% of the price: a full seizure then repays less than the debt, so the liquidation leaves bad debt.
         _drainA(bound(crashBps, 100, 8000));
 
-        uint256 freeLiquidity;
-        for (uint256 i; i < protocol.markets.length; ++i) {
-            Market storage m = protocol.markets[i];
-            MorphoMarket memory mkt = m.core.market(m.id);
-            freeLiquidity += mkt.totalSupplyAssets - mkt.totalBorrowAssets;
-        }
-        assertLe(freeLiquidity, _a().loanToken.balanceOf(address(protocol.core)), "pooled balance covers markets");
+        // No interest accrues and nobody donates, so the core holds no loan token beyond the free liquidity.
+        IERC20 loanToken = _a().loanToken;
+        assertEq(loanToken.balanceOf(address(protocol.core)), _freeLiquidity(loanToken), "pooled balance");
     }
 
     function _a() internal view returns (Market storage) {

@@ -71,31 +71,30 @@ contract RiskStewardDashboardScenarioTest is LidoLendSetup {
         dashboard.increaseActivationDelays(market.id, heldCap + 1, heldCap, before.maxGuardiansQuorumDelay);
     }
 
-    /// @dev A governance motion writes a whole config fixed at its creation, so it undoes
-    ///      every steward tightening made inside its window. A fix changes this outcome; update this test with the fix.
-    function test_absoluteConfigMotion_undoesInWindowStewardTightening() public {
+    /// @dev `setCollateralActivationConfig` replaces the whole config, so the last write wins. A manager write of a
+    ///      config that was read before a steward tightening undoes that tightening. This test makes the write as
+    ///      the market admin. It does not run a governance motion.
+    ///      A fix changes this outcome; update this test with the fix.
+    function test_staleWholeConfigWrite_undoesStewardTightening() public {
         Market storage market = protocol.markets[0];
-        CollateralActivationConfig memory created = market.controller.collateralActivationConfig();
-        CollateralActivationConfig memory motionConfig = created;
-        motionConfig.maxDelayInflow = 20_000 ether;
-        uint256 createdDelay = market.controller.currentActivationDelay(10 ether);
+        CollateralActivationConfig memory staleConfig = market.controller.collateralActivationConfig();
+        staleConfig.maxDelayInflow = 20_000 ether;
+        uint256 delayBefore = market.controller.currentActivationDelay(10 ether);
 
         vm.startPrank(STEWARD);
         dashboard.increaseActivationDelays(market.id, 30 minutes, 6 hours, 7 hours);
         dashboard.increaseActivatingLockDuration(market.id, 2 days);
         dashboard.increaseMinDepositAmount(market.id, 5 ether);
         vm.stopPrank();
+        CollateralActivationConfig memory tightened = market.controller.collateralActivationConfig();
         uint256 tightenedDelay = market.controller.currentActivationDelay(10 ether);
-        assertGt(tightenedDelay, createdDelay, "setup: the steward tightened");
+        assertGt(tightenedDelay, delayBefore, "setup: the steward raised the delay");
+        assertGt(tightened.activatingLockDuration, staleConfig.activatingLockDuration, "setup: lock raised");
+        assertGt(tightened.minDepositAmount, staleConfig.minDepositAmount, "setup: min deposit raised");
 
-        market.setActivationConfig(motionConfig);
+        // The helper asserts that the stored config equals `staleConfig`, so no steward value is left.
+        market.setActivationConfig(staleConfig);
 
-        CollateralActivationConfig memory enacted = market.controller.collateralActivationConfig();
-        assertEq(enacted.minActivationDelay, created.minActivationDelay, "min delay undone");
-        assertEq(enacted.maxActivationDelay, created.maxActivationDelay, "max delay undone");
-        assertEq(enacted.maxGuardiansQuorumDelay, created.maxGuardiansQuorumDelay, "quorum fallback undone");
-        assertEq(enacted.activatingLockDuration, created.activatingLockDuration, "lock undone");
-        assertEq(enacted.minDepositAmount, created.minDepositAmount, "min deposit undone");
         assertLt(market.controller.currentActivationDelay(10 ether), tightenedDelay, "deposit delay loosened");
     }
 }

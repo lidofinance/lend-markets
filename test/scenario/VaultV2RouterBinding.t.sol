@@ -17,10 +17,11 @@ import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20} from "../setup/Mocks.sol";
 
-/// @notice A Vault V2 and the upstream `MorphoMarketV1AdapterV2`, deployed as `script/DeployVaultV2.s.sol` deploys
-///         them: the adapter's IRM argument is the protocol IrmRouter. To price a market that has debt and did not
-///         accrue in this block, the adapter calls `rateAtTarget` on that address. The router has no such function,
-///         so the call reverts with empty data.
+/// @notice A Vault V2 and the upstream `MorphoMarketV1AdapterV2` whose IRM argument is the protocol IrmRouter. To
+///         price a market that has debt and did not accrue in this block, the adapter calls `rateAtTarget` on that
+///         address. The router has no such function, so the call reverts with empty data.
+///         `script/DeployVaultV2.s.sol` passes the same argument, but these tests do not run the script. They deploy
+///         the pair with their own copy of its two constructor calls.
 /// @dev The pair is allocated and the market borrowed in `setUp`, which is a transaction of its own. Vault V2 caches
 ///      its total assets in transient storage for the rest of a transaction, so each test body starts uncached.
 contract VaultV2RouterBindingTest is LidoLendSetup {
@@ -82,16 +83,17 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
     ///      A fix changes this outcome; update this test with it.
     function testRevert_oneSecondStale_vaultEntryPoints() public {
         _warpOneSecondPastAccrual();
+        _assertRouterHasNoRateAtTarget();
 
-        vm.expectRevert(bytes(""));
+        _expectRateAtTargetRevert();
         vault2.totalAssets();
 
         vm.prank(user);
-        vm.expectRevert(bytes(""));
+        _expectRateAtTargetRevert();
         vault2.deposit(1 ether, user);
 
         vm.prank(user);
-        vm.expectRevert(bytes(""));
+        _expectRateAtTargetRevert();
         vault2.withdraw(1 ether, user, user);
     }
 
@@ -103,6 +105,9 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
         _warpOneSecondPastAccrual();
         m.accrueInterest();
 
+        assertEq(vault2.maxRate(), 0, "setup: the vault credits no interest");
+        assertEq(vault2.totalAssets(), USER_DEPOSIT, "total assets are the deposit");
+
         uint256 idleBefore = m.loanToken.balanceOf(address(vault2));
         vm.startPrank(user);
         vault2.deposit(1 ether, user);
@@ -111,20 +116,27 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
         assertEq(m.loanToken.balanceOf(address(vault2)), idleBefore - 1 ether, "idle moved by deposit and withdraw");
     }
 
-    /// @dev A controller pause rejects every core accrual, so the Vault V2's idle assets
-    ///      stay frozen for the whole pause. A fix changes this outcome; update this test with the fix.
+    /// @dev A controller pause rejects every core accrual, so nobody can make the market current. The Vault V2's
+    ///      idle assets stay frozen from the first second of the pause to its last second. After the pause, an
+    ///      accrual frees them. A fix changes this outcome; update this test with the fix.
     function testRevert_pausedMarket_idleWithdrawFrozen() public {
         Market storage m = _m();
+        uint256 idle = m.loanToken.balanceOf(address(vault2));
+        assertEq(idle, USER_DEPOSIT - ALLOCATED, "setup: idle covers the withdraw");
         m.pause(7 days);
+        uint256 pauseEnd = block.timestamp + 7 days;
         _warpOneSecondPastAccrual();
+        _assertRouterHasNoRateAtTarget();
+        _assertAccrualAndWithdrawRevert();
 
-        vm.expectRevert(PausableUntil.ResumedExpected.selector);
-        m.core.accrueInterest(m.params);
+        vm.warp(pauseEnd - 1);
+        _assertAccrualAndWithdrawRevert();
 
-        assertEq(m.loanToken.balanceOf(address(vault2)), USER_DEPOSIT - ALLOCATED, "setup: idle covers the withdraw");
+        vm.warp(pauseEnd);
+        m.accrueInterest();
         vm.prank(user);
-        vm.expectRevert(bytes(""));
         vault2.withdraw(1 ether, user, user);
+        assertEq(m.loanToken.balanceOf(address(vault2)), idle - 1 ether, "withdraw paid from idle after the pause");
     }
 
     /// @dev Binding the adapter to the routed adaptive-curve IRM, as upstream expects, does not help. Every Lido market
@@ -156,6 +168,31 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
         assertGt(m.core.market(m.id).totalBorrowAssets, 0, "setup: market carries debt");
         assertEq(vault2.firstTotalAssets(), 0, "setup: no Vault V2 total cached in this transaction");
         vm.warp(block.timestamp + 1);
+    }
+
+    function _assertAccrualAndWithdrawRevert() internal {
+        Market storage m = _m();
+        vm.expectRevert(PausableUntil.ResumedExpected.selector);
+        m.core.accrueInterest(m.params);
+
+        vm.prank(user);
+        _expectRateAtTargetRevert();
+        vault2.withdraw(1 ether, user, user);
+    }
+
+    /// @dev Pins the cause of the dataless reverts: a direct `rateAtTarget` call on the router fails with no data.
+    function _assertRouterHasNoRateAtTarget() internal view {
+        Market storage m = _m();
+        (bool ok, bytes memory returned) = m.irm.staticcall(abi.encodeWithSignature("rateAtTarget(bytes32)", m.id));
+        assertFalse(ok, "router answers rateAtTarget");
+        assertEq(returned.length, 0, "router revert carries data");
+    }
+
+    /// @dev Expects the next vault call to call `rateAtTarget` on the router and to revert with no data.
+    function _expectRateAtTargetRevert() internal {
+        Market storage m = _m();
+        vm.expectCall(m.irm, abi.encodeWithSignature("rateAtTarget(bytes32)", m.id));
+        vm.expectRevert(bytes(""));
     }
 
     /// @dev Deploys the pair from the artifacts and constructor arguments of `script/DeployVaultV2.s.sol`, with this

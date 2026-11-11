@@ -91,6 +91,13 @@ contract GuardianLivenessTest is LidoLendSetup {
         return ((100 ether * oraclePrice) / 1e36) * 80 / 100;
     }
 
+    /// @dev Two of the three guardians: enough flags to reach the quorum.
+    function _quorumGuardians() internal view returns (address[] memory guardians) {
+        guardians = new address[](2);
+        guardians[0] = guardian1;
+        guardians[1] = guardian2;
+    }
+
     // ── The frontier gate holds maturation ──
 
     function testRevert_TimerElapsedButFrontierBehind_BorrowBlocked() public {
@@ -187,10 +194,7 @@ contract GuardianLivenessTest is LidoLendSetup {
         Market storage m = _m();
         m.supplyCollateral(borrower, 100 ether);
 
-        address[] memory quorumGuardians = new address[](2);
-        quorumGuardians[0] = guardian1;
-        quorumGuardians[1] = guardian2;
-        m.banVia(quorumGuardians, borrower);
+        m.banVia(_quorumGuardians(), borrower);
 
         assertEq(m.controller.positionOf(borrower).unlockTime, type(uint256).max, "banned lot never unlocks");
     }
@@ -201,10 +205,7 @@ contract GuardianLivenessTest is LidoLendSetup {
         uint256 lotStart = block.timestamp;
         m.supplyCollateral(borrower, 100 ether);
 
-        address[] memory quorumGuardians = new address[](2);
-        quorumGuardians[0] = guardian1;
-        quorumGuardians[1] = guardian2;
-        m.banVia(quorumGuardians, borrower);
+        m.banVia(_quorumGuardians(), borrower);
         assertEq(m.controller.positionOf(borrower).unlockTime, type(uint256).max, "setup: banned");
 
         m.unban(borrower);
@@ -219,19 +220,20 @@ contract GuardianLivenessTest is LidoLendSetup {
 
     // ── A ban on matured collateral gates new borrowing only ──
 
-    /// @dev Matures the lot on a quorum of heartbeats, borrows half the capacity, then bans the borrower. Returns the
-    ///      borrow shares.
+    /// @dev Matures the lot on a quorum of heartbeats, borrows half the capacity, then bans the borrower. A borrow
+    ///      that reverts with `AddressBanned` is the control that the ban is in effect. Returns the borrow shares.
     function _borrowThenBan() internal returns (uint256 borrowShares) {
         Market storage m = _m();
         m.supplyCollateral(borrower, 100 ether);
         m.activateCollateral();
         borrowShares = m.borrow(borrower, _maxBorrow() / 2);
 
-        address[] memory quorumGuardians = new address[](2);
-        quorumGuardians[0] = guardian1;
-        quorumGuardians[1] = guardian2;
-        m.banVia(quorumGuardians, borrower);
+        m.banVia(_quorumGuardians(), borrower);
         assertEq(m.controller.positionOf(borrower).active, 100 ether, "setup: lot matured before the ban");
+
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
+        m.core.borrow(m.params, 1 ether, 0, borrower, borrower);
     }
 
     function test_BannedBorrower_RepaysThenWithdrawsAllCollateral() public {
@@ -256,19 +258,14 @@ contract GuardianLivenessTest is LidoLendSetup {
         assertGt(seized, 0, "keeper seized collateral from the banned borrower");
     }
 
-    /// @dev A ban is keyed to the borrower, so the supply side is untouched: a lender still withdraws free liquidity.
-    function test_BannedBorrower_LenderExitStaysOpen() public {
-        _borrowThenBan();
-        _m().vaultWithdraw(_actor("lender"), 333 ether);
-    }
-
-    function testRevert_BannedBorrower_BorrowBlocked() public {
+    /// @dev A ban blocks borrowing only. The banned address still deposits into the vault and withdraws from it.
+    function test_bannedBorrower_depositsAndWithdrawsThroughVault() public {
         Market storage m = _m();
         _borrowThenBan();
 
-        vm.prank(borrower);
-        vm.expectRevert(ILidoLendMarketController.AddressBanned.selector);
-        m.core.borrow(m.params, 1 ether, 0, borrower, borrower);
+        _fund(m.loanToken, borrower, 10 ether);
+        m.vaultDeposit(borrower, 10 ether);
+        m.vaultWithdraw(borrower, 10 ether);
     }
 
     // ── Pinned: the stored frontier stalls after a quorum decrease ──
@@ -314,13 +311,11 @@ contract GuardianLivenessTest is LidoLendSetup {
         assertEq(m.controller.positionOf(borrower).activating, 0, "lot matures once the frontier is synced");
     }
 
-    /// @dev After the remove-guardian motion, the stored frontier stays behind guardian 1's scan. With no
-    ///      `syncQuorumFrontier` call, the lot waits for the fallback deadline. Only `MANAGER_ROLE` can remove a
-    ///      guardian.
-    function test_removeGuardianMotion_lotWaitsForFallback() public {
+    /// @dev After `MANAGER_ROLE` lowers the quorum and removes a silent guardian, the stored frontier stays behind
+    ///      guardian 1's scan. With no `syncQuorumFrontier` call, the lot waits for the fallback deadline.
+    function test_quorumLoweredAndGuardianRemoved_lotWaitsForFallback() public {
         Market storage m = _m();
         uint256 sharedScan = _silenceGuardians2And3();
-        // The motion lowers quorum, then removes a silent guardian.
         vm.startPrank(m.config.admin);
         m.guardianSignals.setQuorum(1);
         m.guardianSignals.removeGuardian(guardian3);

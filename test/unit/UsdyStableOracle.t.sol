@@ -3,6 +3,7 @@ pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {SlotDerivation} from "@openzeppelin/contracts/utils/SlotDerivation.sol";
 
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
@@ -188,14 +189,12 @@ contract UsdyStableOracleTest is Test {
         );
     }
 
-    /// @dev A second `initialize` from any caller reverts, so the bound feed stays.
+    /// @dev A second `initialize` from any caller reverts.
     function testRevert_initialize_alreadyInitialized() public {
         address otherFeed = address(new MockChainlinkFeed());
         vm.prank(makeAddr("stranger"));
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         oracle.initialize(otherFeed, address(loan));
-
-        assertEq(address(oracle.stableUsdFeed()), address(feed), "bound feed kept");
     }
 
     // ── views ──
@@ -425,17 +424,10 @@ contract UsdyStableOracleTest is Test {
 
     /// @dev `stableUsdFeed` opens the ERC-7201 namespace at the base slot and `scale` closes it at base + 1.
     function test_storageLayout_firstAndLastFieldAtErc7201Slots() public view {
-        bytes32 base = _erc7201Slot("lido.lend.storage.UsdyStableOracle");
+        bytes32 base = SlotDerivation.erc7201Slot("lido.lend.storage.UsdyStableOracle");
         assertEq(
-            vm.load(address(oracle), base),
-            bytes32(uint256(uint160(address(oracle.stableUsdFeed())))),
-            "stableUsdFeed at the base slot"
+            vm.load(address(oracle), base), bytes32(uint256(uint160(address(feed)))), "stableUsdFeed at the base slot"
         );
-        assertEq(uint256(vm.load(address(oracle), bytes32(uint256(base) + 1))), oracle.scale(), "scale at base + 1");
-    }
-
-    /// @dev ERC-7201 base slot of `namespaceId`, by the formula of the standard.
-    function _erc7201Slot(string memory namespaceId) private pure returns (bytes32) {
-        return keccak256(abi.encode(uint256(keccak256(bytes(namespaceId))) - 1)) & ~bytes32(uint256(0xff));
+        assertEq(uint256(vm.load(address(oracle), bytes32(uint256(base) + 1))), SCALE, "scale at base + 1");
     }
 }

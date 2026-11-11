@@ -14,8 +14,8 @@ import {IrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/IrmConfigF
 import {IIrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/interfaces/IIrmConfigFactory.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
@@ -32,6 +32,7 @@ import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
 import {DeployConfigFile} from "../../script/lib/DeployConfigFile.sol";
+import {PreseedLib} from "../setup/PreseedLib.sol";
 // --- Minimal read/write surfaces (UDVT `Id` is ABI-identical to bytes32, so bytes32 params match) ---
 
 interface IReadController {
@@ -466,13 +467,6 @@ abstract contract AcceptanceContext is Test {
 
 abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     using MarketParamsLib for MarketParams;
-    using SafeERC20 for IERC20;
-
-    // `LidoLendPreseeder` constants.
-    address internal constant PRESEED_RECIPIENT = address(0xdead);
-    uint256 internal constant MARKET_VIRTUAL_SHARES = 1e6;
-    uint256 internal constant MIN_DEAD_DEPOSIT_SHARES = 1e9;
-    uint256 internal constant MIN_VAULT_ASSET_UNITS = 1e6;
 
     function _assertComponentsDeployed() internal {
         address[11] memory a = [
@@ -978,39 +972,37 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     /// @dev Mirror of the `LidoLendActivateMarket` EasyTrack motion, run by the executor in the motion's call order.
     ///      The curve config MUST be applied before `createMarket`: its first `borrowRate` ping reverts on an unset
     ///      config. A disposable steward stands in for the reviewed one. The motion sets a fee only when it is not
-    ///      zero. This mirror's fee is zero, so it makes no `setFee` call.
+    ///      zero. This mirror's fee is zero, so it makes no `setFee` call. The checks after the motion apply to this
+    ///      simulation only: the local activation replay adds no steward and makes no preseed.
     function _activate(address testPauserCommittee) internal {
         assertNotEq(testPauserCommittee, address(0), "test pauser committee is zero");
         MarketParams memory p = _params();
         address irmConfig = _expectedIrmConfig();
-        address testSteward = makeAddr("acceptanceMarketSteward");
+        marketSteward = makeAddr("acceptanceMarketSteward");
         vm.startPrank(executor);
         IReadCurve(curve).applyIrmConfig(p, irmConfig);
         IReadRouter(router).setMarketIrm(p, curve);
         IReadFacade(facade).createMarket(p, controller, enableSettlement);
-        IReadDashboard(dashboard).addMarketSteward(Id.wrap(marketId), testSteward);
+        IReadDashboard(dashboard).addMarketSteward(Id.wrap(marketId), marketSteward);
         IReadCircuitBreaker(circuitBreaker).registerPauser(controller, testPauserCommittee);
         vm.stopPrank();
-        _preseed(p);
+        uint256 requiredVaultShares = _preseed(p);
+
+        _assertRoles();
+        assertEq(
+            IMorpho(core).position(Id.wrap(marketId), PreseedLib.RECIPIENT).supplyShares,
+            PreseedLib.MIN_DEAD_DEPOSIT_SHARES,
+            "preseed: dead market shares"
+        );
+        assertGe(IERC20(vault).balanceOf(PreseedLib.RECIPIENT), requiredVaultShares, "preseed: dead vault shares");
     }
 
-    /// @dev The two calls of `LidoLendPreseeder.preseedMarket`, with its amounts and share check, made by a funded
-    ///      stand-in for the preseeder. Both the market shares and the vault shares go to `PRESEED_RECIPIENT`.
-    function _preseed(MarketParams memory p) private {
-        uint256 marketAssets = (MIN_DEAD_DEPOSIT_SHARES - 1) / MARKET_VIRTUAL_SHARES + 1;
-        uint256 vaultAssets = Math.max(IReadVault(vault).previewMint(MIN_DEAD_DEPOSIT_SHARES), MIN_VAULT_ASSET_UNITS);
+    /// @dev The preseed of the activation motion, made by a funded stand-in for the preseeder.
+    /// @return requiredVaultShares The fewest vault shares that the preseeder accepts for the dead address.
+    function _preseed(MarketParams memory p) private returns (uint256 requiredVaultShares) {
         address preseeder = makeAddr("acceptancePreseeder");
-        deal(loanToken, preseeder, marketAssets + vaultAssets);
-
-        vm.startPrank(preseeder);
-        IERC20(loanToken).forceApprove(core, marketAssets);
-        IMorpho(core).supply(p, 0, MIN_DEAD_DEPOSIT_SHARES, PRESEED_RECIPIENT, "");
-        uint256 requiredVaultShares =
-            Math.max(IReadVault(vault).previewDeposit(MIN_VAULT_ASSET_UNITS), MIN_DEAD_DEPOSIT_SHARES);
-        IERC20(loanToken).forceApprove(vault, vaultAssets);
-        uint256 vaultShares = IReadVault(vault).deposit(vaultAssets, PRESEED_RECIPIENT);
-        vm.stopPrank();
-        assertGe(vaultShares, requiredVaultShares, "preseed: vault shares too low");
+        deal(loanToken, preseeder, PreseedLib.marketAssets() + PreseedLib.vaultAssets(IERC4626(vault)));
+        return PreseedLib.preseed(IMorpho(core), p, IERC4626(vault), preseeder);
     }
 
     function _expectedIrmConfig() private view returns (address irmConfig) {

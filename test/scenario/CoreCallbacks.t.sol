@@ -5,7 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {Market as MorphoMarket, MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MarketParams, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {IMorphoFlashLoanCallback, IMorphoLiquidateCallback} from "@lido-lend/src/interfaces/IMorphoCallbacks.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
@@ -139,13 +139,11 @@ contract CoreCallbacksTest is LidoLendSetup {
     function testRevert_flashLoanCallback_depositExit_illiquidSingleMarket() public {
         Market storage m = _m();
         _seedIlliquid();
-        uint256 sharesBefore = m.vault.balanceOf(address(actor));
 
+        // The failed transfer is the 20-token liquid leg that the vault withdraws, not the flash payout or repayment.
+        vm.expectCall(address(m.loanToken), abi.encodeCall(IERC20.transfer, (address(m.vault), 20 ether)));
         vm.expectRevert(bytes("transfer reverted"));
         actor.flashDepositExit(10 ether);
-
-        assertEq(m.vault.balanceOf(address(actor)), sharesBefore, "actor shares untouched");
-        _assertCustodyAndQueue();
     }
 
     /// @dev A second market on the same loan token holds 50 idle tokens in the pooled balance. The liquid leg pays the
@@ -205,13 +203,13 @@ contract CoreCallbacksTest is LidoLendSetup {
         Market storage m = _m();
         _seedLiquidatable();
         assertEq(m.loanToken.balanceOf(address(m.core)), 0, "setup: the core holds no loan tokens");
-        uint256 victimSharesBefore = m.core.position(m.id, victim).borrowShares;
+        uint256 repaidShares = m.core.position(m.id, victim).borrowShares / 2;
+        uint256 liquidLeg = Erc4626Math.toAssets(m.vault, m.vault.balanceOf(address(actor)), Math.Rounding.Floor);
 
+        // The failed transfer is the liquid leg that the vault withdraws, not the pull of the repay.
+        vm.expectCall(address(m.loanToken), abi.encodeCall(IERC20.transfer, (address(m.vault), liquidLeg)));
         vm.expectRevert(bytes("transfer reverted"));
-        actor.liquidateThen(CoreCallbackActor.VaultCall.FallbackExit, victim, victimSharesBefore / 2, new address[](0));
-
-        assertEq(m.core.position(m.id, victim).borrowShares, victimSharesBefore, "liquidation undone");
-        _assertCustodyAndQueue();
+        actor.liquidateThen(CoreCallbackActor.VaultCall.FallbackExit, victim, repaidShares, new address[](0));
     }
 
     /// @dev With 50 idle tokens of a second market in the pooled balance, the liquid leg pays the actor's whole
@@ -223,7 +221,7 @@ contract CoreCallbacksTest is LidoLendSetup {
         uint256 repaidShares = m.core.position(m.id, victim).borrowShares / 2;
         uint256 shares = m.vault.balanceOf(address(actor));
         uint256 expectedLoan = Erc4626Math.toAssets(m.vault, shares, Math.Rounding.Floor);
-        (,, uint256 repaidAssets) = m.expectedLiquidation(0, repaidShares);
+        (, uint256 repaidAssets,) = m.expectedLiquidation(0, repaidShares);
         assertGe(repaidAssets, expectedLoan, "setup: the unpaid repay covers the actor's position");
 
         actor.liquidateThen(CoreCallbackActor.VaultCall.FallbackExit, victim, repaidShares, new address[](0));
@@ -301,14 +299,11 @@ contract CoreCallbacksTest is LidoLendSetup {
     ///      borrower is queued exactly when it has debt and collateral, under the key `borrowShares * 1e18 /
     ///      collateral`.
     function _assertCustodyAndQueue() internal view {
-        uint256 freeLiquidity;
-        for (uint256 i; i < protocol.markets.length; ++i) {
-            MorphoMarket memory mkt = protocol.core.market(protocol.markets[i].id);
-            freeLiquidity += mkt.totalSupplyAssets - mkt.totalBorrowAssets;
-        }
-        assertGe(_m().loanToken.balanceOf(address(protocol.core)), freeLiquidity, "pooled balance covers markets");
-
         Market storage m = _m();
+        assertGe(
+            m.loanToken.balanceOf(address(protocol.core)), _freeLiquidity(m.loanToken), "pooled balance covers markets"
+        );
+
         (address[] memory queued, uint256[] memory keys) =
             m.controller.settlementBorrowers(0, m.controller.settlementBorrowersCount());
         address[3] memory tracked = [address(actor), victim, other];

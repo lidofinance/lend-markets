@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {IIrm} from "@lido-lend/src/interfaces/IIrm.sol";
 import {Id, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
@@ -15,6 +14,7 @@ import {IIrm as IrmIIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.
 import {Id as IrmId, MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
 
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
+import {CircuitBreakerConfigFile} from "../../script/lib/CircuitBreakerConfigFile.sol";
 import {IPausableUntil} from "../../src/interfaces/IPausableUntil.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -38,7 +38,7 @@ contract PauseLifecycleTest is LidoLendSetup {
     using SharesMathLib for uint256;
 
     uint256 internal constant LLTV = 0.8e18;
-    /// @dev The borrower's LTV when an I-M003 pause starts: healthy, but within reach of LLTV.
+    /// @dev The borrower's LTV when a full-utilization pause starts: healthy, but within reach of LLTV.
     uint256 internal constant BORROWER_LTV = 0.76e18;
     /// @dev Rate at target of the flat curve the IRM owner applies during a pause: 4%/yr, per second.
     int256 internal constant FLAT_RATE_AT_TARGET = int256(4e16) / int256(365 days);
@@ -352,7 +352,7 @@ contract PauseLifecycleTest is LidoLendSetup {
         vm.stopPrank();
     }
 
-    // ── I-M003: debt compounds while the pause blocks every cure ──
+    // ── Debt compounds while the pause blocks every cure ──
 
     /// @dev A borrower healthy at the pause start becomes liquidatable from 21 days of
     ///      interest alone, with no way to cure. A fix changes this outcome; update this test with the fix.
@@ -360,27 +360,27 @@ contract PauseLifecycleTest is LidoLendSetup {
         Market storage m = _m();
         _seedFullUtilization();
         uint256 price = m.oracle.price();
-        assertLt(_ltv(borrower), LLTV, "setup: healthy when the pause starts");
+        assertLt(m.ltvAt(borrower, price), LLTV, "setup: healthy when the pause starts");
 
         _bookPauseAtResume(21 days);
 
         assertEq(m.oracle.price(), price, "no price move");
-        assertGt(_ltv(borrower), LLTV, "interest alone crossed LLTV");
+        assertGt(m.ltvAt(borrower, price), LLTV, "interest alone crossed LLTV");
         m.liquidate(keeper, borrower, 0, m.core.position(m.id, borrower).borrowShares);
     }
 
-    /// @dev A 60-day pause, the CircuitBreaker maximum, turns a healthy borrower into bad
-    ///      debt from interest alone. A fix changes this outcome; update this test with the fix.
-    function test_pause60dAtFullUse_badDebtAtResume() public {
+    /// @dev A pause of the maximum duration in the `lido-lend` CircuitBreaker profile turns a healthy borrower into
+    ///      bad debt from interest alone. A fix changes this outcome; update this test with the fix.
+    function test_maxCircuitBreakerPauseAtFullUse_badDebtAtResume() public {
         Market storage m = _m();
         _seedFullUtilization();
         uint256 price = m.oracle.price();
-        assertLt(_ltv(borrower), LLTV, "setup: healthy when the pause starts");
+        assertLt(m.ltvAt(borrower, price), LLTV, "setup: healthy when the pause starts");
 
-        _bookPauseAtResume(60 days);
+        _bookPauseAtResume(CircuitBreakerConfigFile.read("lido-lend").maxPauseDuration);
 
         assertEq(m.oracle.price(), price, "no price move");
-        assertGt(_ltv(borrower), WAD, "debt exceeds the collateral value");
+        assertGt(m.ltvAt(borrower, price), WAD, "debt exceeds the collateral value");
         m.liquidateBadDebt(keeper, borrower, m.core.position(m.id, borrower).collateral, 0);
     }
 
@@ -399,7 +399,7 @@ contract PauseLifecycleTest is LidoLendSetup {
         m.core.accrueInterest(m.params);
 
         MorphoMarket memory pre = m.core.market(m.id);
-        uint256 interest = _pendingInterest();
+        uint256 interest = m.pendingInterest();
         uint256 feeAmount = interest.wMulDown(0.1e18);
         uint256 feeShares = feeAmount.toSharesDown(pre.totalSupplyAssets + interest - feeAmount, pre.totalSupplyShares);
         uint256 recipientShares = m.core.position(m.id, feeRecipient).supplyShares;
@@ -447,7 +447,7 @@ contract PauseLifecycleTest is LidoLendSetup {
         m.accrueInterest();
 
         assertEq(m.core.market(m.id).totalBorrowAssets, atPause.totalBorrowAssets + interest, "repriced interval");
-        assertLt(_ltv(borrower), LLTV, "the reprice keeps the borrower healthy");
+        assertLt(m.ltvAt(borrower, m.oracle.price()), LLTV, "the reprice keeps the borrower healthy");
     }
 
     /// @dev Lender in, the borrower at `BORROWER_LTV`, and a filler at LTV 0.5 borrowing the rest, so utilization is
@@ -472,7 +472,8 @@ contract PauseLifecycleTest is LidoLendSetup {
     }
 
     /// @dev Pauses for `duration`, waits until the pause lapses, then books the whole interval with one accrual.
-    ///      Asserts the booked interest against the IRM's rate for the interval, compounded as the core does.
+    ///      Asserts that this one accrual books the interest of the whole interval. The expected value takes its rate
+    ///      from the IRM, so it does not check the rate. The LTV asserts of the callers check the size.
     function _bookPauseAtResume(uint256 duration) internal {
         Market storage m = _m();
         m.pause(duration);
@@ -480,26 +481,9 @@ contract PauseLifecycleTest is LidoLendSetup {
         assertFalse(IPausableUntil(address(m.controller)).isPaused(), "setup: the pause lapsed");
 
         uint128 borrowBefore = m.core.market(m.id).totalBorrowAssets;
-        uint256 interest = _pendingInterest();
+        uint256 interest = m.pendingInterest();
         m.accrueInterest();
         assertEq(m.core.market(m.id).totalBorrowAssets, borrowBefore + interest, "paused interval booked at resume");
-    }
-
-    /// @dev Interest the next accrual must book: the IRM's average rate since `lastUpdate`, Taylor-compounded over
-    ///      the elapsed time.
-    function _pendingInterest() internal view returns (uint256) {
-        Market storage m = _m();
-        MorphoMarket memory market = m.core.market(m.id);
-        uint256 rate = IIrm(m.params.irm).borrowRateView(m.params, market);
-        return uint256(market.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(block.timestamp - market.lastUpdate));
-    }
-
-    function _ltv(address account) internal view returns (uint256) {
-        Market storage m = _m();
-        MorphoMarket memory market = m.core.market(m.id);
-        uint256 debt = uint256(m.core.position(m.id, account).borrowShares)
-            .toAssetsUp(market.totalBorrowAssets, market.totalBorrowShares);
-        return debt * WAD / _collateralValue(m.core.position(m.id, account).collateral);
     }
 
     function _collateralValue(uint256 collateral) internal view returns (uint256) {

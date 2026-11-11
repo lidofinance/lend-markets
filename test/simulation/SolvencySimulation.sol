@@ -432,27 +432,67 @@ abstract contract SolvencySimulation is SolvencyActions {
         try this.checkLenders() {
             assertTrue(false, "the lender check missed the unbooked loss");
         } catch (bytes memory failure) {
-            // A failed assertion reverts with forge's `CheatcodeError(string)`: the selector, then the message.
-            assertEq(bytes4(failure), bytes4(keccak256("CheatcodeError(string)")), "the lender check did not fail");
-            bytes memory encoded = new bytes(failure.length - 4);
-            for (uint256 i; i < encoded.length; ++i) {
-                encoded[i] = failure[i + 4];
-            }
-            assertEq(
-                vm.indexOf(abi.decode(encoded, (string)), "lender: below its flows"),
-                0,
-                "the lender check failed for another reason"
-            );
+            _assertCheckFailedWith(failure, "lender: below its flows");
         }
     }
 
-    /// @notice Audit FZ-18: two borrowers tie on the rounded risk key. The root is solvent at exactly its debt, and
-    ///         the tied borrower is short by about one key unit of debt. The queue check accepts that shortfall.
+    /// @notice Two borrowers tie on the rounded risk key. The root is solvent at exactly its debt, and the tied
+    ///         borrower is short by about one key unit of debt. The queue check accepts that shortfall.
     /// @dev lender-settlement.md "A rounded root check can miss an insolvent borrower". With 1e25 collateral, one key
     ///      unit is 1e7 borrow shares: about 10 loan units at the opening rate of 1e-6 asset per share.
+    ///      `test_solventRootShortfallCheck_aboveOneKeyUnitPlusTwo_fails` is the control for the bound.
     function test_tiedRiskKey_shortfallWithinOneKeyUnit() public {
         _seedTiedRiskKey();
         _checkQueueRoot();
+    }
+
+    /// @notice The shortfall check passes at one key unit plus two units of shortfall and fails one unit above.
+    /// @dev The price falls until the root itself is short by the stated amount. The test calls the check directly
+    ///      on the root, because `_checkQueueRoot` skips it once the root carries bad debt.
+    function test_solventRootShortfallCheck_aboveOneKeyUnitPlusTwo_fails() public {
+        (address root,) = _seedTiedRiskKey();
+        Market storage m = _m();
+        uint256 collateral = m.core.position(m.id, root).collateral;
+        uint256 rootDebt = _debtUp(root);
+        MorphoMarket memory mk = m.core.market(m.id);
+        // One key unit is `collateral / 1e18` borrow shares. Its debt rounds up, as the debt of a borrower does.
+        uint256 keyUnit = Math.mulDiv(
+            collateral / WAD,
+            uint256(mk.totalBorrowAssets) + SharesMathLib.VIRTUAL_ASSETS,
+            uint256(mk.totalBorrowShares) + SharesMathLib.VIRTUAL_SHARES,
+            Math.Rounding.Ceil
+        );
+        address[] memory queued = new address[](1);
+        queued[0] = root;
+
+        _setRootShortfall(root, rootDebt, keyUnit + 2);
+        this.checkSolventRootShortfall(queued);
+
+        _setRootShortfall(root, rootDebt, keyUnit + 3);
+        try this.checkSolventRootShortfall(queued) {
+            assertTrue(false, "the shortfall check missed a shortfall above its bound");
+        } catch (bytes memory failure) {
+            _assertCheckFailedWith(failure, "queue: solvent root hides a shortfall over one key");
+        }
+    }
+
+    /// @dev Sets the price that leaves the collateral of `root` worth `shortfall` less than `rootDebt`.
+    function _setRootShortfall(address root, uint256 rootDebt, uint256 shortfall) internal {
+        Market storage m = _m();
+        uint256 collateral = m.core.position(m.id, root).collateral;
+        MockPriceOracle(address(m.oracle)).setPrice((rootDebt - shortfall) * ORACLE_SCALE / collateral);
+        assertEq(Math.mulDiv(collateral, _price(), ORACLE_SCALE), rootDebt - shortfall, "setup: root value != target");
+    }
+
+    /// @dev Asserts that `failure` is a failed forge assertion whose message starts with `message`. A failed
+    ///      assertion reverts with forge's `CheatcodeError(string)`: the selector, then the message.
+    function _assertCheckFailedWith(bytes memory failure, string memory message) internal pure {
+        assertEq(bytes4(failure), bytes4(keccak256("CheatcodeError(string)")), "the check did not fail");
+        bytes memory encoded = new bytes(failure.length - 4);
+        for (uint256 i; i < encoded.length; ++i) {
+            encoded[i] = failure[i + 4];
+        }
+        assertEq(vm.indexOf(abi.decode(encoded, (string)), message), 0, "the check failed for another reason");
     }
 
     /// @dev Known issue: a solvent root can tie on the rounded risk key with an insolvent borrower. Then a lender exit
@@ -514,7 +554,7 @@ abstract contract SolvencySimulation is SolvencyActions {
         assertGt(lossWithExit, lossWithoutExit, "the exit moves the exiter's part of the loss to the stayer");
     }
 
-    /// @dev Audit FZ-18 setup: two borrowers tie on the rounded risk key. The root is solvent at exactly its debt, and
+    /// @dev Setup: two borrowers tie on the rounded risk key. The root is solvent at exactly its debt, and
     ///      the tied borrower is short by about one key unit of debt.
     function _seedTiedRiskKey() internal returns (address root, address tied) {
         _setUpSimulation(_shortCounts());
@@ -558,6 +598,11 @@ abstract contract SolvencySimulation is SolvencyActions {
     /// @dev `_checkLenders` as a call of its own, so a test can catch its failure.
     function checkLenders() external view {
         _checkLenders();
+    }
+
+    /// @dev `_checkSolventRootShortfall` as a call of its own, so a test can catch its failure.
+    function checkSolventRootShortfall(address[] calldata queued) external view {
+        _checkSolventRootShortfall(queued);
     }
 
     /// @dev One near-full-repay inflation cycle from `s` borrow shares at zero borrow assets: borrows
@@ -865,7 +910,7 @@ abstract contract SolvencySimulation is SolvencyActions {
         if (!m.controller.hasBadDebt()) _checkSolventRootShortfall(queued);
     }
 
-    /// @dev Audit FZ-18: under a solvent root, a member's debt exceeds its collateral value by at most one key unit of
+    /// @dev Under a solvent root, a member's debt exceeds its collateral value by at most one key unit of
     ///      debt plus two units. A member's key is at most the root's, and each key rounds down by less than one. So
     ///      the member's LTV exceeds the root's by less than one key unit. The debt ceiling and the value floor add
     ///      one unit each. The bad-debt gate reads accrued totals, so this check does too.

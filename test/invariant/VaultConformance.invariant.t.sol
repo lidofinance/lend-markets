@@ -344,19 +344,35 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.settledUnderBadDebt(), "gate held under the seeded bad-debt state");
     }
 
-    /// @dev Audit T1-C5: a run can end with no successful settle, fallback exit or liquidation, so `afterInvariant`
+    /// @dev A run can end with no successful settle, two-leg fallback exit or liquidation, so `afterInvariant`
     ///      cannot floor them. This drives each one once from the seeded state.
-    function test_SettleFallbackExitAndLiquidationAreReachable() public {
-        uint256 unitShares = _m().vault.convertToShares(10 ** _loanDecimals());
+    function test_seededState_reachesSettleFallbackExitAndLiquidation() public {
+        Market storage m = _m();
+        uint256 unit = 10 ** _loanDecimals();
+        uint256 unitShares = m.vault.convertToShares(unit);
         handler.settle(0, 1, unitShares); // the seeded borrower carries a personal slice
         assertEq(handler.settles(), 1, "a successful settle was not reached");
-        handler.fallbackExit(0, unitShares, 0);
-        assertEq(handler.fallbackExits(), 1, "a successful fallback exit was not reached");
 
-        handler.borrow(1, type(uint256).max); // bounded inside the handler to its LLTV capacity
+        // One loan unit stays idle, so a two-unit exit redeems one unit and settles the other.
+        handler.withdraw(0, m.vault.maxWithdraw(actors[0]) - unit);
+        assertEq(_mk().totalSupplyAssets - _mk().totalBorrowAssets, unit, "setup: idle is not one loan unit");
+        handler.fallbackExit(0, 2 * unitShares, 0);
+        assertEq(handler.fallbackExits(), 1, "a successful fallback exit was not reached");
+        assertEq(handler.mixedFallbackSettlementFills(), 1, "the fallback exit did not use both legs");
+        assertEq(handler.collateralPayouts(), 2, "the settle leg paid no collateral");
+
+        handler.deposit(0, 1_000_000 * unit); // liquidity for a borrow to the LLTV edge
+        handler.borrow(1, type(uint256).max); // bounded inside the handler to 99% of its LLTV room
+        handler.crashPrice(90); // the LTV is then near 0.88: unhealthy and solvent
+        handler.liquidate(1, 1 ether);
+        assertEq(handler.liquidations(), 1, "a solvent partial liquidation was not reached");
+        assertGt(m.core.position(m.id, actors[1]).collateral, 0, "the solvent liquidation seized all collateral");
+        assertFalse(m.controller.hasBadDebt(), "the solvent liquidation left bad debt");
+
         handler.crashPrice(0); // bounded to the deepest crash the handler allows
         handler.liquidate(1, 0);
-        assertEq(handler.liquidations(), 1, "a successful liquidation was not reached");
+        assertEq(handler.liquidations(), 2, "a seize-all liquidation was not reached");
+        assertEq(m.core.position(m.id, actors[1]).collateral, 0, "the underwater liquidation left collateral");
         invariant_settleConservesAccounting();
         invariant_exitPayoutWithinRoundingBounds();
     }
@@ -414,8 +430,8 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.settlementRejectedForPauseWhileResumed(), "pause error surfaced on a resumed market");
     }
 
-    /// @dev Audit T1-C5: logs the counters and fails a run that missed an action every run must reach. Foundry
-    ///      restores the post-setUp state before each run, so the counters are per run and include the setUp calls.
+    /// @dev Logs the counters and fails a run that never called one of three handler actions. Foundry restores the
+    ///      post-setUp state before each run, so the counters are per run and include the setUp calls.
     function afterInvariant() public {
         emit log_named_uint("deposits", handler.deposits());
         emit log_named_uint("withdraws", handler.withdraws());
@@ -458,13 +474,15 @@ contract VaultConformanceInvariant is LidoLendSetup {
         emit log_named_uint("skippedRepays", handler.skippedRepays());
         emit log_named_uint("skippedLiquidations", handler.skippedLiquidations());
         emit log_named_uint("skippedSettlementLtv", handler.skippedSettlementLtv());
-        // Coverage floors. A run makes 250 calls over 16 selectors (17 at six decimals). An action that always counts
-        // then misses a run with odds (1 - 1/17)^250 < 3e-7.
+        // Wiring floors. These three actions count on every call, so a floor fails only when the selector leaves the
+        // target list. A run makes 250 calls over 16 selectors (17 at six decimals), and misses a wired action with
+        // odds (1 - 1/17)^250 < 3e-7.
         //   crashes: each call sets a crashed price, which liquidation and bad debt need.
         //   pauses: each call pauses or resumes the market.
         //   caps: each call sets or lifts the supply cap.
-        // Settles, fallback exits and liquidations miss some runs, so they carry no floor here.
-        // `test_SettleFallbackExitAndLiquidationAreReachable` reaches each of them instead.
+        // The floors do not show that a run settled or exited. Settles, fallback exits and liquidations miss some
+        // runs, so they carry no floor here.
+        // `test_seededState_reachesSettleFallbackExitAndLiquidation` reaches each of them instead.
         assertGt(handler.crashes(), 0, "coverage: no crash");
         assertGt(handler.pauses(), 0, "coverage: no pause or resume");
         assertGt(handler.caps(), 0, "coverage: no supply-cap change");

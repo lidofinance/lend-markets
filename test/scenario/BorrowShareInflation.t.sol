@@ -382,8 +382,8 @@ contract BorrowShareInflationTest is LidoLendSetup {
 
     // ── a close at the exact cap ──
 
-    /// @dev At the exact cap a healthy borrower's full close reverts while other debt remains,
-    ///      and liquidation cannot close it. A fix changes this outcome; update this test with the fix.
+    /// @dev At the exact cap a healthy borrower's full close reverts while other debt remains.
+    ///      A fix changes this outcome; update this test with the fix.
     function testFuzz_atCapCoDebt_fullCloseReverts(uint256 coDebt) public {
         coDebt = bound(coDebt, 1, 20 ether);
         Market storage m = _m();
@@ -393,6 +393,7 @@ contract BorrowShareInflationTest is LidoLendSetup {
         vm.expectRevert(ILidoLendMarketController.BorrowShareRateExceeded.selector);
         m.core.repay(m.params, 0, hShares, h, "");
 
+        // The position is healthy, so the core's usual rule also stops a keeper from closing it.
         vm.expectRevert(bytes(ErrorsLib.HEALTHY_POSITION));
         m.core.liquidate(m.params, h, 0, hShares, "");
     }

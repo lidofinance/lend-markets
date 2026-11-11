@@ -3,11 +3,9 @@ pragma solidity 0.8.36;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {IIrm} from "@lido-lend/src/interfaces/IIrm.sol";
 import {Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
-import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
-import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
 
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -27,8 +25,6 @@ import {MockERC20, MockNavOracle, MockUsdFeed} from "../setup/Mocks.sol";
 ///         healthy position rejecting a liquidation.
 contract OracleOutageTest is LidoLendSetup {
     using MarketActions for Market;
-    using MathLib for uint256;
-    using SharesMathLib for uint256;
 
     uint256 internal constant LLTV = 0.8e18;
 
@@ -176,12 +172,13 @@ contract OracleOutageTest is LidoLendSetup {
         m.borrow(victim, victimDebt);
         market = m.core.market(m.id);
         assertEq(market.totalBorrowAssets, market.totalSupplyAssets, "setup: utilization is 100%");
-        assertLt(_ltv(victim, price), LLTV, "setup: healthy before the outage");
+        assertLt(m.ltvAt(victim, price), LLTV, "setup: healthy before the outage");
 
         nav.setDown(true);
         vm.warp(block.timestamp + 21 days);
 
-        uint256 interest = _pendingInterest();
+        // The expected value takes its rate from the IRM. It pins that the accrual books the whole outage interval.
+        uint256 interest = m.pendingInterest();
         m.accrueInterest();
         assertEq(
             m.core.market(m.id).totalBorrowAssets, market.totalBorrowAssets + interest, "21 days booked during outage"
@@ -194,7 +191,7 @@ contract OracleOutageTest is LidoLendSetup {
 
         nav.setDown(false);
         assertEq(m.oracle.price(), price, "the same price returns");
-        assertGt(_ltv(victim, price), LLTV, "interest alone crossed LLTV");
+        assertGt(m.ltvAt(victim, price), LLTV, "interest alone crossed LLTV");
         m.liquidate(keeper, victim, 0, victimShares);
     }
 
@@ -285,24 +282,6 @@ contract OracleOutageTest is LidoLendSetup {
     }
 
     // ── helpers ──
-
-    /// @dev Interest the next accrual must book: the IRM's average rate since `lastUpdate`, Taylor-compounded over
-    ///      the elapsed time.
-    function _pendingInterest() internal view returns (uint256) {
-        Market storage m = _m();
-        MorphoMarket memory market = m.core.market(m.id);
-        uint256 rate = IIrm(m.params.irm).borrowRateView(m.params, market);
-        return uint256(market.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(block.timestamp - market.lastUpdate));
-    }
-
-    /// @dev LTV at `price`, the price before the outage, so a change in LTV comes from debt alone.
-    function _ltv(address account, uint256 price) internal view returns (uint256) {
-        Market storage m = _m();
-        MorphoMarket memory market = m.core.market(m.id);
-        uint256 debt = uint256(m.core.position(m.id, account).borrowShares)
-            .toAssetsUp(market.totalBorrowAssets, market.totalBorrowShares);
-        return debt * WAD / (uint256(m.core.position(m.id, account).collateral) * price / ORACLE_PRICE_SCALE);
-    }
 
     /// @dev Move the NAV and return the price it produces, computed rather than read back, since `price()`
     ///      is exactly what may now revert.

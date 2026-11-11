@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 import {Test, stdError} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {SlotDerivation} from "@openzeppelin/contracts/utils/SlotDerivation.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 import {Id, IMorpho} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {
@@ -1851,23 +1852,21 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── storage layout ──
 
-    /// @dev `marketId` opens the ERC-7201 namespace. `_instantActivationCallers` closes it at base + 12, after
-    ///      `supplyCap` (1 slot), the packed `isFrozen` and `_guardianSignals` (1 slot), `_activation` (5 slots) and
-    ///      `_settlementQueue` (4 slots). A mapping slot holds no value, so the pin reads one entry of the mapping.
-    function test_storageLayout_firstAndLastFieldAtErc7201Slots() public {
+    /// @dev `marketId` opens the ERC-7201 namespace and `supplyCap` follows at base + 1. `_instantActivationCallers`
+    ///      closes it at base + 12, after the packed `isFrozen` and `_guardianSignals` (1 slot), `_activation`
+    ///      (5 slots) and `_settlementQueue` (4 slots). A mapping slot holds no value, so the pin reads one entry of
+    ///      the mapping. The `supplyCap` pin catches a reorder of the fields behind `marketId`.
+    function test_storageLayout_firstSecondAndLastFieldAtErc7201Slots() public {
         address caller = _actor("instantCaller");
         _m().setInstantActivation(caller, true);
+        _m().setSupplyCap(500 ether);
 
-        bytes32 base = _erc7201Slot("lido.lend.storage.LidoLendMarketController");
+        bytes32 base = SlotDerivation.erc7201Slot("lido.lend.storage.LidoLendMarketController");
         assertEq(vm.load(address(c), base), Id.unwrap(c.marketId()), "marketId at the base slot");
+        assertEq(uint256(vm.load(address(c), bytes32(uint256(base) + 1))), 500 ether, "supplyCap at base + 1");
         bytes32 entry = keccak256(abi.encode(caller, uint256(base) + 12));
         assertTrue(c.hasInstantActivation(caller), "setup: caller has instant activation");
         assertEq(vm.load(address(c), entry), bytes32(uint256(1)), "_instantActivationCallers at base + 12");
-    }
-
-    /// @dev ERC-7201 base slot of `namespaceId`, by the formula of the standard.
-    function _erc7201Slot(string memory namespaceId) private pure returns (bytes32) {
-        return keccak256(abi.encode(uint256(keccak256(bytes(namespaceId))) - 1)) & ~bytes32(uint256(0xff));
     }
 }
 

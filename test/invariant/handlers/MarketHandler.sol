@@ -50,7 +50,8 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     uint256 public repays;
     uint256 public crashes;
     uint256 public liquidations;
-    // Victims of a forced seizure, excluded from the floor invariant until their debt is cleared.
+    // Victims that a forced seizure left with debt and active collateral below the floor. The floor invariant
+    // excludes them until the debt is gone or the active collateral is back at the floor.
     mapping(address => bool) public liquidated;
 
     constructor(
@@ -97,6 +98,13 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         return d.dust + (matures ? 0 : d.activating);
     }
 
+    /// @dev Clears the flag once the victim has no debt, or has active collateral at the floor again. From then on
+    ///      the voluntary paths must keep the floor for this actor.
+    function _clearLiquidatedIfRestored(address a) internal {
+        if (!liquidated[a]) return;
+        if (CORE.position(ID, a).borrowShares == 0 || CONTROLLER.positionOf(a).active >= FLOOR) liquidated[a] = false;
+    }
+
     function supply(uint256 actorSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         amount = bound(amount, 1e18, 1_000_000e18);
@@ -128,6 +136,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         CORE.supplyCollateral(params, amount, a, "");
         vm.stopPrank();
         collateralSupplies++;
+        _clearLiquidatedIfRestored(a);
     }
 
     /// @dev A delayed actor with no pending dust supplies less than `minActivationAmount`, which stays dust.
@@ -141,6 +150,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         CORE.supplyCollateral(params, amount, a, "");
         vm.stopPrank();
         dustSupplies++;
+        _clearLiquidatedIfRestored(a);
     }
 
     function borrow(uint256 actorSeed, uint256 amount) external {
@@ -171,6 +181,8 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         vm.prank(a);
         CORE.borrow(params, amount, 0, a, a);
         borrows++;
+        // The borrow hook matures a due lot, which can lift a delayed victim back to the floor.
+        _clearLiquidatedIfRestored(a);
     }
 
     function repay(uint256 actorSeed, uint256 amount) external {
@@ -194,7 +206,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         vm.stopPrank();
         repays++;
         // A debt-free actor's next debt comes from a voluntary borrow, which must meet the floor again.
-        if (CORE.position(ID, a).borrowShares == 0) liquidated[a] = false;
+        _clearLiquidatedIfRestored(a);
     }
 
     function withdrawCollateral(uint256 actorSeed, uint256 amount) external {
@@ -210,7 +222,8 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         uint256 floorKeep = pos.borrowShares == 0 ? 0 : FLOOR;
         uint256 minKeep = requiredColl > floorKeep ? requiredColl : floorKeep;
         if (pos.collateral <= minKeep) return;
-        uint256 free = (uint256(pos.collateral) - minKeep) * 9 / 10; // 90% margin, clear of the gate
+        // With debt, a 90% margin stays clear of the health gate. Without debt, the whole position can leave.
+        uint256 free = pos.borrowShares == 0 ? pos.collateral : (uint256(pos.collateral) - minKeep) * 9 / 10;
         // With no activation lock, a withdrawal must clear the whole inactive balance. The remainder is then all
         // active, so the health bound above still holds.
         uint256 inactive = _inactiveAfterSync(a);
@@ -219,6 +232,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         vm.prank(a);
         CORE.withdrawCollateral(params, amount, a, a);
         collateralWithdrawals++;
+        _clearLiquidatedIfRestored(a);
     }
 
     function warp(uint256 dt) external {
@@ -267,6 +281,6 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         CORE.liquidate(params, victim, amount, 0, "");
         vm.stopPrank();
         liquidations++;
-        liquidated[victim] = CORE.position(ID, victim).borrowShares != 0;
+        liquidated[victim] = CORE.position(ID, victim).borrowShares != 0 && CONTROLLER.positionOf(victim).active < FLOOR;
     }
 }

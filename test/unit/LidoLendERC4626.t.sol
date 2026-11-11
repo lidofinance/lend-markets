@@ -6,6 +6,7 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SlotDerivation} from "@openzeppelin/contracts/utils/SlotDerivation.sol";
 import {stdError} from "forge-std/StdError.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
@@ -853,28 +854,29 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
     // ── storage layout ──
 
-    /// @dev `marketId` opens the ERC-7201 namespace. `_managedSupplyShares` closes it at base + 8, after `controller`
-    ///      (1 slot), the five-field `_marketParams` (5 slots) and `_loanDecimalsOffset` (1 slot). A field inserted
-    ///      before the last one moves it off that slot.
-    function test_storageLayout_firstAndLastFieldAtErc7201Slots() public {
+    /// @dev `marketId` opens the ERC-7201 namespace and `controller` follows at base + 1. `_managedSupplyShares`
+    ///      closes it at base + 8, after the five-field `_marketParams` (5 slots) and `_loanDecimalsOffset` (1 slot).
+    ///      A field inserted before the last one moves it off that slot. The `controller` pin catches a reorder of
+    ///      the fields behind `marketId`.
+    function test_storageLayout_firstSecondAndLastFieldAtErc7201Slots() public {
         Market storage m = _market();
         address lender = _actor("lender");
         _fund(m.loanToken, lender, 10 ether);
         m.vaultDeposit(lender, 10 ether);
         assertGt(m.vault.managedSupplyShares(), 0, "setup: managed supply shares are nonzero");
 
-        bytes32 base = _erc7201Slot("lido.lend.storage.LidoLendERC4626");
+        bytes32 base = SlotDerivation.erc7201Slot("lido.lend.storage.LidoLendERC4626");
         address vault = address(m.vault);
         assertEq(vm.load(vault, base), Id.unwrap(m.vault.marketId()), "marketId at the base slot");
+        assertEq(
+            vm.load(vault, bytes32(uint256(base) + 1)),
+            bytes32(uint256(uint160(address(m.controller)))),
+            "controller at base + 1"
+        );
         assertEq(
             uint256(vm.load(vault, bytes32(uint256(base) + 8))),
             m.vault.managedSupplyShares(),
             "_managedSupplyShares at base + 8"
         );
-    }
-
-    /// @dev ERC-7201 base slot of `namespaceId`, by the formula of the standard.
-    function _erc7201Slot(string memory namespaceId) private pure returns (bytes32) {
-        return keccak256(abi.encode(uint256(keccak256(bytes(namespaceId))) - 1)) & ~bytes32(uint256(0xff));
     }
 }

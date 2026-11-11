@@ -150,39 +150,33 @@ contract MarketSolvencyInvariant is LidoLendSetup {
     ///      VOLUNTARY paths: sub-threshold active collateral has zero borrow capacity, so `withdrawCollateral`
     ///      and the borrow hook both revert `InsufficientActiveCollateral` (a gap this invariant first caught —
     ///      a debt-free withdraw below the threshold followed by a borrow). Liquidation is a FORCED path that may
-    ///      legitimately leave a debt-bearing sub-threshold position, so its victims are excluded until their debt
-    ///      is cleared; only the voluntary paths must uphold the floor. Audit T1-C13: the exclusion once outlived
-    ///      the debt.
+    ///      legitimately leave a debt-bearing sub-threshold position. The handler flags only such a victim. The
+    ///      exclusion ends when the debt is gone or the active collateral is back at the floor.
     function invariant_noDebtWithSubFloorCollateral() public view {
         Market storage m = protocol.markets[0];
         for (uint256 i; i < actors.length; i++) {
             if (!handler.liquidated(actors[i]) && m.core.position(m.id, actors[i]).borrowShares > 0) {
                 assertGe(
-                    m.core.position(m.id, actors[i]).collateral,
+                    m.controller.positionOf(actors[i]).active,
                     FLOOR,
-                    "debt-bearing position keeps collateral >= minActivationAmount"
+                    "debt-bearing position keeps active collateral >= minActivationAmount"
                 );
             }
         }
     }
 
-    /// @dev Audit T1-C1: `positionOf` derives `active` as the remainder, so a sum check was a tautology. The two
-    ///      stored buckets must fit in the core collateral, and a lot has an unlock time exactly while it holds
-    ///      activating collateral (market-controller.md "Collateral activation").
-    function invariant_activationBucketsFitCollateral() public view {
+    /// @dev A lot has an unlock time exactly while it holds activating collateral (market-controller.md "Collateral
+    ///      activation"). `positionOf` derives `active` with a checked subtraction. Buckets that exceed the core
+    ///      collateral therefore revert here, and need no assertion.
+    function invariant_unlockTimeSetIffActivating() public view {
         Market storage m = protocol.markets[0];
         for (uint256 i; i < actors.length; i++) {
             ILidoLendMarketController.BorrowerPosition memory d = m.controller.positionOf(actors[i]);
-            assertLe(
-                d.activating + d.dust,
-                m.core.position(m.id, actors[i]).collateral,
-                "activating + dust <= core collateral"
-            );
             assertEq(d.unlockTime != 0, d.activating != 0, "unlock time set iff activating > 0");
         }
     }
 
-    /// @dev Audit T1-C5: logs the counters and fails a run that missed a path the solvency invariants need. Foundry
+    /// @dev Logs the counters and fails a run that missed a path the solvency invariants need. Foundry
     ///      restores the post-setUp state before each run, so the counters are per run.
     function afterInvariant() public {
         emit log_named_uint("supplies", handler.supplies());
@@ -198,11 +192,11 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         // E is the share of draws that count. A 1000-run campaign then misses the floor with odds below 1e-6.
         //   supplies, collateralSupplies, crashes: E = 1, because nothing in this fixture blocks them.
         // The next four rest on measurement over 3003 runs. The fewest moves in one run are in brackets:
-        //   withdraws (15): E = 0.87. A draw fails only with no vault shares or no idle supply.
-        //   borrows (11): E = 0.65. A draw needs active collateral with room under the LLTV, and idle supply.
-        //   repays (7): E = 0.61. A draw needs debt, which the borrows keep open.
-        //   collateralWithdrawals (7): E = 0.65. A draw needs collateral above the health margin.
-        // Dust supplies (E = 0.2) and liquidations (none in 6 of 3003 runs) carry no floor. The tests below
+        //   withdraws (14): E = 0.86. A draw fails only with no vault shares or no idle supply.
+        //   borrows (11): E = 0.66. A draw needs active collateral with room under the LLTV, and idle supply.
+        //   repays (8): E = 0.62. A draw needs debt, which the borrows keep open.
+        //   collateralWithdrawals (11): E = 0.73. A draw needs collateral above the health margin.
+        // Dust supplies (E = 0.23) and liquidations (none in 42 of 3003 runs) carry no floor. The tests below
         // reach them.
         assertGt(handler.supplies(), 0, "coverage: no supply");
         assertGt(handler.collateralSupplies(), 0, "coverage: no collateral supply");
@@ -213,7 +207,7 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         assertGt(handler.collateralWithdrawals(), 0, "coverage: no collateral withdrawal");
     }
 
-    /// @dev Audit T1-C1 and T1-C5: a run can miss a dust supply, so this drives each delayed bucket once. D1 holds
+    /// @dev A run can miss a dust supply, so this drives each delayed bucket once. D1 holds
     ///      dust. D2's lot gets an unlock time, then matures inside the borrow hook once the delay has passed.
     function test_delayedActorBuckets_reachDustLotAndMaturity() public {
         Market storage m = protocol.markets[0];
@@ -225,7 +219,7 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         ILidoLendMarketController.BorrowerPosition memory lot = m.controller.positionOf(D2);
         assertEq(lot.activating, 50 ether, "D2 holds no activating lot");
         assertGt(lot.unlockTime, block.timestamp, "D2's lot has no future unlock time");
-        invariant_activationBucketsFitCollateral();
+        invariant_unlockTimeSetIffActivating();
 
         handler.warp(0); // bound maps 0 to one hour
         assertLe(m.controller.positionOf(D2).unlockTime, block.timestamp, "setup: D2's lot is not due");
@@ -234,26 +228,58 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         lot = m.controller.positionOf(D2);
         assertEq(lot.activating, 0, "the lot did not mature in the borrow hook");
         assertEq(lot.unlockTime, 0, "the matured lot kept its unlock time");
-        invariant_activationBucketsFitCollateral();
+        invariant_unlockTimeSetIffActivating();
     }
 
-    /// @dev Audit T1-C13 and T1-C5: a run can miss a liquidation. A solvent partial liquidation leaves debt and flags
-    ///      the victim. Repaying that debt clears the flag, so the floor invariant covers the victim's next borrow.
-    function test_liquidatedFlag_clearsOnceDebtIsRepaid() public {
-        Market storage m = protocol.markets[0];
+    /// @dev A run can miss a liquidation. A1 borrows 75% of the LLTV capacity, which is 60% of the collateral value.
+    ///      At 64% of the seed price the LTV is near 0.94: unhealthy and solvent.
+    function _seedUnhealthySolventA1() internal {
         handler.supply(0, 1_000_000e18);
         handler.supplyCollateral(0, 100e18);
-        // 75% of the LLTV capacity. A crash to 70% of the seed price then puts the LTV near 0.86: unhealthy, solvent.
         handler.borrow(0, 100e18 * oraclePrice / 1e36 * 80 / 100 * 75 / 100);
-        handler.crashPrice(70);
+        handler.crashPrice(64);
+    }
+
+    /// @dev A liquidation flags the victim only when it leaves debt on active collateral below the floor. A supply
+    ///      that lifts the active collateral back to the floor ends the exclusion while the debt is still open.
+    function test_liquidatedFlag_setOnlyBelowFloorAndClearedBySupply() public {
+        Market storage m = protocol.markets[0];
+        _seedUnhealthySolventA1();
         handler.liquidate(0, 10e18);
-        assertEq(handler.liquidations(), 1, "liquidation unreached");
-        assertGt(m.core.position(m.id, A1).borrowShares, 0, "setup: the partial liquidation left no debt");
-        assertTrue(handler.liquidated(A1), "the victim with debt left is not flagged");
+        assertEq(m.controller.positionOf(A1).active, 90e18, "setup: the first seizure did not leave 90");
+        assertGt(m.core.position(m.id, A1).borrowShares, 0, "setup: the first seizure left no debt");
+        assertFalse(handler.liquidated(A1), "a victim above the floor is flagged");
+        invariant_noDebtWithSubFloorCollateral();
+
+        handler.liquidate(0, 82e18); // the debt is worth about 84 collateral, so this seizure is partial
+        assertEq(handler.liquidations(), 2, "liquidation unreached");
+        assertEq(m.controller.positionOf(A1).active, 8e18, "setup: the second seizure did not leave 8");
+        assertGt(m.core.position(m.id, A1).borrowShares, 0, "setup: the second seizure left no debt");
+        assertTrue(handler.liquidated(A1), "the victim with debt below the floor is not flagged");
+        invariant_noDebtWithSubFloorCollateral();
+
+        handler.supplyCollateral(0, 50e18);
+        assertGt(m.core.position(m.id, A1).borrowShares, 0, "setup: the debt is gone");
+        assertFalse(handler.liquidated(A1), "the flag outlived the return to the floor");
+        invariant_noDebtWithSubFloorCollateral();
+    }
+
+    /// @dev Repaying the whole debt clears the flag. The floor invariant then covers the victim's next borrow.
+    function test_liquidatedFlag_clearsOnceDebtIsRepaid() public {
+        Market storage m = protocol.markets[0];
+        _seedUnhealthySolventA1();
+        handler.liquidate(0, 92e18); // the debt is worth about 93.7 collateral, so this seizure is partial
+        assertEq(m.controller.positionOf(A1).active, 8e18, "setup: the seizure did not leave 8");
+        assertTrue(handler.liquidated(A1), "the victim with debt below the floor is not flagged");
 
         handler.repay(0, m.core.position(m.id, A1).borrowShares);
         assertEq(m.core.position(m.id, A1).borrowShares, 0, "setup: the debt is not repaid");
         assertFalse(handler.liquidated(A1), "the flag outlived the debt");
+
+        handler.supplyCollateral(0, 50e18);
+        handler.borrow(0, 1e18);
+        assertEq(handler.borrows(), 2, "the next borrow unreached");
+        invariant_noDebtWithSubFloorCollateral();
     }
 
     /// @dev Deterministic bad-debt case with a SECOND, healthy borrower, so solvency is checked against a live

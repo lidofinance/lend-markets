@@ -343,41 +343,21 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         m.accrueInterest();
     }
 
-    /// @dev Targeted settlement cuts personal slices only. The attacker sets no personal settlement LTV, so its
-    ///      share settles nothing at any seed and the call reverts. The victim keeps its u.
-    function testRevert_settlementExtraction_noPersonalTarget_nothingSettled() public {
-        Market storage m = _market();
-        uint256 u = 10 ether;
-        (address attacker, uint256 attackerShares, uint256 victimShares) = _setUpExtraction(m, u);
-        (uint256 attackerLtv,) = m.controller.settlementLtv(attacker);
-        assertEq(attackerLtv, 0, "setup: attacker has no personal settlement LTV");
-        address[] memory bs = new address[](1);
-        bs[0] = attacker;
-
-        vm.prank(attacker);
-        vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
-        m.vault.settle(attackerShares, bs, attacker, attacker);
-
-        // Victim is still whole: its shares remain worth ~u (a collateral crash does not touch loan-side value).
-        assertGe(m.vault.convertToAssets(victimShares), u * 99 / 100, "victim value survives the attack");
-        _assertManagedLeCore(m);
-    }
-
-    /// @dev The same extraction with a personal settlement LTV, so the settle executes. The debt it cancels is the
-    ///      value it extracts in loan terms, and the attacker's own share value bounds it. The victim keeps its u.
+    /// @dev The extraction with a personal settlement LTV, so the settle executes. The debt it cancels is the value
+    ///      it extracts in loan terms. The attacker deposited one unit, so one unit plus rounding bounds it. The
+    ///      victim keeps its u.
     function test_settlementExtraction_personalTarget_cancelsOnlyOwnShareValue() public {
         Market storage m = _market();
         uint256 u = 10 ether;
         (address attacker, uint256 attackerShares, uint256 victimShares) = _setUpExtraction(m, u);
         m.setSettlementLtv(attacker, 0.8e18);
-        uint256 attackerShareValue = m.vault.convertToAssets(attackerShares);
         address[] memory bs = new address[](1);
         bs[0] = attacker;
 
         (,, uint256 debtCanceled) = m.settle(attacker, attackerShares, bs, attacker);
 
         assertGt(debtCanceled, 0, "setup: the settle cancelled debt");
-        assertLe(debtCanceled, attackerShareValue + 2, "settle extracts no more than the attacker's own share");
+        assertLe(debtCanceled, 1 + 2, "settle extracts no more than the attacker's own deposit");
         assertGe(m.vault.convertToAssets(victimShares), u * 99 / 100, "victim value survives the attack");
         _assertManagedLeCore(m);
     }

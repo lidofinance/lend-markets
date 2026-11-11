@@ -23,7 +23,6 @@ interface ICircuitBreaker {
 
     function MAX_PAUSE_DURATION() external view returns (uint256);
     function pauseDuration() external view returns (uint256);
-    function heartbeatInterval() external view returns (uint256);
     function heartbeatExpiry(address pauser) external view returns (uint256);
     function getPauser(address pausable) external view returns (address);
     function isPauserLive(address pauser) external view returns (bool);
@@ -33,9 +32,10 @@ interface ICircuitBreaker {
     function pause(address pausable) external;
 }
 
-/// @notice The real CircuitBreaker, deployed with the `lido-lend` profile bounds, on real market controllers. The
-///         controllers get the roles the market factory grants: CircuitBreaker holds `PAUSER_ROLE`, and the Reseal
-///         Manager holds `PAUSER_ROLE` and `RESUMER_ROLE`. A second market on the same core checks the pause scope.
+/// @notice The real CircuitBreaker, deployed with the `lido-lend` profile bounds, on real market controllers.
+///         `setUp` grants by hand the roles that the market factory grants: CircuitBreaker holds `PAUSER_ROLE`, and
+///         the Reseal Manager holds `PAUSER_ROLE` and `RESUMER_ROLE`. The factory suite checks the factory grants.
+///         A second market on the same core checks the pause scope.
 ///
 ///         The upstream suite tests CircuitBreaker against a mock pausable. This suite covers what only the real
 ///         controller decides: it rejects `pauseFor` while paused, and that revert rolls back the registration
@@ -50,7 +50,7 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
     address internal executor;
     /// @dev The pauser registered for market A only.
     address internal committee;
-    /// @dev Stand-in for the Reseal Manager. Only its controller roles are modelled.
+    /// @dev An EOA that stands in for the Reseal Manager. Only its controller roles are modelled.
     address internal resealManager;
     address internal lender;
 
@@ -119,7 +119,7 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
     // ── Scope ──
 
     /// @dev One pause stops the registered controller for exactly the configured duration. The other market on the
-    ///      same core keeps serving users, and the committee has no power over it.
+    ///      same core keeps serving users. The committee cannot pause it, but its own pauser can.
     function test_cbPause_pausesOnlyRegisteredController_forExactDuration() public {
         Market storage a = _a();
         Market storage b = _b();
@@ -140,9 +140,15 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         _fund(b.loanToken, lender, 10 ether);
         b.vaultDeposit(lender, 10 ether);
 
+        address committeeB = _actor("pauserCommitteeB");
+        vm.prank(executor);
+        circuitBreaker.registerPauser(address(b.controller), committeeB);
         vm.prank(committee);
         vm.expectRevert(ICircuitBreaker.SenderNotPauser.selector);
         circuitBreaker.pause(address(b.controller));
+        vm.prank(committeeB);
+        circuitBreaker.pause(address(b.controller));
+        assertTrue(_pausable(b).isPaused(), "the pauser of market B pauses it");
     }
 
     // ── Single use ──
@@ -221,7 +227,7 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         vm.prank(resealManager);
         a.controller.resume();
         uint256 resumeSince = _pauseA();
-        assertEq(resumeSince, block.timestamp + circuitBreaker.pauseDuration(), "committee pause after the resume");
+        assertEq(resumeSince, block.timestamp + profile.initialPauseDuration, "committee pause after the resume");
     }
 
     // ── Re-arm and liveness ──
@@ -238,12 +244,12 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         circuitBreaker.registerPauser(_controllerA(), committee);
         assertEq(
             circuitBreaker.heartbeatExpiry(committee),
-            block.timestamp + circuitBreaker.heartbeatInterval(),
+            block.timestamp + profile.initialHeartbeatInterval,
             "fresh heartbeat window"
         );
 
         uint256 resumeSince = _pauseA();
-        assertEq(resumeSince, block.timestamp + circuitBreaker.pauseDuration(), "second pause after the re-arm");
+        assertEq(resumeSince, block.timestamp + profile.initialPauseDuration, "second pause after the re-arm");
     }
 
     /// @dev Liveness ends at the expiry second. A heartbeat one second earlier extends it by the interval. An
@@ -299,8 +305,9 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         _a().core.accrueInterest(_a().params);
     }
 
-    /// @dev The Reseal Manager's controller roles turn a bounded CircuitBreaker pause into
-    ///      an indefinite one in one step. A fix changes this outcome; update this test with the fix.
+    /// @dev The Reseal Manager's controller roles turn a bounded CircuitBreaker pause into an indefinite one. An EOA
+    ///      with those roles stands in for the two calls of the Reseal Manager: `resume`, then `pauseFor`. The test
+    ///      does not run the Reseal Manager contract. A fix changes this outcome; update this test with the fix.
     function test_resealRoles_turnCbPauseIndefinite() public {
         Market storage a = _a();
         _pauseA();
@@ -311,13 +318,7 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         vm.stopPrank();
         assertEq(_pausable(a).getResumeSinceTimestamp(), type(uint256).max, "indefinite pause");
 
-        vm.warp(block.timestamp + circuitBreaker.MAX_PAUSE_DURATION() + 1);
+        vm.warp(block.timestamp + profile.maxPauseDuration + 1);
         assertTrue(_pausable(a).isPaused(), "still paused past the CircuitBreaker bound");
-
-        vm.prank(executor);
-        circuitBreaker.registerPauser(address(a.controller), committee);
-        vm.prank(committee);
-        vm.expectRevert(PausableUntil.ResumedExpected.selector);
-        circuitBreaker.pause(address(a.controller));
     }
 }

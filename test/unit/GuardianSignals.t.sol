@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {SlotDerivation} from "@openzeppelin/contracts/utils/SlotDerivation.sol";
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
@@ -1391,7 +1392,7 @@ contract GuardianSignalsTest is Test {
         _suspect(GUARDIAN_1, BOB);
         _suspect(GUARDIAN_2, BOB);
 
-        bytes32 base = _erc7201Slot("lido.lend.storage.GuardianSignals");
+        bytes32 base = SlotDerivation.erc7201Slot("lido.lend.storage.GuardianSignals");
         assertEq(uint8(uint256(vm.load(address(gs), base))), gs.getQuorum(), "_quorum at the base slot");
 
         bytes32 signalSlot = keccak256(abi.encode(BOB, keccak256(abi.encode(MARKET, uint256(base) + 5))));
@@ -1404,10 +1405,5 @@ contract GuardianSignalsTest is Test {
             opinion.suspectExpiryTimestamp,
             "_signals suspectReportedAt at base + 5"
         );
-    }
-
-    /// @dev ERC-7201 base slot of `namespaceId`, by the formula of the standard.
-    function _erc7201Slot(string memory namespaceId) private pure returns (bytes32) {
-        return keccak256(abi.encode(uint256(keccak256(bytes(namespaceId))) - 1)) & ~bytes32(uint256(0xff));
     }
 }

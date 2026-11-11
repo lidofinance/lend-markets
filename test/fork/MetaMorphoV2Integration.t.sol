@@ -154,6 +154,7 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
     ///      deposit or report its total assets. A fix changes this outcome; update this test with the fix.
     ///      The test is isolated, so each call is its own transaction. Vault V2 caches its total assets for the rest of
     ///      a transaction.
+    ///      Control: a core accrual in the same block makes the market current, and the same deposit goes through.
     /// @dev Same issue as `testRevert_oneSecondStale_vaultEntryPoints` in `test/scenario/VaultV2RouterBinding.t.sol`;
     ///      this test shows the revert on the deployed Vault V2 and adapter.
     /// forge-config: default.isolate = true
@@ -175,12 +176,27 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
         assertEq(core.market(marketId).lastUpdate, block.timestamp, "borrow accrued the market");
         vm.warp(block.timestamp + 1);
 
+        // Pins the cause of the dataless reverts: the IRM that the adapter is bound to has no `rateAtTarget`.
+        address boundIrm = adapter.adaptiveCurveIrm();
+        bytes memory rateAtTargetCall = abi.encodeWithSignature("rateAtTarget(bytes32)", marketId);
+        (bool ok, bytes memory returned) = boundIrm.staticcall(rateAtTargetCall);
+        assertFalse(ok, "bound IRM answers rateAtTarget");
+        assertEq(returned.length, 0, "bound IRM revert carries data");
+
         vm.prank(USER);
+        vm.expectCall(boundIrm, rateAtTargetCall);
         vm.expectRevert(bytes(""));
         vault2.deposit(1 ether, USER);
 
+        vm.expectCall(boundIrm, rateAtTargetCall);
         vm.expectRevert(bytes(""));
         vault2.totalAssets();
+
+        _pokeAccrue(m);
+        uint256 idleBefore = m.loanToken.balanceOf(address(vault2));
+        vm.prank(USER);
+        vault2.deposit(1 ether, USER);
+        assertEq(m.loanToken.balanceOf(address(vault2)), idleBefore + 1 ether, "control: deposit works after accrual");
     }
 
     /// @dev USER deposits into the vault, the allocator routes it into the Lido market via the adapter, and a

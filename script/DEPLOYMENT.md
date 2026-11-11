@@ -99,7 +99,7 @@ For a deliberately standalone Exit Book rollout, deploy the backbone with `exit_
 
 ## Activate
 
-Activation inputs are runtime EasyTrack motion choices, not deployment artifacts. No separate activation artifact is generated or required. EasyTrack acceptance reads reviewed values and resolved addresses from `deployed/<RUN>/markets/<market-name>.toml`. Deployment creates or reuses an immutable config for the recorded curve parameters. After confirmation, activation applies that config to Adaptive Curve, routes it, creates the market through `LidoLendOwner`, and registers the pauser committee on the protocol CircuitBreaker — `pauser_committee` from the network config, recorded in `protocol.toml`; the Agent stands in when the config sets none. Settlement enablement remains a runtime input.
+Activation inputs are runtime EasyTrack motion choices, not deployment artifacts. No separate activation artifact is generated or required. EasyTrack acceptance reads reviewed values and resolved addresses from `deployed/<RUN>/markets/<market-name>.toml`. Deployment creates or reuses an immutable config for the recorded curve parameters. After confirmation, activation applies that config to Adaptive Curve, routes it, creates the market through `LidoLendOwner`, and registers the pauser committee on the protocol CircuitBreaker — `pauser_committee` from the network config, recorded in `protocol.toml`; the Agent stands in when the config sets none. The EasyTrack motion also adds the reviewed market steward, makes the dead-share preseed of the market and the vault, and sets the initial fee when it is not zero. Settlement enablement, the steward and the fee remain runtime inputs.
 
 The EasyTrack factory implementation and its registration are outside this repository; this repository deploys the lending stack, records the immutable inputs, and verifies the result. A production rollout cannot be activated until its governance proposal identifies the reviewed external factory/version and supplies the runtime inputs to acceptance independently of live contract state. Readiness needs the settlement choice and the pauser committee. Activated-state acceptance also needs the market steward that the motion adds and the initial fee, `0` when the motion sets none:
 
@@ -125,8 +125,8 @@ ACCEPTANCE_ENABLE_SETTLEMENT=true \
   make acceptance-run-multi RUN=mainnet-weth-wsteth MARKET_A=market-a MARKET_B=market-b
 ```
 
-The multi-market simulation supplies disposable test pausers and a disposable steward itself and sets no fee, so only its settlement choice is external.
-The conventional local `deployed/fork` run uses the activation replay's fixed values when these inputs are unset. The replay adds no steward and sets no fee.
+The multi-market simulation supplies disposable test pausers and a disposable steward itself and sets no fee, so only its settlement choice is external. It also makes the preseed with a funded stand-in, and checks the steward and both dead positions.
+The conventional local `deployed/fork` run uses the activation replay's fixed values when these inputs are unset. The replay adds no steward, sets no fee and makes no preseed, so activated-state acceptance does not check the preseed.
 
 Acceptance audits the exact initial-launch role topology. It is not a general audit of a deployment after later governance grants; such a run needs a separately reviewed expected-role input before this suite can support it.
 
