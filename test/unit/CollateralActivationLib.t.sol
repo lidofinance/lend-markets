@@ -55,6 +55,10 @@ contract ActivationHarness {
         return $.config.maxGuardiansQuorumDelay;
     }
 
+    function config() external view returns (CollateralActivationConfig memory) {
+        return $.config;
+    }
+
     function deposit(address borrower, uint256 assets) external {
         _total[borrower] += assets;
         $.credit(borrower, assets, false);
@@ -442,6 +446,29 @@ contract CollateralActivationLibTest is Test {
     function testRevert_setMaxGuardiansQuorumDelay_aboveBound() public {
         vm.expectRevert(CollateralActivationLib.MaxGuardiansQuorumDelayExceeded.selector);
         h.setMaxGuardiansQuorumDelay(7 days + 1);
+    }
+
+    /// @dev The quorum fallback must exceed the delay cap and stay within 7 days, so a 7-day cap leaves it off.
+    function test_setConfig_delayCapAndLockAtSevenDays_accepted() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.maxActivationDelay = 7 days;
+        cfg.activatingLockDuration = 7 days;
+        cfg.maxGuardiansQuorumDelay = 0;
+        h.setConfig(cfg);
+
+        assertEq(h.config().maxActivationDelay, 7 days, "delay cap at the bound");
+        assertEq(h.config().activatingLockDuration, 7 days, "lock at the bound");
+    }
+
+    function test_setConfig_floorEqualToCap_accepted() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.minActivationDelay = 1 hours;
+        cfg.maxActivationDelay = 1 hours;
+        h.setConfig(cfg);
+
+        (uint40 minActivationDelay, uint40 maxActivationDelay) = h.delays();
+        assertEq(minActivationDelay, 1 hours, "floor stored");
+        assertEq(maxActivationDelay, 1 hours, "cap equal to the floor");
     }
 
     /// @notice Inactive collateral (`dust + activating`) leaves all-or-nothing: a voluntary withdrawal that would
@@ -852,6 +879,50 @@ contract CollateralActivationLibTest is Test {
         assertEq(activatingAfter, 10 ether);
     }
 
+    function test_seize_fullActivating_resetsUnlockTime() public {
+        address borrower = address(0xB1);
+        h.deposit(borrower, 10 ether);
+        assertGt(h.getUnlockTime(borrower, _noSignals()), 0, "the lot has a timer");
+
+        h.seize(borrower, 10 ether);
+
+        assertEq(h.getUnlockTime(borrower, _noSignals()), 0, "no lot, no unlock time");
+    }
+
+    /// @dev The lot shares one timer, and a top-up only ever extends it: after governance shortens the delays, a
+    ///      top-up whose own deadline is earlier leaves the lot on its original unlock.
+    function test_credit_topUpWithEarlierDeadline_keepsTimer() public {
+        address borrower = address(0xB1);
+        h.deposit(borrower, 10_000 ether); // saturates the inflow: the full 1 hour delay
+        uint256 unlock = h.getUnlockTime(borrower, _noSignals());
+        assertEq(unlock, block.timestamp + 1 hours, "booked at the delay cap");
+
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.minActivationDelay = 1 minutes;
+        cfg.maxActivationDelay = 2 minutes;
+        cfg.maxGuardiansQuorumDelay = 0;
+        h.setConfig(cfg);
+        vm.warp(block.timestamp + 10 minutes);
+
+        h.deposit(borrower, 1 ether); // its own deadline is at most now + 2 minutes, before `unlock`
+
+        assertEq(h.getUnlockTime(borrower, _noSignals()), unlock, "the earlier deadline keeps the timer");
+        (, uint256 activating,) = h.bucketsOf(borrower);
+        assertEq(activating, 10_001 ether, "the top-up joins the lot");
+        vm.warp(block.timestamp + 2 minutes + 1);
+        assertEq(h.sync(borrower, 0), 0, "the lot does not mature on the top-up's shorter deadline");
+    }
+
+    function _noSignals() internal view returns (GuardiansOpinion memory) {
+        return GuardiansOpinion({
+            banned: false,
+            strikeCount: 0,
+            suspectCount: 0,
+            suspectExpiryTimestamp: 0,
+            quorumFrontierTimestamp: block.timestamp
+        });
+    }
+
     /// @notice Fuzzed waterfall model: a seizure of any size consumes active, then dust, then activating, in
     ///         that order, matching a hand-computed reference split.
     function testFuzz_seize_matchesWaterfallModel(uint256 activeSeed, uint256 seizeSeed) public {
@@ -1180,6 +1251,50 @@ contract CollateralActivationLibTest is Test {
             }
         }
         assertEq(found, 1, "exactly one CollateralDrained");
+    }
+
+    function test_instantDeposit_emitsCollateralActivated() public {
+        address borrower = address(0xD3);
+        vm.expectEmit(true, false, false, true, address(h));
+        emit CollateralActivationLib.CollateralActivated(borrower, 5 ether, _position(0, 0, 0, 0));
+        h.depositInstant(borrower, 5 ether);
+    }
+
+    /// @dev Maturation carries the matured lot and the cleared position: no activating, no timer.
+    function test_maturation_emitsCollateralActivated() public {
+        address borrower = address(0xD4);
+        h.deposit(borrower, 5 ether);
+        vm.warp(block.timestamp + 1 hours);
+
+        vm.expectEmit(true, false, false, true, address(h));
+        emit CollateralActivationLib.CollateralActivated(borrower, 5 ether, _position(0, 0, 0, 0));
+        h.sync(borrower, 0);
+    }
+
+    function test_subThresholdDeposit_emitsCollateralDusted() public {
+        address borrower = address(0xD5);
+        h.setMinActivationAmount(10 ether);
+        vm.expectEmit(true, false, false, true, address(h));
+        emit CollateralActivationLib.CollateralDusted(borrower, 3 ether, _position(3 ether, 0, 0, 0));
+        h.deposit(borrower, 3 ether);
+    }
+
+    function test_setConfig_emitsCollateralActivationConfigSet() public {
+        CollateralActivationConfig memory cfg = _baseConfig();
+        cfg.minActivationAmount = 7 ether;
+        vm.expectEmit(address(h));
+        emit CollateralActivationLib.CollateralActivationConfigSet(cfg);
+        h.setConfig(cfg);
+    }
+
+    function _position(uint128 dust, uint128 activating, uint40 activatingStart, uint32 activatingDelay)
+        internal
+        pure
+        returns (CollateralActivationLib.Position memory)
+    {
+        return CollateralActivationLib.Position({
+            dust: dust, activating: activating, activatingStart: activatingStart, activatingDelay: activatingDelay
+        });
     }
 }
 

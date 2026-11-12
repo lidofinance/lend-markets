@@ -132,6 +132,9 @@ Where contracts compute amounts (shares↔assets, slice sizing, oracle conversio
 ### Discipline
 
 - Tests land with the change. Separate "tests follow-up" PRs are not accepted for new functionality.
+- Before writing a test, find its check in `TEST_PLAN.md`. A `[x]` line names the tests that already cover it: extend those, do not add a duplicate.
+- A change that adds, renames or removes a test updates `TEST_PLAN.md` in the same change, in the line format its header gives: a new check gets a line, a `[ ]` line it covers becomes `[x]` with the test, and a removed test leaves no reference. Write test names and paths bare, in backticks: `make test-plan` adds the links.
+- Any edit under `test/` or `src/` can move the line anchors in `TEST_PLAN.md`: run `make test-plan` after it. `make test-plan-check` must pass before the change is done.
 - After source changes, run at least `forge build --force` and `make test-local` (`make test` when a fork setup is configured).
 
 ## Commit Messages

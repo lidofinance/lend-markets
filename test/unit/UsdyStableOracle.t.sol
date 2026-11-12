@@ -189,12 +189,15 @@ contract UsdyStableOracleTest is Test {
         );
     }
 
-    /// @dev A second `initialize` from any caller reverts.
-    function testRevert_initialize_alreadyInitialized() public {
-        address otherFeed = address(new MockChainlinkFeed());
-        vm.prank(makeAddr("stranger"));
+    function testRevert_initialize_bareImplementation() public {
+        UsdyStableOracle impl = new UsdyStableOracle(address(usdy), MIN_PRICE, MAX_PRICE);
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        oracle.initialize(otherFeed, address(loan));
+        impl.initialize(address(feed), address(loan));
+    }
+
+    function testRevert_initialize_twice() public {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        oracle.initialize(address(feed), address(loan));
     }
 
     // ── views ──

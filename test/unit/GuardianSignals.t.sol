@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {SlotDerivation} from "@openzeppelin/contracts/utils/SlotDerivation.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 
@@ -150,6 +151,18 @@ contract GuardianSignalsTest is Test {
         assertEq(_flagCount(BOB), 1, "set semantics: one flag per guardian");
     }
 
+    function test_flag_sameGuardianTwice_emitsNoSecondFlagged() public {
+        _flag(GUARDIAN_1, BOB);
+
+        vm.recordLogs();
+        _flag(GUARDIAN_1, BOB);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(logs[i].topics[0] != Flagged.selector, "a repeat flag emits no Flagged");
+        }
+    }
+
     /// @dev A guardian can only retract its OWN flag: retracting a flag it never cast is a no-op.
     function test_unflag_nonFlagger_isNoop() public {
         _flag(GUARDIAN_1, BOB);
@@ -178,6 +191,45 @@ contract GuardianSignalsTest is Test {
         gs.ban(MARKET, BOB);
         assertTrue(gs.isBanned(MARKET, BOB), "forced ban latches with zero flags");
         assertEq(_flagCount(BOB), 0, "forced ban does not touch flags");
+    }
+
+    function test_ban_emitsBanned() public {
+        vm.expectEmit(true, true, false, true, address(gs));
+        emit Banned(MARKET, BOB);
+        gs.ban(MARKET, BOB);
+    }
+
+    function test_unban_emitsUnbannedWithCaller() public {
+        gs.ban(MARKET, BOB);
+        vm.expectEmit(true, true, true, true, address(gs));
+        emit IGuardianSignals.Unbanned(MARKET, BOB, address(this));
+        gs.unban(MARKET, BOB);
+    }
+
+    /// @dev The event carries the strikes left after the retraction.
+    function test_unflag_emitsUnflaggedWithRemainingStrikes() public {
+        _flag(GUARDIAN_1, BOB);
+        vm.expectEmit(true, true, true, true, address(gs));
+        emit IGuardianSignals.Unflagged(MARKET, BOB, GUARDIAN_1, GUARDIAN_1, 0);
+        _unflag(GUARDIAN_1, BOB);
+    }
+
+    /// @dev A delegate's report is recorded under the guardian, with the delegate as the actor.
+    function test_suspect_byDelegate_emitsDelegateAsActor() public {
+        vm.prank(GUARDIAN_1);
+        gs.setDelegate(DELEGATE);
+        vm.expectEmit(true, true, true, true, address(gs));
+        emit IGuardianSignals.Suspected(MARKET, BOB, GUARDIAN_1, DELEGATE, block.timestamp);
+        vm.prank(DELEGATE);
+        gs.suspect(MARKET, GUARDIAN_1, _one(BOB));
+    }
+
+    function test_unsuspect_emitsSuspectCleared() public {
+        _suspect(GUARDIAN_1, BOB);
+        vm.expectEmit(true, true, true, true, address(gs));
+        emit IGuardianSignals.SuspectCleared(MARKET, BOB, GUARDIAN_1, GUARDIAN_1);
+        vm.prank(GUARDIAN_1);
+        gs.unsuspect(MARKET, GUARDIAN_1, _one(BOB));
     }
 
     /// @dev `ban` is role-gated: guardians flag, only `ACCESS_LIMITER_ROLE` bans directly.
@@ -211,6 +263,36 @@ contract GuardianSignalsTest is Test {
         _unflag(GUARDIAN_1, BOB); // drops to 1 flag < 2, but the retraction latches the ban first
         assertTrue(gs.isBanned(MARKET, BOB), "the retraction latched the ban -> it survives below quorum");
         assertEq(_flagCount(BOB), 1, "the flag count still dropped");
+    }
+
+    function test_unflag_latchingDerivedBan_emitsBanned() public {
+        gs.setQuorum(3);
+        _flag(GUARDIAN_1, BOB);
+        _flag(GUARDIAN_2, BOB);
+        gs.setQuorum(2); // a derived, unlatched ban
+
+        vm.expectEmit(true, true, false, true, address(gs));
+        emit Banned(MARKET, BOB);
+        _unflag(GUARDIAN_1, BOB);
+    }
+
+    function test_prune_latchingDerivedBan_emitsBanned() public {
+        gs.setQuorum(3);
+        _flag(GUARDIAN_1, BOB);
+        _flag(GUARDIAN_2, BOB);
+        gs.setQuorum(1); // a derived, unlatched ban
+        gs.removeGuardian(GUARDIAN_1);
+
+        vm.expectEmit(true, true, false, true, address(gs));
+        emit Banned(MARKET, BOB);
+        vm.prank(CLEANER);
+        gs.prune(MARKET, BOB);
+    }
+
+    function test_setQuorum_emitsQuorumSet() public {
+        vm.expectEmit(false, false, false, true, address(gs));
+        emit QuorumSet(3);
+        gs.setQuorum(3);
     }
 
     /// @dev A purely-derived ban (never latched, no retraction) still tracks the quorum both ways.
@@ -529,6 +611,13 @@ contract GuardianSignalsTest is Test {
         assertEq(_flagCount(BOB), 0, "batch is atomic");
     }
 
+    /// @dev A suspect report on the zero address reverts, like a flag.
+    function testRevert_suspect_zeroAccount() public {
+        vm.prank(GUARDIAN_1);
+        vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
+        gs.suspect(MARKET, GUARDIAN_1, _one(address(0)));
+    }
+
     /// @dev A flag records no heartbeat: liveness is a standalone `heartbeat` call.
     function test_flag_doesNotHeartbeat() public {
         _flag(GUARDIAN_1, BOB);
@@ -580,6 +669,18 @@ contract GuardianSignalsTest is Test {
         _heartbeat(GUARDIAN_2, 998);
     }
 
+    /// @dev Lowering the quorum does not move the frontier; the explicit sync does, and names its caller.
+    function test_syncQuorumFrontier_raisingFrontier_emitsAdvanced() public {
+        _heartbeat(GUARDIAN_1, 999); // one heartbeat, quorum 2: frontier 0
+        gs.setQuorum(1);
+        assertEq(gs.getQuorumFrontier(), 0, "setQuorum does not sync");
+
+        vm.expectEmit(true, false, false, true, address(gs));
+        emit QuorumFrontierAdvanced(CLEANER, 999);
+        vm.prank(CLEANER);
+        gs.syncQuorumFrontier();
+    }
+
     /// @dev A guardian already above the frontier cannot raise the quorum-th largest, so the frontier holds.
     function test_frontier_heartbeatAboveFrontier_noAdvance() public {
         _heartbeat(GUARDIAN_1, 997);
@@ -593,6 +694,14 @@ contract GuardianSignalsTest is Test {
         _heartbeat(GUARDIAN_1, 999);
         gs.syncQuorumFrontier();
         assertEq(gs.getQuorumFrontier(), 0, "fewer than quorum heartbeats -> frontier stays 0");
+    }
+
+    /// @dev An uninitialized registry has quorum zero and no guardians, so there is no quorum-th heartbeat to read:
+    ///      the permissionless sync leaves the frontier at zero instead of indexing an empty set.
+    function test_frontier_uninitializedRegistry_syncIsNoOp() public {
+        GuardianSignals bare = new GuardianSignals();
+        bare.syncQuorumFrontier();
+        assertEq(bare.getQuorumFrontier(), 0, "no quorum -> frontier stays 0");
     }
 
     /// @dev The frontier is the quorum-th largest timestamp.
@@ -750,6 +859,27 @@ contract GuardianSignalsTest is Test {
         vm.prank(BOB);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
         gs.setQuorum(1);
+    }
+
+    function testRevert_addGuardian_wrongRole() public {
+        bytes32 role = gs.MANAGER_ROLE();
+        vm.prank(BOB);
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
+        gs.addGuardian(address(0x4004));
+    }
+
+    function testRevert_removeGuardian_wrongRole() public {
+        bytes32 role = gs.MANAGER_ROLE();
+        vm.prank(BOB);
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
+        gs.removeGuardian(GUARDIAN_3);
+    }
+
+    function testRevert_setSuspectWindow_wrongRole() public {
+        bytes32 role = gs.MANAGER_ROLE();
+        vm.prank(BOB);
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, BOB, role));
+        gs.setSuspectWindow(1 days);
     }
 
     function testRevert_addGuardian_existing() public {
@@ -1286,6 +1416,82 @@ contract GuardianSignalsTest is Test {
         bytes memory initData =
             abi.encodeWithSignature("initialize(address,address[],uint256)", address(this), guardians, uint256(2));
         vm.expectRevert(IGuardianSignals.ZeroAddress.selector);
+        new OssifiableProxy(impl, address(this), initData);
+    }
+
+    function testRevert_initialize_bareImplementation() public {
+        GuardianSignals bare = new GuardianSignals();
+        address[] memory guardians = _defaultGuardians();
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        bare.initialize(address(this), guardians, 2);
+    }
+
+    function testRevert_initialize_twice() public {
+        address[] memory guardians = _defaultGuardians();
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        gs.initialize(address(this), guardians, 2);
+    }
+
+    function testRevert_initialize_duplicateGuardian() public {
+        address[] memory guardians = _defaultGuardians();
+        guardians[2] = GUARDIAN_1;
+        _expectInitializeRevert(guardians, 2, IGuardianSignals.AlreadyGuardian.selector);
+    }
+
+    function testRevert_initialize_badQuorum() public {
+        _expectInitializeRevert(_defaultGuardians(), 0, IGuardianSignals.BadQuorum.selector);
+        _expectInitializeRevert(_defaultGuardians(), 4, IGuardianSignals.BadQuorum.selector);
+    }
+
+    function testRevert_initialize_moreThan32Guardians() public {
+        address[] memory guardians = new address[](33);
+        for (uint160 i; i < 33; ++i) {
+            guardians[i] = address(0x6000 + i);
+        }
+        _expectInitializeRevert(guardians, 1, IGuardianSignals.MaxGuardiansReached.selector);
+    }
+
+    function test_initialize_onlyAdminHoldsAdminRole_suspectWindowZero() public {
+        address admin = makeAddr("admin");
+        address impl = address(new GuardianSignals());
+        GuardianSignals fresh = GuardianSignals(
+            address(
+                new OssifiableProxy(
+                    impl,
+                    address(this),
+                    abi.encodeWithSignature(
+                        "initialize(address,address[],uint256)", admin, _defaultGuardians(), uint256(2)
+                    )
+                )
+            )
+        );
+
+        bytes32 adminRole = fresh.DEFAULT_ADMIN_ROLE();
+        assertEq(fresh.getRoleMemberCount(adminRole), 1, "one admin");
+        assertEq(fresh.getRoleMember(adminRole, 0), admin, "the admin passed in");
+        assertEq(fresh.getSuspectWindow(), 0, "suspect window starts at 0");
+    }
+
+    function test_initialize_emitsGuardianAddedPerGuardian() public {
+        address impl = address(new GuardianSignals());
+        address[] memory guardians = _defaultGuardians();
+        for (uint256 i; i < guardians.length; ++i) {
+            vm.expectEmit(true, false, false, true);
+            emit GuardianAdded(guardians[i]);
+        }
+        new OssifiableProxy(
+            impl,
+            address(this),
+            abi.encodeWithSignature("initialize(address,address[],uint256)", address(this), guardians, uint256(2))
+        );
+    }
+
+    /// @dev `initialize` runs in the proxy constructor, so its revert surfaces from the proxy deployment.
+    function _expectInitializeRevert(address[] memory guardians, uint256 quorum, bytes4 selector) internal {
+        address impl = address(new GuardianSignals());
+        bytes memory initData =
+            abi.encodeWithSignature("initialize(address,address[],uint256)", address(this), guardians, quorum);
+        vm.expectRevert(selector);
         new OssifiableProxy(impl, address(this), initData);
     }
 
