@@ -80,7 +80,6 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
     ///      Same cause: `deposit`, `mint`, `withdraw`, `redeem`, `totalAssets`, the previews, `allocate`, and the fee
     ///      and rate setters that accrue first. One such market in the adapter blocks the whole vault. It happens in
     ///      any block after a borrow or accrual, with no attacker.
-    ///      A fix changes this outcome; update this test with it.
     function testRevert_oneSecondStale_vaultEntryPoints() public {
         _warpOneSecondPastAccrual();
         _assertRouterHasNoRateAtTarget();
@@ -116,9 +115,9 @@ contract VaultV2RouterBindingTest is LidoLendSetup {
         assertEq(m.loanToken.balanceOf(address(vault2)), idleBefore - 1 ether, "idle moved by deposit and withdraw");
     }
 
-    /// @dev A controller pause rejects every core accrual, so nobody can make the market current. The Vault V2's
-    ///      idle assets stay frozen from the first second of the pause to its last second. After the pause, an
-    ///      accrual frees them. A fix changes this outcome; update this test with the fix.
+    /// @dev A controller pause rejects every hooked core call, so no user can make the market current. Only the core
+    ///      owner's `setFee` still accrues. The Vault V2's idle assets stay frozen for users from the first second of
+    ///      the pause to its last second. After the pause, an accrual frees them.
     function testRevert_pausedMarket_idleWithdrawFrozen() public {
         Market storage m = _m();
         uint256 idle = m.loanToken.balanceOf(address(vault2));

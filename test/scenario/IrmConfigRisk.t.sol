@@ -108,11 +108,12 @@ contract ReentrantSupplyIrm {
 
 /// @notice Curve configs that the adaptive IRM accepts but that can stop a live market. The tests apply a config in
 ///         one transaction: accrue under the old curve, then `applyIrmConfig`.
-///         Every repair that accrues first fails with the same error as the market. Only the IRM owner's direct
-///         `applyIrmConfig` does not accrue, so only it restores accrual.
+///         Every repair that accrues first fails with the same error as the market. A direct `applyIrmConfig` by the
+///         IRM owner or manager does not accrue, so only it restores accrual.
 ///
-///         The market runs at exactly 100% utilization. The curve error is then 1, so the charged rate is the
-///         steepness times the rate at target. No curve here adapts, so each rate is exact.
+///         `_seedFullUtilization` puts the market at exactly 100% utilization. The curve error is then 1, so the
+///         adaptive rate is the steepness times the rate at target. The `_flatCurve` and `_ceilingCurve` configs do
+///         not adapt, so each of those rates is exact.
 contract IrmConfigRiskTest is LidoLendSetup {
     using MarketActions for Market;
     using MathLib for uint256;
@@ -163,13 +164,12 @@ contract IrmConfigRiskTest is LidoLendSetup {
     ///      week of interest on a large borrow total overflows `toUint128` in `LidoLend._accrueInterest`.
     ///      `IrmRouter.setMarketIrm` accrues through the current route first, so it fails the same way. A repair that
     ///      calls `accrueInterest` before `applyIrmConfig` fails the same way.
-    ///      Same cause: a `uint128` overflow in `LidoLend._accrueInterest` when rate, borrow total, and gap together
-    ///      are large enough. A direct `applyIrmConfig` does not accrue, so it recovers a config failure only. A routed
-    ///      model whose `borrowRate` always reverts has no recovery path short of an upgrade of the core proxy or the
-    ///      router proxy.
-    ///      A fix changes this outcome; update this test with the fix.
-    function test_ceilingConfig_overflowsAccrual_onlyDirectOwnerApplyRecovers() public {
+    ///      Same cause: any rate, borrow total, and gap that are together large enough. A direct `applyIrmConfig`
+    ///      does not accrue, so it recovers a config failure only. A routed model whose `borrowRate` always reverts
+    ///      has no recovery path short of an upgrade of the core proxy or the router proxy.
+    function test_ceilingConfig_overflowsAccrual_onlyDirectApplyRecovers() public {
         Market storage m = _m();
+        // A borrow total of 1e27 raw loan-token units overflows within 7 days. A longer gap overflows a smaller total.
         _seedFullUtilization(1e27);
         address ceilingConfig = factory.getOrDeployAdaptiveCurveConfig(_ceilingCurve());
         this.accrueThenApplyConfig(ceilingConfig);
@@ -182,13 +182,13 @@ contract IrmConfigRiskTest is LidoLendSetup {
         bytes memory err = bytes(ErrorsLib.MAX_UINT128_EXCEEDED);
         _assertAccruingActionsRevert(err);
         _assertAccrueFirstRepairsRevert(err);
-        _assertDirectOwnerApplyRecovers();
+        _assertDirectApplyRecovers();
     }
 
     // ── A mutable config changes rates after it is bound ──
 
     /// @dev The admin of a non-factory config raises the market rate after the IRM binds the config. The IRM owner
-    ///      makes no new `applyIrmConfig` call. A fix changes this outcome; update this test with the fix.
+    ///      makes no new `applyIrmConfig` call.
     function test_mutableConfig_adminRepricesAfterBinding() public {
         Market storage m = _m();
         _seedFullUtilization(200 ether);
@@ -218,7 +218,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
 
     /// @dev A mutable config whose getter reverts halts accrual and each repair that accrues first. Only the IRM
     ///      owner or manager can bind such a config.
-    function test_revertingGetter_haltsAccrual_onlyDirectOwnerApplyRecovers() public {
+    function test_revertingGetter_haltsAccrual_onlyDirectApplyRecovers() public {
         _seedFullUtilization(200 ether);
         MutableCurveConfig config = new MutableCurveConfig(configAdmin, _flatCurve(FLAT_STEEPNESS));
         this.accrueThenApplyConfig(address(config));
@@ -230,7 +230,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
         bytes memory err = abi.encodeWithSelector(MutableCurveConfig.ConfigBroken.selector);
         _assertAccruingActionsRevert(err);
         _assertAccrueFirstRepairsRevert(err);
-        _assertDirectOwnerApplyRecovers();
+        _assertDirectApplyRecovers();
     }
 
     // ── A reentrant IRM supplies inside accrual ──
@@ -306,14 +306,14 @@ contract IrmConfigRiskTest is LidoLendSetup {
         bytes memory err = stdError.arithmeticError;
         _assertAccruingActionsRevert(err);
         _assertAccrueFirstRepairsRevert(err);
-        _assertDirectOwnerApplyRecovers();
+        _assertDirectApplyRecovers();
     }
 
     // ── Market creation needs the curve config first ──
 
     /// @dev Specified behaviour: `createMarket` on an adaptive route with no curve config reverts, and it succeeds
     ///      once the config is applied. The NatSpec of `IrmRouter.setMarketIrm` states this revert.
-    ///      Root cause: `AdaptiveCurveIrm._borrowRate` reverts with `CONFIG_NOT_SET` when `marketCurveConfig` has no
+    ///      Mechanism: `AdaptiveCurveIrm._borrowRate` reverts with `CONFIG_NOT_SET` when `marketCurveConfig` has no
     ///      entry. The core calls `borrowRate` in `_createMarket` and in each `_accrueInterest` after time has passed.
     ///      Same cause: `LinearKinkIrm._borrowRate` reverts the same way with no kink config. On a live market, a
     ///      route to an unconfigured model fails the probe in `setMarketIrm`.
@@ -339,15 +339,15 @@ contract IrmConfigRiskTest is LidoLendSetup {
 
     // ── The periphery library reads a stale adaptive config ──
 
-    /// @dev Known issue: after the router moves a market to a linear-kink model, `AdaptiveCurveIrmLib.borrowRateView`
-    ///      still prices it from the old adaptive config.
+    /// @dev The library NatSpec requires a market routed to the passed `AdaptiveCurveIrm`, but the library does not
+    ///      check the route. After the router moves a market to a linear-kink model,
+    ///      `AdaptiveCurveIrmLib.borrowRateView` still prices it from the old adaptive config.
     ///      Root cause: `IrmRouter.setMarketIrm` leaves `marketCurveConfig` and `rateAtTarget` in the old
     ///      `AdaptiveCurveIrm`. `AdaptiveCurveIrmLib` uses the IRM address that its caller passes, checks only that a
     ///      config exists, and never reads `IrmRouter.marketIrm`.
     ///      Same cause: `AdaptiveCurveIrmLib.expectedMarketBalances` returns wrong balances for the same market. A
     ///      reroute to another `AdaptiveCurveIrm` instance or to any other model gives the same stale result. Core
     ///      accrual goes through the router, so it uses the live route.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_adaptiveLibAfterReroute_returnsStaleRate() public {
         Market storage m = _m();
         _seedFullUtilization(200 ether);
@@ -365,7 +365,7 @@ contract IrmConfigRiskTest is LidoLendSetup {
         IrmRouter(m.irm).setMarketIrm(_irmParams(), IrmIIrm(address(linear)));
 
         MorphoMarket memory market = m.core.market(m.id);
-        assertEq(market.lastUpdate, block.timestamp, "setup: the reroute accrued, so no adaptation is pending");
+        assertEq(market.lastUpdate, block.timestamp, "setup: no time has passed, so no adaptation is pending");
         assertEq(adaptive.rateAtTarget(_irmId()), FLAT_RATE_AT_TARGET, "setup: the old model keeps the flat rate");
         uint256 liveRate = uint256(kink.baseRate) + kink.slope1 + kink.slope2;
         assertEq(IIrm(m.irm).borrowRateView(m.params, market), liveRate, "router prices the kink at 100%");
@@ -386,7 +386,6 @@ contract IrmConfigRiskTest is LidoLendSetup {
     ///      rounding at each step make the stored rate depend on how the interval is split.
     ///      Same cause: anyone can split an interval with `accrueInterest` or any other accruing action, once per
     ///      block at most. On a market with borrows, the split also changes the stored rate.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_idleAccrualSchedule_changesRateAtTarget() public {
         Market storage daily = _m();
         Market storage once = _addMarket(daily.config);
@@ -440,7 +439,6 @@ contract IrmConfigRiskTest is LidoLendSetup {
     ///      Same cause: a rate rise or a rate cut, and the clamp of the stored `rateAtTarget` to the new band. A change
     ///      by the admin of a mutable adaptive config also reprices the open window. Anyone can call `accrueInterest`
     ///      before the apply lands, and the window then gets the old curve.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_directApplyWithoutAccrue_pricesElapsedWindowAtNewCurve() public {
         Market storage m = _m();
         _seedFullUtilization(200 ether);
@@ -529,9 +527,9 @@ contract IrmConfigRiskTest is LidoLendSetup {
         IrmRouter(m.irm).setMarketIrm(irmParams, IrmIIrm(address(replacement)));
     }
 
-    /// @dev The owner's direct apply reads only the new config and does not accrue. The next accrual prices the
-    ///      whole stalled interval at the repair curve, and a borrower can repay again.
-    function _assertDirectOwnerApplyRecovers() internal {
+    /// @dev A direct apply by the owner or manager reads only the new config and does not accrue. The next accrual
+    ///      prices the whole stalled interval at the repair curve, and a borrower can repay again.
+    function _assertDirectApplyRecovers() internal {
         Market storage m = _m();
         MorphoMarket memory stalled = m.core.market(m.id);
         _irm().applyIrmConfig(_irmParams(), flatConfig);
@@ -550,8 +548,8 @@ contract IrmConfigRiskTest is LidoLendSetup {
     // ── helpers ──
 
     /// @dev Accrues under the old curve, then applies `config`. External, so a test can expect a revert of both steps.
-    ///      This order copies the Easy Track `ApplyIrmConfig` script from another repository. This repository cannot
-    ///      check the copy against that source.
+    ///      Assumption: the Easy Track `ApplyIrmConfig` script uses this order. That script is outside this
+    ///      repository, so this repository cannot check it.
     function accrueThenApplyConfig(address config) external {
         Market storage m = _m();
         m.core.accrueInterest(m.params);

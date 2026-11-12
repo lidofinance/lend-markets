@@ -108,15 +108,15 @@ contract GuardianSignalsQuorumBanTest is Test {
         assertEq(count, 1, "one registry event");
     }
 
-    /// @dev Known issue: `setQuorum` turns a derived ban on and off with only a `QuorumSet` event, never `Banned` or
-    ///      `Unbanned`.
-    ///      Root cause: `_isBanned` returns true when the latch is set or `flaggedBy.length()` reaches the current
+    /// @dev Specified behaviour: `setQuorum` turns a derived ban on and off with only a `QuorumSet` event, never
+    ///      `Banned` or `Unbanned`. `guardian-signals.md` states that a quorum change writes no ban latch and can
+    ///      create or lift derived bans.
+    ///      Mechanism: `_isBanned` returns true when the latch is set or `flaggedBy.length()` reaches the current
     ///      `_quorum`. A call that changes the count or the quorum without a latch write emits no ban event.
     ///      Same cause: a `prune` that drops a removed guardian's flag lets a derived ban lapse with only
     ///      `FlagPruned`. One `setQuorum` call, up or down, flips each affected account in each market of the
     ///      registry. `unflag` latches a derived ban and emits `Banned` before it drops the count, so it does not flip
     ///      the result silently.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_setQuorumFlipsDerivedBan_emitsNoBanEvent() public {
         gs.setQuorum(3);
         _flag(G1, BOB);

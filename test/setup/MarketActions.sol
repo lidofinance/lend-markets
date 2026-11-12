@@ -1203,7 +1203,7 @@ library MarketActions {
 
     /// @notice `caller` (with NO instant activation) supplies collateral for `borrower`. Asserts the whole lot
     ///         enters the activation timer: the caller's lack of a grant, not the borrower's, decides the bucket.
-    ///         `amount` must clear the activation threshold on its own.
+    ///         `amount` plus the borrower's dust must reach the activation threshold.
     function supplyCollateralOnBehalf(Market storage self, address caller, address borrower, uint256 amount) internal {
         Approvals.approve(address(self.collateralToken), caller, address(self.core), amount);
 

@@ -79,10 +79,9 @@ contract CircuitBreakerConfigFileTest is Test {
         vm.removeDir(dir, true);
     }
 
-    /// @dev Specified behaviour: a committee pause of a market controller ends when the breaker pause duration
-    ///      expires. The `mainnet` deploy config selects the "lido-lend" profile for that duration.
-    ///      The profile starts the pause duration at five minutes and sets its lower limit to 60 seconds.
-    ///      Root cause: `script/config/circuit-breakers/lido-lend.toml` sets `initial_pause_duration = 300` and
+    /// @dev Config pin: the `mainnet` deploy config selects the "lido-lend" circuit-breaker profile. The profile
+    ///      starts the pause duration at five minutes and sets its lower limit to 60 seconds.
+    ///      `script/config/circuit-breakers/lido-lend.toml` sets `initial_pause_duration = 300` and
     ///      `min_pause_duration = 60`. `DeployCircuitBreaker` passes these values to the `CircuitBreaker` constructor.
     ///      This test reads the config files only. `test_cbPause_pausesOnlyRegisteredController_forExactDuration`
     ///      shows the expiry on a deployed breaker.
@@ -90,13 +89,13 @@ contract CircuitBreakerConfigFileTest is Test {
         _assertLidoLendProfile("mainnet");
     }
 
-    /// @dev Same behaviour as `test_mainnetDeployConfig_selectsLidoLendProfile_fiveMinutePause`; this test shows that
+    /// @dev Same pin as `test_mainnetDeployConfig_selectsLidoLendProfile_fiveMinutePause`; this test shows that
     ///      the Hoodi deploy config selects the same "lido-lend" profile.
     function test_hoodiDeployConfig_selectsLidoLendProfile_fiveMinutePause() external view {
         _assertLidoLendProfile("hoodi");
     }
 
-    /// @dev Same behaviour as `test_mainnetDeployConfig_selectsLidoLendProfile_fiveMinutePause`; this test shows that
+    /// @dev Same pin as `test_mainnetDeployConfig_selectsLidoLendProfile_fiveMinutePause`; this test shows that
     ///      the fork deploy config selects the same "lido-lend" profile.
     function test_forkMainnetDeployConfig_selectsLidoLendProfile_fiveMinutePause() external view {
         _assertLidoLendProfile("fork-mainnet");

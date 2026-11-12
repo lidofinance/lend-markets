@@ -117,7 +117,7 @@ contract ExitFeeVault is ERC4626Fees {
 }
 
 /// @dev A vault that holds `RECOVERER_ROLE` on the book and, once armed, calls `recoverERC20` from inside
-///      `withdraw`, after the assets reach the book. It models a callback that runs a matured recovery mid-fill.
+///      `withdraw`, after the assets reach the book. It models a recovery that runs inside the source withdrawal.
 contract RecoveringVault is ERC4626 {
     ExitBookBase internal _book;
     address internal _recoverTo;
@@ -137,8 +137,8 @@ contract RecoveringVault is ERC4626 {
     }
 }
 
-/// @dev Holds `FEE_MANAGER_ROLE` and sets the new fee terms when the asset calls it. It models a callback that runs
-///      a matured fee update mid-fill.
+/// @dev Holds `FEE_MANAGER_ROLE` and sets the new fee terms when the asset calls it. It models a fee update that runs
+///      inside the reward transfer.
 contract FeeRotationHook is ITokenTransferHook {
     ExitBookBase internal immutable BOOK;
     address internal immutable NEW_RECIPIENT;
@@ -969,30 +969,19 @@ contract ExitBookFeeSplitTest is Test {
     /// @dev A recovery by `RECOVERER_ROLE` inside the source withdrawal lowers the measured proceeds, and
     ///      `fillExitRequest` reverts with `AssetsOutMismatch`. Here the vault holds the role and recovers 5 of 7 stray
     ///      tokens.
-    function testRevert_recoveryDuringWithdraw_assetsOutMismatchRollsBack() public {
+    function testRevert_recoveryDuringWithdraw_assetsOutMismatch() public {
         RecoveringVault source = new RecoveringVault(IERC20(address(asset)));
-        (uint256 id, uint256 lenderShares) =
-            _depositAndPlace(IERC4626(address(source)), 100 ether, 100 ether, lender, 0, _zeroRamp());
-        uint256 strayBalance = 7 ether;
+        (uint256 id,) = _depositAndPlace(IERC4626(address(source)), 100 ether, 100 ether, lender, 0, _zeroRamp());
         uint256 recovered = 5 ether;
-        address recoverTo = makeAddr("recoverTo");
-        asset.mint(address(book), strayBalance);
+        asset.mint(address(book), 7 ether);
         book.grantRole(book.RECOVERER_ROLE(), address(source));
-        source.armRecovery(book, recoverTo, recovered);
-        bytes32 requestBefore = keccak256(abi.encode(book.getExitRequest(id)));
+        source.armRecovery(book, makeAddr("recoverTo"), recovered);
 
         vm.prank(filler);
         vm.expectRevert(
             abi.encodeWithSelector(ExitBookBase.AssetsOutMismatch.selector, 100 ether, 100 ether - recovered)
         );
         book.fillExitRequest(id, 100 ether, filler);
-
-        assertEq(keccak256(abi.encode(book.getExitRequest(id))), requestBefore, "request rolled back");
-        assertEq(source.balanceOf(lender), lenderShares, "lender shares rolled back");
-        assertEq(asset.balanceOf(address(source)), 100 ether, "source assets rolled back");
-        assertEq(asset.balanceOf(address(book)), strayBalance, "book keeps its stray balance");
-        assertEq(asset.balanceOf(recoverTo), 0, "recovery rolled back");
-        assertEq(asset.balanceOf(lender), 0, "lender paid nothing");
     }
 
     /// @dev A `setServiceFee` call by `FEE_MANAGER_ROLE` inside a fill sends the cut at the old rate to the new

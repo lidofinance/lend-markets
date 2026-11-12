@@ -195,7 +195,6 @@ contract SuspectDelayTest is LidoLendSetup {
     ///      snapshot expiry, also a lot already on the timer. Each further lapsed report under one live report adds
     ///      one more `delayPerSuspect`. While the suspect window does not grow, the cached count never undercounts
     ///      live reports, so the error only makes delays longer.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_staleCount_lapsedReportUnderALiveOne_delaysTheLot() public {
         _suspect(guardian1);
         vm.warp(block.timestamp + SUSPECT_WINDOW - 1 days);

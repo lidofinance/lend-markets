@@ -378,6 +378,7 @@ contract RiskStewardDashboardTest is Test {
     /// @dev A `revokeInstantActivation` call by a market steward emits `InstantActivationRevoked`.
     function test_revokeInstantActivation_emitsEvent() public {
         address caller = address(0xCA11E7);
+        controller.setInstantActivation(caller, true);
         vm.expectEmit(true, true, false, true);
         emit IRiskStewardDashboard.InstantActivationRevoked(marketId, caller);
         vm.prank(steward);

@@ -151,7 +151,7 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
     }
 
     /// @dev One second after a borrow accrued the market, the deployed pair cannot take a
-    ///      deposit or report its total assets. A fix changes this outcome; update this test with the fix.
+    ///      deposit or report its total assets.
     ///      The test is isolated, so each call is its own transaction. Vault V2 caches its total assets for the rest of
     ///      a transaction.
     ///      Control: a core accrual in the same block makes the market current, and the same deposit goes through.

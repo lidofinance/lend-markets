@@ -11,9 +11,11 @@ import {
     ILidoLendMarketController as ILidoLendBaseMarketController
 } from "@lido-lend/src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {IGuardianSignalsView} from "../../src/interfaces/IGuardianSignalsView.sol";
 
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig, SettlementSlice, SettlementQuote} from "../../src/types/SettlementTypes.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
@@ -85,7 +87,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertGe(found, 1, "GuardianSignalsSet emitted at initialization");
     }
 
-    /// @dev Fixed issue: markets launched with no supply cap.
+    /// @dev Fixed issue: a new market had no supply cap until a later `setSupplyCap` call.
     ///      Root cause: `initialize` took no cap, so a cap needed a later `setSupplyCap` call. Now: `initialize` takes
     ///      `supplyCap_`, and the factory `MarketSpec` carries `supplyCap`. A zero value still means no cap.
     ///      Same cause: deposits of any size in the gap between launch and the cap call, through the vault or a direct
@@ -107,6 +109,35 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     function test_constructor_zeroCoreReverts() public {
         vm.expectRevert(ILidoLendMarketController.ZeroAddress.selector);
         new LidoLendMarketController(IMorpho(address(0)));
+    }
+
+    /// @dev `initialize` reverts with `ZeroAddress` on a zero admin.
+    function testRevert_initialize_zeroAdmin() public {
+        _expectInitializeZeroAddress(address(0), IGuardianSignalsView(address(protocol.guardianSignals)));
+    }
+
+    /// @dev `initialize` reverts with `ZeroAddress` on a zero guardian registry.
+    function testRevert_initialize_zeroGuardianSignals() public {
+        _expectInitializeZeroAddress(address(this), IGuardianSignalsView(address(0)));
+    }
+
+    /// @dev Initializes a fresh controller proxy with the configs of the deployed controller.
+    function _expectInitializeZeroAddress(address admin, IGuardianSignalsView guardianSignals) internal {
+        Id marketId = _m().id;
+        CollateralActivationConfig memory activation = c.collateralActivationConfig();
+        SettlementConfig memory settlement = c.settlementConfig();
+        address impl = address(new LidoLendMarketController(IMorpho(address(_m().core))));
+        LidoLendMarketController fresh = LidoLendMarketController(address(new OssifiableProxy(impl, address(this), "")));
+
+        // Control: the same call with a nonzero admin and registry passes.
+        uint256 snapshot = vm.snapshotState();
+        fresh.initialize(
+            marketId, address(this), 0, IGuardianSignalsView(address(protocol.guardianSignals)), activation, settlement
+        );
+        vm.revertToState(snapshot);
+
+        vm.expectRevert(ILidoLendMarketController.ZeroAddress.selector);
+        fresh.initialize(marketId, admin, 0, guardianSignals, activation, settlement);
     }
 
     /// @dev Lender liquidity + a borrower with matured collateral and an open borrow.
@@ -1185,9 +1216,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     ///      does not run the maturity check of `CollateralActivationLib.sync`. Only the supply-collateral,
     ///      withdraw-collateral, and borrow hooks call `sync`.
     ///      Same cause: `positionOf` also understates `active` and reports a past `unlockTime` for the lot. Any reader
-    ///      of `positionOf`, such as a front end or a keeper bot, sees the stale split. The liquidate and settle hooks
+    ///      of `positionOf` sees the stale split. The liquidate and settle hooks
     ///      call `seize` on the stored split with no `sync`.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_positionOf_reportsMaturedLotActivatingUntilHook() public {
         Market storage m = _m();
         uint256 collat = 100 ether;
@@ -1855,7 +1885,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
     /// @dev `marketId` opens the ERC-7201 namespace and `supplyCap` follows at base + 1. `_instantActivationCallers`
     ///      closes it at base + 12, after the packed `isFrozen` and `_guardianSignals` (1 slot), `_activation`
     ///      (5 slots) and `_settlementQueue` (4 slots). A mapping slot holds no value, so the pin reads one entry of
-    ///      the mapping. The `supplyCap` pin catches a reorder of the fields behind `marketId`.
+    ///      the mapping. The `supplyCap` pin catches a move of `supplyCap`. The last
+    ///      pin catches a change of the total size. A reorder of the fields between them is not checked.
     function test_storageLayout_firstSecondAndLastFieldAtErc7201Slots() public {
         address caller = _actor("instantCaller");
         _m().setInstantActivation(caller, true);

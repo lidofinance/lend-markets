@@ -43,8 +43,7 @@ contract MockChainlinkFeed {
     }
 }
 
-/// @dev Chainlink aggregator stub whose answer, decimals, and round ids can change after `initialize`, like a proxy
-///      that moves to a new aggregator.
+/// @dev Chainlink aggregator stub whose answer, decimals, and round ids can change after `initialize`.
 contract SettableDecimalsFeed {
     int256 public answer;
     uint8 public decimals;
@@ -146,12 +145,13 @@ contract UsdyStableOracleTest is Test {
         new UsdyStableOracle(address(0), MIN_PRICE, MAX_PRICE);
     }
 
-    /// @dev Fixed issue: a zero oracle price let a liquidator seize collateral and repay no debt.
-    ///      Root cause: `price()` had no lower bound, so it could return zero. Now: the constructor takes a price band
-    ///      and reverts with `InvalidPriceBounds` on a zero `MIN_PRICE`. `price()` reverts with `PriceOutOfBounds`
-    ///      below `MIN_PRICE`, so it never returns zero.
-    ///      Same cause: a `mulDiv` result that rounds to zero under a very large feed answer, and any collapsed price
-    ///      below the band. The fix stops each of them in `liquidate`, `settle`, and the core health check.
+    /// @dev Fixed issue: `price()` could round to zero under a very large feed answer. A zero price lets a
+    ///      liquidator seize collateral and repay no debt.
+    ///      Root cause: `price()` had no lower bound. Now: the constructor takes a price band and reverts with
+    ///      `InvalidPriceBounds` on a zero `MIN_PRICE`. `price()` reverts with `PriceOutOfBounds` below `MIN_PRICE`,
+    ///      so it never returns zero.
+    ///      Same cause: any collapsed price below the band. The fix stops such a price in `liquidate`, `settle`, and
+    ///      the core health check.
     function testRevert_constructor_zeroMinPrice() public {
         vm.expectRevert(abi.encodeWithSelector(UsdyStableOracle.InvalidPriceBounds.selector, 0, MAX_PRICE));
         new UsdyStableOracle(address(usdy), 0, MAX_PRICE);
@@ -261,7 +261,7 @@ contract UsdyStableOracleTest is Test {
 
     /// @dev Specified behaviour: `price()` returns the answer of an old feed round when the result stays inside the
     ///      band. The NatSpec of `UsdyStableOracle` states that the oracle has no staleness check.
-    ///      Root cause: `UsdyStableOracle.price` reads only `answer` from `latestRoundData` and drops `roundId`,
+    ///      Mechanism: `UsdyStableOracle.price` reads only `answer` from `latestRoundData` and drops `roundId`,
     ///      `updatedAt`, and `answeredInRound`. `USDY_ORACLE.getPrice` gives no timestamp.
     ///      Same cause: a feed that stops updating, an incomplete round, and a NAV that is not updated. A stale price
     ///      above the true price lets a borrower borrow or withdraw collateral past the true limit. A stale price below
@@ -284,15 +284,14 @@ contract UsdyStableOracleTest is Test {
         assertEq(o.price(), _expected(1.08e18, 0.99e8), "incomplete round answer used");
     }
 
-    /// @dev Known issue: the feed drops from 8 to 7 decimals after `initialize`. The cached `scale` then returns ten
-    ///      times the correct price, which `MAX_PRICE` still accepts.
+    /// @dev Known issue: if the feed's `decimals()` changes from 8 to 7 after `initialize`, the cached `scale`
+    ///      returns ten times the correct price. `MAX_PRICE` still accepts that price.
     ///      Root cause: `initialize` computes `scale` once from `stableUsdFeed.decimals()` and the loan-token decimals.
     ///      `price()` never reads either value again, and no function updates `scale`.
-    ///      Same cause: a drop of k feed decimals multiplies the price by 10^k, and a rise divides it by 10^k. A new
-    ///      aggregator with other decimals behind the feed proxy has the same effect. An overprice inside the band lets
+    ///      Same cause: a drop of k feed decimals multiplies the price by 10^k, and a rise divides it by 10^k. Any
+    ///      later change of `decimals()` at the feed address has this effect. An overprice inside the band lets
     ///      borrowers borrow against inflated collateral. An underprice inside the band lets keepers liquidate or
     ///      settle healthy borrowers. A result outside the band halts each price-dependent action.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_feedDecimalsDrop_cachedScaleReturnsTenfoldPriceAtMax() public {
         SettableDecimalsFeed decimalsFeed = new SettableDecimalsFeed(1.1e8, 8);
         UsdyStableOracle o = _deploy(address(usdy), address(decimalsFeed), address(loan));

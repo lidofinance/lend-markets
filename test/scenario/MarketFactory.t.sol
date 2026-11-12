@@ -94,7 +94,8 @@ contract MarketFactoryScenarioTest is Test {
         guardianSignals = factory.deployGuardianSignals(_guardianSpec(), keccak256("primary"));
     }
 
-    /// @dev The factory components go to `ADMIN`, the factory keeps no role, and the market stays uncreated.
+    /// @dev Both proxies and the controller admin role belong to `ADMIN`. The factory holds no admin role, and the
+    ///      market stays uncreated.
     function test_deployMarketComponents_producesInertWiredComponents() external {
         (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
         LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
@@ -422,7 +423,8 @@ contract MarketFactoryScenarioTest is Test {
     }
 
     /// @dev `_deployProxy` uses `CREATE2`, so two registries with identical specs need different caller salts. Each
-    ///      registry lands at its predicted address. With one salt, the second deploy reverts.
+    ///      registry lands at its predicted address. The reused-salt revert is in
+    ///      `testRevert_deployGuardianSignals_rejectsAReusedSalt`.
     function test_deployGuardianSignals_identicalSpecsSeparatedBySalt() external {
         LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
 

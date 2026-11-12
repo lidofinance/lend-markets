@@ -40,7 +40,7 @@ contract PauseLifecycleTest is LidoLendSetup {
     uint256 internal constant LLTV = 0.8e18;
     /// @dev The borrower's LTV when a full-utilization pause starts: healthy, but within reach of LLTV.
     uint256 internal constant BORROWER_LTV = 0.76e18;
-    /// @dev Rate at target of the flat curve the IRM owner applies during a pause: 4%/yr, per second.
+    /// @dev Rate at target of the flat curve applied during a pause: 4%/yr, per second.
     int256 internal constant FLAT_RATE_AT_TARGET = int256(4e16) / int256(365 days);
     int256 internal constant FLAT_STEEPNESS = 4e18;
 
@@ -355,7 +355,7 @@ contract PauseLifecycleTest is LidoLendSetup {
     // ── Debt compounds while the pause blocks every cure ──
 
     /// @dev A borrower healthy at the pause start becomes liquidatable from 21 days of
-    ///      interest alone, with no way to cure. A fix changes this outcome; update this test with the fix.
+    ///      interest alone, with no way to cure. 21 days is an example duration below the profile maximum.
     function test_pause21dAtFullUse_healthyBorrowerLiquidatedAtResume() public {
         Market storage m = _m();
         _seedFullUtilization();
@@ -370,7 +370,7 @@ contract PauseLifecycleTest is LidoLendSetup {
     }
 
     /// @dev A pause of the maximum duration in the `lido-lend` CircuitBreaker profile turns a healthy borrower into
-    ///      bad debt from interest alone. A fix changes this outcome; update this test with the fix.
+    ///      bad debt from interest alone.
     function test_maxCircuitBreakerPauseAtFullUse_badDebtAtResume() public {
         Market storage m = _m();
         _seedFullUtilization();
@@ -385,7 +385,7 @@ contract PauseLifecycleTest is LidoLendSetup {
     }
 
     /// @dev The owner's `setFee` accrues through a pause, so it books interest and mints fee
-    ///      shares while users stay locked out. A fix changes this outcome; update this test with the fix.
+    ///      shares while users stay locked out.
     function test_ownerSetFeeWhilePaused_accruesAndMintsFeeShares() public {
         Market storage m = _m();
         address feeRecipient = _actor("feeRecipient");
@@ -417,9 +417,9 @@ contract PauseLifecycleTest is LidoLendSetup {
         assertEq(post.fee, 0.2e18, "new fee stored");
     }
 
-    /// @dev During a pause only the IRM owner's direct `applyIrmConfig` can reprice, since
-    ///      the router's switch accrues first. A fix changes this outcome; update this test with the fix.
-    function test_irmRepairWhilePaused_onlyDirectOwnerApplyReprices() public {
+    /// @dev During a pause the router's `setMarketIrm` reverts, because it accrues first. A direct `applyIrmConfig`
+    ///      by the IRM owner or manager does not accrue. It reprices the whole interval since the last accrual.
+    function test_irmRepairWhilePaused_routerSwitchReverts_directApplyReprices() public {
         Market storage m = _m();
         _seedFullUtilization();
         MorphoMarket memory atPause = m.core.market(m.id);

@@ -482,7 +482,7 @@ contract ActivationTest is LidoLendSetup {
     }
 
     // ---
-    // KNOWN FINDINGS
+    // KNOWN ISSUES AND SPECIFIED EDGE BEHAVIOUR
     // ---
 
     /// @dev A guardian ban on an instant-activation caller does not remove its grant. Only `MANAGER_ROLE` can enable
@@ -585,14 +585,15 @@ contract ActivationTest is LidoLendSetup {
     }
 
     /// @dev Specified behaviour: one caller can split 50 lots of 200 ether over fresh addresses. Then the first
-    ///      lot gets the ramp-floor delay for one lot, and the last lot gets the max delay. After one hour the first
+    ///      lot gets the delay of a 200 ether inflow, and the last lot gets the max delay. After one hour the first
     ///      address borrows and the last cannot.
-    ///      Root cause: `credit` freezes each lot's `activatingDelay` from the market inflow at that lot's own deposit.
+    ///      Mechanism: `credit` freezes each lot's `activatingDelay` from the market inflow at that lot's own deposit.
     ///      A later deposit raises the inflow but never the frozen delay of another position. `market-controller.md`
     ///      states that a lot keeps the base delay quoted at its start.
     ///      Same cause: the split works with any lot at or above `minActivationAmount` and any number of addresses. It
     ///      works in one transaction or across several transactions and blocks. Splits within one address gain
-    ///      nothing, because its lots share one timer. A guardian ban still blocks the borrow.
+    ///      nothing, because its lots share one timer. A guardian ban still blocks the borrow. This test covers one
+    ///      caller that splits in one transaction.
     function test_splitAcrossAddresses_underThrottlesEarlyLots() public {
         Market storage m = _m();
         uint256 lots = 50;
@@ -618,7 +619,7 @@ contract ActivationTest is LidoLendSetup {
 
         uint256 expectedFirstDelay = uint256(cfg.minActivationDelay)
             + (uint256(cfg.maxActivationDelay) - cfg.minActivationDelay) * lot / cfg.maxDelayInflow;
-        assertEq(firstDelay, expectedFirstDelay, "the first lot freezes the ramp floor for one lot");
+        assertEq(firstDelay, expectedFirstDelay, "the first lot gets the delay of one lot of inflow");
         assertEq(lastDelay, cfg.maxActivationDelay, "the last lot freezes the max delay");
 
         vm.warp(startTime + 1 hours);

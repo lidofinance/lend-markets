@@ -209,8 +209,6 @@ contract AssetRecovererTest is Test {
     }
 
     // ── zero token address ──
-    // Foundry `expectRevert` reports these empty reverts as a call to a non-contract address and does not match
-    // empty data, so the ERC-721 and ERC-1155 tests use a low-level call and check the data.
 
     /// @dev `recoverERC20` with a token that has no code reverts with `SafeERC20FailedOperation`, not a zero-token
     ///      error. Only the recoverer can make this call, which is `RECOVERER_ROLE` in the exit books.
@@ -224,21 +222,15 @@ contract AssetRecovererTest is Test {
     ///      recoverer can make this call.
     function testRevert_recoverERC721_zeroToken_emptyRevert() public {
         vm.prank(owner);
-        (bool success, bytes memory revertData) =
-            address(rec).call(abi.encodeCall(AssetRecoverer.recoverERC721, (address(0), recipient, 7)));
-
-        assertFalse(success, "zero token reverts, not a silent no-op");
-        assertEq(revertData, "", "code-check revert has no data");
+        vm.expectRevert(bytes(""));
+        rec.recoverERC721(address(0), recipient, 7);
     }
 
     /// @dev `recoverERC1155` with a token that has no code reverts with no data, because `balanceOf` returns no data
     ///      to decode. Only the recoverer can make this call.
     function testRevert_recoverERC1155_zeroToken_emptyRevert() public {
         vm.prank(owner);
-        (bool success, bytes memory revertData) =
-            address(rec).call(abi.encodeCall(AssetRecoverer.recoverERC1155, (address(0), recipient, 5)));
-
-        assertFalse(success, "zero token reverts");
-        assertEq(revertData, "", "decode revert has no data");
+        vm.expectRevert(bytes(""));
+        rec.recoverERC1155(address(0), recipient, 5);
     }
 }

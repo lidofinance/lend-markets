@@ -888,9 +888,9 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "request filled");
     }
 
-    /// @dev The borrower takes all of a 100-token supply, the price falls by 1e13, and a full-collateral liquidation
-    ///      writes off almost all the debt. One `WAD` of supply shares is then worth zero assets. Returns the
-    ///      lender's live backing.
+    /// @dev The borrower takes all of a 100-token supply. The price falls by a factor of 1e13, and a full-collateral
+    ///      liquidation writes off almost all the debt. One `WAD` of supply shares is then worth zero assets. Returns
+    ///      the lender's live backing.
     function _collapseSupplyPrice(address lender) internal returns (uint256 liveBacking) {
         Market storage m = _m();
         uint256 supplied = 100 ether;

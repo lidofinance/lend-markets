@@ -313,7 +313,7 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
             );
     }
 
-    /// @dev The one-victim extraction from the finding, set up end to end: attacker seeds one raw unit (k = 1, so
+    /// @dev The one-victim extraction, set up end to end: attacker seeds one raw unit (k = 1, so
     ///      one vault share), credits D = 2u to the vault's core position, a victim deposits u, then the attacker
     ///      borrows the credited liquidity and a crash makes it settle-eligible. Pre-fix that share commanded the
     ///      inflated 1 + 3u backing, letting the attacker cancel ~2u of its own debt and walk with the victim's u.
@@ -543,7 +543,6 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
     ///      this core rounding, so the incumbents absorb the one-share gap.
     ///      Same cause: `deposit` or `mint` followed by `redeem` or `withdraw`, and a deposit followed by the liquid
     ///      leg of `fallbackExit`. Each round trip takes at most one core share.
-    ///      A fix changes this outcome; update this test with it.
     function test_roundTripAtRoundingBoundary_burnsOneIncumbentCoreShare() public {
         Market storage m = _market();
         (address incumbent, uint256 incumbentShares) = _seedRoundTripMarket(100 ether, 30 days);
@@ -595,8 +594,8 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         _assertManagedLeCore(m);
     }
 
-    /// @dev An incumbent lender and a 50-unit borrow, then `elapsed` of interest, so the core supply index is not a
-    ///      whole number of shares per asset.
+    /// @dev An incumbent lender and a 50-unit borrow, then `elapsed` of interest. With a nonzero `elapsed`, the core
+    ///      supply index is not a whole number of shares per asset.
     function _seedRoundTripMarket(uint256 incumbentAssets, uint256 elapsed)
         internal
         returns (address incumbent, uint256 incumbentShares)

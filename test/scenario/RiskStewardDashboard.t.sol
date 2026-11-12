@@ -74,7 +74,6 @@ contract RiskStewardDashboardScenarioTest is LidoLendSetup {
     /// @dev `setCollateralActivationConfig` replaces the whole config, so the last write wins. A manager write of a
     ///      config that was read before a steward tightening undoes that tightening. This test makes the write as
     ///      the market admin. It does not run a governance motion.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_staleWholeConfigWrite_undoesStewardTightening() public {
         Market storage market = protocol.markets[0];
         CollateralActivationConfig memory staleConfig = market.controller.collateralActivationConfig();

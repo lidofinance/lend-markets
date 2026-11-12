@@ -155,8 +155,8 @@ contract OracleOutageTest is LidoLendSetup {
 
     // ── interest through an outage ──
 
-    /// @dev Unlike a pause, an outage leaves accrual running, so interest is booked while no one can liquidate. A
-    ///      borrower who does not cure crosses LLTV from interest alone and is liquidated when the price returns.
+    /// @dev An outage does not block accrual: `accrueInterest` succeeds and books interest while no one can liquidate.
+    ///      A borrower who does not cure crosses LLTV from interest alone and is liquidated when the price returns.
     function test_outage_interestAccrues_uncuredBorrowerLiquidatableWhenPriceReturns() public {
         Market storage m = _m();
         address victim = _actor("victim");

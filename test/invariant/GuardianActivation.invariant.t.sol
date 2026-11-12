@@ -12,8 +12,8 @@ import {GuardianActivationHandler} from "./handlers/GuardianActivationHandler.so
 /// @notice Stateful invariants that connect the guardian registry to the policy that reads it. The market in
 ///         this suite has a non-zero frontier fallback and a non-zero per-suspect delay.
 /// @dev This configuration is necessary. `ActivationInflowHandler` sets the fallback to zero, and
-///      `MarketSolvency` gives instant activation to each actor. No other suite tests the surcharge arithmetic
-///      or the frontier gate.
+///      `MarketSolvency` keeps the default zero fallback and files no guardian report. No other suite tests
+///      the surcharge arithmetic or the frontier gate.
 ///
 ///      The suite computes the unlock time from the start and the base delay of the lot. It does not read the
 ///      unlock time from the controller, because that value is the value under test. The handler asserts the
@@ -133,7 +133,7 @@ contract GuardianActivationInvariant is LidoLendSetup {
     ///      later than the unlock time. The lot then matures without scan evidence. `guardian-signals.md` defines
     ///      the deadline as `activatingStart + maxGuardiansQuorumDelay` and accepts the fallback as a liveness
     ///      trade-off.
-    ///      Root cause: `CollateralActivationLib.sync` measures `maxQuorumDelayElapsed` from `activatingStart`, but
+    ///      Mechanism: `CollateralActivationLib.sync` measures `maxQuorumDelayElapsed` from `activatingStart`, but
     ///      `_getUnlockTime` adds `strikeCount * delayPerStrike` and `suspectCount * delayPerSuspect` to the unlock.
     ///      When the unlock passes `activatingStart + maxGuardiansQuorumDelay`, the fallback holds as soon as the
     ///      unlock time passes, and `hasGuardiansQuorum` has no effect.

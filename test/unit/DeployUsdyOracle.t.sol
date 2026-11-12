@@ -25,7 +25,8 @@ contract DeployUsdyOracleTest is Test {
     ///      `LidoLendPrimitives._behindProxy` and `LidoLendMarketFactory` also get their init data at creation. The
     ///      `WstEthRateOracle` proxy gets empty data, and it has no initializer.
     ///      This test calls the script entry point with the checked-in fork configs. It sets `ARTIFACTS_DIR`, which
-    ///      is a process-wide variable that the fork suites read. The test skips when the variable is already set.
+    ///      is a process-wide variable that the fork suites read. The test skips when the variable is already set,
+    ///      as in a fork setup.
     function testRevert_strangerInitializeAfterDeploy_invalidInitialization() external {
         vm.skip(bytes(vm.envOr("ARTIFACTS_DIR", string(""))).length != 0);
 

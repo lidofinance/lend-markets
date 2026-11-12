@@ -30,7 +30,7 @@ contract SharedTokenMarketsTest is LidoLendSetup {
         MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
         DeployConfig memory cfg = _defaultConfig(address(loan), address(collateral), address(collateral));
         _deployProtocol(cfg);
-        // The same config again: each market gets its own oracle, so only the oracle address separates the ids.
+        // The same config again: each market gets its own oracle and IRM router, so the ids differ.
         _addMarket(cfg);
         assertEq(address(_a().loanToken), address(_b().loanToken), "setup: shared loan token");
         assertEq(address(_a().collateralToken), address(_b().collateralToken), "setup: shared collateral token");

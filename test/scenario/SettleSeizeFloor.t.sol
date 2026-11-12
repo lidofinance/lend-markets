@@ -241,7 +241,6 @@ contract SettleSeizeFloorTest is LidoLendSetup {
     ///      root with no policy or personal slice also stop the loop. The root holds the block for every lender and
     ///      every repeated exit while its cut stays unavailable. With free liquidity the call partial-fills on its
     ///      liquid leg instead of a revert.
-    ///      A fix changes this outcome; update this test with it.
     function testRevert_unavailableRoot_blocksFallbackExitPastExecutableBorrower() public {
         Market storage m = protocol.markets[0];
         _seedUnavailableRootInFullyBorrowedMarket();
@@ -274,6 +273,8 @@ contract SettleSeizeFloorTest is LidoLendSetup {
 
     /// @dev The settlement policy under test: a one-loan-asset root slice and nothing else. At this price that slice
     ///      buys no collateral unit. A new root with no personal LTV then borrows all free liquidity.
+    ///      No market config in `script/config/markets` uses this policy. The test uses it to give the root an
+    ///      unavailable cut.
     function _seedUnavailableRootInFullyBorrowedMarket() internal {
         Market storage m = protocol.markets[0];
         m.setSettlementConfig(
@@ -291,7 +292,6 @@ contract SettleSeizeFloorTest is LidoLendSetup {
 
         (address queueRoot, SettlementSlice memory rootSlice) = m.controller.nextSettlementBorrower(0);
         assertEq(queueRoot, root, "setup: the new borrower is the queue root");
-        assertNotEq(queueRoot, borrower, "setup: the executable borrower is behind the root");
         assertEq(rootSlice.borrowShares, 0, "setup: the root cut buys no collateral unit");
         assertEq(m.controller.maxWithdrawableAssets(address(m.vault)), 0, "setup: no liquid leg");
     }

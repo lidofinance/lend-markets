@@ -240,12 +240,10 @@ contract SettlementTest is LidoLendSetup {
         assertEq(_freeLiquidity(m), 0, "settlement preserves the zero-liquidity state");
     }
 
-    /// @dev Targeted settlement is allowed by a positive personal LTV while the market has free liquidity. It
-    ///      consumes no loan assets and preserves the market's free-liquidity amount.
     /// @dev Specified behaviour: settlement can run while the market has free liquidity, as `lender-settlement.md`
     ///      states. A personal cut needs the borrower's own settlement LTV. A root-policy cut needs supplier supply
     ///      above the free liquidity.
-    ///      Root cause: `_handleSettle` allows a personal settlement-LTV cut with no liquidity check. For a larger
+    ///      Mechanism: `_handleSettle` allows a personal settlement-LTV cut with no liquidity check. For a larger
     ///      root-policy cut, `_settleableSupplyAssets` allows the part of the `onBehalf` supply above the market free
     ///      liquidity.
     ///      Same cause: a vault `settle` or a direct core `settle` of any borrower that set a personal settlement LTV,
@@ -324,8 +322,8 @@ contract SettlementTest is LidoLendSetup {
     ///      any budget. Now: `settle` reverts with `NothingSettled` when the budget is untouched, and `fallbackExit`
     ///      reverts with it when neither leg burns shares.
     ///      Same cause: a borrower list with no personal settlement LTV, and borrowers with no debt. A queue root with
-    ///      no executable cut also has this cause. A paused or fully borrowed market, where the liquid leg pays
-    ///      nothing, has the same effect.
+    ///      no executable cut also has this cause. In a fully borrowed market the liquid leg pays nothing, so a
+    ///      `fallbackExit` with no executable cut also reverts with `NothingSettled`.
     function testRevert_settle_rootWithoutPersonalLtv_settlesNothing() public {
         Market storage m = _m();
         address lender = _actor("lender");

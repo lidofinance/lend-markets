@@ -191,13 +191,9 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         // A run makes 400 calls over 10 selectors. A floor holds when (1 - 0.1 * E)^400 < 1e-9, that is E >= 0.51.
         // E is the share of draws that count. A 1000-run campaign then misses the floor with odds below 1e-6.
         //   supplies, collateralSupplies, crashes: E = 1, because nothing in this fixture blocks them.
-        // The next four rest on measurement over 3003 runs. The fewest moves in one run are in brackets:
-        //   withdraws (14): E = 0.86. A draw fails only with no vault shares or no idle supply.
-        //   borrows (11): E = 0.66. A draw needs active collateral with room under the LLTV, and idle supply.
-        //   repays (8): E = 0.62. A draw needs debt, which the borrows keep open.
-        //   collateralWithdrawals (11): E = 0.73. A draw needs collateral above the health margin.
-        // Dust supplies (E = 0.23) and liquidations (none in 42 of 3003 runs) carry no floor. The tests below
-        // reach them.
+        //   withdraws, borrows, repays, collateralWithdrawals: a draw can return early. No stored measurement
+        //   supports a floor for these four. A failure here can be a coverage miss, not a protocol fault.
+        // Dust supplies and liquidations can miss a run and carry no floor. The tests below reach them.
         assertGt(handler.supplies(), 0, "coverage: no supply");
         assertGt(handler.collateralSupplies(), 0, "coverage: no collateral supply");
         assertGt(handler.crashes(), 0, "coverage: no crash");
@@ -240,8 +236,9 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         handler.crashPrice(64);
     }
 
-    /// @dev A liquidation flags the victim only when it leaves debt on active collateral below the floor. A supply
-    ///      that lifts the active collateral back to the floor ends the exclusion while the debt is still open.
+    /// @dev Handler self-check: the handler flags a liquidated victim only when the liquidation leaves debt on active
+    ///      collateral below the floor. A supply that lifts the active collateral back to the floor ends the
+    ///      exclusion while the debt is still open.
     function test_liquidatedFlag_setOnlyBelowFloorAndClearedBySupply() public {
         Market storage m = protocol.markets[0];
         _seedUnhealthySolventA1();
@@ -264,7 +261,8 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         invariant_noDebtWithSubFloorCollateral();
     }
 
-    /// @dev Repaying the whole debt clears the flag. The floor invariant then covers the victim's next borrow.
+    /// @dev Handler self-check: a repay of the whole debt clears the flag. The floor invariant then covers the
+    ///      victim's next borrow.
     function test_liquidatedFlag_clearsOnceDebtIsRepaid() public {
         Market storage m = protocol.markets[0];
         _seedUnhealthySolventA1();

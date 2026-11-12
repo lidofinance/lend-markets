@@ -206,8 +206,7 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
     ///      Root cause: the old `fallbackExit` passed `settledShares` as the burned amount and had no field for
     ///      `loanAssets`. Now: one `FallbackExit` per successful call reports `sharesBurned`, `sharesSettled`,
     ///      `assetsWithdrawn`, `collateralSeized` and `debtCanceled`.
-    ///      Same cause: an exit with both legs. A partial fill that stops at the iteration cap or at an unavailable
-    ///      cut also has this cause.
+    ///      Same cause: a partial fill that stops at the iteration cap or at an unavailable cut.
     function test_fallbackExit_bothLegs_eventSplitsTheLegs() public {
         (address owner, address borrower) = _distressFull();
         Market storage m = _m();

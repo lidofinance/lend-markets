@@ -214,15 +214,14 @@ contract VaultConformanceInvariant is LidoLendSetup {
     /// @dev For settlement claim `C` and consumed core shares `q`, the burn is exactly
     ///      `ceil(requestedVaultShares * q / C)`. A partial fill therefore burns less than one additional raw vault
     ///      share; when `q == C`, it burns exactly `requestedVaultShares`.
-    /// @dev Known issue: one `settle` or `fallbackExit` call burns `ceil(shares * settled / budget)` vault shares.
+    /// @dev Specified behaviour: `docs/specs/lender-settlement.md` defines the floored budget and the burn that rounds
+    ///      up. One `settle` or `fallbackExit` call burns `ceil(shares * settled / budget)` vault shares.
     ///      Its budget is floored, so an oversized request burns at a higher rate than the cuts need.
-    ///      Root cause: each call sizes its own budget with `_settlementSupplyShares`, which floors
-    ///      `previewRedeem(shares)` into core supply shares. Each call then rounds its own burn up, and no residual
-    ///      carries to the next call.
-    ///      Same cause: targeted `settle` calls, `fallbackExit` calls, and a mix of both. Each call still pays out no
-    ///      more than the `previewRedeem` value of the shares it burns. The core supply shares per vault share of the
-    ///      remaining holders do not decrease.
-    ///      A fix changes this outcome; update this test with it.
+    ///      Each call sizes its own budget with `_settlementSupplyShares`, which floors `previewRedeem(shares)` into
+    ///      core supply shares. Each call then rounds its own burn up, and no residual carries to the next call.
+    ///      This applies to targeted `settle` calls, `fallbackExit` calls, and a mix of both. Each call still pays
+    ///      out no more than the `previewRedeem` value of the shares it burns. The core supply shares per vault share
+    ///      of the remaining holders do not decrease.
     function invariant_settlementRounding() public view {
         assertFalse(handler.settlementBurnMismatch(), "settlement burn matched its declared rounding");
         assertFalse(handler.fullSettlementBurnMismatch(), "full settlement fill burned the full request");
@@ -430,8 +429,8 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.settlementRejectedForPauseWhileResumed(), "pause error surfaced on a resumed market");
     }
 
-    /// @dev Logs the counters and fails a run that never called one of three handler actions. Foundry restores the
-    ///      post-setUp state before each run, so the counters are per run and include the setUp calls.
+    /// @dev Logs the counters. Foundry restores the post-setUp state before each run, so the counters are per run and
+    ///      include the setUp calls.
     function afterInvariant() public {
         emit log_named_uint("deposits", handler.deposits());
         emit log_named_uint("withdraws", handler.withdraws());
@@ -474,17 +473,29 @@ contract VaultConformanceInvariant is LidoLendSetup {
         emit log_named_uint("skippedRepays", handler.skippedRepays());
         emit log_named_uint("skippedLiquidations", handler.skippedLiquidations());
         emit log_named_uint("skippedSettlementLtv", handler.skippedSettlementLtv());
-        // Wiring floors. These three actions count on every call, so a floor fails only when the selector leaves the
-        // target list. A run makes 250 calls over 16 selectors (17 at six decimals), and misses a wired action with
-        // odds (1 - 1/17)^250 < 3e-7.
-        //   crashes: each call sets a crashed price, which liquidation and bad debt need.
-        //   pauses: each call pauses or resumes the market.
-        //   caps: each call sets or lifts the supply cap.
-        // The floors do not show that a run settled or exited. Settles, fallback exits and liquidations miss some
-        // runs, so they carry no floor here.
-        // `test_seededState_reachesSettleFallbackExitAndLiquidation` reaches each of them instead.
-        assertGt(handler.crashes(), 0, "coverage: no crash");
-        assertGt(handler.pauses(), 0, "coverage: no pause or resume");
-        assertGt(handler.caps(), 0, "coverage: no supply-cap change");
+        // No counter has a floor here: a run can miss any action.
+        // `test_targetSelectors_containCrashPauseAndSupplyCap` checks that the fuzzer can call the three wired actions.
+        // `test_seededState_reachesSettleFallbackExitAndLiquidation` reaches a settle, a fallback exit and a
+        // liquidation.
+    }
+
+    /// @dev The fuzzer calls only the selectors in the target list of the handler. `crashPrice` sets a crashed price,
+    ///      which liquidation and bad debt need. `pauseResume` pauses or resumes the market. `setSupplyCap` sets or
+    ///      lifts the supply cap.
+    function test_targetSelectors_containCrashPauseAndSupplyCap() public view {
+        FuzzSelector[] memory targets = targetSelectors();
+        assertEq(targets.length, 1, "one target selector list");
+        assertEq(targets[0].addr, address(handler), "the list targets the handler");
+        bytes4[] memory selectors = targets[0].selectors;
+        assertTrue(_contains(selectors, VaultHandler.crashPrice.selector), "crashPrice is not a target");
+        assertTrue(_contains(selectors, VaultHandler.pauseResume.selector), "pauseResume is not a target");
+        assertTrue(_contains(selectors, VaultHandler.setSupplyCap.selector), "setSupplyCap is not a target");
+    }
+
+    function _contains(bytes4[] memory selectors, bytes4 selector) private pure returns (bool) {
+        for (uint256 i; i < selectors.length; i++) {
+            if (selectors[i] == selector) return true;
+        }
+        return false;
     }
 }

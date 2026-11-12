@@ -394,14 +394,14 @@ contract ExitBookTest is Test, LidoLendDeployer {
         );
     }
 
-    /// @dev Known issue: the priority-fee ramp runs on during a source pause. The first fill after the pause pays the
-    ///      end rate, although no fill was possible before.
-    ///      Root cause: `ExitBookBase._priorityFeeRate` measures elapsed time from `createdAt` on the wall clock.
+    /// @dev Specified behaviour: the priority-fee ramp runs on during a source pause. The first fill after the pause
+    ///      pays the end rate, although no fill was possible before. `exit-books.md` computes the rate from the time
+    ///      since creation, and states that deadlines and fee ramps advance during a pause of the book.
+    ///      Mechanism: `ExitBookBase._priorityFeeRate` measures elapsed time from `createdAt` on the wall clock.
     ///      `ExitBookLib.requireFillable` checks `deadline` against `block.timestamp`. Neither subtracts the time in
     ///      which a fill was impossible.
     ///      Same cause: a controller pause by the circuit breaker or the reseal manager, or a pause of the exit book
     ///      itself, in either book. The ramp can reach `endRate`, and the deadline can pass with no fillable second.
-    ///      A fix changes this outcome; update this test with it.
     function test_sourcePause_rampAdvances_fillAfterPausePaysEndRate() public {
         address lender = _actor("lender");
         address filler = _actor("filler");
@@ -436,8 +436,8 @@ contract ExitBookTest is Test, LidoLendDeployer {
         assertEq(loan.balanceOf(lender) - lenderBefore, assets - endFee, "lender pays the end rate");
     }
 
-    /// @dev Same issue as `test_sourcePause_rampAdvances_fillAfterPausePaysEndRate`; this test shows that a deadline
-    ///      inside the pause expires the request, and the pause blocks a fill at the deadline.
+    /// @dev Same behaviour as `test_sourcePause_rampAdvances_fillAfterPausePaysEndRate`. A deadline inside the pause
+    ///      expires the request, and the pause blocks a fill at the deadline.
     function testRevert_deadlinePassesDuringSourcePause_requestExpired() public {
         address lender = _actor("lender");
         address filler = _actor("filler");

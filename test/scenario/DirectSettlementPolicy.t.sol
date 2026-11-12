@@ -389,11 +389,8 @@ contract DirectSettlementPolicyTest is LidoLendSetup {
     ///      Root cause: `_settleableSupplyAssets` reads the market free liquidity at hook time, and any borrower with
     ///      active collateral can lower it for one transaction. `_handleSettle` gates only the root-policy cut on that
     ///      value.
-    ///      Same cause: the borrow can come from the supplier or from a second account it controls. A helper contract
-    ///      can run the steps. A second account can also withdraw its own supply, then supply again after the cut. A
-    ///      vault holder with collateral can borrow the free liquidity and call `fallbackExit`, which then skips the
-    ///      liquid leg and cuts the root. A personal-slice cut needs no such step.
-    ///      A fix changes this outcome; update this test with it.
+    ///      Same cause: any step that lowers free liquidity for one transaction, by the supplier or a second account.
+    ///      Variants are not tested here.
     function test_sameTxBorrowRootCutRepay_bypassesLenderTail() public {
         Actors memory actors = _seed();
         Market storage m = _m();

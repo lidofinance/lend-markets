@@ -244,8 +244,7 @@ contract SettlementSafetyTest is LidoLendSetup {
     // ── Tied risk keys: the root check misses an insolvent non-root borrower ──
 
     /// @dev A personal direct settle takes all collateral of an insolvent non-root borrower
-    ///      and leaves debt that no queue entry or gate tracks. A fix changes this outcome; update this test with the
-    ///      fix.
+    ///      and leaves debt that no queue entry or gate tracks.
     function test_tiedKeyPersonalCoreSettle_leavesDebtOnZeroCollateral() public {
         Market storage m = _m();
         (address root, address insolvent) = _seedTiedKeys();
@@ -267,14 +266,14 @@ contract SettlementSafetyTest is LidoLendSetup {
     }
 
     /// @dev A targeted vault settle takes all collateral of an insolvent non-root borrower
-    ///      and leaves debt that no queue entry or gate tracks. A fix changes this outcome; update this test with the
-    ///      fix.
+    ///      and leaves debt that no queue entry or gate tracks.
     function test_tiedKeyPersonalVaultSettle_leavesDebtOnZeroCollateral() public {
         Market storage m = _m();
         (address root, address insolvent) = _seedTiedKeys();
         address lender = _actor("lender");
 
-        // A claim a few units above the collateral value. The budgeted cut still seizes everything and stays partial.
+        // A claim 4 loan units above the collateral value. One collateral unit is worth 10 loan units (`TIED_PRICE`).
+        // The budgeted cut still seizes everything and stays partial.
         uint256 shares = Erc4626Math.toShares(m.vault, TIED_VALUE + 4, Math.Rounding.Ceil);
         address[] memory borrowers = new address[](1);
         borrowers[0] = insolvent;
@@ -296,9 +295,8 @@ contract SettlementSafetyTest is LidoLendSetup {
     ///      Same cause: any root whose exact debt and collateral value have no whole loan unit between them, not
     ///      only a sub-unit root. Such a root can come from a partial liquidation, a partial repay, or a price
     ///      move. It blocks vault `settle` of any borrower, the `fallbackExit` settle leg, and a direct core
-    ///      `settle` by any supplier, and `hasBadDebt` reports true. A repay or a liquidation of the root by any
-    ///      account clears it.
-    ///      A fix changes this outcome; update this test with it.
+    ///      `settle` by any supplier, and `hasBadDebt` reports true. A repay of the root by any account
+    ///      clears it.
     function test_subUnitSolventRoot_blocksOtherSettlementUntilRepaid() public {
         Market storage m = _m();
         (address lender, uint256 shares, address root, address healthy) = _seedSubUnitRoot();
@@ -374,8 +372,7 @@ contract SettlementSafetyTest is LidoLendSetup {
     // ── Collateral with a transfer callback: settle pays out before the vault books it ──
 
     /// @dev A redeem from the collateral transfer callback of `settle` pays the same as a redeem after the settle,
-    ///      within one loan unit. Only `MARKET_CREATOR_ROLE` can create a market whose collateral token has a transfer
-    ///      callback.
+    ///      within one loan unit. Market creation through the facade requires `MARKET_CREATOR_ROLE`.
     function test_reentrantRedeemInSettleCallback_paysSameAsRedeemAfter() public {
         MockERC20 loan = new MockERC20("Loan2", "LOAN2", 18);
         CallbackERC20 collateral = new CallbackERC20("Hooked Collateral", "HCOLL", 18);

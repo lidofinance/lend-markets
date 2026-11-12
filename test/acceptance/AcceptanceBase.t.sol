@@ -124,9 +124,6 @@ interface IReadVault {
     function totalSupply() external view returns (uint256);
     function totalAssets() external view returns (uint256);
     function managedSupplyShares() external view returns (uint256);
-    function previewMint(uint256 shares) external view returns (uint256);
-    function previewDeposit(uint256 assets) external view returns (uint256);
-    function deposit(uint256 assets, address receiver) external returns (uint256);
 }
 
 interface IReadProxy {
@@ -445,8 +442,8 @@ abstract contract AcceptanceContext is Test {
         require(pauserCommittee != address(0), "acceptance: CircuitBreaker pauser committee is zero");
     }
 
-    /// @dev Production acceptance requires the reviewed steward that the activation motion adds. The conventional
-    ///      `fork` run defaults to none, because ActivateMarkets.s.sol adds no steward.
+    /// @dev Production acceptance requires the steward from the reviewed motion input `ACCEPTANCE_MARKET_STEWARD`.
+    ///      The conventional `fork` run defaults to none, because ActivateMarkets.s.sol adds no steward.
     function _loadExpectedMarketSteward() internal {
         marketSteward = forkProvision
             ? vm.envOr("ACCEPTANCE_MARKET_STEWARD", address(0))
@@ -454,8 +451,8 @@ abstract contract AcceptanceContext is Test {
         require(forkProvision || marketSteward != address(0), "acceptance: market steward is zero");
     }
 
-    /// @dev Production acceptance requires the reviewed initial fee, zero when the motion sets none. The conventional
-    ///      `fork` run defaults to zero, because ActivateMarkets.s.sol sets no fee.
+    /// @dev Production acceptance requires the fee from the reviewed motion input `ACCEPTANCE_MARKET_FEE`. The
+    ///      conventional `fork` run defaults to zero, because ActivateMarkets.s.sol sets no fee.
     function _loadExpectedMarketFee() internal {
         marketFee = forkProvision ? vm.envOr("ACCEPTANCE_MARKET_FEE", uint256(0)) : vm.envUint("ACCEPTANCE_MARKET_FEE");
     }
@@ -743,8 +740,8 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         );
     }
 
-    /// @dev The activation motion adds exactly one steward, the reviewed `marketSteward`. An inert market has none, and
-    ///      so has a `fork` run, whose replay adds none.
+    /// @dev Expects the `marketSteward` from the reviewed motion input as the only steward of an activated market.
+    ///      An inert market has none, and so has a `fork` run, whose replay adds none.
     function _expectedMarketStewards() private view returns (address[] memory stewards) {
         if (!_isMarketActivated() || marketSteward == address(0)) return new address[](0);
         stewards = new address[](1);
@@ -895,8 +892,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
     /// @notice Every accounting variable on the market, the vault, and the controller is still zero, and no
     ///         protocol fee is set.
-    /// @dev Readiness only: before the motion the core has no market under this id. The motion itself preseeds
-    ///      the market and the vault, and sets any non-zero initial fee.
+    /// @dev Readiness only: before the motion the core has no market under this id.
     function _assertZeroState() internal view {
         (uint128 tSupplyA, uint128 tSupplyS, uint128 tBorrowA, uint128 tBorrowS,, uint128 fee) =
             IReadCore(core).market(marketId);
@@ -969,16 +965,16 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertTrue(IReadErc4626Book(erc4626Book).paused(), "configured pauser did not pause ERC-4626 exit book");
     }
 
-    /// @dev Mirror of the `LidoLendActivateMarket` EasyTrack motion, run by the executor in the motion's call order.
+    /// @dev Stand-in for the `LidoLendActivateMarket` EasyTrack motion, run by the executor. The motion code is
+    ///      outside this repository, and this repository cannot check it. The call order here is an assumption.
     ///      The curve config MUST be applied before `createMarket`: its first `borrowRate` ping reverts on an unset
-    ///      config. A disposable steward stands in for the reviewed one. The motion sets a fee only when it is not
-    ///      zero. This mirror's fee is zero, so it makes no `setFee` call. The checks after the motion apply to this
-    ///      simulation only: the local activation replay adds no steward and makes no preseed.
+    ///      config. A disposable steward stands in for the reviewed one. This stand-in sets no fee. The checks after
+    ///      the calls apply to this simulation only: the local activation replay adds no steward and makes no preseed.
     function _activate(address testPauserCommittee) internal {
         assertNotEq(testPauserCommittee, address(0), "test pauser committee is zero");
         MarketParams memory p = _params();
         address irmConfig = _expectedIrmConfig();
-        marketSteward = makeAddr("acceptanceMarketSteward");
+        marketSteward = makeAddr(string.concat("acceptanceMarketSteward-", vm.toString(marketId)));
         vm.startPrank(executor);
         IReadCurve(curve).applyIrmConfig(p, irmConfig);
         IReadRouter(router).setMarketIrm(p, curve);
@@ -997,8 +993,9 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertGe(IERC20(vault).balanceOf(PreseedLib.RECIPIENT), requiredVaultShares, "preseed: dead vault shares");
     }
 
-    /// @dev The preseed of the activation motion, made by a funded stand-in for the preseeder.
-    /// @return requiredVaultShares The fewest vault shares that the preseeder accepts for the dead address.
+    /// @dev Stand-in for the preseed of the activation motion. The preseeder code is outside this repository, and
+    ///      this repository cannot check it. A funded account makes the stand-in preseed.
+    /// @return requiredVaultShares The fewest vault shares that `PreseedLib.preseed` accepts for the dead address.
     function _preseed(MarketParams memory p) private returns (uint256 requiredVaultShares) {
         address preseeder = makeAddr("acceptancePreseeder");
         deal(loanToken, preseeder, PreseedLib.marketAssets() + PreseedLib.vaultAssets(IERC4626(vault)));

@@ -66,8 +66,8 @@ contract DeployVaultV2Test is Test {
     }
 
     /// @dev A new vault of the pinned upstream vault-v2 has every timelock at zero. A named curator can then submit
-    ///      and execute each curator action in one transaction. `script/DeployVaultV2.s.sol` relies on this default.
-    ///      This test does not run the script.
+    ///      and execute each curator action in one transaction. `script/DeployVaultV2.s.sol` sets no timelock, so a
+    ///      deployed vault starts with this default. This test does not run the script.
     function test_pinnedVaultV2_newVaultHasZeroTimelocks() external {
         IVaultV2 vault = _deployVault();
         bytes4[18] memory timelocked = [
@@ -96,7 +96,8 @@ contract DeployVaultV2Test is Test {
     }
 
     /// @dev A new vault of the pinned upstream vault-v2 has no gate, so anyone can deposit and hold shares.
-    ///      `script/DeployVaultV2.s.sol` relies on this default. This test does not run the script.
+    ///      `script/DeployVaultV2.s.sol` sets no gate, so a deployed vault starts with this default. This test does
+    ///      not run the script.
     function test_pinnedVaultV2_newVaultHasNoGates() external {
         IVaultV2 vault = _deployVault();
         assertEq(vault.receiveSharesGate(), address(0), "receiveSharesGate");
@@ -106,8 +107,8 @@ contract DeployVaultV2Test is Test {
     }
 
     /// @dev A new adapter of the pinned upstream vault-v2 has every timelock at zero. A named curator can then burn
-    ///      the adapter's market shares in one transaction. `script/DeployVaultV2.s.sol` relies on this default.
-    ///      This test does not run the script.
+    ///      the adapter's market shares in one transaction. `script/DeployVaultV2.s.sol` sets no timelock, so a
+    ///      deployed adapter starts with this default. This test does not run the script.
     function test_pinnedVaultV2_newAdapterHasZeroTimelocks() external {
         IVaultV2 vault = _deployVault();
         IMorphoMarketV1AdapterV2 adapter = IMorphoMarketV1AdapterV2(

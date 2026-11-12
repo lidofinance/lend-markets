@@ -13,10 +13,11 @@ import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20} from "../setup/Mocks.sol";
 import {PreseedLib} from "../setup/PreseedLib.sol";
 
-/// @notice Two subjects on a fresh stack. First, the dead-share preseed of the Easy Track activation motion, replayed
-///         through `PreseedLib`. Second, donation immunity of the vault and the core market for a first depositor.
-/// @dev `PreseedLib` copies `LidoLendPreseeder.preseedMarket` from another repository, and this repository cannot
-///      check it against the source. The preseed tests prove only that the copied calls mint the stated dead shares.
+/// @notice Two subjects on a fresh stack. First, the dead-share preseed that `PreseedLib` models. Second, donation
+///         immunity of the vault and the core market for a first depositor.
+/// @dev Assumption: `PreseedLib` matches `LidoLendPreseeder.preseedMarket`, which the Easy Track activation motion
+///      calls. That code is outside this repository, and this repository cannot check the library or its constants
+///      against it. The preseed tests prove only that the library calls mint the dead shares that the library states.
 ///      The donation tests run without the preseed. The vault counts only its own core supply shares, and the core
 ///      counts no token transfers, so no donation moves a share price.
 contract PreseedTest is LidoLendSetup {
@@ -49,7 +50,8 @@ contract PreseedTest is LidoLendSetup {
 
     // ── The preseed ──
 
-    /// @dev With 18 decimals the vault has no share offset, so 1e9 shares cost 1e9 assets, above the asset floor.
+    /// @dev With 18 decimals the vault has no share offset, so 1e9 shares cost 1e9 assets, above the library's
+    ///      asset floor.
     function test_preseed_18DecimalLoan_mintsDeadSharesInMarketAndVault() public {
         Market storage m = _m();
         _preseed(m);
@@ -59,8 +61,8 @@ contract PreseedTest is LidoLendSetup {
         assertEq(m.core.market(m.id).totalSupplyAssets, PRESEED_MARKET_ASSETS + 1e9, "market holds both preseeds");
     }
 
-    /// @dev With 6 decimals, the vault's 1e12 share offset prices 1e9 shares below one unit. So the preseed deposits
-    ///      the 1e6 asset floor and mints 1e6 * 1e12 shares.
+    /// @dev With 6 decimals, the vault's 1e12 share offset prices 1e9 shares below one unit. So the library deposits
+    ///      its 1e6 asset floor and mints 1e6 * 1e12 shares.
     function test_preseed_6DecimalLoan_depositsVaultAssetFloor() public {
         MockERC20 loan = new MockERC20("Loan6", "LOAN6", 6);
         MockERC20 collateral = new MockERC20("Collateral6", "COLL6", 18);

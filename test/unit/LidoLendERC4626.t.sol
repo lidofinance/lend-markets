@@ -856,8 +856,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
     /// @dev `marketId` opens the ERC-7201 namespace and `controller` follows at base + 1. `_managedSupplyShares`
     ///      closes it at base + 8, after the five-field `_marketParams` (5 slots) and `_loanDecimalsOffset` (1 slot).
-    ///      A field inserted before the last one moves it off that slot. The `controller` pin catches a reorder of
-    ///      the fields behind `marketId`.
+    ///      A field inserted before the last one moves it off that slot. The `controller` pin catches a field moved
+    ///      into base + 1.
     function test_storageLayout_firstSecondAndLastFieldAtErc7201Slots() public {
         Market storage m = _market();
         address lender = _actor("lender");

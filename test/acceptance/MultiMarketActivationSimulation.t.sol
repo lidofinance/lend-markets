@@ -18,6 +18,7 @@ contract MultiMarketActivationSimulation is AcceptanceBase {
 
         _assertMarketReady();
         _activate(pauserA);
+        address stewardA = marketSteward;
         pauserCommittee = pauserA;
         _allowlistExitBooks();
         _assertActivated();
@@ -36,9 +37,10 @@ contract MultiMarketActivationSimulation is AcceptanceBase {
         _assertActivated();
         _assertExitBooksAllowed();
 
-        // Activating B must not alter A's router, curve, controller, pauser, settlement, or allow-list state.
+        // Activating B must not alter A's router, curve, controller, roles, pauser, settlement, or allow-list state.
         _loadMarket(marketA);
         pauserCommittee = pauserA;
+        marketSteward = stewardA;
         _assertActivated();
         _assertRoles();
         _assertExitBooksAllowed();

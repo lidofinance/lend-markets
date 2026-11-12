@@ -864,7 +864,6 @@ contract GuardianSignalsTest is Test {
     ///      when the surviving flags still meet the quorum, so the ban lapses with no `ACCESS_RESTORER_ROLE` call.
     ///      Same cause: any caller can run `prune` after `removeGuardian` or `replaceGuardian` of one flagger. An
     ///      `unflag`, or a `prune` while the flags still meet the quorum, latches the ban and stops the lapse.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_prune_derivedBan_lapsesWhenBelowQuorum() public {
         gs.setQuorum(3);
         _flag(GUARDIAN_1, BOB);
@@ -884,14 +883,13 @@ contract GuardianSignalsTest is Test {
     ///      latches the ban. `prune` then drops the stale flag, but the ban stays.
     ///      Root cause: `_removeGuardian` keeps the signals stored under the outgoing guardian. `_flag`, `_unflag`,
     ///      `_isBanned` and `_signalCounters` use `flaggedBy.length()` with no check that each flagger is still a
-    ///      guardian. Only a permissionless `prune` or an `unban` drops these flags, and `prune` never lifts a latched
-    ///      ban.
+    ///      guardian. While the guardian stays removed, only a permissionless `prune` or an `unban` drops these flags,
+    ///      and `prune` never lifts a latched ban.
     ///      Same cause: `replaceGuardian` leaves the same stale flag. The stale flag counts for each account that the
     ///      guardian flagged, in each market of the shared registry. After a `setQuorum` decrease, stale flags can
     ///      derive a ban, and an `unflag` by any current guardian latches it. Stale flags also add `delayPerStrike`
     ///      through `strikeCount`, and stale suspect reports add `delayPerSuspect` through `suspectCount`. A re-added
     ///      guardian cannot flag again, because its old flag is still stored and counts.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_removedGuardianStaleFlag_latchesBan() public {
         _flag(GUARDIAN_1, BOB);
         gs.removeGuardian(GUARDIAN_1);

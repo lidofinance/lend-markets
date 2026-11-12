@@ -1277,7 +1277,8 @@ contract CollateralActivationLibBoundaryTest is Test {
         });
     }
 
-    /// @dev Each duration bound is inclusive: a value of exactly seven days passes.
+    /// @dev The 7-day bound is inclusive for the delay cap, the lock and both surcharges. The quorum fallback bound
+    ///      is in `test_setMaxGuardiansQuorumDelay_atBound`.
     function test_setConfig_durationsAtSevenDays_accepted() public {
         CollateralActivationConfig memory cfg = _config();
         cfg.maxActivationDelay = 7 days;

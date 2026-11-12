@@ -247,7 +247,6 @@ contract LidoLendOwnerGovernanceTest is LidoLendSetup {
     ///      Same cause: each market of the core has its own open window, and the new recipient gets all of them. A
     ///      switch and a switch back before the next accrual leave the middle recipient with nothing. The path through
     ///      `LidoLendOwner.setFeeRecipient` is the same.
-    ///      A fix changes this outcome; update this test with the fix.
     function test_setFeeRecipient_mintsOpenWindowFeeToNewRecipient() public {
         Market storage market = protocol.markets[0];
         address oldRecipient = _actor("oldRecipient");
@@ -272,8 +271,8 @@ contract LidoLendOwnerGovernanceTest is LidoLendSetup {
         assertEq(market.core.position(market.id, oldRecipient).supplyShares, oldShares, "old recipient gets none");
     }
 
-    /// @dev After a zero fee recipient is set, the next accrual mints the fee shares to the zero address. Only
-    ///      `FEE_MANAGER_ROLE` can set the fee recipient.
+    /// @dev After a zero fee recipient is set, the next accrual mints the fee shares to the zero address.
+    ///      `setFeeRecipient` on the facade requires `FEE_MANAGER_ROLE`.
     function test_zeroFeeRecipient_mintsFeeSharesToZero() public {
         Market storage market = protocol.markets[0];
         facade.grantRole(facade.FEE_MANAGER_ROLE(), address(this));

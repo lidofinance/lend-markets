@@ -439,7 +439,7 @@ abstract contract SolvencySimulation is SolvencyActions {
     /// @notice Two borrowers tie on the rounded risk key. The root is solvent at exactly its debt, and the tied
     ///         borrower is short by about one key unit of debt. The queue check accepts that shortfall.
     /// @dev lender-settlement.md "A rounded root check can miss an insolvent borrower". With 1e25 collateral, one key
-    ///      unit is 1e7 borrow shares: about 10 loan units at the opening rate of 1e-6 asset per share.
+    ///      unit is 1e7 borrow shares: about 10 raw loan-token units at the opening rate of 1e-6 asset per share.
     ///      `test_solventRootShortfallCheck_aboveOneKeyUnitPlusTwo_fails` is the control for the bound.
     function test_tiedRiskKey_shortfallWithinOneKeyUnit() public {
         _seedTiedRiskKey();
@@ -504,7 +504,6 @@ abstract contract SolvencySimulation is SolvencyActions {
     ///      Same cause: a `fallbackExit` root cut, a vault `settle` of any borrower with a personal settlement LTV,
     ///      and a direct core `settle` by any supplier. Each exit before the insolvent borrower becomes the root
     ///      leaves its share of the loss to the lenders that stay.
-    ///      A fix changes this outcome; update this test with it.
     /// @dev `maxIterations = 1` stops the settle leg before it tries the insolvent borrower as the next root.
     function test_tiedRiskKey_rootExitLeavesHiddenLossToRemainingLenders() public {
         (address root, address tied) = _seedTiedRiskKey();

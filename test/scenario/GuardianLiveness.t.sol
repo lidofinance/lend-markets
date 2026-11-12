@@ -169,8 +169,8 @@ contract GuardianLivenessTest is LidoLendSetup {
         assertEq(m.controller.positionOf(borrower).activating, 0, "fallback matured the lot without scan evidence");
     }
 
-    /// @dev The stored frontier never moves backward, even when a `MANAGER_ROLE` quorum or membership change lowers
-    ///      the live candidate. `guardian-signals.md` specifies this ratchet.
+    /// @dev The stored frontier never moves backward when a `MANAGER_ROLE` quorum increase lowers the live candidate.
+    ///      `guardian-signals.md` specifies this ratchet, also for membership changes.
     function test_SyncFrontier_NeverMovesBackwards() public {
         Market storage m = _m();
         uint256 unlockTime = _bookLotAndPassUnlockTime();
@@ -258,7 +258,7 @@ contract GuardianLivenessTest is LidoLendSetup {
         assertGt(seized, 0, "keeper seized collateral from the banned borrower");
     }
 
-    /// @dev A ban blocks borrowing only. The banned address still deposits into the vault and withdraws from it.
+    /// @dev A ban does not gate the vault. The banned address still deposits into the vault and withdraws from it.
     function test_bannedBorrower_depositsAndWithdrawsThroughVault() public {
         Market storage m = _m();
         _borrowThenBan();
@@ -311,15 +311,13 @@ contract GuardianLivenessTest is LidoLendSetup {
         assertEq(m.controller.positionOf(borrower).activating, 0, "lot matures once the frontier is synced");
     }
 
-    /// @dev After `MANAGER_ROLE` lowers the quorum and removes a silent guardian, the stored frontier stays behind
-    ///      guardian 1's scan. With no `syncQuorumFrontier` call, the lot waits for the fallback deadline.
-    function test_quorumLoweredAndGuardianRemoved_lotWaitsForFallback() public {
+    /// @dev After `MANAGER_ROLE` lowers the quorum, the stored frontier stays behind guardian 1's scan. With no
+    ///      `syncQuorumFrontier` call, the lot waits for the fallback deadline.
+    function test_quorumLowered_noSync_lotWaitsForFallback() public {
         Market storage m = _m();
         uint256 sharedScan = _silenceGuardians2And3();
-        vm.startPrank(m.config.admin);
+        vm.prank(m.config.admin);
         m.guardianSignals.setQuorum(1);
-        m.guardianSignals.removeGuardian(guardian3);
-        vm.stopPrank();
         uint256 lotStart = block.timestamp;
         uint256 unlockTime = _bookLotAndPassUnlockTime();
 

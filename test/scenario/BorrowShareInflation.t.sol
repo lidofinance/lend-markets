@@ -382,8 +382,8 @@ contract BorrowShareInflationTest is LidoLendSetup {
 
     // ── a close at the exact cap ──
 
-    /// @dev At the exact cap a healthy borrower's full close reverts while other debt remains.
-    ///      A fix changes this outcome; update this test with the fix.
+    /// @dev Specified behaviour: at the exact cap a healthy borrower's full close reverts while other debt remains.
+    ///      `market-controller.md` forbids a repay that moves the market from at or below the ceiling to above it.
     function testFuzz_atCapCoDebt_fullCloseReverts(uint256 coDebt) public {
         coDebt = bound(coDebt, 1, 20 ether);
         Market storage m = _m();
@@ -398,8 +398,8 @@ contract BorrowShareInflationTest is LidoLendSetup {
         m.core.liquidate(m.params, h, 0, hShares, "");
     }
 
-    /// @dev At the exact cap the full close reverts until one block of interest adds a raw
-    ///      unit to the 20-token book. A fix changes this outcome; update this test with the fix.
+    /// @dev Specified behaviour: at the exact cap the full close reverts until one block of interest adds a raw unit
+    ///      to the 20-token book. The rule is the at-cap repay rule of `market-controller.md`.
     function test_atCapCoDebt_fullCloseSucceedsAfterOneBlock() public {
         Market storage m = _m();
         (address h, uint256 hShares) = _atCapBook(m, 15 ether, 20 ether);
@@ -415,13 +415,14 @@ contract BorrowShareInflationTest is LidoLendSetup {
         assertEq(m.core.position(m.id, h).borrowShares, 0, "h closed after interest");
     }
 
-    /// @dev Per-block accrual books zero interest on a 6-decimal 50-token book, so the dust
-    ///      close and its collateral floor stay locked. A fix changes this outcome; update this test with the fix.
+    /// @dev Specified behaviour: at the borrow rate of this fixture, per-block accrual books zero interest on a
+    ///      6-decimal 50-token book. The dust close and its collateral floor stay locked, by the at-cap repay rule of
+    ///      `market-controller.md`.
     function test_sixDecimalBook_perBlockAccrual_keepsDustCloseBlocked() public {
         MockERC20 loan = new MockERC20("Loan6", "LOAN6", 6);
         MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
         DeployConfig memory cfg = _defaultConfig(address(loan), address(collateral), address(collateral));
-        cfg.lltv = 0.86e18;
+        cfg.lltv = 0.86e18; // the LLTV in `script/config/markets/fork-usdy-usdt.toml`
         Market storage m = _addMarket(cfg);
         MockPriceOracle(address(m.oracle)).setPrice(1.05e24); // 1 COLL = 1.05 LOAN
         (address h, uint256 hShares) = _atCapBook(m, 15 ether, 50e6);

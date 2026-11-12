@@ -9,9 +9,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IMorpho, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 
-/// @notice The dead-share preseed of the Easy Track activation motion: the two calls of
-///         `LidoLendPreseeder.preseedMarket`, with its constants, amounts and vault-share check.
-/// @dev This library copies code from another repository, and this repository cannot check it against the source.
+/// @notice A model of the dead-share preseed that the Easy Track activation motion is assumed to make.
+/// @dev Assumption: `LidoLendPreseeder.preseedMarket` makes these two calls with these constants, amounts and
+///      vault-share check. That contract is outside this repository, and this repository cannot check this copy.
 library PreseedLib {
     using SafeERC20 for IERC20;
 
@@ -34,7 +34,7 @@ library PreseedLib {
 
     /// @notice Makes both preseed calls as `preseeder`, which must hold `marketAssets() + vaultAssets(vault)`.
     ///         The market shares and the vault shares go to `RECIPIENT`.
-    /// @return requiredVaultShares The fewest vault shares that the preseeder accepts for `RECIPIENT`.
+    /// @return requiredVaultShares The fewest vault shares that this library accepts for `RECIPIENT`.
     function preseed(IMorpho core, MarketParams memory params, IERC4626 vault, address preseeder)
         internal
         returns (uint256 requiredVaultShares)

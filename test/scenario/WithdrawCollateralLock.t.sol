@@ -156,7 +156,6 @@ contract WithdrawCollateralLockTest is LidoLendSetup {
     ///      dust is close to the threshold. A top-up that extends the deadline of an existing activating lot restarts
     ///      the lock for the whole lot. Dust next to a locked activating lot is locked too. All committed market
     ///      configs set the lock to zero.
-    ///      A fix changes this outcome; update this test with the fix.
     function testRevert_thirdPartyTopUp_locksVictimDust() public {
         uint40 lockDuration = 1 hours;
         Market storage market = _deployLockMarket(lockDuration);
@@ -168,6 +167,11 @@ contract WithdrawCollateralLockTest is LidoLendSetup {
         _fund(market.collateralToken, victim, victimDust);
         market.supplyCollateral(victim, victimDust);
         assertEq(market.controller.positionOf(victim).dust, victimDust, "setup: victim holds dust");
+
+        // Control: before the top-up, the victim can withdraw its dust.
+        uint256 snapshot = vm.snapshotState();
+        market.withdrawCollateral(victim, victimDust, victim);
+        vm.revertToState(snapshot);
 
         address attacker = _actor("attacker");
         _fund(market.collateralToken, attacker, topUp);
@@ -201,7 +205,6 @@ contract WithdrawCollateralLockTest is LidoLendSetup {
     ///      unmatured. Each restart also delays the maturity of the whole lot, so it holds back borrow capacity even
     ///      with a zero lock. Onto an empty dust bucket, each top-up must reach `minActivationAmount`, and it becomes
     ///      the victim's collateral.
-    ///      A fix changes this outcome; update this test with the fix.
     function testRevert_repeatedTopUps_renewLock() public {
         uint40 lockDuration = 2 hours;
         MockERC20 loan = new MockERC20("Loan", "LOAN", 18);

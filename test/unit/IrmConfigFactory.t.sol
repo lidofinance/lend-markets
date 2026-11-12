@@ -24,7 +24,6 @@ contract IrmConfigFactoryTest is Test {
     ///      new params. Two `AddMarket` runs that overlap race the same way.
     ///      This test shows the factory part only: the address that a simulation predicts goes to the first caller.
     ///      It does not run `AddMarket`, because a unit test cannot separate simulation from broadcast.
-    ///      A fix changes this outcome; update this test with it.
     function test_strangerDeploysFirst_reviewedConfigMovesToNextCreateAddress() external {
         AdaptiveCurveParams memory reviewed = _curve(0.9 ether);
         AdaptiveCurveParams memory stranger = _curve(0.8 ether);

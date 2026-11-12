@@ -37,9 +37,9 @@ interface ICircuitBreaker {
 ///         the Reseal Manager holds `PAUSER_ROLE` and `RESUMER_ROLE`. The factory suite checks the factory grants.
 ///         A second market on the same core checks the pause scope.
 ///
-///         The upstream suite tests CircuitBreaker against a mock pausable. This suite covers what only the real
-///         controller decides: it rejects `pauseFor` while paused, and that revert rolls back the registration
-///         consumption.
+///         The upstream suite tests CircuitBreaker against a mock pausable. This suite adds what the real controller
+///         decides: it rejects `pauseFor` while paused, and that revert rolls back the registration consumption.
+///         It also repeats the upstream heartbeat and re-arm checks at the `lido-lend` profile bounds.
 contract CircuitBreakerPauseTest is LidoLendSetup {
     using MarketActions for Market;
 
@@ -282,10 +282,10 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         assertTrue(_pausable(_a()).isPaused(), "paused after the revival");
     }
 
-    // ── Open findings ──
+    // ── Pause extension ──
 
-    /// @dev Through the re-arm route, the admin chains maximum pauses with no
-    ///      gap, one admin action per pause. A fix changes this outcome; update this test with the fix.
+    /// @dev Specified behaviour: `docs/specs/roles.md` lets the CircuitBreaker admin register a pauser for any target.
+    ///      Through the re-arm route, the admin chains maximum pauses with no gap, one admin action per pause.
     function test_adminRearmAtResume_chainsBackToBackMaxPauses() public {
         uint256 maxPause = circuitBreaker.MAX_PAUSE_DURATION();
         assertEq(maxPause, profile.maxPauseDuration, "setup: profile bound");
@@ -305,9 +305,10 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         _a().core.accrueInterest(_a().params);
     }
 
-    /// @dev The Reseal Manager's controller roles turn a bounded CircuitBreaker pause into an indefinite one. An EOA
-    ///      with those roles stands in for the two calls of the Reseal Manager: `resume`, then `pauseFor`. The test
-    ///      does not run the Reseal Manager contract. A fix changes this outcome; update this test with the fix.
+    /// @dev Specified behaviour: `docs/specs/roles.md` lets the Reseal Manager extend a pause, and lets `PAUSER_ROLE`
+    ///      pause indefinitely. The controller roles of the Reseal Manager turn a bounded CircuitBreaker pause into an
+    ///      indefinite one. An EOA with those roles calls `resume`, then `pauseFor`. The Reseal Manager contract is
+    ///      outside this repository, and this repository cannot check its calls.
     function test_resealRoles_turnCbPauseIndefinite() public {
         Market storage a = _a();
         _pauseA();
