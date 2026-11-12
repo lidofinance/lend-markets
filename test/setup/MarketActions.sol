@@ -5,6 +5,7 @@ import {Vm} from "forge-std/Vm.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {Id, IMorpho, Position, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {IIrm} from "@lido-lend/src/interfaces/IIrm.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
@@ -1010,6 +1011,22 @@ library MarketActions {
         return SharesMathLib.toAssetsUp(shares, m.totalBorrowAssets, m.totalBorrowShares);
     }
 
+    /// @notice Interest that an accrual at this timestamp books. The rate comes from the IRM, so the value pins
+    ///         the accrual interval and the compounding, not the rate.
+    function pendingInterest(Market storage self) internal view returns (uint256) {
+        MorphoMarket memory m = self.core.market(self.id);
+        uint256 rate = IIrm(self.params.irm).borrowRateView(self.params, m);
+        return uint256(m.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(block.timestamp - m.lastUpdate));
+    }
+
+    /// @notice LTV of `account` in WAD at `price`, from the stored totals. The debt rounds up.
+    function ltvAt(Market storage self, address account, uint256 price) internal view returns (uint256) {
+        MorphoMarket memory m = self.core.market(self.id);
+        Position memory pos = self.core.position(self.id, account);
+        uint256 debt = SharesMathLib.toAssetsUp(pos.borrowShares, m.totalBorrowAssets, m.totalBorrowShares);
+        return debt * WAD / (uint256(pos.collateral) * price / ORACLE_PRICE_SCALE);
+    }
+
     // ── Direct core lender (no vault) ──
 
     /// @notice Lender supplies `assets` straight to the core, bypassing the vault. Asserts the supply-share
@@ -1186,7 +1203,7 @@ library MarketActions {
 
     /// @notice `caller` (with NO instant activation) supplies collateral for `borrower`. Asserts the whole lot
     ///         enters the activation timer: the caller's lack of a grant, not the borrower's, decides the bucket.
-    ///         `amount` must clear the activation threshold on its own.
+    ///         `amount` plus the borrower's dust must reach the activation threshold.
     function supplyCollateralOnBehalf(Market storage self, address caller, address borrower, uint256 amount) internal {
         Approvals.approve(address(self.collateralToken), caller, address(self.core), amount);
 

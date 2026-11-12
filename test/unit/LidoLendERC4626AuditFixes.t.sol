@@ -134,6 +134,13 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
 
     /// @dev A core credit AFTER a deposit does not move the share price: `totalAssets` is unchanged and a later
     ///      victim deposit mints exactly its pre-credit preview.
+    /// @dev Fixed issue: anyone could supply to the core on behalf of the vault and raise the share price without new
+    ///      vault shares. This could make a later deposit mint zero shares.
+    ///      Root cause: `LidoLend.supply` accepts any `onBehalf` with no authorization, and the old `totalAssets`
+    ///      valued the whole core supply position of the vault. Now: `totalAssets` values only
+    ///      `_managedSupplyShares`, which only vault deposits, withdrawals and settlements change. `_deposit`
+    ///      reverts with `ZeroSharesMinted` or `ZeroCoreSupplySharesMinted` when either mint rounds to zero.
+    ///      Same cause: a credit before or after the first deposit, and a credit that sandwiches a `deposit` or `mint`.
     function test_donationAfterFirstDeposit_doesNotMoveSharePrice() public {
         Market storage m = _market();
         _depositFor(m, _actor("lender"), 100 ether);
@@ -152,10 +159,12 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         _assertManagedLeCore(m);
     }
 
-    /// @dev The exact WETH boundary from the finding: k = 10 ** offset = 1 (18-decimal loan token), attacker
+    /// @dev The exact WETH boundary: k = 10 ** offset = 1 (18-decimal loan token), attacker
     ///      seeds one raw unit then credits D = 2u. Pre-fix the victim's u-asset deposit minted
     ///      floor(2·k·u/(D+2)) = 0 shares; post-fix the credit is uncounted, so the victim mints its full
     ///      uninflated preview (u shares at the ~1:1 virgin ratio).
+    /// @dev Same issue as `test_donationAfterFirstDeposit_doesNotMoveSharePrice`; this test replays the exact
+    ///      zero-share boundary on an 18-decimal token with no share offset.
     function test_wethBoundary_D2u_victimStillMintsShares() public {
         Market storage m = _market();
         uint256 u = 10 ether;
@@ -180,6 +189,7 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
     /// @dev Core fee shares minted directly to the vault are not managed backing. A deposit that triggers their
     ///      accrual therefore receives the same shares and post-deposit claim as a control deposit made after an
     ///      explicit accrual; the entrant cannot capture fees earned before entry.
+    ///      The vault gets fee shares only when the core owner sets it as the fee recipient.
     function test_pendingFeeShares_doNotTransferValueToEntrant() public {
         Market storage m = _market();
         _depositFor(m, _actor("incumbent"), 1_000 ether);
@@ -225,6 +235,8 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
     /// @dev Even if a legitimate share price ever grew enough to floor a tiny deposit to zero shares (here via
     ///      a year of accrued interest, no donation involved), the vault rejects it rather than pocketing the
     ///      assets for existing holders.
+    /// @dev This test covers the `ZeroSharesMinted` guard from the fix in
+    ///      `test_donationAfterFirstDeposit_doesNotMoveSharePrice`. Here the share price rises by interest alone.
     function testRevert_deposit_zeroSharesMinted() public {
         Market storage m = _market();
         _depositFor(m, _actor("lender"), 100 ether);
@@ -301,23 +313,20 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
             );
     }
 
-    /// @dev The full one-victim extraction from the finding, executed end to end: attacker seeds one raw unit
-    ///      (k = 1, so one vault share), credits D = 2u to the vault's core position, a victim deposits u, then
-    ///      the attacker — a settle-eligible borrower of the credited liquidity — settles its single share
-    ///      against its own debt to reclaim the seized collateral. Pre-fix that share commanded the inflated
-    ///      1 + 3u backing, letting the attacker cancel ~2u of its own debt and walk with the victim's u.
-    ///      Post-fix the share is worth only its own ~1 wei, so the debt the settle can cancel (the value it
-    ///      extracts, in loan terms) is bounded by that — and the victim keeps its u.
-    function test_settlementExtraction_yieldsNothing() public {
-        Market storage m = _market();
-        uint256 u = 10 ether;
-
-        address attacker = _actor("attacker");
-        uint256 attackerShares = _depositFor(m, attacker, 1); // k = 1 -> one share
+    /// @dev The one-victim extraction, set up end to end: attacker seeds one raw unit (k = 1, so
+    ///      one vault share), credits D = 2u to the vault's core position, a victim deposits u, then the attacker
+    ///      borrows the credited liquidity and a crash makes it settle-eligible. Pre-fix that share commanded the
+    ///      inflated 1 + 3u backing, letting the attacker cancel ~2u of its own debt and walk with the victim's u.
+    function _setUpExtraction(Market storage m, uint256 u)
+        internal
+        returns (address attacker, uint256 attackerShares, uint256 victimShares)
+    {
+        attacker = _actor("attacker");
+        attackerShares = _depositFor(m, attacker, 1); // k = 1 -> one share
         assertEq(attackerShares, 1, "one raw unit mints one share");
         _donateToVault(m, attacker, 2 * u); // credit D = 2u
 
-        uint256 victimShares = _depositFor(m, _actor("victim"), u);
+        victimShares = _depositFor(m, _actor("victim"), u);
         assertGt(victimShares, 0, "victim is not floored to zero shares");
 
         // The credit is not counted, so the attacker's single share is worth only its own ~1 wei and the
@@ -332,22 +341,23 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
         m.borrow(attacker, 20 ether);
         MockPriceOracle(address(m.oracle)).setPrice(0.22e36);
         m.accrueInterest();
+    }
 
-        uint256 attackerShareValue = m.vault.convertToAssets(attackerShares);
+    /// @dev The extraction with a personal settlement LTV, so the settle executes. The debt it cancels is the value
+    ///      it extracts in loan terms. The attacker deposited one unit, so one unit plus rounding bounds it. The
+    ///      victim keeps its u.
+    function test_settlementExtraction_personalTarget_cancelsOnlyOwnShareValue() public {
+        Market storage m = _market();
+        uint256 u = 10 ether;
+        (address attacker, uint256 attackerShares, uint256 victimShares) = _setUpExtraction(m, u);
+        m.setSettlementLtv(attacker, 0.8e18);
         address[] memory bs = new address[](1);
         bs[0] = attacker;
 
-        // The extraction: settle the sole share against the attacker's own position. The value it can pull —
-        // the debt it cancels, in loan terms — is bounded by the attacker's own share value (or it reverts on
-        // a too-small slice, extracting nothing).
-        vm.prank(attacker);
-        try m.vault.settle(attackerShares, bs, attacker, attacker) returns (uint256, uint256, uint256 debtCanceled) {
-            assertLe(debtCanceled, attackerShareValue + 2, "settle extracts no more than the attacker's own share");
-        } catch {
-            // Reverted (zero budget / slice too small) -> nothing extracted.
-        }
+        (,, uint256 debtCanceled) = m.settle(attacker, attackerShares, bs, attacker);
 
-        // Victim is still whole: its shares remain worth ~u (a collateral crash does not touch loan-side value).
+        assertGt(debtCanceled, 0, "setup: the settle cancelled debt");
+        assertLe(debtCanceled, 1 + 2, "settle extracts no more than the attacker's own deposit");
         assertGe(m.vault.convertToAssets(victimShares), u * 99 / 100, "victim value survives the attack");
         _assertManagedLeCore(m);
     }
@@ -521,5 +531,86 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
 
         assertEq(m.vault.totalAssets(), assetsBefore, "credit never counts as backing");
         _assertManagedLeCore(m);
+    }
+
+    // ── round-trip rounding: an entrant can burn one core share of incumbent backing ──
+
+    /// @dev Known issue: a deposit and an immediate redeem use the same assets at a rounding boundary. The redeem burns
+    ///      one more core supply share than the deposit minted. The managed backing of the incumbent holders thus falls
+    ///      by one core share.
+    ///      Root cause: `_deposit` adds the `toSharesDown` result of `LIDO_LEND.supply` to `_managedSupplyShares`.
+    ///      `_withdraw` subtracts the `toSharesUp` result of `LIDO_LEND.withdraw`. The vault share math does not see
+    ///      this core rounding, so the incumbents absorb the one-share gap.
+    ///      Same cause: `deposit` or `mint` followed by `redeem` or `withdraw`, and a deposit followed by the liquid
+    ///      leg of `fallbackExit`. Each round trip takes at most one core share.
+    function test_roundTripAtRoundingBoundary_burnsOneIncumbentCoreShare() public {
+        Market storage m = _market();
+        (address incumbent, uint256 incumbentShares) = _seedRoundTripMarket(100 ether, 30 days);
+        address entrant = _actor("entrant");
+
+        // `totalAssets + 1` assets mint exactly `totalSupply + 1` vault shares, so the redeem returns the whole entry.
+        uint256 entry = m.vault.totalAssets() + 1;
+        MorphoMarket memory mk = m.core.market(m.id);
+        uint256 mintedCore = SharesMathLib.toSharesDown(entry, mk.totalSupplyAssets, mk.totalSupplyShares);
+        uint256 burnedCore = SharesMathLib.toSharesUp(entry, mk.totalSupplyAssets, mk.totalSupplyShares);
+        assertEq(burnedCore, mintedCore + 1, "setup: the entry is not a whole number of core shares");
+        uint256 managedBefore = m.vault.managedSupplyShares();
+        uint256 incumbentBefore = m.vault.previewRedeem(incumbentShares);
+
+        _fund(m.loanToken, entrant, entry);
+        uint256 entrantShares = m.vaultDeposit(entrant, entry);
+        assertEq(m.vault.managedSupplyShares(), managedBefore + mintedCore, "the deposit mints floor core shares");
+        uint256 paid = m.vaultRedeem(entrant, entrantShares);
+
+        assertEq(paid, entry, "the redeem returns the whole entry");
+        assertEq(m.vault.managedSupplyShares(), managedBefore - 1, "the round trip burns one incumbent core share");
+        assertEq(m.vault.previewRedeem(incumbentShares), incumbentBefore, "one core share is below one loan unit");
+        _assertManagedLeCore(m);
+    }
+
+    /// @dev Any deposit and immediate redeem takes at most one core share of managed backing, and at most one loan
+    ///      unit from the incumbent's redeem value.
+    /// @dev Same issue as `test_roundTripAtRoundingBoundary_burnsOneIncumbentCoreShare`; this test fuzzes the entry,
+    ///      the incumbent size and the elapsed interest to bound the loss.
+    function testFuzz_roundTrip_incumbentLossAtMostOneCoreShare(uint256 incumbentAssets, uint256 entry, uint256 elapsed)
+        public
+    {
+        Market storage m = _market();
+        incumbentAssets = bound(incumbentAssets, 60 ether, 1_000_000 ether);
+        elapsed = bound(elapsed, 0, 365 days);
+        (, uint256 incumbentShares) = _seedRoundTripMarket(incumbentAssets, elapsed);
+        entry = bound(entry, 1e6, 1_000_000 ether);
+
+        uint256 managedBefore = m.vault.managedSupplyShares();
+        uint256 incumbentBefore = m.vault.previewRedeem(incumbentShares);
+
+        address entrant = _actor("entrant");
+        uint256 entrantShares = _depositFor(m, entrant, entry);
+        vm.prank(entrant);
+        m.vault.redeem(entrantShares, entrant, entrant);
+
+        assertLe(managedBefore, m.vault.managedSupplyShares() + 1, "at most one core share lost");
+        assertLe(incumbentBefore, m.vault.previewRedeem(incumbentShares) + 1, "at most one loan unit lost");
+        _assertManagedLeCore(m);
+    }
+
+    /// @dev An incumbent lender and a 50-unit borrow, then `elapsed` of interest. With a nonzero `elapsed`, the core
+    ///      supply index is not a whole number of shares per asset.
+    function _seedRoundTripMarket(uint256 incumbentAssets, uint256 elapsed)
+        internal
+        returns (address incumbent, uint256 incumbentShares)
+    {
+        Market storage m = _market();
+        incumbent = _actor("incumbent");
+        _fund(m.loanToken, incumbent, incumbentAssets);
+        incumbentShares = m.vaultDeposit(incumbent, incumbentAssets);
+
+        // 1000 collateral units are worth at least 300 loan units at any seeded price, so a 50-unit borrow is safe.
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 1_000 ether);
+        m.supplyCollateral(borrower, 1_000 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 50 ether);
+        m.warpAndAccrue(elapsed);
     }
 }

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {MarketParams, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, MarketParams, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SlotDerivation} from "@openzeppelin/contracts/utils/SlotDerivation.sol";
+import {stdError} from "forge-std/StdError.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
@@ -348,6 +351,8 @@ contract LidoLendERC4626Test is LidoLendSetup {
 
     /// @dev Pausing collapses withdrawable liquidity to zero. A positive-value fallback exit therefore cannot use
     ///      the internal liquid leg; with no settleable borrower it reverts instead of silently returning a no-op.
+    /// @dev Same issue as `testRevert_settle_rootWithoutPersonalLtv_settlesNothing` in
+    ///      `test/scenario/Settlement.t.sol`; this test covers `fallbackExit` when a pause leaves no liquid leg.
     function testRevert_fallbackExit_doesNotNoopPositiveValueShares_whenPaused() public {
         Market storage m = _market();
         address lender = _actor("paused-lender");
@@ -923,5 +928,60 @@ contract LidoLendERC4626Test is LidoLendSetup {
         vm.prank(minter);
         m.vault.mint(maxShares, minter);
         assertEq(m.vault.balanceOf(minter), maxShares, "minted exactly maxMint");
+    }
+
+    /// @dev A finite cap near `type(uint256).max` makes `maxMint` overflow on a six-decimal market with supply, so
+    ///      every `mint` reverts. Only the deployer and `MANAGER_ROLE` can set such a cap.
+    function testRevert_extremeFiniteCap_sixDecimals_maxMintOverflowsAndMintReverts() public {
+        Market storage m = _deploySixDecimalMarket();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 2e6);
+        m.vaultDeposit(lender, 1e6);
+        m.setSupplyCap(type(uint256).max - 1);
+
+        uint256 headroom = m.vault.maxDeposit(lender);
+        assertEq(headroom, type(uint256).max - 1 - 1e6, "setup: finite headroom below the unlimited value");
+        assertEq(m.vault.decimals() - IERC20Metadata(address(m.loanToken)).decimals(), 12, "setup: share offset");
+
+        vm.expectRevert(stdError.arithmeticError);
+        m.vault.maxMint(lender);
+
+        vm.prank(lender);
+        m.loanToken.approve(address(m.vault), 1e6);
+        vm.prank(lender);
+        vm.expectRevert(stdError.arithmeticError);
+        m.vault.mint(1e18, lender);
+
+        m.setSupplyCap(0);
+        assertEq(m.vault.maxMint(lender), type(uint256).max, "a zero cap reports unlimited mint");
+        m.vaultMint(lender, 1e18);
+    }
+
+    // ── storage layout ──
+
+    /// @dev `marketId` opens the ERC-7201 namespace and `controller` follows at base + 1. `_managedSupplyShares`
+    ///      closes it at base + 8, after the five-field `_marketParams` (5 slots) and `_loanDecimalsOffset` (1 slot).
+    ///      A field inserted before the last one moves it off that slot. The `controller` pin catches a field moved
+    ///      into base + 1.
+    function test_storageLayout_firstSecondAndLastFieldAtErc7201Slots() public {
+        Market storage m = _market();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 10 ether);
+        m.vaultDeposit(lender, 10 ether);
+        assertGt(m.vault.managedSupplyShares(), 0, "setup: managed supply shares are nonzero");
+
+        bytes32 base = SlotDerivation.erc7201Slot("lido.lend.storage.LidoLendERC4626");
+        address vault = address(m.vault);
+        assertEq(vm.load(vault, base), Id.unwrap(m.vault.marketId()), "marketId at the base slot");
+        assertEq(
+            vm.load(vault, bytes32(uint256(base) + 1)),
+            bytes32(uint256(uint160(address(m.controller)))),
+            "controller at base + 1"
+        );
+        assertEq(
+            uint256(vm.load(vault, bytes32(uint256(base) + 8))),
+            m.vault.managedSupplyShares(),
+            "_managedSupplyShares at base + 8"
+        );
     }
 }

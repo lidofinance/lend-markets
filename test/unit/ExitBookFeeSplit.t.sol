@@ -16,6 +16,8 @@ import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {ExitBookLib} from "../../src/libs/ExitBookLib.sol";
 import {Request, PriorityRamp, ExitStatus} from "../../src/types/ExitBookTypes.sol";
 
+import {CallbackERC20, ITokenTransferHook} from "../setup/Mocks.sol";
+
 contract MockAsset is ERC20 {
     error TransferBlocked(address recipient);
 
@@ -111,6 +113,45 @@ contract ExitFeeVault is ERC4626Fees {
 
     function _exitFeeRecipient() internal view override returns (address) {
         return exitFeeRecipient;
+    }
+}
+
+/// @dev A vault that holds `RECOVERER_ROLE` on the book and, once armed, calls `recoverERC20` from inside
+///      `withdraw`, after the assets reach the book. It models a recovery that runs inside the source withdrawal.
+contract RecoveringVault is ERC4626 {
+    ExitBookBase internal _book;
+    address internal _recoverTo;
+    uint256 internal _recoverAmount;
+
+    constructor(IERC20 asset_) ERC20("Recovering Vault", "rvAST") ERC4626(asset_) {}
+
+    function armRecovery(ExitBookBase book_, address recoverTo, uint256 amount) external {
+        _book = book_;
+        _recoverTo = recoverTo;
+        _recoverAmount = amount;
+    }
+
+    function withdraw(uint256 assets, address receiver, address owner) public override returns (uint256 shares) {
+        shares = super.withdraw(assets, receiver, owner);
+        if (_recoverAmount != 0) _book.recoverERC20(asset(), _recoverTo, _recoverAmount);
+    }
+}
+
+/// @dev Holds `FEE_MANAGER_ROLE` and sets the new fee terms when the asset calls it. It models a fee update that runs
+///      inside the reward transfer.
+contract FeeRotationHook is ITokenTransferHook {
+    ExitBookBase internal immutable BOOK;
+    address internal immutable NEW_RECIPIENT;
+    uint256 internal immutable NEW_FEE;
+
+    constructor(ExitBookBase book_, address newRecipient, uint256 newFee) {
+        BOOK = book_;
+        NEW_RECIPIENT = newRecipient;
+        NEW_FEE = newFee;
+    }
+
+    function onTokenTransfer(address, uint256) external {
+        BOOK.setServiceFee(NEW_RECIPIENT, NEW_FEE);
     }
 }
 
@@ -370,6 +411,13 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── asset-native requests ──
 
+    /// @dev Fixed issue: an exit request on a vault with high-decimal shares lost part of the position value to the
+    ///      filler.
+    ///      Root cause: the old `placeExitRequest` stored a price snapshot, the rounded value of `1e18` raw shares, and
+    ///      each fill scaled it across the filled shares. Now: the request stores a fixed asset amount, and each fill
+    ///      withdraws exactly that amount at the live share price.
+    ///      Same cause: any vault where `1e18` raw shares round to a coarse value, and split fills. `MorphoExitBook`
+    ///      stored the same snapshot of `WAD` supply shares and now stores assets too.
     function test_place_storesAssetRequestAndEmits() public {
         uint256 assets = 100 ether;
         uint256 minFillAssets = 10 ether;
@@ -635,6 +683,8 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(asset.balanceOf(address(book)), 0, "book balance rolled back");
     }
 
+    /// @dev Same issue as `test_place_storesAssetRequestAndEmits`; this test shows that yield after placement lowers
+    ///      the share burn and the fill still pays the exact assets.
     function test_fill_afterYieldBurnsLiveSharesAndStillPaysExactAssets() public {
         (uint256 id,) = _depositAndPlace(200 ether, 100 ether, lender, 0, _zeroRamp());
         uint256 sharesAtPlacement = vault.previewWithdraw(100 ether);
@@ -708,6 +758,13 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(_status(id), uint8(ExitStatus.Filled));
     }
 
+    /// @dev Fixed issue: after a front-run fill, the rest of a filler deposit stayed in the market as idle liquidity
+    ///      that others could withdraw.
+    ///      Root cause: the old `fillExitRequest` supplied the full filler deposit before it sized the fill from the
+    ///      live remainder. Now: `fillExitRequest` takes no filler assets, and a fill above `assetsRemaining` reverts
+    ///      with `FillExceedsRemaining`.
+    ///      Same cause: a partial fill by another filler before this fill, in either book. The fill now reverts, and
+    ///      the filler keeps its assets.
     function testRevert_fill_frontRunReducedRemainderRejectsWithoutTouchingExecutor() public {
         (uint256 id,) = _lenderPlace(100 ether, _zeroRamp());
         vm.prank(address(0xB));
@@ -747,6 +804,13 @@ contract ExitBookFeeSplitTest is Test {
 
     // ── externally prepared liquidity ──
 
+    /// @dev Fixed issue: a filler deposit into a donation-sensitive vault could mint zero shares, and the fill still
+    ///      succeeded.
+    ///      Root cause: the old `fillExitRequest` deposited filler assets into the source with no minimum share output.
+    ///      Now: `fillExitRequest` takes no assets from the filler and mints nothing to the filler. It only withdraws
+    ///      the exact request assets from the owner.
+    ///      Same cause: share-price inflation before the fill in the ERC-4626 book. The old Morpho path also set no
+    ///      minimum share output. A filler that needs liquidity now deposits in a separate call that it controls.
     function test_fill_doesNotUseExecutorAssetsWhenSourceIsLiquid() public {
         (uint256 id,) = _lenderPlace(100 ether, _zeroRamp());
         asset.mint(filler, 50 ether);
@@ -779,6 +843,8 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(_status(id), uint8(ExitStatus.Filled));
     }
 
+    /// @dev Same issue as `testRevert_fill_frontRunReducedRemainderRejectsWithoutTouchingExecutor`; this test shows
+    ///      that low source liquidity reverts the fill and leaves the filler assets untouched.
     function testRevert_fill_insufficientSourceLiquidityDoesNotUseExecutorAssets() public {
         LiquidityCappedVault source = new LiquidityCappedVault(IERC20(address(asset)));
         (uint256 id,) = _depositAndPlace(IERC4626(address(source)), 100 ether, 100 ether, lender, 0, _zeroRamp());
@@ -898,6 +964,66 @@ contract ExitBookFeeSplitTest is Test {
         assertEq(asset.balanceOf(filler), fillerAssetsBefore);
         assertEq(asset.balanceOf(feeRecipient), serviceAssetsBefore);
         assertEq(asset.balanceOf(address(book)), bookAssetsBefore);
+    }
+
+    /// @dev A recovery by `RECOVERER_ROLE` inside the source withdrawal lowers the measured proceeds, and
+    ///      `fillExitRequest` reverts with `AssetsOutMismatch`. Here the vault holds the role and recovers 5 of 7 stray
+    ///      tokens.
+    function testRevert_recoveryDuringWithdraw_assetsOutMismatch() public {
+        RecoveringVault source = new RecoveringVault(IERC20(address(asset)));
+        (uint256 id,) = _depositAndPlace(IERC4626(address(source)), 100 ether, 100 ether, lender, 0, _zeroRamp());
+        uint256 recovered = 5 ether;
+        asset.mint(address(book), 7 ether);
+        book.grantRole(book.RECOVERER_ROLE(), address(source));
+        source.armRecovery(book, makeAddr("recoverTo"), recovered);
+
+        vm.prank(filler);
+        vm.expectRevert(
+            abi.encodeWithSelector(ExitBookBase.AssetsOutMismatch.selector, 100 ether, 100 ether - recovered)
+        );
+        book.fillExitRequest(id, 100 ether, filler);
+    }
+
+    /// @dev A `setServiceFee` call by `FEE_MANAGER_ROLE` inside a fill sends the cut at the old rate to the new
+    ///      recipient. Here a reward-recipient hook holds the role.
+    function test_feeUpdateInRewardCallback_newRecipientGetsOldRateCut() public {
+        CallbackERC20 callbackAsset = new CallbackERC20("Callback Asset", "CBA", 18);
+        MockVault source = new MockVault(IERC20(address(callbackAsset)));
+        book.setVaultAllowed(IERC4626(address(source)), true);
+        uint256 oldFee = book.MAX_SERVICE_FEE();
+        uint256 newFee = 0.01e18;
+        address newRecipient = makeAddr("newRecipient");
+        book.setServiceFee(feeRecipient, oldFee);
+
+        uint256 assets = 100 ether;
+        callbackAsset.mint(lender, assets);
+        vm.startPrank(lender);
+        callbackAsset.approve(address(source), assets);
+        source.deposit(assets, lender);
+        source.approve(address(book), type(uint256).max);
+        uint256 id = book.placeExitRequest(
+            IERC4626(address(source)), assets, receiver, 0, 0, _flatRamp(0.08e18), block.timestamp + 30 days
+        );
+        vm.stopPrank();
+
+        FeeRotationHook hook = new FeeRotationHook(book, newRecipient, newFee);
+        book.grantRole(book.FEE_MANAGER_ROLE(), address(hook));
+        callbackAsset.setHookedReceiver(address(hook));
+
+        Split memory oldTerms = _expectedSplit(assets, 0.08e18, oldFee);
+        vm.prank(filler);
+        book.fillExitRequest(id, assets, address(hook));
+
+        assertEq(book.feeRecipient(), newRecipient, "setup: the callback rotated the recipient");
+        assertEq(book.serviceFee(), newFee, "setup: the callback lowered the fee");
+        assertEq(callbackAsset.balanceOf(receiver), oldTerms.receiverAssets, "receiver payout");
+        assertEq(callbackAsset.balanceOf(address(hook)), oldTerms.fillerReward, "filler reward at the old rate");
+        assertEq(callbackAsset.balanceOf(newRecipient), oldTerms.serviceCut, "new recipient gets the old-rate cut");
+        assertEq(callbackAsset.balanceOf(feeRecipient), 0, "old recipient gets nothing");
+    }
+
+    function _flatRamp(uint256 rate) internal pure returns (PriorityRamp memory) {
+        return PriorityRamp({startRate: rate, endRate: rate, rampStart: 0, rampEnd: 0});
     }
 
     function test_priorityRamp_holdLinearPlateau() public {

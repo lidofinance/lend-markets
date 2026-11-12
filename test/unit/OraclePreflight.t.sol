@@ -8,7 +8,7 @@ import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {OraclePreflight} from "../../script/lib/OraclePreflight.sol";
-import {WstEthOracleConfig, UsdyOracleConfig} from "../../script/lib/OracleConfigFile.sol";
+import {OracleConfigFile, WstEthOracleConfig, UsdyOracleConfig} from "../../script/lib/OracleConfigFile.sol";
 
 contract OraclePreflightHarness {
     function validate(string memory name, address oracle, address loanToken, address collateralToken, address admin)
@@ -69,6 +69,13 @@ contract WstEthRateMock {
 
     function getStETHByWstETH(uint256 amount) external view returns (uint256) {
         return amount * rate / 1 ether;
+    }
+}
+
+/// @dev Stateless, so `vm.etch` can place it at the wstETH address in a checked-in oracle config.
+contract FixedWstEthRateMock {
+    function getStETHByWstETH(uint256 amount) external pure returns (uint256) {
+        return amount * 1.217 ether / 1 ether;
     }
 }
 
@@ -163,6 +170,22 @@ contract OraclePreflightTest is Test {
         wstEth.setRate(0);
         vm.expectRevert(OraclePreflight.OraclePriceIsZero.selector);
         harness.validateWstEth(_config(), oracle, address(wstEth));
+    }
+
+    /// @dev `OraclePreflight.validate` does not check the loan token against a wstETH oracle config. The deployer
+    ///      chooses this pairing in the market config. A 6-decimal ETH-unit loan token gets a price 1e12 too high.
+    function test_wstEthPreflightWithSixDecimalLoan_acceptsEthUnitPrice() external {
+        address configuredWstEth = OracleConfigFile.readWstEth("weth-wsteth").wstETH;
+        vm.etch(configuredWstEth, address(new FixedWstEthRateMock()).code);
+        address wstEthOracle =
+            address(new OssifiableProxy(address(new WstEthRateOracle(configuredWstEth)), admin, bytes("")));
+        DecimalsMock sixDecimalLoan = new DecimalsMock(6);
+
+        harness.validate("weth-wsteth", wstEthOracle, address(sixDecimalLoan), configuredWstEth, admin);
+
+        // 1 wstETH is 1.217 ETH: 1.217e6 units of the 6-decimal loan for 1e18 collateral units, at the 1e36 scale.
+        uint256 sixDecimalPrice = 1.217e6 * 1e36 / 1e18;
+        assertEq(IOracleForTest(wstEthOracle).price(), 1e12 * sixDecimalPrice, "accepted price is 1e12 too high");
     }
 
     function _config() private view returns (WstEthOracleConfig memory) {

@@ -699,10 +699,12 @@ log "activating markets (motion replay as the executor)"
 deploy activate-markets
 
 # After activation the halves swap: MarketActivated runs, MarketMotionReadiness self-skips.
+# The replay adds no steward and sets no fee. The two pins keep a production value in .env out of this run.
 for market in "${MARKETS[@]}"; do
   log "verifying $market is activated and fully wired (acceptance)"
   make acceptance-run RUN="$RUN_NAME" MARKET="$market" RPC_URL="$RPC_LOCAL" \
-    ACCEPTANCE_PAUSER_COMMITTEE="$AGENT" ACCEPTANCE_ENABLE_SETTLEMENT=true
+    ACCEPTANCE_PAUSER_COMMITTEE="$AGENT" ACCEPTANCE_ENABLE_SETTLEMENT=true \
+    ACCEPTANCE_MARKET_STEWARD=0x0000000000000000000000000000000000000000 ACCEPTANCE_MARKET_FEE=0
 done
 
 commit_run

@@ -7,4 +7,5 @@ pragma solidity >=0.5.0;
 ///      `adapters/` artifact, never typed-imported).
 interface IMorphoMarketV1AdapterLike {
     function expectedSupplyAssets(bytes32 marketId) external view returns (uint256);
+    function adaptiveCurveIrm() external view returns (address);
 }

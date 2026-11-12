@@ -1,7 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
+import {Id, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {MathLib, WAD} from "@lido-lend/src/libraries/MathLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
+
+import {AdaptiveCurveConfig} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveConfig.sol";
+import {AdaptiveCurveIrm} from "@lido-lend-irm/src/adaptive-curve-irm/AdaptiveCurveIrm.sol";
+import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
+import {IrmRouter} from "@lido-lend-irm/src/irm-router/IrmRouter.sol";
+import {IIrm as IrmIIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.sol";
+import {Id as IrmId, MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
+
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
+import {CircuitBreakerConfigFile} from "../../script/lib/CircuitBreakerConfigFile.sol";
 import {IPausableUntil} from "../../src/interfaces/IPausableUntil.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -17,10 +30,19 @@ import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 ///         pause becomes realised bad debt the moment it lifts.
 ///
 ///         Driven through a `PAUSER_ROLE` holder rather than a real CircuitBreaker. CircuitBreaker's own
-///         mechanics — the single-use registration and the heartbeat — are covered upstream and by the
-///         acceptance suite against the deployed instance.
+///         mechanics, such as the single-use registration and the heartbeat, are covered upstream, by the
+///         CircuitBreakerPause scenario, and by the acceptance suite against the deployed instance.
 contract PauseLifecycleTest is LidoLendSetup {
     using MarketActions for Market;
+    using MathLib for uint256;
+    using SharesMathLib for uint256;
+
+    uint256 internal constant LLTV = 0.8e18;
+    /// @dev The borrower's LTV when a full-utilization pause starts: healthy, but within reach of LLTV.
+    uint256 internal constant BORROWER_LTV = 0.76e18;
+    /// @dev Rate at target of the flat curve applied during a pause: 4%/yr, per second.
+    int256 internal constant FLAT_RATE_AT_TARGET = int256(4e16) / int256(365 days);
+    int256 internal constant FLAT_STEEPNESS = 4e18;
 
     address internal lender;
     address internal borrower;
@@ -328,5 +350,167 @@ contract PauseLifecycleTest is LidoLendSetup {
         vm.expectRevert(PausableUntil.ZeroPauseDuration.selector);
         m.controller.pauseFor(0);
         vm.stopPrank();
+    }
+
+    // ── Debt compounds while the pause blocks every cure ──
+
+    /// @dev A borrower healthy at the pause start becomes liquidatable from 21 days of
+    ///      interest alone, with no way to cure. 21 days is an example duration below the profile maximum.
+    function test_pause21dAtFullUse_healthyBorrowerLiquidatedAtResume() public {
+        Market storage m = _m();
+        _seedFullUtilization();
+        uint256 price = m.oracle.price();
+        assertLt(m.ltvAt(borrower, price), LLTV, "setup: healthy when the pause starts");
+
+        _bookPauseAtResume(21 days);
+
+        assertEq(m.oracle.price(), price, "no price move");
+        assertGt(m.ltvAt(borrower, price), LLTV, "interest alone crossed LLTV");
+        m.liquidate(keeper, borrower, 0, m.core.position(m.id, borrower).borrowShares);
+    }
+
+    /// @dev A pause of the maximum duration in the `lido-lend` CircuitBreaker profile turns a healthy borrower into
+    ///      bad debt from interest alone.
+    function test_maxCircuitBreakerPauseAtFullUse_badDebtAtResume() public {
+        Market storage m = _m();
+        _seedFullUtilization();
+        uint256 price = m.oracle.price();
+        assertLt(m.ltvAt(borrower, price), LLTV, "setup: healthy when the pause starts");
+
+        _bookPauseAtResume(CircuitBreakerConfigFile.read("lido-lend").maxPauseDuration);
+
+        assertEq(m.oracle.price(), price, "no price move");
+        assertGt(m.ltvAt(borrower, price), WAD, "debt exceeds the collateral value");
+        m.liquidateBadDebt(keeper, borrower, m.core.position(m.id, borrower).collateral, 0);
+    }
+
+    /// @dev The owner's `setFee` accrues through a pause, so it books interest and mints fee
+    ///      shares while users stay locked out.
+    function test_ownerSetFeeWhilePaused_accruesAndMintsFeeShares() public {
+        Market storage m = _m();
+        address feeRecipient = _actor("feeRecipient");
+        m.core.setFeeRecipient(feeRecipient);
+        m.core.setFee(m.params, 0.1e18);
+        _seedFullUtilization();
+        m.pause(21 days);
+        vm.warp(block.timestamp + 10 days);
+
+        vm.expectRevert(PausableUntil.ResumedExpected.selector);
+        m.core.accrueInterest(m.params);
+
+        MorphoMarket memory pre = m.core.market(m.id);
+        uint256 interest = m.pendingInterest();
+        uint256 feeAmount = interest.wMulDown(0.1e18);
+        uint256 feeShares = feeAmount.toSharesDown(pre.totalSupplyAssets + interest - feeAmount, pre.totalSupplyShares);
+        uint256 recipientShares = m.core.position(m.id, feeRecipient).supplyShares;
+
+        m.core.setFee(m.params, 0.2e18);
+
+        MorphoMarket memory post = m.core.market(m.id);
+        assertTrue(IPausableUntil(address(m.controller)).isPaused(), "still paused");
+        assertEq(post.lastUpdate, block.timestamp, "setFee checkpointed accrual");
+        assertEq(post.totalBorrowAssets, pre.totalBorrowAssets + interest, "10 paused days booked");
+        assertGt(feeShares, 0, "setup: the interval earns a fee");
+        assertEq(
+            m.core.position(m.id, feeRecipient).supplyShares, recipientShares + feeShares, "fee shares at the old fee"
+        );
+        assertEq(post.fee, 0.2e18, "new fee stored");
+    }
+
+    /// @dev During a pause the router's `setMarketIrm` reverts, because it accrues first. A direct `applyIrmConfig`
+    ///      by the IRM owner or manager does not accrue. It reprices the whole interval since the last accrual.
+    function test_irmRepairWhilePaused_routerSwitchReverts_directApplyReprices() public {
+        Market storage m = _m();
+        _seedFullUtilization();
+        MorphoMarket memory atPause = m.core.market(m.id);
+        m.pause(21 days);
+        uint256 resumeSince = IPausableUntil(address(m.controller)).getResumeSinceTimestamp();
+        vm.warp(block.timestamp + 10 days);
+
+        IrmId irmId = IrmId.wrap(Id.unwrap(m.id));
+        AdaptiveCurveIrm irm = AdaptiveCurveIrm(address(IrmRouter(m.irm).marketIrm(irmId)));
+        IrmMarketParams memory irmParams = _irmParams();
+
+        vm.expectRevert(PausableUntil.ResumedExpected.selector);
+        IrmRouter(m.irm).setMarketIrm(irmParams, IrmIIrm(address(irm)));
+
+        address flatConfig = address(new AdaptiveCurveConfig(_flatCurve()));
+        irm.applyIrmConfig(irmParams, flatConfig);
+        assertEq(address(irm.marketCurveConfig(irmId)), flatConfig, "applied while paused");
+
+        // At full utilization the flat curve charges steepness times its rate at target, over the whole interval
+        // since the last accrual, including the ten days before the apply.
+        vm.warp(resumeSince);
+        uint256 rate = uint256(FLAT_STEEPNESS * FLAT_RATE_AT_TARGET / 1e18);
+        uint256 interest =
+            uint256(atPause.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(resumeSince - atPause.lastUpdate));
+        m.accrueInterest();
+
+        assertEq(m.core.market(m.id).totalBorrowAssets, atPause.totalBorrowAssets + interest, "repriced interval");
+        assertLt(m.ltvAt(borrower, m.oracle.price()), LLTV, "the reprice keeps the borrower healthy");
+    }
+
+    /// @dev Lender in, the borrower at `BORROWER_LTV`, and a filler at LTV 0.5 borrowing the rest, so utilization is
+    ///      exactly 100%.
+    function _seedFullUtilization() internal {
+        Market storage m = _m();
+        address filler = _actor("filler");
+        m.vaultDeposit(lender, 1000 ether);
+        uint256 borrowerDebt = _collateralValue(100 ether) * BORROWER_LTV / WAD;
+        uint256 fillerDebt = m.core.market(m.id).totalSupplyAssets - borrowerDebt;
+        uint256 fillerCollateral = fillerDebt * 2 * ORACLE_PRICE_SCALE / oraclePrice;
+        _fund(m.collateralToken, filler, fillerCollateral);
+
+        m.supplyCollateral(borrower, 100 ether);
+        m.supplyCollateral(filler, fillerCollateral);
+        m.activateCollateral();
+        m.borrow(borrower, borrowerDebt);
+        m.borrow(filler, fillerDebt);
+
+        MorphoMarket memory market = m.core.market(m.id);
+        assertEq(market.totalBorrowAssets, market.totalSupplyAssets, "setup: utilization is 100%");
+    }
+
+    /// @dev Pauses for `duration`, waits until the pause lapses, then books the whole interval with one accrual.
+    ///      Asserts that this one accrual books the interest of the whole interval. The expected value takes its rate
+    ///      from the IRM, so it does not check the rate. The LTV asserts of the callers check the size.
+    function _bookPauseAtResume(uint256 duration) internal {
+        Market storage m = _m();
+        m.pause(duration);
+        vm.warp(IPausableUntil(address(m.controller)).getResumeSinceTimestamp());
+        assertFalse(IPausableUntil(address(m.controller)).isPaused(), "setup: the pause lapsed");
+
+        uint128 borrowBefore = m.core.market(m.id).totalBorrowAssets;
+        uint256 interest = m.pendingInterest();
+        m.accrueInterest();
+        assertEq(m.core.market(m.id).totalBorrowAssets, borrowBefore + interest, "paused interval booked at resume");
+    }
+
+    function _collateralValue(uint256 collateral) internal view returns (uint256) {
+        return collateral * _m().oracle.price() / ORACLE_PRICE_SCALE;
+    }
+
+    function _irmParams() internal view returns (IrmMarketParams memory) {
+        Market storage m = _m();
+        return IrmMarketParams({
+            loanToken: m.params.loanToken,
+            collateralToken: m.params.collateralToken,
+            oracle: m.params.oracle,
+            irm: m.params.irm,
+            lltv: m.params.lltv
+        });
+    }
+
+    /// @dev A valid curve with no adaptation: the rate at target is pinned to `FLAT_RATE_AT_TARGET`.
+    function _flatCurve() internal pure returns (AdaptiveCurveParams memory) {
+        return AdaptiveCurveParams({
+            curveSteepness: FLAT_STEEPNESS,
+            adjustmentSpeed: 0,
+            targetUtilization: 0.9e18,
+            initialRateAtTarget: FLAT_RATE_AT_TARGET,
+            minRateAtTarget: FLAT_RATE_AT_TARGET,
+            maxRateAtTarget: FLAT_RATE_AT_TARGET,
+            maxBorrowRate: 0
+        });
     }
 }

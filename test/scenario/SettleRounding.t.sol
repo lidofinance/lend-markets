@@ -190,6 +190,14 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
     }
 
     /// @dev A partial cut cancels exact borrow shares. The lender pays for the up-rounded debt amount.
+    /// @dev Fixed issue: core `settle` rounded the canceled borrow shares up in the borrower's favour. A cut thus
+    ///      removed less debt from the market than the shares it canceled were worth.
+    ///      Root cause: the old `LidoLend.settle` accepted supply shares as an anchor. On that anchor it valued them
+    ///      down into `borrowAssetsCanceled` and converted that amount up into canceled borrow shares. Now: `settle`
+    ///      takes `borrowShares` as its only anchor. It charges their debt with `toAssetsUp` and burns supplier shares
+    ///      with `toSharesUp` on that debt.
+    ///      Same cause: vault `settle`, `fallbackExit`, and a direct core `settle` by any supplier all run this core
+    ///      function, so the fix covers each of them.
     function test_borrowAnchored_partialCut_lenderBearsRounding() public {
         Market memory m = core.market(id);
         uint256 borrowBefore = core.position(id, BORROWER).borrowShares;
@@ -209,6 +217,49 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         assertEq(seized, expSeized, "collateral seized at oracle par");
         assertEq(lenderBefore - core.position(id, LENDER).supplyShares, expSupplyBurn, "lender burn is rounded up");
         assertEq(borrowBefore - core.position(id, BORROWER).borrowShares, borrowCut, "exact borrow shares canceled");
+    }
+
+    /// @dev With a fee and borrow and supply indices far apart,
+    ///      the smallest executable borrow-share cut lowers total borrow assets by exactly the cut's debt rounded up,
+    ///      so the cut moves no debt onto the borrowers that stay.
+    /// @dev Same issue as `test_borrowAnchored_partialCut_lenderBearsRounding`; this test adds a fee-bearing market
+    ///      and the smallest executable cut.
+    function test_minimumCutAfterFeeAccrual_movesNoDebtToOtherBorrowers() public {
+        vm.startPrank(core.owner());
+        core.setFeeRecipient(address(0xFEE));
+        core.setFee(params, 0.25e18);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 30 days);
+        core.accrueInterest(params);
+
+        Market memory m = core.market(id);
+        // Fee shares grow the supply side only, so one borrow share is now worth more than one supply share.
+        assertGt(
+            (uint256(m.totalBorrowAssets) + 1) * (uint256(m.totalSupplyShares) + 1e6),
+            (uint256(m.totalSupplyAssets) + 1) * (uint256(m.totalBorrowShares) + 1e6) * 105 / 100,
+            "setup: the borrow index is more than 5% above the supply index"
+        );
+        assertFalse(controller.hasBadDebt(), "setup: the root is solvent");
+
+        // At a price of 1.2 a cut must be worth two loan assets rounded down to seize one collateral unit.
+        uint256 cut = SharesMathLib.toSharesUp(2, m.totalBorrowAssets, m.totalBorrowShares);
+        assertEq(SharesMathLib.toAssetsDown(cut, m.totalBorrowAssets, m.totalBorrowShares), 2, "setup: minimum cut");
+        uint256 cutDebt = SharesMathLib.toAssetsUp(cut, m.totalBorrowAssets, m.totalBorrowShares);
+        assertGt(cutDebt, 2, "setup: the cut's debt rounds up");
+        uint256 lenderBefore = core.position(id, LENDER).supplyShares;
+
+        vm.prank(LENDER);
+        (, uint256 debtCanceled,,) = core.settle(params, cut, LENDER, BORROWER, RECEIVER);
+
+        Market memory post = core.market(id);
+        assertEq(debtCanceled, cutDebt, "the cut cancels its debt rounded up");
+        assertEq(m.totalBorrowAssets - post.totalBorrowAssets, cutDebt, "total borrow assets fall by that debt");
+        assertEq(m.totalBorrowShares - post.totalBorrowShares, cut, "total borrow shares fall by the cut");
+        assertEq(
+            lenderBefore - core.position(id, LENDER).supplyShares,
+            SharesMathLib.toSharesUp(cutDebt, m.totalSupplyAssets, m.totalSupplyShares),
+            "the lender burns supply worth the canceled debt, rounded up"
+        );
     }
 
     function testRevert_zeroBorrowShares() public {

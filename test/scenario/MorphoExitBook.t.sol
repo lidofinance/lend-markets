@@ -733,6 +733,14 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertGt(m.core.position(m.id, coreFeeRecipient).supplyShares, 0, "fees minted to distinct recipient");
     }
 
+    /// @dev Fixed issue: a loss after placement let a fill pay the lender less than the request implied.
+    ///      Root cause: the old fill paid the lower of a placement price snapshot and the measured proceeds, so a lower
+    ///      live price passed through. Now: a request names an exact asset amount, and each fill pays that amount or
+    ///      reverts. A nonzero `maxShareBurn` caps the shares each fill burns, pro rata with ceiling rounding. A fill
+    ///      above that cap reverts with `ShareBurnExceedsMaximum`.
+    ///      Same cause: bad debt in the Morpho market, and a loss or an exit fee in an ERC-4626 vault. With
+    ///      `maxShareBurn` at zero, a loss still raises the share burn with no limit.
+    ///      Here bad debt raises the live share burn, and the fill still pays the exact 50 tokens.
     function test_badDebtLoss_stillFillsExactAssetsWhenBackingRemains() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -760,6 +768,8 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "exact request filled after loss");
     }
 
+    /// @dev Same issue as `test_badDebtLoss_stillFillsExactAssetsWhenBackingRemains`; this test shows that a
+    ///      `maxShareBurn` at the placement quote rejects the higher burn after bad debt and rolls back.
     function testRevert_maxShareBurn_badDebtLossUsesActualBurnAndRollsBack() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -878,6 +888,60 @@ contract MorphoExitBookTest is LidoLendSetup {
         Request memory request = book.getExitRequest(id);
         assertEq(request.assetsRemaining, requestedAssets - liveBacking, "explicit smaller fill leaves exact tail");
         assertEq(uint8(request.status), uint8(ExitStatus.Open), "underbacked tail remains open");
+    }
+
+    /// @dev Same issue as `test_collapsedSupplyPrice_requestPaysExactAssets`; this test shows that a placement above
+    ///      the live backing reverts, so a new request cannot name more assets than the position holds.
+    function testRevert_collapsedSupplyPrice_placeAboveBacking_insufficientBacking() public {
+        address lender = _actor("lender");
+        uint256 liveBacking = _collapseSupplyPrice(lender);
+
+        vm.prank(lender);
+        vm.expectRevert(MorphoExitBook.InsufficientBacking.selector);
+        book.placeExitRequest(_m().id, liveBacking + 1, lender, 0, 0, _flat(0), block.timestamp + MAX_LIFETIME);
+    }
+
+    /// @dev Fixed issue: a Morpho exit request placed at a collapsed supply price stored a zero price, and each fill
+    ///      paid the lender nothing.
+    ///      Root cause: the old `placeExitRequest` stored `_supplySharesToAssets(marketParams, WAD)`, which rounds
+    ///      down, and had no zero check. Now: the request stores assets, and `placeExitRequest` converts them to
+    ///      shares at the live price, rounding up. It reverts with `InsufficientBacking` when the owner holds too few
+    ///      shares.
+    ///      Same cause: a snapshot that rounds to a small nonzero price, in either book. The fix stops it too.
+    ///      Here bad debt collapses the supply price, and the fill pays the receiver the exact requested assets.
+    function test_collapsedSupplyPrice_requestPaysExactAssets() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        address receiver = _actor("receiver");
+        uint256 liveBacking = _collapseSupplyPrice(lender);
+        uint256 id = _place(lender, liveBacking, receiver, 0, _flat(0));
+        uint256 receiverBefore = m.loanToken.balanceOf(receiver);
+
+        _fillAndAssert(id, liveBacking, _actor("filler"));
+
+        assertEq(m.loanToken.balanceOf(receiver) - receiverBefore, liveBacking, "receiver gets the exact assets");
+        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "request filled");
+    }
+
+    /// @dev The borrower takes all of a 100-token supply. The price falls by a factor of 1e13, and a full-collateral
+    ///      liquidation writes off almost all the debt. One `WAD` of supply shares is then worth zero assets. Returns
+    ///      the lender's live backing.
+    function _collapseSupplyPrice(address lender) internal returns (uint256 liveBacking) {
+        Market storage m = _m();
+        uint256 supplied = 100 ether;
+        _lenderSupply(lender, supplied);
+        address borrower = _actor("borrower");
+        _borrowOut(borrower, supplied);
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 1e13);
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1 ether);
+        m.liquidateBadDebt(keeper, borrower, m.core.position(m.id, borrower).collateral, 0);
+
+        liveBacking = _positionAssets(lender);
+        assertGt(liveBacking, 0, "setup: some backing is left");
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
+            MorphoBalancesLib.expectedMarketBalances(m.core, m.params);
+        assertEq(WAD.toAssetsDown(totalSupplyAssets, totalSupplyShares), 0, "setup: one WAD of shares is worth zero");
     }
 
     function test_externalSelfSupplyThenFill_preservesLenderAssets() public {

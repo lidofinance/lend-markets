@@ -4,12 +4,38 @@ pragma solidity 0.8.36;
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {SettlementQueueLib} from "../../src/libs/SettlementQueueLib.sol";
-import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {SettlementSlice} from "../../src/types/SettlementTypes.sol";
+import {Id, Market as MorphoMarket, Position} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
+import {Erc4626Math} from "../setup/Erc4626Math.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
-import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
+import {CallbackERC20, ITokenTransferHook, MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
+
+/// @dev Vault lender that redeems vault shares from inside the collateral transfer of its own settle.
+contract ReentrantRedeemer is ITokenTransferHook {
+    ILidoLendERC4626 private immutable VAULT;
+    /// @dev Vault shares to redeem in the callback. Zero means the callback does nothing.
+    uint256 public redeemShares;
+    uint256 public reentrantPayout;
+    bool public reentered;
+
+    constructor(ILidoLendERC4626 vault) {
+        VAULT = vault;
+    }
+
+    function arm(uint256 shares) external {
+        redeemShares = shares;
+    }
+
+    function onTokenTransfer(address, uint256) external {
+        if (redeemShares == 0) return;
+        reentered = true;
+        reentrantPayout = VAULT.redeem(redeemShares, address(this), address(this));
+    }
+}
 
 /// @notice L2 controller-safety scenarios that the per-method suites left to the integration layer: the
 ///         settle bad-debt gate (the controller's O(1) root health-check discharging the duty the core skips
@@ -17,6 +43,19 @@ import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 ///         LTV opt-in.
 contract SettlementSafetyTest is LidoLendSetup {
     using MarketActions for Market;
+
+    /// @dev Raw collateral of each tied-key borrower. One rounded risk-key unit then spans 1e7 borrow shares, about
+    ///      ten loan units of debt.
+    uint256 private constant TIED_COLLATERAL = 1e25;
+    uint256 private constant TIED_KEY_SHARES = TIED_COLLATERAL / 1e18;
+    /// @dev Ten loan units per collateral unit, so ten consecutive cut values all seize the whole collateral.
+    uint256 private constant TIED_PRICE = 10e36;
+    uint256 private constant TIED_VALUE = TIED_COLLATERAL * TIED_PRICE / 1e36;
+    /// @dev Borrow shares left on the sub-unit root. About 0.1 loan unit of debt at the opening rate of 1e6 shares
+    ///      per loan unit, so its debt rounds up to one unit. Its key, 1e23, is above the healthy borrower's key.
+    uint256 private constant SUB_UNIT_SHARES = 1e5;
+    /// @dev Below `ORACLE_PRICE_SCALE`, so one collateral unit is worth 0.61 loan unit and rounds down to zero.
+    uint256 private constant SUB_UNIT_PRICE = 0.61e36;
 
     function setUp() public {
         MockERC20 loan = new MockERC20("Loan", "LOAN", 18);
@@ -42,6 +81,52 @@ contract SettlementSafetyTest is LidoLendSetup {
         m.activateCollateral();
         uint256 maxBorrow = collat * oraclePrice / 1e36 * 80 / 100;
         m.borrow(borrower, maxBorrow * borrowBps / 10_000);
+    }
+
+    /// @dev The tied-key case of the spec. `root` and `insolvent` post equal collateral and their risk keys round to
+    ///      the same value, so `root`, queued first, stays the root. The root's debt equals its collateral value.
+    ///      `insolvent` owes more than its collateral value and opts into personal settlement.
+    function _seedTiedKeys() private returns (address root, address insolvent) {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 3 * TIED_VALUE);
+        m.vaultDeposit(lender, 3 * TIED_VALUE);
+
+        root = _actor("root");
+        insolvent = _actor("insolvent");
+        _fund(m.collateralToken, root, TIED_COLLATERAL);
+        m.supplyCollateral(root, TIED_COLLATERAL);
+        _fund(m.collateralToken, insolvent, TIED_COLLATERAL);
+        m.supplyCollateral(insolvent, TIED_COLLATERAL);
+        m.activateCollateral();
+
+        // Borrow at twice the final price to stay within LLTV. The first borrow prices one asset at 1e6 shares.
+        MockPriceOracle(address(m.oracle)).setPrice(2 * TIED_PRICE);
+        m.borrowByShares(root, TIED_VALUE * 1e6);
+        m.borrowByShares(insolvent, TIED_VALUE * 1e6 + TIED_KEY_SHARES - 1);
+        m.setSettlementLtv(insolvent, 1);
+        MockPriceOracle(address(m.oracle)).setPrice(TIED_PRICE);
+
+        (address queueRoot,) = m.controller.nextSettlementBorrower(0);
+        (, uint256[] memory keys) = m.controller.settlementBorrowers(0, 2);
+        assertEq(queueRoot, root, "setup: the first borrower stays root");
+        assertEq(keys[0], keys[1], "setup: both risk keys round to the same value");
+        assertEq(m.controller.positionOf(root).debtAssets, TIED_VALUE, "setup: root debt equals collateral value");
+        assertGt(m.controller.positionOf(insolvent).debtAssets, TIED_VALUE, "setup: the tied borrower is insolvent");
+        assertFalse(m.controller.hasBadDebt(), "setup: the solvent root passes the bad-debt gate");
+    }
+
+    /// @dev `insolvent` keeps debt on zero collateral, has left the queue, and the gate still sees no bad debt.
+    function _assertDebtLeftOnZeroCollateral(address root, address insolvent) private view {
+        Market storage m = _m();
+        Position memory p = m.core.position(m.id, insolvent);
+        assertEq(p.collateral, 0, "settle took all collateral");
+        assertGt(p.borrowShares, 0, "settle left debt shares");
+        assertGt(m.controller.positionOf(insolvent).debtAssets, 0, "the remaining shares carry debt");
+        assertEq(m.controller.settlementBorrowersCount(), 1, "the zero-collateral borrower left the queue");
+        (address queueRoot,) = m.controller.nextSettlementBorrower(0);
+        assertEq(queueRoot, root, "the solvent root stays");
+        assertFalse(m.controller.hasBadDebt(), "the gate does not see the remaining debt");
     }
 
     // ── Bad debt at the queue root: fallback exit has three distinct outcomes ──
@@ -154,6 +239,188 @@ contract SettlementSafetyTest is LidoLendSetup {
         vm.prank(lender);
         vm.expectRevert(ILidoLendMarketController.SettlementBadDebt.selector);
         m.vault.settle(shares / 100, bs, lender, lender);
+    }
+
+    // ── Tied risk keys: the root check misses an insolvent non-root borrower ──
+
+    /// @dev A personal direct settle takes all collateral of an insolvent non-root borrower
+    ///      and leaves debt that no queue entry or gate tracks.
+    function test_tiedKeyPersonalCoreSettle_leavesDebtOnZeroCollateral() public {
+        Market storage m = _m();
+        (address root, address insolvent) = _seedTiedKeys();
+        address supplier = _actor("supplier");
+        _fund(m.loanToken, supplier, 2 * TIED_VALUE);
+        m.coreSupply(supplier, 2 * TIED_VALUE);
+
+        // The fewest borrow shares whose down-rounded value equals the collateral value.
+        MorphoMarket memory mkt = m.core.market(m.id);
+        uint256 cut = Math.mulDiv(
+            TIED_VALUE, uint256(mkt.totalBorrowShares) + 1e6, uint256(mkt.totalBorrowAssets) + 1, Math.Rounding.Ceil
+        );
+        assertLt(cut, m.core.position(m.id, insolvent).borrowShares, "setup: the cut is partial");
+
+        (uint256 seized,) = m.coreSettle(supplier, insolvent, cut, supplier);
+
+        assertEq(seized, TIED_COLLATERAL, "the partial cut seizes all collateral");
+        _assertDebtLeftOnZeroCollateral(root, insolvent);
+    }
+
+    /// @dev A targeted vault settle takes all collateral of an insolvent non-root borrower
+    ///      and leaves debt that no queue entry or gate tracks.
+    function test_tiedKeyPersonalVaultSettle_leavesDebtOnZeroCollateral() public {
+        Market storage m = _m();
+        (address root, address insolvent) = _seedTiedKeys();
+        address lender = _actor("lender");
+
+        // A claim 4 loan units above the collateral value. One collateral unit is worth 10 loan units (`TIED_PRICE`).
+        // The budgeted cut still seizes everything and stays partial.
+        uint256 shares = Erc4626Math.toShares(m.vault, TIED_VALUE + 4, Math.Rounding.Ceil);
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = insolvent;
+
+        (, uint256 seized,) = m.settle(lender, shares, borrowers, lender);
+
+        assertEq(seized, TIED_COLLATERAL, "the budgeted cut seizes all collateral");
+        _assertDebtLeftOnZeroCollateral(root, insolvent);
+    }
+
+    // ── Sub-unit root: the rounded bad-debt check blocks every settlement ──
+
+    /// @dev Known issue: a queue root can be solvent in exact math while its collateral value rounds down to zero. Such
+    ///      a root counts as bad debt. It blocks the settlement of every other borrower until someone repays it.
+    ///      Root cause: `_isBadDebt` compares the debt rounded up by `toAssetsUp` with the collateral value rounded
+    ///      down by `_collateralValue`, in whole loan units. `_handleSettle` runs that check on `peekRoot()` for
+    ///      every cut. `allowedSliceAssets` also returns no slice when the collateral value is zero, so the root
+    ///      itself cannot be cut.
+    ///      Same cause: any root whose exact debt and collateral value have no whole loan unit between them, not
+    ///      only a sub-unit root. Such a root can come from a partial liquidation, a partial repay, or a price
+    ///      move. It blocks vault `settle` of any borrower, the `fallbackExit` settle leg, and a direct core
+    ///      `settle` by any supplier, and `hasBadDebt` reports true. A repay of the root by any account
+    ///      clears it.
+    function test_subUnitSolventRoot_blocksOtherSettlementUntilRepaid() public {
+        Market storage m = _m();
+        (address lender, uint256 shares, address root, address healthy) = _seedSubUnitRoot();
+
+        // The root is solvent in exact math: shares * (A + 1) * SCALE <= collateral * price * (S + V).
+        MorphoMarket memory mkt = m.accruedMarket();
+        assertLe(
+            SUB_UNIT_SHARES * (uint256(mkt.totalBorrowAssets) + 1) * 1e36,
+            uint256(m.core.position(m.id, root).collateral) * SUB_UNIT_PRICE * (uint256(mkt.totalBorrowShares) + 1e6),
+            "setup: the root is solvent in exact math"
+        );
+        assertTrue(m.controller.hasBadDebt(), "the rounded check reports bad debt at the root");
+        (, SettlementSlice memory rootSlice) = m.controller.nextSettlementBorrower(0);
+        assertEq(rootSlice.borrowShares, 0, "the root itself has no executable cut");
+
+        m.setSettlementLtv(healthy, 1);
+        assertGt(m.controller.positionOf(healthy).personalSliceAssets, 0, "setup: the healthy borrower is eligible");
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = healthy;
+
+        vm.prank(lender);
+        vm.expectRevert(ILidoLendMarketController.SettlementBadDebt.selector);
+        m.vault.settle(shares / 100, borrowers, lender, lender);
+
+        // Anyone can clear the root: its whole residual debt costs one loan unit.
+        assertEq(m.repayAssets(SUB_UNIT_SHARES), 1, "the residual debt costs one loan unit");
+        m.repay(root, SUB_UNIT_SHARES);
+        assertFalse(m.controller.hasBadDebt(), "the repay clears the gate");
+        (address newRoot,) = m.controller.nextSettlementBorrower(0);
+        assertEq(newRoot, healthy, "the healthy borrower is the root now");
+
+        (,, uint256 debtCanceled) = m.settle(lender, shares / 100, borrowers, lender);
+        assertGt(debtCanceled, 0, "the same settle now cancels debt");
+    }
+
+    /// @dev A root with one collateral unit and `SUB_UNIT_SHARES` of debt, and a healthy borrower behind it. A
+    ///      liquidation leaves one collateral unit, and a repay leaves the residual shares.
+    function _seedSubUnitRoot() private returns (address lender, uint256 shares, address root, address healthy) {
+        Market storage m = _m();
+        lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        shares = m.vaultDeposit(lender, 1000 ether);
+
+        root = _actor("subUnitRoot");
+        healthy = _actor("healthy");
+        _fund(m.collateralToken, root, 100 ether);
+        m.supplyCollateral(root, 100 ether);
+        _fund(m.collateralToken, healthy, 100 ether);
+        m.supplyCollateral(healthy, 100 ether);
+        m.activateCollateral();
+        // 70% LTV. 100 collateral is worth at least 30 loan units at any seeded price, so 5 is a low LTV.
+        m.borrow(root, 100 ether * oraclePrice / 1e36 * 70 / 100);
+        m.borrow(healthy, 5 ether);
+
+        // At about 97% LTV a seizure of all but one collateral unit repays less than the debt (1 / incentive is
+        // 94% at this LLTV), so the liquidation leaves debt on one collateral unit and no bad debt.
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice * 70 / 97);
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1000 ether);
+        m.liquidate(keeper, root, 100 ether - 1, 0);
+        assertEq(m.core.position(m.id, root).collateral, 1, "setup: one collateral unit left");
+
+        uint256 residual = m.core.position(m.id, root).borrowShares;
+        assertGt(residual, SUB_UNIT_SHARES, "setup: the liquidation left more debt than the target");
+        m.repay(root, residual - SUB_UNIT_SHARES);
+        MockPriceOracle(address(m.oracle)).setPrice(SUB_UNIT_PRICE);
+
+        (address queueRoot,) = m.controller.nextSettlementBorrower(0);
+        assertEq(queueRoot, root, "setup: the sub-unit position is the queue root");
+        assertEq(m.core.position(m.id, root).borrowShares, SUB_UNIT_SHARES, "setup: residual shares");
+    }
+
+    // ── Collateral with a transfer callback: settle pays out before the vault books it ──
+
+    /// @dev A redeem from the collateral transfer callback of `settle` pays the same as a redeem after the settle,
+    ///      within one loan unit. Market creation through the facade requires `MARKET_CREATOR_ROLE`.
+    function test_reentrantRedeemInSettleCallback_paysSameAsRedeemAfter() public {
+        MockERC20 loan = new MockERC20("Loan2", "LOAN2", 18);
+        CallbackERC20 collateral = new CallbackERC20("Hooked Collateral", "HCOLL", 18);
+        Market storage m = _addMarket(_defaultConfig(address(loan), address(collateral), address(collateral)));
+
+        ReentrantRedeemer attacker = new ReentrantRedeemer(m.vault);
+        collateral.setHookedReceiver(address(attacker));
+        _fund(m.loanToken, address(attacker), 1000 ether);
+        uint256 shares = m.vaultDeposit(address(attacker), 1000 ether);
+
+        address borrower = _actor("hookedBorrower");
+        _fund(m.collateralToken, borrower, 100 ether);
+        m.supplyCollateral(borrower, 100 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 100 ether * oraclePrice / 1e36 * 40 / 100);
+        m.setSettlementLtv(borrower, 1);
+
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = borrower;
+        uint256 settleShares = shares / 100;
+        uint256 redeemShares = shares / 10;
+
+        // Reference: the callback does nothing, and the lender redeems after the settle.
+        uint256 snapshot = vm.snapshotState();
+        vm.prank(address(attacker));
+        m.vault.settle(settleShares, borrowers, address(attacker), address(attacker));
+        vm.prank(address(attacker));
+        uint256 referencePayout = m.vault.redeem(redeemShares, address(attacker), address(attacker));
+        assertFalse(attacker.reentered(), "setup: the reference path does not re-enter");
+        vm.revertToState(snapshot);
+
+        attacker.arm(redeemShares);
+        vm.prank(address(attacker));
+        (uint256 sharesBurned, uint256 seized,) =
+            m.vault.settle(settleShares, borrowers, address(attacker), address(attacker));
+
+        assertTrue(attacker.reentered(), "the collateral transfer gave control to the receiver");
+        assertGt(seized, 0, "the settle seized collateral");
+        assertEq(sharesBurned, settleShares, "the settle burned the whole request");
+        assertApproxEqAbs(attacker.reentrantPayout(), referencePayout, 1, "the reentrant redeem pays the same");
+        assertEq(
+            m.vault.balanceOf(address(attacker)), shares - settleShares - redeemShares, "both burns hit the lender"
+        );
+        assertLe(
+            m.vault.managedSupplyShares(),
+            m.core.position(m.id, address(m.vault)).supplyShares,
+            "managed shares stay within the core position"
+        );
     }
 
     /// @dev Withdrawing collateral under open debt may not leave active collateral below the activation

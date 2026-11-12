@@ -62,10 +62,10 @@ These suites check **functional correctness, not state values**: they take addre
 
 ## 6. Acceptance tests (deployment verification on a fork)
 
-Assert the deployed stack is exactly what the plan intended: wiring, the full initial role topology (direct enumerable-role checks), and its state relative to the activation motion — **readiness** mode before the motion, **activated** mode after it, plus a multi-market activation simulation. Expected addresses come from the immutable artifacts; the reviewed motion inputs (pauser committee, settlement flag) come from the environment so a wrong artifact cannot vouch for itself. Acceptance is a **post-deploy-only** gate: it also asserts the virgin state (no positions taken, nothing borrowed yet), so it cannot be re-run meaningfully once the protocol is in use.
+Assert the deployed stack is exactly what the plan intended: wiring, the full initial role topology (direct enumerable-role checks), and its state relative to the activation motion — **readiness** mode before the motion, **activated** mode after it, plus a multi-market activation simulation. Expected addresses come from the immutable artifacts; the reviewed motion inputs (pauser committee, settlement flag, and in activated mode the market steward and the initial fee) come from the environment so a wrong artifact cannot vouch for itself. The multi-market simulation also makes the motion's dead-share preseed of the market and the vault, and checks the steward and both dead positions after it. Acceptance is a **post-deploy-only** gate: it also asserts the virgin state (no positions taken, nothing borrowed yet), so it cannot be re-run meaningfully once the protocol is in use.
 Audits launch state only — not later governance changes; the operational counterpart is state-mate (kind 9).
 
-- **Requires:** fork RPC + `deployed/<run>/protocol.toml` (`ACCEPTANCE_REGISTRY`) + `ACCEPTANCE_PAUSER_COMMITTEE` + `ACCEPTANCE_ENABLE_SETTLEMENT`.
+- **Requires:** fork RPC + `deployed/<run>/protocol.toml` (`ACCEPTANCE_REGISTRY`) + `ACCEPTANCE_PAUSER_COMMITTEE` + `ACCEPTANCE_ENABLE_SETTLEMENT`; activated mode also needs `ACCEPTANCE_MARKET_STEWARD` + `ACCEPTANCE_MARKET_FEE`.
 - **Runs:** on deploy day — readiness before the activation motion (a gate on starting it), activated + multi after enactment; again for every added market.
 - **Here:** `test/acceptance/` via `make acceptance-run RUN=<run> MARKET=<m>` / `make acceptance-run-multi RUN=<run> MARKET_A=<a> MARKET_B=<b>`.
 

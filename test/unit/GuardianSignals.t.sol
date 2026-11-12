@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {SlotDerivation} from "@openzeppelin/contracts/utils/SlotDerivation.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
@@ -385,8 +386,16 @@ contract GuardianSignalsTest is Test {
         gs.setDelegate(GUARDIAN_1);
     }
 
-    /// @dev One address cannot be the delegate of two guardians: quorum counts guardian identities, so a shared
-    ///      delegate key would collapse several identities into one signer.
+    /// @dev Fixed issue: several guardians could name the same delegate key, so one address could sign for several
+    ///      committee identities.
+    ///      Root cause: `setDelegate` accepted any address, and `_isSenderAuthorized` lets a delegate act for each
+    ///      guardian that names it. The quorum counts guardian identities, so one key counted as several signers.
+    ///      Now: `setDelegate` reverts with `DelegateIsGuardian` for a guardian and with `AccountIsDelegate` for
+    ///      another guardian's delegate.
+    ///      Same cause: the check stops one key that sends `flag` toward a ban quorum or `suspect` toward the surcharge
+    ///      for several guardians. It also stops one key that sends `heartbeat` toward the quorum frontier for several
+    ///      guardians. It also stops a guardian that names another guardian as its delegate. `_addGuardian` rejects a
+    ///      current delegate, so a delegate cannot also become a guardian.
     function testRevert_setDelegate_takenByAnotherGuardian() public {
         vm.prank(GUARDIAN_1);
         gs.setDelegate(DELEGATE);
@@ -431,8 +440,8 @@ contract GuardianSignalsTest is Test {
         assertEq(gs.getDelegate(GUARDIAN_1), DELEGATE, "delegate freed by guardian removal reusable");
     }
 
-    /// @dev A current delegate cannot be added as a guardian: membership changes enforce the same uniqueness rule
-    ///      as `setDelegate`.
+    /// @dev A guardian can name any free address as its delegate, and `addGuardian` for that address then reverts
+    ///      with `AccountIsDelegate`.
     function testRevert_addGuardian_isDelegate() public {
         vm.prank(GUARDIAN_1);
         gs.setDelegate(DELEGATE);
@@ -440,7 +449,8 @@ contract GuardianSignalsTest is Test {
         gs.addGuardian(DELEGATE);
     }
 
-    /// @dev A replacement cannot bring in another guardian's current delegate either.
+    /// @dev `replaceGuardian` reverts when the new address is the delegate of another guardian, and it keeps the old
+    ///      guardian.
     function testRevert_replaceGuardian_newIsDelegate() public {
         vm.prank(GUARDIAN_1);
         gs.setDelegate(DELEGATE);
@@ -449,7 +459,8 @@ contract GuardianSignalsTest is Test {
         assertTrue(gs.isGuardian(GUARDIAN_2), "old guardian preserved after revert");
     }
 
-    /// @dev Replacing a guardian with its *own* delegate works: the removal clears the pairing before the add runs.
+    /// @dev `replaceGuardian` of a guardian with its own delegate succeeds, because the removal clears the delegate
+    ///      before the add.
     function test_replaceGuardian_withOwnDelegate_succeeds() public {
         vm.prank(GUARDIAN_1);
         gs.setDelegate(DELEGATE);
@@ -621,7 +632,15 @@ contract GuardianSignalsTest is Test {
 
     // ── liveness frontier ──
 
-    /// @dev A heartbeat advances the frontier in the same call once a quorum has reported — no separate sync tx.
+    /// @dev Fixed issue: the opinion could return a stale quorum frontier after guardians had scanned past the unlock
+    ///      of a lot. The lot then waited for a separate `syncQuorumBlock` call or the fallback.
+    ///      Root cause: only a separate `syncQuorumBlock` call moved the stored frontier, and the `getOpinion` view
+    ///      cannot sync. Now: `heartbeat` calls `_syncQuorumFrontier` when that heartbeat crosses the stored
+    ///      frontier, so the quorum-th heartbeat advances it in the same call.
+    ///      Same cause: the fix covers each crossing heartbeat from a guardian or its delegate. A `setQuorum` decrease
+    ///      that raises the candidate does not sync. The stored frontier then needs `syncQuorumFrontier` or a later
+    ///      crossing heartbeat. See `test_quorumLowered_frontierStallsUntilSync` in
+    ///      `test/scenario/GuardianLiveness.t.sol`.
     function test_frontier_heartbeatAdvancesEagerly() public {
         _heartbeat(GUARDIAN_1, 999);
         assertEq(gs.getQuorumFrontier(), 0, "one heartbeat is below quorum: frontier stays 0");
@@ -629,7 +648,13 @@ contract GuardianSignalsTest is Test {
         assertEq(gs.getQuorumFrontier(), 998, "the quorum-th heartbeat advances the frontier without an explicit sync");
     }
 
-    /// @dev A heartbeat that raises the frontier emits `QuorumFrontierAdvanced`; a sub-quorum one emits none.
+    /// @dev Fixed issue: the quorum frontier moved with no event, so off-chain monitors got no event when the
+    ///      maturation gate opened.
+    ///      Root cause: `_syncQuorumBlock` wrote the stored frontier and emitted nothing. Now: `_syncQuorumFrontier`
+    ///      emits `QuorumFrontierAdvanced` each time it raises the stored frontier. A sub-quorum heartbeat or a no-op
+    ///      sync emits no event.
+    ///      Same cause: the event covers both entry points, the eager sync in `heartbeat` and the permissionless
+    ///      `syncQuorumFrontier`.
     function test_frontier_heartbeatEmitsAdvanced() public {
         vm.recordLogs();
         _heartbeat(GUARDIAN_1, 999); // below quorum: frontier holds at 0
@@ -963,7 +988,12 @@ contract GuardianSignalsTest is Test {
         assertFalse(gs.isBanned(MARKET, BOB), "stays Normal");
     }
 
-    /// @dev A never-latched derived ban lapses when prune drops the surviving flags below quorum.
+    /// @dev Known issue: a never-latched derived ban lapses when `prune` drops the surviving flags below quorum.
+    ///      Root cause: `_isBanned` derives a ban from `flaggedBy.length() >= _quorum` with no latch. `setQuorum`
+    ///      creates such a ban when it lowers the quorum, and it writes nothing to the signal. `prune` latches only
+    ///      when the surviving flags still meet the quorum, so the ban lapses with no `ACCESS_RESTORER_ROLE` call.
+    ///      Same cause: any caller can run `prune` after `removeGuardian` or `replaceGuardian` of one flagger. An
+    ///      `unflag`, or a `prune` while the flags still meet the quorum, latches the ban and stops the lapse.
     function test_prune_derivedBan_lapsesWhenBelowQuorum() public {
         gs.setQuorum(3);
         _flag(GUARDIAN_1, BOB);
@@ -977,6 +1007,50 @@ contract GuardianSignalsTest is Test {
 
         assertFalse(gs.isBanned(MARKET, BOB), "pruned below quorum -> derived ban lapses");
         assertEq(_flagCount(BOB), 1, "the stale flag was pruned");
+    }
+
+    /// @dev Known issue: a removed guardian's flag still counts, so one current guardian's flag reaches quorum 2 and
+    ///      latches the ban. `prune` then drops the stale flag, but the ban stays.
+    ///      Root cause: `_removeGuardian` keeps the signals stored under the outgoing guardian. `_flag`, `_unflag`,
+    ///      `_isBanned` and `_signalCounters` use `flaggedBy.length()` with no check that each flagger is still a
+    ///      guardian. While the guardian stays removed, only a permissionless `prune` or an `unban` drops these flags,
+    ///      and `prune` never lifts a latched ban.
+    ///      Same cause: `replaceGuardian` leaves the same stale flag. The stale flag counts for each account that the
+    ///      guardian flagged, in each market of the shared registry. After a `setQuorum` decrease, stale flags can
+    ///      derive a ban, and an `unflag` by any current guardian latches it. Stale flags also add `delayPerStrike`
+    ///      through `strikeCount`, and stale suspect reports add `delayPerSuspect` through `suspectCount`. A re-added
+    ///      guardian cannot flag again, because its old flag is still stored and counts.
+    function test_removedGuardianStaleFlag_latchesBan() public {
+        _flag(GUARDIAN_1, BOB);
+        gs.removeGuardian(GUARDIAN_1);
+        assertFalse(gs.isBanned(MARKET, BOB), "setup: one flag is below quorum 2");
+
+        vm.expectEmit(true, true, false, false, address(gs));
+        emit Banned(MARKET, BOB);
+        _flag(GUARDIAN_2, BOB);
+        assertTrue(gs.isBanned(MARKET, BOB), "the stale flag helps latch the ban");
+
+        vm.prank(CLEANER);
+        gs.prune(MARKET, BOB);
+        assertTrue(gs.isBanned(MARKET, BOB), "prune does not lift the latched ban");
+        assertEq(_flagCount(BOB), 1, "only the current guardian's flag remains");
+    }
+
+    /// @dev Same issue as `test_removedGuardianStaleFlag_latchesBan`; here `replaceGuardian` leaves the stale flag.
+    function test_replacedGuardianStaleFlag_latchesBan() public {
+        _flag(GUARDIAN_1, BOB);
+        gs.replaceGuardian(GUARDIAN_1, address(0xBEEF));
+        assertFalse(gs.isBanned(MARKET, BOB), "setup: one flag is below quorum 2");
+
+        vm.expectEmit(true, true, false, false, address(gs));
+        emit Banned(MARKET, BOB);
+        _flag(GUARDIAN_2, BOB);
+        assertTrue(gs.isBanned(MARKET, BOB), "the stale flag helps latch the ban");
+
+        vm.prank(CLEANER);
+        gs.prune(MARKET, BOB);
+        assertTrue(gs.isBanned(MARKET, BOB), "prune does not lift the latched ban");
+        assertEq(_flagCount(BOB), 1, "only the current guardian's flag remains");
     }
 
     /// @dev A derived ban whose surviving flags still meet quorum after prune is latched (made permanent).
@@ -1056,6 +1130,11 @@ contract GuardianSignalsTest is Test {
         assertEq(gs.getOpinion(MARKET, BOB).suspectCount, 1, "retraction re-snapshots to 1");
     }
 
+    /// @dev Fixed issue: a suspect retraction could move the surcharge expiry later instead of earlier.
+    ///      Root cause: `_snapshotSuspects` set the snapshot time to `block.timestamp` on every rebuild. Now: it sets
+    ///      `suspectReportedAt` to the newest live report, so a rebuild cannot move the expiry past the reports.
+    ///      Same cause: the fix covers each rebuild that adds no report. These are an `unsuspect` from any guardian
+    ///      that clears or prunes a report, and a permissionless `prune` that drops a removed guardian's report.
     function test_unsuspect_doesNotExtendSnapshotExpiry() public {
         gs.setSuspectWindow(10 days);
         _suspect(GUARDIAN_2, BOB);
@@ -1122,6 +1201,14 @@ contract GuardianSignalsTest is Test {
         );
     }
 
+    /// @dev Fixed issue: a retraction after the caller's own report expired left a stale suspect count, so the lot
+    ///      paid an extra `delayPerSuspect`.
+    ///      Root cause: `_unsuspect` pruned expired reports and then returned early when the caller had no report to
+    ///      remove, so it skipped `_snapshotSuspects`. Now: `_unsuspect` rebuilds the snapshot when it prunes or
+    ///      clears any report.
+    ///      Same cause: the fix covers a guardian whose report expired and a guardian that never reported. It covers
+    ///      each account in one batched `unsuspect` call. A snapshot that no call rebuilds still counts a lapsed
+    ///      report. See `test_staleCount_lapsedReportUnderALiveOne_delaysTheLot` in `test/scenario/SuspectDelay.t.sol`.
     function test_unsuspectFirst_firstReportStale_rebuildsSnapshotFromSecondReport() public {
         gs.setSuspectWindow(OVERLAP_SUSPECT_WINDOW);
         uint256 firstReportedAt = block.timestamp;
@@ -1497,5 +1584,30 @@ contract GuardianSignalsTest is Test {
         _heartbeat(GUARDIAN_3, b3);
         gs.syncQuorumFrontier();
         assertEq(gs.getQuorumFrontier(), _sort3(b1, b2, b3), "frontier = quorum-th largest heartbeat");
+    }
+
+    // ── storage layout ──
+
+    /// @dev `_quorum` opens the ERC-7201 namespace in the low byte of the base slot. `_signals` closes it at
+    ///      base + 5, after `_guardians` (2 slots), `_delegates` and `_heartbeats`. A mapping slot holds no value,
+    ///      so the pin reads one signal, whose first slot packs `banned`, `suspectReportedAt` and `suspectCount`.
+    function test_storageLayout_firstAndLastFieldAtErc7201Slots() public {
+        gs.setSuspectWindow(1 days);
+        _suspect(GUARDIAN_1, BOB);
+        _suspect(GUARDIAN_2, BOB);
+
+        bytes32 base = SlotDerivation.erc7201Slot("lido.lend.storage.GuardianSignals");
+        assertEq(uint8(uint256(vm.load(address(gs), base))), gs.getQuorum(), "_quorum at the base slot");
+
+        bytes32 signalSlot = keccak256(abi.encode(BOB, keccak256(abi.encode(MARKET, uint256(base) + 5))));
+        uint256 signalWord = uint256(vm.load(address(gs), signalSlot));
+        GuardiansOpinion memory opinion = gs.getOpinion(MARKET, BOB);
+        assertEq(opinion.suspectCount, 2, "setup: two active suspect reports");
+        assertEq(uint16(signalWord >> 48), opinion.suspectCount, "_signals suspectCount at base + 5");
+        assertEq(
+            uint40(signalWord >> 8) + gs.getSuspectWindow(),
+            opinion.suspectExpiryTimestamp,
+            "_signals suspectReportedAt at base + 5"
+        );
     }
 }

@@ -5,7 +5,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
-import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, Market as MorphoMarket, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
 import {MarketParamsLib} from "@lido-lend/src/libraries/MarketParamsLib.sol";
 
@@ -289,5 +289,20 @@ abstract contract LidoLendSetup is Test, LidoLendDeployer {
     /// @notice Fund `to` with `amount` of `token` (test-only mint via `deal`).
     function _fund(IERC20 token, address to, uint256 amount) internal {
         deal(address(token), to, amount);
+    }
+
+    // ---
+    // POOLED CUSTODY
+    // ---
+
+    /// @notice Supplied loan assets that no borrower holds, summed over every market on `loanToken`. The core keeps
+    ///         the tokens of all its markets in one balance, so this sum is what that balance must cover.
+    function _freeLiquidity(IERC20 loanToken) internal view returns (uint256 freeLiquidity) {
+        for (uint256 i; i < protocol.markets.length; ++i) {
+            Market storage m = protocol.markets[i];
+            if (m.loanToken != loanToken) continue;
+            MorphoMarket memory mkt = m.core.market(m.id);
+            freeLiquidity += mkt.totalSupplyAssets - mkt.totalBorrowAssets;
+        }
     }
 }

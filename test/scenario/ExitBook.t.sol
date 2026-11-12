@@ -12,6 +12,7 @@ import {IMorpho, Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
+import {ExitBookLib} from "../../src/libs/ExitBookLib.sol";
 import {Erc4626ExitBook} from "../../src/periphery/Erc4626ExitBook.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {Request, ExitStatus, PriorityRamp} from "../../src/types/ExitBookTypes.sol";
@@ -391,6 +392,79 @@ contract ExitBookTest is Test, LidoLendDeployer {
         assertEq(
             uint8(vaultBook.getExitRequest(id).status), uint8(ExitStatus.Filled), "freeze leaves lender exits open"
         );
+    }
+
+    /// @dev Specified behaviour: the priority-fee ramp runs on during a source pause. The first fill after the pause
+    ///      pays the end rate, although no fill was possible before. `exit-books.md` computes the rate from the time
+    ///      since creation, and states that deadlines and fee ramps advance during a pause of the book.
+    ///      Mechanism: `ExitBookBase._priorityFeeRate` measures elapsed time from `createdAt` on the wall clock.
+    ///      `ExitBookLib.requireFillable` checks `deadline` against `block.timestamp`. Neither subtracts the time in
+    ///      which a fill was impossible.
+    ///      Same cause: a controller pause by the circuit breaker or the reseal manager, or a pause of the exit book
+    ///      itself, in either book. The ramp can reach `endRate`, and the deadline can pass with no fillable second.
+    function test_sourcePause_rampAdvances_fillAfterPausePaysEndRate() public {
+        address lender = _actor("lender");
+        address filler = _actor("filler");
+        uint256 assets = 10 ether;
+        _depositToVault(lender, assets);
+        PriorityRamp memory ramp = PriorityRamp({startRate: 0.01e18, endRate: 0.08e18, rampStart: 0, rampEnd: 2 days});
+        uint256 id = _place(lender, assets, lender, 0, ramp);
+
+        uint256 pauseStart = block.timestamp;
+        LidoLendMarketController controller = LidoLendMarketController(d.controllerProxy);
+        controller.grantRole(controller.PAUSER_ROLE(), address(this));
+        controller.pauseFor(3 days);
+
+        vm.prank(filler);
+        vm.expectRevert(abi.encodeWithSelector(ERC4626.ERC4626ExceededMaxWithdraw.selector, lender, assets, 0));
+        vaultBook.fillExitRequest(id, assets, filler);
+
+        vm.warp(pauseStart + 3 days - 1);
+        assertTrue(controller.isPaused(), "setup: last paused second");
+        vm.prank(filler);
+        vm.expectRevert(abi.encodeWithSelector(ERC4626.ERC4626ExceededMaxWithdraw.selector, lender, assets, 0));
+        vaultBook.fillExitRequest(id, assets, filler);
+
+        vm.warp(pauseStart + 3 days);
+        assertFalse(controller.isPaused(), "setup: pause is over");
+        uint256 endFee = assets * ramp.endRate / WAD;
+        uint256 lenderBefore = loan.balanceOf(lender);
+
+        vm.prank(filler);
+        vaultBook.fillExitRequest(id, assets, filler);
+
+        assertEq(loan.balanceOf(lender) - lenderBefore, assets - endFee, "lender pays the end rate");
+    }
+
+    /// @dev Same behaviour as `test_sourcePause_rampAdvances_fillAfterPausePaysEndRate`. A deadline inside the pause
+    ///      expires the request, and the pause blocks a fill at the deadline.
+    function testRevert_deadlinePassesDuringSourcePause_requestExpired() public {
+        address lender = _actor("lender");
+        address filler = _actor("filler");
+        uint256 assets = 10 ether;
+        _depositToVault(lender, assets);
+        uint256 pauseStart = block.timestamp;
+        uint256 deadline = pauseStart + 1 days;
+        vm.startPrank(lender);
+        IVaultLike(d.vault).approve(address(vaultBook), type(uint256).max);
+        uint256 id = vaultBook.placeExitRequest(IERC4626(d.vault), assets, lender, 0, 0, _flat(0), deadline);
+        vm.stopPrank();
+
+        LidoLendMarketController controller = LidoLendMarketController(d.controllerProxy);
+        controller.grantRole(controller.PAUSER_ROLE(), address(this));
+        controller.pauseFor(2 days);
+
+        vm.warp(deadline);
+        assertTrue(controller.isPaused(), "setup: deadline is inside the pause");
+        vm.prank(filler);
+        vm.expectRevert(abi.encodeWithSelector(ERC4626.ERC4626ExceededMaxWithdraw.selector, lender, assets, 0));
+        vaultBook.fillExitRequest(id, assets, filler);
+
+        vm.warp(pauseStart + 2 days);
+        assertFalse(controller.isPaused(), "setup: pause is over");
+        vm.prank(filler);
+        vm.expectRevert(ExitBookLib.RequestExpired.selector);
+        vaultBook.fillExitRequest(id, assets, filler);
     }
 
     // ---

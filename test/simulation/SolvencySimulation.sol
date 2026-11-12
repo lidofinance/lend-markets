@@ -432,23 +432,176 @@ abstract contract SolvencySimulation is SolvencyActions {
         try this.checkLenders() {
             assertTrue(false, "the lender check missed the unbooked loss");
         } catch (bytes memory failure) {
-            // A failed assertion reverts with forge's `CheatcodeError(string)`: the selector, then the message.
-            assertEq(bytes4(failure), bytes4(keccak256("CheatcodeError(string)")), "the lender check did not fail");
-            bytes memory encoded = new bytes(failure.length - 4);
-            for (uint256 i; i < encoded.length; ++i) {
-                encoded[i] = failure[i + 4];
-            }
-            assertEq(
-                vm.indexOf(abi.decode(encoded, (string)), "lender: below its flows"),
-                0,
-                "the lender check failed for another reason"
-            );
+            _assertCheckFailedWith(failure, "lender: below its flows");
         }
+    }
+
+    /// @notice Two borrowers tie on the rounded risk key. The root is solvent at exactly its debt, and the tied
+    ///         borrower is short by about one key unit of debt. The queue check accepts that shortfall.
+    /// @dev lender-settlement.md "A rounded root check can miss an insolvent borrower". With 1e25 collateral, one key
+    ///      unit is 1e7 borrow shares: about 10 raw loan-token units at the opening rate of 1e-6 asset per share.
+    ///      `test_solventRootShortfallCheck_aboveOneKeyUnitPlusTwo_fails` is the control for the bound.
+    function test_tiedRiskKey_shortfallWithinOneKeyUnit() public {
+        _seedTiedRiskKey();
+        _checkQueueRoot();
+    }
+
+    /// @notice The shortfall check passes at one key unit plus two units of shortfall and fails one unit above.
+    /// @dev The price falls until the root itself is short by the stated amount. The test calls the check directly
+    ///      on the root, because `_checkQueueRoot` skips it once the root carries bad debt.
+    function test_solventRootShortfallCheck_aboveOneKeyUnitPlusTwo_fails() public {
+        (address root,) = _seedTiedRiskKey();
+        Market storage m = _m();
+        uint256 collateral = m.core.position(m.id, root).collateral;
+        uint256 rootDebt = _debtUp(root);
+        MorphoMarket memory mk = m.core.market(m.id);
+        // One key unit is `collateral / 1e18` borrow shares. Its debt rounds up, as the debt of a borrower does.
+        uint256 keyUnit = Math.mulDiv(
+            collateral / WAD,
+            uint256(mk.totalBorrowAssets) + SharesMathLib.VIRTUAL_ASSETS,
+            uint256(mk.totalBorrowShares) + SharesMathLib.VIRTUAL_SHARES,
+            Math.Rounding.Ceil
+        );
+        address[] memory queued = new address[](1);
+        queued[0] = root;
+
+        _setRootShortfall(root, rootDebt, keyUnit + 2);
+        this.checkSolventRootShortfall(queued);
+
+        _setRootShortfall(root, rootDebt, keyUnit + 3);
+        try this.checkSolventRootShortfall(queued) {
+            assertTrue(false, "the shortfall check missed a shortfall above its bound");
+        } catch (bytes memory failure) {
+            _assertCheckFailedWith(failure, "queue: solvent root hides a shortfall over one key");
+        }
+    }
+
+    /// @dev Sets the price that leaves the collateral of `root` worth `shortfall` less than `rootDebt`.
+    function _setRootShortfall(address root, uint256 rootDebt, uint256 shortfall) internal {
+        Market storage m = _m();
+        uint256 collateral = m.core.position(m.id, root).collateral;
+        MockPriceOracle(address(m.oracle)).setPrice((rootDebt - shortfall) * ORACLE_SCALE / collateral);
+        assertEq(Math.mulDiv(collateral, _price(), ORACLE_SCALE), rootDebt - shortfall, "setup: root value != target");
+    }
+
+    /// @dev Asserts that `failure` is a failed forge assertion whose message starts with `message`. A failed
+    ///      assertion reverts with forge's `CheatcodeError(string)`: the selector, then the message.
+    function _assertCheckFailedWith(bytes memory failure, string memory message) internal pure {
+        assertEq(bytes4(failure), bytes4(keccak256("CheatcodeError(string)")), "the check did not fail");
+        bytes memory encoded = new bytes(failure.length - 4);
+        for (uint256 i; i < encoded.length; ++i) {
+            encoded[i] = failure[i + 4];
+        }
+        assertEq(vm.indexOf(abi.decode(encoded, (string)), message), 0, "the check failed for another reason");
+    }
+
+    /// @dev Known issue: a solvent root can tie on the rounded risk key with an insolvent borrower. Then a lender exit
+    ///      closes the solvent root. The later write-off of the hidden bad debt falls on the lenders that stay.
+    ///      Root cause: `_handleSettle` runs `_isBadDebt` only on `peekRoot()`, and the heap orders borrowers by
+    ///      `_riskKey`, which is `borrowShares * 1e18 / collateral` rounded down. Two LTVs inside one key unit tie.
+    ///      `MaxHeapLib` does not swap equal keys, so the node already above stays above. A solvent root can thus
+    ///      hide an insolvent borrower, and `hasBadDebt` also reports false.
+    ///      Same cause: a `fallbackExit` root cut, a vault `settle` of any borrower with a personal settlement LTV,
+    ///      and a direct core `settle` by any supplier. Each exit before the insolvent borrower becomes the root
+    ///      leaves its share of the loss to the lenders that stay.
+    /// @dev `maxIterations = 1` stops the settle leg before it tries the insolvent borrower as the next root.
+    function test_tiedRiskKey_rootExitLeavesHiddenLossToRemainingLenders() public {
+        (address root, address tied) = _seedTiedRiskKey();
+        Market storage m = _m();
+        address exiter = lenders[0];
+        address stayer = lenders[1];
+        assertGt(
+            _debtUp(tied),
+            Math.mulDiv(m.core.position(m.id, tied).collateral, _price(), ORACLE_SCALE),
+            "setup: the tied borrower is short before the exit"
+        );
+
+        // The stayer deposits one unit less than the tied borrower's debt. The exiter then redeems all free
+        // liquidity. The rest of the exiter's claim equals the root's debt, so the close of the root burns it all.
+        uint256 stayerDeposit = _debtUp(tied) - 1;
+        _mintLoan(stayer, stayerDeposit);
+        uint256 stayerShares = m.vaultDeposit(stayer, stayerDeposit);
+        m.vaultRedeem(exiter, m.vault.maxRedeem(exiter));
+        uint256 stayerBefore = m.vault.previewRedeem(stayerShares);
+
+        // Control: the exiter stays, so the write-off also lowers the exiter's claim.
+        uint256 beforeExit = vm.snapshotState();
+        _writeOff(keepers[0], tied);
+        uint256 lossWithoutExit = stayerBefore - m.vault.previewRedeem(stayerShares);
+        vm.revertToState(beforeExit);
+
+        (,, uint256 seized,) = m.fallbackExit(exiter, m.vault.balanceOf(exiter), exiter, 1);
+
+        assertGt(seized, 0, "the exit seized root collateral");
+        assertEq(m.core.position(m.id, root).borrowShares, 0, "the solvent root closes in full");
+        assertEq(m.vault.balanceOf(exiter), 0, "the exiter holds no claim on the market");
+        assertEq(m.vault.totalSupply(), stayerShares, "the stayer is the only lender left");
+        (address newRoot,) = m.controller.nextSettlementBorrower(0);
+        assertEq(newRoot, tied, "the tied borrower is the root now");
+        assertTrue(m.controller.hasBadDebt(), "and it carries bad debt");
+        MorphoMarket memory mk = m.core.market(m.id);
+        assertEq(
+            m.core.position(m.id, address(m.vault)).supplyShares,
+            mk.totalSupplyShares,
+            "setup: the vault is the only supplier"
+        );
+
+        uint256 bad = _writeOff(keepers[0], tied);
+        uint256 lossWithExit = stayerBefore - m.vault.previewRedeem(stayerShares);
+
+        assertApproxEqAbs(lossWithExit, bad, 2, "the stayer takes the whole write-off");
+        assertGt(lossWithExit, lossWithoutExit, "the exit moves the exiter's part of the loss to the stayer");
+    }
+
+    /// @dev Setup: two borrowers tie on the rounded risk key. The root is solvent at exactly its debt, and
+    ///      the tied borrower is short by about one key unit of debt.
+    function _seedTiedRiskKey() internal returns (address root, address tied) {
+        _setUpSimulation(_shortCounts());
+        Market storage m = _m();
+        _mintLoan(lenders[0], 1000 * unit);
+        m.vaultDeposit(lenders[0], 1000 * unit);
+        assertEq(m.core.market(m.id).totalBorrowShares, 0, "setup: no debt before the tie");
+
+        uint256 collateral = 1e25;
+        uint256 rootShares = 1000 * 1e7;
+        uint256 tiedShares = rootShares + 1e7 - 1;
+        root = borrowers[0]; // instant activation: index 0 of every fourth borrower
+        tied = borrowers[4];
+        _mintCollateral(root, collateral);
+        _mintCollateral(tied, collateral);
+        m.supplyCollateralInstant(root, root, collateral);
+        m.supplyCollateralInstant(tied, tied, collateral);
+        vm.prank(root);
+        m.core.borrow(m.params, 0, rootShares, root, root);
+        vm.prank(tied);
+        m.core.borrow(m.params, 0, tiedShares, tied, tied);
+        assertEq(m.core.position(m.id, tied).collateral, collateral, "setup: the tied borrower holds only this lot");
+
+        MorphoMarket memory mk = m.core.market(m.id);
+        uint256 assets = uint256(mk.totalBorrowAssets) + SharesMathLib.VIRTUAL_ASSETS;
+        uint256 shares = uint256(mk.totalBorrowShares) + SharesMathLib.VIRTUAL_SHARES;
+        uint256 rootDebt = Math.mulDiv(rootShares, assets, shares, Math.Rounding.Ceil);
+        // The root's collateral is worth exactly its debt, so the root sits on the solvent side of the gate.
+        MockPriceOracle(address(m.oracle)).setPrice(rootDebt * ORACLE_SCALE / collateral);
+        assertEq(Math.mulDiv(collateral, _price(), ORACLE_SCALE), rootDebt, "setup: root value != root debt");
+        assertGt(
+            Math.mulDiv(tiedShares, assets, shares, Math.Rounding.Ceil), rootDebt, "setup: tied borrower not short"
+        );
+
+        (address[] memory queued, uint256[] memory keys) = m.controller.settlementBorrowers(0, 2);
+        assertEq(queued[0], root, "setup: the first borrower is not the root");
+        assertEq(keys[0], keys[1], "setup: the keys do not tie");
+        assertFalse(m.controller.hasBadDebt(), "setup: the root carries bad debt");
     }
 
     /// @dev `_checkLenders` as a call of its own, so a test can catch its failure.
     function checkLenders() external view {
         _checkLenders();
+    }
+
+    /// @dev `_checkSolventRootShortfall` as a call of its own, so a test can catch its failure.
+    function checkSolventRootShortfall(address[] calldata queued) external view {
+        _checkSolventRootShortfall(queued);
     }
 
     /// @dev One near-full-repay inflation cycle from `s` borrow shares at zero borrow assets: borrows
@@ -724,13 +877,54 @@ abstract contract SolvencySimulation is SolvencyActions {
     }
 
     /// @dev The queue holds exactly the borrowers with debt and collateral; its root and bad-debt flag match the model.
+    ///      Each member carries the spec key of its current position, and no child key exceeds its parent's
+    ///      (lender-settlement.md "Risk queue and bad-debt gate"; heap index 0 is the root).
     function _checkQueueRoot() internal view {
         Market storage m = _m();
         (,, uint256 tracked) = _modelRoot();
-        assertEq(m.controller.settlementBorrowersCount(), tracked, "queue: size != borrowers with debt and collateral");
+        uint256 size = m.controller.settlementBorrowersCount();
+        assertEq(size, tracked, "queue: size != borrowers with debt and collateral");
         (address root,) = m.controller.nextSettlementBorrower(0);
         _assertRoot(root);
         assertEq(m.controller.hasBadDebt(), _rootBadDebt(), "queue: bad-debt flag != model");
+
+        (address[] memory queued, uint256[] memory keys) = m.controller.settlementBorrowers(0, size);
+        assertEq(queued.length, size, "queue: window != size");
+        // With the size equal to `tracked`, one entry per tracked borrower leaves no room for anyone else.
+        for (uint256 i; i < borrowers.length; ++i) {
+            Position memory p = m.core.position(m.id, borrowers[i]);
+            uint256 entries;
+            for (uint256 j; j < size; ++j) {
+                if (queued[j] == borrowers[i]) ++entries;
+            }
+            assertEq(entries, p.borrowShares > 0 && p.collateral > 0 ? 1 : 0, "queue: member iff debt and collateral");
+        }
+        for (uint256 i; i < size; ++i) {
+            Position memory p = m.core.position(m.id, queued[i]);
+            assertEq(
+                keys[i], Math.mulDiv(p.borrowShares, WAD, p.collateral), "queue: key != shares * 1e18 / collateral"
+            );
+            if (i > 0) assertGe(keys[(i - 1) / 2], keys[i], "queue: child key above its parent");
+        }
+        if (!m.controller.hasBadDebt()) _checkSolventRootShortfall(queued);
+    }
+
+    /// @dev Under a solvent root, a member's debt exceeds its collateral value by at most one key unit of
+    ///      debt plus two units. A member's key is at most the root's, and each key rounds down by less than one. So
+    ///      the member's LTV exceeds the root's by less than one key unit. The debt ceiling and the value floor add
+    ///      one unit each. The bad-debt gate reads accrued totals, so this check does too.
+    function _checkSolventRootShortfall(address[] memory queued) internal view {
+        Market storage m = _m();
+        MorphoMarket memory mk = m.accruedMarket();
+        uint256 assets = uint256(mk.totalBorrowAssets) + SharesMathLib.VIRTUAL_ASSETS;
+        uint256 shares = uint256(mk.totalBorrowShares) + SharesMathLib.VIRTUAL_SHARES;
+        for (uint256 i; i < queued.length; ++i) {
+            Position memory p = m.core.position(m.id, queued[i]);
+            uint256 debt = Math.mulDiv(p.borrowShares, assets, shares, Math.Rounding.Ceil);
+            uint256 value = Math.mulDiv(p.collateral, _price(), ORACLE_SCALE);
+            uint256 keyUnit = Math.mulDiv(p.collateral, assets, shares * WAD, Math.Rounding.Ceil);
+            assertLe(Math.saturatingSub(debt, value), keyUnit + 2, "queue: solvent root hides a shortfall over one key");
+        }
     }
 
     /// @dev While paused the vault accepts nothing and lets nothing out.

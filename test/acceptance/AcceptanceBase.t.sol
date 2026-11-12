@@ -13,7 +13,9 @@ import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfa
 import {IrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/IrmConfigFactory.sol";
 import {IIrmConfigFactory} from "@lido-lend-irm/src/irm-config-factory/interfaces/IIrmConfigFactory.sol";
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 import {CollateralActivationConfig} from "../../src/types/CollateralActivationTypes.sol";
 import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
@@ -30,6 +32,7 @@ import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
 import {DeployConfigFile} from "../../script/lib/DeployConfigFile.sol";
+import {PreseedLib} from "../setup/PreseedLib.sol";
 // --- Minimal read/write surfaces (UDVT `Id` is ABI-identical to bytes32, so bytes32 params match) ---
 
 interface IReadController {
@@ -263,6 +266,8 @@ abstract contract AcceptanceContext is Test {
     uint256 internal lltv;
     bytes32 internal marketId;
     address internal pauserCommittee;
+    address internal marketSteward;
+    uint256 internal marketFee;
     bool internal enableSettlement;
     bool internal forkProvision;
 
@@ -435,6 +440,21 @@ abstract contract AcceptanceContext is Test {
             ? vm.envOr("ACCEPTANCE_PAUSER_COMMITTEE", agent)
             : vm.envAddress("ACCEPTANCE_PAUSER_COMMITTEE");
         require(pauserCommittee != address(0), "acceptance: CircuitBreaker pauser committee is zero");
+    }
+
+    /// @dev Production acceptance requires the steward from the reviewed motion input `ACCEPTANCE_MARKET_STEWARD`.
+    ///      The conventional `fork` run defaults to none, because ActivateMarkets.s.sol adds no steward.
+    function _loadExpectedMarketSteward() internal {
+        marketSteward = forkProvision
+            ? vm.envOr("ACCEPTANCE_MARKET_STEWARD", address(0))
+            : vm.envAddress("ACCEPTANCE_MARKET_STEWARD");
+        require(forkProvision || marketSteward != address(0), "acceptance: market steward is zero");
+    }
+
+    /// @dev Production acceptance requires the fee from the reviewed motion input `ACCEPTANCE_MARKET_FEE`. The
+    ///      conventional `fork` run defaults to zero, because ActivateMarkets.s.sol sets no fee.
+    function _loadExpectedMarketFee() internal {
+        marketFee = forkProvision ? vm.envOr("ACCEPTANCE_MARKET_FEE", uint256(0)) : vm.envUint("ACCEPTANCE_MARKET_FEE");
     }
 }
 
@@ -716,8 +736,16 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(IReadCurve(curve).owner(), agent, "curve.owner=agent");
         assertEq(IReadCurve(curve).manager(), executor, "curve.manager=executor");
         _assertAddressSetEq(
-            IReadDashboard(dashboard).marketStewards(Id.wrap(marketId)), new address[](0), "market steward"
+            IReadDashboard(dashboard).marketStewards(Id.wrap(marketId)), _expectedMarketStewards(), "market steward"
         );
+    }
+
+    /// @dev Expects the `marketSteward` from the reviewed motion input as the only steward of an activated market.
+    ///      An inert market has none, and so has a `fork` run, whose replay adds none.
+    function _expectedMarketStewards() private view returns (address[] memory stewards) {
+        if (!_isMarketActivated() || marketSteward == address(0)) return new address[](0);
+        stewards = new address[](1);
+        stewards[0] = marketSteward;
     }
 
     function _assertLocalBytecode() internal {
@@ -864,8 +892,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
     /// @notice Every accounting variable on the market, the vault, and the controller is still zero, and no
     ///         protocol fee is set.
-    /// @dev Readiness only: before the motion the core has no market under this id. The motion itself preseeds
-    ///      the market and the vault, and sets any non-zero initial fee.
+    /// @dev Readiness only: before the motion the core has no market under this id.
     function _assertZeroState() internal view {
         (uint128 tSupplyA, uint128 tSupplyS, uint128 tBorrowA, uint128 tBorrowS,, uint128 fee) =
             IReadCore(core).market(marketId);
@@ -894,8 +921,9 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     function _assertActivated() internal view {
-        (,,,, uint128 lastUpdate,) = IReadCore(core).market(marketId);
+        (,,,, uint128 lastUpdate, uint128 fee) = IReadCore(core).market(marketId);
         assertGt(uint256(lastUpdate), 0, "market not created on core");
+        assertEq(uint256(fee), marketFee, "market fee");
         assertEq(IReadCore(core).marketController(marketId), controller, "controller not bound");
         assertEq(IReadCore(core).isSettlementEnabled(marketId), enableSettlement, "settlement flag");
         assertEq(IReadRouter(router).marketIrm(marketId), curve, "IRM not routed");
@@ -937,18 +965,41 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertTrue(IReadErc4626Book(erc4626Book).paused(), "configured pauser did not pause ERC-4626 exit book");
     }
 
-    /// @dev Mirror of the `LidoLendActivateMarket` EasyTrack motion, run by the executor. The curve config
-    ///      MUST be applied before `createMarket` — its first `borrowRate` ping reverts on an unset config.
+    /// @dev Stand-in for the `LidoLendActivateMarket` EasyTrack motion, run by the executor. The motion code is
+    ///      outside this repository, and this repository cannot check it. The call order here is an assumption.
+    ///      The curve config MUST be applied before `createMarket`: its first `borrowRate` ping reverts on an unset
+    ///      config. A disposable steward stands in for the reviewed one. This stand-in sets no fee. The checks after
+    ///      the calls apply to this simulation only: the local activation replay adds no steward and makes no preseed.
     function _activate(address testPauserCommittee) internal {
         assertNotEq(testPauserCommittee, address(0), "test pauser committee is zero");
         MarketParams memory p = _params();
         address irmConfig = _expectedIrmConfig();
+        marketSteward = makeAddr(string.concat("acceptanceMarketSteward-", vm.toString(marketId)));
         vm.startPrank(executor);
         IReadCurve(curve).applyIrmConfig(p, irmConfig);
         IReadRouter(router).setMarketIrm(p, curve);
         IReadFacade(facade).createMarket(p, controller, enableSettlement);
+        IReadDashboard(dashboard).addMarketSteward(Id.wrap(marketId), marketSteward);
         IReadCircuitBreaker(circuitBreaker).registerPauser(controller, testPauserCommittee);
         vm.stopPrank();
+        uint256 requiredVaultShares = _preseed(p);
+
+        _assertRoles();
+        assertEq(
+            IMorpho(core).position(Id.wrap(marketId), PreseedLib.RECIPIENT).supplyShares,
+            PreseedLib.MIN_DEAD_DEPOSIT_SHARES,
+            "preseed: dead market shares"
+        );
+        assertGe(IERC20(vault).balanceOf(PreseedLib.RECIPIENT), requiredVaultShares, "preseed: dead vault shares");
+    }
+
+    /// @dev Stand-in for the preseed of the activation motion. The preseeder code is outside this repository, and
+    ///      this repository cannot check it. A funded account makes the stand-in preseed.
+    /// @return requiredVaultShares The fewest vault shares that `PreseedLib.preseed` accepts for the dead address.
+    function _preseed(MarketParams memory p) private returns (uint256 requiredVaultShares) {
+        address preseeder = makeAddr("acceptancePreseeder");
+        deal(loanToken, preseeder, PreseedLib.marketAssets() + PreseedLib.vaultAssets(IERC4626(vault)));
+        return PreseedLib.preseed(IMorpho(core), p, IERC4626(vault), preseeder);
     }
 
     function _expectedIrmConfig() private view returns (address irmConfig) {

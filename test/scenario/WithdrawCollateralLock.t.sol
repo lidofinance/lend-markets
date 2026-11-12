@@ -27,6 +27,13 @@ contract WithdrawCollateralLockTest is LidoLendSetup {
         return protocol.markets[0];
     }
 
+    /// @dev Fixed issue: a debt-free withdrawal under the activating lock reverted with an arithmetic panic.
+    ///      Root cause: `_handleWithdrawCollateral` computed `position.collateral - inactive` for every position, and
+    ///      the locked buckets could exceed the collateral left after the withdrawal. Now: `debit` reverts with
+    ///      `ActivatingCollateralLocked` when the request exceeds active collateral inside the lock. The controller
+    ///      subtracts `inactive` only for a position with debt.
+    ///      Same cause: the fix covers a full withdrawal and any partial withdrawal above the active balance, with or
+    ///      without debt. It also covers dust that sits next to a locked lot.
     function testRevert_debtFreeWithdrawUnderLock_activatingCollateralLocked() public {
         Market storage market = _deployLockMarket(1 hours);
 
@@ -137,5 +144,103 @@ contract WithdrawCollateralLockTest is LidoLendSetup {
             abi.encodeWithSelector(CollateralActivationLib.InactiveCollateralNotCleared.selector, 50 ether, 100 ether)
         );
         market.core.withdrawCollateral(market.params, 50 ether, borrower, borrower);
+    }
+
+    /// @dev Known issue: a third party tops up a borrower's dust to the activation threshold, so the whole amount
+    ///      enters the timer. The activating lock then blocks the borrower's withdrawal of its old dust until the lock
+    ///      ends.
+    ///      Root cause: `LidoLend.supplyCollateral` accepts any `onBehalf` with no consent from that borrower.
+    ///      `credit` moves existing dust into `activating` when dust plus the deposit reach `minActivationAmount`.
+    ///      `debit` then allows only draws from active collateral until `activatingStart + activatingLockDuration`.
+    ///      Same cause: any address, router or bundler can send the top-up. It needs only `minDepositAmount` when the
+    ///      dust is close to the threshold. A top-up that extends the deadline of an existing activating lot restarts
+    ///      the lock for the whole lot. Dust next to a locked activating lot is locked too. All committed market
+    ///      configs set the lock to zero.
+    function testRevert_thirdPartyTopUp_locksVictimDust() public {
+        uint40 lockDuration = 1 hours;
+        Market storage market = _deployLockMarket(lockDuration);
+        uint256 minActivation = market.controller.collateralActivationConfig().minActivationAmount;
+        uint256 victimDust = minActivation - 1 ether;
+        uint256 topUp = 1 ether; // == minDepositAmount in the default config
+
+        address victim = _actor("victim");
+        _fund(market.collateralToken, victim, victimDust);
+        market.supplyCollateral(victim, victimDust);
+        assertEq(market.controller.positionOf(victim).dust, victimDust, "setup: victim holds dust");
+
+        // Control: before the top-up, the victim can withdraw its dust.
+        uint256 snapshot = vm.snapshotState();
+        market.withdrawCollateral(victim, victimDust, victim);
+        vm.revertToState(snapshot);
+
+        address attacker = _actor("attacker");
+        _fund(market.collateralToken, attacker, topUp);
+        market.supplyCollateralOnBehalf(attacker, victim, topUp); // helper asserts dust + topUp enters the timer
+        uint256 lockDeadline = block.timestamp + lockDuration;
+
+        ILidoLendMarketController.BorrowerPosition memory position = market.controller.positionOf(victim);
+        assertEq(position.dust, 0, "the victim's dust left the dust bucket");
+        assertEq(position.activating, minActivation, "dust plus top-up is activating");
+
+        vm.prank(victim);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CollateralActivationLib.ActivatingCollateralLocked.selector, minActivation, lockDeadline
+            )
+        );
+        market.core.withdrawCollateral(market.params, victimDust, victim, victim);
+
+        // The lock outlasts the short activation delay, so at the deadline the lot has matured and the old dust is
+        // free again.
+        vm.warp(lockDeadline);
+        market.withdrawCollateral(victim, victimDust, victim);
+    }
+
+    /// @dev Known issue: each third-party top-up before the deadline restarts the shared timer. The lock deadline
+    ///      moves past the first deadline plus one lock duration, and the victim still cannot withdraw.
+    ///      Root cause: `credit` restarts `activatingStart` for the whole activating lot when a deposit extends the
+    ///      unlock deadline, and any caller can deposit for any borrower. `debit` measures the lock from that
+    ///      restarted `activatingStart`.
+    ///      Same cause: the attacker repeats the top-up before each maturity, so the lot can stay locked and
+    ///      unmatured. Each restart also delays the maturity of the whole lot, so it holds back borrow capacity even
+    ///      with a zero lock. Onto an empty dust bucket, each top-up must reach `minActivationAmount`, and it becomes
+    ///      the victim's collateral.
+    function testRevert_repeatedTopUps_renewLock() public {
+        uint40 lockDuration = 2 hours;
+        MockERC20 loan = new MockERC20("Loan", "LOAN", 18);
+        MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
+        DeployConfig memory cfg = _defaultConfig(address(loan), address(collateral), address(collateral));
+        // A fixed delay equal to the lock: every later top-up gives a later deadline, so it restarts the timer.
+        cfg.activation.minActivationDelay = lockDuration;
+        cfg.activation.maxActivationDelay = lockDuration;
+        cfg.activation.activatingLockDuration = lockDuration;
+        _deployProtocol(cfg);
+        Market storage market = protocol.markets[0];
+        uint256 topUp = cfg.activation.minActivationAmount;
+
+        address victim = _actor("victim");
+        _fund(market.collateralToken, victim, 100 ether);
+        market.supplyCollateral(victim, 100 ether);
+        uint256 firstDeadline = block.timestamp + lockDuration;
+
+        address attacker = _actor("attacker");
+        _fund(market.collateralToken, attacker, 2 * topUp);
+        vm.warp(firstDeadline - 1 hours);
+        market.supplyCollateralOnBehalf(attacker, victim, topUp);
+        vm.warp(firstDeadline + 30 minutes);
+        market.supplyCollateralOnBehalf(attacker, victim, topUp);
+        uint256 renewedDeadline = block.timestamp + lockDuration;
+
+        vm.warp(firstDeadline + lockDuration);
+        assertEq(
+            market.controller.positionOf(victim).unlockTime, renewedDeadline, "the second top-up restarts the timer"
+        );
+
+        uint256 total = 100 ether + 2 * topUp;
+        vm.prank(victim);
+        vm.expectRevert(
+            abi.encodeWithSelector(CollateralActivationLib.ActivatingCollateralLocked.selector, total, renewedDeadline)
+        );
+        market.core.withdrawCollateral(market.params, total, victim, victim);
     }
 }

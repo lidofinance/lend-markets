@@ -29,8 +29,9 @@ contract VaultConformanceInvariant is LidoLendSetup {
         return 18;
     }
 
-    function _priceAction() internal pure virtual returns (bytes4) {
-        return VaultHandler.crashPrice.selector;
+    function _priceActions() internal pure virtual returns (bytes4[] memory actions) {
+        actions = new bytes4[](1);
+        actions[0] = VaultHandler.crashPrice.selector;
     }
 
     function setUp() public {
@@ -76,7 +77,8 @@ contract VaultConformanceInvariant is LidoLendSetup {
         handler.borrow(1, 25 * loanUnit);
         handler.setSettlementLtv(1, 1);
 
-        bytes4[] memory all = new bytes4[](16);
+        bytes4[] memory priceActions = _priceActions();
+        bytes4[] memory all = new bytes4[](15 + priceActions.length);
         all[0] = VaultHandler.deposit.selector;
         all[1] = VaultHandler.mint.selector;
         all[2] = VaultHandler.withdraw.selector;
@@ -88,11 +90,13 @@ contract VaultConformanceInvariant is LidoLendSetup {
         all[8] = VaultHandler.setSettlementLtv.selector;
         all[9] = VaultHandler.repay.selector;
         all[10] = VaultHandler.warp.selector;
-        all[11] = _priceAction();
-        all[12] = VaultHandler.liquidate.selector;
-        all[13] = VaultHandler.donate.selector;
-        all[14] = VaultHandler.pauseResume.selector;
-        all[15] = VaultHandler.setSupplyCap.selector;
+        all[11] = VaultHandler.liquidate.selector;
+        all[12] = VaultHandler.donate.selector;
+        all[13] = VaultHandler.pauseResume.selector;
+        all[14] = VaultHandler.setSupplyCap.selector;
+        for (uint256 i; i < priceActions.length; i++) {
+            all[15 + i] = priceActions[i];
+        }
         targetSelector(FuzzSelector({addr: address(handler), selectors: all}));
         targetContract(address(handler));
     }
@@ -210,6 +214,14 @@ contract VaultConformanceInvariant is LidoLendSetup {
     /// @dev For settlement claim `C` and consumed core shares `q`, the burn is exactly
     ///      `ceil(requestedVaultShares * q / C)`. A partial fill therefore burns less than one additional raw vault
     ///      share; when `q == C`, it burns exactly `requestedVaultShares`.
+    /// @dev Specified behaviour: `docs/specs/lender-settlement.md` defines the floored budget and the burn that rounds
+    ///      up. One `settle` or `fallbackExit` call burns `ceil(shares * settled / budget)` vault shares.
+    ///      Its budget is floored, so an oversized request burns at a higher rate than the cuts need.
+    ///      Each call sizes its own budget with `_settlementSupplyShares`, which floors `previewRedeem(shares)` into
+    ///      core supply shares. Each call then rounds its own burn up, and no residual carries to the next call.
+    ///      This applies to targeted `settle` calls, `fallbackExit` calls, and a mix of both. Each call still pays
+    ///      out no more than the `previewRedeem` value of the shares it burns. The core supply shares per vault share
+    ///      of the remaining holders do not decrease.
     function invariant_settlementRounding() public view {
         assertFalse(handler.settlementBurnMismatch(), "settlement burn matched its declared rounding");
         assertFalse(handler.fullSettlementBurnMismatch(), "full settlement fill burned the full request");
@@ -331,6 +343,39 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.settledUnderBadDebt(), "gate held under the seeded bad-debt state");
     }
 
+    /// @dev A run can end with no successful settle, two-leg fallback exit or liquidation, so `afterInvariant`
+    ///      cannot floor them. This drives each one once from the seeded state.
+    function test_seededState_reachesSettleFallbackExitAndLiquidation() public {
+        Market storage m = _m();
+        uint256 unit = 10 ** _loanDecimals();
+        uint256 unitShares = m.vault.convertToShares(unit);
+        handler.settle(0, 1, unitShares); // the seeded borrower carries a personal slice
+        assertEq(handler.settles(), 1, "a successful settle was not reached");
+
+        // One loan unit stays idle, so a two-unit exit redeems one unit and settles the other.
+        handler.withdraw(0, m.vault.maxWithdraw(actors[0]) - unit);
+        assertEq(_mk().totalSupplyAssets - _mk().totalBorrowAssets, unit, "setup: idle is not one loan unit");
+        handler.fallbackExit(0, 2 * unitShares, 0);
+        assertEq(handler.fallbackExits(), 1, "a successful fallback exit was not reached");
+        assertEq(handler.mixedFallbackSettlementFills(), 1, "the fallback exit did not use both legs");
+        assertEq(handler.collateralPayouts(), 2, "the settle leg paid no collateral");
+
+        handler.deposit(0, 1_000_000 * unit); // liquidity for a borrow to the LLTV edge
+        handler.borrow(1, type(uint256).max); // bounded inside the handler to 99% of its LLTV room
+        handler.crashPrice(90); // the LTV is then near 0.88: unhealthy and solvent
+        handler.liquidate(1, 1 ether);
+        assertEq(handler.liquidations(), 1, "a solvent partial liquidation was not reached");
+        assertGt(m.core.position(m.id, actors[1]).collateral, 0, "the solvent liquidation seized all collateral");
+        assertFalse(m.controller.hasBadDebt(), "the solvent liquidation left bad debt");
+
+        handler.crashPrice(0); // bounded to the deepest crash the handler allows
+        handler.liquidate(1, 0);
+        assertEq(handler.liquidations(), 2, "a seize-all liquidation was not reached");
+        assertEq(m.core.position(m.id, actors[1]).collateral, 0, "the underwater liquidation left collateral");
+        invariant_settleConservesAccounting();
+        invariant_exitPayoutWithinRoundingBounds();
+    }
+
     /// @dev A pause gates the core's settle hook and zeroes the vault's withdrawable amount, so neither the
     ///      targeted settle nor either leg of a fallback exit can serve a request while it holds.
     function invariant_pauseStopsEverySettlePath() public view {
@@ -384,6 +429,8 @@ contract VaultConformanceInvariant is LidoLendSetup {
         assertFalse(handler.settlementRejectedForPauseWhileResumed(), "pause error surfaced on a resumed market");
     }
 
+    /// @dev Logs the counters. Foundry restores the post-setUp state before each run, so the counters are per run and
+    ///      include the setUp calls.
     function afterInvariant() public {
         emit log_named_uint("deposits", handler.deposits());
         emit log_named_uint("withdraws", handler.withdraws());
@@ -426,5 +473,29 @@ contract VaultConformanceInvariant is LidoLendSetup {
         emit log_named_uint("skippedRepays", handler.skippedRepays());
         emit log_named_uint("skippedLiquidations", handler.skippedLiquidations());
         emit log_named_uint("skippedSettlementLtv", handler.skippedSettlementLtv());
+        // No counter has a floor here: a run can miss any action.
+        // `test_targetSelectors_containCrashPauseAndSupplyCap` checks that the fuzzer can call the three wired actions.
+        // `test_seededState_reachesSettleFallbackExitAndLiquidation` reaches a settle, a fallback exit and a
+        // liquidation.
+    }
+
+    /// @dev The fuzzer calls only the selectors in the target list of the handler. `crashPrice` sets a crashed price,
+    ///      which liquidation and bad debt need. `pauseResume` pauses or resumes the market. `setSupplyCap` sets or
+    ///      lifts the supply cap.
+    function test_targetSelectors_containCrashPauseAndSupplyCap() public view {
+        FuzzSelector[] memory targets = targetSelectors();
+        assertEq(targets.length, 1, "one target selector list");
+        assertEq(targets[0].addr, address(handler), "the list targets the handler");
+        bytes4[] memory selectors = targets[0].selectors;
+        assertTrue(_contains(selectors, VaultHandler.crashPrice.selector), "crashPrice is not a target");
+        assertTrue(_contains(selectors, VaultHandler.pauseResume.selector), "pauseResume is not a target");
+        assertTrue(_contains(selectors, VaultHandler.setSupplyCap.selector), "setSupplyCap is not a target");
+    }
+
+    function _contains(bytes4[] memory selectors, bytes4 selector) private pure returns (bool) {
+        for (uint256 i; i < selectors.length; i++) {
+            if (selectors[i] == selector) return true;
+        }
+        return false;
     }
 }

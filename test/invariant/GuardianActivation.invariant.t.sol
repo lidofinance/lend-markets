@@ -12,8 +12,8 @@ import {GuardianActivationHandler} from "./handlers/GuardianActivationHandler.so
 /// @notice Stateful invariants that connect the guardian registry to the policy that reads it. The market in
 ///         this suite has a non-zero frontier fallback and a non-zero per-suspect delay.
 /// @dev This configuration is necessary. `ActivationInflowHandler` sets the fallback to zero, and
-///      `MarketSolvency` gives instant activation to each actor. No other suite tests the surcharge arithmetic
-///      or the frontier gate.
+///      `MarketSolvency` keeps the default zero fallback and files no guardian report. No other suite tests
+///      the surcharge arithmetic or the frontier gate.
 ///
 ///      The suite computes the unlock time from the start and the base delay of the lot. It does not read the
 ///      unlock time from the controller, because that value is the value under test. The handler asserts the
@@ -128,14 +128,21 @@ contract GuardianActivationInvariant is LidoLendSetup {
         emit log_named_uint("maturedOnFallback", handler.maturedOnFallback());
     }
 
-    /// @dev The deadline starts at the lot start. The surcharge increases the unlock time only. If the base
-    ///      delay and the surcharge together reach the fallback window, the deadline is always earlier than the
-    ///      unlock time. The lot then matures without scan evidence.
+    /// @dev Specified behaviour: the fallback deadline starts at the lot start, and the surcharge increases the unlock
+    ///      time only. If the base delay and the surcharge together reach the fallback window, the deadline is never
+    ///      later than the unlock time. The lot then matures without scan evidence. `guardian-signals.md` defines
+    ///      the deadline as `activatingStart + maxGuardiansQuorumDelay` and accepts the fallback as a liveness
+    ///      trade-off.
+    ///      Mechanism: `CollateralActivationLib.sync` measures `maxQuorumDelayElapsed` from `activatingStart`, but
+    ///      `_getUnlockTime` adds `strikeCount * delayPerStrike` and `suspectCount * delayPerSuspect` to the unlock.
+    ///      When the unlock passes `activatingStart + maxGuardiansQuorumDelay`, the fallback holds as soon as the
+    ///      unlock time passes, and `hasGuardiansQuorum` has no effect.
+    ///      Same cause: strikes alone, suspects alone, or both give the same result. A borrower with flags below the
+    ///      quorum, or with suspect reports, thus matures with no quorum scan, but no earlier than its surcharged
+    ///      unlock time.
     ///
-    ///      The specification permits this result, and the test therefore asserts it as the expected value. If
-    ///      a later change measures the deadline from the unlock time, this test fails. The campaign above
-    ///      cannot reach this state. Three guardians at two hours for each signal stay inside the 36-hour
-    ///      window.
+    ///      The campaign above cannot reach this state. Three guardians at two hours for each signal stay inside the
+    ///      36-hour window. If a later change measures the deadline from the unlock time, this test fails.
     function test_largeSurchargeDischargesTheFrontierRequirement() public {
         Market storage m = protocol.markets[0];
         address borrower = _actor("dave");

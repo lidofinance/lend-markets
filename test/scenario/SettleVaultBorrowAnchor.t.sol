@@ -620,6 +620,15 @@ contract SettleVaultBorrowAnchorTest is Test, LidoLendDeployer {
     ///      controller quotes no cut at all and the queue leg stops on it. The exit partial-fills on its liquid leg
     ///      instead of reverting. Repaying the dust root removes it from the queue, and the leftover shares then
     ///      complete through the ordinary redeem leg.
+    /// @dev Fixed issue: a dust-debt queue root made `fallbackExit` revert when its settle leg cut that root. The
+    ///      revert also rolled back a liquid leg that had already paid out.
+    ///      Root cause: the old `settlementSlice` quoted a positive cut for the root that seized zero collateral.
+    ///      `LidoLend.settle` reverted on it, which rolled back the whole exit. Now: `settlementSlice` returns an empty
+    ///      slice when `_seizedCollateral` is zero, and `fallbackExit` breaks its settle loop on it. The exit burns
+    ///      shares only for the legs that ran.
+    ///      Same cause: a dust root left by a partial repay, a partial liquidation, or an earlier partial cut. A small
+    ///      `sliceFloorAssets` at a price above `ORACLE_PRICE_SCALE`, and a small exit tail budget, have the same
+    ///      effect. The dust root still blocks the settle leg for borrowers behind it.
     function test_fallbackExit_dustRootPartialFillsUntilDustIsRepaid() public {
         _repayAll(FILLER);
         _repayAll(THIRD);

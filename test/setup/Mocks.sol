@@ -21,6 +21,29 @@ contract MockERC20 is ERC20 {
     }
 }
 
+/// @dev Receiver side of `CallbackERC20`.
+interface ITokenTransferHook {
+    function onTokenTransfer(address from, uint256 amount) external;
+}
+
+/// @dev `MockERC20` that calls `onTokenTransfer` on one registered receiver after each transfer to it, as an
+///      ERC-777 or ERC-1363 token gives control to a receiver. Only the registered address gets the call, so a
+///      transfer to the core or to an account without code does not revert.
+contract CallbackERC20 is MockERC20 {
+    address public hookedReceiver;
+
+    constructor(string memory name_, string memory symbol_, uint8 decimals_) MockERC20(name_, symbol_, decimals_) {}
+
+    function setHookedReceiver(address receiver) external {
+        hookedReceiver = receiver;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        super._update(from, to, value);
+        if (to != address(0) && to == hookedReceiver) ITokenTransferHook(to).onTokenTransfer(from, value);
+    }
+}
+
 /// @dev Minimal WETH9-style wrapped-native token, so bundle tests can exercise the native-ETH wrap leg
 ///      on a bare local chain.
 contract MockWETH is ERC20 {

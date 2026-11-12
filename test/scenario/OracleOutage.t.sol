@@ -3,7 +3,9 @@ pragma solidity 0.8.36;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
+import {Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {WAD} from "@lido-lend/src/libraries/MathLib.sol";
 
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -23,6 +25,8 @@ import {MockERC20, MockNavOracle, MockUsdFeed} from "../setup/Mocks.sol";
 ///         healthy position rejecting a liquidation.
 contract OracleOutageTest is LidoLendSetup {
     using MarketActions for Market;
+
+    uint256 internal constant LLTV = 0.8e18;
 
     /// @dev `price()` per unit of NAV: 10^(36 + loanDec + feedDec - 18 - 18) / 10^feedDec at an $1.00 feed,
     ///      which is 1e18 for the 18-decimal loan token below.
@@ -147,6 +151,48 @@ contract OracleOutageTest is LidoLendSetup {
         _assertPricedActionsRevert(abi.encodeWithSelector(UsdyStableOracle.PriceOutOfBounds.selector, outOfBand));
         _assertUnpricedActionsRun();
         _assertMarketResumes();
+    }
+
+    // ── interest through an outage ──
+
+    /// @dev An outage does not block accrual: `accrueInterest` succeeds and books interest while no one can liquidate.
+    ///      A borrower who does not cure crosses LLTV from interest alone and is liquidated when the price returns.
+    function test_outage_interestAccrues_uncuredBorrowerLiquidatableWhenPriceReturns() public {
+        Market storage m = _m();
+        address victim = _actor("victim");
+        uint256 price = m.oracle.price();
+
+        // The victim takes all free liquidity at LTV 0.76: utilization is 100% and the position is healthy.
+        MorphoMarket memory market = m.core.market(m.id);
+        uint256 victimDebt = market.totalSupplyAssets - market.totalBorrowAssets;
+        uint256 victimCollateral = victimDebt * ORACLE_PRICE_SCALE / price * WAD / 0.76e18;
+        _fund(m.collateralToken, victim, victimCollateral);
+        m.supplyCollateral(victim, victimCollateral);
+        m.activateCollateral();
+        m.borrow(victim, victimDebt);
+        market = m.core.market(m.id);
+        assertEq(market.totalBorrowAssets, market.totalSupplyAssets, "setup: utilization is 100%");
+        assertLt(m.ltvAt(victim, price), LLTV, "setup: healthy before the outage");
+
+        nav.setDown(true);
+        vm.warp(block.timestamp + 21 days);
+
+        // The expected value takes its rate from the IRM. It pins that the accrual books the whole outage interval.
+        uint256 interest = m.pendingInterest();
+        m.accrueInterest();
+        assertEq(
+            m.core.market(m.id).totalBorrowAssets, market.totalBorrowAssets + interest, "21 days booked during outage"
+        );
+
+        uint256 victimShares = m.core.position(m.id, victim).borrowShares;
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(MockNavOracle.NavOracleDown.selector));
+        m.core.liquidate(m.params, victim, 0, victimShares, "");
+
+        nav.setDown(false);
+        assertEq(m.oracle.price(), price, "the same price returns");
+        assertGt(m.ltvAt(victim, price), LLTV, "interest alone crossed LLTV");
+        m.liquidate(keeper, victim, 0, victimShares);
     }
 
     // ── the matrix ──
