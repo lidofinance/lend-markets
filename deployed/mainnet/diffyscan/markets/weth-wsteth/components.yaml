@@ -1,0 +1,23 @@
+# Source pins checked against the protocol audit record; fill production addresses after deployment.
+# Reused implementations refer to the completed protocol verification record at their own audited revision.
+contracts:
+  '<RECORDED_GUARDIAN_REGISTRY_PROXY>': OssifiableProxy
+  '<RECORDED_CONTROLLER_PROXY>': OssifiableProxy
+  '<RECORDED_VAULT_PROXY>': OssifiableProxy
+explorer_hostname: api.etherscan.io
+explorer_chain_id: 1
+explorer_token_env_var: ETHERSCAN_EXPLORER_TOKEN
+rpc_url_env_var: REMOTE_RPC_URL
+github_repo:
+  url: https://github.com/lidofinance/lend-markets
+  commit: 93d4cd057b7caf6ac829621f168b6e0704b8acf9
+  relative_root: ''
+dependencies:
+  lib/openzeppelin-contracts:
+    url: https://github.com/OpenZeppelin/openzeppelin-contracts
+    commit: 5fd1781b1454fd1ef8e722282f86f9293cacf256
+    relative_root: ''
+fail_on_bytecode_comparison_error: true
+metadata:
+  scope: New market components only; reused implementations reference the completed protocol verification record.
+  review: Confirm dependency source roots and exact revisions against explorer build metadata.

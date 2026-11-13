@@ -1,0 +1,41 @@
+# Source pins checked against the protocol audit record; fill production addresses after deployment.
+# Nested lend dependency paths must match the published compiler source paths.
+contracts:
+  '<RECORDED_IRM_CONFIG>': AdaptiveCurveConfig
+explorer_hostname: api.etherscan.io
+explorer_chain_id: 1
+explorer_token_env_var: ETHERSCAN_EXPLORER_TOKEN
+rpc_url_env_var: REMOTE_RPC_URL
+github_repo:
+  url: https://github.com/lidofinance/lend-markets
+  commit: 93d4cd057b7caf6ac829621f168b6e0704b8acf9
+  relative_root: ''
+dependencies:
+  lib/lido-lend:
+    url: https://github.com/lidofinance/lend
+    commit: 422d589f9d098124249b54b55306884165833207
+    relative_root: ''
+  lib/lido-lend-irm:
+    url: https://github.com/lidofinance/lend-irm
+    commit: 566d31f7dfdf83d07a6593f641f7474c263a7f89
+    relative_root: ''
+  lib/lend:
+    url: https://github.com/lidofinance/lend
+    commit: 422d589f9d098124249b54b55306884165833207
+    relative_root: ''
+  lib/lend-irm:
+    url: https://github.com/lidofinance/lend-irm
+    commit: 566d31f7dfdf83d07a6593f641f7474c263a7f89
+    relative_root: ''
+  lib/lend-irm/lib/lido-lend:
+    url: https://github.com/lidofinance/lend
+    commit: 422d589f9d098124249b54b55306884165833207
+    relative_root: ''
+  lib/lido-lend-irm/lib/lido-lend:
+    url: https://github.com/lidofinance/lend
+    commit: 422d589f9d098124249b54b55306884165833207
+    relative_root: ''
+fail_on_bytecode_comparison_error: true
+metadata:
+  scope: New market components only; reused implementations reference the completed protocol verification record.
+  review: Confirm dependency source roots and exact revisions against explorer build metadata.

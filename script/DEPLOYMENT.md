@@ -170,3 +170,19 @@ parameters before running State Mate. Each market configuration must reflect tha
 ## Audit checksums
 
 Run `make audit-checksums` or `make audit-checksums REF=<git-ref>` to compare audited source digests.
+
+### Launch without Exit Book access
+
+For a market that must remain outside both Exit Book allowlists, pass
+`ACCEPTANCE_ALLOW_EXIT_BOOKS=false` to `make acceptance-run`. Activated acceptance then checks
+that the market and vault are not allowed. The default remains `true`. The pauser test runs in
+both modes; factory registration does not change a market allowlist.
+
+The local activation helper is [`docs/deployment/test-activation.sh`](../docs/deployment/test-activation.sh).
+It accepts only a loopback Anvil fork, registers the seven recorded factories when missing, and
+replays the activation motion. This is not a test of the full prerequisite DAO vote.
+Run `bash docs/deployment/test-activation.sh --help` for its inputs.
+
+Market verification configs are in `deployed/mainnet/state-mate/markets/weth-wsteth.yaml` and
+`deployed/mainnet/diffyscan/markets/weth-wsteth/`. Fill the deployment addresses and approved
+expectations before use. See [State Mate on a fork](../docs/deployment/fork-state-mate.md).

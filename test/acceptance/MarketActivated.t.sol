@@ -26,7 +26,8 @@ contract MarketActivatedAcceptance is AcceptanceBase {
         _assertRoleHolderCompleteness();
         _assertActivated();
         _assertActivationFunding();
-        _assertExitBooksAllowed();
+        if (vm.envOr("ACCEPTANCE_ALLOW_EXIT_BOOKS", true)) _assertExitBooksAllowed();
+        else _assertExitBooksNotAllowed();
     }
 
     function test_circuitBreakerPausesControllerAndClearsRegistration() external {

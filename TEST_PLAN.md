@@ -1532,8 +1532,8 @@ One market of a deploy run, on a fork. Expected values come from `script/deploym
    - [x] rejects nonzero vault supply, a nonempty settlement queue or a wrong vault symbol — [`testRevert_nonZeroVaultSupplyIsRejected`](test/acceptance/MarketMotionReadiness.t.sol#L95), [`testRevert_nonZeroSettlementQueueIsRejected`](test/acceptance/MarketMotionReadiness.t.sol#L101), [`testRevert_wrongVaultSymbolIsRejected`](test/acceptance/MarketMotionReadiness.t.sol#L107)
 2. After the motion — [`test/acceptance/MarketActivated.t.sol`](test/acceptance/MarketActivated.t.sol); skips before activation
    - [x] the market is created, bound and routed, with exact role holders — [`test_fullyConnectedConfiguredAndLive`](test/acceptance/MarketActivated.t.sol#L20)
-   - [x] the registered CircuitBreaker pauser pauses the controller and the registration clears — [`test_circuitBreakerPausesControllerAndClearsRegistration`](test/acceptance/MarketActivated.t.sol#L32)
-   - [x] the exit-book pauser pauses both books — [`test_exitBookPauserPausesBothBooks`](test/acceptance/MarketActivated.t.sol#L36)
+   - [x] the registered CircuitBreaker pauser pauses the controller and the registration clears — [`test_circuitBreakerPausesControllerAndClearsRegistration`](test/acceptance/MarketActivated.t.sol#L33)
+   - [x] the exit-book pauser pauses both books — [`test_exitBookPauserPausesBothBooks`](test/acceptance/MarketActivated.t.sol#L37)
 3. A second activation — [`test/acceptance/MultiMarketActivationSimulation.t.sol`](test/acceptance/MultiMarketActivationSimulation.t.sol) (`make acceptance-run-multi`)
    - [x] activating market B leaves market A's routing, controller, pauser and allowlists intact — [`test_twoMarketsActivateWithoutCrossMarketStateCollision`](test/acceptance/MultiMarketActivationSimulation.t.sol#L8)
 4. Fresh-fixture acceptance — [`test/fork/FreshDeploymentAcceptance.t.sol`](test/fork/FreshDeploymentAcceptance.t.sol)
