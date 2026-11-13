@@ -27,6 +27,7 @@ abstract contract WethWstethMarket is MarketDeployment {
         pure
         returns (MarketParameters memory parameters)
     {
+        int256 stethAPRma90 = 0.0223519561285827 ether; // https://dune.com/queries/9095577 2026-10-29
         parameters.name = "weth-wsteth";
         parameters.guardianGroup = keccak256("weth-wsteth");
         parameters.market.loanToken = WETH;
@@ -52,20 +53,19 @@ abstract contract WethWstethMarket is MarketDeployment {
         parameters.committee.guardians = guardians;
         parameters.committee.quorum = 1;
         parameters.committee.suspectWindow = 1 days;
-        // Annual base APR 0.0223519561285827; scale by 0.9 or 2 before dividing by 365 days.
         parameters.curve = AdaptiveCurveParams({
             curveSteepness: 4e18,
-            adjustmentSpeed: 1_585_489_599_188,
+            adjustmentSpeed: 50 ether / int256(365 days),
             targetUtilization: 0.9e18,
-            initialRateAtTarget: 637_898_291,
-            minRateAtTarget: 31_709_791,
-            maxRateAtTarget: 1_417_551_758,
-            maxBorrowRate: 1_417_551_758
+            initialRateAtTarget: stethAPRma90 * 9 / 10 / int256(365 days),
+            minRateAtTarget: 0.001 ether / int256(365 days),
+            maxRateAtTarget: 2 * stethAPRma90 / int256(365 days),
+            maxBorrowRate: 2 * uint256(stethAPRma90) / 365 days
         });
     }
 
     function _deployPriceFeedImplementation(MarketParameters memory parameters) internal override returns (address) {
-        return address(new WstEthRateOracle(parameters.market.collateralToken));
+        return address(new WstEthRateOracle(WSTETH));
     }
 
     function _checkPriceFeed(ProtocolAddresses memory p, MarketParameters memory parameters) internal view override {
