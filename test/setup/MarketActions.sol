@@ -958,11 +958,13 @@ library MarketActions {
         );
         if (seizedAssets != 0) {
             seized = seizedAssets;
-            repaid = seizedAssets.mulDivUp(price, ORACLE_PRICE_SCALE).wDivUp(incentive)
+            repaid = seizedAssets.mulDivUp(price, ORACLE_PRICE_SCALE)
+                .wDivUp(incentive)
                 .toSharesUp(mkt.totalBorrowAssets, mkt.totalBorrowShares);
         } else {
             repaid = repaidShares;
-            seized = repaidShares.toAssetsDown(mkt.totalBorrowAssets, mkt.totalBorrowShares).wMulDown(incentive)
+            seized = repaidShares.toAssetsDown(mkt.totalBorrowAssets, mkt.totalBorrowShares)
+                .wMulDown(incentive)
                 .mulDivDown(ORACLE_PRICE_SCALE, price);
         }
         repaidAssets = repaid.toAssetsUp(mkt.totalBorrowAssets, mkt.totalBorrowShares);

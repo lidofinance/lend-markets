@@ -25,7 +25,15 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
     function setUp() public {
         _fork();
         _bindRole();
-        other = _bindMarket(_marketForRole("usdy-usdt")); // a one-market deployment skips here
+        string memory second;
+        for (uint256 i; i < forkDeployment.markets.length; ++i) {
+            if (keccak256(bytes(forkDeployment.markets[i].parameters.name)) != keccak256(bytes(deployed.name))) {
+                second = forkDeployment.markets[i].parameters.name;
+                break;
+            }
+        }
+        if (bytes(second).length == 0) vm.skip(true, "MultiMarket: run has only one market");
+        other = _bindMarket(second);
         _pokeAccrue(other);
         _copyMarket(otherMarket, other);
 

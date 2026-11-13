@@ -1,6 +1,7 @@
 name: coverage
 
 on:
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -23,22 +24,16 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      # The whole suite is measured, fork suites included, so they need a deployment to bind to — the same
-      # provisioned anvil fork as ci.yml's fork job. The secret is the upstream archive node anvil forks.
-      - name: provision a fork deployment
+      - name: build deployment dependencies
+        run: make build-deps
+
+      - name: coverage (including in-process fork setup)
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
+          DEPLOYMENT_RUN: ''
         run: |
-          test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for the coverage job"; exit 1; }
-          make provision-fork
-
-      # `--ir-minimum` lets coverage instrument the bytecode while keeping via_ir for
-      # compilation — turning via_ir off triggers stack-too-deep on the deleverage helpers.
-      - name: coverage
-        env:
-          RPC_URL: http://127.0.0.1:8545
-          ARTIFACTS_DIR: fork
-        run: forge coverage --ir-minimum --report summary --report lcov --report-file lcov.info
+          test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for coverage"; exit 1; }
+          forge coverage --report summary --report lcov --report-file lcov.info
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

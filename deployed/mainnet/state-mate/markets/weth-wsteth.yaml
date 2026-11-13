@@ -1,0 +1,578 @@
+# Fill approved rates before rehearsal; production addresses after recording; expected price at the verification block.
+# Inert WETH/wstETH market on mainnet (block 26406665): components deployed, core market not created, before guardian delegation or heartbeats.
+# Fill addresses, APR-derived rates and the independently calculated price before running.
+# Standalone market verification: shared entries read only this market; proxy metadata binds the ABI.
+# Fill the participating Safe expectations from the approved roster before rehearsal.
+# Complete non-enumerable instant-activation caller checks from controller event history in the plan.
+# Null checks are deliberate exclusions, not successful assertions; recheck ABI coverage if the selected Safe version changes.
+# After activation, change only reviewed expectations for routing, fee/seed, steward/pauser and allowlists.
+deployed:
+  l1:
+  - '0x026a770badc7126c7252Ef8d407E5b9C56147491'
+  - '0xa40Bd2281F54A2D3845F9535b74D2abD946E1911'
+  - '0x81B7cC9523B30429110282d90db2fa90ff443d91'
+  - '0x683eA34c29658fb6cDeCc92Eb4B4e7f766979868'
+  - '0xf6f1565F4fD3d29E6bDAb86764A50BCde381422f'
+  - '0xC3C241bC213EF3ba16234A7c689999209cE515D7'
+  - '0xd0A81A130a303237d338A0b5835edcB011Ab3afd'
+  - '0xAd28EFa8f2ef56a68b0Eb6836f4aE1d2D6459Ecd'
+  - '0x0d2580e4c9b20507eDFAeFC7777d760F12Ad55D4'
+  - '0x20a078F9940dC05C46De4153D1bCbd54D2b5b151'
+  - '0xEA67847D37069bF385983c6f58e59dD6011A59a0'
+  - '0xc8a8CBBF4c55980F85332fD8470DF0fC52d690aC'
+  - '0x66aFC8Bb3aB2f01127fDdEb05425bAD77923091f'
+  - '0xCF1B266d320CA9c0d4e13eF2C46465962F040e88'
+  - '0x69136Ab2be05194C0b2773f6E2Cb944bCeb1D6b8'
+  - '0xd8765FA896be3D30A49B9a7d95453E34E2c7A056'
+  - '0x8549736900BF3e643D7660E6DfDd09B0FBa2E286'
+  - '0x6076f89f5Cd68c526C73eA1F730d9ce8f05301a6'
+  - '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
+  - '0x41675C099F32341bf84BFc5382aF534df5C7461a'
+  - '0x4f29aA4c299e17176b48c41D67ee97aE673d29bC'
+  - '0x41675C099F32341bf84BFc5382aF534df5C7461a'
+  - '0x604B13eD638663AA0C1eEF0c3482e51f228BA2E1'
+  - '0x41675C099F32341bf84BFc5382aF534df5C7461a'
+l1:
+  rpcUrl: MAINNET_RPC_URL
+  chainId: 1
+  explorerHostname: api.etherscan.io
+  explorerTokenEnv: ETHERSCAN_EXPLORER_TOKEN
+  contracts:
+    core:
+      name: LidoLend
+      address: '0x026a770badc7126c7252Ef8d407E5b9C56147491'
+      proxyName: OssifiableProxy
+      implementation: '0xa40Bd2281F54A2D3845F9535b74D2abD946E1911'
+      checks:
+        market:
+        - args:
+          - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+          result:
+          - '0'
+          - '0'
+          - '0'
+          - '0'
+          - '0'
+          - '0'
+        marketController:
+        - args:
+          - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+          result: '0x0000000000000000000000000000000000000000'
+        idToMarketParams:
+        - args:
+          - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+          result:
+          - '0x0000000000000000000000000000000000000000'
+          - '0x0000000000000000000000000000000000000000'
+          - '0x0000000000000000000000000000000000000000'
+          - '0x0000000000000000000000000000000000000000'
+          - '0'
+        isSettlementEnabled:
+        - args:
+          - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+          result: false
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        DOMAIN_SEPARATOR: null
+        extSloads: null
+        feeRecipient: null
+        isAuthorized: null
+        isInitialized: null
+        isIrmEnabled: null
+        isLltvEnabled: null
+        nonce: null
+        owner: null
+        position: null
+    irmRouter:
+      name: IrmRouter
+      address: '0x81B7cC9523B30429110282d90db2fa90ff443d91'
+      proxyName: OssifiableProxy
+      implementation: '0x683eA34c29658fb6cDeCc92Eb4B4e7f766979868'
+      checks:
+        marketIrm:
+        - args:
+          - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+          result: '0x0000000000000000000000000000000000000000'
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        MORPHO: null
+        borrowRateView: null
+        isInitialized: null
+        manager: null
+        owner: null
+    adaptiveCurveIrm:
+      name: AdaptiveCurveIrm
+      address: '0xf6f1565F4fD3d29E6bDAb86764A50BCde381422f'
+      checks:
+        marketCurveConfig:
+        - args:
+          - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+          result: '0x0000000000000000000000000000000000000000'
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        ROUTER: null
+        borrowRateView: null
+        manager: null
+        owner: null
+        rateAtTarget: null
+    riskStewardDashboard:
+      name: RiskStewardDashboard
+      address: '0xC3C241bC213EF3ba16234A7c689999209cE515D7'
+      checks:
+        marketStewards:
+        - args:
+          - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+          result: []
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        DEFAULT_ADMIN_ROLE: null
+        LIDO_LEND: null
+        STEWARD_ADMIN_ROLE: null
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        hasRole: null
+        isMarketSteward: null
+        supportsInterface: null
+    circuitBreaker:
+      name: CircuitBreaker
+      address: '0xd0A81A130a303237d338A0b5835edcB011Ab3afd'
+      checks:
+        getPauser:
+        - args:
+          - '0xCF1B266d320CA9c0d4e13eF2C46465962F040e88'
+          result: '0x0000000000000000000000000000000000000000'
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        ADMIN: null
+        MAX_HEARTBEAT_INTERVAL: null
+        MAX_PAUSE_DURATION: null
+        MIN_HEARTBEAT_INTERVAL: null
+        MIN_PAUSE_DURATION: null
+        getPausableCount: null
+        getPausables: null
+        heartbeatExpiry: null
+        heartbeatInterval: null
+        isPauserLive: null
+        pauseDuration: null
+    morphoExitBook:
+      name: MorphoExitBook
+      address: '0xAd28EFa8f2ef56a68b0Eb6836f4aE1d2D6459Ecd'
+      checks:
+        isMarketAllowed:
+        - args:
+          - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+          result: false
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        ALLOWLIST_MANAGER_ROLE: null
+        DEFAULT_ADMIN_ROLE: null
+        FEE_MANAGER_ROLE: null
+        MAX_PRIORITY_FEE: null
+        MAX_REQUEST_LIFETIME: null
+        MAX_SERVICE_FEE: null
+        MORPHO: null
+        PAUSER_ROLE: null
+        RECOVERER_ROLE: null
+        RESUMER_ROLE: null
+        feeRecipient: null
+        getExitRequest: null
+        getOwnerRequestCount: null
+        getOwnerRequestIds: null
+        getRequests: null
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        hasRole: null
+        lastRequestId: null
+        marketParamsOf: null
+        paused: null
+        serviceFee: null
+        supportsInterface: null
+    erc4626ExitBook:
+      name: Erc4626ExitBook
+      address: '0x0d2580e4c9b20507eDFAeFC7777d760F12Ad55D4'
+      checks:
+        isVaultAllowed:
+        - args:
+          - '0xd8765FA896be3D30A49B9a7d95453E34E2c7A056'
+          result: false
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        ALLOWLIST_MANAGER_ROLE: null
+        DEFAULT_ADMIN_ROLE: null
+        FEE_MANAGER_ROLE: null
+        MAX_PRIORITY_FEE: null
+        MAX_REQUEST_LIFETIME: null
+        MAX_SERVICE_FEE: null
+        PAUSER_ROLE: null
+        RECOVERER_ROLE: null
+        RESUMER_ROLE: null
+        feeRecipient: null
+        getExitRequest: null
+        getOwnerRequestCount: null
+        getOwnerRequestIds: null
+        getRequests: null
+        getRoleAdmin: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        hasRole: null
+        lastRequestId: null
+        paused: null
+        serviceFee: null
+        supportsInterface: null
+        vaultOf: null
+    marketPriceFeed:
+      name: WstEthRateOracle
+      address: '0x20a078F9940dC05C46De4153D1bCbd54D2b5b151'
+      proxyName: OssifiableProxy
+      implementation: '0xEA67847D37069bF385983c6f58e59dD6011A59a0'
+      proxyAdmin: '0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c'
+      proxyChecks:
+        # These two fields are checked by implementation/proxyAdmin above.
+        proxy__getAdmin: null
+        proxy__getImplementation: null
+        proxy__getIsOssified: false
+      checks:
+        WSTETH: '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0'
+        price: '1249147186214455561684769463261025929'
+    marketGuardianSignals:
+      name: GuardianSignals
+      address: '0xc8a8CBBF4c55980F85332fD8470DF0fC52d690aC'
+      proxyName: OssifiableProxy
+      implementation: '0x66aFC8Bb3aB2f01127fDdEb05425bAD77923091f'
+      proxyAdmin: '0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c'
+      proxyChecks:
+        # These two fields are checked by implementation/proxyAdmin above.
+        proxy__getAdmin: null
+        proxy__getImplementation: null
+        proxy__getIsOssified: false
+      checks:
+        getGuardianCount: 1
+        getGuardians:
+        - - '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
+        - - '0x0000000000000000000000000000000000000000'
+        getQuorum: 1
+        getSuspectWindow: 86400
+        getDelegate:
+        - args:
+          - '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
+          result: '0x0000000000000000000000000000000000000000'
+        getHeartbeat:
+        - args:
+          - '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
+          result: 0
+        getQuorumFrontier: 0
+        getRoleAdmin:
+        - args:
+          - '0x0000000000000000000000000000000000000000000000000000000000000000'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        - args:
+          - '0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        - args:
+          - '0x2185faf57ed59187a53d561a36691febce26676457b65b4553aa732fd2c9d195'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        - args:
+          - '0xfc5f5b5f0f3f8995740cf969e82c673b6edb5075d8813046f28c6058bdd58de0'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        ACCESS_LIMITER_ROLE: null
+        ACCESS_RESTORER_ROLE: null
+        DEFAULT_ADMIN_ROLE: null
+        MANAGER_ROLE: null
+        MAX_GUARDIANS_COUNT: null
+        MAX_SUSPECT_WINDOW: null
+        getFlaggedBy: null
+        getHeartbeats: null
+        getOpinion: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        getSuspectedBy: null
+        hasRole: null
+        isBanned: null
+        isGuardian: null
+        supportsInterface: null
+      ozAcl:
+        '0x0000000000000000000000000000000000000000000000000000000000000000':
+        - '0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c'
+        '0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08':
+        - '0x85378a1073E8f338e11A97E090E47e2F0FdD3D5a'
+        '0x2185faf57ed59187a53d561a36691febce26676457b65b4553aa732fd2c9d195':
+        - '0x85378a1073E8f338e11A97E090E47e2F0FdD3D5a'
+        '0xfc5f5b5f0f3f8995740cf969e82c673b6edb5075d8813046f28c6058bdd58de0': []
+    marketController:
+      name: LidoLendMarketController
+      address: '0xCF1B266d320CA9c0d4e13eF2C46465962F040e88'
+      proxyName: OssifiableProxy
+      implementation: '0x69136Ab2be05194C0b2773f6E2Cb944bCeb1D6b8'
+      proxyAdmin: '0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c'
+      proxyChecks:
+        # These two fields are checked by implementation/proxyAdmin above.
+        proxy__getAdmin: null
+        proxy__getImplementation: null
+        proxy__getIsOssified: false
+      checks:
+        LIDO_LEND: '0x026a770badc7126c7252Ef8d407E5b9C56147491'
+        marketId: '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+        guardianSignals: '0xc8a8CBBF4c55980F85332fD8470DF0fC52d690aC'
+        supplyCap: '5000000000000000000000'
+        collateralActivationConfig:
+        - '7200'
+        - '28800'
+        - '1000000000000000000000'
+        - '1000000000000000000'
+        - '0'
+        - '10000000000000000000'
+        - '172800'
+        - '43200'
+        - '43200'
+        settlementConfig:
+        - '100'
+        - '10000000000000000000'
+        - '10000000000000000000'
+        - '100'
+        isPaused: false
+        isFrozen: false
+        hasBadDebt: false
+        currentInflow: '0'
+        settlementBorrowersCount: '0'
+        getRoleAdmin:
+        - args:
+          - '0x0000000000000000000000000000000000000000000000000000000000000000'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        - args:
+          - '0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        - args:
+          - '0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        - args:
+          - '0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        - args:
+          - '0x92de27771f92d6942691d73358b3a4673e4880de8356f8f2cf452be87e02d363'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        - args:
+          - '0x3e02eaefb22229c9fa4ecb927d4a3b0bd2d30b1af650a970c5a95ba1f96906ea'
+          result: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        DEFAULT_ADMIN_ROLE: null
+        FREEZER_ROLE: null
+        MANAGER_ROLE: null
+        MAX_BORROW_SHARE_RATE: null
+        PAUSER_ROLE: null
+        PAUSE_INFINITELY: null
+        RESUMER_ROLE: null
+        UNFREEZER_ROLE: null
+        currentActivationDelay: null
+        getResumeSinceTimestamp: null
+        getRoleMember: null
+        getRoleMemberCount: null
+        getRoleMembers: null
+        hasInstantActivation: null
+        hasRole: null
+        maxDeposit: null
+        maxWithdrawableAssets: null
+        nextSettlementBorrower: null
+        positionOf: null
+        settlementBorrowers: null
+        settlementFor: null
+        settlementLtv: null
+        supportsInterface: null
+      ozAcl:
+        '0x0000000000000000000000000000000000000000000000000000000000000000':
+        - '0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c'
+        '0x241ecf16d79d0f8dbfb92cbc07fe17840425976cf0667f022fe9877caa831b08':
+        - '0x85378a1073E8f338e11A97E090E47e2F0FdD3D5a'
+        - '0xC3C241bC213EF3ba16234A7c689999209cE515D7'
+        '0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a':
+        - '0xd0A81A130a303237d338A0b5835edcB011Ab3afd'
+        - '0x7914b5a1539b97Bd0bbd155757F25FD79A522d24'
+        '0xf7f4a11bd0d206dbf09149f977ee978cf87879c93f7d8d7b725d222bdd3aa5e3':
+        - '0x7914b5a1539b97Bd0bbd155757F25FD79A522d24'
+        '0x92de27771f92d6942691d73358b3a4673e4880de8356f8f2cf452be87e02d363':
+        - '0xC3C241bC213EF3ba16234A7c689999209cE515D7'
+        '0x3e02eaefb22229c9fa4ecb927d4a3b0bd2d30b1af650a970c5a95ba1f96906ea':
+        - '0x85378a1073E8f338e11A97E090E47e2F0FdD3D5a'
+    marketVault:
+      name: LidoLendERC4626
+      address: '0xd8765FA896be3D30A49B9a7d95453E34E2c7A056'
+      proxyName: OssifiableProxy
+      implementation: '0x8549736900BF3e643D7660E6DfDd09B0FBa2E286'
+      proxyAdmin: '0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c'
+      proxyChecks:
+        # These two fields are checked by implementation/proxyAdmin above.
+        proxy__getAdmin: null
+        proxy__getImplementation: null
+        proxy__getIsOssified: false
+      checks:
+        LIDO_LEND: '0x026a770badc7126c7252Ef8d407E5b9C56147491'
+        controller: '0xCF1B266d320CA9c0d4e13eF2C46465962F040e88'
+        asset: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+        marketId: '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+        marketParams:
+        - '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+        - '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0'
+        - '0x20a078F9940dC05C46De4153D1bCbd54D2b5b151'
+        - '0x81B7cC9523B30429110282d90db2fa90ff443d91'
+        - '980000000000000000'
+        name: Lido Lend WETH (wstETH)
+        symbol: lendWETHwstETH
+        decimals: 18
+        totalSupply: '0'
+        totalAssets: '0'
+        managedSupplyShares: '0'
+        balanceOf:
+        - args:
+          - '0x000000000000000000000000000000000000dEaD'
+          result: '0'
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        DEFAULT_MAX_SETTLEMENT_ITERATIONS: null
+        allowance: null
+        convertToAssets: null
+        convertToShares: null
+        maxDeposit: null
+        maxMint: null
+        maxRedeem: null
+        maxWithdraw: null
+        previewDeposit: null
+        previewMint: null
+        previewRedeem: null
+        previewWithdraw: null
+    marketIrmConfig:
+      name: AdaptiveCurveConfig
+      address: '0x6076f89f5Cd68c526C73eA1F730d9ce8f05301a6'
+      checks:
+        CURVE_STEEPNESS: '4000000000000000000'
+        ADJUSTMENT_SPEED: '1585489599188'
+        TARGET_UTILIZATION: '900000000000000000'
+        INITIAL_RATE_AT_TARGET: '637898291'
+        MIN_RATE_AT_TARGET: '31709791'
+        MAX_RATE_AT_TARGET: '1417551758'
+        MAX_BORROW_RATE: '1417551758'
+        getCurveParams:
+        - '4000000000000000000'
+        - '1585489599188'
+        - '900000000000000000'
+        - '637898291'
+        - '31709791'
+        - '1417551758'
+        - '1417551758'
+    guardianRiskStewardSafe:
+      name: Safe
+      address: '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
+      proxyName: SafeProxy
+      implementation: '0x41675C099F32341bf84BFc5382aF534df5C7461a'
+      proxyChecks: {}
+      # Slots below are for Safe 1.4.1; check them against the approved version.
+      storage:
+      - slot: '0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5'
+        expected: '0x000000000000000000000000fd0732dc9e303f09fcef3a7388ad10a83459ec99'
+        label: fallbackHandler
+      - slot: '0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8'
+        expected: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        label: guard
+      checks:
+        VERSION: '1.4.1'
+        getThreshold: 1
+        getOwners:
+        - '0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd'
+        # Replace the first field with an address array. Add every additional page if the next pointer is not the sentinel.
+        getModulesPaginated:
+        - args:
+          - '0x0000000000000000000000000000000000000001'
+          - 100
+          result:
+          - []
+          - '0x0000000000000000000000000000000000000001'
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        approvedHashes: null
+        checkNSignatures: null
+        checkSignatures: null
+        domainSeparator: null
+        encodeTransactionData: null
+        getChainId: null
+        getStorageAt: null
+        getTransactionHash: null
+        isModuleEnabled: null
+        isOwner: null
+        nonce: null
+        signedMessages: null
+    trustedCallerSafe:
+      name: Safe
+      address: '0x4f29aA4c299e17176b48c41D67ee97aE673d29bC'
+      proxyName: SafeProxy
+      implementation: '0x41675C099F32341bf84BFc5382aF534df5C7461a'
+      proxyChecks: {}
+      # Slots below are for Safe 1.4.1; check them against the approved version.
+      storage:
+      - slot: '0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5'
+        expected: '0x000000000000000000000000fd0732dc9e303f09fcef3a7388ad10a83459ec99'
+        label: fallbackHandler
+      - slot: '0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8'
+        expected: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        label: guard
+      checks:
+        VERSION: '1.4.1'
+        getThreshold: 1
+        getOwners:
+        - '0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd'
+        # Replace the first field with an address array. Add every additional page if the next pointer is not the sentinel.
+        getModulesPaginated:
+        - args:
+          - '0x0000000000000000000000000000000000000001'
+          - 100
+          result:
+          - []
+          - '0x0000000000000000000000000000000000000001'
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        approvedHashes: null
+        checkNSignatures: null
+        checkSignatures: null
+        domainSeparator: null
+        encodeTransactionData: null
+        getChainId: null
+        getStorageAt: null
+        getTransactionHash: null
+        isModuleEnabled: null
+        isOwner: null
+        nonce: null
+        signedMessages: null
+    controllerPauserSafe:
+      name: Safe
+      address: '0x604B13eD638663AA0C1eEF0c3482e51f228BA2E1'
+      proxyName: SafeProxy
+      implementation: '0x41675C099F32341bf84BFc5382aF534df5C7461a'
+      proxyChecks: {}
+      # Slots below are for Safe 1.4.1; check them against the approved version.
+      storage:
+      - slot: '0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5'
+        expected: '0x000000000000000000000000fd0732dc9e303f09fcef3a7388ad10a83459ec99'
+        label: fallbackHandler
+      - slot: '0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8'
+        expected: '0x0000000000000000000000000000000000000000000000000000000000000000'
+        label: guard
+      checks:
+        VERSION: '1.4.1'
+        getThreshold: 1
+        getOwners:
+        - '0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd'
+        # Replace the first field with an address array. Add every additional page if the next pointer is not the sentinel.
+        getModulesPaginated:
+        - args:
+          - '0x0000000000000000000000000000000000000001'
+          - 100
+          result:
+          - []
+          - '0x0000000000000000000000000000000000000001'
+        # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
+        approvedHashes: null
+        checkNSignatures: null
+        checkSignatures: null
+        domainSeparator: null
+        encodeTransactionData: null
+        getChainId: null
+        getStorageAt: null
+        getTransactionHash: null
+        isModuleEnabled: null
+        isOwner: null
+        nonce: null
+        signedMessages: null

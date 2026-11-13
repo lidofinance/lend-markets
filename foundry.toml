@@ -1,6 +1,7 @@
 [profile.default]
 src = "src"
 test = "test"
+no_match_path = "test/deployment/**"
 out = "out"
 libs = ["lib"]
 names = true
@@ -38,6 +39,10 @@ fail_on_revert = true
 wrap_comments = true
 line_length = 120
 single_line_statement_blocks = "single"
+
+[profile.deployment]
+test = "test/deployment"
+no_match_path = "test/fork/**"
 
 [lint]
 exclude_lints = [

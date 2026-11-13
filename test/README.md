@@ -44,28 +44,35 @@ Limitations:
 
 ## 4. Empty-fork deploy tests (scratch deploy on a fork)
 
-The full deploy path exercised on a fork of the target network that is empty of the protocol but has the real external world (real tokens, wstETH, governance contracts): deploy scripts run end to end, artifacts are written, markets activate. This is what proves the *deploy tooling*, not the contracts.
+Fork fixtures deploy the protocol and WETH/wstETH markets using shared Solidity operations, activate them locally,
+and run integration and acceptance assertions. The source RPC is unchanged; no intermediate artifacts are written.
+The fresh fixture contains two WETH/wstETH markets. Historical USDY regressions remain available with a recorded run.
 
-- **Requires:** an archive RPC of the target network; anvil.
-- **Runs:** on deploy-script changes; as the pre-deploy rehearsal (full dry run of the deploy on a fork, under a scratch run id).
-- **Here:** `make provision-fork` / `make test-fork-provision` (deploys + activates the `fork-*` markets, then runs the fork suites against them).
+- **Requires:** a mainnet archive RPC.
+- **Here:** `make test-fork RPC_URL=<rpc>` for integrations and acceptance;
+  `make test-deployment RPC_URL=<rpc>` for missing/inert/active deployment-state scenarios. CI runs both targets.
+  Fixtures and recorded Solidity descriptions produce one `DeploymentSnapshot`.
+  `RecordedDeployment` selects the corresponding library under `script/deployment/<run>/artifacts/Deployment.sol`.
 
 ## 5. Live-deployment regression tests (fork against a real run)
 
-Flow tests bound to an **already-deployed** protocol: fork the network that holds it, read the run's immutable artifacts, and drive real flows against the live state. Never deploys what it tests. This is the regression net for "the deployed protocol still behaves" — after code changes or governance actions.
+Flow tests bound to an **already-deployed** protocol: fork the network that holds it, read the run's Solidity description, and drive real flows against the live state. Never deploys what it tests. This is the regression net for "the deployed protocol still behaves" — after code changes or governance actions.
 
-These suites check **functional correctness, not state values**: they take addresses from the artifacts, read parameters off the chain, and assert *relative* behavior (read a value, act, assert the delta) plus *relational* validity (`minActivationDelay < maxActivationDelay` and the like), so a degenerate on-chain configuration still trips them. Absolute parameter assertions belong to state-mate (kind 9) — baking state into these tests would mean rewriting them on every parameter change. When authoring, mind the asymmetry: a false positive fails loudly and gets fixed; a false negative accumulates silently and is the more dangerous of the two.
+These suites check **functional correctness, not state values**: they take addresses from the Solidity description, read parameters off the chain, and assert *relative* behavior (read a value, act, assert the delta) plus *relational* validity (`minActivationDelay < maxActivationDelay` and the like), so a degenerate on-chain configuration still trips them. Absolute parameter assertions belong to state-mate (kind 9) — baking state into these tests would mean rewriting them on every parameter change. When authoring, mind the asymmetry: a false positive fails loudly and gets fixed; a false negative accumulates silently and is the more dangerous of the two.
 
-- **Requires:** `RPC_URL` holding the deployment + `ARTIFACTS_DIR` naming the run under `deployed/<run>/`; `FORK_BLOCK` to pin a block for replay. Reverts (never skips) when the setup is missing; only a role with no market in the run, a missing optional artifact or an unmet network precondition skips a suite.
+- **Requires:** `RPC_URL` holding the deployment + `RUN` naming the run under
+  `script/deployment/<run>/artifacts/Deployment.sol`; `FORK_BLOCK` to pin a block for replay. Reverts (never skips) when the setup
+  is missing; absent market roles, optional components or network-specific preconditions can skip a suite.
 - **Runs:** after every deploy; on protocol-touching changes.
-- **Here:** `test/fork/` via `make test-fork` / `make fork-run RUN=<run>`.
+- **Here:** `test/fork/` via `make test-fork RUN=<run> PREPARE=false`. `make test-fork` without command-line `RUN` creates a fresh stack; with `RUN` and no `PREPARE=false`, it prepares missing/inert markets before testing.
 
 ## 6. Acceptance tests (deployment verification on a fork)
 
-Assert the deployed stack is exactly what the plan intended: wiring, the full initial role topology (direct enumerable-role checks), and its state relative to the activation motion — **readiness** mode before the motion, **activated** mode after it, plus a multi-market activation simulation. Expected addresses come from the immutable artifacts; the reviewed motion inputs (pauser committee, settlement flag) come from the environment so a wrong artifact cannot vouch for itself. Acceptance is a **post-deploy-only** gate: it also asserts the virgin state (no positions taken, nothing borrowed yet), so it cannot be re-run meaningfully once the protocol is in use.
+Assert the deployed stack is exactly what the plan intended: wiring, the full initial role topology (direct enumerable-role checks), and its state relative to the activation motion — **readiness** mode before the motion, **activated** mode after it, plus a multi-market activation simulation. Expected addresses come from the Solidity description; the reviewed motion inputs (pauser committee, settlement flag) come from the environment so the deployment description cannot vouch for the motion inputs. Acceptance is a **post-deploy-only** gate: it also asserts the virgin state (no positions taken, nothing borrowed yet), so it cannot be re-run meaningfully once the protocol is in use.
 Audits launch state only — not later governance changes; the operational counterpart is state-mate (kind 9).
 
-- **Requires:** fork RPC + `deployed/<run>/protocol.toml` (`ACCEPTANCE_REGISTRY`) + `ACCEPTANCE_PAUSER_COMMITTEE` + `ACCEPTANCE_ENABLE_SETTLEMENT`.
+- **Requires:** fork RPC + `script/deployment/<run>/artifacts/Deployment.sol` (`ACCEPTANCE_RUN`) + `ACCEPTANCE_PAUSER_COMMITTEE` + `ACCEPTANCE_ENABLE_SETTLEMENT`; activated checks also require `ACCEPTANCE_STEWARD`, `ACCEPTANCE_FEE`,
+  `ACCEPTANCE_MIN_CORE_SEED_SHARES` and `ACCEPTANCE_MIN_VAULT_SEED_SHARES`.
 - **Runs:** on deploy day — readiness before the activation motion (a gate on starting it), activated + multi after enactment; again for every added market.
 - **Here:** `test/acceptance/` via `make acceptance-run RUN=<run> MARKET=<m>` / `make acceptance-run-multi RUN=<run> MARKET_A=<a> MARKET_B=<b>`.
 
@@ -89,23 +96,37 @@ Each motion factory is a bounded governance action and gets its own fork tests: 
 
 Every market-parameter change (guardian roster, caps, activation/settlement config) runs through one pipeline; the only exemption is an **unban motion**, which touches no market configuration and needs only an address-presence check.
 
-1. **PR first.** The change starts as a PR to this repo updating the market config, plus a forum post stating the intent and the safety rationale. The motion's parameters must equal the PR's exactly.
-2. **Pre-motion tests.** Before the motion is created, the pending change is validated on a fork of the live deployment. Mechanics:
-   - the **multisig-level calldata** goes into `script/config/pending/<network>.toml` — encoded at the multisig boundary, not deeper;
-   - an **apply-pending-action make command** forks the live network, applies the transaction, and leaves the fork running;
-   - the fork-test setup **reuses that existing fork** (fork-URL passthrough) instead of spawning its own, and the regression suites (kind 5) run over it — they assert the mechanics still work, not the values;
-   - **state-mate runs on the same fork** against the updated config — the value diff is reviewed there (for a simple change this is browser-only: edit the field in the state-mate config, open the PR, dispatch the `pending-action` workflow on its branch);
+1. **PR first.** The change starts as a PR to this repo updating the market config, plus a forum
+   post stating the intent and the safety rationale. The motion's parameters must equal the PR's
+   exactly.
+2. **Pre-motion tests.** Before the motion is created, the pending change is validated on a fork
+   of the live deployment. Mechanics:
+   - the **multisig-level calldata** goes into a small `pending_action` TOML next to the network's
+     deploy config — encoded at the multisig boundary, not deeper;
+   - an **apply-pending-action make command** forks the live network, applies the transaction, and
+     leaves the fork running;
+   - the fork-test setup creates its own Forge fork of that node, preserving the applied change;
+     the regression suites (kind 5) run on that private fork — they assert the mechanics still
+     work, not the values;
+   - **state-mate runs on the same fork** against the updated config — the value diff is reviewed
+     there (for a simple change this is browser-only: edit the field in the state-mate config,
+     open the PR, dispatch the `pending-action` workflow on its branch);
    - a **green `pending-action` run on the PR branch** gates the motion.
    Validation must complete **before** the motion starts.
 3. **Post-enact.** State-mate re-run against the updated intended config (kind 9).
 
-Role coverage follows the guinea-pig principle: every motion factory is exercised end to end on **one** test market; the expected role set is hardcoded as the expectation for *any* market's configuration (the factory wires every market identically), and each market is checked against that same set. Deploy commands used by tests live next to the tests that use them, so a removed test cannot orphan a forgotten deploy path.
+Role coverage follows the guinea-pig principle: every motion factory is exercised end to end on
+**one** test market; the expected role set is hardcoded as the expectation for *any* market's
+configuration (the factory wires every market identically), and each market is checked against
+that same set. Deployment operations live in `script/deployment/` and are reused by the shared `test/setup/ForkFixture.sol`.
+Deployment and test inputs are Solidity; historical TOML files are retained without runtime readers.
 
 ## 9. Deploy verification (state-mate / diffyscan / artifact checks)
 
 Non-forge verification layers on a live deployment:
 
-- **artifact sanity** — files appeared, metadata records the chain id and deploy commit, every recorded address has bytecode;
+- **artifact sanity** — files appeared, metadata records the chain id and run identity, successful transaction receipts are archived, every
+  recorded address has bytecode;
 - **state-mate** — on-chain state vs the intended configuration, from a reviewed YAML config.
   Unlike acceptance it works at **any operational moment**: run it over the critical state (ACLs and the like) after every governance action. The config is **self-healing**: state-mate can pull the current on-chain values back into the config, so maintenance is reviewing the diff, not hand-editing — and the config must be updated with every EasyTrack motion, since the parameters move with the protocol;
 - **diffyscan** — deployed bytecode vs pinned source, via the explorer's verified source (only on runs where explorer verification is enabled).
@@ -132,9 +153,9 @@ Each off-chain service carries its own suite in its repo: unit + integration aga
 | Stage | Gating kinds |
 | --- | --- |
 | Every change (local) | 1 unit · 2 integration · 3 invariant (`make test-local`) |
-| PR / CI merge gate | 1–3 + 4 empty-fork (`test-fork-provision`) + lint |
+| PR / CI merge gate | 1–3 + 4 empty-fork (`test-fork` + `test-deployment`) + fmt/lint |
 | Dependency pin bump | 1–3 full + submodule gitlink check |
-| Pre-deploy freeze | full `make test` + 4 as the deploy-plan rehearsal + 7 voting (here, triggered from `scripts`) + 8 motion (`easy-track`) |
+| Pre-deploy freeze | full `make test` + `make test-deployment` + 4 as the deploy-plan rehearsal + 7 voting (here, triggered from `scripts`) + 8 motion (`easy-track`) |
 | Deploy day | 6 acceptance readiness → (motions) → 6 activated + multi · 9 deploy verification · 10 drills |
 | Post-deploy / operations | 5 regression against the live run · 9 state-mate after governance actions · 11 off-chain e2e |
 | New market / upgrade | 4 on a fork first, then 5 + 6 + 9 for the new market |

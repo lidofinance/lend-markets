@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
+import {
+    MarketParameters,
+    CircuitBreakerParameters,
+    DeploymentSnapshot,
+    RecordedMarket,
+    PriceFeedRecord
+} from "../../script/deployment/DeploymentTypes.sol";
+import {RecordedDeployment} from "../../script/deployment/RecordedDeployment.sol";
+
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {Id, IMorpho, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
@@ -28,8 +37,6 @@ import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
-import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
-import {DeployConfigFile} from "../../script/lib/DeployConfigFile.sol";
 // --- Minimal read/write surfaces (UDVT `Id` is ABI-identical to bytes32, so bytes32 params match) ---
 
 interface IReadController {
@@ -121,6 +128,7 @@ interface IReadVault {
     function totalSupply() external view returns (uint256);
     function totalAssets() external view returns (uint256);
     function managedSupplyShares() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
 }
 
 interface IReadProxy {
@@ -214,9 +222,6 @@ interface IReadCircuitBreaker {
 abstract contract AcceptanceContext is Test {
     using MarketParamsLib for MarketParams;
 
-    error ProtocolDeploymentMismatch(string expected, string actual);
-    error RegistryPathMismatch(string expected, string actual);
-
     // role ids
     bytes32 internal constant DEFAULT_ADMIN_ROLE = 0x00;
     bytes32 internal constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
@@ -235,6 +240,8 @@ abstract contract AcceptanceContext is Test {
     bytes32 internal constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
 
     bytes32 internal constant INSTANT_ACTIVATION_SET_SIG = keccak256("InstantActivationSet(address,bool)");
+
+    address internal constant PRESEED_RECIPIENT = address(0xdead);
 
     // governance holders
     address internal agent;
@@ -264,7 +271,9 @@ abstract contract AcceptanceContext is Test {
     bytes32 internal marketId;
     address internal pauserCommittee;
     bool internal enableSettlement;
-    bool internal forkProvision;
+    uint256 internal expectedFee;
+    uint256 internal minimumCoreSeedShares;
+    uint256 internal minimumVaultSeedShares;
 
     // Event-scan starting point for the non-enumerable instant-activation mapping.
     uint256 internal marketDeployedBlock;
@@ -275,166 +284,153 @@ abstract contract AcceptanceContext is Test {
     address internal bundler3;
     address internal generalAdapter;
     address internal vaultAdapter;
-    string internal bundlerArtifact;
 
     // Factory-derived controller and proxy admin.
     address internal rAdmin;
     address internal rProxyAdmin;
 
     address[] internal expectedGuardians;
+    address[] internal expectedMarketStewards;
     uint256 internal expectedQuorum;
     uint256 internal expectedSuspectWindow;
 
-    string internal toml;
-    string internal guardiansCfg;
-    string internal oracleCfg;
-    string internal circuitBreakerCfg;
-    string internal exitBooksArtifact;
-    string internal registry;
-    string internal artifactsDir;
-    ArtifactMetadata internal artifactMetadata;
+    MarketParameters internal expectedMarketParameters;
+    CircuitBreakerParameters internal expectedCircuitBreaker;
+    address internal expectedIrmConfigAddress;
+    address internal expectedBundlerWeth;
+    address internal expectedBundlerWstEth;
+    address internal expectedBundlerCore;
+
+    PriceFeedRecord internal expectedPriceFeed;
+    bool internal useLocalDeploymentLogs;
+    string internal recordedRun;
+
+    struct ActivationCandidate {
+        address controller;
+        address caller;
+    }
+    ActivationCandidate[] internal localActivationCandidates;
 
     function setUp() public virtual {
-        string memory regPath = vm.envOr("ACCEPTANCE_REGISTRY", string(""));
-        // Unset means "not verifying a deployment". A configured but missing artifact is an error.
-        if (bytes(regPath).length == 0) {
-            vm.skip(true, "acceptance: set ACCEPTANCE_REGISTRY to protocol.toml");
+        recordedRun = vm.envOr("ACCEPTANCE_RUN", string(""));
+        if (bytes(recordedRun).length == 0) {
+            vm.skip(true, "acceptance: set ACCEPTANCE_RUN");
             return;
         }
-        require(vm.exists(regPath), string.concat("acceptance: ACCEPTANCE_REGISTRY not found: ", regPath));
-        registry = vm.readFile(regPath);
-
-        string memory deployment = vm.parseTomlString(registry, ".artifact.deployment");
-        string memory recordedDeployment = vm.parseTomlString(registry, ".protocol.deployment");
-        if (keccak256(bytes(recordedDeployment)) != keccak256(bytes(deployment))) {
-            revert ProtocolDeploymentMismatch(deployment, recordedDeployment);
-        }
-        DeployConfigFile.requireProtocolArtifactCompatibility(registry);
-
-        artifactsDir = string.concat(ArtifactMetadataFile.artifactsDir(deployment), "/");
-        string memory expectedRegistryPath = string.concat(artifactsDir, "protocol.toml");
-        string memory absoluteRegistryPath = string.concat(vm.projectRoot(), "/", expectedRegistryPath);
-        if (
-            keccak256(bytes(regPath)) != keccak256(bytes(expectedRegistryPath))
-                && keccak256(bytes(regPath)) != keccak256(bytes(absoluteRegistryPath))
-        ) revert RegistryPathMismatch(expectedRegistryPath, regPath);
-
-        artifactMetadata = ArtifactMetadata({
-            deployment: deployment,
-            chainId: vm.parseTomlUint(registry, ".protocol.chain_id"),
-            configHash: vm.parseTomlBytes32(registry, ".protocol.config_hash"),
-            compatibilityHash: vm.parseTomlBytes32(registry, ".artifact.compatibility_hash")
-        });
-        registry = ArtifactMetadataFile.requireExact(regPath, artifactMetadata);
-        forkProvision = keccak256(bytes(deployment)) == keccak256("fork");
-
         string memory rpc = vm.envOr("ACCEPTANCE_RPC_URL", string(""));
-        if (bytes(rpc).length != 0) vm.createSelectFork(rpc);
-        assertEq(block.chainid, artifactMetadata.chainId, "protocol artifact chain ID");
+        if (bytes(rpc).length != 0) {
+            uint256 pin = vm.envOr("FORK_BLOCK", uint256(0));
+            if (pin == 0) vm.createSelectFork(rpc);
+            else vm.createSelectFork(rpc, pin);
+        }
         _loadMarket(vm.envString("MARKET"));
-        assertGt(core.code.length, 0, "core missing code on acceptance RPC");
         assertGt(controller.code.length, 0, "controller missing code on acceptance RPC");
     }
 
     function _loadMarket(string memory market) internal {
-        toml = _readSibling(string.concat("markets/", market, ".toml"));
-        string memory guardianGroup = vm.parseTomlString(toml, ".market.guardian_group");
-        guardiansCfg = _readSibling(string.concat("guardians/", guardianGroup, ".toml"));
-        string memory oracleArtifact = vm.parseTomlString(toml, ".market.oracle_artifact");
-        oracleCfg = _readSibling(string.concat("oracles/", oracleArtifact, ".toml"));
-        string memory circuitBreakerArtifact = vm.parseTomlString(registry, ".protocol.circuit_breaker_artifact");
-        circuitBreakerCfg = _readSibling(string.concat("circuit-breakers/", circuitBreakerArtifact, ".toml"));
-
-        agent = _reg(".protocol.agent");
-        executor = _reg(".protocol.evm_script_executor");
-
-        core = _reg(".protocol.core");
-        facade = _reg(".protocol.owner_facade");
-        router = _reg(".protocol.irm_router");
-        curve = _reg(".protocol.adaptive_curve_irm");
-        factory = _reg(".protocol.factory");
-        irmConfigFactory = _reg(".protocol.irm_config_factory");
-        dashboard = _reg(".protocol.risk_steward_dashboard");
-        string memory exitBooksPath = string.concat(artifactsDir, "exit-books.toml");
-        if (vm.exists(exitBooksPath)) {
-            exitBooksArtifact = ArtifactMetadataFile.requireCompatible(exitBooksPath, artifactMetadata);
-            morphoBook = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.morpho");
-            erc4626Book = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.erc4626");
-            expectedExitBookMaxRequestLifetime = vm.parseTomlUint(exitBooksArtifact, ".exit_books.max_request_lifetime");
-            exitBookPauser = vm.parseTomlAddress(exitBooksArtifact, ".exit_books.pauser");
+        DeploymentSnapshot memory d = RecordedDeployment.load(recordedRun);
+        for (uint256 i; i < d.markets.length; ++i) {
+            if (keccak256(bytes(d.markets[i].parameters.name)) != keccak256(bytes(market))) continue;
+            _bindTypedDeployment(d, i, pauserCommittee, enableSettlement, address(0));
+            // Recorded deployments require historical log scans, unlike in-process fresh fixtures.
+            useLocalDeploymentLogs = false;
+            marketDeployedBlock = d.markets[i].deployedBlock;
+            return;
         }
-        string memory bundlerPath = string.concat(artifactsDir, "bundler.toml");
-        if (vm.exists(bundlerPath)) {
-            bundlerArtifact = ArtifactMetadataFile.requireCompatible(bundlerPath, artifactMetadata);
-            bundler3 = vm.parseTomlAddress(bundlerArtifact, ".bundler.bundler3");
-            generalAdapter = vm.parseTomlAddress(bundlerArtifact, ".bundler.general_adapter");
-            vaultAdapter = vm.parseTomlAddress(bundlerArtifact, ".bundler.vault_adapter");
-        }
-        oracle = _addr(".market.oracle");
-        guardianSignals = _addr(".market.guardian_signals");
-        controller = _addr(".market.controller");
-        vault = _addr(".market.vault");
-        marketId = vm.parseTomlBytes32(toml, ".market.id");
-        assertEq(_addr(".market.factory"), factory, "market factory != protocol factory");
-        assertEq(_addr(".market.irm"), router, "market IRM != protocol router");
-        assertEq(vm.parseTomlAddress(oracleCfg, ".oracle.address"), oracle, "oracle artifact address");
-        assertEq(
-            vm.parseTomlAddress(guardiansCfg, ".guardian_signals.address"),
-            guardianSignals,
-            "GuardianSignals artifact address"
-        );
-
-        marketDeployedBlock = vm.parseTomlUint(toml, ".market.deployed_block");
-
-        loanToken = _addr(".market.loan_token");
-        collateralToken = _addr(".market.collateral_token");
-        lltv = vm.parseTomlUint(toml, ".market.lltv");
-
-        rAdmin = IReadFactory(factory).ADMIN();
-        rProxyAdmin = rAdmin;
-        circuitBreaker = _reg(".protocol.circuit_breaker");
-        resealManager = _reg(".protocol.reseal_manager");
-        assertEq(
-            vm.parseTomlAddress(circuitBreakerCfg, ".circuit_breaker.address"),
-            circuitBreaker,
-            "CircuitBreaker artifact address"
-        );
-
-        expectedGuardians = vm.parseTomlAddressArray(guardiansCfg, ".guardian_signals.guardians");
-        expectedQuorum = vm.parseTomlUint(guardiansCfg, ".guardian_signals.quorum");
-        expectedSuspectWindow = vm.parseTomlUint(guardiansCfg, ".guardian_signals.suspect_window");
+        revert("Acceptance market is absent from deployment");
     }
 
-    function _readSibling(string memory relPath) internal view returns (string memory) {
-        return ArtifactMetadataFile.requireCompatible(string.concat(artifactsDir, relPath), artifactMetadata);
+    /// @notice Bind independently supplied addresses and expected parameters without preparing or changing the
+    /// deployment.
+    function _bindTypedDeployment(
+        DeploymentSnapshot memory d,
+        uint256 index,
+        address expectedPauser,
+        bool settlement,
+        address expectedSteward
+    ) internal {
+        assertEq(block.chainid, d.protocol.chainId, "deployment chain ID");
+        RecordedMarket memory entry = d.markets[index];
+        agent = d.protocol.agent;
+        executor = d.protocol.executor;
+        core = d.protocol.core;
+        facade = d.protocol.ownerFacade;
+        router = d.protocol.irmRouter;
+        factory = d.protocol.factory;
+        irmConfigFactory = d.protocol.irmConfigFactory;
+        dashboard = d.protocol.dashboard;
+        curve = d.protocol.adaptiveCurveIrm;
+        circuitBreaker = d.protocol.circuitBreaker;
+        resealManager = d.protocol.resealManager;
+        morphoBook = d.books.morpho;
+        erc4626Book = d.books.erc4626;
+        exitBookPauser = d.bookPauser;
+        expectedExitBookMaxRequestLifetime = d.bookLifetime;
+        bundler3 = d.bundler;
+        generalAdapter = d.generalAdapter;
+        vaultAdapter = d.vaultAdapter;
+        expectedBundlerWeth = d.weth;
+        expectedBundlerWstEth = d.wstEth;
+        expectedBundlerCore = d.protocol.core;
+        expectedMarketParameters = entry.parameters;
+        expectedCircuitBreaker = d.circuitBreakerParameters;
+        expectedIrmConfigAddress = entry.contracts.irmConfig;
+        oracle = entry.contracts.params.oracle;
+        guardianSignals = entry.contracts.guardianSignals;
+        controller = entry.contracts.controller;
+        vault = entry.contracts.vault;
+        marketId = Id.unwrap(entry.contracts.id);
+        loanToken = entry.parameters.market.loanToken;
+        collateralToken = entry.parameters.market.collateralToken;
+        lltv = entry.parameters.market.lltv;
+        rAdmin = d.protocol.agent;
+        rProxyAdmin = d.protocol.agent;
+        expectedGuardians = entry.parameters.committee.guardians;
+        expectedQuorum = entry.parameters.committee.quorum;
+        expectedSuspectWindow = entry.parameters.committee.suspectWindow;
+        expectedPriceFeed = entry.priceFeed;
+        if (
+            expectedPriceFeed.wstEth == address(0)
+                && (bytes(entry.priceFeedKind).length == 0
+                    || keccak256(bytes(entry.priceFeedKind)) == keccak256("wsteth-rate"))
+        ) expectedPriceFeed.wstEth = d.wstEth;
+        pauserCommittee = expectedPauser;
+        enableSettlement = settlement;
+        _expectMarketSteward(expectedSteward);
+        useLocalDeploymentLogs = true;
     }
 
-    function _addr(string memory key) internal view returns (address) {
-        return vm.parseTomlAddress(toml, key);
-    }
-
-    function _grd(string memory key) internal view returns (address) {
-        return vm.parseTomlAddress(guardiansCfg, key);
-    }
-
-    function _reg(string memory key) internal view returns (address) {
-        return vm.parseTomlAddress(registry, key);
-    }
-
-    /// @dev Production acceptance requires the reviewed motion value explicitly. The conventional `fork` run may
-    ///      use the local replay's fixed `true` default so provision-fork remains self-contained.
     function _loadExpectedSettlementChoice() internal {
-        enableSettlement =
-            forkProvision ? vm.envOr("ACCEPTANCE_ENABLE_SETTLEMENT", true) : vm.envBool("ACCEPTANCE_ENABLE_SETTLEMENT");
+        enableSettlement = vm.envBool("ACCEPTANCE_ENABLE_SETTLEMENT");
     }
 
-    /// @dev Production acceptance requires the reviewed committee explicitly instead of trusting the live
-    ///      registration. The conventional `fork` run defaults to the Agent used by ActivateMarkets.s.sol.
     function _loadExpectedPauserCommittee() internal {
-        pauserCommittee = forkProvision
-            ? vm.envOr("ACCEPTANCE_PAUSER_COMMITTEE", agent)
-            : vm.envAddress("ACCEPTANCE_PAUSER_COMMITTEE");
+        pauserCommittee = vm.envAddress("ACCEPTANCE_PAUSER_COMMITTEE");
         require(pauserCommittee != address(0), "acceptance: CircuitBreaker pauser committee is zero");
+    }
+
+    function _loadExpectedSteward() internal {
+        _expectMarketSteward(vm.envAddress("ACCEPTANCE_STEWARD"));
+    }
+
+    function _loadExpectedFunding() internal {
+        _expectFunding(
+            vm.envUint("ACCEPTANCE_FEE"),
+            vm.envUint("ACCEPTANCE_MIN_CORE_SEED_SHARES"),
+            vm.envUint("ACCEPTANCE_MIN_VAULT_SEED_SHARES")
+        );
+    }
+
+    function _expectFunding(uint256 fee, uint256 coreShares, uint256 vaultShares) internal {
+        require(coreShares != 0 && vaultShares != 0, "acceptance: seed thresholds must be nonzero");
+        expectedFee = fee;
+        minimumCoreSeedShares = coreShares;
+        minimumVaultSeedShares = vaultShares;
+    }
+
+    function _expectMarketSteward(address steward) internal {
+        delete expectedMarketStewards;
+        if (steward != address(0)) expectedMarketStewards.push(steward);
     }
 }
 
@@ -533,40 +529,40 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     ///      run owns. The role audits and the instant-activation log scan already prove they hold no privilege.
     function _assertBundlerWiring() internal view {
         IReadGeneralAdapter1 general = IReadGeneralAdapter1(generalAdapter);
-        address weth = vm.parseTomlAddress(bundlerArtifact, ".bundler.weth");
-        address wsteth = vm.parseTomlAddress(bundlerArtifact, ".bundler.wsteth");
+        address weth = expectedBundlerWeth;
+        address wsteth = expectedBundlerWstEth;
         assertEq(general.BUNDLER3(), bundler3, "generalAdapter.BUNDLER3");
         assertEq(general.MORPHO(), core, "generalAdapter.MORPHO");
         assertEq(general.WRAPPED_NATIVE(), weth, "generalAdapter.WRAPPED_NATIVE");
         assertEq(general.WST_ETH(), wsteth, "generalAdapter.WST_ETH");
         assertEq(general.ST_ETH(), IReadWstEth(wsteth).stETH(), "generalAdapter.ST_ETH");
         assertEq(IReadGeneralAdapter1(vaultAdapter).BUNDLER3(), bundler3, "vaultAdapter.BUNDLER3");
-        assertEq(vm.parseTomlAddress(bundlerArtifact, ".bundler.morpho"), core, "bundler.toml morpho");
+        assertEq(expectedBundlerCore, core, "bundler.toml morpho");
     }
 
     function _assertOracle() internal {
         address implementation = IReadProxy(oracle).proxy__getImplementation();
         assertGt(implementation.code.length, 0, "oracle implementation missing code");
 
-        bool isWstEth = vm.keyExistsToml(oracleCfg, ".oracle.wsteth");
-        bool isUsdy = vm.keyExistsToml(oracleCfg, ".oracle.usdy_oracle");
+        bool isWstEth = expectedPriceFeed.wstEth != address(0);
+        bool isUsdy = expectedPriceFeed.usdySource != address(0);
         assertTrue(isWstEth != isUsdy, "unknown or ambiguous oracle config");
 
         if (isWstEth) {
-            address expectedWstEth = vm.parseTomlAddress(oracleCfg, ".oracle.wsteth");
+            address expectedWstEth = expectedPriceFeed.wstEth;
             assertEq(expectedWstEth, collateralToken, "oracle WstETH != collateral token");
             address expectedImplementation = address(new WstEthRateOracle(expectedWstEth));
             assertEq(implementation.codehash, expectedImplementation.codehash, "WstETH oracle implementation");
             assertEq(IReadWstEthOracle(oracle).WSTETH(), expectedWstEth, "oracle.WSTETH");
         } else {
-            address expectedUsdyOracle = vm.parseTomlAddress(oracleCfg, ".oracle.usdy_oracle");
-            address expectedFeed = vm.parseTomlAddress(oracleCfg, ".oracle.feed");
-            address expectedLoanToken = vm.parseTomlAddress(oracleCfg, ".oracle.loan_token");
-            address expectedCollateralToken = vm.parseTomlAddress(oracleCfg, ".oracle.collateral_token");
+            address expectedUsdyOracle = expectedPriceFeed.usdySource;
+            address expectedFeed = expectedPriceFeed.feed;
+            address expectedLoanToken = expectedPriceFeed.loanToken;
+            address expectedCollateralToken = expectedPriceFeed.collateralToken;
             assertEq(expectedLoanToken, loanToken, "oracle loan token != market loan token");
             assertEq(expectedCollateralToken, collateralToken, "oracle USDY != collateral token");
-            uint256 expectedMinPrice = vm.parseTomlUint(oracleCfg, ".oracle.min_price");
-            uint256 expectedMaxPrice = vm.parseTomlUint(oracleCfg, ".oracle.max_price");
+            uint256 expectedMinPrice = expectedPriceFeed.minPrice;
+            uint256 expectedMaxPrice = expectedPriceFeed.maxPrice;
             address expectedImplementation =
                 address(new UsdyStableOracle(expectedUsdyOracle, expectedMinPrice, expectedMaxPrice));
             assertEq(implementation.codehash, expectedImplementation.codehash, "USDY oracle implementation");
@@ -589,24 +585,16 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     function _assertCircuitBreakerConfig() internal view {
         IReadCircuitBreaker cb = IReadCircuitBreaker(circuitBreaker);
         assertEq(cb.ADMIN(), executor, "CircuitBreaker.ADMIN");
-        assertEq(
-            cb.MIN_PAUSE_DURATION(),
-            vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.min_pause_duration"),
-            "CircuitBreaker.MIN_PAUSE_DURATION"
-        );
-        assertEq(
-            cb.MAX_PAUSE_DURATION(),
-            vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.max_pause_duration"),
-            "CircuitBreaker.MAX_PAUSE_DURATION"
-        );
+        assertEq(cb.MIN_PAUSE_DURATION(), expectedCircuitBreaker.minPauseDuration, "CircuitBreaker.MIN_PAUSE_DURATION");
+        assertEq(cb.MAX_PAUSE_DURATION(), expectedCircuitBreaker.maxPauseDuration, "CircuitBreaker.MAX_PAUSE_DURATION");
         assertEq(
             cb.MIN_HEARTBEAT_INTERVAL(),
-            vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.min_heartbeat_interval"),
+            expectedCircuitBreaker.minHeartbeatInterval,
             "CircuitBreaker.MIN_HEARTBEAT_INTERVAL"
         );
         assertEq(
             cb.MAX_HEARTBEAT_INTERVAL(),
-            vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.max_heartbeat_interval"),
+            expectedCircuitBreaker.maxHeartbeatInterval,
             "CircuitBreaker.MAX_HEARTBEAT_INTERVAL"
         );
         assertGe(cb.pauseDuration(), cb.MIN_PAUSE_DURATION(), "CircuitBreaker.pauseDuration below min");
@@ -631,34 +619,72 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     function _assertConfig() internal view {
-        assertEq(IReadController(controller).supplyCap(), vm.parseTomlUint(toml, ".market.supply_cap"), "supplyCap");
+        assertEq(IReadController(controller).supplyCap(), expectedMarketParameters.market.supplyCap, "supplyCap");
 
         CollateralActivationConfig memory c = IReadController(controller).collateralActivationConfig();
-        assertEq(uint256(c.minActivationDelay), vm.parseTomlUint(toml, ".activation.min_activation_delay"), "minDelay");
-        assertEq(uint256(c.maxActivationDelay), vm.parseTomlUint(toml, ".activation.max_activation_delay"), "maxDelay");
-        assertEq(uint256(c.maxDelayInflow), vm.parseTomlUint(toml, ".activation.max_delay_inflow"), "maxDelayInflow");
         assertEq(
-            uint256(c.activatingLockDuration), vm.parseTomlUint(toml, ".activation.activating_lock_duration"), "lockDur"
+            uint256(c.minActivationDelay),
+            uint256(expectedMarketParameters.market.activationConfig.minActivationDelay),
+            "minDelay"
         );
-        assertEq(uint256(c.minActivationAmount), vm.parseTomlUint(toml, ".activation.min_activation_amount"), "minAmt");
-        assertEq(uint256(c.minDepositAmount), vm.parseTomlUint(toml, ".activation.min_deposit_amount"), "minDeposit");
+        assertEq(
+            uint256(c.maxActivationDelay),
+            uint256(expectedMarketParameters.market.activationConfig.maxActivationDelay),
+            "maxDelay"
+        );
+        assertEq(
+            uint256(c.maxDelayInflow),
+            uint256(expectedMarketParameters.market.activationConfig.maxDelayInflow),
+            "maxDelayInflow"
+        );
+        assertEq(
+            uint256(c.activatingLockDuration),
+            uint256(expectedMarketParameters.market.activationConfig.activatingLockDuration),
+            "lockDur"
+        );
+        assertEq(
+            uint256(c.minActivationAmount),
+            uint256(expectedMarketParameters.market.activationConfig.minActivationAmount),
+            "minAmt"
+        );
+        assertEq(
+            uint256(c.minDepositAmount),
+            uint256(expectedMarketParameters.market.activationConfig.minDepositAmount),
+            "minDeposit"
+        );
         assertEq(
             uint256(c.maxGuardiansQuorumDelay),
-            vm.parseTomlUint(toml, ".activation.max_guardians_quorum_delay"),
+            uint256(expectedMarketParameters.market.activationConfig.maxGuardiansQuorumDelay),
             "qDelay"
         );
-        assertEq(uint256(c.delayPerStrike), vm.parseTomlUint(toml, ".activation.delay_per_strike"), "perStrike");
-        assertEq(uint256(c.delayPerSuspect), vm.parseTomlUint(toml, ".activation.delay_per_suspect"), "perSuspect");
+        assertEq(
+            uint256(c.delayPerStrike),
+            uint256(expectedMarketParameters.market.activationConfig.delayPerStrike),
+            "perStrike"
+        );
+        assertEq(
+            uint256(c.delayPerSuspect),
+            uint256(expectedMarketParameters.market.activationConfig.delayPerSuspect),
+            "perSuspect"
+        );
 
         SettlementConfig memory s = IReadController(controller).settlementConfig();
-        assertEq(uint256(s.sliceFloorBps), vm.parseTomlUint(toml, ".settlement.slice_floor_bps"), "sliceBps");
-        assertEq(uint256(s.sliceFloorAssets), vm.parseTomlUint(toml, ".settlement.slice_floor_assets"), "sliceAssets");
+        assertEq(
+            uint256(s.sliceFloorBps),
+            uint256(expectedMarketParameters.market.settlementConfig.sliceFloorBps),
+            "sliceBps"
+        );
+        assertEq(
+            uint256(s.sliceFloorAssets),
+            uint256(expectedMarketParameters.market.settlementConfig.sliceFloorAssets),
+            "sliceAssets"
+        );
         assertEq(
             uint256(s.fullCutBelowCollateral),
-            vm.parseTomlUint(toml, ".settlement.full_cut_below_collateral"),
+            uint256(expectedMarketParameters.market.settlementConfig.fullCutBelowCollateral),
             "fullCut"
         );
-        assertEq(uint256(s.ltvStepBps), vm.parseTomlUint(toml, ".settlement.ltv_step_bps"), "ltvStep");
+        assertEq(uint256(s.ltvStepBps), uint256(expectedMarketParameters.market.settlementConfig.ltvStepBps), "ltvStep");
 
         address irmConfig = _expectedIrmConfig();
         _assertCurveParams(ICurveConfig(irmConfig).getCurveParams());
@@ -676,8 +702,8 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     ///      The offset closes the gap up to 18, and is zero for a loan token already at or above it.
     function _assertVaultIdentity() internal view {
         IReadVault deployedVault = IReadVault(vault);
-        assertEq(deployedVault.name(), vm.parseTomlString(toml, ".market.vault_name"), "vault.name");
-        assertEq(deployedVault.symbol(), vm.parseTomlString(toml, ".market.vault_symbol"), "vault.symbol");
+        assertEq(deployedVault.name(), expectedMarketParameters.wrapper.name, "vault.name");
+        assertEq(deployedVault.symbol(), expectedMarketParameters.wrapper.symbol, "vault.symbol");
 
         uint256 loanDecimals = uint256(IReadDecimals(loanToken).decimals());
         assertEq(uint256(deployedVault.decimals()), Math.max(18, loanDecimals), "vault.decimals");
@@ -685,15 +711,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
     /// @dev The per-market curve params used by the activation simulation.
     function _expectedCurveParams() internal view returns (AdaptiveCurveParams memory) {
-        return AdaptiveCurveParams({
-            curveSteepness: vm.parseTomlInt(toml, ".curve.curve_steepness"),
-            adjustmentSpeed: vm.parseTomlInt(toml, ".curve.adjustment_speed"),
-            targetUtilization: vm.parseTomlInt(toml, ".curve.target_utilization"),
-            initialRateAtTarget: vm.parseTomlInt(toml, ".curve.initial_rate_at_target"),
-            minRateAtTarget: vm.parseTomlInt(toml, ".curve.min_rate_at_target"),
-            maxRateAtTarget: vm.parseTomlInt(toml, ".curve.max_rate_at_target"),
-            maxBorrowRate: vm.parseTomlUint(toml, ".curve.max_borrow_rate")
-        });
+        return expectedMarketParameters.curve;
     }
 
     function _assertCurveParams(AdaptiveCurveParams memory cp) internal view {
@@ -716,7 +734,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(IReadCurve(curve).owner(), agent, "curve.owner=agent");
         assertEq(IReadCurve(curve).manager(), executor, "curve.manager=executor");
         _assertAddressSetEq(
-            IReadDashboard(dashboard).marketStewards(Id.wrap(marketId)), new address[](0), "market steward"
+            IReadDashboard(dashboard).marketStewards(Id.wrap(marketId)), expectedMarketStewards, "market steward"
         );
     }
 
@@ -795,17 +813,17 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     function _deployExpectedCircuitBreaker() private returns (address expected) {
-        bytes memory creationCode = vm.getCode("out/CircuitBreaker.sol/CircuitBreaker.json");
+        bytes memory creationCode = vm.getCode("CircuitBreaker.sol:CircuitBreaker");
         bytes memory initCode = abi.encodePacked(
             creationCode,
             abi.encode(
                 executor,
-                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.min_pause_duration"),
-                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.max_pause_duration"),
-                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.min_heartbeat_interval"),
-                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.max_heartbeat_interval"),
-                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.initial_pause_duration"),
-                vm.parseTomlUint(circuitBreakerCfg, ".circuit_breaker.initial_heartbeat_interval")
+                expectedCircuitBreaker.minPauseDuration,
+                expectedCircuitBreaker.maxPauseDuration,
+                expectedCircuitBreaker.minHeartbeatInterval,
+                expectedCircuitBreaker.maxHeartbeatInterval,
+                expectedCircuitBreaker.initialPauseDuration,
+                expectedCircuitBreaker.initialHeartbeatInterval
             )
         );
         assembly ("memory-safe") {
@@ -906,6 +924,18 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(IReadCircuitBreaker(circuitBreaker).getPauser(controller), pauserCommittee, "pauser not registered");
     }
 
+    function _assertActivationFunding() internal view {
+        require(minimumCoreSeedShares != 0 && minimumVaultSeedShares != 0, "acceptance: seed expectations missing");
+        (,,,,, uint128 fee) = IReadCore(core).market(marketId);
+        assertEq(uint256(fee), expectedFee, "activation fee");
+        assertGe(
+            ILidoLend(core).position(Id.wrap(marketId), PRESEED_RECIPIENT).supplyShares,
+            minimumCoreSeedShares,
+            "core preseed shares"
+        );
+        assertGe(IReadVault(vault).balanceOf(PRESEED_RECIPIENT), minimumVaultSeedShares, "vault preseed shares");
+    }
+
     function _assertCircuitBreakerPausePath() internal {
         IReadCircuitBreaker cb = IReadCircuitBreaker(circuitBreaker);
         assertTrue(cb.isPauserLive(pauserCommittee), "pauser heartbeat is not live");
@@ -952,7 +982,7 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
     }
 
     function _expectedIrmConfig() private view returns (address irmConfig) {
-        irmConfig = vm.parseTomlAddress(toml, ".market.irm_config");
+        irmConfig = expectedIrmConfigAddress;
         assertNotEq(irmConfig, address(0), "IRM config missing from artifact");
     }
 
@@ -1047,6 +1077,28 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
     }
 
     function _assertNoInstantActivationCallers() private {
+        if (useLocalDeploymentLogs) {
+            Vm.Log[] memory localLogs = vm.getRecordedLogs();
+            for (uint256 i; i < localLogs.length; ++i) {
+                if (localLogs[i].topics.length >= 2 && localLogs[i].topics[0] == INSTANT_ACTIVATION_SET_SIG) {
+                    localActivationCandidates.push(
+                        ActivationCandidate({
+                            controller: localLogs[i].emitter, caller: address(uint160(uint256(localLogs[i].topics[1])))
+                        })
+                    );
+                }
+            }
+            address[] memory candidates = new address[](localActivationCandidates.length);
+            uint256 count;
+            for (uint256 i; i < localActivationCandidates.length; ++i) {
+                if (localActivationCandidates[i].controller == controller) {
+                    candidates[count++] = localActivationCandidates[i].caller;
+                }
+            }
+            assembly ("memory-safe") { mstore(candidates, count) }
+            _assertInstantActivationCallers(_dedupAddr(candidates), new address[](0));
+            return;
+        }
         uint256 toBlock = vm.getBlockNumber();
         bytes32[] memory topics = new bytes32[](1);
         topics[0] = INSTANT_ACTIVATION_SET_SIG;
@@ -1081,9 +1133,9 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
         roles[5] = RESUMER_ROLE;
         address[][] memory holders = new address[][](6);
         holders[0] = _arr1(agent);
-        holders[1] = _arr2(executor, agent);
-        holders[2] = _arr1(executor);
-        holders[3] = _arr1(agent);
+        holders[1] = _arr1(executor);
+        holders[2] = new address[](0);
+        holders[3] = new address[](0);
         holders[4] = _arr1(exitBookPauser);
         holders[5] = new address[](0);
         _assertExactEnumerableRoleHolders(book, roles, holders);

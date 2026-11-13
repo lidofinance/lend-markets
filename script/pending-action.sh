@@ -5,8 +5,8 @@
 #   bash script/pending-action.sh apply <config> [block]   # fork + apply; leaves anvil on :8545
 #   bash script/pending-action.sh stop                     # stop the anvil a previous apply started
 #
-# `config` names both the network config (script/config/<config>.toml — its chain_id is checked
-# against the upstream) and the pending file (script/config/pending/<config>.toml). The upstream
+# `config` names the deployment: its network config (script/config/<config>/protocol.toml — its chain_id
+# is checked against the upstream) and the pending file (script/config/<config>/pending.toml). The upstream
 # comes from RPC_URL and must hold the live deployment. `block` pins the fork block; without it
 # anvil forks the tip. Each [[transaction]] is applied by impersonating `from`; a revert aborts.
 # A transaction that creates an EasyTrack motion carries `motion_calldata` (the factory calldata
@@ -18,14 +18,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 ACTION="${1:-apply}"
-CONFIG_NAME="${2:-hoodi}"
+CONFIG_NAME="${2:-hoodi-testnet}"
 PIN_BLOCK="${3:-}"
 
 RPC_LOCAL="http://127.0.0.1:8545"
 PID_FILE="deployed/pending-anvil.pid"
 LOG_FILE="deployed/pending-anvil.log"
-NETWORK_TOML="script/config/${CONFIG_NAME}.toml"
-PENDING_TOML="script/config/pending/${CONFIG_NAME}.toml"
+NETWORK_TOML="script/config/${CONFIG_NAME}/protocol.toml"
+PENDING_TOML="script/config/${CONFIG_NAME}/pending.toml"
 
 log() { echo "[pending] $*"; }
 die() { echo "[pending] ERROR: $*" >&2; exit 1; }
@@ -49,7 +49,7 @@ UPSTREAM_CHAIN_ID="$(cast chain-id --rpc-url "$RPC_URL")"
 [ "$UPSTREAM_CHAIN_ID" = "$EXPECTED_CHAIN_ID" ] || die "upstream chain id $UPSTREAM_CHAIN_ID != expected $EXPECTED_CHAIN_ID"
 
 if cast chain-id --rpc-url "$RPC_LOCAL" >/dev/null 2>&1; then
-  die "something already answers on $RPC_LOCAL; stop it first (make pending-stop / provision-stop)"
+  die "something already answers on $RPC_LOCAL; stop it first (make pending-stop for a pending-action fork)"
 fi
 
 FORK_ARGS=(--fork-url "$RPC_URL" --chain-id "$EXPECTED_CHAIN_ID" --port 8545 --auto-impersonate)
@@ -115,4 +115,4 @@ if [ "$APPLIED" -eq 0 ]; then
 else
   log "$APPLIED transaction(s) applied — fork with the pending state is up on $RPC_LOCAL"
 fi
-log "next: make test-fork RPC_URL=$RPC_LOCAL ARTIFACTS_DIR=<run> FORK_BLOCK= ; stop with: make pending-stop"
+log "next: make test-fork RPC_URL=$RPC_LOCAL RUN=<run> PREPARE=false FORK_BLOCK= ; stop with: make pending-stop"

@@ -9,8 +9,10 @@ contract MultiMarketActivationSimulation is AcceptanceBase {
         string memory marketA = vm.envString("MARKET_A");
         string memory marketB = vm.envString("MARKET_B");
         _loadExpectedSettlementChoice();
+        bool reviewedSettlement = enableSettlement;
 
         _loadMarket(marketA);
+        assertEq(enableSettlement, reviewedSettlement, "market loading changed the reviewed settlement choice");
         bytes32 marketIdA = marketId;
         address controllerA = controller;
         address vaultA = vault;
@@ -24,6 +26,7 @@ contract MultiMarketActivationSimulation is AcceptanceBase {
         _assertExitBooksAllowed();
 
         _loadMarket(marketB);
+        assertEq(enableSettlement, reviewedSettlement, "market loading changed the reviewed settlement choice");
         assertNotEq(marketId, marketIdA, "markets have the same id");
         assertNotEq(controller, controllerA, "markets share controller");
         assertNotEq(vault, vaultA, "markets share vault");
@@ -38,6 +41,7 @@ contract MultiMarketActivationSimulation is AcceptanceBase {
 
         // Activating B must not alter A's router, curve, controller, pauser, settlement, or allow-list state.
         _loadMarket(marketA);
+        assertEq(enableSettlement, reviewedSettlement, "market loading changed the reviewed settlement choice");
         pauserCommittee = pauserA;
         _assertActivated();
         _assertExitBooksAllowed();

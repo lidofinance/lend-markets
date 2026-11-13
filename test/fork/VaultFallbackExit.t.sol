@@ -76,7 +76,7 @@ contract VaultFallbackExitTest is ForkStack {
         targetPostRebaseLtv = (params.lltv + WAD) / 2;
 
         WETH = IWETH(address(m.loanToken));
-        STETH = IStETH(_ext("stEth"));
+        STETH = IStETH(forkDeployment.stEth);
         WSTETH = IWstETH(address(m.collateralToken));
 
         LENDER = _freshActor(m, "vaultFallbackExit.lender");

@@ -19,8 +19,7 @@ import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {LidoLendPrimitives} from "./LidoLendPrimitives.sol";
-import {ProtocolConfig, ProtocolDeployment} from "./ProtocolConfigFile.sol";
-import {ExitBookConfig} from "./ExitBookConfigFile.sol";
+import {ProtocolConfig, ProtocolAddresses, ExitBookConfig} from "../deployment/DeploymentTypes.sol";
 
 interface ICircuitBreakerConfig {
     function ADMIN() external view returns (address);
@@ -46,14 +45,15 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     /// @dev The dashboard must exist before the factory grants it market roles.
     function _deployBackbone(ProtocolConfig memory cfg, address deployer)
         internal
-        returns (ProtocolDeployment memory d)
+        returns (ProtocolAddresses memory d)
     {
         if (cfg.agent == deployer) revert AgentCannotBeDeployer();
         if (cfg.evmScriptExecutor == deployer) revert ExecutorCannotBeDeployer();
         if (cfg.agent == cfg.evmScriptExecutor) revert AgentCannotBeExecutor();
         _requireCircuitBreakerPolicy(cfg.circuitBreaker, cfg.evmScriptExecutor);
+        d.chainId = block.chainid;
         d.agent = cfg.agent;
-        d.evmScriptExecutor = cfg.evmScriptExecutor;
+        d.executor = cfg.evmScriptExecutor;
         d.circuitBreaker = cfg.circuitBreaker;
         d.resealManager = cfg.resealManager;
 
@@ -67,7 +67,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         dashboard.grantRole(dashboard.STEWARD_ADMIN_ROLE(), cfg.evmScriptExecutor);
         dashboard.grantRole(dashboard.DEFAULT_ADMIN_ROLE(), cfg.agent);
         dashboard.revokeRole(dashboard.DEFAULT_ADMIN_ROLE(), deployer);
-        d.riskStewardDashboard = address(dashboard);
+        d.dashboard = address(dashboard);
 
         d.adaptiveCurveIrm = address(new AdaptiveCurveIrm(d.irmRouter, cfg.agent, cfg.evmScriptExecutor));
         d.irmConfigFactory = address(new IrmConfigFactory());
@@ -75,14 +75,12 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
         // Injecting implementations keeps the factory below the EIP-3860 initcode limit.
         address controllerImpl = address(new LidoLendMarketController(IMorpho(d.core)));
         address erc4626WrapperImpl = address(new LidoLendERC4626(d.core));
-        d.guardianSignalsImpl = address(new GuardianSignals());
+        address guardianSignalsImpl = address(new GuardianSignals());
 
         d.factory = address(
             new LidoLendMarketFactory(
                 LidoLendMarketFactory.Implementations({
-                    controller: controllerImpl,
-                    erc4626Wrapper: erc4626WrapperImpl,
-                    guardianSignals: d.guardianSignalsImpl
+                    controller: controllerImpl, erc4626Wrapper: erc4626WrapperImpl, guardianSignals: guardianSignalsImpl
                 }),
                 LidoLendMarketFactory.Dependencies({
                     lidoLend: d.core,
@@ -90,7 +88,7 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
                     lidoLendOwner: d.ownerFacade,
                     circuitBreaker: cfg.circuitBreaker,
                     resealManager: cfg.resealManager,
-                    riskStewardDashboard: d.riskStewardDashboard
+                    riskStewardDashboard: d.dashboard
                 }),
                 cfg.agent
             )
@@ -139,14 +137,14 @@ abstract contract ProtocolDeployer is LidoLendPrimitives {
     }
 
     function _handOverExitBook(ExitBookBase book, ExitBookConfig memory cfg, address deployer) private {
-        // EasyTrack and the Agent both need independent allow-list control.
+        // EasyTrack controls the allow-list; the Agent administers role grants.
         book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.evmScriptExecutor);
-        book.grantRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.agent);
-        book.grantRole(book.FEE_MANAGER_ROLE(), cfg.evmScriptExecutor);
-        book.grantRole(book.RECOVERER_ROLE(), cfg.agent);
         book.grantRole(book.PAUSER_ROLE(), cfg.pauser);
         // RESUMER_ROLE deliberately starts empty. Governance grants it only when it needs to resume the book.
         book.grantRole(book.DEFAULT_ADMIN_ROLE(), cfg.agent);
+        book.grantRole(book.FEE_MANAGER_ROLE(), deployer);
+        book.setServiceFee(cfg.agent, 0);
+        book.revokeRole(book.FEE_MANAGER_ROLE(), deployer);
         book.revokeRole(book.DEFAULT_ADMIN_ROLE(), deployer);
     }
 }

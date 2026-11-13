@@ -1,0 +1,18 @@
+[artifact]
+kind = "circuit-breaker"
+deployment = "mainnet"
+chain_id = 1
+config_hash = "0x31863c02bee67d85b5cab182b449c4fc7655ca4d42cafafe3eb47e14ab38d9ef"
+compatibility_hash = "0x52644200ae3b7ae5be5f9721ba9d69a64b3be1a25f6f3260dcb8591671097e4f"
+
+[circuit_breaker]
+name = "lido-lend"
+address = "0xd0A81A130a303237d338A0b5835edcB011Ab3afd"
+admin = "0xFE5986E06210aC1eCC1aDCafc0cc7f8D63B3F977"
+deployed_block = 26291257
+min_pause_duration = 432000
+max_pause_duration = 5184000
+min_heartbeat_interval = 2592000
+max_heartbeat_interval = 94608000
+initial_pause_duration = 1814400
+initial_heartbeat_interval = 31536000

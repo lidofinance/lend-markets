@@ -77,15 +77,13 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
         params = m.params;
         marketId = m.id;
 
-        // The pair is recorded under the name of the market it serves, and a deployment may carry none.
-        string memory vaultArtifact = string.concat("vaults/", market_, ".toml");
-        string memory adapterArtifact = string.concat("adapters/", market_, ".toml");
-        if (!_hasArtifact(vaultArtifact) || !_hasArtifact(adapterArtifact)) {
-            vm.skip(true, string.concat("MetaMorphoV2: run has no vault-v2 pair for '", market_, "'"));
+        (address vaultAddress, address adapterAddress) = _vaultPair(market_);
+        if (vaultAddress == address(0) || adapterAddress == address(0)) {
+            vm.skip(true, "MetaMorphoV2: no vault-v2 pair for this market");
             return;
         }
-        vault2 = IVaultV2(_artifactAddr(vaultArtifact, "vault.address"));
-        adapterAddr = _artifactAddr(adapterArtifact, "adapter.address");
+        vault2 = IVaultV2(vaultAddress);
+        adapterAddr = adapterAddress;
         adapter = IMorphoMarketV1AdapterLike(adapterAddr);
 
         // The adapter drives the SAME market the suite is bound to. The two param structs are ABI-identical
