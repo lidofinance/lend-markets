@@ -61,6 +61,9 @@ The production deployment uses one CircuitBreaker instance for its controllers. 
 
 A successful pause consumes that controller registration. CircuitBreaker does not validate a target or its pause permission when registration is written. The registered pauser cannot configure CircuitBreaker or resume the controller. The admin cannot exceed the immutable duration bounds or pause through CircuitBreaker without a live registration.
 
+> [!NOTE]
+> **Pauses can be chained.** After a pause, the CircuitBreaker `ADMIN` can register a new pauser, so a chain of pauses can keep a market's exits blocked for longer than one pause. Each registration goes through an EasyTrack motion that LDO holders can object to.
+
 ## Interest-rate management
 
 In the standard market, the immutable `irm` field points to `IrmRouter`. The router selects an address for each market. `AdaptiveCurveIrm` is the standard model; `LinearKinkIrm` is optional. Each standard model references or stores a per-market configuration.

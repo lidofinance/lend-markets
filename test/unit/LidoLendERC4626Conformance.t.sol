@@ -158,17 +158,26 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
         assertLe(out, assets, "no free profit: deposit -> redeem returns no more than put in");
     }
 
+    /// @dev Mint `shares`, then withdraw the whole `maxWithdraw`. `withdraw` returns the shares it burns, so the
+    ///      bound is measured in the loan tokens the mint pulled and the withdraw paid out.
     function testFuzz_roundTrip_mintWithdraw_noFreeProfit(uint256 shares) public {
         shares = bound(shares, 1, 1_000_000 ether);
         uint256 cost = _v().previewMint(shares);
         _fundApprove(alice, cost);
 
+        uint256 balanceBeforeMint = _m().loanToken.balanceOf(alice);
         vm.startPrank(alice);
         _v().mint(shares, alice);
-        uint256 back = _v().withdraw(_v().maxWithdraw(alice), alice, alice);
+        uint256 balanceAfterMint = _m().loanToken.balanceOf(alice);
+        uint256 assetsOut = _v().maxWithdraw(alice);
+        uint256 burned = _v().withdraw(assetsOut, alice, alice);
         vm.stopPrank();
 
-        assertLe(back, cost, "no free profit: mint then withdraw returns no more than the mint cost");
+        uint256 paid = balanceBeforeMint - balanceAfterMint;
+        uint256 received = _m().loanToken.balanceOf(alice) - balanceAfterMint;
+        assertEq(received, assetsOut, "withdraw pays the requested assets");
+        assertLe(received, paid, "no free profit: the withdraw pays out no more loan tokens than the mint pulled");
+        assertEq(_v().balanceOf(alice), shares - burned, "the withdraw burns exactly the shares it returns");
     }
 
     // ── G5: preview rounding direction — mint/withdraw round UP, deposit/redeem round DOWN ──

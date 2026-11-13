@@ -50,6 +50,7 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
     uint256 public repays;
     uint256 public crashes;
     uint256 public liquidations;
+    uint256 public belowFloorBorrowsRejected;
     // Victims that a forced seizure left with debt and active collateral below the floor. The floor invariant
     // excludes them until the debt is gone or the active collateral is back at the floor.
     mapping(address => bool) public liquidated;
@@ -183,6 +184,53 @@ contract MarketHandler is CommonBase, StdCheats, StdUtils {
         borrows++;
         // The borrow hook matures a due lot, which can lift a delayed victim back to the floor.
         _clearLiquidatedIfRestored(a);
+    }
+
+    /// @dev The voluntary borrow the floor forbids. A debt-free instant actor trims its collateral below
+    ///      `minActivationAmount`, which needs no floor without debt, then borrows within its LLTV room and the idle
+    ///      supply. The borrow must revert `InsufficientActiveCollateral`, and the trim is then supplied back, so a
+    ///      refused attempt leaves the position as it was. A borrow that lands keeps its sub-floor debt, which
+    ///      `invariant_noDebtWithSubFloorCollateral` rejects.
+    function borrowBelowFloor(uint256 actorSeed, uint256 keep, uint256 amount) external {
+        address a = _actor(actorSeed);
+        if (!CONTROLLER.hasInstantActivation(a)) return;
+        Position memory pos = CORE.position(ID, a);
+        if (pos.borrowShares != 0 || pos.collateral == 0) return;
+        keep = bound(keep, 1, Math.min(pos.collateral, FLOOR - 1));
+        uint256 trim = pos.collateral - keep;
+
+        MorphoMarket memory mk = CORE.market(ID);
+        uint256 maxBorrow = Math.mulDiv(Math.mulDiv(keep, _price(), 1e36), LLTV, 1e18);
+        uint256 liquidity = mk.totalSupplyAssets - mk.totalBorrowAssets;
+        uint256 room = Math.min(maxBorrow * 99 / 100, liquidity);
+        if (room == 0) return;
+        amount = bound(amount, 1, room);
+        uint256 mintShares = Math.mulDiv(
+            amount, uint256(mk.totalBorrowShares) + 1e6, uint256(mk.totalBorrowAssets) + 1, Math.Rounding.Ceil
+        );
+        if (mintShares > type(uint128).max) return;
+
+        if (trim != 0) {
+            vm.prank(a);
+            CORE.withdrawCollateral(params, trim, a, a);
+        }
+        vm.prank(a);
+        try CORE.borrow(params, amount, 0, a, a) {
+            return;
+        } catch (bytes memory reason) {
+            require(
+                bytes4(reason) == ILidoLendMarketController.InsufficientActiveCollateral.selector,
+                "borrowBelowFloor: unexpected revert"
+            );
+        }
+        belowFloorBorrowsRejected++;
+
+        if (trim != 0) {
+            vm.startPrank(a);
+            COLLATERAL.approve(address(CORE), trim);
+            CORE.supplyCollateral(params, trim, a, "");
+            vm.stopPrank();
+        }
     }
 
     function repay(uint256 actorSeed, uint256 amount) external {

@@ -123,6 +123,8 @@ contract IrmConfigRiskTest is LidoLendSetup {
     int256 internal constant CEILING_RATE_AT_TARGET = int256(10_000 ether) / int256(365 days);
     /// @dev The validation ceiling for the steepness.
     int256 internal constant CEILING_STEEPNESS = 100e18;
+    /// @dev ln 2 in WAD, as the curve's exponential approximation uses it.
+    int256 internal constant LN_2 = 0.693147180559945309 ether;
     /// @dev The repair curve: 4%/yr at target, per second.
     int256 internal constant FLAT_RATE_AT_TARGET = int256(4e16) / int256(365 days);
     int256 internal constant FLAT_STEEPNESS = 4e18;
@@ -411,6 +413,42 @@ contract IrmConfigRiskTest is LidoLendSetup {
         assertGt(dailyRate - onceRate, onceRate / 1000, "daily checkpoints leave the stored rate over 0.1% higher");
     }
 
+    // ── Idle interest is not monotone in the idle length ──
+
+    /// @dev Specified behaviour: below target utilization the curve's exponential steps down where its argument crosses
+    ///      an odd multiple of `-ln 2 / 2`, so an accrual one second later books less interest for the whole idle
+    ///      period, up to about 0.7% of it, and the vault's `totalAssets` dips with it. The lend-irm `SPECIFICATION.md`
+    ///      describes it.
+    function test_idleBelowTarget_oneSecondLaterAccrualBooksLessInterest() public {
+        Market storage m = _m();
+        _seedUtilization(100 ether, 30 ether);
+        MorphoMarket memory market = m.core.market(m.id);
+        AdaptiveCurveParams memory curve = _irm().marketCurveConfig(_irmId()).getCurveParams();
+        int256 utilization = int256(uint256(market.totalBorrowAssets).wDivDown(market.totalSupplyAssets));
+        int256 err = (utilization - curve.targetUtilization) * 1e18 / curve.targetUtilization;
+        int256 speed = curve.adjustmentSpeed * err / 1e18;
+        assertLt(speed, 0, "setup: below target the rate adapts down");
+
+        // The end rate's argument `speed * elapsed` crosses `-ln 2 / 2` first; the midpoint rate's, at half the
+        // argument, crosses it at twice that time.
+        uint256 endCrossing = uint256(LN_2 / 2 / -speed);
+        for (uint256 k = 1; k <= 2; ++k) {
+            (uint256 dropAt, uint256 drop, uint256 interest) =
+                _largestOneSecondDrop(market.lastUpdate, k * endCrossing - 50, 100);
+            assertGt(drop, 0, "one more idle second books less interest");
+            uint256 dropPpm = drop * 1e6 / interest;
+            assertLt(dropPpm, 7_000, "the drop stays under 0.7% of the period's interest");
+            // The first crossing moves `end`, about 0.3% of the rate, and the second moves `mid`, about 0.7%.
+            assertGt(dropPpm, k == 1 ? 2_900 : 6_900, "the drop is the size the wExp step predicts");
+            if (k == 1) assertLt(dropPpm, 3_100, "the end-term drop is about 0.3%");
+
+            vm.warp(market.lastUpdate + dropAt - 1);
+            uint256 vaultAssets = m.vault.totalAssets();
+            vm.warp(market.lastUpdate + dropAt);
+            assertLt(m.vault.totalAssets(), vaultAssets, "vault totalAssets dips one second later");
+        }
+    }
+
     // ── Ownership moves in one step ──
 
     /// @dev `IrmRouter.transferOwnership` moves ownership in one call, with no acceptance step. Only the owner can
@@ -504,6 +542,11 @@ contract IrmConfigRiskTest is LidoLendSetup {
         vm.expectRevert(err);
         m.vault.redeem(lenderShares / 2, lender, lender);
 
+        // A direct supply withdrawal accrues right after its authorization check, so it reverts the same way.
+        vm.prank(lender);
+        vm.expectRevert(err);
+        m.core.withdraw(m.params, 1, 0, lender, lender);
+
         vm.prank(lender);
         vm.expectRevert(err);
         m.vault.fallbackExit(lenderShares, lender, lender, 0);
@@ -573,6 +616,46 @@ contract IrmConfigRiskTest is LidoLendSetup {
 
         MorphoMarket memory market = m.core.market(m.id);
         assertEq(market.totalBorrowAssets, market.totalSupplyAssets, "setup: utilization is 100%");
+    }
+
+    /// @dev Lender supplies `supply` through the vault and the borrower takes `debt` of it at LTV 0.5.
+    function _seedUtilization(uint256 supply, uint256 debt) internal {
+        Market storage m = _m();
+        _fund(m.loanToken, lender, supply);
+        m.vaultDeposit(lender, supply);
+
+        uint256 collateral = debt * 2 * ORACLE_PRICE_SCALE / m.oracle.price();
+        _fund(m.collateralToken, borrower, collateral);
+        m.supplyCollateral(borrower, collateral);
+        m.activateCollateral();
+        m.borrow(borrower, debt);
+    }
+
+    /// @dev Interest the core books when the next accrual lands `elapsed` seconds after `start`. State is restored.
+    function _bookedInterest(uint256 start, uint256 elapsed) internal returns (uint256 interest) {
+        Market storage m = _m();
+        uint256 snapshot = vm.snapshotState();
+        vm.warp(start + elapsed);
+        uint256 debtBefore = m.core.market(m.id).totalBorrowAssets;
+        m.core.accrueInterest(m.params);
+        interest = m.core.market(m.id).totalBorrowAssets - debtBefore;
+        vm.revertToState(snapshot);
+    }
+
+    /// @dev The largest one-second fall of the booked interest for accruals `from` to `from + window` seconds after
+    ///      `start`, the elapsed time it lands at, and the interest one second earlier.
+    function _largestOneSecondDrop(uint256 start, uint256 from, uint256 window)
+        internal
+        returns (uint256 dropAt, uint256 drop, uint256 interestBefore)
+    {
+        uint256 previous = _bookedInterest(start, from);
+        for (uint256 elapsed = from + 1; elapsed <= from + window; ++elapsed) {
+            uint256 current = _bookedInterest(start, elapsed);
+            if (current < previous && previous - current > drop) {
+                (dropAt, drop, interestBefore) = (elapsed, previous - current, previous);
+            }
+            previous = current;
+        }
     }
 
     /// @dev The adaptive curve at error 1 is `((steepness - 1) * 1 + 1) * rateAtTarget`.

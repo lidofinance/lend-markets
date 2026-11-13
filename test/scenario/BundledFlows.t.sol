@@ -81,6 +81,23 @@ contract BundledFlowsTest is BundlerSetup {
         m.vault.approve(address(vaultAdapter), type(uint256).max);
     }
 
+    /// @dev `from` sends `amount` of ETH straight to the general adapter, outside any bundle.
+    function _preloadAdapter(address from, uint256 amount) internal {
+        vm.deal(from, amount);
+        vm.prank(from);
+        (bool ok,) = address(adapter).call{value: amount}("");
+        assertTrue(ok, "anyone can send ETH to the adapter");
+    }
+
+    /// @dev Sends `value` to the adapter, then stakes the adapter's whole ETH balance for `receiver`.
+    function _stakeAllBundle(uint256 value, address receiver) internal view returns (Call[] memory bundle) {
+        bundle = new Call[](2);
+        bundle[0] = _callValue(address(adapter), "", value);
+        bundle[1] = _adapterCall(
+            abi.encodeCall(adapter.stakeEth, (type(uint256).max, MAX_SHARE_PRICE_E27, address(0), receiver))
+        );
+    }
+
     // ---
     // LENDER: DEPOSITS
     // ---
@@ -316,6 +333,45 @@ contract BundledFlowsTest is BundlerSetup {
 
         assertEq(m.core.position(m.id, user).collateral, expectedWst, "collateral posted at the mock rates");
         assertEq(user.balance, 0, "all ETH staked");
+    }
+
+    /// @dev `stakeEth(max)` stakes the adapter's whole ETH balance, including ETH anyone sent it before the bundle.
+    ///      When the victim's ETH plus that preload exceeds Lido's remaining stake limit, the victim's bundle reverts,
+    ///      and the griefer sweeps the preload back.
+    function testRevert_bundle_stakeEthMax_preloadPushesPastStakeLimit() public {
+        address victim = _actor("victim");
+        address griefer = _actor("griefer");
+        vm.deal(victim, 6 ether);
+        _preloadAdapter(griefer, 5 ether);
+
+        // The mock refuses the 11 ETH submit, the victim's 6 plus the preload, as a 10 ETH remaining stake limit would.
+        vm.mockCallRevert(
+            address(steth),
+            11 ether,
+            abi.encodeCall(steth.submit, (address(0))),
+            abi.encodeWithSignature("Error(string)", "STAKE_LIMIT")
+        );
+        vm.prank(victim);
+        vm.expectRevert(bytes("STAKE_LIMIT"));
+        bundler3.multicall{value: 6 ether}(_stakeAllBundle(6 ether, victim));
+
+        Call[] memory sweep = new Call[](1);
+        sweep[0] = _adapterCall(abi.encodeCall(adapter.nativeTransfer, (griefer, type(uint256).max)));
+        _exec(griefer, 0, sweep);
+        assertEq(griefer.balance, 5 ether, "the griefer sweeps its preload back");
+        assertEq(victim.balance, 6 ether, "the victim keeps its ETH");
+    }
+
+    /// @dev When the victim's ETH plus the preload fits the stake limit, `stakeEth(max)` stakes the preload as well and
+    ///      sends it to the victim as stETH.
+    function test_bundle_stakeEthMax_stakesPreloadForVictim() public {
+        address victim = _actor("victim");
+        vm.deal(victim, 6 ether);
+        _preloadAdapter(_actor("griefer"), 5 ether);
+
+        _exec(victim, 6 ether, _stakeAllBundle(6 ether, victim));
+
+        assertEq(steth.balanceOf(victim), 11 ether, "the victim gets its 6 ETH and the preload as stETH");
     }
 
     function test_bundle_supplyCollateralFromWstEth() public {

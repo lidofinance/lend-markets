@@ -630,6 +630,169 @@ contract ActivationTest is LidoLendSetup {
         m.core.borrow(m.params, 1, 0, last, last);
     }
 
+    /// @dev Specified behaviour: a third party's top-up while a freeze defers maturation restarts a lot whose delay has
+    ///      passed, so after unfreeze that lot waits a fresh delay while an untouched lot borrows at once.
+    ///      `market-controller.md` describes it.
+    function test_topUpDuringFreeze_retimesElapsedLot() public {
+        Market storage m = _m();
+        address victim = _seedLenderAndCollateral(100 ether);
+        address control = _actor("control");
+        _fund(m.collateralToken, control, 100 ether);
+        m.supplyCollateral(control, 100 ether);
+        uint256 firstUnlock = m.controller.positionOf(victim).unlockTime;
+        m.activateCollateral();
+        assertLt(firstUnlock, block.timestamp, "setup: the victim's lot is past its unlock");
+
+        m.freeze();
+        uint256 topUp = m.controller.collateralActivationConfig().minActivationAmount;
+        address stranger = _actor("stranger");
+        _fund(m.collateralToken, stranger, topUp);
+        m.supplyCollateralOnBehalf(stranger, victim, topUp); // helper asserts the whole lot stays on the timer
+        uint256 newUnlock = m.controller.positionOf(victim).unlockTime;
+        uint256 minDelay = m.controller.collateralActivationConfig().minActivationDelay;
+        assertGe(newUnlock, block.timestamp + minDelay, "the elapsed lot restarted on a fresh delay");
+        m.unfreeze();
+
+        m.borrow(control, _safeBorrow(100 ether)); // the untouched lot matures on the first sync after unfreeze
+
+        vm.prank(victim);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.borrow(m.params, 1, 0, victim, victim);
+
+        vm.warp(newUnlock);
+        m.borrow(victim, _safeBorrow(100 ether));
+    }
+
+    /// @dev Specified behaviour: with a nonzero lock, the same top-up during a freeze also restarts the lock of a lot
+    ///      whose lock had ended, so the debt-free borrower's exit reverts for another lock period.
+    ///      `market-controller.md` describes it.
+    function testRevert_topUpDuringFreeze_relocksElapsedLot() public {
+        Market storage m = _m();
+        CollateralActivationConfig memory cfg = m.controller.collateralActivationConfig();
+        cfg.activatingLockDuration = 1 hours;
+        m.setActivationConfig(cfg);
+        address victim = _actor("victim");
+        _fund(m.collateralToken, victim, 100 ether);
+        m.supplyCollateral(victim, 100 ether);
+        m.activateCollateral(); // the unlock and the lock have both passed
+        m.freeze();
+
+        // Control: without the top-up the debt-free victim clears its lot during the freeze.
+        uint256 snap = vm.snapshotState();
+        m.withdrawCollateral(victim, 100 ether, victim);
+        vm.revertToState(snap);
+
+        address stranger = _actor("stranger");
+        _fund(m.collateralToken, stranger, cfg.minActivationAmount);
+        m.supplyCollateralOnBehalf(stranger, victim, cfg.minActivationAmount);
+        uint256 total = 100 ether + cfg.minActivationAmount;
+
+        vm.prank(victim);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CollateralActivationLib.ActivatingCollateralLocked.selector,
+                total,
+                block.timestamp + cfg.activatingLockDuration
+            )
+        );
+        m.core.withdrawCollateral(m.params, total, victim, victim);
+    }
+
+    /// @dev Specified behaviour: while an activating lot is inside its lock, a withdrawal must fit within the active
+    ///      balance, so the borrower's untimed dust is locked with the lot. Here the lot matures before its lock ends,
+    ///      and the dust then leaves alone. `market-controller.md` describes it.
+    function testRevert_dustBesideLockedLot_activatingCollateralLocked() public {
+        Market storage m = _m();
+        CollateralActivationConfig memory cfg = m.controller.collateralActivationConfig();
+        cfg.activatingLockDuration = 1 days;
+        m.setActivationConfig(cfg);
+        address borrower = _actor("borrower");
+        uint256 dust = 1 ether;
+        _fund(m.collateralToken, borrower, cfg.minActivationAmount + dust);
+        m.supplyCollateral(borrower, cfg.minActivationAmount); // activating, locked for one day
+        uint256 lockDeadline = block.timestamp + cfg.activatingLockDuration;
+        m.supplyCollateral(borrower, dust); // sub-threshold over an empty dust bucket: untimed dust
+
+        ILidoLendMarketController.BorrowerPosition memory position = m.controller.positionOf(borrower);
+        assertEq(position.dust, dust, "setup: untimed dust");
+        assertEq(position.activating, cfg.minActivationAmount, "setup: a locked lot");
+        assertEq(position.active, 0, "setup: no active collateral");
+
+        vm.prank(borrower);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CollateralActivationLib.ActivatingCollateralLocked.selector, cfg.minActivationAmount, lockDeadline
+            )
+        );
+        m.core.withdrawCollateral(m.params, dust, borrower, borrower);
+
+        // Here the lot unlocks before its lock ends. One second earlier the dust is still locked, and at the unlock
+        // the withdraw hook matures the lot first, which lifts the lock, so the dust leaves alone.
+        uint256 unlock = position.unlockTime;
+        assertLt(unlock, lockDeadline, "setup: the lot unlocks before its lock ends");
+        vm.warp(unlock - 1);
+        vm.prank(borrower);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CollateralActivationLib.ActivatingCollateralLocked.selector, cfg.minActivationAmount, lockDeadline
+            )
+        );
+        m.core.withdrawCollateral(m.params, dust, borrower, borrower);
+        vm.warp(unlock);
+        m.withdrawCollateral(borrower, dust, borrower);
+    }
+
+    /// @dev Specified behaviour: a strike surcharge puts a lot's unlock past the base deadline, so a quorum frontier at
+    ///      the base deadline does not mature it: the lot stays activating after its unlock until a quorum heartbeat
+    ///      covers the unlock or the quorum-delay fallback passes. `market-controller.md` describes it.
+    function test_surchargedLot_frontierAtBaseDeadline_waitsForHeartbeatOrFallback() public {
+        Market storage m = _m();
+        CollateralActivationConfig memory cfg = m.controller.collateralActivationConfig();
+        cfg.maxGuardiansQuorumDelay = 36 hours;
+        m.setActivationConfig(cfg);
+        address guardian2 = _actor("guardian2");
+        address guardian3 = _actor("guardian3");
+        m.guardianSignals.addGuardian(guardian2);
+        m.guardianSignals.addGuardian(guardian3);
+        m.guardianSignals.setQuorum(2);
+
+        address borrower = _seedLenderAndCollateral(100 ether);
+        uint256 start = block.timestamp;
+        uint256 baseDue = m.controller.positionOf(borrower).unlockTime;
+        m.flagAs(guardian3, borrower); // one strike below quorum 2: a surcharge, not a ban
+        uint256 unlock = m.controller.positionOf(borrower).unlockTime;
+        assertEq(unlock, baseDue + cfg.delayPerStrike, "setup: one strike surcharge");
+
+        // A quorum heartbeats at the base deadline.
+        vm.warp(baseDue);
+        vm.roll(block.number + 1);
+        m.heartbeatAt(address(this), baseDue);
+        m.heartbeatAt(guardian2, baseDue);
+        assertEq(m.guardianSignals.getQuorumFrontier(), baseDue, "setup: frontier at the base deadline");
+
+        vm.warp(unlock);
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.borrow(m.params, 1, 0, borrower, borrower);
+
+        vm.warp(start + cfg.maxGuardiansQuorumDelay - 1);
+        vm.prank(borrower);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.borrow(m.params, 1, 0, borrower, borrower);
+
+        // A quorum heartbeat that covers the unlock matures the lot.
+        uint256 snap = vm.snapshotState();
+        vm.roll(block.number + 1);
+        m.heartbeatAt(address(this), unlock);
+        m.heartbeatAt(guardian2, unlock);
+        m.borrow(borrower, _safeBorrow(100 ether));
+        vm.revertToState(snap);
+
+        // Without one, the lot matures at the fallback.
+        vm.warp(start + cfg.maxGuardiansQuorumDelay);
+        m.borrow(borrower, _safeBorrow(100 ether));
+    }
+
     function _splitAddress(uint256 i) internal pure returns (address) {
         return address(uint160(0xA0000 + i));
     }

@@ -38,9 +38,12 @@ For one `(marketId, account)`, `getOpinion` returns the fields below. An **activ
 | `suspectCount`, `suspectExpiryTimestamp` | Add `suspectCount * delayPerSuspect` when the lot started before the snapshot expiry |
 | `quorumFrontierTimestamp` | Gates maturation after the activation delay has passed |
 
-A borrow checks the caller, debt owner, and receiver for a ban. The debt owner's other opinion fields affect only collateral activation.
+A borrow checks the caller, debt owner, and receiver for a ban. The receiver check covers only the core borrow's receiver, so a loan forwarded after the borrow can still reach a banned address. The debt owner's other opinion fields affect only collateral activation.
 
-A ban does not directly gate repayment, liquidation, settlement, or a debt-free collateral withdrawal. It does prevent maturation. If an activation lock is still live, the unmatured collateral can therefore delay a debt-free withdrawal of the inactive balance until the lock expires; the active balance stays withdrawable.
+> [!NOTE]
+> **A ban on a shared caller blocks every borrow made through it.** The borrow check covers the caller, so a ban on the bundler's general adapter reverts every borrow through it in that market until the ban is lifted, while direct core borrows still work. Anyone can supply at least `minActivationAmount` of tainted collateral on the adapter's behalf, which the adapter can never withdraw, so guardians flag it and a quorum of their flags bans it.
+
+A ban does not directly gate repayment, liquidation, settlement, or a debt-free collateral withdrawal. It does prevent maturation. If an activation lock is still live, the unmatured collateral can therefore delay a debt-free withdrawal of the inactive balance until the lock expires, and a top-up can restart that lock ([Market Controller Policy](market-controller.md#voluntary-withdrawals-and-forced-collateral-reductions)). While the lock lasts, the active balance stays withdrawable.
 
 ## Guardian identities and authority
 
@@ -107,7 +110,7 @@ A report is still active when `reportedAt + suspectWindow == block.timestamp`; i
 activatingStart < suspectExpiryTimestamp
 ```
 
-The lot's start time decides whether the extra delay applies. Once it applies, waiting for the report to expire does not shorten that lot's delay.
+The lot's start time decides whether the extra delay applies. Once it applies, waiting for the report to expire does not shorten that lot's delay, but the next `suspect`, `unsuspect` or `prune` rebuilds the snapshot from the live reports and can lower or remove it ([Snapshot updates](#snapshot-updates)).
 
 A zero suspect window does not disable reports: a report at time `t` can still affect a lot started before `t`. Setting the controller's `delayPerSuspect` to zero removes the added delay.
 
@@ -172,7 +175,7 @@ The fallback deadline is `activatingStart + maxGuardiansQuorumDelay`. Setting th
 
 A heartbeat recomputes the candidate only when that guardian moves from at or below the stored frontier to above it. Membership and quorum changes do not recompute it. Anyone may call `syncQuorumFrontier` to recompute explicitly; it raises the stored frontier only when the candidate is higher.
 
-Lowering quorum raises or preserves the live candidate because fewer guardian identities are required. Raising quorum lowers or preserves it. Neither change recomputes the stored value. Removing or replacing a guardian clears that identity's heartbeat, but also leaves the stored frontier unchanged.
+Lowering quorum raises or preserves the live candidate because fewer guardian identities are required. Raising quorum lowers or preserves it. Neither change recomputes the stored value. Removing or replacing a guardian clears that identity's heartbeat, but also leaves the stored frontier unchanged. After a quorum decrease, heartbeats from guardians already above the stored frontier never recompute it, so it can stall and lots can wait until their fallback deadline. A later `syncQuorumFrontier` call restores progress.
 
 ### Heartbeat validation
 

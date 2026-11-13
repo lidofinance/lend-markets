@@ -73,6 +73,9 @@ Expiry is not a stored state. A request remains `Open` after its deadline but ca
 
 Placement and cancellation are non-custodial. Placement checks the owner's current position and permission, but it does not reserve shares, allowance, authorization, or source liquidity. The same position can therefore back several requests, and later owner actions can make any of them unfillable.
 
+> [!WARNING]
+> **An unfillable request revives when its backing returns.** A request stays open until it is filled, cancelled or past its deadline, so once the owner again holds the shares and the allowance or authorization it needs, any filler can fill it at its current rate and keep the reward, even if the source is already liquid. Cancelling the request prevents this.
+
 ## Placement and backing
 
 New requests require an allowlisted source, a positive asset amount, a non-zero receiver, and a future deadline within the maximum request lifetime fixed when the book is deployed. The ramp offsets are seconds from creation. A valid fee ramp satisfies `startRate <= endRate <= 10%` and `rampStart <= rampEnd`, and it must finish by the deadline. `minFillAssets` is capped at the request amount; setting it to the full amount makes the request full-fill-only.
@@ -171,6 +174,12 @@ receiverAssets + fillerReward + serviceCut = F
 ```
 
 Each fill uses its own amount, execution timestamp, and live service-fee configuration, so partial fills of one request can use different priority rates and payout splits. The fill call has no minimum-reward parameter.
+
+> [!NOTE]
+> **A fee update during a fill pays the old rate to the new recipient.** The book computes the service cut first and reads the recipient last, so if a payout transfer calls into a contract that enacts a pending fee-update motion, the new recipient gets that fill's cut at the old rate. If the update clears the recipient, the fill reverts for a token that rejects transfers to the zero address.
+
+> [!NOTE]
+> **A recipient that cannot receive the loan token stops fills.** Every fill pushes the service cut to the single service-fee recipient, so if the loan token rejects transfers to it, for example through an issuer blocklist, every fill in that token with a non-zero cut reverts until the fee manager changes the recipient or the fee.
 
 ## Preparing source liquidity
 

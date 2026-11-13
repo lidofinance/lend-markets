@@ -542,7 +542,7 @@ contract LidoLendERC4626AuditFixesTest is LidoLendSetup {
     ///      `_withdraw` subtracts the `toSharesUp` result of `LIDO_LEND.withdraw`. The vault share math does not see
     ///      this core rounding, so the incumbents absorb the one-share gap.
     ///      Same cause: `deposit` or `mint` followed by `redeem` or `withdraw`, and a deposit followed by the liquid
-    ///      leg of `fallbackExit`. Each round trip takes at most one core share.
+    ///      leg of `fallbackExit`. Each withdrawal's core rounding takes at most one core share.
     function test_roundTripAtRoundingBoundary_burnsOneIncumbentCoreShare() public {
         Market storage m = _market();
         (address incumbent, uint256 incumbentShares) = _seedRoundTripMarket(100 ether, 30 days);

@@ -853,16 +853,21 @@ contract CollateralActivationLibTest is Test {
     function test_seize_residualActivatingKeepsTimer() public {
         h.setMinActivationAmount(10 ether);
         h.deposit(address(0xB1), 10 ether); // A = 10, timer quoted now
+        uint256 unlock = h.getUnlockTime(address(0xB1), _noSignals());
+        assertGt(unlock, block.timestamp + 30, "setup: the lot is still timed after 30 seconds");
 
+        vm.warp(block.timestamp + 30);
         h.seize(address(0xB1), 9 ether); // residual A = 1 < minActivationAmount
 
         (, uint256 activating, uint256 dust) = h.bucketsOf(address(0xB1));
         assertEq(activating, 1 ether, "residual stays activating - no demotion");
         assertEq(dust, 0);
+        assertEq(h.getUnlockTime(address(0xB1), _noSignals()), unlock, "the seizure keeps the unlock time");
 
-        vm.warp(block.timestamp + 1 hours + 1);
-        uint256 active = h.sync(address(0xB1), 0);
-        assertEq(active, 1 ether, "residual matures on its original timer");
+        vm.warp(unlock - 1);
+        assertEq(h.sync(address(0xB1), 0), 0, "the remainder is still timed one second before the unlock");
+        vm.warp(unlock);
+        assertEq(h.sync(address(0xB1), 0), 1 ether, "residual matures on its original timer");
     }
 
     /// @notice A seizure that empties the activating lot entirely clears its timer, so a later deposit starts a

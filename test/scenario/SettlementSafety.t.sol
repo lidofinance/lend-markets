@@ -284,6 +284,34 @@ contract SettlementSafetyTest is LidoLendSetup {
         _assertDebtLeftOnZeroCollateral(root, insolvent);
     }
 
+    /// @dev Specified behaviour: debt left on zero collateral is written off by the core's one-share liquidation: with
+    ///      `seizedAssets = 0` and `repaidShares = 1` it seizes nothing, costs one raw loan-token unit, clears every
+    ///      remaining borrow share and takes the rest from suppliers. Any account can call it. The lend
+    ///      `SPECIFICATION.md` describes it.
+    function test_debtOnZeroCollateral_oneShareLiquidationWritesItOff() public {
+        Market storage m = _m();
+        (, address insolvent) = _seedTiedKeys();
+        address supplier = _actor("supplier");
+        _fund(m.loanToken, supplier, 2 * TIED_VALUE);
+        m.coreSupply(supplier, 2 * TIED_VALUE);
+        MorphoMarket memory mkt = m.core.market(m.id);
+        uint256 cut = Math.mulDiv(
+            TIED_VALUE, uint256(mkt.totalBorrowShares) + 1e6, uint256(mkt.totalBorrowAssets) + 1, Math.Rounding.Ceil
+        );
+        m.coreSettle(supplier, insolvent, cut, supplier);
+        assertEq(m.core.position(m.id, insolvent).collateral, 0, "setup: no collateral left");
+        uint256 debtLeft = m.controller.positionOf(insolvent).debtAssets;
+        assertGt(debtLeft, 1, "setup: more than one raw loan-token unit of debt left");
+
+        address stranger = _actor("stranger");
+        _fund(m.loanToken, stranger, 1);
+        (uint256 seized, uint256 repaid) = m.liquidateBadDebt(stranger, insolvent, 0, 1);
+
+        assertEq(seized, 0, "nothing seized");
+        assertEq(repaid, 1, "the write-off costs one raw loan-token unit");
+        assertEq(m.loanToken.balanceOf(stranger), 0, "the caller paid that unit");
+    }
+
     // ── Sub-unit root: the rounded bad-debt check blocks every settlement ──
 
     /// @dev Known issue: a queue root can be solvent in exact math while its collateral value rounds down to zero. Such

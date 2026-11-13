@@ -282,9 +282,8 @@ abstract contract AcceptanceContext is Test {
     address internal vaultAdapter;
     string internal bundlerArtifact;
 
-    // Factory-derived controller and proxy admin.
+    // Expected factory admin: the deploy scripts build the factory with the Agent as its `ADMIN`.
     address internal rAdmin;
-    address internal rProxyAdmin;
 
     address[] internal expectedGuardians;
     uint256 internal expectedQuorum;
@@ -395,8 +394,7 @@ abstract contract AcceptanceContext is Test {
         collateralToken = _addr(".market.collateral_token");
         lltv = vm.parseTomlUint(toml, ".market.lltv");
 
-        rAdmin = IReadFactory(factory).ADMIN();
-        rProxyAdmin = rAdmin;
+        rAdmin = agent;
         circuitBreaker = _reg(".protocol.circuit_breaker");
         resealManager = _reg(".protocol.reseal_manager");
         assertEq(
@@ -768,7 +766,6 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         assertEq(actualFactory.ERC4626_WRAPPER_IMPL(), vaultImpl, "factory ERC-4626 wrapper implementation");
         assertEq(actualFactory.GUARDIAN_SIGNALS_IMPL(), guardianImpl, "factory guardian implementation");
         assertEq(actualFactory.ADMIN(), rAdmin, "factory controller admin");
-        assertEq(rProxyAdmin, rAdmin, "controller proxy admin differs from factory admin");
         assertEq(actualFactory.CIRCUIT_BREAKER(), circuitBreaker, "factory CircuitBreaker");
         assertEq(actualFactory.RESEAL_MANAGER(), resealManager, "factory reseal manager");
 

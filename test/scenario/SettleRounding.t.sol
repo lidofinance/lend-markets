@@ -262,7 +262,10 @@ contract SettleRoundingTest is Test, LidoLendDeployer {
         );
     }
 
+    /// @dev With the oracle reverting, a zero-share cut still reverts with the slice error, so the zero-share guard
+    ///      fires before the oracle read. The zero-seizure guard alone would surface the oracle's revert.
     function testRevert_zeroBorrowShares() public {
+        vm.mockCallRevert(params.oracle, abi.encodeWithSignature("price()"), bytes("oracle down"));
         vm.prank(LENDER);
         vm.expectRevert(bytes("settlement slice too small"));
         core.settle(params, 0, LENDER, BORROWER, RECEIVER);
