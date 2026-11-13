@@ -30,6 +30,8 @@ import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
 import {ArtifactMetadata, ArtifactMetadataFile} from "../../script/lib/ArtifactMetadata.sol";
 import {DeployConfigFile} from "../../script/lib/DeployConfigFile.sol";
+import {OracleConfigFile} from "../../script/lib/OracleConfigFile.sol";
+import {OraclePreflight} from "../../script/lib/OraclePreflight.sol";
 // --- Minimal read/write surfaces (UDVT `Id` is ABI-identical to bytes32, so bytes32 params match) ---
 
 interface IReadController {
@@ -550,9 +552,26 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
         bool isWstEth = vm.keyExistsToml(oracleCfg, ".oracle.wsteth");
         bool isUsdy = vm.keyExistsToml(oracleCfg, ".oracle.usdy_oracle");
-        assertTrue(isWstEth != isUsdy, "unknown or ambiguous oracle config");
+        bool isNav = vm.keyExistsToml(oracleCfg, ".oracle.kind")
+            && OracleConfigFile.isNavKind(vm.parseTomlString(oracleCfg, ".oracle.kind"));
+        uint256 kinds = (isWstEth ? 1 : 0) + (isUsdy ? 1 : 0) + (isNav ? 1 : 0);
+        assertEq(kinds, 1, "unknown or ambiguous oracle config");
 
-        if (isWstEth) {
+        if (isNav) {
+            // The deploy preflight's own check, on the live oracle and the artifact's record of it: the implementation
+            // the record builds, the recorded parameters, a `MAX_LLTV` at or over the market's LLTV, and each role's
+            // whole member list. It reverts with the preflight's errors.
+            OraclePreflight.validateNav(
+                OracleConfigFile.parseNav(oracleCfg, ".oracle"),
+                oracle,
+                implementation,
+                loanToken,
+                collateralToken,
+                lltv,
+                agent,
+                executor
+            );
+        } else if (isWstEth) {
             address expectedWstEth = vm.parseTomlAddress(oracleCfg, ".oracle.wsteth");
             assertEq(expectedWstEth, collateralToken, "oracle WstETH != collateral token");
             address expectedImplementation = address(new WstEthRateOracle(expectedWstEth));

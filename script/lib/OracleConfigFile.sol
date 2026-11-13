@@ -22,16 +22,21 @@ struct UsdyOracleConfig {
     uint256 maxPrice;
 }
 
-/// @notice One NAV oracle: the adapter kind, its constructor arguments, and the parameters it is initialized with.
-///         `poolId` and `shareClassId` apply to `nav-centrifuge` only.
+/// @notice One NAV oracle: the adapter kind, its constructor arguments, the parameters it is initialized with, and the
+///         range the seed price must sit in. `poolId`, `shareClassId` and `maxPriceAge` apply to `nav-centrifuge`
+///         only.
 struct NavOracleConfig {
     string kind;
     address source;
     uint64 poolId;
     bytes16 shareClassId;
+    uint256 maxPriceAge;
     address loanToken;
     address collateralToken;
+    uint256 maxLltv;
     TrailingAnchorOracleBase.Parameters parameters;
+    uint256 seedMinPrice;
+    uint256 seedMaxPrice;
 }
 
 library OracleConfigFile {
@@ -106,17 +111,23 @@ library OracleConfigFile {
             bytes memory scId = vm.parseBytes(ConfigToml.requireString(toml, string.concat(prefix, ".share_class_id")));
             if (scId.length != 16) revert ShareClassIdNot16Bytes(scId.length);
             cfg.shareClassId = bytes16(scId);
+            cfg.maxPriceAge = ConfigToml.requireUint(toml, string.concat(prefix, ".max_price_age"));
         }
+        cfg.maxLltv = ConfigToml.requireUint(toml, string.concat(prefix, ".max_lltv"));
+        cfg.seedMinPrice = ConfigToml.requireUint(toml, string.concat(prefix, ".seed_min_price"));
+        cfg.seedMaxPrice = ConfigToml.requireUint(toml, string.concat(prefix, ".seed_max_price"));
         // All eight are required non-zero: the oracle's validator needs both bounds, the delay and the window, a zero
         // speed would leave the anchor unable to follow the source in that direction, and a zero
-        // `max_anchor_below_mark` or `max_anchor_above_mark` would leave every honest re-anchor under or over the
-        // high-water mark to governance.
+        // `max_anchor_below_fence_base` or `max_anchor_above_fence_base` would leave every honest re-anchor under or
+        // over the fence base price to governance.
         cfg.parameters.maxPriceAboveAnchor = _requireUint64(toml, string.concat(prefix, ".max_price_above_anchor"));
         cfg.parameters.maxPriceBelowAnchor = _requireUint64(toml, string.concat(prefix, ".max_price_below_anchor"));
         cfg.parameters.maxAnchorRisePerYear = _requireUint64(toml, string.concat(prefix, ".max_anchor_rise_per_year"));
         cfg.parameters.maxAnchorFallPerYear = _requireUint64(toml, string.concat(prefix, ".max_anchor_fall_per_year"));
-        cfg.parameters.maxAnchorBelowMark = _requireUint64(toml, string.concat(prefix, ".max_anchor_below_mark"));
-        cfg.parameters.maxAnchorAboveMark = _requireUint64(toml, string.concat(prefix, ".max_anchor_above_mark"));
+        cfg.parameters.maxAnchorBelowFenceBase =
+            _requireUint64(toml, string.concat(prefix, ".max_anchor_below_fence_base"));
+        cfg.parameters.maxAnchorAboveFenceBase =
+            _requireUint64(toml, string.concat(prefix, ".max_anchor_above_fence_base"));
         cfg.parameters.reanchorDelay = _requireUint40(toml, string.concat(prefix, ".reanchor_delay"));
         cfg.parameters.reanchorWindow = _requireUint40(toml, string.concat(prefix, ".reanchor_window"));
     }
@@ -196,17 +207,25 @@ library OracleConfigFile {
         if (isKind(cfg.kind, KIND_NAV_CENTRIFUGE)) {
             s = string.concat(s, "pool_id = \"", vm.toString(uint256(cfg.poolId)), "\"\n");
             s = string.concat(s, "share_class_id = \"", vm.toString(abi.encodePacked(cfg.shareClassId)), "\"\n");
+            s = string.concat(s, "max_price_age = \"", vm.toString(cfg.maxPriceAge), "\"\n");
         }
         s = string.concat(s, "loan_token = \"", vm.toString(cfg.loanToken), "\"\n");
         s = string.concat(s, "collateral_token = \"", vm.toString(cfg.collateralToken), "\"\n");
+        s = string.concat(s, "max_lltv = \"", vm.toString(cfg.maxLltv), "\"\n");
         s = string.concat(s, "max_price_above_anchor = \"", vm.toString(uint256(p.maxPriceAboveAnchor)), "\"\n");
         s = string.concat(s, "max_price_below_anchor = \"", vm.toString(uint256(p.maxPriceBelowAnchor)), "\"\n");
         s = string.concat(s, "max_anchor_rise_per_year = \"", vm.toString(uint256(p.maxAnchorRisePerYear)), "\"\n");
         s = string.concat(s, "max_anchor_fall_per_year = \"", vm.toString(uint256(p.maxAnchorFallPerYear)), "\"\n");
-        s = string.concat(s, "max_anchor_below_mark = \"", vm.toString(uint256(p.maxAnchorBelowMark)), "\"\n");
-        s = string.concat(s, "max_anchor_above_mark = \"", vm.toString(uint256(p.maxAnchorAboveMark)), "\"\n");
+        s = string.concat(
+            s, "max_anchor_below_fence_base = \"", vm.toString(uint256(p.maxAnchorBelowFenceBase)), "\"\n"
+        );
+        s = string.concat(
+            s, "max_anchor_above_fence_base = \"", vm.toString(uint256(p.maxAnchorAboveFenceBase)), "\"\n"
+        );
         s = string.concat(s, "reanchor_delay = ", vm.toString(uint256(p.reanchorDelay)), "\n");
         s = string.concat(s, "reanchor_window = ", vm.toString(uint256(p.reanchorWindow)), "\n");
+        s = string.concat(s, "seed_min_price = \"", vm.toString(cfg.seedMinPrice), "\"\n");
+        s = string.concat(s, "seed_max_price = \"", vm.toString(cfg.seedMaxPrice), "\"\n");
     }
 
     function requireUndeployed(string memory name) internal view {

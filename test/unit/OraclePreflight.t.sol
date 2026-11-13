@@ -22,9 +22,10 @@ contract OraclePreflightHarness {
         address loanToken,
         address collateralToken,
         uint256 lltv,
-        address admin
+        address admin,
+        address evmScriptExecutor
     ) external {
-        OraclePreflight.validate(name, oracle, loanToken, collateralToken, lltv, admin);
+        OraclePreflight.validate(name, oracle, loanToken, collateralToken, lltv, admin, evmScriptExecutor);
     }
 
     function validateWstEth(WstEthOracleConfig memory cfg, address oracle, address collateralToken) external {
@@ -52,16 +53,21 @@ contract OraclePreflightHarness {
         address oracle,
         address loanToken,
         address collateralToken,
-        uint256 lltv
+        uint256 lltv,
+        address admin,
+        address evmScriptExecutor
     ) external {
         OraclePreflight.validateNav(
-            cfg, oracle, OssifiableProxy(payable(oracle)).proxy__getImplementation(), loanToken, collateralToken, lltv
+            cfg,
+            oracle,
+            OssifiableProxy(payable(oracle)).proxy__getImplementation(),
+            loanToken,
+            collateralToken,
+            lltv,
+            admin,
+            evmScriptExecutor
         );
         if (IOracleForTest(oracle).price() == 0) revert OraclePreflight.OraclePriceIsZero();
-    }
-
-    function requireNavSizing(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv) external pure {
-        OraclePreflight.requireNavSizing(p, lltv);
     }
 }
 
@@ -127,13 +133,13 @@ contract OraclePreflightTest is Test {
     uint256 internal constant USDY_MIN_PRICE = 0.5e24;
     uint256 internal constant USDY_MAX_PRICE = 10e24;
     uint256 internal constant WAD = 1e18;
-    /// @dev The LLTV the NAV fixture's market runs at: its 1% floor and 0.2% ceiling pass the sizing rule up to about
-    ///      98.1%.
+    /// @dev The LLTV the NAV fixture's market runs at, and the `MAX_LLTV` its oracle is sized for.
     uint256 internal constant NAV_LLTV = 0.98e18;
 
     OraclePreflightHarness internal harness;
     WstEthRateMock internal wstEth;
     address internal admin;
+    address internal evmScriptExecutor = makeAddr("evmScriptExecutor");
     address internal oracle;
 
     function setUp() external {
@@ -305,7 +311,7 @@ contract OraclePreflightTest is Test {
     ///      a 6-decimal loan token and an 18-decimal collateral.
     function test_validate_acceptsMatchingNavOracle() external {
         (NavOracleConfig memory cfg, address navOracle) = _navFixture();
-        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV, admin, evmScriptExecutor);
         assertEq(IOracleForTest(navOracle).price(), 1e24, "price");
     }
 
@@ -317,7 +323,7 @@ contract OraclePreflightTest is Test {
                 OraclePreflight.OracleAddressMismatch.selector, "collateral_token", wrongCollateral, cfg.collateralToken
             )
         );
-        harness.validateNav(cfg, navOracle, cfg.loanToken, wrongCollateral, NAV_LLTV);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, wrongCollateral, NAV_LLTV, admin, evmScriptExecutor);
     }
 
     /// @dev An oracle over another source is another implementation, refused by codehash.
@@ -331,7 +337,7 @@ contract OraclePreflightTest is Test {
                 OraclePreflight.OracleImplementationMismatch.selector, expected.codehash, deployed.codehash
             )
         );
-        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV, admin, evmScriptExecutor);
     }
 
     /// @dev Each of the eight parameters is compared with the oracle's own value, under the config's key.
@@ -358,14 +364,24 @@ contract OraclePreflightTest is Test {
             cfg, navOracle, p, "max_anchor_fall_per_year", 0.02e18, TrailingAnchorOracleModel.MAX_ANCHOR_FALL_PER_YEAR
         );
         p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorBelowMark = 0.005e18;
+        p.maxAnchorBelowFenceBase = 0.005e18;
         _expectNavParameterMismatch(
-            cfg, navOracle, p, "max_anchor_below_mark", 0.005e18, TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_MARK
+            cfg,
+            navOracle,
+            p,
+            "max_anchor_below_fence_base",
+            0.005e18,
+            TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_FENCE_BASE
         );
         p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorAboveMark = 0.001e18;
+        p.maxAnchorAboveFenceBase = 0.001e18;
         _expectNavParameterMismatch(
-            cfg, navOracle, p, "max_anchor_above_mark", 0.001e18, TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_MARK
+            cfg,
+            navOracle,
+            p,
+            "max_anchor_above_fence_base",
+            0.001e18,
+            TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_FENCE_BASE
         );
         p = TrailingAnchorOracleModel.defaultParameters();
         p.reanchorDelay = 7 hours;
@@ -379,99 +395,74 @@ contract OraclePreflightTest is Test {
         );
     }
 
-    /// @dev The largest `maxAnchorAboveMark` the corridor rule leaves over each class's floor, as the spec gives it:
-    ///      0.26% at a 98% LLTV with bounds of +0.05% and −0.1% and a 1% floor, 0.31% at ±0.05%, 0.21% at ±0.1%,
-    ///      and 1.23% at 92% with ±0.3% and 4%. The rule passes on each.
-    function test_requireNavSizing_largestAboveMarkIsTheEdge() external view {
-        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        _assertLargestAboveMark(p, 0.98e18, 0.0026e18, "0.26% at 98%");
-        p.maxPriceBelowAnchor = 0.0005e18;
-        _assertLargestAboveMark(p, 0.98e18, 0.0031e18, "0.31% at 98% with 0.05% bounds");
-        p.maxPriceAboveAnchor = 0.001e18;
-        p.maxPriceBelowAnchor = 0.001e18;
-        _assertLargestAboveMark(p, 0.98e18, 0.0021e18, "0.21% at 98% with 0.1% bounds");
-        p.maxPriceAboveAnchor = 0.003e18;
-        p.maxPriceBelowAnchor = 0.003e18;
-        p.maxAnchorBelowMark = 0.04e18;
-        _assertLargestAboveMark(p, 0.92e18, 0.0123e18, "1.23% at 92% with 0.3% bounds and 4%");
-    }
-
-    function testRevert_requireNavSizing_aboveMarkOneWeiTooWide() external {
-        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        uint256 largest = _largestAboveMark(p, 0.98e18);
-        p.maxAnchorAboveMark = uint64(largest + 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                OraclePreflight.NavCorridorTooWide.selector, p.maxAnchorBelowMark, largest + 1, 0.98e18, largest
-            )
-        );
-        harness.requireNavSizing(p, 0.98e18);
-    }
-
-    /// @dev The other way round: with the working 0.2% ceiling the rule allows a floor about 1.06% under the mark at
-    ///      98%, and with a 1% ceiling at 92% and ±0.3% bounds about 4.22%. It passes on the edge and fails one wei
-    ///      deeper, where no ceiling wider than about 0.2% fits.
-    function test_requireNavSizing_largestBelowMarkIsTheEdge() external {
-        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        uint256 largest = _largestBelowMark(p, 0.98e18);
-        assertApproxEqAbs(largest, 0.0106e18, 0.00005e18, "1.06% at 98%");
-        p.maxAnchorBelowMark = uint64(largest);
-        harness.requireNavSizing(p, 0.98e18);
-        p.maxAnchorBelowMark = uint64(largest + 1);
-        uint256 largestAboveMark = _largestAboveMark(p, 0.98e18);
-        assertLt(largestAboveMark, p.maxAnchorAboveMark, "the ceiling no longer fits");
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                OraclePreflight.NavCorridorTooWide.selector,
-                largest + 1,
-                p.maxAnchorAboveMark,
-                0.98e18,
-                largestAboveMark
-            )
-        );
-        harness.requireNavSizing(p, 0.98e18);
-
-        p.maxPriceAboveAnchor = 0.003e18;
-        p.maxPriceBelowAnchor = 0.003e18;
-        p.maxAnchorAboveMark = 0.01e18;
-        largest = _largestBelowMark(p, 0.92e18);
-        assertApproxEqAbs(largest, 0.0422e18, 0.00005e18, "4.22% at 92% with 0.3% bounds and 1%");
-        p.maxAnchorBelowMark = uint64(largest);
-        harness.requireNavSizing(p, 0.92e18);
-    }
-
-    /// @dev The preflight refuses a market whose LLTV is too high for the oracle's corridor: the fixture's 1% floor and
-    ///      0.2% ceiling pass at 98% and fail at 98.2%, where the rule allows a ceiling of only about 0.12%.
-    function testRevert_validate_rejectsNavCorridorTooWideForTheLltv() external {
+    /// @dev An oracle sized for a 98% LLTV is refused for a market at 98.2%.
+    function testRevert_validate_rejectsNavMarketLltvAboveMax() external {
         (NavOracleConfig memory cfg, address navOracle) = _navFixture();
-        uint256 largest = _largestAboveMark(cfg.parameters, 0.982e18);
-        assertApproxEqAbs(largest, 0.0012e18, 0.00005e18, "about 0.12% at 98.2%");
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                OraclePreflight.NavCorridorTooWide.selector,
-                cfg.parameters.maxAnchorBelowMark,
-                cfg.parameters.maxAnchorAboveMark,
-                0.982e18,
-                largest
-            )
-        );
-        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, 0.982e18);
+        vm.expectRevert(abi.encodeWithSelector(OraclePreflight.NavLltvAboveMax.selector, 0.982e18, NAV_LLTV));
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, 0.982e18, admin, evmScriptExecutor);
     }
 
-    /// @dev The fall side of the delay rule: with a 0.1% lower bound and a 48-hour delay a source may fall at most
-    ///      0.1% × 365 days / 48 hours = 18.25% a year and stay within the bound over one delay. The edge passes, and
-    ///      a 20% fall speed is refused.
-    function testRevert_requireNavSizing_fallOutrunsTheDelay() external {
-        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.reanchorDelay = 48 hours;
-        p.maxAnchorFallPerYear = 0.1825e18;
-        harness.requireNavSizing(p, NAV_LLTV);
+    /// @dev A market at a lower LLTV than the oracle's `MAX_LLTV` passes: the corridor sized for 98% also fits 92%.
+    function test_validate_acceptsNavMarketLltvBelowMax() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, 0.92e18, admin, evmScriptExecutor);
+    }
 
-        p.maxAnchorFallPerYear = 0.2e18;
+    /// @dev An extra holder of any role is refused: a deployer left as admin, a third manager, a second price
+    ///      acceptor.
+    function testRevert_validate_rejectsNavExtraRoleHolder() external {
+        address deployer = makeAddr("deployer");
+        bytes32[3] memory roles;
+        uint256[3] memory expectedCounts = [uint256(1), 2, 1];
+        for (uint256 i; i < 3; ++i) {
+            (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+            TrailingAnchorOracleBase nav = TrailingAnchorOracleBase(navOracle);
+            roles = [nav.DEFAULT_ADMIN_ROLE(), nav.MANAGER_ROLE(), nav.PRICE_ACCEPTOR_ROLE()];
+            vm.prank(admin);
+            nav.grantRole(roles[i], deployer);
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    OraclePreflight.NavRoleHolderCountMismatch.selector,
+                    roles[i],
+                    expectedCounts[i],
+                    expectedCounts[i] + 1
+                )
+            );
+            harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV, admin, evmScriptExecutor);
+        }
+    }
+
+    /// @dev A role with the right number of holders but a wrong one is refused, with the wrong holder named: the
+    ///      deployer in place of the EasyTrack executor or of the Agent as a manager, in place of the Agent as the
+    ///      price acceptor, and in place of the Agent as the admin.
+    function testRevert_validate_rejectsNavWrongRoleHolder() external {
+        address deployer = makeAddr("deployer");
+        for (uint256 i; i < 4; ++i) {
+            (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+            TrailingAnchorOracleBase nav = TrailingAnchorOracleBase(navOracle);
+            bytes32[4] memory roles =
+                [nav.MANAGER_ROLE(), nav.MANAGER_ROLE(), nav.PRICE_ACCEPTOR_ROLE(), nav.DEFAULT_ADMIN_ROLE()];
+            address replaced = i == 0 ? evmScriptExecutor : admin;
+            vm.startPrank(admin);
+            nav.grantRole(roles[i], deployer);
+            nav.revokeRole(roles[i], replaced);
+            vm.stopPrank();
+            vm.expectRevert(
+                abi.encodeWithSelector(OraclePreflight.NavRoleHolderUnexpected.selector, roles[i], deployer)
+            );
+            harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV, admin, evmScriptExecutor);
+        }
+    }
+
+    /// @dev The holder check is on the oracle's own members, so an expected list that names one address twice does
+    ///      not let a second manager through.
+    function testRevert_validate_rejectsNavHolderBesideARepeatedExpectedOne() external {
+        (NavOracleConfig memory cfg, address navOracle) = _navFixture();
+        bytes32 managerRole = TrailingAnchorOracleBase(navOracle).MANAGER_ROLE();
         vm.expectRevert(
-            abi.encodeWithSelector(OraclePreflight.NavFallOutrunsDelay.selector, 0.2e18, 48 hours, 0.1825e18)
+            abi.encodeWithSelector(OraclePreflight.NavRoleHolderUnexpected.selector, managerRole, evmScriptExecutor)
         );
-        harness.requireNavSizing(p, NAV_LLTV);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV, admin, admin);
     }
 
     /// @dev A source already outside the bounds fails the preflight with the oracle's own revert, on the 18-decimal
@@ -482,7 +473,7 @@ contract OraclePreflightTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(TrailingAnchorOracleBase.PriceOutOfBounds.selector, 0.98e18, 0.999e18, 1.0005e18)
         );
-        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV, admin, evmScriptExecutor);
     }
 
     /// @dev Validates the fixture's oracle against the config with `p` in place of its parameters.
@@ -496,66 +487,11 @@ contract OraclePreflightTest is Test {
     ) private {
         cfg.parameters = p;
         _expectNavUintMismatch(key, expected, actual);
-        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV);
+        harness.validateNav(cfg, navOracle, cfg.loanToken, cfg.collateralToken, NAV_LLTV, admin, evmScriptExecutor);
     }
 
     function _expectNavUintMismatch(string memory key, uint256 expected, uint256 actual) private {
         vm.expectRevert(abi.encodeWithSelector(OraclePreflight.OracleUintMismatch.selector, key, expected, actual));
-    }
-
-    /// @dev Checks that `p`'s largest `maxAnchorAboveMark` at `lltv` is about `expected` and that the rule passes on
-    ///      it.
-    function _assertLargestAboveMark(
-        TrailingAnchorOracleBase.Parameters memory p,
-        uint256 lltv,
-        uint256 expected,
-        string memory label
-    ) private view {
-        uint256 largest = _largestAboveMark(p, lltv);
-        assertApproxEqAbs(largest, expected, 0.00005e18, label);
-        p.maxAnchorAboveMark = uint64(largest);
-        harness.requireNavSizing(p, lltv);
-    }
-
-    /// @dev The widest `maxAnchorAboveMark` the corridor rule allows, from the spec's formula: the highest price the
-    ///      oracle returns, the ceiling × (1 + maxPriceAboveAnchor), times LLTV × LIF must stay under the lowest, the
-    ///      floor × (1 − maxPriceBelowAnchor), with LIF = min(1.15, 1 / (1 − 0.3 × (1 − LLTV))) and every step
-    ///      rounded against the corridor.
-    function _largestAboveMark(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
-        private
-        pure
-        returns (uint256)
-    {
-        uint256 room = (WAD - p.maxAnchorBelowMark) * (WAD - p.maxPriceBelowAnchor) / WAD;
-        uint256 needed = _neededAtTheMark(p, lltv);
-        return room < needed ? 0 : room * WAD / needed - WAD;
-    }
-
-    /// @dev The widest `maxAnchorBelowMark` the corridor rule allows for `p`'s `maxAnchorAboveMark`, from the same
-    ///      formula.
-    function _largestBelowMark(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
-        private
-        pure
-        returns (uint256)
-    {
-        uint256 needed = _ceilDiv(_neededAtTheMark(p, lltv) * (WAD + p.maxAnchorAboveMark), WAD);
-        return WAD - _ceilDiv(needed * WAD, WAD - p.maxPriceBelowAnchor);
-    }
-
-    /// @dev What the rule needs with the ceiling on the mark: LLTV × LIF × (1 + maxPriceAboveAnchor), each step
-    ///      rounded up.
-    function _neededAtTheMark(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
-        private
-        pure
-        returns (uint256)
-    {
-        uint256 lif = WAD * WAD / (WAD - 0.3e18 * (WAD - lltv) / WAD);
-        if (lif > 1.15e18) lif = 1.15e18;
-        return _ceilDiv(_ceilDiv(lltv * lif, WAD) * (WAD + p.maxPriceAboveAnchor), WAD);
-    }
-
-    function _ceilDiv(uint256 a, uint256 b) private pure returns (uint256) {
-        return (a + b - 1) / b;
     }
 
     function _navFixture() private returns (NavOracleConfig memory cfg, address navOracle) {
@@ -564,17 +500,29 @@ contract OraclePreflightTest is Test {
             source: _navSource(),
             poolId: 0,
             shareClassId: bytes16(0),
+            maxPriceAge: 0,
             loanToken: address(new DecimalsMock(6)),
             collateralToken: address(new DecimalsMock(18)),
-            parameters: TrailingAnchorOracleModel.defaultParameters()
+            maxLltv: NAV_LLTV,
+            parameters: TrailingAnchorOracleModel.defaultParameters(),
+            seedMinPrice: 0.99e18,
+            seedMaxPrice: 1.01e18
         });
         navOracle = address(
             new OssifiableProxy(
                 NavOracleImplementation.deploy(cfg),
                 admin,
-                TrailingAnchorOracleModel.initializeCall(admin, cfg.parameters)
+                TrailingAnchorOracleModel.initializeCall(admin, cfg.parameters, cfg.seedMinPrice, cfg.seedMaxPrice)
             )
         );
+        TrailingAnchorOracleBase nav = TrailingAnchorOracleBase(navOracle);
+        bytes32 managerRole = nav.MANAGER_ROLE();
+        bytes32 priceAcceptorRole = nav.PRICE_ACCEPTOR_ROLE();
+        vm.startPrank(admin);
+        nav.grantRole(managerRole, admin);
+        nav.grantRole(managerRole, evmScriptExecutor);
+        nav.grantRole(priceAcceptorRole, admin);
+        vm.stopPrank();
     }
 
     /// @dev An Ondo-style NAV getter at $1.00.

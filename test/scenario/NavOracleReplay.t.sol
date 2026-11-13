@@ -28,7 +28,7 @@ import {INavSourceMock, MockCentrifugeSpoke, MockOndoPriceGetter} from "../setup
 ///         anchor follows the source at the speeds and stays above its floor, and no pending anchor is ever recorded.
 ///         Without a keeper the accruing token leaves its bound within days, and a creeping source gains its bound once
 ///         and then only the rise speed. A fourth series, the credit fund with a drawdown shaped like the JAAA
-///         strategy's worst since 2020, is followed with the credit class's floor, 4% under the high-water mark, and
+///         strategy's worst since 2020, is followed with the credit class's floor, 4% under the fence base price, and
 ///         with a 1% one stops on the floor and then, after the acceptances there, on the ceiling.
 /// @dev The loan token has 6 decimals, like USDC: the price scale is 1e6 for the 18-decimal USDY and 1e18 for the
 ///      6-decimal fund share.
@@ -57,21 +57,24 @@ contract NavOracleReplayTest is Test {
     /// @dev The speeds: a rise above the class's yield, so the anchor keeps up, and a fall well under it. The credit
     ///      fund's noise outruns a 6% rise, so its anchor rises at 8% and still trails the source by up to about 0.29%,
     ///      inside its 0.3% bound.
+    /// @dev The LLTV each class's market runs at, and its oracle is sized for.
+    uint256 internal constant TREASURY_LLTV = 0.98e18;
+    uint256 internal constant CREDIT_LLTV = 0.92e18;
     uint256 internal constant RISE = 0.06e18;
     uint256 internal constant FALL = 0.01e18;
     uint256 internal constant CREDIT_RISE = 0.08e18;
-    /// @dev The floors under the high-water mark: the working 1% for the accruing token and the treasury fund, and 4%
+    /// @dev The floors under the fence base price: the working 1% for the accruing token and the treasury fund, and 4%
     ///      for the credit fund, about 1.2% under the 5.17% at which a 92% LLTV position borrowed at the top of its
     ///      0.3% bounds stops covering its liquidation at the bottom, which leaves room for interest accrued on the
     ///      floor.
-    uint256 internal constant BELOW_MARK = TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_MARK;
-    uint256 internal constant CREDIT_BELOW_MARK = 0.04e18;
-    /// @dev The ceilings over the high-water mark, about 80% of the room the corridor rule leaves over each floor:
+    uint256 internal constant BELOW_FENCE_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_FENCE_BASE;
+    uint256 internal constant CREDIT_BELOW_FENCE_BASE = 0.04e18;
+    /// @dev The ceilings over the fence base price, about 80% of the room the corridor rule leaves over each floor:
     ///      0.31% for the accruing token and 0.21% for the treasury fund at a 98% LLTV, and 1.23% for the credit fund
     ///      at a 92% LLTV.
-    uint256 internal constant ACCRUING_ABOVE_MARK = 0.0025e18;
-    uint256 internal constant TREASURY_ABOVE_MARK = 0.0015e18;
-    uint256 internal constant CREDIT_ABOVE_MARK = 0.01e18;
+    uint256 internal constant ACCRUING_ABOVE_FENCE_BASE = 0.0025e18;
+    uint256 internal constant TREASURY_ABOVE_FENCE_BASE = 0.0015e18;
+    uint256 internal constant CREDIT_ABOVE_FENCE_BASE = 0.01e18;
     /// @dev The stress: from a Wednesday after the holiday, 15 strikes of −0.19% on top of the accrual, then 15 of
     ///      +0.16%.
     uint256 internal constant STRESS_START = 100;
@@ -101,8 +104,9 @@ contract NavOracleReplayTest is Test {
     ///      over the pause covers, so the anchor reaches the source on every strike.
     function test_replay_treasuryFund() public {
         uint256[] memory series = _businessDaySeries(TREASURY_DAILY, 0, 0, 0);
-        (TrailingAnchorOracleBase oracle, INavSourceMock source) =
-            _deployCentrifuge(series[0], TREASURY_BOUND, RISE, FALL, BELOW_MARK, TREASURY_ABOVE_MARK);
+        (TrailingAnchorOracleBase oracle, INavSourceMock source) = _deployCentrifuge(
+            TREASURY_LLTV, series[0], TREASURY_BOUND, RISE, FALL, BELOW_FENCE_BASE, TREASURY_ABOVE_FENCE_BASE
+        );
         (uint256 oldest, uint256 lag) = _replayWithKeeper(oracle, source, series, 1e18);
         assertEq(oldest, 5 days, "oldest anchor: the longest pause");
         assertEq(lag, 0, "the anchor reaches the source on every strike");
@@ -113,8 +117,9 @@ contract NavOracleReplayTest is Test {
     ///      pauses, so it is never older than the longest pause.
     function test_replay_creditFund() public {
         uint256[] memory series = _businessDaySeries(CREDIT_DAILY, CREDIT_NOISE, CREDIT_DIP_DAY, CREDIT_DIP);
-        (TrailingAnchorOracleBase oracle, INavSourceMock source) =
-            _deployCentrifuge(series[0], CREDIT_BOUND, CREDIT_RISE, FALL, CREDIT_BELOW_MARK, CREDIT_ABOVE_MARK);
+        (TrailingAnchorOracleBase oracle, INavSourceMock source) = _deployCentrifuge(
+            CREDIT_LLTV, series[0], CREDIT_BOUND, CREDIT_RISE, FALL, CREDIT_BELOW_FENCE_BASE, CREDIT_ABOVE_FENCE_BASE
+        );
         (uint256 oldest, uint256 lag) = _replayWithKeeper(oracle, source, series, 1e18);
         assertLe(oldest, 5 days, "never older than the longest pause");
         assertGt(lag, 0, "the anchor trails the source on some day");
@@ -134,8 +139,9 @@ contract NavOracleReplayTest is Test {
     function test_replay_creditStress_followedWithTheCreditFloor() public {
         uint256[] memory series = _stressSeries();
         assertGe(_maxDrawdown(series), 0.025e18, "a drawdown of about 2.6%");
-        (TrailingAnchorOracleBase oracle, INavSourceMock source) =
-            _deployCentrifuge(series[0], CREDIT_BOUND, CREDIT_RISE, FALL, CREDIT_BELOW_MARK, CREDIT_ABOVE_MARK);
+        (TrailingAnchorOracleBase oracle, INavSourceMock source) = _deployCentrifuge(
+            CREDIT_LLTV, series[0], CREDIT_BOUND, CREDIT_RISE, FALL, CREDIT_BELOW_FENCE_BASE, CREDIT_ABOVE_FENCE_BASE
+        );
         (uint256 floorStops, uint256 ceilingStops, uint256 pinnedDays) = _replayStress(oracle, source, series);
         assertEq(floorStops + ceilingStops, 0, "every day priced after the keeper");
         assertEq(pinnedDays, 0, "the anchor never on the floor or the ceiling");
@@ -143,13 +149,14 @@ contract NavOracleReplayTest is Test {
 
     /// @dev The same stress with the other classes' 1% floor: the anchor stops on the floor, and the market waits for
     ///      governance, which accepts the price on each day the market stands still; the series is followed from each
-    ///      accepted price. Each acceptance restarts the high-water mark at the accepted price, and only drifts raise
+    ///      accepted price. Each acceptance restarts the fence base price at the accepted price, and only drifts raise
     ///      it, so the recovery outruns the ceiling over the last one and the market waits on the ceiling too. Without
     ///      the acceptances the market would wait until the price came back within the floor's bounds.
     function test_replay_creditStress_waitsOnTheFloorThenTheCeilingAtOnePercent() public {
         uint256[] memory series = _stressSeries();
-        (TrailingAnchorOracleBase oracle, INavSourceMock source) =
-            _deployCentrifuge(series[0], CREDIT_BOUND, CREDIT_RISE, FALL, BELOW_MARK, CREDIT_ABOVE_MARK);
+        (TrailingAnchorOracleBase oracle, INavSourceMock source) = _deployCentrifuge(
+            CREDIT_LLTV, series[0], CREDIT_BOUND, CREDIT_RISE, FALL, BELOW_FENCE_BASE, CREDIT_ABOVE_FENCE_BASE
+        );
         (uint256 floorStops, uint256 ceilingStops,) = _replayStress(oracle, source, series);
         assertGt(floorStops, 0, "the fall waits on the floor");
         assertGt(ceilingStops, 0, "the recovery waits on the ceiling");
@@ -181,20 +188,23 @@ contract NavOracleReplayTest is Test {
 
     /// @dev A source held at the upper bound of each new anchor, updated every day: the price is accepted every day, a
     ///      second update in the same block moves nothing, and the anchor rises by exactly one day of the rise speed
-    ///      each day, so after 60 days it has gained the 6% a year for 60 days and no more, and the returned price the
+    ///      each day, compounded continuously: e^x − 1 as x + x²/2 + x³/6 for x = 6% × 1 day / 365 days, each term
+    ///      rounded down. So after 60 days it has gained e^(6% × 60 / 365) and no more, and the returned price the
     ///      0.05% bound on top.
     function test_creepingSource_gainsBoundOnceThenRiseSpeed() public {
         uint256 initial = 1.1e18;
         (TrailingAnchorOracleBase oracle, INavSourceMock source) = _deployUsdy(initial, ACCRUING_BOUND, RISE, FALL);
         uint256 steps = 60;
         uint256 expected = initial;
+        uint256 x = RISE * 1 days / YEAR;
+        uint256 dailyRise = x + x * x / (2 * WAD) + x * x / (2 * WAD) * x / (3 * WAD);
         for (uint256 i = 1; i <= steps; ++i) {
             vm.warp(START + i * 1 days);
             TrailingAnchorOracleState memory s = TrailingAnchorOracleModel.read(oracle);
             source.setCurrentPrice(s.upperBound());
             assertEq(oracle.price(), s.upperBound() * 1e6, "the upper bound is returned");
             oracle.updateAnchor();
-            expected += Math.mulDiv(expected, RISE * 1 days, WAD * YEAR);
+            expected += Math.mulDiv(expected, dailyRise, WAD);
             assertEq(oracle.anchorPrice(), expected, "one day of the rise speed");
 
             source.setCurrentPrice(TrailingAnchorOracleModel.read(oracle).upperBound());
@@ -233,7 +243,7 @@ contract NavOracleReplayTest is Test {
             assertEq(oracle.pendingAnchorAt(), 0, "no pending anchor");
             TrailingAnchorOracleState memory after_ = TrailingAnchorOracleModel.read(oracle);
             assertGt(after_.anchorPrice, after_.floor(), "above the floor");
-            assertLe(after_.anchorPrice, after_.highWaterMark, "never over the high-water mark");
+            assertLe(after_.anchorPrice, after_.fenceBasePrice, "never over the fence base price");
             uint256 anchorPrice = oracle.anchorPrice();
             uint256 gap = series[day] > anchorPrice ? series[day] - anchorPrice : anchorPrice - series[day];
             lag = Math.max(lag, Math.mulDiv(gap, WAD, anchorPrice));
@@ -283,6 +293,7 @@ contract NavOracleReplayTest is Test {
     // DEPLOYMENT
     // ---
 
+    /// @dev The accruing token's oracle, sized for the 98% LLTV its floor and ceiling are chosen for.
     function _deployUsdy(uint256 initialPrice, uint256 bound_, uint256 rise, uint256 fall)
         internal
         returns (TrailingAnchorOracleBase, INavSourceMock)
@@ -290,38 +301,55 @@ contract NavOracleReplayTest is Test {
         MockOndoPriceGetter getter = new MockOndoPriceGetter();
         getter.setCurrentPrice(initialPrice);
         MockERC20 usdy = new MockERC20("Ondo US Dollar Yield", "USDY", 18);
-        address impl = address(new UsdyNavOracle(address(getter), address(usdc), address(usdy)));
-        return (_deploy(impl, bound_, rise, fall, BELOW_MARK, ACCRUING_ABOVE_MARK), getter);
+        address impl = address(new UsdyNavOracle(address(getter), address(usdc), address(usdy), TREASURY_LLTV));
+        return (_deploy(impl, bound_, rise, fall, BELOW_FENCE_BASE, ACCRUING_ABOVE_FENCE_BASE), getter);
     }
 
+    /// @dev A fund's oracle, sized for `maxLltv`, the LLTV its floor and ceiling are chosen for.
     function _deployCentrifuge(
+        uint256 maxLltv,
         uint256 initialPrice,
         uint256 bound_,
         uint256 rise,
         uint256 fall,
-        uint256 belowMark,
-        uint256 aboveMark
+        uint256 belowFenceBase,
+        uint256 aboveFenceBase
     ) internal returns (TrailingAnchorOracleBase, INavSourceMock) {
-        MockCentrifugeSpoke spoke = new MockCentrifugeSpoke(POOL_ID, SHARE_CLASS_ID);
-        spoke.setCurrentPrice(initialPrice);
+        (address impl, INavSourceMock spoke) = _centrifugeImplementation(maxLltv, initialPrice);
+        return (_deploy(impl, bound_, rise, fall, belowFenceBase, aboveFenceBase), spoke);
+    }
+
+    function _centrifugeImplementation(uint256 maxLltv, uint256 initialPrice)
+        internal
+        returns (address impl, INavSourceMock)
+    {
         MockERC20 share = new MockERC20("Fund share", "SHARE", 6);
-        address impl =
-            address(new CentrifugeNavOracle(address(spoke), POOL_ID, SHARE_CLASS_ID, address(usdc), address(share)));
-        return (_deploy(impl, bound_, rise, fall, belowMark, aboveMark), spoke);
+        MockCentrifugeSpoke spoke = new MockCentrifugeSpoke(POOL_ID, SHARE_CLASS_ID, address(share));
+        spoke.setCurrentPrice(initialPrice);
+        impl = address(
+            new CentrifugeNavOracle(
+                address(spoke), POOL_ID, SHARE_CLASS_ID, 7 days, address(usdc), address(share), maxLltv
+            )
+        );
+        return (impl, spoke);
     }
 
     /// @dev The same bound both ways, the class's speeds, floor and ceiling, and the working delay and window.
-    function _deploy(address impl, uint256 bound_, uint256 rise, uint256 fall, uint256 belowMark, uint256 aboveMark)
-        internal
-        returns (TrailingAnchorOracleBase)
-    {
+    function _deploy(
+        address impl,
+        uint256 bound_,
+        uint256 rise,
+        uint256 fall,
+        uint256 belowFenceBase,
+        uint256 aboveFenceBase
+    ) internal returns (TrailingAnchorOracleBase) {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
         p.maxPriceAboveAnchor = uint64(bound_);
         p.maxPriceBelowAnchor = uint64(bound_);
         p.maxAnchorRisePerYear = uint64(rise);
         p.maxAnchorFallPerYear = uint64(fall);
-        p.maxAnchorBelowMark = uint64(belowMark);
-        p.maxAnchorAboveMark = uint64(aboveMark);
+        p.maxAnchorBelowFenceBase = uint64(belowFenceBase);
+        p.maxAnchorAboveFenceBase = uint64(aboveFenceBase);
         bytes memory init = TrailingAnchorOracleModel.initializeCall(address(this), p);
         return TrailingAnchorOracleBase(address(new OssifiableProxy(impl, address(this), init)));
     }

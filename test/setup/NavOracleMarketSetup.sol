@@ -51,7 +51,7 @@ abstract contract NavOracleMarketSetup is LidoLendSetup {
     }
 
     function _deployOracle(address, address admin) internal override returns (address oracle) {
-        address impl = address(new UsdyNavOracle(address(nav), address(usdc), address(usdy)));
+        address impl = address(new UsdyNavOracle(address(nav), address(usdc), address(usdy), LLTV));
         oracle = _behindProxy(impl, admin, TrailingAnchorOracleModel.initializeCall(admin));
         navOracle = UsdyNavOracle(oracle);
         bytes32 priceAcceptorRole = navOracle.PRICE_ACCEPTOR_ROLE();

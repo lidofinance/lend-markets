@@ -27,9 +27,9 @@ contract UsdyNavOracleTest is Test {
 
     function testRevert_constructor_zeroAddresses() public {
         vm.expectRevert(TrailingAnchorOracleBase.ZeroAddress.selector);
-        new UsdyNavOracle(address(0), address(usdc), address(usdy));
+        new UsdyNavOracle(address(0), address(usdc), address(usdy), 0);
         vm.expectRevert(TrailingAnchorOracleBase.ZeroAddress.selector);
-        new UsdyNavOracle(address(getter), address(usdc), address(0));
+        new UsdyNavOracle(address(getter), address(usdc), address(0), 0);
     }
 
     /// @dev A NAV of 1.15 USD prices one USDY at 1.15 USDC: `1.15e18 × 10^(36 + 6 − 18 − 18) = 1.15e24`. The
@@ -57,10 +57,10 @@ contract UsdyNavOracleTest is Test {
                     TrailingAnchorOracleBase.UnsupportedDecimals.selector, loanDecimals, collateralDecimals
                 )
             );
-            new UsdyNavOracle(address(getter), address(loanToken), address(collateralToken));
+            new UsdyNavOracle(address(getter), address(loanToken), address(collateralToken), 0);
             return;
         }
-        UsdyNavOracle impl = new UsdyNavOracle(address(getter), address(loanToken), address(collateralToken));
+        UsdyNavOracle impl = new UsdyNavOracle(address(getter), address(loanToken), address(collateralToken), 0);
         assertEq(
             impl.PRICE_SCALE(), TrailingAnchorOracleModel.priceScale(loanDecimals, collateralDecimals), "PRICE_SCALE"
         );
@@ -78,7 +78,7 @@ contract UsdyNavOracleTest is Test {
     }
 
     function _deploy(MockERC20 loan) internal returns (UsdyNavOracle) {
-        UsdyNavOracle impl = new UsdyNavOracle(address(getter), address(loan), address(usdy));
+        UsdyNavOracle impl = new UsdyNavOracle(address(getter), address(loan), address(usdy), 0);
         bytes memory init = TrailingAnchorOracleModel.initializeCall(address(this));
         return UsdyNavOracle(address(new OssifiableProxy(address(impl), address(this), init)));
     }

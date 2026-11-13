@@ -5,6 +5,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {TrailingAnchorOracleModel, TrailingAnchorOracleState} from "../setup/TrailingAnchorOracleModel.sol";
 import {MockERC20} from "../setup/Mocks.sol";
@@ -35,18 +36,26 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         source.setCurrentPrice(1.112233445566778899e18);
         MockERC20 loan = new MockERC20("USD Coin", "USDC", 6);
         priceScale = TrailingAnchorOracleModel.priceScale(6, IERC20Metadata(collateralToken).decimals());
-        oracle = _deployOracle(address(loan), address(this), TrailingAnchorOracleModel.initializeCall(address(this)));
+        oracle = TrailingAnchorOracleBase(
+            address(
+                new OssifiableProxy(
+                    _newImplementation(address(loan), _maxLltv()),
+                    address(this),
+                    TrailingAnchorOracleModel.initializeCall(address(this))
+                )
+            )
+        );
 
         address manager = makeAddr("manager");
         address priceAcceptor = makeAddr("priceAcceptor");
         oracle.grantRole(oracle.MANAGER_ROLE(), manager);
         oracle.grantRole(oracle.PRICE_ACCEPTOR_ROLE(), priceAcceptor);
-        handler = new TrailingAnchorOracleHandler(oracle, source, manager, priceAcceptor);
+        handler = new TrailingAnchorOracleHandler(oracle, source, manager, priceAcceptor, _maxPriceAge());
 
         // Weighted: source moves, window edges, updates, the keeper's hour and a source settling at its pending anchor
         // appear more than once, since a pending anchor needs a price outside the bounds and a re-anchor needs its
-        // window.
-        bytes4[] memory selectors = new bytes4[](19);
+        // window. A Spoke source also restamps its price.
+        bytes4[] memory selectors = new bytes4[](_maxPriceAge() == 0 ? 19 : 20);
         selectors[0] = TrailingAnchorOracleHandler.stepSource.selector;
         selectors[1] = TrailingAnchorOracleHandler.stepSource.selector;
         selectors[2] = TrailingAnchorOracleHandler.moveSource.selector;
@@ -66,8 +75,20 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         selectors[16] = TrailingAnchorOracleHandler.moveSource.selector;
         selectors[17] = TrailingAnchorOracleHandler.settleAtPendingAnchor.selector;
         selectors[18] = TrailingAnchorOracleHandler.settleAtPendingAnchor.selector;
+        if (_maxPriceAge() != 0) selectors[19] = TrailingAnchorOracleHandler.setPriceStamp.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
+    }
+
+    /// @dev The LLTV the oracle under test is sized for: none in the shared suites, so they can move the floor and the
+    ///      ceiling out of the way.
+    function _maxLltv() internal pure virtual returns (uint256) {
+        return TrailingAnchorOracleModel.MAX_LLTV;
+    }
+
+    /// @dev The adapter's `MAX_PRICE_AGE` when its source stamps the price: none in the shared suites.
+    function _maxPriceAge() internal pure virtual returns (uint256) {
+        return 0;
     }
 
     /// @dev The stored values are exactly what the model produces from the calls made.
@@ -83,12 +104,19 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
             maxPriceBelowAnchor: uint64(s.maxPriceBelowAnchor),
             maxAnchorRisePerYear: uint64(s.maxAnchorRisePerYear),
             maxAnchorFallPerYear: uint64(s.maxAnchorFallPerYear),
-            maxAnchorBelowMark: uint64(s.maxAnchorBelowMark),
-            maxAnchorAboveMark: uint64(s.maxAnchorAboveMark),
+            maxAnchorBelowFenceBase: uint64(s.maxAnchorBelowFenceBase),
+            maxAnchorAboveFenceBase: uint64(s.maxAnchorAboveFenceBase),
             reanchorDelay: uint40(s.reanchorDelay),
             reanchorWindow: uint40(s.reanchorWindow)
         });
-        assertEq(TrailingAnchorOracleModel.parametersRevert(p).length, 0, "stored parameters out of range");
+        assertEq(TrailingAnchorOracleModel.parametersRevert(p, _maxLltv()).length, 0, "stored parameters out of range");
+    }
+
+    /// @dev What the sizing rule is for: while the anchor started between the floor and the ceiling, every price
+    ///      `price()` returns covers a debt borrowed at `MAX_LLTV` against the highest price returned since the last
+    ///      acceptance or parameter change, with the core's liquidation incentive on top.
+    function invariant_returnedPriceCoversDebtAtTheHighest() public view {
+        assertEq(handler.uncoveredPrices(), 0, "a returned price under LLTV x LIF of an earlier one");
     }
 
     /// @dev The anchor is never zero nor set in the future.
@@ -136,28 +164,29 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         assertEq(handler.strayAnchorMoves(), 0, "an anchor move outside the rules");
     }
 
-    /// @dev No update sets the anchor under the floor, `maxAnchorBelowMark` below the high-water mark, unless the
+    /// @dev No update sets the anchor under the floor, `maxAnchorBelowFenceBase` below the fence base price, unless the
     ///      anchor already sat under it.
     function invariant_anchorNeverUnderTheFloor() public view {
         assertEq(handler.floorBreaches(), 0, "an update moved the anchor under the floor");
     }
 
-    /// @dev No update leaves the anchor further over the high-water mark than both `maxAnchorAboveMark` of it and its
-    ///      distance before the update: a re-anchor up stops on the ceiling, and a drift keeps the gap.
+    /// @dev No update leaves the anchor further over the fence base price than both `maxAnchorAboveFenceBase` of it and
+    ///      its distance before the update: a re-anchor up stops on the ceiling, and a drift keeps the gap.
     function invariant_anchorNeverOverTheCeiling() public view {
         assertEq(handler.ceilingBreaches(), 0, "an update moved the anchor over the ceiling");
     }
 
-    /// @dev The stored high-water mark follows its rule: the seed or the last acceptance, raised by each drift up and
-    ///      left by re-anchors. The anchor sits over it by at most `maxAnchorAboveMark` of it, or by its gap at the
-    ///      last parameter change when a narrower `maxAnchorAboveMark` left it higher.
-    function invariant_highWaterMarkFollowsItsRule() public view {
-        uint256 mark = oracle.highWaterMark();
-        assertEq(mark, handler.expectedHighWaterMark(), "highWaterMark");
+    /// @dev The stored fence base price follows its rule: the seed or the last acceptance, raised by each drift up and
+    ///      left by re-anchors. The anchor sits over it by at most `maxAnchorAboveFenceBase` of it, or by its gap at
+    ///      the last parameter change when a narrower `maxAnchorAboveFenceBase` left it higher.
+    function invariant_fenceBasePriceFollowsItsRule() public view {
+        uint256 fenceBase = oracle.fenceBasePrice();
+        assertEq(fenceBase, handler.expectedFenceBasePrice(), "fenceBasePrice");
         uint256 anchor = oracle.anchorPrice();
-        uint256 gap = anchor > mark ? anchor - mark : 0;
-        uint256 allowed = Math.max(Math.mulDiv(mark, oracle.maxAnchorAboveMark(), WAD), handler.gapAtParameterChange());
-        assertLe(gap, allowed, "an anchor too far over the high-water mark");
+        uint256 gap = anchor > fenceBase ? anchor - fenceBase : 0;
+        uint256 allowed =
+            Math.max(Math.mulDiv(fenceBase, oracle.maxAnchorAboveFenceBase(), WAD), handler.gapAtParameterChange());
+        assertLe(gap, allowed, "an anchor too far over the fence base price");
     }
 
     /// @dev A parameter change never changes a returned price.
@@ -223,6 +252,19 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         handler.acceptPrice(2);
         assertEq(handler.succeeded("accept"), 1, "the exact current price is accepted");
         assertEq(oracle.pendingAnchorAt(), 0, "the acceptance drops the pending anchor");
+        assertGt(handler.checkedPrices(), 0, "returned prices checked against the highest");
+
+        handler.setParameters(_parametersSeed(true));
+        assertEq(handler.succeeded("parameters"), 1, "a parameter set the validator takes");
+        handler.setParameters(_parametersSeed(false));
+        assertEq(handler.refused("parameters"), 1, "a parameter set the validator refuses");
+    }
+
+    /// @dev A seed whose parameters the validator takes, or refuses, at the oracle's `MAX_LLTV`.
+    function _parametersSeed(bool taken) internal view returns (uint256 seed) {
+        while (
+            (TrailingAnchorOracleModel.parametersRevert(handler.parametersFor(seed), _maxLltv()).length == 0) != taken
+        ) ++seed;
     }
 
     /// @dev A seed whose edge pick is `index`: 0 the delay's last second, 1 the window's first second.
@@ -231,7 +273,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
     }
 
     function afterInvariant() public {
-        bytes32[10] memory actions = [
+        bytes32[13] memory actions = [
             bytes32("update"),
             "drift",
             "pendingAnchor",
@@ -241,7 +283,10 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
             "pinned",
             "accept",
             "parameters",
-            "suspension"
+            "suspension",
+            "stale",
+            "future",
+            "expiredWhileStale"
         ];
         for (uint256 i; i < actions.length; ++i) {
             emit log_named_uint(
@@ -251,6 +296,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
                 string.concat(string(abi.encodePacked(actions[i])), " refused"), handler.refused(actions[i])
             );
         }
+        emit log_named_uint("prices checked against the highest", handler.checkedPrices());
     }
 }
 
@@ -262,4 +308,56 @@ contract TrailingAnchorOracleUsdyInvariant is TrailingAnchorOracleInvariantTest,
 /// forge-config: default.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 256
 /// forge-config: default.invariant.depth = 128
-contract TrailingAnchorOracleCentrifugeInvariant is TrailingAnchorOracleInvariantTest, CentrifugeNavOracleFixture {}
+contract TrailingAnchorOracleCentrifugeInvariant is TrailingAnchorOracleInvariantTest, CentrifugeNavOracleFixture {
+    function _maxPriceAge() internal pure override returns (uint256) {
+        return MAX_PRICE_AGE;
+    }
+
+    /// @dev The stamp action reaches each refusal of the Spoke's stamp: a pending anchor whose window closes while the
+    ///      price is stale, and a price stamped after the block. A fresh stamp then records a new pending anchor.
+    function test_stampCases_areReachable() public {
+        handler.moveSource(0);
+        handler.updateAnchor(0);
+        assertEq(handler.succeeded("pendingAnchor"), 1, "a pending anchor");
+        handler.setPriceStamp(_stampSeed(0));
+        uint256 closesAt = handler.shadowState().pendingAnchorAt + handler.shadowState().reanchorDelay
+            + handler.shadowState().reanchorWindow;
+        while (block.timestamp <= closesAt) handler.warp(3 days);
+        handler.updateAnchor(0);
+        assertEq(handler.refused("expiredWhileStale"), 1, "a window that closed while the price was stale");
+        handler.setPriceStamp(_stampSeed(1));
+        handler.updateAnchor(0);
+        assertEq(handler.refused("future"), 1, "a price stamped after the block");
+        handler.setPriceStamp(_stampSeed(4));
+        handler.updateAnchor(0);
+        assertEq(handler.succeeded("pendingAnchor"), 2, "a new pending anchor in place of the expired one");
+    }
+
+    /// @dev A seed whose stamp pick is `kind`: 0 stale, 1 after the block, 4 fresh.
+    function _stampSeed(uint256 kind) internal pure returns (uint256 seed) {
+        while (uint256(keccak256(abi.encode(seed, "stamp"))) % 8 != kind) ++seed;
+    }
+}
+
+/// @notice The same campaign on an oracle sized for a 98% LLTV, so that the sizing rule decides which parameter sets
+///         the manager can set, and the returned prices are checked against it.
+/// forge-config: default.invariant.fail-on-revert = true
+/// forge-config: default.invariant.runs = 256
+/// forge-config: default.invariant.depth = 128
+contract TrailingAnchorOracleSizedInvariant is TrailingAnchorOracleInvariantTest, UsdyNavOracleFixture {
+    function _maxLltv() internal pure override returns (uint256) {
+        return 0.98e18;
+    }
+
+    /// @dev The sizing rule alone refuses some of the handler's sets: one that an oracle sized for no LLTV would take
+    ///      is refused here.
+    function test_seededSizing_isNonVacuous() public {
+        uint256 seed;
+        while (
+            TrailingAnchorOracleModel.parametersRevert(handler.parametersFor(seed), 0).length != 0
+                || TrailingAnchorOracleModel.parametersRevert(handler.parametersFor(seed), _maxLltv()).length == 0
+        ) ++seed;
+        handler.setParameters(seed);
+        assertEq(handler.refused("parameters"), 1, "a set only the sizing rule refuses");
+    }
+}

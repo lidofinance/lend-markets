@@ -38,7 +38,7 @@ The production deployer and market factory use temporary setup authority, grant 
 
 At deployment, the deployer, Lido DAO Agent, and EVMScriptExecutor must be distinct. An Exit Book pauser must also differ from all three. These checks do not constrain guardians, stewards, delegates, controller pausers, or later role assignments.
 
-Acceptance checks the exact holder set for every AccessControl role listed below, except the Trailing Anchor Oracle roles, and rejects missing or extra holders. It also checks proxy admins, core ownership, and the router and Adaptive IRM owner-manager pairs.
+Acceptance checks the exact holder set for every AccessControl role listed below, and rejects missing or extra holders. For the Trailing Anchor Oracle roles, acceptance runs the same check as the `deploy-market` preflight. It also checks proxy admins, core ownership, and the router and Adaptive IRM owner-manager pairs.
 
 ## Proxy administration
 
@@ -164,7 +164,7 @@ Delisting one source affects only new requests for that source. Pausing affects 
 | Authority | Powers | Class | Initial onchain holder |
 |---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the oracle's roles | C1 | Lido DAO Agent |
-| `MANAGER_ROLE` | set the price bounds, the anchor's rise and fall speeds, its floor below and ceiling above the high-water mark, the re-anchor delay and the re-anchor window, each call dropping the pending anchor; suspend pricing for up to 7 days per call, or lift the suspension | C2 / C3 / C4 | EVMScriptExecutor and Lido DAO Agent, independently |
+| `MANAGER_ROLE` | set the price bounds, the anchor's rise and fall speeds, its floor below and ceiling above the fence base price, the re-anchor delay and the re-anchor window, each call dropping the pending anchor; suspend pricing for up to 7 days per call, or lift the suspension | C2 / C3 / C4 | EVMScriptExecutor and Lido DAO Agent, independently |
 | `PRICE_ACCEPTOR_ROLE` | move the anchor to the source's current price at any distance, past the floor or the ceiling included, inside a range the caller passes, without waiting the re-anchor delay | C4 | Lido DAO Agent |
 | `OssifiableProxy` admin | replace the implementation, which can return any price; transfer proxy administration; irreversibly set the admin to `address(0)` | C1 | Lido DAO Agent |
 

@@ -2,6 +2,8 @@
 pragma solidity 0.8.36;
 
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
+import {LIQUIDATION_CURSOR, MAX_LIQUIDATION_INCENTIVE_FACTOR} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
 
 import {
     AccessControlEnumerableUpgradeable
@@ -24,6 +26,9 @@ uint256 constant ORACLE_PRICE_DECIMALS = 36;
 /// @dev Concrete oracles bind one source in their constructor and override `_currentPrice()` with its ABI. Each
 ///      declares its own storage namespace, so an anchor never carries over to an adapter of another kind.
 ///
+///      The oracle does not read the loan token's own price. A loan token below one unit of the source's currency
+///      makes the price too low, and one above it makes the price too high by the same fraction.
+///
 ///      Anyone can call `updateAnchor()`. A current price within the bounds drags the anchor toward it at the yearly
 ///      speeds, so the bounds follow a source that changes slowly. A current price outside them is recorded as a
 ///      pending anchor. While the price stays outside the bounds on the pending anchor's side the anchor holds still,
@@ -31,10 +36,10 @@ uint256 constant ORACLE_PRICE_DECIMALS = 36;
 ///      the pending anchor, or onto the price if it sits nearer the anchor. So a move past the bounds becomes the price
 ///      only after it has been public for a whole delay: the time to stop the markets that read the oracle.
 ///
-///      No update takes the anchor more than `maxAnchorBelowMark` below `highWaterMark`, and no re-anchor more than
-///      `maxAnchorAboveMark` above it. That mark is the seed or the last accepted price, and only a drift up raises it,
-///      so however many steps a source takes past the bounds, it moves the anchor at most down to the floor and up to
-///      the ceiling; going further takes `acceptPrice()`.
+///      No update takes the anchor more than `maxAnchorBelowFenceBase` below `fenceBasePrice`, and no re-anchor more
+///      than `maxAnchorAboveFenceBase` above it. That price is the seed or the last accepted price, and only a drift up
+///      raises it, so however many steps a source takes past the bounds, it moves the anchor at most down to the floor
+///      and up to the ceiling; going further takes `acceptPrice()`.
 abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable, IOracle {
     // ---
     // TYPES
@@ -46,8 +51,8 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         uint64 maxPriceBelowAnchor;
         uint64 maxAnchorRisePerYear;
         uint64 maxAnchorFallPerYear;
-        uint64 maxAnchorBelowMark;
-        uint64 maxAnchorAboveMark;
+        uint64 maxAnchorBelowFenceBase;
+        uint64 maxAnchorAboveFenceBase;
         uint40 reanchorDelay;
         uint40 reanchorWindow;
     }
@@ -89,6 +94,10 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///      the price Morpho reads.
     uint256 public immutable PRICE_SCALE;
 
+    /// @notice Highest LLTV of a market that may read this oracle, WAD. `setParameters()` sizes the floor, the ceiling
+    ///         and the bounds for it.
+    uint256 public immutable MAX_LLTV;
+
     /// @notice Shortest `reanchorDelay`.
     uint256 public constant MIN_REANCHOR_DELAY = 1 hours;
     /// @notice Longest a pricing suspension may run from the call that sets it.
@@ -104,6 +113,8 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     error ZeroAddress();
     /// @notice The loan and collateral decimals leave no room for the 1e36 convention.
     error UnsupportedDecimals(uint256 loanDecimals, uint256 collateralDecimals);
+    /// @notice `maxLltv` is not below a whole price.
+    error InvalidMaxLltv(uint256 maxLltv);
     /// @notice A parameter is outside the range `setParameters()` names.
     error InvalidParameters();
     /// @notice The suspension would end more than `MAX_PRICING_SUSPENSION` from now.
@@ -145,8 +156,8 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // 1: anchorPrice
     // 2: maxAnchorRisePerYear, maxAnchorFallPerYear, reanchorDelay, reanchorWindow, pendingAnchorAt
     // 3: pendingAnchorPrice
-    // 4: maxAnchorBelowMark, maxAnchorAboveMark
-    // 5: highWaterMark
+    // 4: maxAnchorBelowFenceBase, maxAnchorAboveFenceBase
+    // 5: fenceBasePrice
 
     /// @notice How far the current price may sit above the anchor price before `price()` reverts, as a fraction of it,
     ///         WAD. 0.0005e18 allows 0.05%.
@@ -162,8 +173,9 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @notice Price the current price is compared with, with `PRICE_DECIMALS` decimals.
     uint256 public anchorPrice;
 
-    /// @notice Yearly speed at which an update may raise the anchor toward a price within the bounds, as a fraction of
-    ///         the anchor price, WAD. 0.06e18 lets it rise 6% a year, about 0.016% a day.
+    /// @notice Continuously compounded yearly rate at which an update may raise the anchor toward a price within the
+    ///         bounds, WAD. 0.06e18 lets it rise e^0.06 − 1, about 6.18%, in a year, whatever the schedule of
+    ///         updates.
     uint64 public maxAnchorRisePerYear;
     /// @notice Yearly speed at which an update may lower the anchor toward a price within the bounds, as a fraction of
     ///         the anchor price, WAD. 0.01e18 lets it fall 1% a year, about 0.003% a day.
@@ -181,19 +193,19 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///         past the floor or the ceiling.
     uint256 public pendingAnchorPrice;
 
-    /// @notice How far below `highWaterMark` an update may take the anchor, as a fraction of it, WAD. 0.01e18
+    /// @notice How far below `fenceBasePrice` an update may take the anchor, as a fraction of it, WAD. 0.01e18
     ///         allows 1%.
-    uint64 public maxAnchorBelowMark;
+    uint64 public maxAnchorBelowFenceBase;
 
-    /// @notice How far above `highWaterMark` a re-anchor may take the anchor, as a fraction of it, WAD. 0.002e18
+    /// @notice How far above `fenceBasePrice` a re-anchor may take the anchor, as a fraction of it, WAD. 0.002e18
     ///         allows 0.2%.
-    uint64 public maxAnchorAboveMark;
+    uint64 public maxAnchorAboveFenceBase;
 
     /// @notice Price the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals: the seed or the last
     ///         accepted price, raised by a drift up, onto the new anchor when that passes it, or by the drift's step
     ///         while the anchor already sits above it. A re-anchor never moves it, so a re-anchor up may leave the
     ///         anchor above it, up to the ceiling.
-    uint256 public highWaterMark;
+    uint256 public fenceBasePrice;
 
     // ---
     // CONSTRUCTOR
@@ -201,9 +213,12 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
 
     /// @param loanToken Loan token; its decimals set `PRICE_SCALE`.
     /// @param collateralToken Collateral token; its decimals set `PRICE_SCALE`.
+    /// @param maxLltv `MAX_LLTV`, below a whole price.
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
-    constructor(address loanToken, address collateralToken) {
+    constructor(address loanToken, address collateralToken, uint256 maxLltv) {
         if (loanToken == address(0) || collateralToken == address(0)) revert ZeroAddress();
+        if (maxLltv >= WAD) revert InvalidMaxLltv(maxLltv);
+        MAX_LLTV = maxLltv;
         uint256 loanDecimals = IERC20Metadata(loanToken).decimals();
         uint256 collateralDecimals = IERC20Metadata(collateralToken).decimals();
         if (ORACLE_PRICE_DECIMALS + loanDecimals < collateralDecimals + PRICE_DECIMALS) {
@@ -218,13 +233,20 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // ---
 
     /// @notice Grants the admin, stores the parameters as `setParameters()` does and seeds the anchor from the current
-    ///         price.
-    function initialize(address admin, Parameters calldata parameters) external initializer {
+    ///         price. A current price outside `minPrice` and `maxPrice` is refused, as in `acceptPrice()`.
+    /// @param admin First `DEFAULT_ADMIN_ROLE` holder.
+    /// @param parameters The parameters, as `setParameters()` takes them.
+    /// @param minPrice Lowest current price to seed, inclusive, with `PRICE_DECIMALS` decimals.
+    /// @param maxPrice Highest current price to seed, inclusive, with `PRICE_DECIMALS` decimals.
+    function initialize(address admin, Parameters calldata parameters, uint256 minPrice, uint256 maxPrice)
+        external
+        initializer
+    {
         if (admin == address(0)) revert ZeroAddress();
         __AccessControlEnumerable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _setParameters(parameters);
-        _setAnchor(_currentPrice(), true);
+        _acceptPrice(minPrice, maxPrice);
     }
 
     // ---
@@ -243,9 +265,9 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @notice Moves the anchor toward a current price within the bounds, or, once a pending anchor has waited out the
     ///         delay with the price outside the bounds on its side, onto the pending anchor or the price, whichever is
     ///         nearer the anchor; records any other current price outside the bounds as the pending anchor. Neither
-    ///         move takes the anchor under the floor, `maxAnchorBelowMark` below `highWaterMark`, nor a re-anchor over
-    ///         the ceiling, `maxAnchorAboveMark` above it; an anchor already past one moves no further past it. Open to
-    ///         anyone in any block, also while `price()` reverts. Each call emits `AnchorUpdated`.
+    ///         move takes the anchor under the floor, `maxAnchorBelowFenceBase` below `fenceBasePrice`, nor a re-anchor
+    ///         over the ceiling, `maxAnchorAboveFenceBase` above it; an anchor already past one moves no further past
+    ///         it. Open to anyone in any block, also while `price()` reverts. Each call emits `AnchorUpdated`.
     /// @dev `block.timestamp` sets the time counted: a validator's few seconds of skew move the speeds' reach and the
     ///      pending anchor's delay and window by those seconds.
     /// @return outcome What the call did; a keeper can read it with `eth_call` before sending the call.
@@ -269,18 +291,13 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     }
 
     /// @notice Moves the anchor to the current price wherever it sits, once the price acceptor has checked the value,
-    ///         restarts `highWaterMark` there and drops the pending anchor: the way out of a revert on the bounds
+    ///         restarts `fenceBasePrice` there and drops the pending anchor: the way out of a revert on the bounds
     ///         without waiting out the delay, and the only way under the floor or over the ceiling. A current price
     ///         outside `minPrice` and `maxPrice` is refused, so a price that moved after the check is not accepted.
     /// @param minPrice Lowest current price to accept, inclusive, with `PRICE_DECIMALS` decimals.
     /// @param maxPrice Highest current price to accept, inclusive, with `PRICE_DECIMALS` decimals.
     function acceptPrice(uint256 minPrice, uint256 maxPrice) external onlyRole(PRICE_ACCEPTOR_ROLE) {
-        uint256 currentPrice = _currentPrice();
-        if (currentPrice < minPrice || currentPrice > maxPrice) {
-            revert UnexpectedPrice(currentPrice, minPrice, maxPrice);
-        }
-        _setAnchor(currentPrice, true);
-        _clearPendingAnchor();
+        _acceptPrice(minPrice, maxPrice);
     }
 
     /// @notice Makes `price()` revert until `resumesAt`, at most `MAX_PRICING_SUSPENSION` from now, so liquidations
@@ -292,11 +309,14 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         emit PricingResumesAtSet(resumesAt);
     }
 
-    /// @notice Sets every parameter at once and drops the pending anchor; the anchor and `highWaterMark` stay where
-    ///         they are. Each bound must be above zero and below a whole price, each speed at most a whole price a
-    ///         year, `maxAnchorBelowMark` and `maxAnchorAboveMark` below a whole price, the delay at least
-    ///         `MIN_REANCHOR_DELAY` and no longer than the rise speed takes to cover the upper bound, and the window
-    ///         above zero.
+    /// @notice Sets every parameter at once and drops the pending anchor; the anchor and `fenceBasePrice` stay where
+    ///         they are. Each bound must be above zero and below a whole price, the fall speed at most a whole price a
+    ///         year and the rise rate at most 1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a
+    ///         whole price, the delay at least `MIN_REANCHOR_DELAY` and no longer than each speed takes to cover its
+    ///         bound, and the window above zero.
+    ///         A position borrowed at `MAX_LLTV` against the highest price, the ceiling × (1 + maxPriceAboveAnchor),
+    ///         must still cover its debt and the core's liquidation incentive at the lowest, the floor × (1 −
+    ///         maxPriceBelowAnchor).
     function setParameters(Parameters calldata parameters) external onlyRole(MANAGER_ROLE) {
         _setParameters(parameters);
     }
@@ -314,33 +334,40 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // ---
 
     /// @dev Moves the anchor toward `currentPrice` by at most the yearly speeds for the time since it was last set, and
-    ///      down never past the floor. A move up raises `highWaterMark` by its part above both the anchor and that
-    ///      mark, so the gap a re-anchor up left between them stays. Callers pass a price within the bounds, so one
+    ///      down never past the floor. A move up raises `fenceBasePrice` by its part above both the anchor and that
+    ///      price, so the gap a re-anchor up left between them stays. Callers pass a price within the bounds, so one
     ///      move never passes the bound however long the anchor rested; the fall term is capped at the anchor price
     ///      for the same reason.
     function _moveAnchorTowards(uint256 currentPrice) private {
         uint256 elapsed = block.timestamp - anchorAt;
-        uint256 rise = Math.mulDiv(anchorPrice, maxAnchorRisePerYear * elapsed, WAD * YEAR);
+        uint256 rise = Math.mulDiv(anchorPrice, _compoundedRise(maxAnchorRisePerYear, elapsed), WAD);
         uint256 fall = Math.min(Math.mulDiv(anchorPrice, maxAnchorFallPerYear * elapsed, WAD * YEAR), anchorPrice);
         uint256 lowest = Math.max(anchorPrice - fall, _lowestAnchor());
         uint256 newAnchorPrice = Math.min(Math.max(currentPrice, lowest), anchorPrice + rise);
         if (newAnchorPrice == anchorPrice) return;
-        uint256 top = Math.max(anchorPrice, highWaterMark);
-        if (newAnchorPrice > top) highWaterMark += newAnchorPrice - top;
+        uint256 top = Math.max(anchorPrice, fenceBasePrice);
+        if (newAnchorPrice > top) fenceBasePrice += newAnchorPrice - top;
         _setAnchor(newAnchorPrice, false);
     }
 
-    /// @dev The lowest anchor an update may set: the floor, `maxAnchorBelowMark` below `highWaterMark` with the
+    /// @dev e^(rate × elapsed / YEAR) − 1 by its first three Taylor terms, WAD, rounded down. Each step compounds
+    ///      from the anchor the last one set, so the terms keep the total rise under e^(rate × T) − 1 for any
+    ///      schedule.
+    function _compoundedRise(uint256 rate, uint256 elapsed) private pure returns (uint256) {
+        return MathLib.wTaylorCompounded(Math.mulDiv(rate, elapsed, YEAR), 1);
+    }
+
+    /// @dev The lowest anchor an update may set: the floor, `maxAnchorBelowFenceBase` below `fenceBasePrice` with the
     ///      distance rounded down, or the anchor itself when it already sits lower.
     function _lowestAnchor() private view returns (uint256) {
-        uint256 floor = highWaterMark - Math.mulDiv(highWaterMark, maxAnchorBelowMark, WAD);
+        uint256 floor = fenceBasePrice - Math.mulDiv(fenceBasePrice, maxAnchorBelowFenceBase, WAD);
         return Math.min(floor, anchorPrice);
     }
 
-    /// @dev The highest anchor a re-anchor may set: the ceiling, `maxAnchorAboveMark` above `highWaterMark` with the
-    ///      distance rounded down, or the anchor itself when it already sits higher.
+    /// @dev The highest anchor a re-anchor may set: the ceiling, `maxAnchorAboveFenceBase` above `fenceBasePrice` with
+    ///      the distance rounded down, or the anchor itself when it already sits higher.
     function _highestAnchor() private view returns (uint256) {
-        uint256 ceiling = highWaterMark + Math.mulDiv(highWaterMark, maxAnchorAboveMark, WAD);
+        uint256 ceiling = fenceBasePrice + Math.mulDiv(fenceBasePrice, maxAnchorAboveFenceBase, WAD);
         return Math.max(ceiling, anchorPrice);
     }
 
@@ -398,13 +425,24 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     }
 
     /// @dev Sets the anchor to `newAnchorPrice` at the current time. The seed and an acceptance also restart
-    ///      `highWaterMark` there.
+    ///      `fenceBasePrice` there.
     function _setAnchor(uint256 newAnchorPrice, bool accepted) private {
         if (newAnchorPrice == 0) revert ZeroPrice();
         anchorPrice = newAnchorPrice;
         anchorAt = uint40(block.timestamp);
-        if (accepted) highWaterMark = newAnchorPrice;
+        if (accepted) fenceBasePrice = newAnchorPrice;
         emit AnchorSet(newAnchorPrice, anchorAt, accepted);
+    }
+
+    /// @dev Moves the anchor onto the current price once it sits inside `minPrice` and `maxPrice`, restarts
+    ///      `fenceBasePrice` there and drops the pending anchor.
+    function _acceptPrice(uint256 minPrice, uint256 maxPrice) private {
+        uint256 currentPrice = _currentPrice();
+        if (currentPrice < minPrice || currentPrice > maxPrice) {
+            revert UnexpectedPrice(currentPrice, minPrice, maxPrice);
+        }
+        _setAnchor(currentPrice, true);
+        _clearPendingAnchor();
     }
 
     /// @dev Drops the pending anchor, if there is one.
@@ -419,12 +457,29 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     function _setParameters(Parameters calldata p) private {
         if (p.maxPriceAboveAnchor == 0 || p.maxPriceBelowAnchor == 0) revert InvalidParameters();
         if (p.maxPriceAboveAnchor >= WAD || p.maxPriceBelowAnchor >= WAD) revert InvalidParameters();
-        if (p.maxAnchorBelowMark >= WAD || p.maxAnchorAboveMark >= WAD) revert InvalidParameters();
+        if (p.maxAnchorBelowFenceBase >= WAD || p.maxAnchorAboveFenceBase >= WAD) revert InvalidParameters();
         if (p.maxAnchorRisePerYear > WAD || p.maxAnchorFallPerYear > WAD) revert InvalidParameters();
         if (p.reanchorDelay < MIN_REANCHOR_DELAY || p.reanchorWindow == 0) revert InvalidParameters();
-        // A source rising at the rise speed must stay within the upper bound over one delay, or each re-anchor upward
-        // would land short of the price and record the next pending anchor.
-        if (uint256(p.reanchorDelay) * p.maxAnchorRisePerYear > uint256(p.maxPriceAboveAnchor) * YEAR) {
+        // A source moving at a speed must stay within its bound over one delay, or each re-anchor would land short of
+        // the price and record the next pending anchor.
+        if (_compoundedRise(p.maxAnchorRisePerYear, p.reanchorDelay) > p.maxPriceAboveAnchor) {
+            revert InvalidParameters();
+        }
+        if (uint256(p.reanchorDelay) * p.maxAnchorFallPerYear > uint256(p.maxPriceBelowAnchor) * YEAR) {
+            revert InvalidParameters();
+        }
+        uint256 incentive = Math.min(
+            MAX_LIQUIDATION_INCENTIVE_FACTOR,
+            Math.mulDiv(WAD, WAD, WAD - Math.mulDiv(LIQUIDATION_CURSOR, WAD - MAX_LLTV, WAD))
+        );
+        uint256 needed = Math.mulDiv(
+            Math.mulDiv(MAX_LLTV, incentive, WAD, Math.Rounding.Ceil),
+            WAD + p.maxPriceAboveAnchor,
+            WAD,
+            Math.Rounding.Ceil
+        );
+        uint256 room = Math.mulDiv(WAD - p.maxAnchorBelowFenceBase, WAD - p.maxPriceBelowAnchor, WAD);
+        if (room < Math.mulDiv(needed, WAD + p.maxAnchorAboveFenceBase, WAD, Math.Rounding.Ceil)) {
             revert InvalidParameters();
         }
 
@@ -432,8 +487,8 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         maxPriceBelowAnchor = p.maxPriceBelowAnchor;
         maxAnchorRisePerYear = p.maxAnchorRisePerYear;
         maxAnchorFallPerYear = p.maxAnchorFallPerYear;
-        maxAnchorBelowMark = p.maxAnchorBelowMark;
-        maxAnchorAboveMark = p.maxAnchorAboveMark;
+        maxAnchorBelowFenceBase = p.maxAnchorBelowFenceBase;
+        maxAnchorAboveFenceBase = p.maxAnchorAboveFenceBase;
         reanchorDelay = p.reanchorDelay;
         reanchorWindow = p.reanchorWindow;
         emit ParametersSet(p);

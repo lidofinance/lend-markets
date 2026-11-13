@@ -24,8 +24,8 @@ contract UsdyNavOracle layout at erc7201("lido.lend.storage.UsdyNavOracle") is T
     // ---
 
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
-    constructor(address source, address loanToken, address collateralToken)
-        TrailingAnchorOracleBase(loanToken, collateralToken)
+    constructor(address source, address loanToken, address collateralToken, uint256 maxLltv)
+        TrailingAnchorOracleBase(loanToken, collateralToken, maxLltv)
     {
         if (source == address(0)) revert ZeroAddress();
         SOURCE = IOndoPriceGetter(source);

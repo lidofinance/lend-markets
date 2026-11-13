@@ -2,7 +2,9 @@
 pragma solidity 0.8.36;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {LIQUIDATION_CURSOR, MAX_LIQUIDATION_INCENTIVE_FACTOR} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
+import {CentrifugeNavOracle} from "../../src/oracle/CentrifugeNavOracle.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 
 import {SourceDown} from "./NavSourceMocks.sol";
@@ -15,13 +17,13 @@ struct TrailingAnchorOracleState {
     uint256 pricingResumesAt;
     uint256 pendingAnchorPrice;
     uint256 pendingAnchorAt;
-    uint256 highWaterMark;
+    uint256 fenceBasePrice;
     uint256 maxPriceAboveAnchor;
     uint256 maxPriceBelowAnchor;
     uint256 maxAnchorRisePerYear;
     uint256 maxAnchorFallPerYear;
-    uint256 maxAnchorBelowMark;
-    uint256 maxAnchorAboveMark;
+    uint256 maxAnchorBelowFenceBase;
+    uint256 maxAnchorAboveFenceBase;
     uint256 reanchorDelay;
     uint256 reanchorWindow;
 }
@@ -49,17 +51,20 @@ library TrailingAnchorOracleModel {
     uint256 internal constant MAX_PRICING_SUSPENSION = 7 days;
 
     /// @dev Working defaults: a USDY-sized 0.05% bound up and a wider 0.1% down; an anchor that may drift 6% a year up
-    ///      and 1% down, a little above a treasury yield and well under it; a floor 1% under the high-water mark and a
+    ///      and 1% down, a little above a treasury yield and well under it; a floor 1% under the fence base price and a
     ///      ceiling 0.2% over it, inside the 0.26% at which a 98% LLTV position borrowed at the top of the ceiling's
     ///      bounds stops covering its liquidation at the bottom of the floor's; a six-hour delay and a one-day window.
     uint256 internal constant MAX_PRICE_ABOVE_ANCHOR = 0.0005e18;
     uint256 internal constant MAX_PRICE_BELOW_ANCHOR = 0.001e18;
     uint256 internal constant MAX_ANCHOR_RISE_PER_YEAR = 0.06e18;
     uint256 internal constant MAX_ANCHOR_FALL_PER_YEAR = 0.01e18;
-    uint256 internal constant MAX_ANCHOR_BELOW_MARK = 0.01e18;
-    uint256 internal constant MAX_ANCHOR_ABOVE_MARK = 0.002e18;
+    uint256 internal constant MAX_ANCHOR_BELOW_FENCE_BASE = 0.01e18;
+    uint256 internal constant MAX_ANCHOR_ABOVE_FENCE_BASE = 0.002e18;
     uint256 internal constant REANCHOR_DELAY = 6 hours;
     uint256 internal constant REANCHOR_WINDOW = 1 days;
+    /// @dev The `MAX_LLTV` of the shared suites: zero, so the sizing rule takes any parameters and the suites can move
+    ///      the floor and the ceiling out of the way. The sizing rule has tests of its own at a 98% LLTV.
+    uint256 internal constant MAX_LLTV = 0;
 
     // ---
     // DEPLOYMENT
@@ -71,14 +76,14 @@ library TrailingAnchorOracleModel {
             maxPriceBelowAnchor: uint64(MAX_PRICE_BELOW_ANCHOR),
             maxAnchorRisePerYear: uint64(MAX_ANCHOR_RISE_PER_YEAR),
             maxAnchorFallPerYear: uint64(MAX_ANCHOR_FALL_PER_YEAR),
-            maxAnchorBelowMark: uint64(MAX_ANCHOR_BELOW_MARK),
-            maxAnchorAboveMark: uint64(MAX_ANCHOR_ABOVE_MARK),
+            maxAnchorBelowFenceBase: uint64(MAX_ANCHOR_BELOW_FENCE_BASE),
+            maxAnchorAboveFenceBase: uint64(MAX_ANCHOR_ABOVE_FENCE_BASE),
             reanchorDelay: uint40(REANCHOR_DELAY),
             reanchorWindow: uint40(REANCHOR_WINDOW)
         });
     }
 
-    /// @dev The `initialize` call on the working defaults.
+    /// @dev The `initialize` call on the working defaults, with a seed range that takes any price.
     function initializeCall(address admin) internal pure returns (bytes memory) {
         return initializeCall(admin, defaultParameters());
     }
@@ -88,7 +93,16 @@ library TrailingAnchorOracleModel {
         pure
         returns (bytes memory)
     {
-        return abi.encodeCall(TrailingAnchorOracleBase.initialize, (admin, parameters));
+        return initializeCall(admin, parameters, 0, type(uint256).max);
+    }
+
+    function initializeCall(
+        address admin,
+        TrailingAnchorOracleBase.Parameters memory parameters,
+        uint256 minPrice,
+        uint256 maxPrice
+    ) internal pure returns (bytes memory) {
+        return abi.encodeCall(TrailingAnchorOracleBase.initialize, (admin, parameters, minPrice, maxPrice));
     }
 
     /// @dev 10^(ORACLE_PRICE_DECIMALS + loanDecimals − collateralDecimals − PRICE_DECIMALS).
@@ -112,13 +126,13 @@ library TrailingAnchorOracleModel {
         s.pricingResumesAt = oracle.pricingResumesAt();
         s.pendingAnchorPrice = oracle.pendingAnchorPrice();
         s.pendingAnchorAt = oracle.pendingAnchorAt();
-        s.highWaterMark = oracle.highWaterMark();
+        s.fenceBasePrice = oracle.fenceBasePrice();
         s.maxPriceAboveAnchor = oracle.maxPriceAboveAnchor();
         s.maxPriceBelowAnchor = oracle.maxPriceBelowAnchor();
         s.maxAnchorRisePerYear = oracle.maxAnchorRisePerYear();
         s.maxAnchorFallPerYear = oracle.maxAnchorFallPerYear();
-        s.maxAnchorBelowMark = oracle.maxAnchorBelowMark();
-        s.maxAnchorAboveMark = oracle.maxAnchorAboveMark();
+        s.maxAnchorBelowFenceBase = oracle.maxAnchorBelowFenceBase();
+        s.maxAnchorAboveFenceBase = oracle.maxAnchorAboveFenceBase();
         s.reanchorDelay = oracle.reanchorDelay();
         s.reanchorWindow = oracle.reanchorWindow();
     }
@@ -128,7 +142,7 @@ library TrailingAnchorOracleModel {
     }
 
     /// @dev The state after `setParameters(parameters)`: the parameters stored and the pending anchor dropped; the
-    ///      anchor and the high-water mark stay.
+    ///      anchor and the fence base price stay.
     function withParameters(TrailingAnchorOracleState memory s, TrailingAnchorOracleBase.Parameters memory parameters)
         internal
         pure
@@ -139,8 +153,8 @@ library TrailingAnchorOracleModel {
         next.maxPriceBelowAnchor = parameters.maxPriceBelowAnchor;
         next.maxAnchorRisePerYear = parameters.maxAnchorRisePerYear;
         next.maxAnchorFallPerYear = parameters.maxAnchorFallPerYear;
-        next.maxAnchorBelowMark = parameters.maxAnchorBelowMark;
-        next.maxAnchorAboveMark = parameters.maxAnchorAboveMark;
+        next.maxAnchorBelowFenceBase = parameters.maxAnchorBelowFenceBase;
+        next.maxAnchorAboveFenceBase = parameters.maxAnchorAboveFenceBase;
         next.reanchorDelay = parameters.reanchorDelay;
         next.reanchorWindow = parameters.reanchorWindow;
         next.pendingAnchorPrice = 0;
@@ -186,9 +200,9 @@ library TrailingAnchorOracleModel {
     // FLOOR
     // ---
 
-    /// @dev highWaterMark × (1 − maxAnchorBelowMark), the distance term rounded down so the floor rounds up.
+    /// @dev fenceBasePrice × (1 − maxAnchorBelowFenceBase), the distance term rounded down so the floor rounds up.
     function floor(TrailingAnchorOracleState memory s) internal pure returns (uint256) {
-        return s.highWaterMark - Math.mulDiv(s.highWaterMark, s.maxAnchorBelowMark, WAD);
+        return s.fenceBasePrice - Math.mulDiv(s.fenceBasePrice, s.maxAnchorBelowFenceBase, WAD);
     }
 
     /// @dev The lowest anchor an update may set: the floor, or the anchor when it already sits under the floor.
@@ -200,9 +214,9 @@ library TrailingAnchorOracleModel {
     // CEILING
     // ---
 
-    /// @dev highWaterMark × (1 + maxAnchorAboveMark), the distance term rounded down.
+    /// @dev fenceBasePrice × (1 + maxAnchorAboveFenceBase), the distance term rounded down.
     function ceiling(TrailingAnchorOracleState memory s) internal pure returns (uint256) {
-        return s.highWaterMark + Math.mulDiv(s.highWaterMark, s.maxAnchorAboveMark, WAD);
+        return s.fenceBasePrice + Math.mulDiv(s.fenceBasePrice, s.maxAnchorAboveFenceBase, WAD);
     }
 
     /// @dev The highest anchor a re-anchor may set: the ceiling, or the anchor when it already sits over the ceiling.
@@ -210,26 +224,33 @@ library TrailingAnchorOracleModel {
         return Math.max(ceiling(s), s.anchorPrice);
     }
 
-    /// @dev The high-water mark after a drift to `newAnchorPrice`: max(H, A' − max(A − H, 0)) for a drift up, so
+    /// @dev The fence base price after a drift to `newAnchorPrice`: max(H, A' − max(A − H, 0)) for a drift up, so
     ///      the new anchor while the anchor sits at or under H, else H raised by the step and the gap a re-anchor left
     ///      above H kept. A drift down leaves it.
-    function raisedHighWaterMark(TrailingAnchorOracleState memory s, uint256 newAnchorPrice)
+    function raisedFenceBasePrice(TrailingAnchorOracleState memory s, uint256 newAnchorPrice)
         internal
         pure
         returns (uint256)
     {
-        if (newAnchorPrice <= s.anchorPrice) return s.highWaterMark;
-        uint256 gap = s.anchorPrice > s.highWaterMark ? s.anchorPrice - s.highWaterMark : 0;
-        return Math.max(s.highWaterMark, newAnchorPrice - gap);
+        if (newAnchorPrice <= s.anchorPrice) return s.fenceBasePrice;
+        uint256 gap = s.anchorPrice > s.fenceBasePrice ? s.anchorPrice - s.fenceBasePrice : 0;
+        return Math.max(s.fenceBasePrice, newAnchorPrice - gap);
     }
 
     // ---
     // DRIFT
     // ---
 
-    /// @dev The lowest and highest anchor a drift at `time` may set: the speeds for the time since the anchor last
-    ///      moved, each term rounded down, the fall term held at the anchor price, and the lowest never under
-    ///      `lowestAnchor`.
+    /// @dev e^x − 1 for `x` = rate × elapsed / 365 days, by its first three Taylor terms, each rounded down.
+    function compoundedRise(uint256 rate, uint256 elapsed) internal pure returns (uint256) {
+        uint256 x = Math.mulDiv(rate, elapsed, YEAR);
+        uint256 square = Math.mulDiv(x, x, 2 * WAD);
+        return x + square + Math.mulDiv(square, x, 3 * WAD);
+    }
+
+    /// @dev The lowest and highest anchor a drift at `time` may set: the fall speed for the time since the anchor last
+    ///      moved, the rise speed compounded continuously over it, each term rounded down, the fall term held at the
+    ///      anchor price, and the lowest never under `lowestAnchor`.
     function reach(TrailingAnchorOracleState memory s, uint256 time)
         internal
         pure
@@ -238,7 +259,7 @@ library TrailingAnchorOracleModel {
         uint256 elapsed = time - s.anchorAt;
         uint256 fall = Math.min(Math.mulDiv(s.anchorPrice, s.maxAnchorFallPerYear * elapsed, WAD * YEAR), s.anchorPrice);
         lowest = Math.max(s.anchorPrice - fall, lowestAnchor(s));
-        highest = s.anchorPrice + Math.mulDiv(s.anchorPrice, s.maxAnchorRisePerYear * elapsed, WAD * YEAR);
+        highest = s.anchorPrice + Math.mulDiv(s.anchorPrice, compoundedRise(s.maxAnchorRisePerYear, elapsed), WAD);
     }
 
     /// @dev The anchor a drift toward `currentPrice` at `time` sets: the price held inside the reach.
@@ -291,17 +312,52 @@ library TrailingAnchorOracleModel {
     // OUTCOMES
     // ---
 
-    /// @dev The revert `price()` gives, or nothing: the suspension, then the source, a zero price and the bounds.
+    /// @dev The revert a read of the source gives, or nothing: `SourceDown` when the source is down.
+    function sourceRevert(bool sourceDown) internal pure returns (bytes memory) {
+        if (sourceDown) return abi.encodeWithSelector(SourceDown.selector);
+        return "";
+    }
+
+    /// @dev The revert a read of a Spoke source gives at `time`, or nothing: the source down, then a price stamped
+    ///      after `time`, then a price stamped more than `maxPriceAge` before it.
+    function sourceRevert(bool sourceDown, uint256 computedAt, uint256 maxPriceAge, uint256 time)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        if (sourceDown) return abi.encodeWithSelector(SourceDown.selector);
+        if (computedAt > time) {
+            return abi.encodeWithSelector(CentrifugeNavOracle.PriceFromFuture.selector, uint64(computedAt));
+        }
+        if (time - computedAt > maxPriceAge) {
+            return abi.encodeWithSelector(CentrifugeNavOracle.StalePrice.selector, uint64(computedAt));
+        }
+        return "";
+    }
+
+    /// @dev `priceRevert` for a source that reverts only when it is down.
     function priceRevert(TrailingAnchorOracleState memory s, uint256 currentPrice, bool sourceDown, uint256 time)
         internal
         pure
         returns (bytes memory)
     {
+        return priceRevert(s, currentPrice, sourceRevert(sourceDown), time);
+    }
+
+    /// @dev The revert `price()` gives, or nothing: the suspension, then the source's own revert `sourceError`, a zero
+    ///      price and the bounds.
+    function priceRevert(
+        TrailingAnchorOracleState memory s,
+        uint256 currentPrice,
+        bytes memory sourceError,
+        uint256 time
+    ) internal pure returns (bytes memory) {
         if (time < s.pricingResumesAt) {
-            return
-                abi.encodeWithSelector(TrailingAnchorOracleBase.PricingSuspended.selector, uint40(s.pricingResumesAt));
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.PricingSuspended.selector, uint40(s.pricingResumesAt)
+            );
         }
-        if (sourceDown) return abi.encodeWithSelector(SourceDown.selector);
+        if (sourceError.length != 0) return sourceError;
         if (currentPrice == 0) return abi.encodeWithSelector(TrailingAnchorOracleBase.ZeroPrice.selector);
         if (withinBounds(s, currentPrice)) return "";
         return abi.encodeWithSelector(
@@ -317,16 +373,26 @@ library TrailingAnchorOracleModel {
     ///      - an open pending anchor that would take the anchor under the floor or over the ceiling moves it onto that
     ///        line, and one with the anchor already there changes nothing;
     ///      - any other price outside the bounds is recorded as the pending anchor.
-    ///      A drift up raises the high-water mark by `raisedHighWaterMark`, a re-anchor leaves it, and every call that
-    ///      does not revert returns the outcome of its case.
+    ///      A drift up raises the fence base price by `raisedFenceBasePrice`, a re-anchor leaves it, and every call
+    ///      that does not revert returns the outcome of its case.
     function update(TrailingAnchorOracleState memory s, uint256 currentPrice, bool sourceDown, uint256 time)
         internal
         pure
         returns (TrailingAnchorOracleUpdate memory u)
     {
+        return update(s, currentPrice, sourceRevert(sourceDown), time);
+    }
+
+    /// @dev `update` for a source whose read reverts with `sourceError`, or does not when it is empty: the update then
+    ///      reverts with it and changes nothing.
+    function update(TrailingAnchorOracleState memory s, uint256 currentPrice, bytes memory sourceError, uint256 time)
+        internal
+        pure
+        returns (TrailingAnchorOracleUpdate memory u)
+    {
         u.next = copy(s);
-        if (sourceDown) {
-            u.revertData = abi.encodeWithSelector(SourceDown.selector);
+        if (sourceError.length != 0) {
+            u.revertData = sourceError;
             return u;
         }
         if (currentPrice == 0) {
@@ -338,7 +404,7 @@ library TrailingAnchorOracleModel {
         if (withinBounds(s, currentPrice)) {
             uint256 newAnchorPrice = drifted(s, currentPrice, time);
             if (newAnchorPrice != s.anchorPrice) {
-                n.highWaterMark = raisedHighWaterMark(s, newAnchorPrice);
+                n.fenceBasePrice = raisedFenceBasePrice(s, newAnchorPrice);
                 _setAnchor(n, u, newAnchorPrice, time);
             }
             _dropPendingAnchor(n, u);
@@ -379,7 +445,7 @@ library TrailingAnchorOracleModel {
         u.pendingAnchorSet = true;
     }
 
-    /// @dev Sets the anchor of `n` by an update, and marks the update. The high-water mark is the caller's.
+    /// @dev Sets the anchor of `n` by an update, and marks the update. The fence base price is the caller's.
     function _setAnchor(
         TrailingAnchorOracleState memory n,
         TrailingAnchorOracleUpdate memory u,
@@ -408,7 +474,18 @@ library TrailingAnchorOracleModel {
         uint256 minPrice,
         uint256 maxPrice
     ) internal pure returns (bytes memory) {
-        if (sourceDown) return abi.encodeWithSelector(SourceDown.selector);
+        return acceptRevert(s, currentPrice, sourceRevert(sourceDown), minPrice, maxPrice);
+    }
+
+    /// @dev `acceptRevert` for a source whose read reverts with `sourceError`, or does not when it is empty.
+    function acceptRevert(
+        TrailingAnchorOracleState memory s,
+        uint256 currentPrice,
+        bytes memory sourceError,
+        uint256 minPrice,
+        uint256 maxPrice
+    ) internal pure returns (bytes memory) {
+        if (sourceError.length != 0) return sourceError;
         if (currentPrice < minPrice || currentPrice > maxPrice) {
             return
                 abi.encodeWithSelector(
@@ -419,7 +496,7 @@ library TrailingAnchorOracleModel {
         return "";
     }
 
-    /// @dev The state after a successful `acceptPrice()` at `time`: the high-water mark restarts at the price.
+    /// @dev The state after a successful `acceptPrice()` at `time`: the fence base price restarts at the price.
     function accepted(TrailingAnchorOracleState memory s, uint256 currentPrice, uint256 time)
         internal
         pure
@@ -428,22 +505,48 @@ library TrailingAnchorOracleModel {
         next = copy(s);
         next.anchorPrice = currentPrice;
         next.anchorAt = time;
-        next.highWaterMark = currentPrice;
+        next.fenceBasePrice = currentPrice;
         next.pendingAnchorPrice = 0;
         next.pendingAnchorAt = 0;
     }
 
-    /// @dev `InvalidParameters()`, or nothing: each bound above zero and below a whole price, each speed at most a
-    ///      whole price a year, `maxAnchorBelowMark` and `maxAnchorAboveMark` below a whole price, a delay of at least
-    ///      an hour in which the rise speed covers at most the upper bound, and a window above zero.
+    /// @dev `InvalidParameters()`, or nothing, for an oracle sized for `MAX_LLTV`.
     function parametersRevert(TrailingAnchorOracleBase.Parameters memory p) internal pure returns (bytes memory) {
+        return parametersRevert(p, MAX_LLTV);
+    }
+
+    /// @dev `InvalidParameters()`, or nothing: each bound above zero and below a whole price, each speed at most a
+    ///      whole price a year, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, a delay
+    ///      of at least an hour in which each speed covers at most its bound, a window above zero, and the sizing rule
+    ///      at `maxLltv`.
+    function parametersRevert(TrailingAnchorOracleBase.Parameters memory p, uint256 maxLltv)
+        internal
+        pure
+        returns (bytes memory)
+    {
         bool valid = p.maxPriceAboveAnchor != 0 && p.maxPriceBelowAnchor != 0 && p.maxPriceAboveAnchor < WAD
             && p.maxPriceBelowAnchor < WAD && p.maxAnchorRisePerYear <= WAD && p.maxAnchorFallPerYear <= WAD
-            && p.maxAnchorBelowMark < WAD && p.maxAnchorAboveMark < WAD && p.reanchorDelay >= MIN_REANCHOR_DELAY
-            && p.reanchorWindow != 0
-            && uint256(p.reanchorDelay) * p.maxAnchorRisePerYear <= uint256(p.maxPriceAboveAnchor) * YEAR;
+            && p.maxAnchorBelowFenceBase < WAD && p.maxAnchorAboveFenceBase < WAD
+            && p.reanchorDelay >= MIN_REANCHOR_DELAY && p.reanchorWindow != 0
+            && compoundedRise(p.maxAnchorRisePerYear, p.reanchorDelay) <= p.maxPriceAboveAnchor
+            && uint256(p.reanchorDelay) * p.maxAnchorFallPerYear <= uint256(p.maxPriceBelowAnchor) * YEAR
+            && sized(p, maxLltv);
         if (valid) return "";
         return abi.encodeWithSelector(TrailingAnchorOracleBase.InvalidParameters.selector);
+    }
+
+    /// @dev The sizing rule from the spec formula and not from the contract: (1 − maxAnchorBelowFenceBase)(1 −
+    ///      maxPriceBelowAnchor) ≥ LLTV × LIF × (1 + maxAnchorAboveFenceBase)(1 + maxPriceAboveAnchor). LIF is the
+    ///      integer incentive that the core applies in a liquidation, `min(MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD /
+    ///      (WAD − LIQUIDATION_CURSOR × (WAD − LLTV)))` with each division rounded down. The rest is multiplied
+    /// through
+    ///      in whole numbers, so nothing else is rounded.
+    function sized(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv) internal pure returns (bool) {
+        uint256 incentive =
+            Math.min(MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD * WAD / (WAD - LIQUIDATION_CURSOR * (WAD - lltv) / WAD));
+        uint256 room = (WAD - p.maxAnchorBelowFenceBase) * (WAD - p.maxPriceBelowAnchor);
+        uint256 reach = (WAD + p.maxAnchorAboveFenceBase) * (WAD + p.maxPriceAboveAnchor);
+        return room * WAD * WAD >= lltv * incentive * reach;
     }
 
     /// @dev `InvalidPricingResumesAt(resumesAt)` when it ends more than `MAX_PRICING_SUSPENSION` after `time`.
