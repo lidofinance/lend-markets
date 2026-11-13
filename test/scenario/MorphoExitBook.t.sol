@@ -10,6 +10,7 @@ import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {Request, ExitStatus, PriorityRamp} from "../../src/types/ExitBookTypes.sol";
@@ -1071,6 +1072,50 @@ contract MorphoExitBookTest is LidoLendSetup {
         vm.stopPrank();
 
         assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "freeze leaves lender exits open");
+    }
+
+    /// @dev Specified behaviour: at the market's supply cap the supply a filler makes before the fill reverts on its
+    ///      gross amount, and accrued interest keeps the total above the cap, so the supply route stays closed while
+    ///      total supply stays at or above the cap. `market-controller.md` describes it.
+    function test_supplyCapReached_blocksSupplyFundedFillUntilCapRaised() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        address filler = _actor("filler");
+        _lenderSupply(lender, 100 ether);
+        m.setSupplyCap(100 ether);
+        _borrowOut(_actor("borrower"), 100 ether);
+        uint256 id = _place(lender, 40 ether, lender, 0, _flat(PRIORITY_FEE));
+        _fund(m.loanToken, filler, 200 ether);
+        vm.prank(filler);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+
+        vm.prank(filler);
+        vm.expectRevert(
+            abi.encodeWithSelector(ILidoLendMarketController.SupplyCapExceeded.selector, 100 ether, 140 ether)
+        );
+        m.core.supply(m.params, 40 ether, 0, filler, "");
+        vm.prank(filler);
+        vm.expectRevert(bytes("insufficient liquidity"));
+        book.fillExitRequest(id, 40 ether, filler);
+
+        vm.warp(block.timestamp + 29 days);
+        m.accrueInterest();
+        uint256 totalSupplyAssets = m.core.market(m.id).totalSupplyAssets;
+        assertGt(totalSupplyAssets, 100 ether, "interest carries the total above the cap");
+        vm.prank(filler);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ILidoLendMarketController.SupplyCapExceeded.selector, 100 ether, totalSupplyAssets + 1
+            )
+        );
+        m.core.supply(m.params, 1, 0, filler, "");
+
+        m.setSupplyCap(totalSupplyAssets + 40 ether);
+        vm.startPrank(filler);
+        m.core.supply(m.params, 40 ether, 0, filler, "");
+        book.fillExitRequest(id, 40 ether, filler);
+        vm.stopPrank();
+        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "fills once the cap is raised");
     }
 
     /// @dev Constructing the book with a zero core (Morpho) address reverts.

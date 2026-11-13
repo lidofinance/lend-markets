@@ -1164,8 +1164,9 @@ contract AdaptiveIrmRetuneTest is Test {
         id = params.id();
     }
 
-    /// @dev A retune whose new bounds still contain the adapted `rateAtTarget` keeps the stored rate and the borrow
-    ///      rate continues unchanged — no spike.
+    /// @dev Specified behaviour: a retune whose new bounds still contain the adapted `rateAtTarget` keeps the stored
+    ///      rate, though the new config seeds the band floor, and the borrow rate continues unchanged — no spike. The
+    ///      lend-irm `SPECIFICATION.md` describes it.
     function test_retune_statePersists_noSpike_whenBoundsContainRate() public {
         _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
         _adaptDown();
@@ -1173,10 +1174,32 @@ contract AdaptiveIrmRetuneTest is Test {
         int256 ratBefore = _rat();
         uint256 borrowBefore = _borrowAtTarget();
 
-        _setBounds(ratBefore, ratBefore / 2, ratBefore * 2);
+        _setBounds(ratBefore / 2, ratBefore / 2, ratBefore * 2);
 
         assertEq(_rat(), ratBefore, "rateAtTarget persisted through the retune (instance storage intact)");
         assertEq(_borrowAtTarget(), borrowBefore, "no spike: borrow continues from the persisted rate");
+    }
+
+    /// @dev Specified behaviour: after a retune the stored rate is the adapted rate clamped into the new band,
+    ///      whatever initial rate the new config seeds. The lend-irm `SPECIFICATION.md` describes it.
+    function testFuzz_retune_storedRateIsAdaptedRateClampedIntoBand(uint256 minSeed, uint256 maxSeed, uint256 initSeed)
+        public
+    {
+        _setBounds(int256(0.025 ether) / Y, int256(0.005 ether) / Y, int256(0.08 ether) / Y);
+        _adaptDown();
+        int256 ratBefore = _rat();
+        uint256 ceiling = uint256(ratBefore) * 4;
+        uint256 newMin = bound(minSeed, 1, ceiling);
+        uint256 newMax = bound(maxSeed, newMin, ceiling);
+        uint256 initial = bound(initSeed, newMin, newMax);
+        int256 expected =
+            ratBefore < int256(newMin) ? int256(newMin) : ratBefore > int256(newMax) ? int256(newMax) : ratBefore;
+        // A config that seeds the expected rate cannot tell a re-seed from a kept rate.
+        vm.assume(int256(initial) != expected);
+
+        _setBounds(int256(initial), int256(newMin), int256(newMax));
+
+        assertEq(_rat(), expected, "stored rate == adapted rate clamped into the new band");
     }
 
     /// @dev A retune whose new minimum exceeds the stored `rateAtTarget` clamps it up when the config is applied,

@@ -74,7 +74,7 @@ contract MarketSolvencyInvariant is LidoLendSetup {
             address(m.oracle),
             actors
         );
-        bytes4[] memory selectors = new bytes4[](10);
+        bytes4[] memory selectors = new bytes4[](11);
         selectors[0] = MarketHandler.supply.selector;
         selectors[1] = MarketHandler.withdraw.selector;
         selectors[2] = MarketHandler.supplyCollateral.selector;
@@ -85,6 +85,7 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         selectors[7] = MarketHandler.crashPrice.selector;
         selectors[8] = MarketHandler.liquidate.selector;
         selectors[9] = MarketHandler.supplyCollateralDust.selector;
+        selectors[10] = MarketHandler.borrowBelowFloor.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -188,12 +189,14 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         emit log_named_uint("repays", handler.repays());
         emit log_named_uint("crashes", handler.crashes());
         emit log_named_uint("liquidations", handler.liquidations());
-        // A run makes 400 calls over 10 selectors. A floor holds when (1 - 0.1 * E)^400 < 1e-9, that is E >= 0.51.
+        emit log_named_uint("belowFloorBorrowsRejected", handler.belowFloorBorrowsRejected());
+        // A run makes 400 calls over 11 selectors. A floor holds when (1 - E / 11)^400 < 1e-9, that is E >= 0.56.
         // E is the share of draws that count. A 1000-run campaign then misses the floor with odds below 1e-6.
         //   supplies, collateralSupplies, crashes: E = 1, because nothing in this fixture blocks them.
         //   withdraws, borrows, repays, collateralWithdrawals: a draw can return early. No stored measurement
         //   supports a floor for these four. A failure here can be a coverage miss, not a protocol fault.
-        // Dust supplies and liquidations can miss a run and carry no floor. The tests below reach them.
+        // Dust supplies, liquidations and below-floor borrows can miss a run and carry no floor. The tests below
+        // reach them.
         assertGt(handler.supplies(), 0, "coverage: no supply");
         assertGt(handler.collateralSupplies(), 0, "coverage: no collateral supply");
         assertGt(handler.crashes(), 0, "coverage: no crash");
@@ -277,6 +280,23 @@ contract MarketSolvencyInvariant is LidoLendSetup {
         handler.supplyCollateral(0, 50e18);
         handler.borrow(0, 1e18);
         assertEq(handler.borrows(), 2, "the next borrow unreached");
+        invariant_noDebtWithSubFloorCollateral();
+    }
+
+    /// @dev The handler's collateral withdrawals keep the floor, so in a campaign only `borrowBelowFloor` drives
+    ///      `invariant_noDebtWithSubFloorCollateral`. `SettlementSafety` pins the same borrow refusal, and this test
+    ///      shows that the handler reaches it. A debt-free actor trims its collateral to 5 tokens and borrows 1
+    ///      token: the borrow is refused, and the trim comes back.
+    function test_borrowBelowFloor_refusedAndPositionRestored() public {
+        Market storage m = protocol.markets[0];
+        handler.supply(0, 1_000_000e18);
+        handler.supplyCollateral(0, 100e18);
+        uint256 collateralBefore = m.core.position(m.id, A1).collateral;
+
+        handler.borrowBelowFloor(0, 5e18, 1e18); // keep 5 tokens, under the 10-token floor
+        assertEq(handler.belowFloorBorrowsRejected(), 1, "the below-floor borrow was not refused");
+        assertEq(m.core.position(m.id, A1).borrowShares, 0, "the below-floor borrow opened debt");
+        assertEq(m.core.position(m.id, A1).collateral, collateralBefore, "the trim was not supplied back");
         invariant_noDebtWithSubFloorCollateral();
     }
 

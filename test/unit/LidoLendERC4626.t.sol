@@ -16,6 +16,7 @@ import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketCon
 import {LidoLendERC4626} from "../../src/LidoLendERC4626.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {SettlementConfig, SettlementSlice, SettlementQuote} from "../../src/types/SettlementTypes.sol";
+import {Erc4626Math} from "../setup/Erc4626Math.sol";
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {IrmKind, Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
@@ -209,6 +210,36 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.vaultMint(lender, 50 ether);
         m.vaultRedeem(lender, m.vault.balanceOf(lender));
         assertEq(m.vault.balanceOf(lender), 0, "all shares redeemed");
+    }
+
+    /// @dev Specified behaviour: the redemption budget includes the vault's virtual shares, so after interest the
+    ///      only holder's full redeem leaves managed core supply shares, here worth one raw unit, in a vault with no
+    ///      shares. `lender-settlement.md` describes it.
+    function test_fullRedeemAfterInterest_leavesManagedCoreSharesInEmptyVault() public {
+        Market storage m = _market();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 100 ether);
+        uint256 shares = m.vaultDeposit(lender, 100 ether);
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 1_000 ether);
+        m.supplyCollateral(borrower, 1_000 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 50 ether);
+        m.warpAndAccrue(30 days);
+        _fund(m.loanToken, borrower, 100 ether);
+        m.repay(borrower, m.core.position(m.id, borrower).borrowShares);
+
+        uint256 managedBefore = m.vault.managedSupplyShares();
+        MorphoMarket memory mkt = m.core.market(m.id);
+        uint256 coreSharesWithdrawn =
+            m.vault.previewRedeem(shares).toSharesUp(mkt.totalSupplyAssets, mkt.totalSupplyShares);
+
+        m.vaultRedeem(lender, shares);
+
+        assertEq(m.vault.totalSupply(), 0, "every vault share redeemed");
+        assertEq(m.vault.managedSupplyShares(), managedBefore - coreSharesWithdrawn, "managed shares left");
+        assertGt(m.vault.managedSupplyShares(), 0, "managed core shares stay in the empty vault");
+        assertEq(m.vault.totalAssets(), 1, "worth one raw loan unit");
     }
 
     // ── maxRedeem is a conservative, honoured redeem boundary ──
@@ -955,6 +986,70 @@ contract LidoLendERC4626Test is LidoLendSetup {
         m.setSupplyCap(0);
         assertEq(m.vault.maxMint(lender), type(uint256).max, "a zero cap reports unlimited mint");
         m.vaultMint(lender, 1e18);
+    }
+
+    /// @dev Specified behaviour: once a vault share is worth more than one raw loan unit, a one-unit cap headroom makes
+    ///      `maxDeposit` report an amount that mints no vault share, so `deposit(maxDeposit)` reverts.
+    ///      `lender-settlement.md` describes it.
+    function testRevert_dustCapHeadroom_depositOfMaxDepositMintsZeroShares() public {
+        Market storage m = _market();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 100 ether);
+        m.vaultDeposit(lender, 100 ether);
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 1_000 ether);
+        m.supplyCollateral(borrower, 1_000 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 50 ether);
+        m.warpAndAccrue(365 days);
+        m.setSupplyCap(m.core.market(m.id).totalSupplyAssets + 1);
+
+        address integrator = _actor("integrator");
+        uint256 maxAssets = m.vault.maxDeposit(integrator);
+        assertEq(maxAssets, 1, "maxDeposit reports one raw unit of headroom");
+        assertEq(Erc4626Math.toShares(m.vault, maxAssets, Math.Rounding.Floor), 0, "one raw unit buys no share");
+        assertEq(m.vault.previewDeposit(maxAssets), 0, "previewDeposit agrees");
+
+        _fund(m.loanToken, integrator, maxAssets);
+        vm.prank(integrator);
+        m.loanToken.approve(address(m.vault), maxAssets);
+        vm.prank(integrator);
+        vm.expectRevert(abi.encodeWithSelector(ILidoLendERC4626.ZeroSharesMinted.selector, maxAssets));
+        m.vault.deposit(maxAssets, integrator);
+    }
+
+    /// @dev Specified behaviour: a near-total write-off leaves the core's supply assets at one raw unit against the
+    ///      original supply shares, so an ordinary deposit overflows the core's `uint128` share total while
+    ///      `maxDeposit` still reports no limit. `lender-settlement.md` and the core specification describe it.
+    function testRevert_afterNearTotalWriteOff_depositUnderMaxDepositOverflowsCoreShares() public {
+        Market storage m = _market();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 100 ether);
+        m.vaultDeposit(lender, 100 ether);
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 1_000 ether);
+        m.supplyCollateral(borrower, 1_000 ether);
+        m.activateCollateral();
+        m.borrow(borrower, 100 ether);
+        MockPriceOracle(address(m.oracle)).setPrice(1);
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1 ether);
+        m.liquidateBadDebt(keeper, borrower, 1_000 ether, 0);
+
+        MorphoMarket memory mkt = m.core.market(m.id);
+        assertEq(mkt.totalSupplyAssets, 1, "one raw unit of supply left");
+        assertEq(mkt.totalSupplyShares, 1e26, "every supply share left");
+        uint256 depositShares = uint256(1 ether).toSharesDown(mkt.totalSupplyAssets, mkt.totalSupplyShares);
+        assertGt(mkt.totalSupplyShares + depositShares, type(uint128).max, "one token's shares exceed uint128");
+
+        address newcomer = _actor("newcomer");
+        assertEq(m.vault.maxDeposit(newcomer), type(uint256).max, "maxDeposit reports no limit");
+        _fund(m.loanToken, newcomer, 1 ether);
+        vm.prank(newcomer);
+        m.loanToken.approve(address(m.vault), 1 ether);
+        vm.prank(newcomer);
+        vm.expectRevert(bytes("max uint128 exceeded"));
+        m.vault.deposit(1 ether, newcomer);
     }
 
     // ── storage layout ──

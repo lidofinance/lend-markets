@@ -76,7 +76,7 @@ The controller divides a borrower's collateral into three balances:
 | Balance | Meaning |
 |---|---|
 | `dust` | Inactive collateral without a timer. It may come from a sub-threshold supply over an empty dust bucket; at most one unresolved dust lot exists per borrower. |
-| `activating` | Inactive collateral in the activation timer. An activation lock, while it applies, blocks its voluntary withdrawal; the active balance stays withdrawable throughout. |
+| `activating` | Inactive collateral in the activation timer, subject to the [activation lock](#voluntary-withdrawals-and-forced-collateral-reductions). |
 | `active` | The remainder of the core collateral balance. It contributes to borrow capacity only when the total active amount reaches `minActivationAmount`. |
 
 Only `dust` and `activating` are stored by the activation subsystem:
@@ -142,6 +142,9 @@ The decay formula always uses the current configuration. Changing `maxDelayInflo
 
 To keep an add-then-remove sequence from inflating future activation delays, the controller records each borrower's inflow contribution during the transaction. If that borrower's collateral is later withdrawn, liquidated, or settled in the same transaction, the controller subtracts at most that recorded contribution. Older inflow and other borrowers' contributions remain unchanged.
 
+> [!NOTE]
+> **A withdrawal in a later transaction leaves its inflow counted.** Only a withdrawal in the same transaction takes a supply back out of the market inflow, so anyone can recycle the same capital through supplies and later withdrawals to hold the inflow at `maxDelayInflow`. Every other borrower's new collateral then waits about `maxActivationDelay`. Without a lock this costs only gas, and a nonzero `activatingLockDuration` ties the capital up for the length of the lock.
+
 ### Maturation gate
 
 Activation is lazy. Collateral-supply, collateral-withdrawal, and borrow hooks try to mature an existing lot; time passing alone does not update balances.
@@ -161,7 +164,7 @@ A top-up that restarts the lot at or after the stored suspect snapshot's expiry 
 2. the quorum frontier has reached `unlockTime`, or `block.timestamp >= activatingStart + maxGuardiansQuorumDelay`; and
 3. the market is not frozen.
 
-Setting `maxGuardiansQuorumDelay` to zero removes the frontier wait, not the full activation delay. A nonzero value must exceed `maxActivationDelay` and cannot exceed seven days. Freeze does not change the deadline; an otherwise ready lot may mature on the first sync after unfreeze.
+Setting `maxGuardiansQuorumDelay` to zero removes the frontier wait, not the full activation delay. A nonzero value must exceed `maxActivationDelay` and cannot exceed seven days. Freeze does not change the unlock time or the fallback deadline, and an otherwise ready lot may mature on the first sync after unfreeze. While the market is frozen, a ready lot cannot mature, so a non-instant top-up that reaches `minActivationAmount` restarts it with a fresh delay and lock ([top-ups](#classifying-a-collateral-supply)).
 
 > [!NOTE]
 > The fallback may permit maturation without new guardian frontier progress. This is an accepted liveness trade-off described in [Guardian Signals](guardian-signals.md#how-the-controller-uses-the-frontier).
@@ -175,11 +178,14 @@ A voluntary collateral withdrawal first runs the maturation sync. If the borrowe
 
 A voluntary withdrawal never partially reduces dust or activating collateral, and nothing is ever demoted to dust. With open debt, the post-withdraw health check counts the remaining active balance only (see the borrow-capacity formula above), so a still-inactive top-up is no debt cover for an exit.
 
+> [!WARNING]
+> **A third party can keep a debt-free borrower's inactive collateral locked.** Anyone can top up a borrower's lot, and a top-up with a later deadline restarts the lot and its lock ([Classifying a collateral supply](#classifying-a-collateral-supply)). With a nonzero lock, a top-up before each lock ends therefore keeps the borrower from withdrawing that collateral. Each top-up costs at least `max(minDepositAmount, minActivationAmount - dust)` and becomes the borrower's collateral, so these parameters should make the attack cost more than it gains.
+
 Liquidation and settlement are forced reductions. They do not mature the lot first and ignore the voluntary lock. They consume active collateral, then dust, then activating. A surviving activating remainder — of any size — keeps its existing start and base delay; maturity, not seizure, decides when it activates. Activation policy never caps or resizes a forced reduction; the core determines eligibility and amounts, and the controller only reclassifies what remains.
 
 ### Configuration changes
 
-Configuration changes do not move collateral between buckets. A lot keeps its start and base delay, while current values govern the minimum amount, withdrawal lock, guardian surcharges, quorum fallback, and inflow decay. Changes can therefore affect existing positions immediately without rewriting their activation balances. Since `activatingLockDuration` alone gates the lock, moving it to or from zero enables or disables the lock outright; changing it between two nonzero values only changes how long an already-locked lot stays locked.
+Configuration changes do not move collateral between buckets. A lot keeps its start and base delay, while current values govern the minimum amount, withdrawal lock, guardian surcharges, quorum fallback, and inflow decay. Changes can therefore affect existing positions immediately without rewriting their activation balances. A lot's lock deadline is always its start plus the current `activatingLockDuration`. Setting the duration to zero disables the lock, and setting it from zero enables it. A raise can lock again a lot whose lock had ended, until the new deadline or until the lot matures.
 
 ## Freeze and pause
 
@@ -190,13 +196,11 @@ Configuration changes do not move collateral between buckets. A lot keeps its st
 
 Freeze keeps debt reduction and lender exits available. Use pause when market turbulence or another incident makes liquidation or settlement unsafe. Classification and instant activation continue while frozen, but borrowing and maturation remain blocked.
 
-Because freeze defers maturation, a debt-free borrower whose activation delay has fully elapsed still cannot mature the lot while frozen, so it stays inactive and the all-or-nothing withdrawal rule still governs it: the borrower can exit only by clearing the whole inactive balance, not part of it. This never traps funds — the withdrawal itself is not blocked, only forced to clear everything inactive at once — and an activation lock does not compound it: `activatingLockDuration` is capped at seven days regardless of freeze, so it always expires on its own.
-
-Pause blocks every market action that invokes the controller. It does not stop the interest clock: a later successful accrual covers the time since the market's last update. A finite pause expires automatically; an indefinite pause requires an authorized resume. Authorities and intended holders are listed in [Roles](roles.md).
+Pause blocks every market action that invokes the controller, but interest keeps running. Only a fee change accrues without a hook, so unless the fee changed during the pause, the first accrual after it books the whole pause. With the Adaptive IRM, that accrual also adapts the rate over the same interval at the utilization the pause froze, since no hooked action could change it. A long pause at high utilization can therefore push the rate far above its pre-pause level while borrowers cannot repay or add collateral, and at resume liquidation reopens together with repayment. A nonzero `maxBorrowRate` caps the rate charged, though `rateAtTarget` still adapts. Before resume, the IRM owner or manager can apply a lower-rate config with a direct `applyIrmConfig`, which does not accrue, so that config prices the whole pause. A finite pause expires automatically, and an indefinite one needs an authorized resume ([Roles](roles.md)).
 
 ## Borrow-share-rate transition guard
 
-Debt is recorded in both assets and shares. Near an empty debt book, repayment can reduce `totalBorrowAssets` to zero while some `totalBorrowShares` remain. Those remaining shares make the shares-to-assets ratio unusually high, so a small later borrow can mint an unusually large number of new shares. Without a limit, repeating this borrow-and-near-full-repay cycle could overflow the `uint128` field that stores the share total and prevent new debt from being recorded.
+Debt is recorded in both assets and shares. With near-empty market debt, repayment can reduce `totalBorrowAssets` to zero while some `totalBorrowShares` remain. Those remaining shares make the shares-to-assets ratio unusually high, so a small later borrow can mint an unusually large number of new shares. Without a limit, repeating this borrow-and-near-full-repay cycle could overflow the `uint128` field that stores the share total and prevent new debt from being recorded.
 
 The guard limits this distortion by comparing raw market totals with the core's virtual offsets:
 
@@ -214,6 +218,9 @@ This is a transition guard, not a permanent market invariant:
 - liquidation is exempt and may move the market above the ceiling.
 
 If pre-hook accrual leaves the market above the ceiling, every borrow reverts. Interest can lower the ratio only while `totalBorrowAssets` is nonzero. When the asset total is zero, exact-share repayment can remove the stranded shares.
+
+> [!NOTE]
+> **A dust borrower's full repay can revert.** On a market whose whole debt is dust, such as a fresh one, repaying a borrower's debt one share at a time removes a whole raw unit with each share, so that borrower's remaining shares are left with almost no assets behind them. Another borrower's full repay then also rounds its assets up, pushes the share rate over the ceiling and reverts, so that borrower cannot close and its collateral stays locked. It can first repay the near-empty shares on their holder's behalf for a few raw units, or, if the market sits exactly at the ceiling, where that repay reverts too, wait until a raw unit of interest brings the market back under.
 
 ## Related specifications
 

@@ -7,6 +7,7 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {SettlementConfig, SettlementQuote, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -269,6 +270,38 @@ contract SettleSeizeFloorTest is LidoLendSetup {
         assertGt(sharesBurned, 0, "the targeted settle burns lender shares");
         assertGt(collateralSeized, 0, "and seizes collateral");
         assertLt(m.core.position(m.id, borrower).borrowShares, borrowSharesBefore, "and cuts the borrower");
+    }
+
+    /// @dev Specified behaviour: anyone can make a repay of the root's exact borrow shares revert by first repaying
+    ///      one of them for one raw unit. A repay that reads the root's shares when it runs still lifts it, and
+    ///      `fallbackExit` then settles past it. `lender-settlement.md` describes it.
+    function test_unavailableRootLift_frontRunByOneShare_liveShareRepayStillLifts() public {
+        Market storage m = protocol.markets[0];
+        _seedUnavailableRootInFullyBorrowedMarket();
+        address root = _actor("unavailableRoot");
+        uint256 rootShares = m.core.position(m.id, root).borrowShares;
+
+        address griefer = _actor("griefer");
+        _fund(m.loanToken, griefer, 1);
+        vm.startPrank(griefer);
+        m.loanToken.approve(address(m.core), 1);
+        (uint256 griefPaid,) = m.core.repay(m.params, 0, 1, root, "");
+        vm.stopPrank();
+        assertEq(griefPaid, 1, "one borrow share costs one raw unit");
+
+        address lifter = _actor("lifter");
+        _fund(m.loanToken, lifter, 100 ether);
+        vm.startPrank(lifter);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+        vm.expectRevert(ILidoLendMarketController.PositionAccountingMismatch.selector);
+        m.core.repay(m.params, 0, rootShares, root, "");
+        m.core.repay(m.params, 0, m.core.position(m.id, root).borrowShares, root, "");
+        vm.stopPrank();
+
+        (address queueRoot,) = m.controller.nextSettlementBorrower(0);
+        assertEq(queueRoot, borrower, "the executable borrower is the root again");
+        (,, uint256 collateralSeized,) = m.fallbackExit(lender, m.vault.balanceOf(lender), receiver, 0);
+        assertGt(collateralSeized, 0, "the exit settles against the borrower behind the old root");
     }
 
     /// @dev The settlement policy under test: a one-loan-asset root slice and nothing else. At this price that slice

@@ -11,8 +11,10 @@ import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
 /// @dev Transfer-gated collateral (USDY/treasuries style): any transfer TO a blocked address reverts. Models
 ///      an allowlisted RWA token where the protocol must fail cleanly when collateral would move to a
 ///      blocked recipient (a seizing keeper or a fallback-exit receiver), never strand or mis-credit it.
+///      An issuer freeze goes further: a frozen address can neither send nor receive.
 contract GatedCollateral is MockERC20 {
     mapping(address => bool) public blocked;
+    mapping(address => bool) public frozen;
 
     constructor() MockERC20("Gated Collateral", "gCOLL", 18) {}
 
@@ -20,8 +22,12 @@ contract GatedCollateral is MockERC20 {
         blocked[account] = isBlocked;
     }
 
+    function setFrozen(address account, bool isFrozen) external {
+        frozen[account] = isFrozen;
+    }
+
     function _update(address from, address to, uint256 value) internal override {
-        require(!blocked[to], "transfer reverted");
+        require(!blocked[to] && !frozen[from] && !frozen[to], "transfer reverted");
         super._update(from, to, value);
     }
 }
@@ -138,5 +144,43 @@ contract GatedCollateralMarketTest is LidoLendSetup {
             collateralSeized,
             "allowlisted receiver got exactly the seized collateral"
         );
+    }
+
+    /// @dev Specified behaviour: an issuer freeze of the core's collateral balance does not stop borrowing against
+    ///      it, since a borrow moves only the loan token, but every liquidation reverts on the seizure. If the issuer
+    ///      then takes the frozen balance, the core still books collateral it no longer holds and the debt is unbacked.
+    ///      `markets/stables-usdy.md` describes it.
+    function test_issuerFreezeOfCore_borrowingContinues_liquidationReverts() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        _fund(m.loanToken, lender, 1000 ether);
+        m.vaultDeposit(lender, 1000 ether);
+        address borrower = _actor("borrower");
+        _fund(m.collateralToken, borrower, 100 ether);
+        m.supplyCollateral(borrower, 100 ether);
+        m.activateCollateral();
+        uint256 collateralValue = 100 ether * oraclePrice / 1e36;
+        m.borrow(borrower, collateralValue / 2); // 50% LTV
+
+        gated.setFrozen(address(m.core), true);
+
+        m.borrow(borrower, collateralValue / 4); // to 75% LTV against the frozen collateral
+        m.distress(borrower, 0.9e18); // past the 80% LLTV
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1000 ether);
+        vm.prank(keeper);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+        vm.prank(keeper);
+        vm.expectRevert("transfer reverted");
+        m.core.liquidate(m.params, borrower, 10 ether, 0, "");
+
+        // The issuer takes the frozen balance and lifts the freeze.
+        deal(address(gated), address(m.core), 0);
+        gated.setFrozen(address(m.core), false);
+        assertEq(m.core.position(m.id, borrower).collateral, 100 ether, "the core still books the collateral");
+        assertGt(m.core.position(m.id, borrower).borrowShares, 0, "the debt remains");
+        vm.prank(keeper);
+        vm.expectRevert("transfer reverted");
+        m.core.liquidate(m.params, borrower, 10 ether, 0, "");
     }
 }

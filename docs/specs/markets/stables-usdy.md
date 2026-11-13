@@ -34,10 +34,13 @@ Each oracle instance carries an inclusive band `[MIN_PRICE, MAX_PRICE]`, fixed a
 
 The band is a sanity check on the sources, not a risk parameter: it is chosen wide enough that NAV accrual and stablecoin depegs stay inside it, and changing it requires deploying a new oracle. Its magnitude depends on the loan token's decimals, so a band is valid only for the loan token its instance was initialized with. Deployment preflight and the acceptance suite both require the live price to sit strictly inside the band, which keeps a market from being wired to an oracle already at its edge.
 
-If either source fails to return a usable positive value, or the result falls outside the band, price-dependent actions revert, including borrowing, debt-bearing collateral withdrawal, liquidation, and settlement. That oracle failure does not by itself block repayment or ordinary loan-asset withdrawal. A positive stale value inside the band is accepted because the oracle does not enforce freshness or deviation limits.
+If either source fails to return a usable positive value, or the result falls outside the band, the oracle reverts, which halts the price-dependent actions the [core trust assumptions](https://github.com/lidofinance/lend/blob/main/SPECIFICATION.md#trust-assumptions) list, while repayment and ordinary loan-asset withdrawal continue. A positive stale value inside the band is accepted because the oracle does not enforce freshness or deviation limits.
 
 > [!WARNING]
 > **NAV and feed trust boundary.** Health checks, liquidation, and settlement use the reported NAV conversion, not executable USDY sale or redemption proceeds. A stale feed, stale NAV, redemption delay or fee, transfer restriction, issuer freeze, or loss of redeemability can therefore make the onchain collateral value exceed what a receiver can realize.
+
+> [!NOTE]
+> **The oracle assumes the feed's decimals never change.** It fixes `scale` from the feed's decimals at initialization and never reads them again. If a new aggregator behind the feed proxy reported `k` other decimals, every price would be off by `10^k`. A price outside the band halts price-dependent actions, and a price still inside it misprices health checks, liquidation and settlement, until the oracle's proxy admin upgrades the oracle.
 
 ## Token-transfer boundaries
 

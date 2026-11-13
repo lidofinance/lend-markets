@@ -53,13 +53,7 @@ riskKey = borrowShares * 1e18 / rawCollateral
 Before authorizing any settlement, the controller checks the tracked root for bad debt. If that root's debt value exceeds its collateral value, every settlement path reverts until the root becomes solvent or its debt is cleared. Checking one borrower keeps the cost independent of queue length, but it does not prove that every other borrower is solvent.
 
 > [!WARNING]
-> **A rounded root check can miss an insolvent borrower.** Two borrowers can have the same rounded `riskKey` even when the non-root borrower's unrounded share-to-collateral ratio is higher. The heap may then keep the other borrower at the root. Near the insolvency boundary, the root can pass the bad-debt test while the tied non-root borrower is already insolvent.
->
-> This does not change the missed position by itself. To create zero-collateral debt, the borrower must also have enabled personal settlement. A caller must then select a partial cut whose rounded collateral payout equals the borrower's full collateral balance while borrow shares remain.
->
-> The controller then removes the zero-collateral borrower from the queue, while the core keeps the remaining debt shares. If that debt is later written off, the remaining suppliers take the loss. The remaining debt can be much larger than one raw loan-token unit.
->
-> Positions become liquidatable before insolvency, and normal operation assumes that liquidators act in that window. This path also requires the exact `riskKey` tie, personal opt-in, and a partial cut that takes all collateral while leaving debt. Under that assumption, the combination is expected to be extremely rare, although the contracts allow it.
+> **A rounded root check can miss an insolvent borrower.** Borrowers with the same rounded `riskKey` are not ordered by exact LTV, so the root can pass the bad-debt check while a tied borrower behind it is insolvent. If that borrower has enabled personal settlement, a cut can take all of its collateral and leave its debt outside the queue, where anyone can write it off against the remaining suppliers ([core specification](https://github.com/lidofinance/lend/blob/main/SPECIFICATION.md#health-and-debt-clearing)). This needs an exact tie and liquidators missing the insolvency, so it is expected to be extremely rare.
 
 > [!WARNING]
 > **Liquidation-loss boundary.** The bad-debt check compares debt with 100% of collateral value and does not account for the liquidation incentive factor (`LIF`). Ignoring raw-unit rounding, a root with `1 / LIF < LTV <= 100%` passes the settlement gate even though a collateral-exhausting liquidation would write unpaid debt off against suppliers.
@@ -242,6 +236,12 @@ The vault spends only that budget and later removes the consumed core shares fro
 
 Both vault exits require nonzero requested shares, a nonzero receiver, and a request no larger than the owner's current vault-share balance. Targeted settlement additionally requires a nonempty borrower list.
 
+> [!NOTE]
+> **Round-trip rounding.** A deposit and redeem at a rounding boundary can burn one more managed core supply share than the deposit added, because each vault withdrawal rounds its core share burn up. This rounding costs the holders who stay at most one core supply share per withdrawal, worth about `1e-6` of a raw loan-token unit until interest raises the share price, and the depositor gains nothing.
+
+> [!NOTE]
+> **`maxDeposit` can report a deposit that reverts.** It returns the [supply-cap](market-controller.md#lender-supply-cap) headroom without two checks a deposit runs, and both pass in normal operation. With an 18-decimal loan token, `deposit(maxDeposit)` still reverts when the headroom is below one vault share's price, or when a bad-debt write-off has left the core's supply assets near zero and the new shares overflow its `uint128` total.
+
 ## Targeted vault settlement
 
 Targeted settlement does not withdraw or reserve existing loan-token liquidity. The caller supplies an ordered borrower list. For each borrower, the vault asks the controller for the **personal** settlement budgeted to the remaining supply shares and sends the resulting borrow-share amount unchanged to the core. Root policy is reserved for the queue-driven fallback path and cannot be invoked through the caller's list.
@@ -280,9 +280,7 @@ The loop stops when:
 The caller sets the iteration bound per call, and nothing clamps the value it passes. A zero input selects the contract's default of 50 attempts, sized for gas headroom on the costliest settlement path rather than for completing a large exit in one call. Each root quote consumes one attempt, including a zero candidate that stops the loop. The bound counts attempts, not distinct borrowers: a partial settlement can leave the same borrower at the root for another attempt. Queue or iteration exhaustion returns a partial result when the call has made progress, so a large exit may need repeated calls. A root candidate the controller still quotes but the core rejects is not skipped; it reverts the call.
 
 > [!NOTE]
-> **Head-of-line rounding boundary.** A root whose executable cut falls under the [seizure floor](#seizure-floor) quotes nothing, so the loop stops on it rather than advancing to later borrowers. This depends on the settlement amount, not the borrower's collateral balance: tiny debt, a partial-repayment remainder, or a supply budget shrunk onto the floor can all produce it, and above parity the floor is more than one loan-asset unit.
->
-> A call that has already made progress — a liquid leg, or earlier successful cuts — keeps that progress and returns a partial result. The operational mitigation is to repay the root's exact remaining borrow shares on its behalf; once that succeeds, `fallbackExit` advances past it.
+> **Head-of-line rounding boundary.** When the queue root's cut falls under the [seizure floor](#seizure-floor), for example because its remaining debt is tiny, the root yields no collateral, so settlement stops on it and lenders cannot settle past it. Repaying the root's remaining borrow shares on its behalf removes it from the queue and lets `fallbackExit` advance. That repay must read the shares when it runs, as the general adapter's `morphoRepay` with `shares = type(uint256).max` does, because anyone can break an exact-share repay by first repaying one share.
 
 The vault burns shares for the liquid withdrawal plus the pro-rata shares covered by settlement. If neither step burns any share, the call reverts.
 

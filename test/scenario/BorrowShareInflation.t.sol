@@ -80,8 +80,10 @@ contract BorrowShareInflationTest is LidoLendSetup {
     }
 
     /// @dev Fuzz: no bounded random chain of borrows and repays inflates the borrow-share counter. Each operation
-    ///      goes through the contract's own guards. Borrow and repay both enforce the rate guard, so every step
-    ///      keeps the rate within the cap. Borrows and repays must both succeed, so the chain is not borrow-only.
+    ///      goes through the contract's own guards, and every step keeps the rate within the cap. The chain mixes in
+    ///      stranding cycles, which double the virtual share rate, and then runs them until the ceiling refuses one,
+    ///      so the chain must meet the ceiling and a repay-side ceiling that stops refusing fails the rate assertion.
+    ///      Borrows and repays must both succeed, so the chain is not borrow-only.
     function testFuzz_noShortChainInflatesShares(uint256 seed) public {
         Market storage m = _m();
         address attacker = _actor("attacker");
@@ -92,43 +94,71 @@ contract BorrowShareInflationTest is LidoLendSetup {
 
         uint256 borrows;
         uint256 repays;
+        bool refused;
         for (uint256 i = 0; i < 150; ++i) {
             uint256 r = uint256(keccak256(abi.encode(seed, i)));
             uint256 amt = 1 + ((r >> 8) % 1e12);
             uint256 s = m.core.position(m.id, attacker).borrowShares;
             uint256 tba = m.core.market(m.id).totalBorrowAssets;
-            if (r % 4 == 0) {
+            uint256 move = r % 5;
+            if (move == 0) {
                 borrows += _attempt(
                     attacker, abi.encodeCall(IMorphoBase.borrow, (m.params, 1 + (amt % 1 ether), 0, attacker, attacker))
                 );
-            } else if (r % 4 == 1) {
+            } else if (move == 1) {
                 borrows += _attempt(
                     attacker, abi.encodeCall(IMorphoBase.borrow, (m.params, 0, amt, attacker, attacker))
                 );
-            } else if (r % 4 == 2) {
+            } else if (move == 2) {
                 if (s > 1) {
                     repays += _attempt(
                         attacker, abi.encodeCall(IMorphoBase.repay, (m.params, 0, 1 + (amt % (s - 1)), attacker, ""))
                     );
                 }
-            } else if (tba > 0) {
-                repays += _attempt(
-                    attacker, abi.encodeCall(IMorphoBase.repay, (m.params, 1 + (amt % tba), 0, attacker, ""))
-                );
+            } else if (move == 3) {
+                if (tba > 0) {
+                    repays += _attempt(
+                        attacker, abi.encodeCall(IMorphoBase.repay, (m.params, 1 + (amt % tba), 0, attacker, ""))
+                    );
+                }
+            } else {
+                refused = _strandingCycle(attacker) || refused;
             }
-
-            MorphoMarket memory mk = m.core.market(m.id);
-            assertLe(
-                mk.totalBorrowShares + VIRTUAL_SHARES,
-                MAX_BORROW_SHARE_RATE * (mk.totalBorrowAssets + 1),
-                "every step keeps the rate within the cap"
-            );
-            // Far below any legitimate short-chain total (a whale borrow mints ~amount*VS) and the ~1e38 uint128
-            // ceiling: a fast/cheap inflation would blow past this well within 150 ops.
-            assertLt(mk.totalBorrowShares, 1e30, "no short chain inflates borrow shares");
+            _assertChainBounds();
         }
+        for (uint256 c; !refused && c < 64; ++c) {
+            refused = _strandingCycle(attacker);
+            _assertChainBounds();
+        }
+        assertTrue(refused, "the chain reached the borrow-share-rate ceiling");
         assertGt(borrows, 0, "the chain borrowed");
         assertGt(repays, 0, "the chain repaid");
+    }
+
+    /// @dev Borrows `BORROW_AMOUNT`, then repays the fewest shares whose round-up cost is every borrow asset, leaving
+    ///      the rest of the shares on zero assets. Returns whether either step was refused, which only the ceiling
+    ///      can do here: neither step is a share borrow that rounds to zero assets.
+    function _strandingCycle(address attacker) private returns (bool refused) {
+        Market storage m = _m();
+        bytes memory borrow = abi.encodeCall(IMorphoBase.borrow, (m.params, BORROW_AMOUNT, 0, attacker, attacker));
+        if (_attempt(attacker, borrow) == 0) return true;
+        MorphoMarket memory mk = m.core.market(m.id);
+        uint256 assets = mk.totalBorrowAssets;
+        uint256 shares = (assets - 1) * (mk.totalBorrowShares + VIRTUAL_SHARES) / (assets + 1) + 1;
+        return _attempt(attacker, abi.encodeCall(IMorphoBase.repay, (m.params, 0, shares, attacker, ""))) == 0;
+    }
+
+    /// @dev The chain's bounds after each step: the rate within the cap, and no inflation of the share counter.
+    function _assertChainBounds() private view {
+        MorphoMarket memory mk = _m().core.market(_m().id);
+        assertLe(
+            mk.totalBorrowShares + VIRTUAL_SHARES,
+            MAX_BORROW_SHARE_RATE * (mk.totalBorrowAssets + 1),
+            "every step keeps the rate within the cap"
+        );
+        // Far below any legitimate short-chain total (a whale borrow mints ~amount*VS) and the ~1e38 uint128
+        // ceiling: a fast/cheap inflation would blow past this well within 150 ops.
+        assertLt(mk.totalBorrowShares, 1e30, "no short chain inflates borrow shares");
     }
 
     /// @dev Calls the core as `attacker` and returns 1 on success. A step may revert only as the spec allows: a move
@@ -399,7 +429,7 @@ contract BorrowShareInflationTest is LidoLendSetup {
     }
 
     /// @dev Specified behaviour: at the exact cap the full close reverts until one block of interest adds a raw unit
-    ///      to the 20-token book. The rule is the at-cap repay rule of `market-controller.md`.
+    ///      to the 20-token book. `market-controller.md` describes it.
     function test_atCapCoDebt_fullCloseSucceedsAfterOneBlock() public {
         Market storage m = _m();
         (address h, uint256 hShares) = _atCapBook(m, 15 ether, 20 ether);
@@ -415,9 +445,37 @@ contract BorrowShareInflationTest is LidoLendSetup {
         assertEq(m.core.position(m.id, h).borrowShares, 0, "h closed after interest");
     }
 
+    /// @dev Specified behaviour: at the exact cap a repay of the pumper's stranded shares reverts too. Repaying the
+    ///      co-borrower's debt in full first lowers `totalBorrowAssets` until the stranded holding exceeds
+    ///      `MAX_BORROW_SHARE_RATE * totalBorrowAssets`, so the dust borrower repays it for a few raw units, then
+    ///      closes and leaves. The condition follows from the guard's repay rule in `market-controller.md`.
+    function test_atCapCoDebt_repayingCoDebtFirstFreesDustBorrower() public {
+        Market storage m = _m();
+        (address h, uint256 hShares) = _atCapBook(m, 15 ether, 20 ether);
+        address pumper = _actor("pumper");
+        address coBorrower = _actor("coBorrower");
+        uint256 pumperShares = m.core.position(m.id, pumper).borrowShares;
+        uint256 coShares = m.core.position(m.id, coBorrower).borrowShares;
+
+        vm.prank(h);
+        vm.expectRevert(ILidoLendMarketController.BorrowShareRateExceeded.selector);
+        m.core.repay(m.params, 0, pumperShares, pumper, "");
+
+        _fund(m.loanToken, h, 21 ether);
+        vm.startPrank(h);
+        (uint256 paidForCoBorrower,) = m.core.repay(m.params, 0, coShares, coBorrower, "");
+        (uint256 paidForPumper,) = m.core.repay(m.params, 0, pumperShares, pumper, "");
+        m.core.repay(m.params, 0, hShares, h, "");
+        vm.stopPrank();
+        assertEq(paidForCoBorrower, 20 ether, "the co-debt costs its full value");
+        assertLe(paidForPumper, 2, "the stranded shares cost a few raw units");
+        assertEq(m.core.market(m.id).totalBorrowShares, 0, "every share is repaid");
+        m.withdrawCollateral(h, 15 ether, h);
+    }
+
     /// @dev Specified behaviour: at the borrow rate of this fixture, per-block accrual books zero interest on a
-    ///      6-decimal 50-token book. The dust close and its collateral floor stay locked, by the at-cap repay rule of
-    ///      `market-controller.md`.
+    ///      6-decimal 50-token book. The dust close and its collateral floor stay locked, by the guard's repay rule
+    ///      in `market-controller.md`.
     function test_sixDecimalBook_perBlockAccrual_keepsDustCloseBlocked() public {
         MockERC20 loan = new MockERC20("Loan6", "LOAN6", 6);
         MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
@@ -496,5 +554,160 @@ contract BorrowShareInflationTest is LidoLendSetup {
             assertEq(paid, BORROW_AMOUNT, "setup: each cycle repays what it borrowed");
         }
         assertEq(m.core.market(m.id).totalBorrowShares, target, "setup: pump reached the target");
+    }
+
+    // ── a close that takes the asset total to zero ──
+
+    /// @dev A third party's one-share repay on a dust borrower leaves one raw unit on about 2e6 shares, so the dust
+    ///      borrower's full close takes the asset total to zero within the cap: it closes and withdraws all its
+    ///      collateral.
+    function test_oneShareRepayOnDustBorrower_fullCloseAndExitPass() public {
+        Market storage m = _m();
+        address attacker = _actor("attacker");
+        address victim = _actor("victim");
+        _fundedBorrower(attacker, 20 ether);
+        _fundedBorrower(victim, 20 ether);
+        m.borrow(attacker, 1);
+        uint256 victimShares = m.borrow(victim, 1);
+
+        vm.prank(attacker);
+        (uint256 paid,) = m.core.repay(m.params, 0, 1, victim, "");
+        assertEq(paid, 1, "setup: one share of the victim costs one raw unit");
+        MorphoMarket memory mk = m.core.market(m.id);
+        assertEq(mk.totalBorrowAssets, 1, "setup: one raw unit left");
+        assertEq(mk.totalBorrowShares, 2 * VIRTUAL_SHARES - 1, "setup: one share repaid");
+
+        m.repay(victim, victimShares - 1);
+        assertEq(m.core.market(m.id).totalBorrowAssets, 0, "the close took the asset total to zero");
+        m.withdrawCollateral(victim, 20 ether, victim);
+        assertEq(m.core.position(m.id, victim).collateral, 0, "victim exited");
+    }
+
+    /// @dev Specified behaviour: on a market whose whole debt is dust, a co-borrower's one-share repays leave about 1e7
+    ///      shares behind one raw unit, so a dust borrower's close reverts over the cap and keeps `minActivationAmount`
+    ///      of its collateral locked. A repay of the co-borrower's shares on its behalf, the co-borrower's own exit, or
+    ///      a one-unit borrow at this distance below the cap frees it. Each follows from the guard rules in
+    ///      `market-controller.md`.
+    function test_strandedCoSharesUnderCap_dustCloseReverts() public {
+        Market storage m = _m();
+        address attacker = _actor("attacker");
+        address victim = _actor("victim");
+        address outsider = _actor("outsider");
+        _fundedBorrower(attacker, 20 ether);
+        _fundedBorrower(victim, 20 ether);
+        _fundedBorrower(outsider, 20 ether);
+        uint256 victimShares = m.borrow(victim, 1);
+        m.borrow(attacker, 10);
+
+        // One-share repays at one raw unit each: the first on the victim, nine on the attacker's own position.
+        vm.startPrank(attacker);
+        m.core.repay(m.params, 0, 1, victim, "");
+        for (uint256 i; i < 9; ++i) {
+            m.core.repay(m.params, 0, 1, attacker, "");
+        }
+        vm.stopPrank();
+        victimShares -= 1;
+        MorphoMarket memory mk = m.core.market(m.id);
+        assertEq(mk.totalBorrowAssets, 1, "setup: one raw unit left");
+        assertEq(mk.totalBorrowShares, 11 * VIRTUAL_SHARES - 10, "setup: ten shares repaid");
+        assertLe(
+            (mk.totalBorrowShares + VIRTUAL_SHARES) * 10,
+            6 * MAX_BORROW_SHARE_RATE * (mk.totalBorrowAssets + 1),
+            "setup: at most 60% of the cap"
+        );
+
+        vm.startPrank(victim);
+        vm.expectRevert(ILidoLendMarketController.BorrowShareRateExceeded.selector);
+        m.core.repay(m.params, 0, victimShares, victim, "");
+        vm.expectRevert(ILidoLendMarketController.BorrowShareRateExceeded.selector);
+        m.core.repay(m.params, 0, victimShares / 2, victim, "");
+        vm.stopPrank();
+
+        // Collateral leaves only down to the activation floor, below which active collateral backs no debt.
+        uint256 floor = m.controller.collateralActivationConfig().minActivationAmount;
+        m.withdrawCollateral(victim, 20 ether - floor, victim);
+        vm.prank(victim);
+        vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
+        m.core.withdrawCollateral(m.params, 1, victim, victim);
+
+        // The co-borrower's exit frees the victim.
+        uint256 snap = vm.snapshotState();
+        m.repay(attacker, m.core.position(m.id, attacker).borrowShares);
+        m.repay(victim, victimShares);
+        vm.revertToState(snap);
+
+        // The victim frees itself: it repays the co-borrower's shares on its behalf, then its own, and leaves.
+        snap = vm.snapshotState();
+        _fund(m.loanToken, victim, 3);
+        uint256 attackerShares = m.core.position(m.id, attacker).borrowShares;
+        vm.startPrank(victim);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+        (uint256 paidForAttacker,) = m.core.repay(m.params, 0, attackerShares, attacker, "");
+        vm.stopPrank();
+        assertLe(paidForAttacker, 2, "the co-borrower's shares cost a few raw units");
+        assertEq(m.core.position(m.id, attacker).borrowShares, 0, "the co-borrower's shares are repaid");
+        m.repay(victim, victimShares);
+        m.withdrawCollateral(victim, floor, victim);
+        assertEq(m.core.position(m.id, victim).collateral, 0, "the victim left on its own");
+        vm.revertToState(snap);
+
+        // At this distance below the cap, so does an outside borrow of one raw unit.
+        m.borrow(outsider, 1);
+        m.repay(victim, victimShares);
+        assertEq(m.core.position(m.id, victim).borrowShares, 0, "victim closed after an outside borrow");
+    }
+
+    /// @dev Specified behaviour: on a market whose whole debt is dust, two co-borrowers' one-share repays leave their
+    ///      shares behind one raw unit, so the dust borrower's close and each repay on a co-borrower's behalf revert.
+    ///      The dust borrower frees itself by borrowing a few raw units first, then repaying both co-borrowers and its
+    ///      own debt. A frozen market refuses that borrow. It follows from the guard rules in `market-controller.md`.
+    function test_strandedTwoCoBorrowers_borrowFirstFreesDustBorrower() public {
+        Market storage m = _m();
+        address victim = _actor("victim");
+        address x = _actor("x");
+        address y = _actor("y");
+        _fundedBorrower(victim, 20 ether);
+        _fundedBorrower(x, 20 ether);
+        _fundedBorrower(y, 20 ether);
+        m.borrow(victim, 5);
+        m.borrow(x, 5);
+        m.borrow(y, 5);
+        vm.startPrank(x);
+        for (uint256 i; i < 7; ++i) {
+            m.core.repay(m.params, 0, 1, x, "");
+            m.core.repay(m.params, 0, 1, y, "");
+        }
+        vm.stopPrank();
+        assertEq(m.core.market(m.id).totalBorrowAssets, 1, "setup: one raw unit left");
+
+        uint256 victimShares = m.core.position(m.id, victim).borrowShares;
+        uint256 xShares = m.core.position(m.id, x).borrowShares;
+        uint256 yShares = m.core.position(m.id, y).borrowShares;
+        vm.startPrank(victim);
+        vm.expectRevert(ILidoLendMarketController.BorrowShareRateExceeded.selector);
+        m.core.repay(m.params, 0, victimShares, victim, "");
+        vm.expectRevert(ILidoLendMarketController.BorrowShareRateExceeded.selector);
+        m.core.repay(m.params, 0, xShares, x, "");
+        vm.expectRevert(ILidoLendMarketController.BorrowShareRateExceeded.selector);
+        m.core.repay(m.params, 0, yShares, y, "");
+        vm.stopPrank();
+
+        uint256 snap = vm.snapshotState();
+        m.freeze();
+        vm.prank(victim);
+        vm.expectRevert(ILidoLendMarketController.MarketIsFrozen.selector);
+        m.core.borrow(m.params, 3, 0, victim, victim);
+        vm.revertToState(snap);
+
+        uint256 loanBefore = m.loanToken.balanceOf(victim);
+        vm.startPrank(victim);
+        m.core.borrow(m.params, 3, 0, victim, victim);
+        m.core.repay(m.params, 0, xShares, x, "");
+        m.core.repay(m.params, 0, yShares, y, "");
+        m.core.repay(m.params, 0, m.core.position(m.id, victim).borrowShares, victim, "");
+        vm.stopPrank();
+        assertEq(m.core.market(m.id).totalBorrowShares, 0, "every share is repaid");
+        assertLe(loanBefore - m.loanToken.balanceOf(victim), 2, "the way out costs a few raw units");
+        m.withdrawCollateral(victim, 20 ether, victim);
     }
 }
