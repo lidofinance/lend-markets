@@ -41,25 +41,26 @@ abstract contract WethWstethMarket is MarketDeployment {
             activatingLockDuration: 0,
             minActivationAmount: 10 ether,
             maxGuardiansQuorumDelay: 48 hours,
-            delayPerStrike: 4 hours,
-            delayPerSuspect: 4 hours
+            delayPerStrike: 12 hours,
+            delayPerSuspect: 12 hours
         });
         parameters.market.settlementConfig = SettlementConfig({
             sliceFloorBps: 100, sliceFloorAssets: 10 ether, fullCutBelowCollateral: 10 ether, ltvStepBps: 100
         });
-        parameters.wrapper.name = "Lido wstETH/WETH Vault";
-        parameters.wrapper.symbol = "lidoWSTETH-WETH";
+        parameters.wrapper.name = "Lido Lend WETH (wstETH)";
+        parameters.wrapper.symbol = "lendWETHwstETH";
         parameters.committee.guardians = guardians;
         parameters.committee.quorum = 1;
         parameters.committee.suspectWindow = 1 days;
+        // Annual base APR 0.0223519561285827; scale by 0.9 or 2 before dividing by 365 days.
         parameters.curve = AdaptiveCurveParams({
             curveSteepness: 4e18,
             adjustmentSpeed: 1_585_489_599_188,
             targetUtilization: 0.9e18,
-            initialRateAtTarget: 713_470_319,
+            initialRateAtTarget: 637_898_291,
             minRateAtTarget: 31_709_791,
-            maxRateAtTarget: 1_585_489_599,
-            maxBorrowRate: 1_585_489_599
+            maxRateAtTarget: 1_417_551_758,
+            maxBorrowRate: 1_417_551_758
         });
     }
 

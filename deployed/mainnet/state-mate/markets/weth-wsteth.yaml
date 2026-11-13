@@ -322,8 +322,8 @@ l1:
         - '0'
         - '10000000000000000000'
         - '172800'
-        - '14400'
-        - '14400'
+        - '43200'
+        - '43200'
         settlementConfig:
         - '100'
         - '10000000000000000000'
@@ -414,8 +414,8 @@ l1:
         - '<RECORDED_PRICE_FEED_PROXY>'
         - '0x81B7cC9523B30429110282d90db2fa90ff443d91'
         - '980000000000000000'
-        name: Lido wstETH/WETH Vault
-        symbol: lidoWSTETH-WETH
+        name: Lido Lend WETH (wstETH)
+        symbol: lendWETHwstETH
         decimals: 18
         totalSupply: '0'
         totalAssets: '0'
@@ -444,18 +444,18 @@ l1:
         CURVE_STEEPNESS: '4000000000000000000'
         ADJUSTMENT_SPEED: '1585489599188'
         TARGET_UTILIZATION: '900000000000000000'
-        INITIAL_RATE_AT_TARGET: <APPROVED_INITIAL_RATE_AT_TARGET>
+        INITIAL_RATE_AT_TARGET: '637898291'
         MIN_RATE_AT_TARGET: '31709791'
-        MAX_RATE_AT_TARGET: <APPROVED_MAX_RATE_AT_TARGET>
-        MAX_BORROW_RATE: <APPROVED_MAX_BORROW_RATE>
+        MAX_RATE_AT_TARGET: '1417551758'
+        MAX_BORROW_RATE: '1417551758'
         getCurveParams:
         - '4000000000000000000'
         - '1585489599188'
         - '900000000000000000'
-        - <APPROVED_INITIAL_RATE_AT_TARGET>
+        - '637898291'
         - '31709791'
-        - <APPROVED_MAX_RATE_AT_TARGET>
-        - <APPROVED_MAX_BORROW_RATE>
+        - '1417551758'
+        - '1417551758'
     guardianRiskStewardSafe:
       name: Safe
       address: '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
