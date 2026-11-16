@@ -2,7 +2,6 @@
 pragma solidity 0.8.36;
 
 import {IOracle} from "@lido-lend/src/interfaces/IOracle.sol";
-import {LIQUIDATION_CURSOR, MAX_LIQUIDATION_INCENTIVE_FACTOR} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
 
 import {
@@ -95,10 +94,6 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///      the price Morpho reads.
     uint256 public immutable PRICE_SCALE;
 
-    /// @notice Highest LLTV of a market that may read this oracle, WAD. `setParameters()` sizes the floor, the ceiling
-    ///         and the bounds for it.
-    uint256 public immutable MAX_LLTV;
-
     /// @notice Shortest `reanchorDelay`.
     uint256 public constant MIN_REANCHOR_DELAY = 1 hours;
     /// @notice Longest a pricing suspension may run from the call that sets it.
@@ -114,8 +109,6 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     error ZeroAddress();
     /// @notice The loan and collateral decimals leave no room for the 1e36 convention.
     error UnsupportedDecimals(uint256 loanDecimals, uint256 collateralDecimals);
-    /// @notice `maxLltv` is not below a whole price.
-    error InvalidMaxLltv(uint256 maxLltv);
     /// @notice A parameter is outside the range `setParameters()` names.
     error InvalidParameters();
     /// @notice The suspension would end more than `MAX_PRICING_SUSPENSION` from now.
@@ -215,12 +208,9 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
 
     /// @param loanToken Loan token; its decimals set `PRICE_SCALE`.
     /// @param collateralToken Collateral token; its decimals set `PRICE_SCALE`.
-    /// @param maxLltv `MAX_LLTV`, below a whole price.
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
-    constructor(address loanToken, address collateralToken, uint256 maxLltv) {
+    constructor(address loanToken, address collateralToken) {
         if (loanToken == address(0) || collateralToken == address(0)) revert ZeroAddress();
-        if (maxLltv >= WAD) revert InvalidMaxLltv(maxLltv);
-        MAX_LLTV = maxLltv;
         uint256 loanDecimals = IERC20Metadata(loanToken).decimals();
         uint256 collateralDecimals = IERC20Metadata(collateralToken).decimals();
         if (ORACLE_PRICE_DECIMALS + loanDecimals < collateralDecimals + PRICE_DECIMALS) {
@@ -316,10 +306,10 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///         most 1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, the delay at
     ///         least `MIN_REANCHOR_DELAY` and no longer than each rate takes to cover its bound, and the window above
     ///         zero.
-    ///
-    ///         A position borrowed at `MAX_LLTV` against the highest price, the ceiling × (1 + maxPriceAboveAnchor),
-    ///         must still cover its debt and the core's liquidation incentive at the lowest, the floor × (1 −
-    ///         maxPriceBelowAnchor).
+    /// @dev The oracle does not know the markets that read it, so it does not size the parameters for their LLTV. The
+    ///      manager must keep them so that a position borrowed at a market's LLTV against the highest price, the
+    ///      ceiling × (1 + maxPriceAboveAnchor), still covers its debt and the core's liquidation incentive at the
+    ///      lowest, the floor × (1 − maxPriceBelowAnchor).
     function setParameters(Parameters calldata parameters) external onlyRole(MANAGER_ROLE) {
         _setParameters(parameters);
     }
@@ -437,7 +427,6 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @dev Sets the anchor to `newAnchorPrice` at the current time. The seed and an acceptance also restart
     ///      `fenceBasePrice` there.
     function _setAnchor(uint256 newAnchorPrice, bool accepted) private {
-        if (newAnchorPrice == 0) revert ZeroPrice();
         anchorPrice = newAnchorPrice;
         anchorAt = uint40(block.timestamp);
         if (accepted) fenceBasePrice = newAnchorPrice;
@@ -448,6 +437,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///      `fenceBasePrice` there and drops the pending anchor.
     function _acceptPrice(uint256 minPrice, uint256 maxPrice) private {
         uint256 currentPrice = _currentPrice();
+        if (currentPrice == 0) revert ZeroPrice();
         if (currentPrice < minPrice || currentPrice > maxPrice) {
             revert UnexpectedPrice(currentPrice, minPrice, maxPrice);
         }
@@ -476,20 +466,6 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
             revert InvalidParameters();
         }
         if (_compoundedFall(p.maxAnchorContinuousFallRate, p.reanchorDelay) > p.maxPriceBelowAnchor) {
-            revert InvalidParameters();
-        }
-        uint256 incentive = Math.min(
-            MAX_LIQUIDATION_INCENTIVE_FACTOR,
-            Math.mulDiv(WAD, WAD, WAD - Math.mulDiv(LIQUIDATION_CURSOR, WAD - MAX_LLTV, WAD))
-        );
-        uint256 needed = Math.mulDiv(
-            Math.mulDiv(MAX_LLTV, incentive, WAD, Math.Rounding.Ceil),
-            WAD + p.maxPriceAboveAnchor,
-            WAD,
-            Math.Rounding.Ceil
-        );
-        uint256 room = Math.mulDiv(WAD - p.maxAnchorBelowFenceBase, WAD - p.maxPriceBelowAnchor, WAD);
-        if (room < Math.mulDiv(needed, WAD + p.maxAnchorAboveFenceBase, WAD, Math.Rounding.Ceil)) {
             revert InvalidParameters();
         }
 

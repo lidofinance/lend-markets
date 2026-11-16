@@ -105,7 +105,7 @@ The examples use illustrative values, not any market's: bounds of +0.05% and −
 | `reanchorDelay` | `uint40`, seconds | `x ≥ MIN_REANCHOR_DELAY` (1 hour), `e^(maxAnchorContinuousRiseRate × x / (1e18 × 365 days)) − 1 ≤ maxPriceAboveAnchor / 1e18` and `1 − e^(−maxAnchorContinuousFallRate × x / (1e18 × 365 days)) ≤ maxPriceBelowAnchor / 1e18` | how long a pending anchor waits before a re-anchor |
 | `reanchorWindow` | `uint40`, seconds | `x > 0` | how long after the delay a re-anchor may come before the pending anchor expires |
 
-The parameters together must also pass the [sizing rule](#choosing-values) at `MAX_LLTV`, an immutable of the implementation below `1e18`. `MAX_LLTV` is the highest LLTV of a market that may read the oracle. The deployment preflight refuses a market with a higher LLTV, and the acceptance suite makes the same check on the live deployment. No contract makes this check, so a market created in a different way can read the oracle at any LLTV. The contract accepts a `MAX_LLTV` of zero, which turns the sizing rule off. The deployment config refuses a zero `max_lltv`.
+The contract does not check the [sizing rule](#choosing-values), because it does not know the LLTV of the markets that read it. The deployment preflight checks the rule at the LLTV of the market, and the acceptance suite makes the same check on the live deployment. The manager must keep the rule in each later `setParameters` call. No contract makes this check, so a too-wide corridor from a `setParameters` call stays until the manager corrects it.
 
 Every `e^y − 1` in the contract is the sum of the first three Taylor terms, `y + y²/2 + y³/6`, each rounded down. This sum is never more than `e^y − 1`. Every `1 − e^(−y)` is `c / (1 + c)`, rounded down, where `c` is that sum for `y`. This value is never more than `1 − e^(−y)`.
 
@@ -206,9 +206,9 @@ What follows:
 **`acceptPrice(minPrice, maxPrice)`**, for `PRICE_ACCEPTOR_ROLE`, moves the anchor onto the current price at any distance, past the floor or the ceiling included. It sets `fenceBasePrice` to that price, drops the pending anchor and emits `AnchorSet(price, block.timestamp, true)`.
 
 - It reverts with `UnexpectedPrice(currentPrice, minPrice, maxPrice)` when the current price is outside `[minPrice, maxPrice]`, so a price that moved after the acceptor's check is refused. The range is its only binding: it has no deadline.
-- A reverting source makes it revert with the source's error, and a zero current price inside the range with `ZeroPrice`.
+- A reverting source makes it revert with the source's error, and a zero current price with `ZeroPrice`, inside the range or outside it.
 
-**`setParameters(parameters)`**, for `MANAGER_ROLE`, sets all eight parameters at once and drops the pending anchor, which restarts the delay of a waiting move even with unchanged values. The anchor and `fenceBasePrice` stay. It reverts with `InvalidParameters`, as `initialize` does, when a value is outside its range in [Parameters](#parameters) or the values fail the sizing rule at `MAX_LLTV`. Each change applies in the same transaction:
+**`setParameters(parameters)`**, for `MANAGER_ROLE`, sets all eight parameters at once and drops the pending anchor, which restarts the delay of a waiting move even with unchanged values. The anchor and `fenceBasePrice` stay. It reverts with `InvalidParameters`, as `initialize` does, when a value is outside its range in [Parameters](#parameters). Each change applies in the same transaction:
 
 - a tighter bound can make `price()` revert at once, and a wider one let a price through with no pending anchor;
 - a new rate applies to the time since the anchor was last set, so a higher one lets the next drift go further, up to one bound;
@@ -249,7 +249,7 @@ A freeze stops borrowing but leaves liquidation and settlement running, and a pa
 
 ## Choosing values
 
-`MAX_LLTV` must be at least the highest LLTV among the markets that read the oracle. The contract checks the sizing rule below at `MAX_LLTV` in `initialize` and in each `setParameters` call. The deployment preflight refuses a market with an LLTV above `MAX_LLTV`.
+The contract does not check the sizing rule below. The deployment preflight checks it at the LLTV of each market it creates. The manager must keep it in each `setParameters` call, for the highest LLTV among the markets that read the oracle.
 
 | Parameter | At least | At most |
 |---|---|---|
@@ -306,7 +306,7 @@ The invariants hold for one storage namespace behind its proxy, from its `initia
 | Keeper | call `updateAnchor()` after each change of the source and in each window | stop updating: drifts and re-anchors need updates, and short of the price acceptor and the manager, only an update drops a pending anchor a passing wrong value left. Without updates, a source that grows at a yield `g` leaves the upper bound after about `maxPriceAboveAnchor / g`, and `price()` reverts. Once the source is more than one bound above the ceiling, an update moves the anchor only onto the ceiling, and the market prices again only after `acceptPrice`, or after the manager widens the ceiling or the upper bound |
 | Block proposer | choose which block includes an update, and so the time it reads | nothing for safety: the time moves only the rates' reach, a pending anchor's delay and window, and the end of a suspension, by as long as a proposer can hold an update back |
 | `PRICE_ACCEPTOR_ROLE` | move the anchor to the current source price at any distance, past the floor or the ceiling included, inside a range it passes, at once, restarting `fenceBasePrice` there | pass a range it has not checked |
-| `MANAGER_ROLE` | set the bounds, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` as wide as the sizing rule at `MAX_LLTV` allows, the rise rate and the fall rate up to `1e18`, a rise of about 171.8% and a fall of about 63.2% a year, the delay down to an hour and the window, each at once; drop the pending anchor with any `setParameters` call, again and again; suspend pricing for up to 7 days per call, again and again, or lift the suspension | loosen the parameters until the checks mean nothing; or tighten them, suspend pricing or drop pending anchors again and again to stop the markets or keep a real move off the price |
+| `MANAGER_ROLE` | set the bounds, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` up to almost a whole price, with no check of the sizing rule, the rise rate and the fall rate up to `1e18`, a rise of about 171.8% and a fall of about 63.2% a year, the delay down to an hour and the window, each at once; drop the pending anchor with any `setParameters` call, again and again; suspend pricing for up to 7 days per call, again and again, or lift the suspension | loosen the parameters until the checks mean nothing; or tighten them, suspend pricing or drop pending anchors again and again to stop the markets or keep a real move off the price |
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles | grant them to unvetted holders |
 | Market freezer and pauser | freeze or pause each market that reads the oracle | act slower than `reanchorDelay` |
 | Monitor, off-chain | watch `PendingAnchorSet`, `AnchorUpdated`, `price()` reverts and the anchor's moves | miss a pending anchor, whose delay counts from the record whether anyone saw it or not, or a creep at the rise rate, which no check in the contract stops |
@@ -317,7 +317,8 @@ What the code does not check:
 - **Source age.** `UsdyNavOracle` does not read when the source last updated, and an anchor never goes stale. A USDY source that stops changing stays priced; a monitor and the markets' freeze have to catch it. `CentrifugeNavOracle` reverts on a share price older than `MAX_PRICE_AGE`.
 - **Source binding.** The base reads `loanToken` and `collateralToken` only for their decimals. Nothing ties the USDY source to the USDY token. `CentrifugeNavOracle` requires the Spoke's share token of `poolId` and `scId` to be the collateral token.
 - **Loan-token price.** One loan token counts as one unit of the source's currency, and the oracle does not read the loan token's own price. This is an accepted risk. A loan token below one unit makes the price too low, so borrowers can be liquidated early. A loan token above one unit makes the price too high by the same fraction. At a 98% LLTV, the sizing budget for a high price is 1.43%, so a 1% move uses most of it.
-- **Earlier parameters.** `setParameters` checks only the new values against the sizing rule, and the anchor keeps its place past a new floor or ceiling. Two valid calls can together break the rule. An example at a 98% LLTV: the first call sets no floor and a 1.27% ceiling, and a re-anchor moves the anchor up. The second call sets no ceiling and a 1.26% floor, and a re-anchor moves the anchor down. The lowest price is then under the debt of a position opened at the highest price.
+- **Sizing by the manager.** No contract checks the sizing rule. A `setParameters` call with a too-wide corridor lets a faulty source leave bad debt. A parameter change is an Easy Track motion, and its reviewers must check the rule.
+- **Earlier parameters.** The sizing rule speaks for one set of values, and the anchor keeps its place past a new floor or ceiling. Two calls that each pass the rule can together break it. An example at a 98% LLTV: the first call sets no floor and a 1.27% ceiling, and a re-anchor moves the anchor up. The second call sets no ceiling and a 1.26% floor, and a re-anchor moves the anchor down. The lowest price is then under the debt of a position opened at the highest price.
 - **Market value.** The price is the source's value. A secondary-market discount of the collateral token, or limits on redeeming it, are not reflected.
 
 ## Interfaces and stored data
@@ -345,7 +346,6 @@ The [API reference](api/trailing-anchor-oracle.md) gives every signature, with a
 | `maxAnchorBelowFenceBase`, `maxAnchorAboveFenceBase` | fraction of `fenceBasePrice`, WAD |
 | `maxAnchorContinuousRiseRate` | continuously compounded rate per 365-day year, WAD |
 | `maxAnchorContinuousFallRate` | continuously compounded rate per 365-day year, WAD |
-| `MAX_LLTV` | LLTV, WAD |
 | `reanchorDelay`, `reanchorWindow` | seconds |
 | `anchorAt`, `pendingAnchorAt`, `pricingResumesAt` | Unix time, seconds |
 | `price()` | loan-token units per collateral-token unit, scaled by 1e36 |
@@ -361,10 +361,10 @@ The constructor reverts with `UnsupportedDecimals` when `36 + loanDecimals < col
 
 | Contract | Constructor | Source call | Current price |
 |---|---|---|---|
-| `UsdyNavOracle` | `(source, loanToken, collateralToken, maxLltv)` | Ondo's USDY oracle, `getPrice()` | USDY redemption value in USD, 18 decimals |
-| `CentrifugeNavOracle` | `(spoke, poolId, scId, maxPriceAge, loanToken, collateralToken, maxLltv)` | Spoke `markersPricePoolPerShare(poolId, scId)`, then `pricePoolPerShare(poolId, scId, false)` | share-class price in the pool currency, 18 decimals |
+| `UsdyNavOracle` | `(source, loanToken, collateralToken)` | Ondo's USDY oracle, `getPrice()` | USDY redemption value in USD, 18 decimals |
+| `CentrifugeNavOracle` | `(spoke, poolId, scId, maxPriceAge, loanToken, collateralToken)` | Spoke `markersPricePoolPerShare(poolId, scId)`, then `pricePoolPerShare(poolId, scId, false)` | share-class price in the pool currency, 18 decimals |
 
-`ZeroAddress` refuses a zero token, source or Spoke in a constructor, and a zero `admin` in `initialize`. `InvalidMaxLltv` refuses a `maxLltv` of `1e18` or more.
+`ZeroAddress` refuses a zero token, source or Spoke in a constructor, and a zero `admin` in `initialize`.
 
 `CentrifugeNavOracle` passes `checkValidity = false`, because the Spoke's own maximum age is unbounded on the deployed pools. The adapter adds its own checks:
 
@@ -394,8 +394,7 @@ Roles and the initializer flag live in OpenZeppelin's own namespaces (`openzeppe
 
 ### Upgrades
 
-The implementation's constructor disables initializers and fixes the immutables: `PRICE_SCALE`, `MAX_LLTV`, the source address and the adapter's own constants, such as `MAX_PRICE_AGE`. An upgrade to another implementation with the same storage namespace keeps the anchor, `fenceBasePrice`, the pending anchor, the suspension and the parameters, whatever its immutables: one bound to another source starts from the old anchor and any pending anchor the old source left, and one that changes the layout misreads them. An upgrade does not check the stored parameters again. If an upgrade raises `MAX_LLTV`, the stored parameters can be too wide for the new value until the next `setParameters` call. Thus, a vote that raises `MAX_LLTV` must also call `setParameters`.
-
+The implementation's constructor disables initializers and fixes the immutables: `PRICE_SCALE`, the source address and the adapter's own constants, such as `MAX_PRICE_AGE`. An upgrade to another implementation with the same storage namespace keeps the anchor, `fenceBasePrice`, the pending anchor, the suspension and the parameters, whatever its immutables: one bound to another source starts from the old anchor and any pending anchor the old source left, and one that changes the layout misreads them.
 An upgrade must keep the adapter's namespace. An implementation with another one, such as the other adapter, reads empty storage, and that case is not supported.
 
 ## Related references

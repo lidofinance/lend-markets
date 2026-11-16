@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
+import {LIQUIDATION_CURSOR, MAX_LIQUIDATION_INCENTIVE_FACTOR} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
+import {WAD} from "../../src/libs/Constants.sol";
 
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
@@ -48,8 +53,12 @@ library OraclePreflight {
     error OracleUintMismatch(string field, uint256 expected, uint256 actual);
     error OraclePriceOutOfConfiguredBounds(uint256 price, uint256 minPrice, uint256 maxPrice);
     error OraclePriceIsZero();
-    /// @notice The market's `lltv` is above the `MAX_LLTV` the NAV oracle sizes its parameters for.
-    error NavLltvAboveMax(uint256 lltv, uint256 maxLltv);
+    /// @notice A position borrowed at `lltv` against the highest price the NAV oracle returns would not cover its debt
+    ///         and the liquidation incentive at the lowest. `largestAboveFenceBase` is the widest
+    ///         `maxAnchorAboveFenceBase` that would with this `maxAnchorBelowFenceBase`, zero when none would.
+    error NavCorridorTooWide(
+        uint256 maxAnchorBelowFenceBase, uint256 maxAnchorAboveFenceBase, uint256 lltv, uint256 largestAboveFenceBase
+    );
     /// @notice The NAV oracle's `role` has `actual` holders, not the `expected` ones.
     error NavRoleHolderCountMismatch(bytes32 role, uint256 expected, uint256 actual);
     /// @notice The NAV oracle's `role` is held by `holder`, which is not one of its expected holders.
@@ -166,7 +175,7 @@ library OraclePreflight {
     }
 
     /// @notice The NAV oracle is the configured adapter over the market's tokens, its implementation is the one the
-    ///         config builds, it runs on the configured parameters, it is sized for an LLTV at least `lltv`, and its
+    ///         config builds, it runs on the configured parameters, they pass the sizing rule at `lltv`, and its
     ///         roles have the deployment's holders: `expectedAdmin` alone for `DEFAULT_ADMIN_ROLE` and
     ///         `PRICE_ACCEPTOR_ROLE`, `expectedAdmin` and `expectedEvmScriptExecutor` for `MANAGER_ROLE`.
     function validateNav(
@@ -194,7 +203,6 @@ library OraclePreflight {
                 - IERC20Metadata(collateralToken).decimals()
                 - PRICE_DECIMALS);
         if (nav.PRICE_SCALE() != expectedScale) revert OracleScaleMismatch(expectedScale, nav.PRICE_SCALE());
-        if (lltv > nav.MAX_LLTV()) revert NavLltvAboveMax(lltv, nav.MAX_LLTV());
         TrailingAnchorOracleBase.Parameters memory p = cfg.parameters;
         _requireUint("max_price_above_anchor", p.maxPriceAboveAnchor, nav.maxPriceAboveAnchor());
         _requireUint("max_price_below_anchor", p.maxPriceBelowAnchor, nav.maxPriceBelowAnchor());
@@ -208,6 +216,7 @@ library OraclePreflight {
         _requireUint("max_anchor_above_fence_base", p.maxAnchorAboveFenceBase, nav.maxAnchorAboveFenceBase());
         _requireUint("reanchor_delay", p.reanchorDelay, nav.reanchorDelay());
         _requireUint("reanchor_window", p.reanchorWindow, nav.reanchorWindow());
+        requireNavSizing(p, lltv);
 
         address[] memory agentOnly = new address[](1);
         agentOnly[0] = expectedAdmin;
@@ -231,6 +240,29 @@ library OraclePreflight {
                 if (holder == expected[j]) isExpected = true;
             }
             if (!isExpected) revert NavRoleHolderUnexpected(role, holder);
+        }
+    }
+
+    /// @notice The sizing rule, which the oracle cannot check because it does not know the market. A position borrowed
+    ///         at `lltv` against the highest price the oracle returns, the ceiling × (1 + maxPriceAboveAnchor), must
+    ///         still cover its debt and the core's liquidation incentive at the lowest, the floor × (1 −
+    ///         maxPriceBelowAnchor): (1 − maxAnchorBelowFenceBase)(1 − maxPriceBelowAnchor) ≥ lltv × LIF × (1 +
+    ///         maxAnchorAboveFenceBase)(1 + maxPriceAboveAnchor). LIF has the rounding of the core, and each other step
+    ///         rounds against the corridor.
+    function requireNavSizing(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv) internal pure {
+        uint256 incentive = Math.min(
+            MAX_LIQUIDATION_INCENTIVE_FACTOR,
+            MathLib.wDivDown(WAD, WAD - MathLib.wMulDown(LIQUIDATION_CURSOR, WAD - lltv))
+        );
+        // What the upper bound needs with the ceiling on the fence base price, and the room the floor's lower bound
+        // leaves.
+        uint256 needed = Math.mulDiv(
+            Math.mulDiv(lltv, incentive, WAD, Math.Rounding.Ceil), WAD + p.maxPriceAboveAnchor, WAD, Math.Rounding.Ceil
+        );
+        uint256 room = Math.mulDiv(WAD - p.maxAnchorBelowFenceBase, WAD - p.maxPriceBelowAnchor, WAD);
+        if (room < Math.mulDiv(needed, WAD + p.maxAnchorAboveFenceBase, WAD, Math.Rounding.Ceil)) {
+            uint256 largest = room < needed ? 0 : Math.mulDiv(room, WAD, needed) - WAD;
+            revert NavCorridorTooWide(p.maxAnchorBelowFenceBase, p.maxAnchorAboveFenceBase, lltv, largest);
         }
     }
 

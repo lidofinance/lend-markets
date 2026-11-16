@@ -118,7 +118,6 @@ contract OracleConfigFileTest is Test {
         assertEq(cfg.maxPriceAge, 7 days, "max_price_age");
         assertEq(cfg.loanToken, address(0x11), "loan_token");
         assertEq(cfg.collateralToken, address(0xC1), "collateral_token");
-        assertEq(cfg.maxLltv, 0.98e18, "max_lltv");
         assertEq(cfg.seedMinPrice, 1.1e18, "seed_min_price");
         assertEq(cfg.seedMaxPrice, 1.2e18, "seed_max_price");
         assertEq(
@@ -170,12 +169,9 @@ contract OracleConfigFileTest is Test {
         harness.parseNav(invalid, "");
     }
 
-    /// @dev The LLTV the oracle is sized for, the seed range and the Centrifuge price age are required.
-    function testRevert_parseNav_missingSizingSeedOrAge() external {
-        string memory invalid = vm.replace(_navUsdyToml(), "max_lltv = \"980000000000000000\"\n", "");
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_lltv"));
-        harness.parseNav(invalid, "");
-        invalid = vm.replace(_navUsdyToml(), "seed_min_price = \"1100000000000000000\"\n", "");
+    /// @dev The seed range and the Centrifuge price age are required.
+    function testRevert_parseNav_missingSeedOrAge() external {
+        string memory invalid = vm.replace(_navUsdyToml(), "seed_min_price = \"1100000000000000000\"\n", "");
         vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".seed_min_price"));
         harness.parseNav(invalid, "");
         invalid = vm.replace(_navUsdyToml(), "seed_max_price = \"1200000000000000000\"\n", "");
@@ -287,13 +283,10 @@ contract OracleConfigFileTest is Test {
         assertEq(harness.parseNav(configs[2], "").maxPriceAge, 2 ** 64, "max_price_age above a bare integer");
     }
 
-    /// @dev A zero `max_lltv` would switch the oracle's sizing rule off, and a zero seed edge or price age is no
-    ///      value: the reader refuses each as missing.
-    function testRevert_parseNav_zeroSizingSeedOrAge() external {
-        string memory invalid = vm.replace(_navUsdyToml(), "max_lltv = \"980000000000000000\"", "max_lltv = \"0\"");
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_lltv"));
-        harness.parseNav(invalid, "");
-        invalid = vm.replace(_navUsdyToml(), "seed_min_price = \"1100000000000000000\"", "seed_min_price = \"0\"");
+    /// @dev A zero seed edge or price age is no value: the reader refuses each as missing.
+    function testRevert_parseNav_zeroSeedOrAge() external {
+        string memory invalid =
+            vm.replace(_navUsdyToml(), "seed_min_price = \"1100000000000000000\"", "seed_min_price = \"0\"");
         vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".seed_min_price"));
         harness.parseNav(invalid, "");
         invalid = vm.replace(_navUsdyToml(), "seed_max_price = \"1200000000000000000\"", "seed_max_price = \"0\"");
@@ -310,7 +303,6 @@ contract OracleConfigFileTest is Test {
             "source = \"0x000000000000000000000000000000000000005B\"\n",
             "loan_token = \"0x0000000000000000000000000000000000000011\"\n",
             "collateral_token = \"0x00000000000000000000000000000000000000C1\"\n",
-            "max_lltv = \"980000000000000000\"\n",
             "max_price_above_anchor = \"500000000000000\"\n",
             "max_price_below_anchor = \"1000000000000000\"\n",
             "max_anchor_continuous_rise_rate = \"60000000000000000\"\n",
@@ -333,7 +325,6 @@ contract OracleConfigFileTest is Test {
             "max_price_age = 604800\n",
             "loan_token = \"0x0000000000000000000000000000000000000011\"\n",
             "collateral_token = \"0x00000000000000000000000000000000000000C1\"\n",
-            "max_lltv = \"980000000000000000\"\n",
             "max_price_above_anchor = \"500000000000000\"\n",
             "max_price_below_anchor = \"1000000000000000\"\n",
             "max_anchor_continuous_rise_rate = \"60000000000000000\"\n",

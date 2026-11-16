@@ -39,7 +39,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         oracle = TrailingAnchorOracleBase(
             address(
                 new OssifiableProxy(
-                    _newImplementation(address(loan), _maxLltv()),
+                    _newImplementation(address(loan)),
                     address(this),
                     TrailingAnchorOracleModel.initializeCall(address(this))
                 )
@@ -50,7 +50,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         address priceAcceptor = makeAddr("priceAcceptor");
         oracle.grantRole(oracle.MANAGER_ROLE(), manager);
         oracle.grantRole(oracle.PRICE_ACCEPTOR_ROLE(), priceAcceptor);
-        handler = new TrailingAnchorOracleHandler(oracle, source, manager, priceAcceptor, _maxPriceAge());
+        handler = new TrailingAnchorOracleHandler(oracle, source, manager, priceAcceptor, _maxPriceAge(), _lltv());
 
         // Weighted: source moves, window edges, updates, the keeper's hour and a source settling at its pending anchor
         // appear more than once, since a pending anchor needs a price outside the bounds and a re-anchor needs its
@@ -80,10 +80,10 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         targetContract(address(handler));
     }
 
-    /// @dev The LLTV the oracle under test is sized for: none in the shared suites, so they can move the floor and the
-    ///      ceiling out of the way.
-    function _maxLltv() internal pure virtual returns (uint256) {
-        return TrailingAnchorOracleModel.MAX_LLTV;
+    /// @dev The LLTV the handler keeps the parameters sized for: none in the shared suites, so they can move the floor
+    ///      and the ceiling out of the way.
+    function _lltv() internal pure virtual returns (uint256) {
+        return 0;
     }
 
     /// @dev The adapter's `MAX_PRICE_AGE` when its source stamps the price: none in the shared suites.
@@ -109,7 +109,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
             reanchorDelay: uint40(s.reanchorDelay),
             reanchorWindow: uint40(s.reanchorWindow)
         });
-        assertEq(TrailingAnchorOracleModel.parametersRevert(p, _maxLltv()).length, 0, "stored parameters out of range");
+        assertEq(TrailingAnchorOracleModel.parametersRevert(p).length, 0, "stored parameters out of range");
     }
 
     /// @dev The anchor is never zero nor set in the future.
@@ -252,10 +252,12 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         assertEq(handler.refused("parameters"), 1, "a parameter set the validator refuses");
     }
 
-    /// @dev A seed whose parameters the validator takes, or refuses, at the oracle's `MAX_LLTV`.
+    /// @dev A seed whose parameters the validator takes, or refuses, and which pass the sizing rule at the suite's
+    ///      LLTV, so the handler sends them.
     function _parametersSeed(bool taken) internal view returns (uint256 seed) {
         while (
-            (TrailingAnchorOracleModel.parametersRevert(handler.parametersFor(seed), _maxLltv()).length == 0) != taken
+            (TrailingAnchorOracleModel.parametersRevert(handler.parametersFor(seed)).length == 0) != taken
+                || (_lltv() != 0 && !TrailingAnchorOracleModel.sized(handler.parametersFor(seed), _lltv()))
         ) ++seed;
     }
 
@@ -330,34 +332,34 @@ contract TrailingAnchorOracleCentrifugeInvariant is TrailingAnchorOracleInvarian
     }
 }
 
-/// @notice The same campaign on an oracle sized for a 98% LLTV, so that the sizing rule decides which parameter sets
-///         the manager can set, and the returned prices are checked against it.
+/// @notice The same campaign with a manager that keeps the parameters inside the sizing rule at a 98% LLTV, so that
+///         the returned prices are checked against it.
 /// forge-config: default.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 256
 /// forge-config: default.invariant.depth = 128
 contract TrailingAnchorOracleSizedInvariant is TrailingAnchorOracleInvariantTest, UsdyNavOracleFixture {
-    function _maxLltv() internal pure override returns (uint256) {
+    function _lltv() internal pure override returns (uint256) {
         return 0.98e18;
     }
 
     /// @dev What the sizing rule is for: while the anchor started between the floor and the ceiling, every price
-    ///      `price()` returns covers a debt borrowed at `MAX_LLTV` against the highest price returned since the last
+    ///      `price()` returns covers a debt borrowed at the LLTV against the highest price returned since the last
     ///      acceptance or parameter change, with the core's liquidation incentive on top.
     function invariant_returnedPriceCoversDebtAtTheHighest() public view {
         assertEq(handler.uncoveredPrices(), 0, "a returned price under LLTV x LIF of an earlier one");
     }
 
-    /// @dev The sizing rule alone refuses some of the handler's sets: one that an oracle sized for no LLTV would take
-    ///      is refused here. And a returned price is checked against the highest one.
+    /// @dev A returned price is checked against the highest one. And the handler holds back a set that the oracle
+    ///      would take and the sizing rule refuses.
     function test_seededSizing_isNonVacuous() public {
         handler.stepSource(0);
         assertEq(handler.checkedPrices(), 1, "a returned price checked against the highest");
         uint256 seed;
         while (
-            TrailingAnchorOracleModel.parametersRevert(handler.parametersFor(seed), 0).length != 0
-                || TrailingAnchorOracleModel.parametersRevert(handler.parametersFor(seed), _maxLltv()).length == 0
+            TrailingAnchorOracleModel.parametersRevert(handler.parametersFor(seed)).length != 0
+                || TrailingAnchorOracleModel.sized(handler.parametersFor(seed), _lltv())
         ) ++seed;
         handler.setParameters(seed);
-        assertEq(handler.refused("parameters"), 1, "a set only the sizing rule refuses");
+        assertEq(handler.succeeded("parameters") + handler.refused("parameters"), 0, "an unsized set is not sent");
     }
 }

@@ -54,8 +54,8 @@ contract NavOracleReplayTest is Test {
     uint256 internal constant ACCRUING_BOUND = 0.0005e18;
     uint256 internal constant TREASURY_BOUND = 0.001e18;
     uint256 internal constant CREDIT_BOUND = 0.003e18;
-    /// @dev The LLTV each class's market runs at, and its oracle is sized for: 98% for the accruing token and the
-    ///      treasury fund, and 92% for the credit fund.
+    /// @dev The LLTV each class's market runs at, which its floor and ceiling are sized for: 98% for the accruing
+    ///      token and the treasury fund, and 92% for the credit fund.
     uint256 internal constant TREASURY_LLTV = 0.98e18;
     uint256 internal constant CREDIT_LLTV = 0.92e18;
     /// @dev The rates: a rise above the class's yield, so the anchor keeps up, and a fall well under it. The credit
@@ -291,7 +291,7 @@ contract NavOracleReplayTest is Test {
     // DEPLOYMENT
     // ---
 
-    /// @dev The accruing token's oracle, sized for the 98% LLTV its floor and ceiling are chosen for.
+    /// @dev The accruing token's oracle, with a floor and a ceiling that fit its 98% LLTV.
     function _deployUsdy(uint256 initialPrice, uint256 bound_, uint256 rise, uint256 fall)
         internal
         returns (TrailingAnchorOracleBase, INavSourceMock)
@@ -299,13 +299,13 @@ contract NavOracleReplayTest is Test {
         MockOndoPriceGetter getter = new MockOndoPriceGetter();
         getter.setCurrentPrice(initialPrice);
         MockERC20 usdy = new MockERC20("Ondo US Dollar Yield", "USDY", 18);
-        address impl = address(new UsdyNavOracle(address(getter), address(usdc), address(usdy), TREASURY_LLTV));
-        return (_deploy(impl, bound_, rise, fall, BELOW_FENCE_BASE, ACCRUING_ABOVE_FENCE_BASE), getter);
+        address impl = address(new UsdyNavOracle(address(getter), address(usdc), address(usdy)));
+        return (_deploy(impl, TREASURY_LLTV, bound_, rise, fall, BELOW_FENCE_BASE, ACCRUING_ABOVE_FENCE_BASE), getter);
     }
 
-    /// @dev A fund's oracle, sized for `maxLltv`, the LLTV its floor and ceiling are chosen for.
+    /// @dev A fund's oracle, with a floor and a ceiling that fit `lltv`.
     function _deployCentrifuge(
-        uint256 maxLltv,
+        uint256 lltv,
         uint256 initialPrice,
         uint256 bound_,
         uint256 rise,
@@ -313,28 +313,25 @@ contract NavOracleReplayTest is Test {
         uint256 belowFenceBase,
         uint256 aboveFenceBase
     ) internal returns (TrailingAnchorOracleBase, INavSourceMock) {
-        (address impl, INavSourceMock spoke) = _centrifugeImplementation(maxLltv, initialPrice);
-        return (_deploy(impl, bound_, rise, fall, belowFenceBase, aboveFenceBase), spoke);
+        (address impl, INavSourceMock spoke) = _centrifugeImplementation(initialPrice);
+        return (_deploy(impl, lltv, bound_, rise, fall, belowFenceBase, aboveFenceBase), spoke);
     }
 
-    function _centrifugeImplementation(uint256 maxLltv, uint256 initialPrice)
-        internal
-        returns (address impl, INavSourceMock)
-    {
+    function _centrifugeImplementation(uint256 initialPrice) internal returns (address impl, INavSourceMock) {
         MockERC20 share = new MockERC20("Fund share", "SHARE", 6);
         MockCentrifugeSpoke spoke = new MockCentrifugeSpoke(POOL_ID, SHARE_CLASS_ID, address(share));
         spoke.setCurrentPrice(initialPrice);
         impl = address(
-            new CentrifugeNavOracle(
-                address(spoke), POOL_ID, SHARE_CLASS_ID, 7 days, address(usdc), address(share), maxLltv
-            )
+            new CentrifugeNavOracle(address(spoke), POOL_ID, SHARE_CLASS_ID, 7 days, address(usdc), address(share))
         );
         return (impl, spoke);
     }
 
-    /// @dev The same bound both ways, the class's rates, floor and ceiling, and the working delay and window.
+    /// @dev The same bound both ways, the class's rates, floor and ceiling, and the working delay and window. The
+    ///      parameters must pass the sizing rule at `lltv`, which the oracle does not check.
     function _deploy(
         address impl,
+        uint256 lltv,
         uint256 bound_,
         uint256 rise,
         uint256 fall,
@@ -348,6 +345,7 @@ contract NavOracleReplayTest is Test {
         p.maxAnchorContinuousFallRate = uint64(fall);
         p.maxAnchorBelowFenceBase = uint64(belowFenceBase);
         p.maxAnchorAboveFenceBase = uint64(aboveFenceBase);
+        assertTrue(TrailingAnchorOracleModel.sized(p, lltv), "the class's parameters fit its LLTV");
         bytes memory init = TrailingAnchorOracleModel.initializeCall(address(this), p);
         return TrailingAnchorOracleBase(address(new OssifiableProxy(impl, address(this), init)));
     }

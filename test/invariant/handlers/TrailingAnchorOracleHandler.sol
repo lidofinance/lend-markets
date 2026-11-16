@@ -30,9 +30,10 @@ contract TrailingAnchorOracleHandler is Test {
     INavSourceMock internal immutable SOURCE;
     address internal immutable MANAGER;
     address internal immutable PRICE_ACCEPTOR;
-    /// @dev The LLTV the oracle is sized for, and the share of the highest returned price a later price must keep for
-    ///      a debt borrowed at that LLTV to be liquidated whole: LLTV × LIF, with the core's integer LIF, WAD.
-    uint256 internal immutable MAX_LLTV;
+    /// @dev The LLTV the manager keeps the parameters sized for, zero for none, and the share of the highest returned
+    ///      price a later price must keep for a debt borrowed at that LLTV to be liquidated whole: LLTV × LIF, with
+    ///      the core's integer LIF, WAD.
+    uint256 internal immutable LLTV;
     uint256 internal immutable COVERAGE;
     /// @dev What the oracle's roundings may take from a price, in the units of `price()` × WAD: 1 wei of an
     ///      18-decimal price. The lower bound is the one value rounded down toward a lower price, by under 1 wei. The
@@ -83,7 +84,8 @@ contract TrailingAnchorOracleHandler is Test {
         INavSourceMock source,
         address manager,
         address priceAcceptor,
-        uint256 maxPriceAge
+        uint256 maxPriceAge,
+        uint256 lltv
     ) {
         ORACLE = oracle;
         MAX_PRICE_AGE = maxPriceAge;
@@ -92,16 +94,16 @@ contract TrailingAnchorOracleHandler is Test {
         PRICE_ACCEPTOR = priceAcceptor;
         shadow = TrailingAnchorOracleModel.read(oracle);
         expectedFenceBasePrice = oracle.anchorPrice();
-        MAX_LLTV = oracle.MAX_LLTV();
-        COVERAGE = MAX_LLTV * TrailingAnchorOracleModel.liquidationIncentive(MAX_LLTV) / WAD;
+        LLTV = lltv;
+        COVERAGE = lltv * TrailingAnchorOracleModel.liquidationIncentive(lltv) / WAD;
         ROUNDING = oracle.PRICE_SCALE() * WAD;
     }
 
-    /// @dev After each action on an oracle sized for an LLTV: a returned price must cover a debt borrowed at
-    ///      `MAX_LLTV` against the highest price returned since the corridor was last set.
+    /// @dev After each action on an oracle whose parameters stay sized for `LLTV`: a returned price must cover a
+    ///      debt borrowed at `LLTV` against the highest price returned since the corridor was last set.
     modifier observed() {
         _;
-        if (MAX_LLTV == 0 || !corridorHeld) return;
+        if (LLTV == 0 || !corridorHeld) return;
         (bool priced, uint256 value) = _price();
         if (!priced) return;
         if (value > highestPrice) highestPrice = value;
@@ -363,7 +365,9 @@ contract TrailingAnchorOracleHandler is Test {
 
     function setParameters(uint256 seed) external observed {
         TrailingAnchorOracleBase.Parameters memory p = _parameters(seed);
-        bytes memory expected = TrailingAnchorOracleModel.parametersRevert(p, MAX_LLTV);
+        // The oracle does not check the sizing rule, so the manager of a sized oracle sends only sets that pass it.
+        if (LLTV != 0 && !TrailingAnchorOracleModel.sized(p, LLTV)) return;
+        bytes memory expected = TrailingAnchorOracleModel.parametersRevert(p);
         if (expected.length != 0) {
             vm.prank(MANAGER);
             vm.expectRevert(expected);
@@ -411,15 +415,15 @@ contract TrailingAnchorOracleHandler is Test {
     // ---
 
     /// @dev Parameters around the working defaults. On one pick in eight a single field leaves its range, so the
-    ///      validator's refusal runs. An oracle sized for an LLTV draws its floor and ceiling from a narrower range,
-    ///      about the budget a 98% LLTV leaves, so the sizing rule takes some sets and refuses others.
+    ///      validator's refusal runs. A suite with an LLTV draws its floor and ceiling from a narrower range, about
+    ///      the budget a 98% LLTV leaves, so the sizing rule takes some sets and refuses others.
     function _parameters(uint256 seed) internal view returns (TrailingAnchorOracleBase.Parameters memory p) {
         uint256 pick = _pick(seed, "parameters");
         p.maxPriceAboveAnchor = uint64(bound(_pick(seed, "aboveAnchor"), 0.0001e18, 0.005e18));
         p.maxPriceBelowAnchor = uint64(bound(_pick(seed, "belowAnchor"), 0.0001e18, 0.01e18));
         p.maxAnchorContinuousRiseRate = uint64(bound(_pick(seed, "rise"), 0, 0.2e18));
         p.maxAnchorContinuousFallRate = uint64(bound(_pick(seed, "fall"), 0, 0.2e18));
-        bool sized = MAX_LLTV != 0;
+        bool sized = LLTV != 0;
         p.maxAnchorBelowFenceBase = uint64(bound(_pick(seed, "belowFenceBase"), 0, sized ? 0.012e18 : 0.05e18));
         p.maxAnchorAboveFenceBase = uint64(bound(_pick(seed, "aboveFenceBase"), 0, sized ? 0.004e18 : 0.01e18));
         p.reanchorDelay = uint40(bound(_pick(seed, "delay"), 1 hours, 2 days));

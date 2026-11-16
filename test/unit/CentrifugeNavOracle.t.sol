@@ -50,14 +50,14 @@ contract CentrifugeNavOracleTest is Test {
 
     function testRevert_constructor_zeroAddresses() public {
         vm.expectRevert(TrailingAnchorOracleBase.ZeroAddress.selector);
-        new CentrifugeNavOracle(address(0), JTRSY_POOL, JTRSY_SC, MAX_PRICE_AGE, address(usdc), address(jtrsy), 0);
+        new CentrifugeNavOracle(address(0), JTRSY_POOL, JTRSY_SC, MAX_PRICE_AGE, address(usdc), address(jtrsy));
         vm.expectRevert(TrailingAnchorOracleBase.ZeroAddress.selector);
-        new CentrifugeNavOracle(address(spoke), JTRSY_POOL, JTRSY_SC, MAX_PRICE_AGE, address(usdc), address(0), 0);
+        new CentrifugeNavOracle(address(spoke), JTRSY_POOL, JTRSY_SC, MAX_PRICE_AGE, address(usdc), address(0));
     }
 
     function testRevert_constructor_zeroMaxPriceAge() public {
         vm.expectRevert(CentrifugeNavOracle.ZeroMaxPriceAge.selector);
-        new CentrifugeNavOracle(address(spoke), JTRSY_POOL, JTRSY_SC, 0, address(usdc), address(jtrsy), 0);
+        new CentrifugeNavOracle(address(spoke), JTRSY_POOL, JTRSY_SC, 0, address(usdc), address(jtrsy));
     }
 
     /// @dev A share class whose token on the Spoke is not the collateral token is refused: 1,000 JTRSY must not be
@@ -67,7 +67,7 @@ contract CentrifugeNavOracleTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(CentrifugeNavOracle.ShareTokenMismatch.selector, address(jtrsy), address(other))
         );
-        new CentrifugeNavOracle(address(spoke), JTRSY_POOL, JTRSY_SC, MAX_PRICE_AGE, address(usdc), address(other), 0);
+        new CentrifugeNavOracle(address(spoke), JTRSY_POOL, JTRSY_SC, MAX_PRICE_AGE, address(usdc), address(other));
     }
 
     /// @dev A price exactly `MAX_PRICE_AGE` old is returned; one second older is refused, by `price()` and by
@@ -116,16 +116,11 @@ contract CentrifugeNavOracleTest is Test {
         new OssifiableProxy(impl, address(this), init);
     }
 
-    /// @dev The adapter hands `maxLltv` to the base and keeps `maxPriceAge` for itself: two different values land in
-    ///      their own getters, and a `maxLltv` of a whole price is refused.
-    function test_constructor_maxLltvAndMaxPriceAge() public {
-        CentrifugeNavOracle impl = new CentrifugeNavOracle(
-            address(spoke), JTRSY_POOL, JTRSY_SC, 3 days, address(usdc), address(jtrsy), 0.98e18
-        );
-        assertEq(impl.MAX_LLTV(), 0.98e18, "MAX_LLTV");
+    /// @dev The adapter keeps `maxPriceAge` in its own getter.
+    function test_constructor_maxPriceAge() public {
+        CentrifugeNavOracle impl =
+            new CentrifugeNavOracle(address(spoke), JTRSY_POOL, JTRSY_SC, 3 days, address(usdc), address(jtrsy));
         assertEq(impl.MAX_PRICE_AGE(), 3 days, "MAX_PRICE_AGE");
-        vm.expectRevert(abi.encodeWithSelector(TrailingAnchorOracleBase.InvalidMaxLltv.selector, 1e18));
-        new CentrifugeNavOracle(address(spoke), JTRSY_POOL, JTRSY_SC, 3 days, address(usdc), address(jtrsy), 1e18);
     }
 
     /// @dev A 6-decimal share in a 6-decimal market scales by 1e18: one base unit of share is 1.119 base units of USDC.
@@ -159,16 +154,15 @@ contract CentrifugeNavOracleTest is Test {
     function testRevert_constructor_otherShareClass() public {
         vm.expectRevert(MockCentrifugeSpoke.ShareTokenDoesNotExist.selector);
         new CentrifugeNavOracle(
-            address(spoke), JTRSY_POOL, bytes16(uint128(JTRSY_SC) + 1), MAX_PRICE_AGE, address(usdc), address(jtrsy), 0
+            address(spoke), JTRSY_POOL, bytes16(uint128(JTRSY_SC) + 1), MAX_PRICE_AGE, address(usdc), address(jtrsy)
         );
     }
 
     function _deploy(uint8 shareDecimals) internal returns (CentrifugeNavOracle) {
         MockERC20 share = new MockERC20("Share", "SHARE", shareDecimals);
         spoke.setShareToken(address(share));
-        CentrifugeNavOracle impl = new CentrifugeNavOracle(
-            address(spoke), JTRSY_POOL, JTRSY_SC, MAX_PRICE_AGE, address(usdc), address(share), 0
-        );
+        CentrifugeNavOracle impl =
+            new CentrifugeNavOracle(address(spoke), JTRSY_POOL, JTRSY_SC, MAX_PRICE_AGE, address(usdc), address(share));
         bytes memory init = TrailingAnchorOracleModel.initializeCall(address(this));
         return CentrifugeNavOracle(address(new OssifiableProxy(address(impl), address(this), init)));
     }

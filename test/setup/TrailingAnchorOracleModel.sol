@@ -63,9 +63,6 @@ library TrailingAnchorOracleModel {
     uint256 internal constant MAX_ANCHOR_ABOVE_FENCE_BASE = 0.002e18;
     uint256 internal constant REANCHOR_DELAY = 6 hours;
     uint256 internal constant REANCHOR_WINDOW = 1 days;
-    /// @dev The `MAX_LLTV` of the shared suites: zero, so the sizing rule takes any parameters and the suites can move
-    ///      the floor and the ceiling out of the way. The sizing rule has tests of its own.
-    uint256 internal constant MAX_LLTV = 0;
 
     // ---
     // DEPLOYMENT
@@ -475,7 +472,7 @@ library TrailingAnchorOracleModel {
     }
 
     /// @dev The revert `acceptPrice(minPrice, maxPrice)` gives a price acceptor, or nothing: the source's own
-    ///      `sourceError` when it is not empty, then the range, then a zero price.
+    ///      `sourceError` when it is not empty, then a zero price, then the range.
     function acceptRevert(
         TrailingAnchorOracleState memory s,
         uint256 currentPrice,
@@ -484,13 +481,13 @@ library TrailingAnchorOracleModel {
         uint256 maxPrice
     ) internal pure returns (bytes memory) {
         if (sourceError.length != 0) return sourceError;
+        if (currentPrice == 0) return abi.encodeWithSelector(TrailingAnchorOracleBase.ZeroPrice.selector);
         if (currentPrice < minPrice || currentPrice > maxPrice) {
             return
                 abi.encodeWithSelector(
                     TrailingAnchorOracleBase.UnexpectedPrice.selector, currentPrice, minPrice, maxPrice
                 );
         }
-        if (currentPrice == 0) return abi.encodeWithSelector(TrailingAnchorOracleBase.ZeroPrice.selector);
         return "";
     }
 
@@ -508,31 +505,22 @@ library TrailingAnchorOracleModel {
         next.pendingAnchorAt = 0;
     }
 
-    /// @dev `InvalidParameters()`, or nothing, for an oracle sized for `MAX_LLTV`.
-    function parametersRevert(TrailingAnchorOracleBase.Parameters memory p) internal pure returns (bytes memory) {
-        return parametersRevert(p, MAX_LLTV);
-    }
-
     /// @dev `InvalidParameters()`, or nothing: each bound above zero and below a whole price, each rate at most
     ///      1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, a delay of at least an
-    ///      hour in which each rate covers at most its bound, a window above zero, and the sizing rule at `maxLltv`.
-    function parametersRevert(TrailingAnchorOracleBase.Parameters memory p, uint256 maxLltv)
-        internal
-        pure
-        returns (bytes memory)
-    {
+    ///      hour in which each rate covers at most its bound, and a window above zero.
+    function parametersRevert(TrailingAnchorOracleBase.Parameters memory p) internal pure returns (bytes memory) {
         bool valid = p.maxPriceAboveAnchor != 0 && p.maxPriceBelowAnchor != 0 && p.maxPriceAboveAnchor < WAD
             && p.maxPriceBelowAnchor < WAD && p.maxAnchorContinuousRiseRate <= WAD
             && p.maxAnchorContinuousFallRate <= WAD && p.maxAnchorBelowFenceBase < WAD
             && p.maxAnchorAboveFenceBase < WAD && p.reanchorDelay >= MIN_REANCHOR_DELAY && p.reanchorWindow != 0
             && compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay) <= p.maxPriceAboveAnchor
-            && compoundedFall(p.maxAnchorContinuousFallRate, p.reanchorDelay) <= p.maxPriceBelowAnchor
-            && sized(p, maxLltv);
+            && compoundedFall(p.maxAnchorContinuousFallRate, p.reanchorDelay) <= p.maxPriceBelowAnchor;
         if (valid) return "";
         return abi.encodeWithSelector(TrailingAnchorOracleBase.InvalidParameters.selector);
     }
 
-    /// @dev The sizing rule from the spec formula and not from the contract: (1 − maxAnchorBelowFenceBase)(1 −
+    /// @dev The sizing rule a market at `lltv` needs, which the oracle does not check, from the spec formula: (1 −
+    ///      maxAnchorBelowFenceBase)(1 −
     ///      maxPriceBelowAnchor) ≥ LLTV × LIF × (1 + maxAnchorAboveFenceBase)(1 + maxPriceAboveAnchor). LIF is the
     ///      `liquidationIncentive`. The rest is multiplied through in whole numbers, so nothing else is rounded.
     function sized(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv) internal pure returns (bool) {

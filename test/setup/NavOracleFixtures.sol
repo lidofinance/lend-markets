@@ -10,7 +10,6 @@ import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {MockERC20} from "./Mocks.sol";
 import {INavSourceMock, MockCentrifugeSpoke, MockOndoPriceGetter} from "./NavSourceMocks.sol";
-import {TrailingAnchorOracleModel} from "./TrailingAnchorOracleModel.sol";
 
 /// @notice One NAV adapter over its source mock, for suites that run the same anchor rules through every adapter. A
 ///         concrete suite mixes in exactly one of the fixtures below.
@@ -23,13 +22,8 @@ abstract contract NavOracleFixture is Test {
     /// @dev Deploys the source mock and the collateral token.
     function _setUpSource() internal virtual;
 
-    /// @dev A new implementation of the adapter over the fixture's source, for `loanToken`, sized for `maxLltv`.
-    function _newImplementation(address loanToken, uint256 maxLltv) internal virtual returns (address);
-
-    /// @dev A new implementation sized for the shared suites' `MAX_LLTV`.
-    function _newImplementation(address loanToken) internal returns (address) {
-        return _newImplementation(loanToken, TrailingAnchorOracleModel.MAX_LLTV);
-    }
+    /// @dev A new implementation of the adapter over the fixture's source, for `loanToken`.
+    function _newImplementation(address loanToken) internal virtual returns (address);
 
     /// @dev The adapter's ERC-7201 namespace id.
     function _namespace() internal pure virtual returns (string memory);
@@ -50,8 +44,8 @@ abstract contract UsdyNavOracleFixture is NavOracleFixture {
         collateralToken = address(new MockERC20("Ondo US Dollar Yield", "USDY", 18));
     }
 
-    function _newImplementation(address loanToken, uint256 maxLltv) internal override returns (address) {
-        return address(new UsdyNavOracle(address(source), loanToken, collateralToken, maxLltv));
+    function _newImplementation(address loanToken) internal override returns (address) {
+        return address(new UsdyNavOracle(address(source), loanToken, collateralToken));
     }
 
     function _namespace() internal pure override returns (string memory) {
@@ -70,11 +64,9 @@ abstract contract CentrifugeNavOracleFixture is NavOracleFixture {
         source = new MockCentrifugeSpoke(POOL_ID, SHARE_CLASS_ID, collateralToken);
     }
 
-    function _newImplementation(address loanToken, uint256 maxLltv) internal override returns (address) {
+    function _newImplementation(address loanToken) internal override returns (address) {
         return address(
-            new CentrifugeNavOracle(
-                address(source), POOL_ID, SHARE_CLASS_ID, MAX_PRICE_AGE, loanToken, collateralToken, maxLltv
-            )
+            new CentrifugeNavOracle(address(source), POOL_ID, SHARE_CLASS_ID, MAX_PRICE_AGE, loanToken, collateralToken)
         );
     }
 

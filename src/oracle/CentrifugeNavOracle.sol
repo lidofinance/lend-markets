@@ -61,9 +61,8 @@ contract CentrifugeNavOracle layout at erc7201("lido.lend.storage.CentrifugeNavO
         bytes16 scId,
         uint256 maxPriceAge,
         address loanToken,
-        address collateralToken,
-        uint256 maxLltv
-    ) TrailingAnchorOracleBase(loanToken, collateralToken, maxLltv) {
+        address collateralToken
+    ) TrailingAnchorOracleBase(loanToken, collateralToken) {
         if (spoke == address(0)) revert ZeroAddress();
         if (maxPriceAge == 0) revert ZeroMaxPriceAge();
         address shareToken = ICentrifugeSpoke(spoke).shareToken(poolId, scId);

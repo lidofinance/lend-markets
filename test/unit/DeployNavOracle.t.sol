@@ -42,7 +42,6 @@ contract DeployNavOracleTest is Test {
         cfg.source = address(getter);
         cfg.loanToken = address(new MockERC20("USD Coin", "USDC", 6));
         cfg.collateralToken = address(new MockERC20("Ondo US Dollar Yield", "USDY", 18));
-        cfg.maxLltv = LLTV;
         cfg.parameters = TrailingAnchorOracleModel.defaultParameters();
         cfg.seedMinPrice = 1.09e18;
         cfg.seedMaxPrice = 1.11e18;
@@ -55,7 +54,6 @@ contract DeployNavOracleTest is Test {
         address oracle = harness.deployNavOracle(cfg, agent, evmScriptExecutor);
         TrailingAnchorOracleBase nav = TrailingAnchorOracleBase(oracle);
         assertEq(nav.anchorPrice(), 1.1e18, "anchor");
-        assertEq(nav.MAX_LLTV(), LLTV, "MAX_LLTV");
         assertEq(nav.getRoleMemberCount(nav.DEFAULT_ADMIN_ROLE()), 1, "one admin");
         assertTrue(nav.hasRole(nav.DEFAULT_ADMIN_ROLE(), agent), "the Agent is the admin");
         assertFalse(nav.hasRole(nav.DEFAULT_ADMIN_ROLE(), address(harness)), "the deployer renounced");
@@ -65,8 +63,8 @@ contract DeployNavOracleTest is Test {
         );
     }
 
-    /// @dev A `nav-centrifuge` config deploys the Centrifuge adapter with each of its own arguments in its place: the
-    ///      price age and the LLTV are both plain numbers, so each is read back from its own getter.
+    /// @dev A `nav-centrifuge` config deploys the Centrifuge adapter with each of its own arguments in its place:
+    ///      each is read back from its own getter.
     function test_deployNavOracle_centrifugeConfigLandsInItsImmutables() external {
         uint64 poolId = 281474976710662;
         bytes16 shareClassId = 0x00010000000000060000000000000001;
@@ -85,7 +83,6 @@ contract DeployNavOracleTest is Test {
         assertEq(oracle.POOL_ID(), poolId, "POOL_ID");
         assertEq(oracle.SHARE_CLASS_ID(), shareClassId, "SHARE_CLASS_ID");
         assertEq(oracle.MAX_PRICE_AGE(), 3 days, "MAX_PRICE_AGE");
-        assertEq(oracle.MAX_LLTV(), LLTV, "MAX_LLTV");
         assertEq(oracle.PRICE_SCALE(), 1e18, "PRICE_SCALE");
     }
 

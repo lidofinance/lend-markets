@@ -11,18 +11,12 @@ import {NavOracleConfig, OracleConfigFile} from "./OracleConfigFile.sol";
 library NavOracleImplementation {
     function deploy(NavOracleConfig memory cfg) internal returns (address) {
         if (OracleConfigFile.isKind(cfg.kind, OracleConfigFile.KIND_NAV_USDY)) {
-            return address(new UsdyNavOracle(cfg.source, cfg.loanToken, cfg.collateralToken, cfg.maxLltv));
+            return address(new UsdyNavOracle(cfg.source, cfg.loanToken, cfg.collateralToken));
         }
         if (OracleConfigFile.isKind(cfg.kind, OracleConfigFile.KIND_NAV_CENTRIFUGE)) {
             return address(
                 new CentrifugeNavOracle(
-                    cfg.source,
-                    cfg.poolId,
-                    cfg.shareClassId,
-                    cfg.maxPriceAge,
-                    cfg.loanToken,
-                    cfg.collateralToken,
-                    cfg.maxLltv
+                    cfg.source, cfg.poolId, cfg.shareClassId, cfg.maxPriceAge, cfg.loanToken, cfg.collateralToken
                 )
             );
         }

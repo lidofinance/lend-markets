@@ -82,17 +82,21 @@ make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
 `nav-centrifuge`) from the config's constructor arguments, puts it behind an `OssifiableProxy` with
 the DAO Agent as admin, and initializes it from the live source with the config's `max_price_above_anchor`,
 `max_price_below_anchor`, `max_anchor_continuous_rise_rate`, `max_anchor_continuous_fall_rate`,
-`max_anchor_below_fence_base`, `max_anchor_above_fence_base`, `reanchor_delay` and `reanchor_window`. The constructor arguments include `max_lltv`, the highest LLTV of a market
-that may read the oracle, and, for `nav-centrifuge`, `max_price_age` in seconds. The initialization reverts unless the
-live source price is inside the config's `seed_min_price` and `seed_max_price`, which are source prices with 18 decimals.
-It also reverts unless the parameters pass the oracle's range checks and three rules, with the parameters as fractions.
-The sizing rule at `max_lltv`:
-`(1 − max_anchor_below_fence_base)(1 − max_price_below_anchor) ≥ LLTV × LIF × (1 + max_anchor_above_fence_base)(1 + max_price_above_anchor)`.
-The two delay rules:
+`max_anchor_below_fence_base`, `max_anchor_above_fence_base`, `reanchor_delay` and `reanchor_window`. For `nav-centrifuge`, the constructor arguments include `max_price_age` in
+seconds. The initialization reverts unless the live source price is inside the config's `seed_min_price` and
+`seed_max_price`, which are source prices with 18 decimals.
+
+It also reverts unless the parameters pass the oracle's range checks and the two delay rules, with the parameters as
+fractions:
 `e^(max_anchor_continuous_rise_rate × reanchor_delay / 365 days) − 1 ≤ max_price_above_anchor`
 and
 `1 − e^(−max_anchor_continuous_fall_rate × reanchor_delay / 365 days) ≤ max_price_below_anchor`.
-The config reader refuses a zero value for `max_lltv`, `max_price_age`, the seed range and each of the eight parameters.
+The config reader refuses a zero value for `max_price_age`, the seed range and each of the eight parameters.
+
+The oracle does not check the sizing rule, because it does not know the LLTV of the market:
+`(1 − max_anchor_below_fence_base)(1 − max_price_below_anchor) ≥ LLTV × LIF × (1 + max_anchor_above_fence_base)(1 + max_price_above_anchor)`.
+The preflight of `deploy-market` checks the rule at the LLTV of the market.
+The manager must keep the rule in each later `setParameters` call.
 
 The reader does not check the width of the seed range.
 The config reviewer must check that `seed_min_price` and `seed_max_price` are a narrow range around the live source price.
@@ -103,7 +107,7 @@ The deployer initializes as the temporary `DEFAULT_ADMIN_ROLE` holder, grants `M
 the EVMScriptExecutor and the Agent, and `PRICE_ACCEPTOR_ROLE` and `DEFAULT_ADMIN_ROLE` to the Agent, and renounces
 in the same broadcast. The artifact under `deployed/<RUN>/oracles/` records the kind, the constructor arguments,
 the eight parameters and the seed range. `deploy-market`'s preflight refuses the oracle unless the live source already
-prices inside the bounds, the market's LLTV is at most `max_lltv`, and each oracle role has exactly the holders above.
+prices inside the bounds, the parameters pass the sizing rule at the market's LLTV, and each oracle role has exactly the holders above.
 The preflight compares the live oracle with its config. After a later `setParameters` call, it refuses a new market on
 that oracle until the config has the live values. After a later role change, it refuses each new market on that oracle,
 because the config has no input for role holders. Acceptance runs the same oracle check on the live deployment.

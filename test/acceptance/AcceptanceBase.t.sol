@@ -559,8 +559,8 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
         if (isNav) {
             // The deploy preflight's own check, on the live oracle and the artifact's record of it: the implementation
-            // the record builds, the recorded parameters, a `MAX_LLTV` at or over the market's LLTV, and each role's
-            // whole member list. It reverts with the preflight's errors.
+            // the record builds, the recorded parameters, which pass the sizing rule at the market's LLTV, and each
+            // role's whole member list. It reverts with the preflight's errors.
             OraclePreflight.validateNav(
                 OracleConfigFile.parseNav(oracleCfg, ".oracle"),
                 oracle,

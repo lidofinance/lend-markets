@@ -123,14 +123,6 @@ error UnsupportedDecimals(uint256 loanDecimals, uint256 collateralDecimals);
 
 The loan and collateral decimals leave no room for the 1e36 convention.
 
-#### `InvalidMaxLltv`
-
-```solidity
-error InvalidMaxLltv(uint256 maxLltv);
-```
-
-`maxLltv` is not below a whole price.
-
 #### `InvalidParameters`
 
 ```solidity
@@ -184,7 +176,7 @@ The current price sits outside the range the price acceptor passed.
 #### `constructor`
 
 ```solidity
-constructor(address loanToken, address collateralToken, uint256 maxLltv);
+constructor(address loanToken, address collateralToken);
 ```
 
 **Parameters**
@@ -193,7 +185,6 @@ constructor(address loanToken, address collateralToken, uint256 maxLltv);
 | --- | --- | --- |
 | `loanToken` | `address` | Loan token; its decimals set `PRICE_SCALE`. |
 | `collateralToken` | `address` | Collateral token; its decimals set `PRICE_SCALE`. |
-| `maxLltv` | `uint256` | `MAX_LLTV`, below a whole price. |
 
 #### `initialize`
 
@@ -268,7 +259,9 @@ Makes `price()` revert until `resumesAt`, at most `MAX_PRICING_SUSPENSION` from 
 function setParameters(Parameters calldata parameters) external;
 ```
 
-Sets every parameter at once and drops the pending anchor; the anchor and `fenceBasePrice` stay where they are. Each bound must be above zero and below a whole price, the rise rate and the fall rate at most 1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, the delay at least `MIN_REANCHOR_DELAY` and no longer than each rate takes to cover its bound, and the window above zero. A position borrowed at `MAX_LLTV` against the highest price, the ceiling × (1 + maxPriceAboveAnchor), must still cover its debt and the core's liquidation incentive at the lowest, the floor × (1 − maxPriceBelowAnchor).
+Sets every parameter at once and drops the pending anchor; the anchor and `fenceBasePrice` stay where they are. Each bound must be above zero and below a whole price, the rise rate and the fall rate at most 1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, the delay at least `MIN_REANCHOR_DELAY` and no longer than each rate takes to cover its bound, and the window above zero.
+
+The oracle does not know the markets that read it, so it does not size the parameters for their LLTV. The manager must keep them so that a position borrowed at a market's LLTV against the highest price, the ceiling × (1 + maxPriceAboveAnchor), still covers its debt and the core's liquidation incentive at the lowest, the floor × (1 − maxPriceBelowAnchor).
 
 ### State variables
 
@@ -277,7 +270,6 @@ Sets every parameter at once and drops the pending anchor; the anchor and `fence
 | `MANAGER_ROLE` | `bytes32` (constant) | Sets the parameters and suspends pricing. |
 | `PRICE_ACCEPTOR_ROLE` | `bytes32` (constant) | Accepts the current price as the anchor, whatever its distance from the last one. |
 | `PRICE_SCALE` | `uint256` (immutable) | 10^(ORACLE_PRICE_DECIMALS + loanDecimals - collateralDecimals - PRICE_DECIMALS): the scaling of a price to the price Morpho reads. |
-| `MAX_LLTV` | `uint256` (immutable) | Highest LLTV of a market that may read this oracle, WAD. `setParameters()` sizes the floor, the ceiling and the bounds for it. |
 | `MIN_REANCHOR_DELAY` | `uint256` (constant) | Shortest `reanchorDelay`. |
 | `MAX_PRICING_SUSPENSION` | `uint256` (constant) | Longest a pricing suspension may run from the call that sets it. |
 | `maxPriceAboveAnchor` | `uint64` | How far the current price may sit above the anchor price before `price()` reverts, as a fraction of it, WAD. 0.0005e18 allows 0.05%. |
@@ -304,12 +296,7 @@ NAV oracle for USDY, reading Ondo's price getter.
 #### `constructor`
 
 ```solidity
-constructor(
-    address source,
-    address loanToken,
-    address collateralToken,
-    uint256 maxLltv
-);
+constructor(address source, address loanToken, address collateralToken);
 ```
 
 ### State variables
@@ -369,8 +356,7 @@ constructor(
     bytes16 scId,
     uint256 maxPriceAge,
     address loanToken,
-    address collateralToken,
-    uint256 maxLltv
+    address collateralToken
 );
 ```
 

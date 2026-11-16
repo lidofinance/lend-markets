@@ -32,7 +32,6 @@ contract AcceptanceNavOracleTest is AcceptanceMarketAssertions {
         cfg.source = address(getter);
         cfg.loanToken = loanToken;
         cfg.collateralToken = collateralToken;
-        cfg.maxLltv = lltv;
         cfg.parameters = TrailingAnchorOracleModel.defaultParameters();
         cfg.seedMinPrice = 1.09e18;
         cfg.seedMaxPrice = 1.11e18;
@@ -65,19 +64,10 @@ contract AcceptanceNavOracleTest is AcceptanceMarketAssertions {
         this.assertOracle();
     }
 
-    /// @dev A market at a higher LLTV than the oracle is sized for is refused.
-    function testRevert_assertOracle_marketLltvAboveMax() external {
+    /// @dev A market at a higher LLTV than the oracle's floor and ceiling fit is refused.
+    function testRevert_assertOracle_corridorTooWideForTheMarketLltv() external {
         lltv = 0.982e18;
-        vm.expectRevert(abi.encodeWithSelector(OraclePreflight.NavLltvAboveMax.selector, 0.982e18, 0.98e18));
-        this.assertOracle();
-    }
-
-    /// @dev An artifact that records another `max_lltv` than the deployed implementation was built with is refused:
-    ///      the implementation it describes has another codehash.
-    function testRevert_assertOracle_artifactRecordsAnotherMaxLltv() external {
-        cfg.maxLltv = 0.99e18;
-        _recordArtifact();
-        vm.expectPartialRevert(OraclePreflight.OracleImplementationMismatch.selector);
+        vm.expectPartialRevert(OraclePreflight.NavCorridorTooWide.selector);
         this.assertOracle();
     }
 

@@ -7,8 +7,6 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 
 import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
-import {UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
-import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
 
 import {TrailingAnchorOracleModel, TrailingAnchorOracleState} from "../setup/TrailingAnchorOracleModel.sol";
@@ -224,30 +222,15 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
         assertGt(m.core.position(m.id, borrower).collateral, 0, "collateral left after the incentive");
     }
 
-    /// @dev The same wrong jump with the ceiling out of the way, a `maxAnchorAboveFenceBase` of almost a whole price.
-    ///      The oracle refuses it at its 98% `MAX_LLTV`: with it, the keeper would re-anchor onto the wrong value one
-    ///      delay later, a position borrowed at LLTV against it would be insolvent when the true price returns, and
-    ///      its liquidation would leave bad debt.
-    function testRevert_wrongJumpUp_ceilingOutOfTheWayRefused() public {
-        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorAboveFenceBase = uint64(1e18 - 1);
-        vm.prank(governance);
-        vm.expectRevert(TrailingAnchorOracleBase.InvalidParameters.selector);
-        navOracle.setParameters(p);
-    }
-
-    /// @dev What the refusal above prevents, on an oracle sized for a lower LLTV than its market: the case the market
-    ///      preflight refuses. An upgrade puts a 50% `MAX_LLTV` under this 98% market, and the sizing rule then takes
-    ///      a ceiling 6% over the fence base price. The keeper re-anchors onto the wrong 5% jump one delay later, a
-    ///      position is borrowed at LLTV against it, and when the true price returns it is insolvent: its liquidation
-    ///      leaves bad debt.
-    function test_wrongJumpUp_oracleSizedForALowerLltvLeavesBadDebt() public {
+    /// @dev What the sizing rule of the market preflight prevents. The oracle takes a ceiling 6% over the fence base
+    ///      price, which the rule refuses at this market's 98% LLTV. The keeper re-anchors onto the wrong 5% jump one
+    ///      delay later, a position is borrowed at LLTV against it, and when the true price returns it is insolvent:
+    ///      its liquidation leaves bad debt.
+    function test_wrongJumpUp_corridorWiderThanTheSizingRuleLeavesBadDebt() public {
         Market storage m = _m();
-        address sizedFor50 = address(new UsdyNavOracle(address(nav), address(usdc), address(usdy), 0.5e18));
-        vm.prank(protocol.config.admin);
-        OssifiableProxy(payable(address(navOracle))).proxy__upgradeTo(sizedFor50);
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
         p.maxAnchorAboveFenceBase = 0.06e18;
+        assertFalse(TrailingAnchorOracleModel.sized(p, LLTV), "the sizing rule refuses the ceiling");
         vm.prank(governance);
         navOracle.setParameters(p);
 

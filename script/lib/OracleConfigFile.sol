@@ -33,7 +33,6 @@ struct NavOracleConfig {
     uint256 maxPriceAge;
     address loanToken;
     address collateralToken;
-    uint256 maxLltv;
     TrailingAnchorOracleBase.Parameters parameters;
     uint256 seedMinPrice;
     uint256 seedMaxPrice;
@@ -113,7 +112,6 @@ library OracleConfigFile {
             cfg.shareClassId = bytes16(scId);
             cfg.maxPriceAge = ConfigToml.requireUint(toml, string.concat(prefix, ".max_price_age"));
         }
-        cfg.maxLltv = ConfigToml.requireUint(toml, string.concat(prefix, ".max_lltv"));
         cfg.seedMinPrice = ConfigToml.requireUint(toml, string.concat(prefix, ".seed_min_price"));
         cfg.seedMaxPrice = ConfigToml.requireUint(toml, string.concat(prefix, ".seed_max_price"));
         // All eight are required non-zero: the oracle's validator needs both bounds, the delay and the window, a zero
@@ -213,7 +211,6 @@ library OracleConfigFile {
         }
         s = string.concat(s, "loan_token = \"", vm.toString(cfg.loanToken), "\"\n");
         s = string.concat(s, "collateral_token = \"", vm.toString(cfg.collateralToken), "\"\n");
-        s = string.concat(s, "max_lltv = \"", vm.toString(cfg.maxLltv), "\"\n");
         s = string.concat(s, "max_price_above_anchor = \"", vm.toString(uint256(p.maxPriceAboveAnchor)), "\"\n");
         s = string.concat(s, "max_price_below_anchor = \"", vm.toString(uint256(p.maxPriceBelowAnchor)), "\"\n");
         s = string.concat(
