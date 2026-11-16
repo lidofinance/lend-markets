@@ -12,11 +12,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {WAD} from "../libs/Constants.sol";
 
-/// @dev Decimals of the prices adapters return from `_currentPrice()` and the anchor stores.
-uint256 constant PRICE_DECIMALS = 18;
-/// @dev Decimals of the price Morpho reads: one collateral unit in loan units, scaled by 1e36.
-uint256 constant ORACLE_PRICE_DECIMALS = 36;
-
 /// @title TrailingAnchorOracleBase
 /// @author Lido
 /// @notice Lido Lend oracle for collateral priced from a source quoted in the loan token's currency, at one loan token
@@ -90,8 +85,13 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // CONSTANTS AND IMMUTABLES
     // ---
 
+    /// @dev Decimals of the prices adapters return from `_currentPrice()` and the anchor stores.
+    uint256 internal constant PRICE_DECIMALS = 18;
+    /// @dev Decimals of the price the core reads: one collateral unit in loan units, scaled by 1e36.
+    uint256 internal constant ORACLE_PRICE_DECIMALS = 36;
+
     /// @dev 10^(ORACLE_PRICE_DECIMALS + loanDecimals - collateralDecimals - PRICE_DECIMALS): the scaling of a price to
-    ///      the price Morpho reads.
+    ///      the price the core reads.
     uint256 public immutable PRICE_SCALE;
 
     /// @notice Shortest `reanchorDelay`.

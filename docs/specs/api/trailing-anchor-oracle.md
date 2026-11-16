@@ -269,7 +269,7 @@ The oracle does not know the markets that read it, so it does not size the param
 | --- | --- | --- |
 | `MANAGER_ROLE` | `bytes32` (constant) | Sets the parameters and suspends pricing. |
 | `PRICE_ACCEPTOR_ROLE` | `bytes32` (constant) | Accepts the current price as the anchor, whatever its distance from the last one. |
-| `PRICE_SCALE` | `uint256` (immutable) | 10^(ORACLE_PRICE_DECIMALS + loanDecimals - collateralDecimals - PRICE_DECIMALS): the scaling of a price to the price Morpho reads. |
+| `PRICE_SCALE` | `uint256` (immutable) | 10^(ORACLE_PRICE_DECIMALS + loanDecimals - collateralDecimals - PRICE_DECIMALS): the scaling of a price to the price the core reads. |
 | `MIN_REANCHOR_DELAY` | `uint256` (constant) | Shortest `reanchorDelay`. |
 | `MAX_PRICING_SUSPENSION` | `uint256` (constant) | Longest a pricing suspension may run from the call that sets it. |
 | `maxPriceAboveAnchor` | `uint64` | How far the current price may sit above the anchor price before `price()` reverts, as a fraction of it, WAD. 0.0005e18 allows 0.05%. |

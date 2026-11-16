@@ -10,11 +10,7 @@ import {WAD} from "../../src/libs/Constants.sol";
 
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
-import {
-    TrailingAnchorOracleBase,
-    ORACLE_PRICE_DECIMALS,
-    PRICE_DECIMALS
-} from "../../src/oracle/TrailingAnchorOracleBase.sol";
+import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {NavOracleImplementation} from "./NavOracleImplementation.sol";
@@ -41,6 +37,11 @@ interface IFeedDecimals {
 }
 
 library OraclePreflight {
+    /// @dev Decimals of the price a NAV source gives.
+    uint256 private constant NAV_PRICE_DECIMALS = 18;
+    /// @dev Decimals of the price the core reads: one collateral unit in loan units, scaled by 1e36.
+    uint256 private constant ORACLE_PRICE_DECIMALS = 36;
+
     error UnknownOracleConfig(string name);
     error AmbiguousOracleConfig(string name);
     error OracleNotContract(address oracle);
@@ -201,7 +202,7 @@ library OraclePreflight {
             ** (ORACLE_PRICE_DECIMALS
                 + IERC20Metadata(loanToken).decimals()
                 - IERC20Metadata(collateralToken).decimals()
-                - PRICE_DECIMALS);
+                - NAV_PRICE_DECIMALS);
         if (nav.PRICE_SCALE() != expectedScale) revert OracleScaleMismatch(expectedScale, nav.PRICE_SCALE());
         TrailingAnchorOracleBase.Parameters memory p = cfg.parameters;
         _requireUint("max_price_above_anchor", p.maxPriceAboveAnchor, nav.maxPriceAboveAnchor());
