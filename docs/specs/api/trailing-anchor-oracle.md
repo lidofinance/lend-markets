@@ -8,9 +8,12 @@ Standard inherited role-membership and role-administration functions are not rep
 
 ## TrailingAnchorOracleBase
 
-Oracle for collateral that has a price source in the currency of the loan token. It returns the current price of the source only while that price is near a stored anchor price. The anchor follows the source slowly. A large move of the source becomes the price only after a delay, which gives time to pause the markets that read the oracle.
+Oracle for a market. It returns the price of the collateral token in the loan token. The price comes from an external source. The oracle returns it only while it is near a stored anchor price. If the source moves far from the anchor, `price()` reverts. The anchor then moves to the new price only after a delay, which gives time to pause the market.
 
-An adapter binds a source in its constructor and reads it in `_currentPrice()`. Each adapter declares its own storage namespace, so an upgrade to a different adapter does not read the old anchor. The oracle counts one loan token as one unit of the source currency, and it does not read the price of the loan token. Anyone can call `updateAnchor()`. While the current price is inside the bounds, an update moves the anchor toward it, limited by the rise and fall rates: a drift. An update records a current price outside the bounds as the pending anchor. If the price stays outside the bounds for `reanchorDelay`, an update moves the anchor onto the pending anchor: a re-anchor. No update moves the anchor below the floor, and no re-anchor moves it above the ceiling. Only `acceptPrice()` moves it further.
+Each adapter reads one source in `_currentPrice()`. Each adapter has its own storage namespace, so an upgrade to a different adapter does not read the old anchor. The oracle assumes that one loan token is worth one unit of the source currency, for example 1 USDC = 1 USD. Anyone can call `updateAnchor()`:
+
+- Price inside the bounds: the anchor moves toward the price, limited by the rise and fall rates. This is a drift.
+- Price outside the bounds: the update records it as the pending anchor. If the price stays outside for `reanchorDelay`, the next update moves the anchor onto it. This is a re-anchor. A drift cannot move the anchor below the floor. A re-anchor cannot move it below the floor or above the ceiling. Only `acceptPrice()` moves it further.
 
 ### Enums
 
