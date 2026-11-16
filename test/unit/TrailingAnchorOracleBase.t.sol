@@ -25,7 +25,7 @@ import {MockOndoPriceGetter, SourceDown} from "../setup/NavSourceMocks.sol";
 /// @notice `TrailingAnchorOracleBase` method by method, run once through each adapter over its source mock.
 /// @dev The loan token has 6 decimals, like USDC. Every `updateAnchor()` call goes through `_update()`, which checks
 ///      the stored state and the exact logs against `TrailingAnchorOracleModel`; the key numbers are also written out
-///      with the bound, speed, floor and ceiling formulas in the tests, never read from the oracle.
+///      with the bound, rate, floor and ceiling formulas in the tests, never read from the oracle.
 abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     using TrailingAnchorOracleModel for TrailingAnchorOracleState;
 
@@ -43,13 +43,13 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     uint256 internal constant MAX_ANCHOR_ABOVE_FENCE_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_FENCE_BASE;
     uint256 internal constant DELAY = TrailingAnchorOracleModel.REANCHOR_DELAY;
     uint256 internal constant WINDOW = TrailingAnchorOracleModel.REANCHOR_WINDOW;
-    /// @dev The longest delay over which 6% a year, compounded continuously, rises at most 0.05%: x + x²/2 + x³/6 ≤
-    ///      0.0005 for x = 0.06 × delay / 365 days, found with exact integer arithmetic. The linear rule would give
-    ///      262,800 seconds.
+    /// @dev The longest delay over which a rate of 0.06, compounded continuously, rises at most 0.05%:
+    ///      x + x²/2 + x³/6 ≤ 0.0005 for x = 0.06 × delay / 365 days, found with exact integer arithmetic. The
+    ///      linear estimate, bound / rate, gives 262,800 seconds.
     uint256 internal constant LONGEST_DELAY_FOR_RISE = 262_734;
-    /// @dev The longest delay over which 1% a year, compounded continuously, falls at most 0.1%: c / (1 + c) ≤ 0.001
-    ///      for c = x + x²/2 + x³/6 and x = 0.01 × delay / 365 days, found with exact integer arithmetic. The linear
-    ///      rule would give 3,153,600 seconds.
+    /// @dev The longest delay over which a rate of 0.01, compounded continuously, falls at most 0.1%:
+    ///      c / (1 + c) ≤ 0.001 for c = x + x²/2 + x³/6 and x = 0.01 × delay / 365 days, found with exact integer
+    ///      arithmetic. The linear estimate, bound / rate, gives 3,153,600 seconds.
     uint256 internal constant LONGEST_DELAY_FOR_FALL = 3_155_177;
     /// @dev The EIP-1967 implementation slot the proxy reads on every call.
     bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
@@ -336,16 +336,16 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(oracle.price(), currentPrice * priceScale, "price is the current price");
     }
 
-    /// @dev A current price on the upper bound moves the anchor by one day of the rise speed compounded continuously,
+    /// @dev A current price on the upper bound moves the anchor by one day of the rise rate compounded continuously,
     ///      rounded down.
-    function test_updateAnchor_risesAtRiseSpeed() public {
+    function test_updateAnchor_risesAtRiseRate() public {
         vm.warp(START + 1 days);
         source.setCurrentPrice(_upper(INITIAL_PRICE));
         _update();
-        assertEq(_read().anchorPrice, INITIAL_PRICE + _riseStep(INITIAL_PRICE, 1 days), "one day of the rise speed");
+        assertEq(_read().anchorPrice, INITIAL_PRICE + _riseStep(INITIAL_PRICE, 1 days), "one day of the rise rate");
     }
 
-    /// @dev The rise speed is a continuous rate, so a year of rise is the same for any schedule of updates: one update
+    /// @dev The rise rate is a continuous rate, so a year of rise is the same for any schedule of updates: one update
     ///      after a year and an update every day both take the anchor to about e^0.06 = 1.0618365 times the seed, and
     ///      neither passes it. A rise of 6% a year, added once a day from the last anchor, would compound to 6.18%.
     ///      The bound is 10% here, so that one update can follow a whole year.
@@ -394,7 +394,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertGe(anchor, Math.mulDiv(INITIAL_PRICE, 1.0618359e18, WAD), "never under one whole-year step");
     }
 
-    /// @dev The rise rule takes a delay over which the rise speed covers exactly the upper bound. At 8.76% a year one
+    /// @dev The rise rule takes a delay over which the rise rate covers exactly the upper bound. At 8.76% a year one
     ///      hour is x = 0.00001, and x + x²/2 + x³/6 in WAD, each term rounded down, is 1e13 + 5e7 + 166: that bound
     ///      is taken, and one wei less is refused.
     function test_setParameters_riseOverOneDelayEqualToTheBound() public {
@@ -412,7 +412,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
 
     /// @dev A current price on the lower bound moves the anchor by one day of the fall rate compounded continuously,
     ///      rounded down.
-    function test_updateAnchor_fallsAtFallSpeed() public {
+    function test_updateAnchor_fallsAtFallRate() public {
         vm.warp(START + 1 days);
         source.setCurrentPrice(_lower(INITIAL_PRICE));
         _update();
@@ -420,10 +420,9 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     }
 
     /// @dev The fall rate is a continuous rate, so a year of fall is the same for any schedule of updates: one update
-    ///      after a year and an update every day both take the anchor to about e^−0.01 = 0.9900498 times the seed,
-    /// and
-    ///      neither goes under it. A fall of 1% a year, taken once from the seed, would go to 0.99. The bound is 10%
-    ///      here, so that one update can follow a whole year, and the floor is out of the way.
+    ///      after a year and an update every day both take the anchor to about e^−0.01 = 0.9900498 times the
+    ///      seed, and neither goes under it. A fall of 1% a year, taken once from the seed, would go to 0.99. The
+    ///      bound is 10% here, so that one update can follow a whole year, and the floor is out of the way.
     function test_updateAnchor_yearOfFallIndependentOfSchedule() public {
         _setParameters(_wideFall());
         uint256 limit = Math.mulDiv(INITIAL_PRICE, 0.990049833749168053e18, WAD);
@@ -448,9 +447,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     }
 
     /// @dev Any schedule: updates at random intervals of one to sixty days over a year, the source always under the
-    ///      anchor, leave the anchor between e^−0.01 = 0.9900498337 and one whole-year step, 1 / (1 + 0.01 + 0.01²/2
-    /// +
-    ///      0.01³/6) = 0.9900498342, times the seed.
+    ///      anchor, leave the anchor between e^−0.01 = 0.9900498337 and one whole-year step,
+    ///      1 / (1 + 0.01 + 0.01²/2 + 0.01³/6) = 0.9900498342, times the seed.
     function testFuzz_updateAnchor_yearOfFallNeverPassesTheContinuousRate(uint256 seed) public {
         _setParameters(_wideFall());
         uint256 time = START;
@@ -466,8 +464,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertLe(anchor, Math.mulDiv(INITIAL_PRICE, 0.9900498342e18, WAD), "never over one whole-year step");
     }
 
-    /// @dev After two years at rest the speeds would reach 12%, but a drift only follows a price within the bounds, so
-    ///      the anchor lands on the price: one move never passes the bound.
+    /// @dev After two years at rest the rise rate would reach 12.7%, but a drift only follows a price within the
+    ///      bounds, so the anchor lands on the price: one move never passes the bound.
     function test_updateAnchor_longRestMovesOnlyToThePrice() public {
         vm.warp(START + 2 * YEAR);
         uint256 high = _upper(INITIAL_PRICE);
@@ -476,9 +474,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(_read().anchorPrice, high, "the upper bound, not the reach");
     }
 
-    /// @dev The highest fall rate over three years at rest reaches almost the whole anchor: the anchor lands on the
-    ///      price.
-    function test_updateAnchor_fullFallSpeedAfterLongRest() public {
+    /// @dev The highest fall rate over three years at rest reaches 92% of the anchor: the anchor lands on the price.
+    function test_updateAnchor_highestFallRateAfterLongRest() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
         p.maxAnchorContinuousFallRate = uint64(WAD);
         _setParameters(p);
@@ -755,8 +752,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(_read().pendingAnchorPrice, risen, "the rise is the pending anchor");
     }
 
-    /// @dev A delay and a window near the type's maximum, which a manager might set to stop re-anchoring with the rise
-    ///      speed off, as the delay rule then allows, do not overflow the window arithmetic.
+    /// @dev A delay and a window near the type's maximum, which a manager might set to stop re-anchoring with both
+    ///      rates off, as the delay rules then allow, do not overflow the window arithmetic.
     function test_updateAnchor_hugeDelayDoesNotOverflow() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
         p.maxAnchorContinuousRiseRate = 0;
@@ -787,7 +784,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     }
 
     /// @dev Any walk of prices and times: every anchor move is a drift toward a price within the bounds, inside the
-    ///      speeds' reach, or a move onto the nearer of the price and a pending anchor recorded at least the delay
+    ///      rates' reach, or a move onto the nearer of the price and a pending anchor recorded at least the delay
     ///      before, with the price outside the bounds on the pending anchor's side. No move goes under the floor, no
     ///      re-anchor over the ceiling, a re-anchor leaves the fence base price, and a drift never widens the anchor's
     ///      gap over it nor raises it by more than its own step.
@@ -880,7 +877,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(_read().anchorPrice, _floor(INITIAL_PRICE), "on the floor");
     }
 
-    /// @dev A source that leaves the lower bound by 0.2% of the anchor in every window walks the anchor down one step a
+    /// @dev A source that leaves the lower bound by 0.1% of the anchor in every window walks the anchor down one step a
     ///      window and stops it on the floor, however many windows follow.
     function test_updateAnchor_walkStopsAtTheFloor() public {
         uint256 floorPrice = _floor(INITIAL_PRICE);
@@ -1050,7 +1047,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     /// @dev A zero `maxAnchorAboveFenceBase` keeps every re-anchor up at the fence base price: from the floor, a rise
     ///      re-anchors back onto it and no higher, while a drift still raises the anchor and the fence base price with
     ///      it.
-    function test_updateAnchor_zeroAboveFenceBaseStopsReanchorsOverTheMark() public {
+    function test_updateAnchor_zeroAboveFenceBaseStopsReanchorsOverTheFenceBase() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
         p.maxAnchorAboveFenceBase = 0;
         _setParameters(p);
@@ -1377,7 +1374,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     /// @dev Each validator edge: the last valid value is taken and the first invalid one refused.
     function test_setParameters_validatorEdges() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        // One-wei bounds leave the delay rules room only with both speeds off.
+        // One-wei bounds leave the delay rules room only with both rates off.
         p.maxPriceAboveAnchor = 1;
         p.maxPriceBelowAnchor = 1;
         p.maxAnchorContinuousRiseRate = 0;
@@ -1397,7 +1394,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         p = TrailingAnchorOracleModel.defaultParameters();
         p.reanchorDelay = uint40(LONGEST_DELAY_FOR_RISE);
         _setParameters(p);
-        // The longest delay the fall rule takes, with the rise speed off: 1 − e^(−1% × delay / 365 days) stays at
+        // The longest delay the fall rule takes, with the rise rate off: 1 − e^(−1% × delay / 365 days) stays at
         // most 0.1%.
         p.maxAnchorContinuousRiseRate = 0;
         p.reanchorDelay = uint40(LONGEST_DELAY_FOR_FALL);
@@ -1425,7 +1422,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     // ---
 
     /// @dev The base's state lives in the adapter's own namespace, low bits first: the bounds, `anchorAt` and
-    ///      `pricingResumesAt` in the first slot, the anchor price in the second, the speeds, the delay, the window and
+    ///      `pricingResumesAt` in the first slot, the anchor price in the second, the rates, the delay, the window and
     ///      `pendingAnchorAt` in the third, the pending anchor price in the fourth, `maxAnchorBelowFenceBase` and
     ///      `maxAnchorAboveFenceBase` in the fifth and `fenceBasePrice` in the sixth.
     function test_storage_namespaceLayout() public {
@@ -1601,22 +1598,22 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         return fenceBase + Math.mulDiv(fenceBase, MAX_ANCHOR_ABOVE_FENCE_BASE, WAD);
     }
 
-    /// @dev One parameter past its range in each case: a zero bound, a bound at a whole price, a speed over a whole
-    ///      price a year, a delay under an hour or longer than a speed takes to cover its bound, a zero window, and a
+    /// @dev One parameter past its range in each case: a zero bound, a bound at a whole price, a rate over 1e18, a
+    ///      delay under an hour or longer than a rate takes to cover its bound, a zero window, and a
     ///      `maxAnchorBelowFenceBase` or `maxAnchorAboveFenceBase` of a whole price.
     function _invalidParameters() internal pure returns (TrailingAnchorOracleBase.Parameters[] memory cases) {
         cases = new TrailingAnchorOracleBase.Parameters[](12);
         for (uint256 i; i < cases.length; ++i) {
             cases[i] = TrailingAnchorOracleModel.defaultParameters();
         }
-        // With both speeds off the delay rules take a zero bound, so only the bound's own check refuses it.
+        // With the rate on its side off, the delay rule takes a zero bound, so only the bound's own check refuses it.
         cases[0].maxPriceAboveAnchor = 0;
         cases[0].maxAnchorContinuousRiseRate = 0;
         cases[1].maxPriceBelowAnchor = 0;
         cases[1].maxAnchorContinuousFallRate = 0;
         cases[2].maxPriceAboveAnchor = uint64(WAD);
         cases[3].maxPriceBelowAnchor = uint64(WAD);
-        // Over a one-hour delay this speed covers 0.011%, inside the 0.05% bound, so only the speed's own limit
+        // Over a one-hour delay this rate covers 0.011%, inside the 0.05% bound, so only the rate's own limit
         // refuses it.
         cases[4].maxAnchorContinuousRiseRate = uint64(WAD + 1);
         cases[4].reanchorDelay = 1 hours;
@@ -1633,9 +1630,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         }
     }
 
-    /// @dev `anchor` × (e^x − 1) for x = MAX_ANCHOR_CONTINUOUS_RISE_RATE × elapsed / 365 days, with e^x − 1 as x
-    /// +
-    ///      x²/2 + x³/6, each term rounded down.
+    /// @dev `anchor` × (e^x − 1) for x = MAX_ANCHOR_CONTINUOUS_RISE_RATE × elapsed / 365 days, with e^x − 1 as
+    ///      x + x²/2 + x³/6, each term rounded down.
     function _riseStep(uint256 anchor, uint256 elapsed) internal pure returns (uint256) {
         uint256 x = MAX_ANCHOR_CONTINUOUS_RISE_RATE * elapsed / YEAR;
         uint256 x2 = x * x / (2 * WAD);
@@ -1643,9 +1639,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         return Math.mulDiv(anchor, x + x2 + x3, WAD);
     }
 
-    /// @dev `anchor` × (1 − e^(−x)) for x = MAX_ANCHOR_CONTINUOUS_FALL_RATE × elapsed / 365 days, with 1 −
-    /// e^(−x) as
-    ///      c / (1 + c) and c = x + x²/2 + x³/6, each step rounded down.
+    /// @dev `anchor` × (1 − e^(−x)) for x = MAX_ANCHOR_CONTINUOUS_FALL_RATE × elapsed / 365 days, with
+    ///      1 − e^(−x) as c / (1 + c) and c = x + x²/2 + x³/6, each step rounded down.
     function _fallStep(uint256 anchor, uint256 elapsed) internal pure returns (uint256) {
         uint256 x = MAX_ANCHOR_CONTINUOUS_FALL_RATE * elapsed / YEAR;
         uint256 x2 = x * x / (2 * WAD);
@@ -1738,5 +1733,344 @@ contract TrailingAnchorOracleUpgradeTest is Test {
     function _upgradeTo(address impl) internal {
         vm.prank(admin);
         IOssifiableProxy(address(oracle)).proxy__upgradeTo(impl);
+    }
+}
+
+/// @notice The rules `setParameters()` checks against `MAX_LLTV` and the delay. The expected edges come from the
+///         spec's sizing formula, written out here, not from the oracle.
+contract TrailingAnchorOracleBaseSizingTest is Test {
+    uint256 internal constant WAD = 1e18;
+    /// @dev The oracle rounds the needed side up and the room side down, so it may refuse a line up to this many wei
+    ///      inside the edge of the rule. In wei of a whole price, the two ceilings on the needed side add less than
+    ///      (1 + above)(1 + ceiling) + (1 + ceiling). The floor on the room and the last ceiling add less than 1
+    ///      together, since an integer is below ceil(y) only if it is below y. A ceiling k wei inside the edge leaves
+    ///      k × LLTV × LIF × (1 + above) of room, so a refusal needs that sum to be more. The edge stays
+    ///      under a whole price, so LLTV × LIF × (1 + above) is at least half the room, and k is at most 10. The
+    ///      floor needs only 3.
+    uint256 internal constant MAX_ROUNDING_GAP = 10;
+
+    MockOndoPriceGetter internal getter;
+    MockERC20 internal usdc;
+    MockERC20 internal usdy;
+    address internal admin = makeAddr("admin");
+    address internal manager = makeAddr("manager");
+
+    function setUp() public {
+        vm.warp(1_760_000_000);
+        getter = new MockOndoPriceGetter();
+        getter.setCurrentPrice(1e18);
+        usdc = new MockERC20("USD Coin", "USDC", 6);
+        usdy = new MockERC20("Ondo US Dollar Yield", "USDY", 18);
+    }
+
+    function testRevert_constructor_maxLltvNotBelowWad() public {
+        vm.expectRevert(abi.encodeWithSelector(TrailingAnchorOracleBase.InvalidMaxLltv.selector, WAD));
+        new UsdyNavOracle(address(getter), address(usdc), address(usdy), WAD);
+        UsdyNavOracle impl = new UsdyNavOracle(address(getter), address(usdc), address(usdy), WAD - 1);
+        assertEq(impl.MAX_LLTV(), WAD - 1, "MAX_LLTV");
+    }
+
+    /// @dev The largest `maxAnchorAboveFenceBase` the sizing rule leaves over each class's floor, by the spec's
+    ///      formula: 0.26% at a 98% LLTV with bounds of +0.05% and −0.1% and a 1% floor, 0.31% at ±0.05%, 0.21% at
+    ///      ±0.1%, and 1.23% at 92% with ±0.3% and 4%. Each edge passes, and one wei more is refused.
+    function test_setParameters_largestAboveFenceBaseIsTheEdge() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        _assertAboveFenceBaseEdge(p, 0.98e18, 0.0026e18, "0.26% at 98%");
+        p.maxPriceBelowAnchor = 0.0005e18;
+        _assertAboveFenceBaseEdge(p, 0.98e18, 0.0031e18, "0.31% at 98% with 0.05% bounds");
+        p.maxPriceAboveAnchor = 0.001e18;
+        p.maxPriceBelowAnchor = 0.001e18;
+        _assertAboveFenceBaseEdge(p, 0.98e18, 0.0021e18, "0.21% at 98% with 0.1% bounds");
+        p.maxPriceAboveAnchor = 0.003e18;
+        p.maxPriceBelowAnchor = 0.003e18;
+        p.maxAnchorBelowFenceBase = 0.04e18;
+        _assertAboveFenceBaseEdge(p, 0.92e18, 0.0123e18, "1.23% at 92% with 0.3% bounds and 4%");
+    }
+
+    /// @dev Under an LLTV of about 56.5% the core holds the liquidation incentive at 1.15. At 50% the rule needs
+    ///      0.5 × 1.15 × 1.0005 = 0.5752875 of the 0.99 × 0.999 the floor leaves, so the ceiling may sit 71.92% over
+    ///      the fence base price. With the incentive not held, 1 / 0.85, it would stop at 68.05%.
+    function test_setParameters_edgeWhereTheIncentiveIsHeld() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        _assertAboveFenceBaseEdge(p, 0.5e18, 0.71916e18, "71.92% at 50%");
+    }
+
+    /// @dev The other way round: with the working 0.2% ceiling the rule allows a floor about 1.06% under the fence base
+    ///      price at 98%, and with a 1% ceiling at 92% and ±0.3% bounds about 4.22%. Each edge passes, and one wei
+    ///      deeper is refused.
+    function test_setParameters_largestBelowFenceBaseIsTheEdge() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        uint256 largest = _largestBelowFenceBase(p, 0.98e18);
+        assertApproxEqAbs(largest, 0.0106e18, 0.00005e18, "1.06% at 98%");
+        TrailingAnchorOracleBase oracle = _deploy(0.98e18);
+        p.maxAnchorBelowFenceBase = uint64(largest);
+        _set(oracle, p);
+        p.maxAnchorBelowFenceBase = uint64(largest + 1);
+        _expectRefused(oracle, p);
+
+        p.maxPriceAboveAnchor = 0.003e18;
+        p.maxPriceBelowAnchor = 0.003e18;
+        p.maxAnchorAboveFenceBase = 0.01e18;
+        largest = _largestBelowFenceBase(p, 0.92e18);
+        assertApproxEqAbs(largest, 0.0422e18, 0.00005e18, "4.22% at 92% with 0.3% bounds and 1%");
+        oracle = _deploy(0.92e18);
+        p.maxAnchorBelowFenceBase = uint64(largest);
+        _set(oracle, p);
+        p.maxAnchorBelowFenceBase = uint64(largest + 1);
+        _expectRefused(oracle, p);
+    }
+
+    /// @dev The working 1% floor and 0.2% ceiling fit a 98% LLTV and not 98.2%, where the rule allows a ceiling of
+    ///      only about 0.12%: `initialize` refuses them there as `setParameters` does.
+    function testRevert_initialize_corridorTooWideForTheMaxLltv() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        assertApproxEqAbs(_largestAboveFenceBase(p, 0.982e18), 0.0012e18, 0.00005e18, "about 0.12% at 98.2%");
+        address impl = address(new UsdyNavOracle(address(getter), address(usdc), address(usdy), 0.982e18));
+        bytes memory init = TrailingAnchorOracleModel.initializeCall(admin, p);
+        vm.expectRevert(TrailingAnchorOracleBase.InvalidParameters.selector);
+        new OssifiableProxy(impl, admin, init);
+    }
+
+    /// @dev The fall side of the delay rule: with a 0.1% lower bound and a 48-hour delay a source may fall at a
+    ///      continuous rate of at most −ln(0.999) × 365 days / 48 hours = 18.2591% and stay within the bound
+    ///      over one delay. The edge, found with exact integer arithmetic on c / (1 + c) ≤ 0.001, passes, and one
+    ///      wei more is refused. The rise rate is off, so only the fall rule decides.
+    function test_setParameters_fallRateEdgeOverOneDelay() public {
+        TrailingAnchorOracleBase oracle = _deploy(0.98e18);
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorContinuousRiseRate = 0;
+        p.reanchorDelay = 48 hours;
+        p.maxAnchorContinuousFallRate = 182_591_310_886_608_672;
+        _set(oracle, p);
+        p.maxAnchorContinuousFallRate = 182_591_310_886_608_673;
+        _expectRefused(oracle, p);
+    }
+
+    /// @dev Any LLTV and any corridor: `setParameters()` takes the parameters only if the lowest price the oracle can
+    ///      return covers a debt borrowed at `MAX_LLTV` against the highest, with the core's incentive on top, and
+    ///      refuses them only if it does not. The inequality is checked in whole numbers with no division, so it shares
+    ///      no rounding with the oracle; the two may differ by the few wei the oracle rounds against the corridor.
+    ///      The oracle's rounding refuses a set up to 4.1 wei over the rule and takes one up to 3.7 wei under it.
+    function testFuzz_setParameters_takesACorridorOnlyIfItCoversTheLiquidation(
+        uint256 maxLltv,
+        uint64 above,
+        uint64 below,
+        uint64 belowFenceBase,
+        uint64 aboveFenceBase
+    ) public {
+        maxLltv = bound(maxLltv, 0.3e18, 0.99e18);
+        TrailingAnchorOracleBase.Parameters memory p = _narrowest();
+        TrailingAnchorOracleBase oracle = _deploy(maxLltv, p);
+        p.maxPriceAboveAnchor = uint64(bound(above, 1, 0.05e18));
+        p.maxPriceBelowAnchor = uint64(bound(below, 1, 0.05e18));
+        p.maxAnchorBelowFenceBase = uint64(bound(belowFenceBase, 0, 0.5e18));
+        p.maxAnchorAboveFenceBase = uint64(bound(aboveFenceBase, 0, 0.5e18));
+
+        vm.prank(manager);
+        try oracle.setParameters(p) {
+            assertTrue(_covers(p, maxLltv, 0, 4), "taken, so the corridor covers the liquidation");
+        } catch (bytes memory revertData) {
+            assertEq(bytes4(revertData), TrailingAnchorOracleBase.InvalidParameters.selector, "refused by the rule");
+            assertFalse(_covers(p, maxLltv, 5, 0), "refused, so the corridor does not cover the liquidation");
+        }
+    }
+
+    /// @dev At the edge of the sizing rule: the fuzzer picks `MAX_LLTV`, the bounds and one line, and the other line
+    ///      sits near the widest value the spec's rule allows for them. The oracle refuses every set the rule
+    ///      refuses, and refuses a set the rule takes only within `MAX_ROUNDING_GAP` of the edge.
+    function testFuzz_setParameters_edgeOfTheSizingRule(
+        uint256 maxLltv,
+        uint64 above,
+        uint64 below,
+        uint64 otherLine,
+        bool solveCeiling,
+        int256 offset
+    ) public {
+        maxLltv = bound(maxLltv, 0.3e18, 0.99e18);
+        TrailingAnchorOracleBase.Parameters memory p = _narrowest();
+        TrailingAnchorOracleBase oracle = _deploy(maxLltv, p);
+        p.maxPriceAboveAnchor = uint64(bound(above, 1, 0.01e18));
+        p.maxPriceBelowAnchor = uint64(bound(below, 1, 0.01e18));
+        _setLine(p, !solveCeiling, bound(otherLine, 0, 0.05e18));
+        uint256 edge = _widestLine(p, maxLltv, solveCeiling);
+        vm.assume(edge >= 2 * MAX_ROUNDING_GAP && edge <= WAD - 10);
+        offset = bound(offset, -2 * int256(MAX_ROUNDING_GAP), int256(MAX_ROUNDING_GAP));
+        _setLine(p, solveCeiling, uint256(int256(edge) + offset));
+        bool holds = TrailingAnchorOracleModel.sized(p, maxLltv);
+        assertEq(holds, offset <= 0, "the rule holds up to the edge");
+
+        vm.prank(manager);
+        try oracle.setParameters(p) {
+            assertTrue(holds, "taken where the rule fails");
+        } catch (bytes memory revertData) {
+            assertEq(bytes4(revertData), TrailingAnchorOracleBase.InvalidParameters.selector, "refused by the rule");
+            if (holds) {
+                assertLe(uint256(-offset), MAX_ROUNDING_GAP, "refused further inside the edge than the rounding");
+            }
+        }
+    }
+
+    /// @dev A ceiling 9 wei inside the edge of the rule at a 43.16% LLTV: the rule takes it, and the oracle's rounding
+    ///      refuses it.
+    function test_setParameters_ceilingNineWeiInsideTheEdgeIsWithinTheRounding() public {
+        testFuzz_setParameters_edgeOfTheSizingRule(
+            431558710300315627, 1881934947331682, 7062787411673335, 24141113695334605, true, -9
+        );
+    }
+
+    /// @dev `MAX_LLTV` belongs to the implementation, so an upgrade can raise it, and it leaves the stored parameters
+    ///      as they are: a corridor sized for 92% stays on an oracle that now reads 98%, until the next
+    ///      `setParameters()` call, which refuses the same values.
+    function test_upgrade_higherMaxLltvKeepsParametersItWouldRefuse() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxPriceAboveAnchor = 0.003e18;
+        p.maxPriceBelowAnchor = 0.003e18;
+        p.maxAnchorBelowFenceBase = 0.04e18;
+        p.maxAnchorAboveFenceBase = 0.01e18;
+        TrailingAnchorOracleBase oracle = _deploy(0.92e18, p);
+
+        address sizedFor98 = address(new UsdyNavOracle(address(getter), address(usdc), address(usdy), 0.98e18));
+        vm.prank(admin);
+        OssifiableProxy(payable(address(oracle))).proxy__upgradeTo(sizedFor98);
+
+        assertEq(oracle.MAX_LLTV(), 0.98e18, "MAX_LLTV after the upgrade");
+        assertEq(oracle.maxAnchorBelowFenceBase(), 0.04e18, "the 4% floor stays");
+        assertEq(oracle.maxAnchorAboveFenceBase(), 0.01e18, "the 1% ceiling stays");
+        _expectRefused(oracle, p);
+    }
+
+    // ---
+    // HELPERS
+    // ---
+
+    function _deploy(uint256 maxLltv) internal returns (TrailingAnchorOracleBase) {
+        return _deploy(maxLltv, TrailingAnchorOracleModel.defaultParameters());
+    }
+
+    function _deploy(uint256 maxLltv, TrailingAnchorOracleBase.Parameters memory p)
+        internal
+        returns (TrailingAnchorOracleBase oracle)
+    {
+        address impl = address(new UsdyNavOracle(address(getter), address(usdc), address(usdy), maxLltv));
+        oracle = TrailingAnchorOracleBase(
+            address(new OssifiableProxy(impl, admin, TrailingAnchorOracleModel.initializeCall(admin, p)))
+        );
+        bytes32 managerRole = oracle.MANAGER_ROLE();
+        vm.prank(admin);
+        oracle.grantRole(managerRole, manager);
+    }
+
+    function _set(TrailingAnchorOracleBase oracle, TrailingAnchorOracleBase.Parameters memory p) internal {
+        vm.prank(manager);
+        oracle.setParameters(p);
+    }
+
+    function _expectRefused(TrailingAnchorOracleBase oracle, TrailingAnchorOracleBase.Parameters memory p) internal {
+        vm.prank(manager);
+        vm.expectRevert(TrailingAnchorOracleBase.InvalidParameters.selector);
+        oracle.setParameters(p);
+    }
+
+    /// @dev Checks that `p`'s largest `maxAnchorAboveFenceBase` at `lltv` is about `expected`, that an oracle sized for
+    ///      `lltv` takes it, and that it refuses one wei more.
+    function _assertAboveFenceBaseEdge(
+        TrailingAnchorOracleBase.Parameters memory p,
+        uint256 lltv,
+        uint256 expected,
+        string memory label
+    ) internal {
+        uint256 largest = _largestAboveFenceBase(p, lltv);
+        assertApproxEqAbs(largest, expected, 0.00005e18, label);
+        TrailingAnchorOracleBase oracle = _deploy(lltv);
+        p.maxAnchorAboveFenceBase = uint64(largest);
+        _set(oracle, p);
+        p.maxAnchorAboveFenceBase = uint64(largest + 1);
+        _expectRefused(oracle, p);
+    }
+
+    /// @dev The widest `maxAnchorAboveFenceBase` the sizing rule allows, from the spec's formula: the highest price the
+    ///      oracle returns, the ceiling × (1 + maxPriceAboveAnchor), times LLTV × LIF must stay under the lowest, the
+    ///      floor × (1 − maxPriceBelowAnchor), with LIF rounded down as the core rounds it, and every other step
+    ///      rounded against the corridor.
+    function _largestAboveFenceBase(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint256 room = (WAD - p.maxAnchorBelowFenceBase) * (WAD - p.maxPriceBelowAnchor) / WAD;
+        uint256 needed = _neededAtTheFenceBase(p, lltv);
+        return room < needed ? 0 : room * WAD / needed - WAD;
+    }
+
+    /// @dev The widest `maxAnchorBelowFenceBase` the sizing rule allows for `p`'s `maxAnchorAboveFenceBase`, from the
+    ///      same formula.
+    function _largestBelowFenceBase(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint256 needed = _ceilDiv(_neededAtTheFenceBase(p, lltv) * (WAD + p.maxAnchorAboveFenceBase), WAD);
+        return WAD - _ceilDiv(needed * WAD, WAD - p.maxPriceBelowAnchor);
+    }
+
+    /// @dev What the rule needs with the ceiling on the fence base price: LLTV × LIF × (1 + maxPriceAboveAnchor),
+    ///      with LIF rounded down as the core rounds it, and each other step rounded up.
+    function _neededAtTheFenceBase(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint256 lif = TrailingAnchorOracleModel.liquidationIncentive(lltv);
+        return _ceilDiv(_ceilDiv(lltv * lif, WAD) * (WAD + p.maxPriceAboveAnchor), WAD);
+    }
+
+    /// @dev Parameters every LLTV up to 99% takes: 0.01% bounds, the floor and the ceiling on the fence base price,
+    ///      both rates off and the shortest delay, so that only the sizing rule decides the fuzzed corridor.
+    function _narrowest() internal pure returns (TrailingAnchorOracleBase.Parameters memory p) {
+        p.maxPriceAboveAnchor = 0.0001e18;
+        p.maxPriceBelowAnchor = 0.0001e18;
+        p.reanchorDelay = 1 hours;
+        p.reanchorWindow = 1;
+    }
+
+    /// @dev The sizing rule in whole numbers: (1 − below fence)(1 − below anchor) ≥ LLTV × LIF × (1 + above
+    ///      fence)(1 + above anchor), with LIF = 10 / (7 + 3 × LLTV), or 1.15 where that is higher, and both sides
+    ///      multiplied through. `slackFor` wei of a whole price are added to the left side and `slackAgainst` taken
+    ///      from it.
+    function _covers(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv, uint256 slackAgainst, uint256 slackFor)
+        internal
+        pure
+        returns (bool)
+    {
+        uint256 room = (WAD - p.maxAnchorBelowFenceBase) * (WAD - p.maxPriceBelowAnchor);
+        uint256 reach = (WAD + p.maxAnchorAboveFenceBase) * (WAD + p.maxPriceAboveAnchor);
+        room = room + slackFor * WAD - slackAgainst * WAD;
+        if (10 * WAD * 100 > 115 * (7 * WAD + 3 * lltv)) return room * 100 * WAD >= 115 * lltv * reach;
+        return room * (7 * WAD + 3 * lltv) >= 10 * lltv * reach;
+    }
+
+    /// @dev The widest value of the ceiling, or of the floor, under a whole price for which the spec's rule holds with
+    ///      the rest of `p`, by bisection on the model. Zero when the rule fails even with that line at zero.
+    function _widestLine(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv, bool ceiling)
+        internal
+        pure
+        returns (uint256 widest)
+    {
+        uint256 refused = WAD;
+        while (refused - widest > 1) {
+            uint256 middle = (widest + refused) / 2;
+            _setLine(p, ceiling, middle);
+            if (TrailingAnchorOracleModel.sized(p, lltv)) widest = middle;
+            else refused = middle;
+        }
+    }
+
+    function _setLine(TrailingAnchorOracleBase.Parameters memory p, bool ceiling, uint256 value) internal pure {
+        if (ceiling) p.maxAnchorAboveFenceBase = uint64(value);
+        else p.maxAnchorBelowFenceBase = uint64(value);
+    }
+
+    function _ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+        return (a + b - 1) / b;
     }
 }

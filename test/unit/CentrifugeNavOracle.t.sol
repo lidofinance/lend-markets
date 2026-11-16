@@ -34,9 +34,10 @@ contract CentrifugeNavOracleTest is Test {
         usdc = new MockERC20("USD Coin", "USDC", 6);
     }
 
-    /// @dev The live Spoke returns three markers: the stamp, the maximum age and the end of validity. The end of
-    ///      validity is the stamp plus the maximum age, and it saturates when the maximum age is unbounded.
-    function test_spokeMarkers_matchTheLiveTuple() public {
+    /// @dev The mock returns the three markers of the live Spoke: the stamp, the maximum age and the end of validity.
+    ///      The end of validity is the stamp plus the maximum age, and it saturates when the maximum age is
+    ///      unbounded.
+    function test_spokeMarkers_mockReturnsTheSpokeTuple() public {
         (bool ok, bytes memory returned) = address(spoke)
             .staticcall(abi.encodeWithSelector(spoke.markersPricePoolPerShare.selector, JTRSY_POOL, JTRSY_SC));
         assertTrue(ok, "markers call");

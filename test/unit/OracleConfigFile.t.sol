@@ -25,8 +25,10 @@ contract OracleConfigFileHarness {
     }
 }
 
-/// @notice Unit tests for the USDY oracle configuration: the sanity band travels from the TOML into the
-///         constructor arguments, and a config missing or zeroing either bound is rejected before broadcast.
+/// @notice Unit tests for the oracle configuration files. USDY: the sanity band travels from the TOML into the
+///         constructor arguments, and a config missing or zeroing either bound is rejected before broadcast. NAV:
+///         every constructor argument and parameter travels from the TOML into the deployment and back from the
+///         artifact.
 contract OracleConfigFileTest is Test {
     OracleConfigFileHarness internal harness;
     string internal toml;
@@ -184,7 +186,7 @@ contract OracleConfigFileTest is Test {
         harness.parseNav(invalid, "");
     }
 
-    /// @dev The floor's and the ceiling's keys and the window are as required as the older keys.
+    /// @dev The floor's and the ceiling's keys and the window are required.
     function testRevert_parseNav_missingFloorCeilingOrWindow() external {
         string memory invalid = vm.replace(_navUsdyToml(), "max_anchor_below_fence_base = \"10000000000000000\"\n", "");
         vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_below_fence_base"));
@@ -197,7 +199,7 @@ contract OracleConfigFileTest is Test {
         harness.parseNav(invalid, "");
     }
 
-    /// @dev The validator needs both bounds, the delay and the window, a zero speed would leave the anchor unable to
+    /// @dev The validator needs both bounds, the delay and the window, a zero rate would leave the anchor unable to
     ///      follow the source, and a zero `max_anchor_below_fence_base` or `max_anchor_above_fence_base` would leave
     ///      every honest re-anchor under or over the fence base price to governance, so a zero one is refused as unset
     ///      before broadcast.
@@ -267,9 +269,9 @@ contract OracleConfigFileTest is Test {
         harness.parseNav(invalid, "");
     }
 
-    /// @dev What deployment records under `[oracle]` reads back to the config it came from.
-    /// @dev Both kinds, and a `max_price_age` above the widest bare TOML integer, 2^63 − 1: every number the config
-    ///      takes as a quoted string must come back from the artifact.
+    /// @dev What deployment records under `[oracle]` reads back to the config it came from: both kinds, and a
+    ///      `max_price_age` above the widest bare TOML integer, 2^63 − 1. Every number the config takes as a quoted
+    ///      string must come back from the artifact.
     function test_navArtifact_roundTrips() external view {
         string[3] memory configs = [
             _navCentrifugeToml(),

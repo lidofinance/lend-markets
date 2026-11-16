@@ -18,16 +18,16 @@ import {MockERC20} from "../setup/Mocks.sol";
 import {INavSourceMock, MockCentrifugeSpoke, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
 
 /// @notice A year of NAV series shaped like the token classes the oracle prices, each replayed through the adapter of
-///         its source with the bounds and speeds sized for its class:
+///         its source with the bounds and rates sized for its class:
 ///         - an accruing token like USDY steps every day, through `UsdyNavOracle`;
 ///         - a treasury fund like JTRSY strikes its NAV on business days and catches up the accrual after weekends and
 ///           a holiday, through `CentrifugeNavOracle`;
 ///         - a credit fund like JAAA does the same with a daily move either way and one sharp fall, through
 ///           `CentrifugeNavOracle`.
 ///         With a keeper that updates every day, no day reverts, the price is the current price on every day, the
-///         anchor follows the source at the speeds and stays above its floor, and no pending anchor is ever recorded.
+///         anchor follows the source at the rates and stays above its floor, and no pending anchor is ever recorded.
 ///         Without a keeper the accruing token leaves its bound within days, and a creeping source gains its bound once
-///         and then only the rise speed. A fourth series, the credit fund with a drawdown shaped like the JAAA
+///         and then only the rise rate. A fourth series, the credit fund with a drawdown shaped like the JAAA
 ///         strategy's worst since 2020, is followed with the credit class's floor, 4% under the fence base price, and
 ///         with a 1% one stops on the floor and then, after the acceptances there, on the ceiling.
 /// @dev The loan token has 6 decimals, like USDC: the price scale is 1e6 for the 18-decimal USDY and 1e18 for the
@@ -54,22 +54,22 @@ contract NavOracleReplayTest is Test {
     uint256 internal constant ACCRUING_BOUND = 0.0005e18;
     uint256 internal constant TREASURY_BOUND = 0.001e18;
     uint256 internal constant CREDIT_BOUND = 0.003e18;
-    /// @dev The speeds: a rise above the class's yield, so the anchor keeps up, and a fall well under it. The credit
-    ///      fund's noise outruns a 6% rise, so its anchor rises at 8% and still trails the source by up to about 0.29%,
-    ///      inside its 0.3% bound.
-    /// @dev The LLTV each class's market runs at, and its oracle is sized for.
+    /// @dev The LLTV each class's market runs at, and its oracle is sized for: 98% for the accruing token and the
+    ///      treasury fund, and 92% for the credit fund.
     uint256 internal constant TREASURY_LLTV = 0.98e18;
     uint256 internal constant CREDIT_LLTV = 0.92e18;
+    /// @dev The rates: a rise above the class's yield, so the anchor keeps up, and a fall well under it. The credit
+    ///      fund's noise outruns a rate of 0.06, so its anchor rises at 0.08 and still trails the source by up to
+    ///      about 0.29%, inside its 0.3% bound.
     uint256 internal constant RISE = 0.06e18;
     uint256 internal constant FALL = 0.01e18;
     uint256 internal constant CREDIT_RISE = 0.08e18;
     /// @dev The floors under the fence base price: the working 1% for the accruing token and the treasury fund, and 4%
-    ///      for the credit fund, about 1.2% under the 5.17% at which a 92% LLTV position borrowed at the top of its
-    ///      0.3% bounds stops covering its liquidation at the bottom, which leaves room for interest accrued on the
-    ///      floor.
+    ///      for the credit fund, under the 4.22% the sizing rule allows at a 92% LLTV with its 0.3% bounds and 1%
+    ///      ceiling, which leaves room for interest accrued on the floor.
     uint256 internal constant BELOW_FENCE_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_FENCE_BASE;
     uint256 internal constant CREDIT_BELOW_FENCE_BASE = 0.04e18;
-    /// @dev The ceilings over the fence base price, about 80% of the room the corridor rule leaves over each floor:
+    /// @dev The ceilings over the fence base price, 70% to 80% of the room the sizing rule leaves over each floor:
     ///      0.31% for the accruing token and 0.21% for the treasury fund at a 98% LLTV, and 1.23% for the credit fund
     ///      at a 92% LLTV.
     uint256 internal constant ACCRUING_ABOVE_FENCE_BASE = 0.0025e18;
@@ -112,7 +112,7 @@ contract NavOracleReplayTest is Test {
         assertEq(lag, 0, "the anchor reaches the source on every strike");
     }
 
-    /// @dev The credit fund's noise outruns the speeds on some days, so the anchor trails the source, but never far
+    /// @dev The credit fund's noise outruns the rates on some days, so the anchor trails the source, but never far
     ///      enough for the price to leave the bounds. A trailing anchor keeps moving toward the source on the days it
     ///      pauses, so it is never older than the longest pause.
     function test_replay_creditFund() public {
@@ -186,18 +186,16 @@ contract NavOracleReplayTest is Test {
         assertEq(day, 5, "leaves the bound on day 5");
     }
 
-    /// @dev A source held at the upper bound of each new anchor, updated every day: the price is accepted every day, a
-    ///      second update in the same block moves nothing, and the anchor rises by exactly one day of the rise speed
-    ///      each day, compounded continuously: e^x − 1 as x + x²/2 + x³/6 for x = 6% × 1 day / 365 days, each term
-    ///      rounded down. So after 60 days it has gained e^(6% × 60 / 365) and no more, and the returned price the
-    ///      0.05% bound on top.
-    function test_creepingSource_gainsBoundOnceThenRiseSpeed() public {
+    /// @dev A source held at the upper bound of each new anchor, updated every day: the price is returned every day, a
+    ///      second update in the same block moves nothing, and the anchor rises by exactly one day of the rise rate
+    ///      each day, compounded continuously. So after 60 days it has gained e^(0.06 × 60 / 365) and no more, and
+    ///      the returned price the 0.05% bound on top.
+    function test_creepingSource_gainsBoundOnceThenRiseRate() public {
         uint256 initial = 1.1e18;
         (TrailingAnchorOracleBase oracle, INavSourceMock source) = _deployUsdy(initial, ACCRUING_BOUND, RISE, FALL);
         uint256 steps = 60;
         uint256 expected = initial;
-        uint256 x = RISE * 1 days / YEAR;
-        uint256 dailyRise = x + x * x / (2 * WAD) + x * x / (2 * WAD) * x / (3 * WAD);
+        uint256 dailyRise = TrailingAnchorOracleModel.compoundedRise(RISE, 1 days);
         for (uint256 i = 1; i <= steps; ++i) {
             vm.warp(START + i * 1 days);
             TrailingAnchorOracleState memory s = TrailingAnchorOracleModel.read(oracle);
@@ -205,7 +203,7 @@ contract NavOracleReplayTest is Test {
             assertEq(oracle.price(), s.upperBound() * 1e6, "the upper bound is returned");
             oracle.updateAnchor();
             expected += Math.mulDiv(expected, dailyRise, WAD);
-            assertEq(oracle.anchorPrice(), expected, "one day of the rise speed");
+            assertEq(oracle.anchorPrice(), expected, "one day of the rise rate");
 
             source.setCurrentPrice(TrailingAnchorOracleModel.read(oracle).upperBound());
             oracle.updateAnchor();
@@ -222,7 +220,7 @@ contract NavOracleReplayTest is Test {
     // ---
 
     /// @dev Replays `series` day by day with a keeper that updates every day, and checks each day against the model.
-    ///      Returns the oldest anchor seen and the largest gap the speeds left between the source and the anchor after
+    ///      Returns the oldest anchor seen and the largest gap the rates left between the source and the anchor after
     ///      the day's update, as a WAD fraction of the anchor.
     function _replayWithKeeper(
         TrailingAnchorOracleBase oracle,
@@ -334,7 +332,7 @@ contract NavOracleReplayTest is Test {
         return (impl, spoke);
     }
 
-    /// @dev The same bound both ways, the class's speeds, floor and ceiling, and the working delay and window.
+    /// @dev The same bound both ways, the class's rates, floor and ceiling, and the working delay and window.
     function _deploy(
         address impl,
         uint256 bound_,

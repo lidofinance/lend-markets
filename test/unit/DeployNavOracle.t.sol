@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 
 import {CentrifugeNavOracle} from "../../src/oracle/CentrifugeNavOracle.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
-import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {DeployNavOracle} from "../../script/DeployNavOracle.s.sol";
 import {NavOracleConfig, OracleConfigFile} from "../../script/lib/OracleConfigFile.sol";
 import {OraclePreflight} from "../../script/lib/OraclePreflight.sol";

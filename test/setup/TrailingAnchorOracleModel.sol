@@ -50,10 +50,11 @@ library TrailingAnchorOracleModel {
     uint256 internal constant MIN_REANCHOR_DELAY = 1 hours;
     uint256 internal constant MAX_PRICING_SUSPENSION = 7 days;
 
-    /// @dev Working defaults: a USDY-sized 0.05% bound up and a wider 0.1% down; an anchor that may drift 6% a year up
-    ///      and 1% down, a little above a treasury yield and well under it; a floor 1% under the fence base price and a
-    ///      ceiling 0.2% over it, inside the 0.26% at which a 98% LLTV position borrowed at the top of the ceiling's
-    ///      bounds stops covering its liquidation at the bottom of the floor's; a six-hour delay and a one-day window.
+    /// @dev Working defaults: a USDY-sized 0.05% bound up and a wider 0.1% down; an anchor that may drift at a
+    ///      continuous rate of 0.06 up and 0.01 down, 6.18% and 0.995% a year, a little above a treasury yield and
+    ///      well under it; a floor 1% under the fence base price and a ceiling 0.2% over it, inside the 0.26% at
+    ///      which a 98% LLTV position borrowed at the top of the ceiling's bounds stops covering its liquidation at
+    ///      the bottom of the floor's; a six-hour delay and a one-day window.
     uint256 internal constant MAX_PRICE_ABOVE_ANCHOR = 0.0005e18;
     uint256 internal constant MAX_PRICE_BELOW_ANCHOR = 0.001e18;
     uint256 internal constant MAX_ANCHOR_CONTINUOUS_RISE_RATE = 0.06e18;
@@ -63,7 +64,7 @@ library TrailingAnchorOracleModel {
     uint256 internal constant REANCHOR_DELAY = 6 hours;
     uint256 internal constant REANCHOR_WINDOW = 1 days;
     /// @dev The `MAX_LLTV` of the shared suites: zero, so the sizing rule takes any parameters and the suites can move
-    ///      the floor and the ceiling out of the way. The sizing rule has tests of its own at a 98% LLTV.
+    ///      the floor and the ceiling out of the way. The sizing rule has tests of its own.
     uint256 internal constant MAX_LLTV = 0;
 
     // ---
@@ -248,8 +249,8 @@ library TrailingAnchorOracleModel {
         return x + square + Math.mulDiv(square, x, 3 * WAD);
     }
 
-    /// @dev 1 − e^(−x) for `x` = rate × elapsed / 365 days, as c / (1 + c) with c = `compoundedRise`, rounded
-    /// down.
+    /// @dev 1 − e^(−x) for `x` = rate × elapsed / 365 days, as c / (1 + c) with c = `compoundedRise`,
+    ///      rounded down.
     function compoundedFall(uint256 rate, uint256 elapsed) internal pure returns (uint256) {
         uint256 compounded = compoundedRise(rate, elapsed);
         return Math.mulDiv(compounded, WAD, WAD + compounded);
@@ -473,19 +474,8 @@ library TrailingAnchorOracleModel {
         u.pendingAnchorCleared = true;
     }
 
-    /// @dev The revert `acceptPrice(minPrice, maxPrice)` gives a price acceptor, or nothing: the source, the range and
-    ///      a zero price.
-    function acceptRevert(
-        TrailingAnchorOracleState memory s,
-        uint256 currentPrice,
-        bool sourceDown,
-        uint256 minPrice,
-        uint256 maxPrice
-    ) internal pure returns (bytes memory) {
-        return acceptRevert(s, currentPrice, sourceRevert(sourceDown), minPrice, maxPrice);
-    }
-
-    /// @dev `acceptRevert` for a source whose read reverts with `sourceError`, or does not when it is empty.
+    /// @dev The revert `acceptPrice(minPrice, maxPrice)` gives a price acceptor, or nothing: the source's own
+    ///      `sourceError` when it is not empty, then the range, then a zero price.
     function acceptRevert(
         TrailingAnchorOracleState memory s,
         uint256 currentPrice,
@@ -544,16 +534,18 @@ library TrailingAnchorOracleModel {
 
     /// @dev The sizing rule from the spec formula and not from the contract: (1 − maxAnchorBelowFenceBase)(1 −
     ///      maxPriceBelowAnchor) ≥ LLTV × LIF × (1 + maxAnchorAboveFenceBase)(1 + maxPriceAboveAnchor). LIF is the
-    ///      integer incentive that the core applies in a liquidation, `min(MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD /
-    ///      (WAD − LIQUIDATION_CURSOR × (WAD − LLTV)))` with each division rounded down. The rest is multiplied
-    /// through
-    ///      in whole numbers, so nothing else is rounded.
+    ///      `liquidationIncentive`. The rest is multiplied through in whole numbers, so nothing else is rounded.
     function sized(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv) internal pure returns (bool) {
-        uint256 incentive =
-            Math.min(MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD * WAD / (WAD - LIQUIDATION_CURSOR * (WAD - lltv) / WAD));
-        uint256 room = (WAD - p.maxAnchorBelowFenceBase) * (WAD - p.maxPriceBelowAnchor);
-        uint256 reach = (WAD + p.maxAnchorAboveFenceBase) * (WAD + p.maxPriceAboveAnchor);
-        return room * WAD * WAD >= lltv * incentive * reach;
+        uint256 lowest = (WAD - p.maxAnchorBelowFenceBase) * (WAD - p.maxPriceBelowAnchor);
+        uint256 highest = (WAD + p.maxAnchorAboveFenceBase) * (WAD + p.maxPriceAboveAnchor);
+        return lowest * WAD * WAD >= lltv * liquidationIncentive(lltv) * highest;
+    }
+
+    /// @dev The integer incentive that the core applies in a liquidation at `lltv`, WAD:
+    ///      `min(MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD / (WAD − LIQUIDATION_CURSOR × (WAD − lltv)))` with each
+    ///      division rounded down.
+    function liquidationIncentive(uint256 lltv) internal pure returns (uint256) {
+        return Math.min(MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD * WAD / (WAD - LIQUIDATION_CURSOR * (WAD - lltv) / WAD));
     }
 
     /// @dev `InvalidPricingResumesAt(resumesAt)` when it ends more than `MAX_PRICING_SUSPENSION` after `time`.

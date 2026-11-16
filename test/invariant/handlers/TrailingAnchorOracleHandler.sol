@@ -19,7 +19,7 @@ import {INavSourceMock, MockCentrifugeSpoke} from "../../setup/NavSourceMocks.so
 /// @dev The handler keeps a shadow of the stored state and updates it by the model only. Before each call it predicts,
 ///      from the shadow, whether the call succeeds and otherwise the exact revert data, so a call the rules allow
 ///      reverts the run and a call they refuse must revert with the predicted error. Ghost counters record what the
-///      suite's invariants read, each checked against the bounds, speed, step, floor and ceiling formulas rather than
+///      suite's invariants read, each checked against the bounds, rate, step, floor and ceiling formulas rather than
 ///      the model.
 contract TrailingAnchorOracleHandler is Test {
     using TrailingAnchorOracleModel for TrailingAnchorOracleState;
@@ -31,12 +31,12 @@ contract TrailingAnchorOracleHandler is Test {
     address internal immutable MANAGER;
     address internal immutable PRICE_ACCEPTOR;
     /// @dev The LLTV the oracle is sized for, and the share of the highest returned price a later price must keep for
-    ///      a debt borrowed at that LLTV to be liquidated whole: LLTV × LIF, with the core's LIF = min(1.15,
-    ///      1 / (1 − 0.3 × (1 − LLTV))), WAD.
+    ///      a debt borrowed at that LLTV to be liquidated whole: LLTV × LIF, with the core's integer LIF, WAD.
     uint256 internal immutable MAX_LLTV;
     uint256 internal immutable COVERAGE;
-    /// @dev What the oracle's roundings may take from a price, in the units of `price()` × WAD: 16 wei of an
-    ///      18-decimal price.
+    /// @dev What the oracle's roundings may take from a price, in the units of `price()` × WAD: 1 wei of an
+    ///      18-decimal price. The lower bound is the one value rounded down toward a lower price, by under 1 wei. The
+    ///      floor rounds up, the ceiling and the upper bound round down, and the sizing rule rounds against itself.
     uint256 internal immutable ROUNDING;
     /// @dev The adapter's `MAX_PRICE_AGE` when the source is a Centrifuge Spoke that stamps its price, zero otherwise.
     uint256 internal immutable MAX_PRICE_AGE;
@@ -45,7 +45,7 @@ contract TrailingAnchorOracleHandler is Test {
 
     /// @dev Ghost violations: an update that stopped or changed a price returned just before it, a parameter change
     ///      that changed a returned price, and an anchor move that is neither a drift toward a price within the bounds
-    ///      inside the speeds' reach nor a move onto a pending anchor recorded at least the delay before.
+    ///      inside the rates' reach nor a move onto a pending anchor recorded at least the delay before.
     uint256 public stoppedPrices;
     uint256 public parameterPriceChanges;
     uint256 public strayAnchorMoves;
@@ -93,16 +93,15 @@ contract TrailingAnchorOracleHandler is Test {
         shadow = TrailingAnchorOracleModel.read(oracle);
         expectedFenceBasePrice = oracle.anchorPrice();
         MAX_LLTV = oracle.MAX_LLTV();
-        uint256 incentive = Math.min(1.15e18, WAD * WAD / (WAD - 0.3e18 * (WAD - MAX_LLTV) / WAD));
-        COVERAGE = MAX_LLTV * incentive / WAD;
-        ROUNDING = 16 * oracle.PRICE_SCALE() * WAD;
+        COVERAGE = MAX_LLTV * TrailingAnchorOracleModel.liquidationIncentive(MAX_LLTV) / WAD;
+        ROUNDING = oracle.PRICE_SCALE() * WAD;
     }
 
-    /// @dev After each action: a returned price must cover a debt borrowed at `MAX_LLTV` against the highest price
-    ///      returned since the corridor was last set.
+    /// @dev After each action on an oracle sized for an LLTV: a returned price must cover a debt borrowed at
+    ///      `MAX_LLTV` against the highest price returned since the corridor was last set.
     modifier observed() {
         _;
-        if (!corridorHeld) return;
+        if (MAX_LLTV == 0 || !corridorHeld) return;
         (bool priced, uint256 value) = _price();
         if (!priced) return;
         if (value > highestPrice) highestPrice = value;
@@ -151,7 +150,7 @@ contract TrailingAnchorOracleHandler is Test {
 
     /// @dev A Spoke source only: restamps the price. On one pick in eight the stamp is up to two days past
     ///      `MAX_PRICE_AGE`, on one it is up to an hour after the block, on one exactly `MAX_PRICE_AGE` old and on one
-    /// a second older. Otherwise it is fresh. The age stays the same while time passes.
+    ///      a second older. Otherwise it is at most `MAX_PRICE_AGE` old. The age stays the same while time passes.
     function setPriceStamp(uint256 seed) external observed {
         if (MAX_PRICE_AGE == 0) return;
         MockCentrifugeSpoke spoke = MockCentrifugeSpoke(address(SOURCE));
@@ -263,7 +262,7 @@ contract TrailingAnchorOracleHandler is Test {
     /// @dev Counts a move that is neither a re-anchor nor a drift, and apart from that a move under the floor or over
     ///      the ceiling. A re-anchor needs a waited, unexpired pending anchor and a price outside the bounds on its
     ///      side, and lands on whichever of the two is nearer the anchor, down never under the floor and up never over
-    ///      the ceiling. A drift needs a price within the bounds and stays inside the speeds' reach, toward the price.
+    ///      the ceiling. A drift needs a price within the bounds and stays inside the rates' reach, toward the price.
     ///      The floor and the ceiling hang off `expectedFenceBasePrice`, which a drift up raises.
     function _checkAnchorMove(TrailingAnchorOracleState memory s, uint256 currentPrice, uint256 stored) internal {
         if (stored == s.anchorPrice) return;
@@ -311,7 +310,7 @@ contract TrailingAnchorOracleHandler is Test {
         return true;
     }
 
-    /// @dev Whether `stored` is a drift: toward a price within the bounds, inside the speeds' reach.
+    /// @dev Whether `stored` is a drift: toward a price within the bounds, inside the rates' reach.
     function _isDrift(TrailingAnchorOracleState memory s, uint256 currentPrice, uint256 stored)
         internal
         view

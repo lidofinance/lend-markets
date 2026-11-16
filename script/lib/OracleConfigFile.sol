@@ -117,7 +117,7 @@ library OracleConfigFile {
         cfg.seedMinPrice = ConfigToml.requireUint(toml, string.concat(prefix, ".seed_min_price"));
         cfg.seedMaxPrice = ConfigToml.requireUint(toml, string.concat(prefix, ".seed_max_price"));
         // All eight are required non-zero: the oracle's validator needs both bounds, the delay and the window, a zero
-        // speed would leave the anchor unable to follow the source in that direction, and a zero
+        // rate would leave the anchor unable to follow the source in that direction, and a zero
         // `max_anchor_below_fence_base` or `max_anchor_above_fence_base` would leave every honest re-anchor under or
         // over the fence base price to governance.
         cfg.parameters.maxPriceAboveAnchor = _requireUint64(toml, string.concat(prefix, ".max_price_above_anchor"));

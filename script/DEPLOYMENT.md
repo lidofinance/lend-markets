@@ -81,8 +81,8 @@ make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
 `deploy-oracle-nav` deploys a NAV oracle: it builds the adapter its config's `kind` names (`nav-usdy`,
 `nav-centrifuge`) from the config's constructor arguments, puts it behind an `OssifiableProxy` with
 the DAO Agent as admin, and initializes it from the live source with the config's `max_price_above_anchor`,
-`max_price_below_anchor`, `max_anchor_continuous_rise_rate`, `max_anchor_continuous_fall_rate`, `max_anchor_below_fence_base`, `max_anchor_above_fence_base`,
-`reanchor_delay` and `reanchor_window`. The constructor arguments include `max_lltv`, the highest LLTV of a market
+`max_price_below_anchor`, `max_anchor_continuous_rise_rate`, `max_anchor_continuous_fall_rate`,
+`max_anchor_below_fence_base`, `max_anchor_above_fence_base`, `reanchor_delay` and `reanchor_window`. The constructor arguments include `max_lltv`, the highest LLTV of a market
 that may read the oracle, and, for `nav-centrifuge`, `max_price_age` in seconds. The initialization reverts unless the
 live source price is inside the config's `seed_min_price` and `seed_max_price`, which are source prices with 18 decimals.
 It also reverts unless the parameters pass the oracle's range checks and three rules, with the parameters as fractions.

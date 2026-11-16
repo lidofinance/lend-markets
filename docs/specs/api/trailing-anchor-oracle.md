@@ -10,7 +10,7 @@ Standard inherited role-membership and role-administration functions are not rep
 
 Lido Lend oracle for collateral priced from a source quoted in the loan token's currency, at one loan token per unit of that currency. It returns the current price scaled by `PRICE_SCALE`, and reverts while that price sits outside the bounds around the anchor price and while the manager suspends pricing.
 
-Concrete oracles bind one source in their constructor and override `_currentPrice()` with its ABI. Each declares its own storage namespace, so an anchor never carries over to an adapter of another kind. The oracle does not read the loan token's own price. A loan token below one unit of the source's currency makes the price too low, and one above it makes the price too high by the same fraction. Anyone can call `updateAnchor()`. A current price within the bounds drags the anchor toward it at the yearly speeds, so the bounds follow a source that changes slowly. A current price outside them is recorded as a pending anchor. While the price stays outside the bounds on the pending anchor's side the anchor holds still, and once the pending anchor has waited `reanchorDelay` an update within `reanchorWindow` moves the anchor onto the pending anchor, or onto the price if it sits nearer the anchor. So a move past the bounds becomes the price only after it has been public for a whole delay: the time to stop the markets that read the oracle. No update takes the anchor more than `maxAnchorBelowFenceBase` below `fenceBasePrice`, and no re-anchor more than `maxAnchorAboveFenceBase` above it. That price is the seed or the last accepted price, and only a drift up raises it, so however many steps a source takes past the bounds, it moves the anchor at most down to the floor and up to the ceiling; going further takes `acceptPrice()`.
+Concrete oracles bind one source in their constructor and override `_currentPrice()` with its ABI. Each declares its own storage namespace, so an anchor never carries over to an adapter of another kind. The oracle does not read the loan token's own price. A loan token below one unit of the source's currency makes the price too low, and one above it makes the price too high by the same fraction. Anyone can call `updateAnchor()`. A current price within the bounds drags the anchor toward it at no more than the rise and fall rates, so the bounds follow a source that changes slowly. A current price outside them is recorded as a pending anchor. While the price stays outside the bounds on the pending anchor's side the anchor holds still, and once the pending anchor has waited `reanchorDelay` an update within `reanchorWindow` moves the anchor onto the pending anchor, or onto the price if it sits nearer the anchor. So a move past the bounds becomes the price only after it has been public for a whole delay: the time to stop the markets that read the oracle. No update takes the anchor more than `maxAnchorBelowFenceBase` below `fenceBasePrice`, and no re-anchor more than `maxAnchorAboveFenceBase` above it. That price is the seed or the last accepted price, and only a drift up raises it, so however many steps a source takes past the bounds, it moves the anchor at most down to the floor and up to the ceiling; going further takes `acceptPrice()`.
 
 ### Enums
 
@@ -29,7 +29,7 @@ enum UpdateOutcome {
 
 What one `updateAnchor()` call did, by the case it took:
 
-- `WithinBounds`: the anchor moved toward the price as far as the speeds and the floor allow, and the pending anchor, if any, was dropped;
+- `WithinBounds`: the anchor moved toward the price as far as the rates and the floor allow, and the pending anchor, if any, was dropped;
 - `PendingAnchorRecorded`: the price, outside the bounds with no held pending anchor, became the pending anchor;
 - `PendingAnchorHeld`: the held pending anchor waits out its delay; nothing changed;
 - `PendingAnchorApplied`: the anchor moved onto the pending anchor or the price, whichever is nearer, and no further than the floor or the ceiling; a price still outside the new bounds became the next pending anchor;
@@ -237,7 +237,7 @@ function updateAnchor() external returns (UpdateOutcome outcome);
 
 Moves the anchor toward a current price within the bounds, or, once a pending anchor has waited out the delay with the price outside the bounds on its side, onto the pending anchor or the price, whichever is nearer the anchor; records any other current price outside the bounds as the pending anchor. Neither move takes the anchor under the floor, `maxAnchorBelowFenceBase` below `fenceBasePrice`, nor a re-anchor over the ceiling, `maxAnchorAboveFenceBase` above it; an anchor already past one moves no further past it. Open to anyone in any block, also while `price()` reverts. Each call emits `AnchorUpdated`.
 
-`block.timestamp` sets the time counted: a validator's few seconds of skew move the speeds' reach and the pending anchor's delay and window by those seconds.
+`block.timestamp` sets the time counted: a validator's few seconds of skew move the rates' reach and the pending anchor's delay and window by those seconds.
 
 #### `acceptPrice`
 

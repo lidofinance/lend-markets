@@ -88,8 +88,8 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
         m.liquidate(keeper, borrower, 100e18, 0);
     }
 
-    /// @dev A fall of 0.002% a day, about 0.73% a year and under the 1% fall speed, is followed by the keeper's daily
-    ///      updates: for 30 days the price returns every day and the anchor lands on it.
+    /// @dev A fall of 0.002% a day, about 0.73% a year and under the 0.995% of the fall rate, is followed by the
+    ///      keeper's daily updates: for 30 days the price returns every day and the anchor lands on it.
     function test_slowFall_followedByUpdates() public {
         Market storage m = _m();
         for (uint256 day = 1; day <= 30; ++day) {
@@ -148,12 +148,12 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
         m.liquidate(keeper, borrower, 100e18, 0);
     }
 
-    /// @dev A source that grows 10% a year, faster than the anchor's 6% rise: the keeper's drifts and re-anchors carry
-    ///      the anchor up until the ceiling, 0.2% over the fence base price, which only the drifts raised, and there
-    ///      the oracle reverts. The source eases back to the ceiling's upper bound, the highest price the oracle
-    ///      returns, and a position is borrowed at LLTV against it. A walk down 0.2% past the anchor in every window
-    ///      ends on the floor, and a full liquidation at the lowest price the oracle returns there still repays the
-    ///      whole debt and leaves no bad debt.
+    /// @dev A source that grows 10% a year, faster than the anchor's 6.18% rise: the keeper's drifts and re-anchors
+    ///      carry the anchor up until the ceiling, 0.2% over the fence base price, which only the drifts raised, and
+    ///      there the oracle reverts. The source eases back to the ceiling's upper bound, the highest price the
+    ///      oracle returns, and a position is borrowed at LLTV against it. A walk down 0.2% past the anchor in every
+    ///      window ends on the floor, and a full liquidation at the lowest price the oracle returns there still
+    ///      repays the whole debt and leaves no bad debt.
     function test_growthToTheCeilingThenFaultyWalk_endsOnTheFloorWithoutBadDebt() public {
         Market storage m = _m();
         _growDaily(30, 0.1e18);

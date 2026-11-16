@@ -29,12 +29,13 @@ uint256 constant ORACLE_PRICE_DECIMALS = 36;
 ///      The oracle does not read the loan token's own price. A loan token below one unit of the source's currency
 ///      makes the price too low, and one above it makes the price too high by the same fraction.
 ///
-///      Anyone can call `updateAnchor()`. A current price within the bounds drags the anchor toward it at the yearly
-///      speeds, so the bounds follow a source that changes slowly. A current price outside them is recorded as a
-///      pending anchor. While the price stays outside the bounds on the pending anchor's side the anchor holds still,
-///      and once the pending anchor has waited `reanchorDelay` an update within `reanchorWindow` moves the anchor onto
-///      the pending anchor, or onto the price if it sits nearer the anchor. So a move past the bounds becomes the price
-///      only after it has been public for a whole delay: the time to stop the markets that read the oracle.
+///      Anyone can call `updateAnchor()`. A current price within the bounds drags the anchor toward it at no more
+///      than the rise and fall rates, so the bounds follow a source that changes slowly. A current price outside them
+///      is recorded as a pending anchor. While the price stays outside the bounds on the pending anchor's side the
+///      anchor holds still, and once the pending anchor has waited `reanchorDelay` an update within `reanchorWindow`
+///      moves the anchor onto the pending anchor, or onto the price if it sits nearer the anchor. So a move past the
+///      bounds becomes the price only after it has been public for a whole delay: the time to stop the markets that
+///      read the oracle.
 ///
 ///      No update takes the anchor more than `maxAnchorBelowFenceBase` below `fenceBasePrice`, and no re-anchor more
 ///      than `maxAnchorAboveFenceBase` above it. That price is the seed or the last accepted price, and only a drift up
@@ -58,7 +59,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     }
 
     /// @notice What one `updateAnchor()` call did, by the case it took:
-    ///         - `WithinBounds`: the anchor moved toward the price as far as the speeds and the floor allow, and the
+    ///         - `WithinBounds`: the anchor moved toward the price as far as the rates and the floor allow, and the
     ///           pending anchor, if any, was dropped;
     ///         - `PendingAnchorRecorded`: the price, outside the bounds with no held pending anchor, became the pending
     ///           anchor;
@@ -269,7 +270,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///         move takes the anchor under the floor, `maxAnchorBelowFenceBase` below `fenceBasePrice`, nor a re-anchor
     ///         over the ceiling, `maxAnchorAboveFenceBase` above it; an anchor already past one moves no further past
     ///         it. Open to anyone in any block, also while `price()` reverts. Each call emits `AnchorUpdated`.
-    /// @dev `block.timestamp` sets the time counted: a validator's few seconds of skew move the speeds' reach and the
+    /// @dev `block.timestamp` sets the time counted: a validator's few seconds of skew move the rates' reach and the
     ///      pending anchor's delay and window by those seconds.
     /// @return outcome What the call did; a keeper can read it with `eth_call` before sending the call.
     function updateAnchor() external returns (UpdateOutcome outcome) {
@@ -315,6 +316,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///         most 1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, the delay at
     ///         least `MIN_REANCHOR_DELAY` and no longer than each rate takes to cover its bound, and the window above
     ///         zero.
+    ///
     ///         A position borrowed at `MAX_LLTV` against the highest price, the ceiling × (1 + maxPriceAboveAnchor),
     ///         must still cover its debt and the core's liquidation incentive at the lowest, the floor × (1 −
     ///         maxPriceBelowAnchor).
@@ -334,10 +336,10 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // PRIVATE
     // ---
 
-    /// @dev Moves the anchor toward `currentPrice` by at most the yearly rates for the time since it was last set, and
-    ///      down never past the floor. A move up raises `fenceBasePrice` by its part above both the anchor and that
-    ///      price, so the gap a re-anchor up left between them stays. Callers pass a price within the bounds, so one
-    ///      move never passes the bound however long the anchor rested.
+    /// @dev Moves the anchor toward `currentPrice` by at most the continuous rates for the time since it was last
+    ///      set, and down never past the floor. A move up raises `fenceBasePrice` by its part above both the anchor
+    ///      and that price, so the gap a re-anchor up left between them stays. Callers pass a price within the
+    ///      bounds, so one move never passes the bound however long the anchor rested.
     function _moveAnchorTowards(uint256 currentPrice) private {
         uint256 elapsed = block.timestamp - anchorAt;
         uint256 rise = Math.mulDiv(anchorPrice, _compoundedRise(maxAnchorContinuousRiseRate, elapsed), WAD);

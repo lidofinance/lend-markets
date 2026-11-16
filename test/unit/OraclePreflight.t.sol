@@ -132,7 +132,6 @@ contract OraclePreflightTest is Test {
     ///      NAV over a $1.00 feed, 6-dec loan), which sits strictly inside [0.5e24, 10e24].
     uint256 internal constant USDY_MIN_PRICE = 0.5e24;
     uint256 internal constant USDY_MAX_PRICE = 10e24;
-    uint256 internal constant WAD = 1e18;
     /// @dev The LLTV the NAV fixture's market runs at, and the `MAX_LLTV` its oracle is sized for.
     uint256 internal constant NAV_LLTV = 0.98e18;
 

@@ -17,7 +17,7 @@ import {TrailingAnchorOracleHandler} from "./handlers/TrailingAnchorOracleHandle
 ///         acceptances, parameter changes and suspensions, run once through each adapter. The oracle runs alone: the
 ///         core only reads `price()`, so a market adds no state the oracle can see.
 /// @dev The handler's shadow follows the model, so `invariant_storedStateMatchesModel` pins the stored values; the
-///      move, floor, ceiling, pending anchor and suspension invariants check the bounds, speed, floor and ceiling
+///      move, floor, ceiling, pending anchor and suspension invariants check the bounds, rate, floor and ceiling
 ///      formulas directly.
 abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
     using TrailingAnchorOracleModel for TrailingAnchorOracleState;
@@ -112,13 +112,6 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         assertEq(TrailingAnchorOracleModel.parametersRevert(p, _maxLltv()).length, 0, "stored parameters out of range");
     }
 
-    /// @dev What the sizing rule is for: while the anchor started between the floor and the ceiling, every price
-    ///      `price()` returns covers a debt borrowed at `MAX_LLTV` against the highest price returned since the last
-    ///      acceptance or parameter change, with the core's liquidation incentive on top.
-    function invariant_returnedPriceCoversDebtAtTheHighest() public view {
-        assertEq(handler.uncoveredPrices(), 0, "a returned price under LLTV x LIF of an earlier one");
-    }
-
     /// @dev The anchor is never zero nor set in the future.
     function invariant_anchorNonZeroAndNotInFuture() public view {
         assertGt(oracle.anchorPrice(), 0, "zero anchor");
@@ -156,7 +149,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         assertEq(handler.stoppedPrices(), 0, "an update stopped a returned price");
     }
 
-    /// @dev Every anchor move by an update is a drift toward a price within the bounds, inside the speeds' reach, or a
+    /// @dev Every anchor move by an update is a drift toward a price within the bounds, inside the rates' reach, or a
     ///      move onto the nearer of the price and a pending anchor recorded at least the delay before, with the price
     ///      outside the bounds on the pending anchor's side, and onto the floor or the ceiling when that is nearer
     ///      still.
@@ -252,7 +245,6 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         handler.acceptPrice(2);
         assertEq(handler.succeeded("accept"), 1, "the exact current price is accepted");
         assertEq(oracle.pendingAnchorAt(), 0, "the acceptance drops the pending anchor");
-        assertGt(handler.checkedPrices(), 0, "returned prices checked against the highest");
 
         handler.setParameters(_parametersSeed(true));
         assertEq(handler.succeeded("parameters"), 1, "a parameter set the validator takes");
@@ -296,7 +288,6 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
                 string.concat(string(abi.encodePacked(actions[i])), " refused"), handler.refused(actions[i])
             );
         }
-        emit log_named_uint("prices checked against the highest", handler.checkedPrices());
     }
 }
 
@@ -349,9 +340,18 @@ contract TrailingAnchorOracleSizedInvariant is TrailingAnchorOracleInvariantTest
         return 0.98e18;
     }
 
+    /// @dev What the sizing rule is for: while the anchor started between the floor and the ceiling, every price
+    ///      `price()` returns covers a debt borrowed at `MAX_LLTV` against the highest price returned since the last
+    ///      acceptance or parameter change, with the core's liquidation incentive on top.
+    function invariant_returnedPriceCoversDebtAtTheHighest() public view {
+        assertEq(handler.uncoveredPrices(), 0, "a returned price under LLTV x LIF of an earlier one");
+    }
+
     /// @dev The sizing rule alone refuses some of the handler's sets: one that an oracle sized for no LLTV would take
-    ///      is refused here.
+    ///      is refused here. And a returned price is checked against the highest one.
     function test_seededSizing_isNonVacuous() public {
+        handler.stepSource(0);
+        assertEq(handler.checkedPrices(), 1, "a returned price checked against the highest");
         uint256 seed;
         while (
             TrailingAnchorOracleModel.parametersRevert(handler.parametersFor(seed), 0).length != 0
