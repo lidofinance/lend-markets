@@ -14,33 +14,28 @@ import {WAD} from "../libs/Constants.sol";
 
 /// @title TrailingAnchorOracleBase
 /// @author Lido
-/// @notice Lido Lend oracle for collateral priced from a source quoted in the loan token's currency, at one loan token
-///         per unit of that currency. It returns the current price scaled by `PRICE_SCALE`, and reverts while that
-///         price sits outside the bounds around the anchor price and while the manager suspends pricing.
-/// @dev Concrete oracles bind one source in their constructor and override `_currentPrice()` with its ABI. Each
-///      declares its own storage namespace, so an anchor never carries over to an adapter of another kind.
+/// @notice Oracle for collateral that has a price source in the currency of the loan token. It returns the current
+///         price of the source only while that price is near a stored anchor price. The anchor follows the source
+///         slowly. A large move of the source becomes the price only after a delay, which gives time to pause the
+///         markets that read the oracle.
+/// @dev An adapter binds a source in its constructor and reads it in `_currentPrice()`. Each adapter declares its
+///      own storage namespace, so an upgrade to a different adapter does not read the old anchor.
 ///
-///      The oracle does not read the loan token's own price. A loan token below one unit of the source's currency
-///      makes the price too low, and one above it makes the price too high by the same fraction.
+///      The oracle counts one loan token as one unit of the source currency, and it does not read the price of the
+///      loan token.
 ///
-///      Anyone can call `updateAnchor()`. A current price within the bounds drags the anchor toward it at no more
-///      than the rise and fall rates, so the bounds follow a source that changes slowly. A current price outside them
-///      is recorded as a pending anchor. While the price stays outside the bounds on the pending anchor's side the
-///      anchor holds still, and once the pending anchor has waited `reanchorDelay` an update within `reanchorWindow`
-///      moves the anchor onto the pending anchor, or onto the price if it sits nearer the anchor. So a move past the
-///      bounds becomes the price only after it has been public for a whole delay: the time to stop the markets that
-///      read the oracle.
-///
-///      No update takes the anchor more than `maxAnchorBelowFenceBase` below `fenceBasePrice`, and no re-anchor more
-///      than `maxAnchorAboveFenceBase` above it. That price is the seed or the last accepted price, and only a drift up
-///      raises it, so however many steps a source takes past the bounds, it moves the anchor at most down to the floor
-///      and up to the ceiling; going further takes `acceptPrice()`.
+///      Anyone can call `updateAnchor()`. While the current price is inside the bounds, an update moves the anchor
+///      toward it, limited by the rise and fall rates: a drift. An update records a current price outside the bounds
+///      as the pending anchor. If the price stays outside the bounds for `reanchorDelay`, an update moves the anchor
+///      onto the pending anchor: a re-anchor. No update moves the anchor below the floor, and no re-anchor moves it
+///      above the ceiling. Only `acceptPrice()` moves it further.
 abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable, IOracle {
     // ---
     // TYPES
     // ---
 
-    /// @notice What `initialize()` and `setParameters()` store, in the units of the getters of the same names.
+    /// @notice The values that `initialize()` and `setParameters()` store. Each field has the units of the getter with
+    ///         the same name.
     struct Parameters {
         uint64 maxPriceAboveAnchor;
         uint64 maxPriceBelowAnchor;
@@ -52,17 +47,16 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         uint40 reanchorWindow;
     }
 
-    /// @notice What one `updateAnchor()` call did, by the case it took:
-    ///         - `WithinBounds`: the anchor moved toward the price as far as the rates and the floor allow, and the
-    ///           pending anchor, if any, was dropped;
-    ///         - `PendingAnchorRecorded`: the price, outside the bounds with no held pending anchor, became the pending
-    ///           anchor;
-    ///         - `PendingAnchorHeld`: the held pending anchor waits out its delay; nothing changed;
+    /// @notice The result of one `updateAnchor()` call:
+    ///         - `WithinBounds`: the price is inside the bounds. The anchor drifted toward it as far as the rates and
+    ///           the floor permit, and the pending anchor was dropped.
+    ///         - `PendingAnchorRecorded`: the price is outside the bounds, and it became the pending anchor.
+    ///         - `PendingAnchorHeld`: the held pending anchor is still in its delay. Nothing changed.
     ///         - `PendingAnchorApplied`: the anchor moved onto the pending anchor or the price, whichever is nearer,
-    ///           and no further than the floor or the ceiling; a price still outside the new bounds became the next
-    ///           pending anchor;
-    ///         - `AnchorOnFloor`: the delay passed, but the anchor sits on or below the floor; nothing changed;
-    ///         - `AnchorOnCeiling`: the delay passed, but the anchor sits on or above the ceiling; nothing changed.
+    ///           but not past the floor or the ceiling. A price still outside the new bounds became the next pending
+    ///           anchor.
+    ///         - `AnchorOnFloor`: the delay is over, but the anchor is on or below the floor. Nothing changed.
+    ///         - `AnchorOnCeiling`: the delay is over, but the anchor is on or above the ceiling. Nothing changed.
     enum UpdateOutcome {
         WithinBounds,
         PendingAnchorRecorded,
@@ -76,76 +70,76 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // ROLES
     // ---
 
-    /// @notice Sets the parameters and suspends pricing.
+    /// @notice Can set the parameters and suspend pricing.
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
-    /// @notice Accepts the current price as the anchor, whatever its distance from the last one.
+    /// @notice Can accept the current price as the anchor, at any distance from the old anchor.
     bytes32 public constant PRICE_ACCEPTOR_ROLE = keccak256("PRICE_ACCEPTOR_ROLE");
 
     // ---
     // CONSTANTS AND IMMUTABLES
     // ---
 
-    /// @dev Decimals of the prices adapters return from `_currentPrice()` and the anchor stores.
+    /// @dev Decimals of the price that an adapter returns and of the stored prices.
     uint256 internal constant PRICE_DECIMALS = 18;
-    /// @dev Decimals of the price the core reads: one collateral unit in loan units, scaled by 1e36.
+    /// @dev Decimals of the price that the core reads: the price of one collateral unit in loan units, scaled by 1e36.
     uint256 internal constant ORACLE_PRICE_DECIMALS = 36;
 
-    /// @dev 10^(ORACLE_PRICE_DECIMALS + loanDecimals - collateralDecimals - PRICE_DECIMALS): the scaling of a price to
-    ///      the price the core reads.
+    /// @notice Factor that converts a source price to the price that the core reads.
+    /// @dev 10^(ORACLE_PRICE_DECIMALS + loanDecimals − collateralDecimals − PRICE_DECIMALS).
     uint256 public immutable PRICE_SCALE;
 
-    /// @notice Shortest `reanchorDelay`.
+    /// @notice Shortest permitted `reanchorDelay`.
     uint256 public constant MIN_REANCHOR_DELAY = 1 hours;
-    /// @notice Longest a pricing suspension may run from the call that sets it.
+    /// @notice Longest time that one call can suspend pricing, counted from that call.
     uint256 public constant MAX_PRICING_SUSPENSION = 7 days;
-    /// @dev The period `maxAnchorContinuousRiseRate` and `maxAnchorContinuousFallRate` are quoted per.
+    /// @dev The period of the rise rate and the fall rate.
     uint256 private constant YEAR = 365 days;
 
     // ---
     // ERRORS
     // ---
 
-    /// @notice An address argument was the zero address.
+    /// @notice An address argument is zero.
     error ZeroAddress();
-    /// @notice The loan and collateral decimals leave no room for the 1e36 convention.
+    /// @notice The token decimals give a negative exponent for `PRICE_SCALE`.
     error UnsupportedDecimals(uint256 loanDecimals, uint256 collateralDecimals);
-    /// @notice A parameter is outside the range `setParameters()` names.
+    /// @notice A parameter is outside the range that `setParameters()` permits.
     error InvalidParameters();
-    /// @notice The suspension would end more than `MAX_PRICING_SUSPENSION` from now.
+    /// @notice `resumesAt` is more than `MAX_PRICING_SUSPENSION` after the current time.
     error InvalidPricingResumesAt(uint40 resumesAt);
-    /// @notice The source returned zero.
+    /// @notice The source returned a zero price.
     error ZeroPrice();
-    /// @notice The current price sits outside the bounds around the anchor price.
+    /// @notice The current price is outside the bounds around the anchor price.
     error PriceOutOfBounds(uint256 currentPrice, uint256 lowerBound, uint256 upperBound);
     /// @notice Pricing is suspended until `resumesAt`.
     error PricingSuspended(uint40 resumesAt);
-    /// @notice The current price sits outside the range the price acceptor passed.
+    /// @notice The current price is outside the range that the caller gave.
     error UnexpectedPrice(uint256 currentPrice, uint256 minPrice, uint256 maxPrice);
 
     // ---
     // EVENTS
     // ---
 
-    /// @notice The anchor was set; `accepted` is true for the seed in `initialize()` and for `acceptPrice()`, false for
-    ///         an update.
+    /// @notice The anchor changed. `accepted` is true for the seed in `initialize()` and for `acceptPrice()`, and
+    ///         false for an update.
     event AnchorSet(uint256 anchorPrice, uint40 anchorAt, bool accepted);
     /// @notice An update recorded a pending anchor.
     event PendingAnchorSet(uint256 pendingAnchorPrice, uint40 pendingAnchorAt);
     /// @notice The pending anchor was dropped.
     event PendingAnchorCleared();
-    /// @notice An `updateAnchor()` call ran: what it did and the current price it read. Emitted after the events of
-    ///         the state it changed.
+    /// @notice An `updateAnchor()` call completed, with its result and the current price that it read. The call emits
+    ///         this event after the events of its state changes.
     event AnchorUpdated(UpdateOutcome indexed outcome, uint256 currentPrice);
     /// @notice The parameters changed.
     event ParametersSet(Parameters parameters);
-    /// @notice The time pricing resumes at changed.
+    /// @notice The time at which pricing resumes changed.
     event PricingResumesAtSet(uint40 resumesAt);
 
     // ---
     // STORAGE
     // ---
 
-    // Slot layout; `price()` reads only the first two:
+    // Slot layout, counted from the base slot of the adapter's namespace. `price()` reads only slots 0 and 1.
     // 0: maxPriceAboveAnchor, maxPriceBelowAnchor, anchorAt, pricingResumesAt
     // 1: anchorPrice
     // 2: maxAnchorContinuousRiseRate, maxAnchorContinuousFallRate, reanchorDelay, reanchorWindow, pendingAnchorAt
@@ -153,61 +147,56 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // 4: maxAnchorBelowFenceBase, maxAnchorAboveFenceBase
     // 5: fenceBasePrice
 
-    /// @notice How far the current price may sit above the anchor price before `price()` reverts, as a fraction of it,
-    ///         WAD. 0.0005e18 allows 0.05%.
+    /// @notice Upper bound: how far above the anchor price the current price can be, as a fraction of the anchor
+    ///         price, WAD. Above it, `price()` reverts. 0.0005e18 is 0.05%.
     uint64 public maxPriceAboveAnchor;
-    /// @notice How far the current price may sit below the anchor price before `price()` reverts, as a fraction of it,
-    ///         WAD. 0.001e18 allows 0.1%.
+    /// @notice Lower bound: how far below the anchor price the current price can be, as a fraction of the anchor
+    ///         price, WAD. Below it, `price()` reverts. 0.001e18 is 0.1%.
     uint64 public maxPriceBelowAnchor;
-    /// @notice When the anchor price was last set.
+    /// @notice Time when the anchor price was last set.
     uint40 public anchorAt;
     /// @notice Time before which `price()` reverts with `PricingSuspended`.
     uint40 public pricingResumesAt;
 
-    /// @notice Price the current price is compared with, with `PRICE_DECIMALS` decimals.
+    /// @notice Price that the bounds are measured from, with `PRICE_DECIMALS` decimals.
     uint256 public anchorPrice;
 
-    /// @notice Continuously compounded yearly rate at which an update may raise the anchor toward a price within the
-    ///         bounds, WAD. 0.06e18 lets it rise e^0.06 − 1, about 6.18%, in a year, whatever the schedule of
-    ///         updates.
+    /// @notice Largest rate at which a drift can raise the anchor, continuously compounded per year, WAD. 0.06e18
+    ///         permits a rise of e^0.06 − 1, about 6.18%, in a year. The update schedule does not change that.
     uint64 public maxAnchorContinuousRiseRate;
-    /// @notice Continuously compounded yearly rate at which an update may lower the anchor toward a price within the
-    ///         bounds, WAD. 0.01e18 lets it fall 1 − e^−0.01, about 0.995%, in a year, whatever the schedule of
-    ///         updates.
+    /// @notice Largest rate at which a drift can lower the anchor, continuously compounded per year, WAD. 0.01e18
+    ///         permits a fall of 1 − e^−0.01, about 0.995%, in a year. The update schedule does not change that.
     uint64 public maxAnchorContinuousFallRate;
-    /// @notice Seconds a pending anchor waits before an update can re-anchor.
+    /// @notice Seconds that a pending anchor must wait before an update can re-anchor.
     uint40 public reanchorDelay;
-    /// @notice Seconds after the delay during which an update can re-anchor; after them the pending anchor expires, and
-    ///         the next update drops it or replaces it with a current price outside the bounds.
+    /// @notice Seconds after the delay in which an update can re-anchor. After the window, the pending anchor expires:
+    ///         the next update drops it or records a new one.
     uint40 public reanchorWindow;
-    /// @notice When the pending anchor was recorded; zero for none.
+    /// @notice Time when the pending anchor was recorded. Zero means no pending anchor.
     uint40 public pendingAnchorAt;
 
-    /// @notice Current price an update recorded outside the bounds, with `PRICE_DECIMALS` decimals; zero for none. The
-    ///         next re-anchor moves the anchor at most onto it: onto the current price if that sits nearer, and never
-    ///         past the floor or the ceiling.
+    /// @notice Price of the pending anchor, with `PRICE_DECIMALS` decimals. Zero means no pending anchor.
     uint256 public pendingAnchorPrice;
 
-    /// @notice How far below `fenceBasePrice` an update may take the anchor, as a fraction of it, WAD. 0.01e18
-    ///         allows 1%.
+    /// @notice Floor: how far below `fenceBasePrice` an update can move the anchor, as a fraction of that price, WAD.
+    ///         0.01e18 is 1%.
     uint64 public maxAnchorBelowFenceBase;
 
-    /// @notice How far above `fenceBasePrice` a re-anchor may take the anchor, as a fraction of it, WAD. 0.002e18
-    ///         allows 0.2%.
+    /// @notice Ceiling: how far above `fenceBasePrice` a re-anchor can move the anchor, as a fraction of that price,
+    ///         WAD. 0.002e18 is 0.2%.
     uint64 public maxAnchorAboveFenceBase;
 
-    /// @notice Price the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals: the seed or the last
-    ///         accepted price, raised by a drift up, onto the new anchor when that passes it, or by the drift's step
-    ///         while the anchor already sits above it. A re-anchor never moves it, so a re-anchor up may leave the
-    ///         anchor above it, up to the ceiling.
+    /// @notice Price that the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals. It starts at the
+    ///         seed price, and `acceptPrice()` restarts it at the accepted price. A drift up raises it. A re-anchor
+    ///         does not change it, so a re-anchor up can leave the anchor above it, up to the ceiling.
     uint256 public fenceBasePrice;
 
     // ---
     // CONSTRUCTOR
     // ---
 
-    /// @param loanToken Loan token; its decimals set `PRICE_SCALE`.
-    /// @param collateralToken Collateral token; its decimals set `PRICE_SCALE`.
+    /// @param loanToken Loan token of the market. Its decimals set `PRICE_SCALE`.
+    /// @param collateralToken Collateral token of the market. Its decimals set `PRICE_SCALE`.
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
     constructor(address loanToken, address collateralToken) {
         if (loanToken == address(0) || collateralToken == address(0)) revert ZeroAddress();
@@ -224,12 +213,12 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // INITIALIZATION
     // ---
 
-    /// @notice Grants the admin, stores the parameters as `setParameters()` does and seeds the anchor from the current
-    ///         price. A current price outside `minPrice` and `maxPrice` is refused, as in `acceptPrice()`.
-    /// @param admin First `DEFAULT_ADMIN_ROLE` holder.
-    /// @param parameters The parameters, as `setParameters()` takes them.
-    /// @param minPrice Lowest current price to seed, inclusive, with `PRICE_DECIMALS` decimals.
-    /// @param maxPrice Highest current price to seed, inclusive, with `PRICE_DECIMALS` decimals.
+    /// @notice Grants the admin role, stores the parameters and sets the first anchor to the current price. The call
+    ///         reverts if the current price is outside `minPrice` and `maxPrice`.
+    /// @param admin First holder of `DEFAULT_ADMIN_ROLE`.
+    /// @param parameters The parameters, with the same checks as in `setParameters()`.
+    /// @param minPrice Lowest current price to accept, inclusive, with `PRICE_DECIMALS` decimals.
+    /// @param maxPrice Highest current price to accept, inclusive, with `PRICE_DECIMALS` decimals.
     function initialize(address admin, Parameters calldata parameters, uint256 minPrice, uint256 maxPrice)
         external
         initializer
@@ -246,6 +235,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // ---
 
     /// @inheritdoc IOracle
+    /// @dev Reverts while pricing is suspended, on a zero price, and while the current price is outside the bounds.
     function price() external view override returns (uint256) {
         if (block.timestamp < pricingResumesAt) revert PricingSuspended(pricingResumesAt);
         uint256 currentPrice = _currentPrice();
@@ -254,15 +244,19 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         return currentPrice * PRICE_SCALE;
     }
 
-    /// @notice Moves the anchor toward a current price within the bounds, or, once a pending anchor has waited out the
-    ///         delay with the price outside the bounds on its side, onto the pending anchor or the price, whichever is
-    ///         nearer the anchor; records any other current price outside the bounds as the pending anchor. Neither
-    ///         move takes the anchor under the floor, `maxAnchorBelowFenceBase` below `fenceBasePrice`, nor a re-anchor
-    ///         over the ceiling, `maxAnchorAboveFenceBase` above it; an anchor already past one moves no further past
-    ///         it. Open to anyone in any block, also while `price()` reverts. Each call emits `AnchorUpdated`.
-    /// @dev `block.timestamp` sets the time counted: a validator's few seconds of skew move the rates' reach and the
-    ///      pending anchor's delay and window by those seconds.
-    /// @return outcome What the call did; a keeper can read it with `eth_call` before sending the call.
+    /// @notice Updates the anchor from the current price. Anyone can call it in any block, also while `price()`
+    ///         reverts.
+    ///         - Price inside the bounds: the anchor drifts toward it, and the pending anchor is dropped.
+    ///         - Price outside the bounds with no held pending anchor: the price becomes the pending anchor.
+    ///         - Held pending anchor in its delay: nothing changes.
+    ///         - Held pending anchor after its delay: the anchor moves onto the pending anchor or the price,
+    ///           whichever is nearer.
+    ///
+    ///         No update moves the anchor below the floor, and no re-anchor moves it above the ceiling. An anchor that
+    ///         is already past one of them does not move further past it.
+    /// @dev The call uses `block.timestamp`. A few seconds of validator skew change the drift limit, the delay and
+    ///      the window by those seconds.
+    /// @return outcome The result of the call. A keeper can read it with `eth_call` before it sends the transaction.
     function updateAnchor() external returns (UpdateOutcome outcome) {
         uint256 currentPrice = _currentPrice();
         if (currentPrice == 0) revert ZeroPrice();
@@ -282,34 +276,39 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         emit AnchorUpdated(outcome, currentPrice);
     }
 
-    /// @notice Moves the anchor to the current price wherever it sits, once the price acceptor has checked the value,
-    ///         restarts `fenceBasePrice` there and drops the pending anchor: the way out of a revert on the bounds
-    ///         without waiting out the delay, and the only way under the floor or over the ceiling. A current price
-    ///         outside `minPrice` and `maxPrice` is refused, so a price that moved after the check is not accepted.
+    /// @notice Sets the anchor and `fenceBasePrice` to the current price, at any distance from the old anchor, and
+    ///         drops the pending anchor. It ends a revert on the bounds without the delay. It is the only way to
+    ///         move the anchor past the floor or the ceiling.
+    /// @dev The call reverts if the current price is outside `minPrice` and `maxPrice`. Thus a price that changed
+    ///      after the caller checked it is not accepted.
     /// @param minPrice Lowest current price to accept, inclusive, with `PRICE_DECIMALS` decimals.
     /// @param maxPrice Highest current price to accept, inclusive, with `PRICE_DECIMALS` decimals.
     function acceptPrice(uint256 minPrice, uint256 maxPrice) external onlyRole(PRICE_ACCEPTOR_ROLE) {
         _acceptPrice(minPrice, maxPrice);
     }
 
-    /// @notice Makes `price()` revert until `resumesAt`, at most `MAX_PRICING_SUSPENSION` from now, so liquidations
-    ///         wait while borrowers can still repay. A time not in the future lifts the suspension. Updates and
-    ///         acceptances run during a suspension.
+    /// @notice Makes `price()` revert until `resumesAt`. Liquidations stop during that time, and borrowers can still
+    ///         repay. A time that is not in the future ends the suspension. `updateAnchor()` and `acceptPrice()`
+    ///         still work during a suspension.
+    /// @param resumesAt Time at which pricing resumes, at most `MAX_PRICING_SUSPENSION` after the current time.
     function setPricingResumesAt(uint40 resumesAt) external onlyRole(MANAGER_ROLE) {
         if (resumesAt > block.timestamp + MAX_PRICING_SUSPENSION) revert InvalidPricingResumesAt(resumesAt);
         pricingResumesAt = resumesAt;
         emit PricingResumesAtSet(resumesAt);
     }
 
-    /// @notice Sets every parameter at once and drops the pending anchor; the anchor and `fenceBasePrice` stay where
-    ///         they are. Each bound must be above zero and below a whole price, the rise rate and the fall rate at
-    ///         most 1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, the delay at
-    ///         least `MIN_REANCHOR_DELAY` and no longer than each rate takes to cover its bound, and the window above
-    ///         zero.
-    /// @dev The oracle does not know the markets that read it, so it does not size the parameters for their LLTV. The
-    ///      manager must keep them so that a position borrowed at a market's LLTV against the highest price, the
-    ///      ceiling × (1 + maxPriceAboveAnchor), still covers its debt and the core's liquidation incentive at the
-    ///      lowest, the floor × (1 − maxPriceBelowAnchor).
+    /// @notice Sets all parameters and drops the pending anchor. The anchor and `fenceBasePrice` do not change. The
+    ///         call reverts unless:
+    ///         - each bound is above zero and below 1e18;
+    ///         - `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` are below 1e18;
+    ///         - each rate is at most 1e18;
+    ///         - the delay is at least `MIN_REANCHOR_DELAY`, and the window is above zero;
+    ///         - a source that moves at a rate for one delay stays inside the bound on that side.
+    /// @dev The oracle does not know the markets that read it, so it does not check the parameters against their
+    ///      LLTV. The manager must keep this rule for each market: a position borrowed at the LLTV against the highest
+    ///      price still covers its debt and the liquidation incentive at the lowest price.
+    ///      Highest price = ceiling × (1 + maxPriceAboveAnchor).
+    ///      Lowest price = floor × (1 − maxPriceBelowAnchor).
     function setParameters(Parameters calldata parameters) external onlyRole(MANAGER_ROLE) {
         _setParameters(parameters);
     }
@@ -318,18 +317,19 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // INTERNAL
     // ---
 
-    /// @dev Reads the current price from the source, with `PRICE_DECIMALS` decimals in the loan token's currency.
-    ///      Reverts with the source.
+    /// @dev Reads the current price from the source, with `PRICE_DECIMALS` decimals, in the currency of the loan
+    ///      token. Reverts when the source reverts.
     function _currentPrice() internal view virtual returns (uint256 currentPrice);
 
     // ---
     // PRIVATE
     // ---
 
-    /// @dev Moves the anchor toward `currentPrice` by at most the continuous rates for the time since it was last
-    ///      set, and down never past the floor. A move up raises `fenceBasePrice` by its part above both the anchor
-    ///      and that price, so the gap a re-anchor up left between them stays. Callers pass a price within the
-    ///      bounds, so one move never passes the bound however long the anchor rested.
+    /// @dev Drift. Moves the anchor toward `currentPrice`, limited by the rise or fall rate for the time since the
+    ///      anchor was last set. A move down stops at the floor. A move up raises `fenceBasePrice` by the part of
+    ///      the move above both the old anchor and that price, so the gap that a re-anchor up left between them
+    ///      stays the same. The caller passes a price inside the bounds, so one move does not go past a bound after
+    ///      a long rest.
     function _moveAnchorTowards(uint256 currentPrice) private {
         uint256 elapsed = block.timestamp - anchorAt;
         uint256 rise = Math.mulDiv(anchorPrice, _compoundedRise(maxAnchorContinuousRiseRate, elapsed), WAD);
@@ -342,47 +342,47 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         _setAnchor(newAnchorPrice, false);
     }
 
-    /// @dev e^(rate × elapsed / YEAR) − 1 by its first three Taylor terms, WAD, rounded down. Each step compounds
-    ///      from the anchor the last one set, so the terms keep the total rise under e^(rate × T) − 1 for any
-    ///      schedule.
+    /// @dev e^(rate × elapsed / YEAR) − 1 from its first three Taylor terms, WAD, rounded down. The three terms are
+    ///      at most the exact value. Thus the total rise in a time T is at most e^(rate × T) − 1 for any schedule
+    ///      of updates.
     function _compoundedRise(uint256 rate, uint256 elapsed) private pure returns (uint256) {
         return MathLib.wTaylorCompounded(Math.mulDiv(rate, elapsed, YEAR), 1);
     }
 
-    /// @dev 1 − e^(−rate × elapsed / YEAR) as c / (1 + c), with c from `_compoundedRise`, WAD, rounded down and so
-    ///      below a whole price. Dividing by 1 + c undoes a rise at the same rate, and c is at most e^(rate × elapsed
-    ///      / YEAR) − 1, so the total fall stays under 1 − e^(−rate × T) for any schedule.
+    /// @dev 1 − e^(−rate × elapsed / YEAR), computed as c / (1 + c) with c from `_compoundedRise`, WAD, rounded
+    ///      down. The result is below 1e18. The total fall in a time T is at most 1 − e^(−rate × T) for any
+    ///      schedule of updates.
     function _compoundedFall(uint256 rate, uint256 elapsed) private pure returns (uint256) {
         uint256 compounded = _compoundedRise(rate, elapsed);
         return Math.mulDiv(compounded, WAD, WAD + compounded);
     }
 
-    /// @dev The lowest anchor an update may set: the floor, `maxAnchorBelowFenceBase` below `fenceBasePrice` with the
-    ///      distance rounded down, or the anchor itself when it already sits lower.
+    /// @dev The lowest anchor that an update can set: the floor, or the anchor when it is already below the floor.
+    ///      Floor = `fenceBasePrice` × (1 − maxAnchorBelowFenceBase), with the subtracted part rounded down.
     function _lowestAnchor() private view returns (uint256) {
         uint256 floor = fenceBasePrice - Math.mulDiv(fenceBasePrice, maxAnchorBelowFenceBase, WAD);
         return Math.min(floor, anchorPrice);
     }
 
-    /// @dev The highest anchor a re-anchor may set: the ceiling, `maxAnchorAboveFenceBase` above `fenceBasePrice` with
-    ///      the distance rounded down, or the anchor itself when it already sits higher.
+    /// @dev The highest anchor that a re-anchor can set: the ceiling, or the anchor when it is already above the
+    ///      ceiling. Ceiling = `fenceBasePrice` × (1 + maxAnchorAboveFenceBase), with the added part rounded down.
     function _highestAnchor() private view returns (uint256) {
         uint256 ceiling = fenceBasePrice + Math.mulDiv(fenceBasePrice, maxAnchorAboveFenceBase, WAD);
         return Math.max(ceiling, anchorPrice);
     }
 
-    /// @dev Records `currentPrice`, outside the bounds, as the pending anchor at the current time.
+    /// @dev Records `currentPrice`, which is outside the bounds, as the pending anchor at the current time.
     function _recordPendingAnchor(uint256 currentPrice) private {
         pendingAnchorPrice = currentPrice;
         pendingAnchorAt = uint40(block.timestamp);
         emit PendingAnchorSet(currentPrice, pendingAnchorAt);
     }
 
-    /// @dev For a held pending anchor past its delay: moves the anchor onto it or `currentPrice`, whichever is nearer,
-    ///      so never further than the published move, and never past the floor down or the ceiling up. Then drops the
-    ///      pending anchor, or records `currentPrice` as the next one while it stays outside the bounds. An anchor
-    ///      already on or past the floor or the ceiling it moves toward stays there until the price comes back or the
-    ///      price acceptor accepts one.
+    /// @dev Re-anchor, for a held pending anchor after its delay. Moves the anchor onto the pending anchor or
+    ///      `currentPrice`, whichever is nearer, so the move is not larger than the recorded one. The move stops at
+    ///      the floor or the ceiling. An anchor that is already on or past that line does not move. After a move,
+    ///      `currentPrice` becomes the next pending anchor if it is still outside the bounds. If not, the pending
+    ///      anchor is dropped.
     function _applyPendingAnchor(uint256 currentPrice) private returns (UpdateOutcome) {
         bool up = pendingAnchorPrice > anchorPrice;
         uint256 newAnchorPrice = up
@@ -395,8 +395,8 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         return UpdateOutcome.PendingAnchorApplied;
     }
 
-    /// @dev Whether there is an unexpired pending anchor and `currentPrice`, outside the bounds, sits on its side of
-    ///      the anchor price.
+    /// @dev True if a pending anchor exists, has not expired, and is on the same side of the anchor as
+    ///      `currentPrice`. The caller passes a price outside the bounds.
     function _isPendingAnchorHeld(uint256 currentPrice) private view returns (bool) {
         if (pendingAnchorAt == 0 || block.timestamp > uint256(pendingAnchorAt) + reanchorDelay + reanchorWindow) {
             return false;
@@ -404,7 +404,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         return (pendingAnchorPrice > anchorPrice) == (currentPrice > anchorPrice);
     }
 
-    /// @dev Reverts with `PriceOutOfBounds` unless `currentPrice` sits within the bounds around the anchor price.
+    /// @dev Reverts with `PriceOutOfBounds` if `currentPrice` is outside the bounds.
     function _requireWithinBounds(uint256 currentPrice) private view {
         (uint256 lowerBound, uint256 upperBound) = _bounds();
         if (currentPrice < lowerBound || currentPrice > upperBound) {
@@ -412,20 +412,20 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         }
     }
 
-    /// @dev Whether `currentPrice` sits within the bounds around the anchor price, both inclusive.
+    /// @dev True if `currentPrice` is inside the bounds. The two bounds are inclusive.
     function _isWithinBounds(uint256 currentPrice) private view returns (bool) {
         (uint256 lowerBound, uint256 upperBound) = _bounds();
         return currentPrice >= lowerBound && currentPrice <= upperBound;
     }
 
-    /// @dev The lowest and highest prices the bounds allow around the anchor price, both rounded down.
+    /// @dev The lowest and highest current price that the bounds permit, both rounded down.
     function _bounds() private view returns (uint256 lowerBound, uint256 upperBound) {
         lowerBound = Math.mulDiv(anchorPrice, WAD - maxPriceBelowAnchor, WAD);
         upperBound = Math.mulDiv(anchorPrice, WAD + maxPriceAboveAnchor, WAD);
     }
 
-    /// @dev Sets the anchor to `newAnchorPrice` at the current time. The seed and an acceptance also restart
-    ///      `fenceBasePrice` there.
+    /// @dev Sets the anchor to `newAnchorPrice` at the current time. If `accepted` is true, also sets
+    ///      `fenceBasePrice` to that price.
     function _setAnchor(uint256 newAnchorPrice, bool accepted) private {
         anchorPrice = newAnchorPrice;
         anchorAt = uint40(block.timestamp);
@@ -433,8 +433,8 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         emit AnchorSet(newAnchorPrice, anchorAt, accepted);
     }
 
-    /// @dev Moves the anchor onto the current price once it sits inside `minPrice` and `maxPrice`, restarts
-    ///      `fenceBasePrice` there and drops the pending anchor.
+    /// @dev Sets the anchor and `fenceBasePrice` to the current price and drops the pending anchor. Reverts if the
+    ///      price is zero or outside `minPrice` and `maxPrice`.
     function _acceptPrice(uint256 minPrice, uint256 maxPrice) private {
         uint256 currentPrice = _currentPrice();
         if (currentPrice == 0) revert ZeroPrice();
@@ -445,7 +445,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         _clearPendingAnchor();
     }
 
-    /// @dev Drops the pending anchor, if there is one.
+    /// @dev Drops the pending anchor, if one exists.
     function _clearPendingAnchor() private {
         if (pendingAnchorAt == 0) return;
         delete pendingAnchorPrice;
@@ -453,15 +453,15 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         emit PendingAnchorCleared();
     }
 
-    /// @dev Stores the parameters once they pass the ranges `setParameters()` names, and drops the pending anchor.
+    /// @dev Checks the parameters as `setParameters()` describes, stores them and drops the pending anchor.
     function _setParameters(Parameters calldata p) private {
         if (p.maxPriceAboveAnchor == 0 || p.maxPriceBelowAnchor == 0) revert InvalidParameters();
         if (p.maxPriceAboveAnchor >= WAD || p.maxPriceBelowAnchor >= WAD) revert InvalidParameters();
         if (p.maxAnchorBelowFenceBase >= WAD || p.maxAnchorAboveFenceBase >= WAD) revert InvalidParameters();
         if (p.maxAnchorContinuousRiseRate > WAD || p.maxAnchorContinuousFallRate > WAD) revert InvalidParameters();
         if (p.reanchorDelay < MIN_REANCHOR_DELAY || p.reanchorWindow == 0) revert InvalidParameters();
-        // A source moving at a rate must stay within its bound over one delay, or each re-anchor would land short of
-        // the price and record the next pending anchor.
+        // A source that moves at a rate must stay inside its bound for one delay. If not, each re-anchor stops short
+        // of the price and records a new pending anchor.
         if (_compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay) > p.maxPriceAboveAnchor) {
             revert InvalidParameters();
         }

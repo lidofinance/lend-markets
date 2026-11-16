@@ -4,19 +4,19 @@ pragma solidity 0.8.36;
 import {TrailingAnchorOracleBase} from "./TrailingAnchorOracleBase.sol";
 
 interface IOndoPriceGetter {
-    /// @notice USDY redemption value in USD, scaled by 1e18.
+    /// @notice USDY redemption value in USD, with 18 decimals.
     function getPrice() external view returns (uint256);
 }
 
 /// @title UsdyNavOracle
 /// @author Lido
-/// @notice NAV oracle for USDY, reading Ondo's price getter.
+/// @notice NAV oracle for USDY. It reads the price from the price getter of Ondo.
 contract UsdyNavOracle layout at erc7201("lido.lend.storage.UsdyNavOracle") is TrailingAnchorOracleBase {
     // ---
     // IMMUTABLES
     // ---
 
-    /// @dev Ondo's documented price getter for USDY.
+    /// @notice Price getter of Ondo for USDY.
     IOndoPriceGetter public immutable SOURCE;
 
     // ---
