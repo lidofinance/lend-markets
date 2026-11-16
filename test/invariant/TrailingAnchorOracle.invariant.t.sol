@@ -103,7 +103,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
             maxPriceAboveAnchor: uint64(s.maxPriceAboveAnchor),
             maxPriceBelowAnchor: uint64(s.maxPriceBelowAnchor),
             maxAnchorContinuousRiseRate: uint64(s.maxAnchorContinuousRiseRate),
-            maxAnchorFallPerYear: uint64(s.maxAnchorFallPerYear),
+            maxAnchorContinuousFallRate: uint64(s.maxAnchorContinuousFallRate),
             maxAnchorBelowFenceBase: uint64(s.maxAnchorBelowFenceBase),
             maxAnchorAboveFenceBase: uint64(s.maxAnchorAboveFenceBase),
             reanchorDelay: uint40(s.reanchorDelay),

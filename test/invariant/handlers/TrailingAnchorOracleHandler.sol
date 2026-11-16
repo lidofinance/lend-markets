@@ -419,7 +419,7 @@ contract TrailingAnchorOracleHandler is Test {
         p.maxPriceAboveAnchor = uint64(bound(_pick(seed, "aboveAnchor"), 0.0001e18, 0.005e18));
         p.maxPriceBelowAnchor = uint64(bound(_pick(seed, "belowAnchor"), 0.0001e18, 0.01e18));
         p.maxAnchorContinuousRiseRate = uint64(bound(_pick(seed, "rise"), 0, 0.2e18));
-        p.maxAnchorFallPerYear = uint64(bound(_pick(seed, "fall"), 0, 0.2e18));
+        p.maxAnchorContinuousFallRate = uint64(bound(_pick(seed, "fall"), 0, 0.2e18));
         bool sized = MAX_LLTV != 0;
         p.maxAnchorBelowFenceBase = uint64(bound(_pick(seed, "belowFenceBase"), 0, sized ? 0.012e18 : 0.05e18));
         p.maxAnchorAboveFenceBase = uint64(bound(_pick(seed, "aboveFenceBase"), 0, sized ? 0.004e18 : 0.01e18));
@@ -430,7 +430,7 @@ contract TrailingAnchorOracleHandler is Test {
         if (field == 0) p.maxPriceAboveAnchor = 0;
         else if (field == 1) p.maxPriceBelowAnchor = uint64(WAD);
         else if (field == 2) p.maxPriceAboveAnchor = uint64(WAD);
-        else if (field == 3) p.maxAnchorFallPerYear = uint64(WAD + 1);
+        else if (field == 3) p.maxAnchorContinuousFallRate = uint64(WAD + 1);
         else if (field == 4) p.reanchorDelay = 1 hours - 1;
         else if (field == 5) p.reanchorWindow = 0;
         else if (field == 6) p.maxAnchorBelowFenceBase = uint64(WAD);

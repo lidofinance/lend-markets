@@ -50,7 +50,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         uint64 maxPriceAboveAnchor;
         uint64 maxPriceBelowAnchor;
         uint64 maxAnchorContinuousRiseRate;
-        uint64 maxAnchorFallPerYear;
+        uint64 maxAnchorContinuousFallRate;
         uint64 maxAnchorBelowFenceBase;
         uint64 maxAnchorAboveFenceBase;
         uint40 reanchorDelay;
@@ -102,7 +102,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     uint256 public constant MIN_REANCHOR_DELAY = 1 hours;
     /// @notice Longest a pricing suspension may run from the call that sets it.
     uint256 public constant MAX_PRICING_SUSPENSION = 7 days;
-    /// @dev The period `maxAnchorContinuousRiseRate` and `maxAnchorFallPerYear` are quoted per.
+    /// @dev The period `maxAnchorContinuousRiseRate` and `maxAnchorContinuousFallRate` are quoted per.
     uint256 private constant YEAR = 365 days;
 
     // ---
@@ -154,7 +154,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // Slot layout; `price()` reads only the first two:
     // 0: maxPriceAboveAnchor, maxPriceBelowAnchor, anchorAt, pricingResumesAt
     // 1: anchorPrice
-    // 2: maxAnchorContinuousRiseRate, maxAnchorFallPerYear, reanchorDelay, reanchorWindow, pendingAnchorAt
+    // 2: maxAnchorContinuousRiseRate, maxAnchorContinuousFallRate, reanchorDelay, reanchorWindow, pendingAnchorAt
     // 3: pendingAnchorPrice
     // 4: maxAnchorBelowFenceBase, maxAnchorAboveFenceBase
     // 5: fenceBasePrice
@@ -177,9 +177,10 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///         bounds, WAD. 0.06e18 lets it rise e^0.06 − 1, about 6.18%, in a year, whatever the schedule of
     ///         updates.
     uint64 public maxAnchorContinuousRiseRate;
-    /// @notice Yearly speed at which an update may lower the anchor toward a price within the bounds, as a fraction of
-    ///         the anchor price, WAD. 0.01e18 lets it fall 1% a year, about 0.003% a day.
-    uint64 public maxAnchorFallPerYear;
+    /// @notice Continuously compounded yearly rate at which an update may lower the anchor toward a price within the
+    ///         bounds, WAD. 0.01e18 lets it fall 1 − e^−0.01, about 0.995%, in a year, whatever the schedule of
+    ///         updates.
+    uint64 public maxAnchorContinuousFallRate;
     /// @notice Seconds a pending anchor waits before an update can re-anchor.
     uint40 public reanchorDelay;
     /// @notice Seconds after the delay during which an update can re-anchor; after them the pending anchor expires, and
@@ -310,10 +311,10 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     }
 
     /// @notice Sets every parameter at once and drops the pending anchor; the anchor and `fenceBasePrice` stay where
-    ///         they are. Each bound must be above zero and below a whole price, the fall speed at most a whole price a
-    ///         year and the rise rate at most 1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a
-    ///         whole price, the delay at least `MIN_REANCHOR_DELAY` and no longer than each speed takes to cover its
-    ///         bound, and the window above zero.
+    ///         they are. Each bound must be above zero and below a whole price, the rise rate and the fall rate at
+    ///         most 1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, the delay at
+    ///         least `MIN_REANCHOR_DELAY` and no longer than each rate takes to cover its bound, and the window above
+    ///         zero.
     ///         A position borrowed at `MAX_LLTV` against the highest price, the ceiling × (1 + maxPriceAboveAnchor),
     ///         must still cover its debt and the core's liquidation incentive at the lowest, the floor × (1 −
     ///         maxPriceBelowAnchor).
@@ -333,15 +334,14 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // PRIVATE
     // ---
 
-    /// @dev Moves the anchor toward `currentPrice` by at most the yearly speeds for the time since it was last set, and
+    /// @dev Moves the anchor toward `currentPrice` by at most the yearly rates for the time since it was last set, and
     ///      down never past the floor. A move up raises `fenceBasePrice` by its part above both the anchor and that
     ///      price, so the gap a re-anchor up left between them stays. Callers pass a price within the bounds, so one
-    ///      move never passes the bound however long the anchor rested; the fall term is capped at the anchor price
-    ///      for the same reason.
+    ///      move never passes the bound however long the anchor rested.
     function _moveAnchorTowards(uint256 currentPrice) private {
         uint256 elapsed = block.timestamp - anchorAt;
         uint256 rise = Math.mulDiv(anchorPrice, _compoundedRise(maxAnchorContinuousRiseRate, elapsed), WAD);
-        uint256 fall = Math.min(Math.mulDiv(anchorPrice, maxAnchorFallPerYear * elapsed, WAD * YEAR), anchorPrice);
+        uint256 fall = Math.mulDiv(anchorPrice, _compoundedFall(maxAnchorContinuousFallRate, elapsed), WAD);
         uint256 lowest = Math.max(anchorPrice - fall, _lowestAnchor());
         uint256 newAnchorPrice = Math.min(Math.max(currentPrice, lowest), anchorPrice + rise);
         if (newAnchorPrice == anchorPrice) return;
@@ -355,6 +355,14 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///      schedule.
     function _compoundedRise(uint256 rate, uint256 elapsed) private pure returns (uint256) {
         return MathLib.wTaylorCompounded(Math.mulDiv(rate, elapsed, YEAR), 1);
+    }
+
+    /// @dev 1 − e^(−rate × elapsed / YEAR) as c / (1 + c), with c from `_compoundedRise`, WAD, rounded down and so
+    ///      below a whole price. Dividing by 1 + c undoes a rise at the same rate, and c is at most e^(rate × elapsed
+    ///      / YEAR) − 1, so the total fall stays under 1 − e^(−rate × T) for any schedule.
+    function _compoundedFall(uint256 rate, uint256 elapsed) private pure returns (uint256) {
+        uint256 compounded = _compoundedRise(rate, elapsed);
+        return Math.mulDiv(compounded, WAD, WAD + compounded);
     }
 
     /// @dev The lowest anchor an update may set: the floor, `maxAnchorBelowFenceBase` below `fenceBasePrice` with the
@@ -458,14 +466,14 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         if (p.maxPriceAboveAnchor == 0 || p.maxPriceBelowAnchor == 0) revert InvalidParameters();
         if (p.maxPriceAboveAnchor >= WAD || p.maxPriceBelowAnchor >= WAD) revert InvalidParameters();
         if (p.maxAnchorBelowFenceBase >= WAD || p.maxAnchorAboveFenceBase >= WAD) revert InvalidParameters();
-        if (p.maxAnchorContinuousRiseRate > WAD || p.maxAnchorFallPerYear > WAD) revert InvalidParameters();
+        if (p.maxAnchorContinuousRiseRate > WAD || p.maxAnchorContinuousFallRate > WAD) revert InvalidParameters();
         if (p.reanchorDelay < MIN_REANCHOR_DELAY || p.reanchorWindow == 0) revert InvalidParameters();
-        // A source moving at a speed must stay within its bound over one delay, or each re-anchor would land short of
+        // A source moving at a rate must stay within its bound over one delay, or each re-anchor would land short of
         // the price and record the next pending anchor.
         if (_compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay) > p.maxPriceAboveAnchor) {
             revert InvalidParameters();
         }
-        if (uint256(p.reanchorDelay) * p.maxAnchorFallPerYear > uint256(p.maxPriceBelowAnchor) * YEAR) {
+        if (_compoundedFall(p.maxAnchorContinuousFallRate, p.reanchorDelay) > p.maxPriceBelowAnchor) {
             revert InvalidParameters();
         }
         uint256 incentive = Math.min(
@@ -486,7 +494,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         maxPriceAboveAnchor = p.maxPriceAboveAnchor;
         maxPriceBelowAnchor = p.maxPriceBelowAnchor;
         maxAnchorContinuousRiseRate = p.maxAnchorContinuousRiseRate;
-        maxAnchorFallPerYear = p.maxAnchorFallPerYear;
+        maxAnchorContinuousFallRate = p.maxAnchorContinuousFallRate;
         maxAnchorBelowFenceBase = p.maxAnchorBelowFenceBase;
         maxAnchorAboveFenceBase = p.maxAnchorAboveFenceBase;
         reanchorDelay = p.reanchorDelay;

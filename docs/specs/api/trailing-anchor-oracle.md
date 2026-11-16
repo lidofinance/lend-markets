@@ -45,7 +45,7 @@ struct Parameters {
     uint64 maxPriceAboveAnchor;
     uint64 maxPriceBelowAnchor;
     uint64 maxAnchorContinuousRiseRate;
-    uint64 maxAnchorFallPerYear;
+    uint64 maxAnchorContinuousFallRate;
     uint64 maxAnchorBelowFenceBase;
     uint64 maxAnchorAboveFenceBase;
     uint40 reanchorDelay;
@@ -268,7 +268,7 @@ Makes `price()` revert until `resumesAt`, at most `MAX_PRICING_SUSPENSION` from 
 function setParameters(Parameters calldata parameters) external;
 ```
 
-Sets every parameter at once and drops the pending anchor; the anchor and `fenceBasePrice` stay where they are. Each bound must be above zero and below a whole price, the fall speed at most a whole price a year and the rise rate at most 1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, the delay at least `MIN_REANCHOR_DELAY` and no longer than each speed takes to cover its bound, and the window above zero. A position borrowed at `MAX_LLTV` against the highest price, the ceiling × (1 + maxPriceAboveAnchor), must still cover its debt and the core's liquidation incentive at the lowest, the floor × (1 − maxPriceBelowAnchor).
+Sets every parameter at once and drops the pending anchor; the anchor and `fenceBasePrice` stay where they are. Each bound must be above zero and below a whole price, the rise rate and the fall rate at most 1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, the delay at least `MIN_REANCHOR_DELAY` and no longer than each rate takes to cover its bound, and the window above zero. A position borrowed at `MAX_LLTV` against the highest price, the ceiling × (1 + maxPriceAboveAnchor), must still cover its debt and the core's liquidation incentive at the lowest, the floor × (1 − maxPriceBelowAnchor).
 
 ### State variables
 
@@ -286,7 +286,7 @@ Sets every parameter at once and drops the pending anchor; the anchor and `fence
 | `pricingResumesAt` | `uint40` | Time before which `price()` reverts with `PricingSuspended`. |
 | `anchorPrice` | `uint256` | Price the current price is compared with, with `PRICE_DECIMALS` decimals. |
 | `maxAnchorContinuousRiseRate` | `uint64` | Continuously compounded yearly rate at which an update may raise the anchor toward a price within the bounds, WAD. 0.06e18 lets it rise e^0.06 − 1, about 6.18%, in a year, whatever the schedule of updates. |
-| `maxAnchorFallPerYear` | `uint64` | Yearly speed at which an update may lower the anchor toward a price within the bounds, as a fraction of the anchor price, WAD. 0.01e18 lets it fall 1% a year, about 0.003% a day. |
+| `maxAnchorContinuousFallRate` | `uint64` | Continuously compounded yearly rate at which an update may lower the anchor toward a price within the bounds, WAD. 0.01e18 lets it fall 1 − e^−0.01, about 0.995%, in a year, whatever the schedule of updates. |
 | `reanchorDelay` | `uint40` | Seconds a pending anchor waits before an update can re-anchor. |
 | `reanchorWindow` | `uint40` | Seconds after the delay during which an update can re-anchor; after them the pending anchor expires, and the next update drops it or replaces it with a current price outside the bounds. |
 | `pendingAnchorAt` | `uint40` | When the pending anchor was recorded; zero for none. |

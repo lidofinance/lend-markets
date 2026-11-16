@@ -37,7 +37,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     uint256 internal constant MAX_PRICE_BELOW_ANCHOR = TrailingAnchorOracleModel.MAX_PRICE_BELOW_ANCHOR;
     uint256 internal constant MAX_ANCHOR_CONTINUOUS_RISE_RATE =
         TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_RISE_RATE;
-    uint256 internal constant MAX_ANCHOR_FALL_PER_YEAR = TrailingAnchorOracleModel.MAX_ANCHOR_FALL_PER_YEAR;
+    uint256 internal constant MAX_ANCHOR_CONTINUOUS_FALL_RATE =
+        TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_FALL_RATE;
     uint256 internal constant MAX_ANCHOR_BELOW_FENCE_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_FENCE_BASE;
     uint256 internal constant MAX_ANCHOR_ABOVE_FENCE_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_FENCE_BASE;
     uint256 internal constant DELAY = TrailingAnchorOracleModel.REANCHOR_DELAY;
@@ -46,6 +47,10 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     ///      0.0005 for x = 0.06 × delay / 365 days, found with exact integer arithmetic. The linear rule would give
     ///      262,800 seconds.
     uint256 internal constant LONGEST_DELAY_FOR_RISE = 262_734;
+    /// @dev The longest delay over which 1% a year, compounded continuously, falls at most 0.1%: c / (1 + c) ≤ 0.001
+    ///      for c = x + x²/2 + x³/6 and x = 0.01 × delay / 365 days, found with exact integer arithmetic. The linear
+    ///      rule would give 3,153,600 seconds.
+    uint256 internal constant LONGEST_DELAY_FOR_FALL = 3_155_177;
     /// @dev The EIP-1967 implementation slot the proxy reads on every call.
     bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
@@ -405,13 +410,60 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         oracle.setParameters(p);
     }
 
-    /// @dev A current price on the lower bound moves the anchor by one day of the fall speed, rounded down.
+    /// @dev A current price on the lower bound moves the anchor by one day of the fall rate compounded continuously,
+    ///      rounded down.
     function test_updateAnchor_fallsAtFallSpeed() public {
         vm.warp(START + 1 days);
         source.setCurrentPrice(_lower(INITIAL_PRICE));
         _update();
-        uint256 expected = INITIAL_PRICE - Math.mulDiv(INITIAL_PRICE, MAX_ANCHOR_FALL_PER_YEAR * 1 days, WAD * YEAR);
-        assertEq(_read().anchorPrice, expected, "one day of the fall speed");
+        assertEq(_read().anchorPrice, INITIAL_PRICE - _fallStep(INITIAL_PRICE, 1 days), "one day of the fall rate");
+    }
+
+    /// @dev The fall rate is a continuous rate, so a year of fall is the same for any schedule of updates: one update
+    ///      after a year and an update every day both take the anchor to about e^−0.01 = 0.9900498 times the seed,
+    /// and
+    ///      neither goes under it. A fall of 1% a year, taken once from the seed, would go to 0.99. The bound is 10%
+    ///      here, so that one update can follow a whole year, and the floor is out of the way.
+    function test_updateAnchor_yearOfFallIndependentOfSchedule() public {
+        _setParameters(_wideFall());
+        uint256 limit = Math.mulDiv(INITIAL_PRICE, 0.990049833749168053e18, WAD);
+
+        uint256 snapshot = vm.snapshotState();
+        vm.warp(START + YEAR);
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD));
+        _update();
+        uint256 once = _read().anchorPrice;
+        assertEq(once, INITIAL_PRICE - _fallStep(INITIAL_PRICE, YEAR), "one update after a year");
+        assertGe(once, limit, "one update stays over e^-0.01");
+        vm.revertToState(snapshot);
+
+        for (uint256 day = 1; day <= 365; ++day) {
+            vm.warp(START + day * 1 days);
+            source.setCurrentPrice(Math.mulDiv(_read().anchorPrice, 0.95e18, WAD));
+            oracle.updateAnchor();
+        }
+        uint256 daily = _read().anchorPrice;
+        assertGe(daily, limit, "daily updates stay over e^-0.01");
+        assertApproxEqRel(daily, once, 0.000001e18, "the schedule moves the year's fall by under 0.0001%");
+    }
+
+    /// @dev Any schedule: updates at random intervals of one to sixty days over a year, the source always under the
+    ///      anchor, leave the anchor between e^−0.01 = 0.9900498337 and one whole-year step, 1 / (1 + 0.01 + 0.01²/2
+    /// +
+    ///      0.01³/6) = 0.9900498342, times the seed.
+    function testFuzz_updateAnchor_yearOfFallNeverPassesTheContinuousRate(uint256 seed) public {
+        _setParameters(_wideFall());
+        uint256 time = START;
+        while (time < START + YEAR) {
+            seed = uint256(keccak256(abi.encode(seed)));
+            time = Math.min(time + bound(seed, 1 days, 60 days), START + YEAR);
+            vm.warp(time);
+            source.setCurrentPrice(Math.mulDiv(_read().anchorPrice, 0.95e18, WAD));
+            oracle.updateAnchor();
+        }
+        uint256 anchor = _read().anchorPrice;
+        assertGe(anchor, Math.mulDiv(INITIAL_PRICE, 0.990049833749168053e18, WAD), "never under e^-0.01");
+        assertLe(anchor, Math.mulDiv(INITIAL_PRICE, 0.9900498342e18, WAD), "never over one whole-year step");
     }
 
     /// @dev After two years at rest the speeds would reach 12%, but a drift only follows a price within the bounds, so
@@ -424,11 +476,11 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(_read().anchorPrice, high, "the upper bound, not the reach");
     }
 
-    /// @dev A whole price a year of fall over three years at rest would take more than the anchor: the fall term is
-    ///      held at the anchor price, and the anchor lands on the price.
+    /// @dev The highest fall rate over three years at rest reaches almost the whole anchor: the anchor lands on the
+    ///      price.
     function test_updateAnchor_fullFallSpeedAfterLongRest() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorFallPerYear = uint64(WAD);
+        p.maxAnchorContinuousFallRate = uint64(WAD);
         _setParameters(p);
         vm.warp(START + 3 * YEAR);
         uint256 low = _lower(INITIAL_PRICE);
@@ -708,7 +760,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     function test_updateAnchor_hugeDelayDoesNotOverflow() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
         p.maxAnchorContinuousRiseRate = 0;
-        p.maxAnchorFallPerYear = 0;
+        p.maxAnchorContinuousFallRate = 0;
         p.reanchorDelay = type(uint40).max;
         p.reanchorWindow = type(uint40).max;
         _setParameters(p);
@@ -852,11 +904,11 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         oracle.price();
     }
 
-    /// @dev A drift stops on the floor too: at a fall speed of a whole price a year, a price held on the lower bound
+    /// @dev A drift stops on the floor too: at the highest fall rate, a price held on the lower bound
     ///      walks the anchor down every day until the floor, and no further.
     function test_updateAnchor_driftStopsAtTheFloor() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorFallPerYear = uint64(WAD);
+        p.maxAnchorContinuousFallRate = uint64(WAD);
         _setParameters(p);
         uint256 floorPrice = _floor(INITIAL_PRICE);
         for (uint256 day = 1; day <= 30; ++day) {
@@ -1243,7 +1295,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
             maxPriceAboveAnchor: 0.001e18,
             maxPriceBelowAnchor: 0.002e18,
             maxAnchorContinuousRiseRate: 0.1e18,
-            maxAnchorFallPerYear: 0.05e18,
+            maxAnchorContinuousFallRate: 0.05e18,
             maxAnchorBelowFenceBase: 0.02e18,
             maxAnchorAboveFenceBase: 0.005e18,
             reanchorDelay: 12 hours,
@@ -1329,7 +1381,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         p.maxPriceAboveAnchor = 1;
         p.maxPriceBelowAnchor = 1;
         p.maxAnchorContinuousRiseRate = 0;
-        p.maxAnchorFallPerYear = 0;
+        p.maxAnchorContinuousFallRate = 0;
         _setParameters(p);
         p = TrailingAnchorOracleModel.defaultParameters();
         p.maxPriceAboveAnchor = uint64(WAD - 1);
@@ -1337,7 +1389,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         _setParameters(p);
         p = TrailingAnchorOracleModel.defaultParameters();
         p.maxAnchorContinuousRiseRate = uint64(WAD);
-        p.maxAnchorFallPerYear = 0;
+        p.maxAnchorContinuousFallRate = 0;
         p.reanchorDelay = 1 hours;
         p.reanchorWindow = 1;
         _setParameters(p);
@@ -1345,9 +1397,10 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         p = TrailingAnchorOracleModel.defaultParameters();
         p.reanchorDelay = uint40(LONGEST_DELAY_FOR_RISE);
         _setParameters(p);
-        // The longest delay the fall rule takes, with the rise speed off: 1% a year covers exactly 0.1% in it.
+        // The longest delay the fall rule takes, with the rise speed off: 1 − e^(−1% × delay / 365 days) stays at
+        // most 0.1%.
         p.maxAnchorContinuousRiseRate = 0;
-        p.reanchorDelay = uint40(MAX_PRICE_BELOW_ANCHOR * YEAR / MAX_ANCHOR_FALL_PER_YEAR);
+        p.reanchorDelay = uint40(LONGEST_DELAY_FOR_FALL);
         _setParameters(p);
         p = TrailingAnchorOracleModel.defaultParameters();
         p.maxAnchorBelowFenceBase = 0;
@@ -1392,7 +1445,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(uint256(vm.load(address(oracle), _slot(base, 1))), INITIAL_PRICE, "anchorPrice in the second slot");
         uint256 third = uint256(vm.load(address(oracle), _slot(base, 2)));
         assertEq(uint64(third), MAX_ANCHOR_CONTINUOUS_RISE_RATE, "maxAnchorContinuousRiseRate in bits 0-63");
-        assertEq(uint64(third >> 64), MAX_ANCHOR_FALL_PER_YEAR, "maxAnchorFallPerYear in bits 64-127");
+        assertEq(uint64(third >> 64), MAX_ANCHOR_CONTINUOUS_FALL_RATE, "maxAnchorContinuousFallRate in bits 64-127");
         assertEq(uint40(third >> 128), DELAY, "reanchorDelay in bits 128-167");
         assertEq(uint40(third >> 168), WINDOW, "reanchorWindow in bits 168-207");
         assertEq(uint40(third >> 208), START + 1 hours, "pendingAnchorAt in bits 208-247");
@@ -1495,7 +1548,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(s.maxPriceAboveAnchor, e.maxPriceAboveAnchor, "maxPriceAboveAnchor");
         assertEq(s.maxPriceBelowAnchor, e.maxPriceBelowAnchor, "maxPriceBelowAnchor");
         assertEq(s.maxAnchorContinuousRiseRate, e.maxAnchorContinuousRiseRate, "maxAnchorContinuousRiseRate");
-        assertEq(s.maxAnchorFallPerYear, e.maxAnchorFallPerYear, "maxAnchorFallPerYear");
+        assertEq(s.maxAnchorContinuousFallRate, e.maxAnchorContinuousFallRate, "maxAnchorContinuousFallRate");
         assertEq(s.maxAnchorBelowFenceBase, e.maxAnchorBelowFenceBase, "maxAnchorBelowFenceBase");
         assertEq(s.maxAnchorAboveFenceBase, e.maxAnchorAboveFenceBase, "maxAnchorAboveFenceBase");
         assertEq(s.reanchorDelay, e.reanchorDelay, "reanchorDelay");
@@ -1509,7 +1562,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(s.maxPriceAboveAnchor, p.maxPriceAboveAnchor, "maxPriceAboveAnchor");
         assertEq(s.maxPriceBelowAnchor, p.maxPriceBelowAnchor, "maxPriceBelowAnchor");
         assertEq(s.maxAnchorContinuousRiseRate, p.maxAnchorContinuousRiseRate, "maxAnchorContinuousRiseRate");
-        assertEq(s.maxAnchorFallPerYear, p.maxAnchorFallPerYear, "maxAnchorFallPerYear");
+        assertEq(s.maxAnchorContinuousFallRate, p.maxAnchorContinuousFallRate, "maxAnchorContinuousFallRate");
         assertEq(s.maxAnchorBelowFenceBase, p.maxAnchorBelowFenceBase, "maxAnchorBelowFenceBase");
         assertEq(s.maxAnchorAboveFenceBase, p.maxAnchorAboveFenceBase, "maxAnchorAboveFenceBase");
         assertEq(s.reanchorDelay, p.reanchorDelay, "reanchorDelay");
@@ -1560,34 +1613,52 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         cases[0].maxPriceAboveAnchor = 0;
         cases[0].maxAnchorContinuousRiseRate = 0;
         cases[1].maxPriceBelowAnchor = 0;
-        cases[1].maxAnchorFallPerYear = 0;
+        cases[1].maxAnchorContinuousFallRate = 0;
         cases[2].maxPriceAboveAnchor = uint64(WAD);
         cases[3].maxPriceBelowAnchor = uint64(WAD);
         // Over a one-hour delay this speed covers 0.011%, inside the 0.05% bound, so only the speed's own limit
         // refuses it.
         cases[4].maxAnchorContinuousRiseRate = uint64(WAD + 1);
         cases[4].reanchorDelay = 1 hours;
-        cases[5].maxAnchorFallPerYear = uint64(WAD + 1);
+        cases[5].maxAnchorContinuousFallRate = uint64(WAD + 1);
         cases[6].reanchorDelay = 1 hours - 1;
         cases[7].reanchorWindow = 0;
         cases[8].reanchorDelay = uint40(LONGEST_DELAY_FOR_RISE + 1);
         cases[9].maxAnchorBelowFenceBase = uint64(WAD);
         cases[10].maxAnchorAboveFenceBase = uint64(WAD);
         cases[11].maxAnchorContinuousRiseRate = 0;
-        cases[11].reanchorDelay = uint40(MAX_PRICE_BELOW_ANCHOR * YEAR / MAX_ANCHOR_FALL_PER_YEAR + 1);
+        cases[11].reanchorDelay = uint40(LONGEST_DELAY_FOR_FALL + 1);
         for (uint256 i; i < cases.length; ++i) {
             assertGt(TrailingAnchorOracleModel.parametersRevert(cases[i]).length, 0, "the model refuses the case");
         }
     }
 
-    /// @dev `anchor` × (e^(MAX_ANCHOR_CONTINUOUS_RISE_RATE × elapsed / 365 days) − 1), with e^x − 1 as x + x²/2
+    /// @dev `anchor` × (e^x − 1) for x = MAX_ANCHOR_CONTINUOUS_RISE_RATE × elapsed / 365 days, with e^x − 1 as x
     /// +
-    ///      x³/6, each term rounded down.
+    ///      x²/2 + x³/6, each term rounded down.
     function _riseStep(uint256 anchor, uint256 elapsed) internal pure returns (uint256) {
         uint256 x = MAX_ANCHOR_CONTINUOUS_RISE_RATE * elapsed / YEAR;
         uint256 x2 = x * x / (2 * WAD);
         uint256 x3 = x2 * x / (3 * WAD);
         return Math.mulDiv(anchor, x + x2 + x3, WAD);
+    }
+
+    /// @dev `anchor` × (1 − e^(−x)) for x = MAX_ANCHOR_CONTINUOUS_FALL_RATE × elapsed / 365 days, with 1 −
+    /// e^(−x) as
+    ///      c / (1 + c) and c = x + x²/2 + x³/6, each step rounded down.
+    function _fallStep(uint256 anchor, uint256 elapsed) internal pure returns (uint256) {
+        uint256 x = MAX_ANCHOR_CONTINUOUS_FALL_RATE * elapsed / YEAR;
+        uint256 x2 = x * x / (2 * WAD);
+        uint256 c = x + x2 + x2 * x / (3 * WAD);
+        return Math.mulDiv(anchor, c * WAD / (WAD + c), WAD);
+    }
+
+    /// @dev The working parameters with a 10% lower bound and the floor a wei or two above zero, so that one update
+    ///      can follow a year of fall.
+    function _wideFall() internal pure returns (TrailingAnchorOracleBase.Parameters memory p) {
+        p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxPriceBelowAnchor = 0.1e18;
+        p.maxAnchorBelowFenceBase = uint64(WAD - 1);
     }
 
     function _lower(uint256 center) internal pure returns (uint256) {

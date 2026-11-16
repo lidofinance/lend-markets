@@ -347,7 +347,7 @@ contract NavOracleReplayTest is Test {
         p.maxPriceAboveAnchor = uint64(bound_);
         p.maxPriceBelowAnchor = uint64(bound_);
         p.maxAnchorContinuousRiseRate = uint64(rise);
-        p.maxAnchorFallPerYear = uint64(fall);
+        p.maxAnchorContinuousFallRate = uint64(fall);
         p.maxAnchorBelowFenceBase = uint64(belowFenceBase);
         p.maxAnchorAboveFenceBase = uint64(aboveFenceBase);
         bytes memory init = TrailingAnchorOracleModel.initializeCall(address(this), p);

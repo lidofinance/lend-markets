@@ -21,7 +21,7 @@ struct TrailingAnchorOracleState {
     uint256 maxPriceAboveAnchor;
     uint256 maxPriceBelowAnchor;
     uint256 maxAnchorContinuousRiseRate;
-    uint256 maxAnchorFallPerYear;
+    uint256 maxAnchorContinuousFallRate;
     uint256 maxAnchorBelowFenceBase;
     uint256 maxAnchorAboveFenceBase;
     uint256 reanchorDelay;
@@ -57,7 +57,7 @@ library TrailingAnchorOracleModel {
     uint256 internal constant MAX_PRICE_ABOVE_ANCHOR = 0.0005e18;
     uint256 internal constant MAX_PRICE_BELOW_ANCHOR = 0.001e18;
     uint256 internal constant MAX_ANCHOR_CONTINUOUS_RISE_RATE = 0.06e18;
-    uint256 internal constant MAX_ANCHOR_FALL_PER_YEAR = 0.01e18;
+    uint256 internal constant MAX_ANCHOR_CONTINUOUS_FALL_RATE = 0.01e18;
     uint256 internal constant MAX_ANCHOR_BELOW_FENCE_BASE = 0.01e18;
     uint256 internal constant MAX_ANCHOR_ABOVE_FENCE_BASE = 0.002e18;
     uint256 internal constant REANCHOR_DELAY = 6 hours;
@@ -75,7 +75,7 @@ library TrailingAnchorOracleModel {
             maxPriceAboveAnchor: uint64(MAX_PRICE_ABOVE_ANCHOR),
             maxPriceBelowAnchor: uint64(MAX_PRICE_BELOW_ANCHOR),
             maxAnchorContinuousRiseRate: uint64(MAX_ANCHOR_CONTINUOUS_RISE_RATE),
-            maxAnchorFallPerYear: uint64(MAX_ANCHOR_FALL_PER_YEAR),
+            maxAnchorContinuousFallRate: uint64(MAX_ANCHOR_CONTINUOUS_FALL_RATE),
             maxAnchorBelowFenceBase: uint64(MAX_ANCHOR_BELOW_FENCE_BASE),
             maxAnchorAboveFenceBase: uint64(MAX_ANCHOR_ABOVE_FENCE_BASE),
             reanchorDelay: uint40(REANCHOR_DELAY),
@@ -130,7 +130,7 @@ library TrailingAnchorOracleModel {
         s.maxPriceAboveAnchor = oracle.maxPriceAboveAnchor();
         s.maxPriceBelowAnchor = oracle.maxPriceBelowAnchor();
         s.maxAnchorContinuousRiseRate = oracle.maxAnchorContinuousRiseRate();
-        s.maxAnchorFallPerYear = oracle.maxAnchorFallPerYear();
+        s.maxAnchorContinuousFallRate = oracle.maxAnchorContinuousFallRate();
         s.maxAnchorBelowFenceBase = oracle.maxAnchorBelowFenceBase();
         s.maxAnchorAboveFenceBase = oracle.maxAnchorAboveFenceBase();
         s.reanchorDelay = oracle.reanchorDelay();
@@ -152,7 +152,7 @@ library TrailingAnchorOracleModel {
         next.maxPriceAboveAnchor = parameters.maxPriceAboveAnchor;
         next.maxPriceBelowAnchor = parameters.maxPriceBelowAnchor;
         next.maxAnchorContinuousRiseRate = parameters.maxAnchorContinuousRiseRate;
-        next.maxAnchorFallPerYear = parameters.maxAnchorFallPerYear;
+        next.maxAnchorContinuousFallRate = parameters.maxAnchorContinuousFallRate;
         next.maxAnchorBelowFenceBase = parameters.maxAnchorBelowFenceBase;
         next.maxAnchorAboveFenceBase = parameters.maxAnchorAboveFenceBase;
         next.reanchorDelay = parameters.reanchorDelay;
@@ -248,16 +248,23 @@ library TrailingAnchorOracleModel {
         return x + square + Math.mulDiv(square, x, 3 * WAD);
     }
 
-    /// @dev The lowest and highest anchor a drift at `time` may set: the fall speed for the time since the anchor last
-    ///      moved, the rise speed compounded continuously over it, each term rounded down, the fall term held at the
-    ///      anchor price, and the lowest never under `lowestAnchor`.
+    /// @dev 1 − e^(−x) for `x` = rate × elapsed / 365 days, as c / (1 + c) with c = `compoundedRise`, rounded
+    /// down.
+    function compoundedFall(uint256 rate, uint256 elapsed) internal pure returns (uint256) {
+        uint256 compounded = compoundedRise(rate, elapsed);
+        return Math.mulDiv(compounded, WAD, WAD + compounded);
+    }
+
+    /// @dev The lowest and highest anchor a drift at `time` may set: the fall rate and the rise rate, each compounded
+    ///      continuously over the time since the anchor last moved and rounded down, and the lowest never under
+    ///      `lowestAnchor`.
     function reach(TrailingAnchorOracleState memory s, uint256 time)
         internal
         pure
         returns (uint256 lowest, uint256 highest)
     {
         uint256 elapsed = time - s.anchorAt;
-        uint256 fall = Math.min(Math.mulDiv(s.anchorPrice, s.maxAnchorFallPerYear * elapsed, WAD * YEAR), s.anchorPrice);
+        uint256 fall = Math.mulDiv(s.anchorPrice, compoundedFall(s.maxAnchorContinuousFallRate, elapsed), WAD);
         lowest = Math.max(s.anchorPrice - fall, lowestAnchor(s));
         highest =
             s.anchorPrice + Math.mulDiv(s.anchorPrice, compoundedRise(s.maxAnchorContinuousRiseRate, elapsed), WAD);
@@ -516,21 +523,20 @@ library TrailingAnchorOracleModel {
         return parametersRevert(p, MAX_LLTV);
     }
 
-    /// @dev `InvalidParameters()`, or nothing: each bound above zero and below a whole price, each speed at most a
-    ///      whole price a year, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, a delay
-    ///      of at least an hour in which each speed covers at most its bound, a window above zero, and the sizing rule
-    ///      at `maxLltv`.
+    /// @dev `InvalidParameters()`, or nothing: each bound above zero and below a whole price, each rate at most
+    ///      1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, a delay of at least an
+    ///      hour in which each rate covers at most its bound, a window above zero, and the sizing rule at `maxLltv`.
     function parametersRevert(TrailingAnchorOracleBase.Parameters memory p, uint256 maxLltv)
         internal
         pure
         returns (bytes memory)
     {
         bool valid = p.maxPriceAboveAnchor != 0 && p.maxPriceBelowAnchor != 0 && p.maxPriceAboveAnchor < WAD
-            && p.maxPriceBelowAnchor < WAD && p.maxAnchorContinuousRiseRate <= WAD && p.maxAnchorFallPerYear <= WAD
-            && p.maxAnchorBelowFenceBase < WAD && p.maxAnchorAboveFenceBase < WAD
-            && p.reanchorDelay >= MIN_REANCHOR_DELAY && p.reanchorWindow != 0
+            && p.maxPriceBelowAnchor < WAD && p.maxAnchorContinuousRiseRate <= WAD
+            && p.maxAnchorContinuousFallRate <= WAD && p.maxAnchorBelowFenceBase < WAD
+            && p.maxAnchorAboveFenceBase < WAD && p.reanchorDelay >= MIN_REANCHOR_DELAY && p.reanchorWindow != 0
             && compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay) <= p.maxPriceAboveAnchor
-            && uint256(p.reanchorDelay) * p.maxAnchorFallPerYear <= uint256(p.maxPriceBelowAnchor) * YEAR
+            && compoundedFall(p.maxAnchorContinuousFallRate, p.reanchorDelay) <= p.maxPriceBelowAnchor
             && sized(p, maxLltv);
         if (valid) return "";
         return abi.encodeWithSelector(TrailingAnchorOracleBase.InvalidParameters.selector);

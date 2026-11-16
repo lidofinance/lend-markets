@@ -201,7 +201,9 @@ library OraclePreflight {
         _requireUint(
             "max_anchor_continuous_rise_rate", p.maxAnchorContinuousRiseRate, nav.maxAnchorContinuousRiseRate()
         );
-        _requireUint("max_anchor_fall_per_year", p.maxAnchorFallPerYear, nav.maxAnchorFallPerYear());
+        _requireUint(
+            "max_anchor_continuous_fall_rate", p.maxAnchorContinuousFallRate, nav.maxAnchorContinuousFallRate()
+        );
         _requireUint("max_anchor_below_fence_base", p.maxAnchorBelowFenceBase, nav.maxAnchorBelowFenceBase());
         _requireUint("max_anchor_above_fence_base", p.maxAnchorAboveFenceBase, nav.maxAnchorAboveFenceBase());
         _requireUint("reanchor_delay", p.reanchorDelay, nav.reanchorDelay());

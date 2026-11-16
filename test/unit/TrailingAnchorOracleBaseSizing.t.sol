@@ -107,17 +107,19 @@ contract TrailingAnchorOracleBaseSizingTest is Test {
         new OssifiableProxy(impl, admin, init);
     }
 
-    /// @dev The fall side of the delay rule: with a 0.1% lower bound and a 48-hour delay a source may fall at most
-    ///      0.1% × 365 days / 48 hours = 18.25% a year and stay within the bound over one delay. The edge passes, and
-    ///      one wei more is refused. The rise speed is off so that its own delay rule does not bind first.
+    /// @dev The fall side of the delay rule: with a 0.1% lower bound and a 48-hour delay a source may fall at a
+    ///      continuous rate of at most −ln(0.999) × 365 days / 48 hours = 18.2591% and stay within the bound over
+    /// one
+    ///      delay. The edge, found with exact integer arithmetic on c / (1 + c) ≤ 0.001, passes, and one wei more is
+    ///      refused. The rise speed is off so that its own delay rule does not bind first.
     function test_setParameters_fallSpeedEdgeOverOneDelay() public {
         TrailingAnchorOracleBase oracle = _deploy(0.98e18);
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
         p.maxAnchorContinuousRiseRate = 0;
         p.reanchorDelay = 48 hours;
-        p.maxAnchorFallPerYear = 0.1825e18;
+        p.maxAnchorContinuousFallRate = 182_591_310_886_608_672;
         _set(oracle, p);
-        p.maxAnchorFallPerYear = 0.1825e18 + 1;
+        p.maxAnchorContinuousFallRate = 182_591_310_886_608_673;
         _expectRefused(oracle, p);
     }
 

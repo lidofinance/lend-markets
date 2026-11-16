@@ -135,9 +135,9 @@ contract OracleConfigFileTest is Test {
             "max_anchor_continuous_rise_rate"
         );
         assertEq(
-            cfg.parameters.maxAnchorFallPerYear,
-            TrailingAnchorOracleModel.MAX_ANCHOR_FALL_PER_YEAR,
-            "max_anchor_fall_per_year"
+            cfg.parameters.maxAnchorContinuousFallRate,
+            TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_FALL_RATE,
+            "max_anchor_continuous_fall_rate"
         );
         assertEq(
             cfg.parameters.maxAnchorBelowFenceBase,
@@ -211,9 +211,13 @@ contract OracleConfigFileTest is Test {
         vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".reanchor_delay"));
         harness.parseNav(invalid, "");
         invalid = vm.replace(
-            _navUsdyToml(), "max_anchor_fall_per_year = \"10000000000000000\"", "max_anchor_fall_per_year = \"0\""
+            _navUsdyToml(),
+            "max_anchor_continuous_fall_rate = \"10000000000000000\"",
+            "max_anchor_continuous_fall_rate = \"0\""
         );
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_fall_per_year"));
+        vm.expectRevert(
+            abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_continuous_fall_rate")
+        );
         harness.parseNav(invalid, "");
         invalid = vm.replace(
             _navUsdyToml(), "max_anchor_below_fence_base = \"10000000000000000\"", "max_anchor_below_fence_base = \"0\""
@@ -308,7 +312,7 @@ contract OracleConfigFileTest is Test {
             "max_price_above_anchor = \"500000000000000\"\n",
             "max_price_below_anchor = \"1000000000000000\"\n",
             "max_anchor_continuous_rise_rate = \"60000000000000000\"\n",
-            "max_anchor_fall_per_year = \"10000000000000000\"\n",
+            "max_anchor_continuous_fall_rate = \"10000000000000000\"\n",
             "max_anchor_below_fence_base = \"10000000000000000\"\n",
             "max_anchor_above_fence_base = \"2000000000000000\"\n",
             "reanchor_delay = 21600\n",
@@ -331,7 +335,7 @@ contract OracleConfigFileTest is Test {
             "max_price_above_anchor = \"500000000000000\"\n",
             "max_price_below_anchor = \"1000000000000000\"\n",
             "max_anchor_continuous_rise_rate = \"60000000000000000\"\n",
-            "max_anchor_fall_per_year = \"10000000000000000\"\n",
+            "max_anchor_continuous_fall_rate = \"10000000000000000\"\n",
             "max_anchor_below_fence_base = \"10000000000000000\"\n",
             "max_anchor_above_fence_base = \"2000000000000000\"\n",
             "reanchor_delay = 21600\n",
