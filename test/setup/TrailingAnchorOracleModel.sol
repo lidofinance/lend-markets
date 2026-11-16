@@ -20,7 +20,7 @@ struct TrailingAnchorOracleState {
     uint256 fenceBasePrice;
     uint256 maxPriceAboveAnchor;
     uint256 maxPriceBelowAnchor;
-    uint256 maxAnchorRisePerYear;
+    uint256 maxAnchorContinuousRiseRate;
     uint256 maxAnchorFallPerYear;
     uint256 maxAnchorBelowFenceBase;
     uint256 maxAnchorAboveFenceBase;
@@ -56,7 +56,7 @@ library TrailingAnchorOracleModel {
     ///      bounds stops covering its liquidation at the bottom of the floor's; a six-hour delay and a one-day window.
     uint256 internal constant MAX_PRICE_ABOVE_ANCHOR = 0.0005e18;
     uint256 internal constant MAX_PRICE_BELOW_ANCHOR = 0.001e18;
-    uint256 internal constant MAX_ANCHOR_RISE_PER_YEAR = 0.06e18;
+    uint256 internal constant MAX_ANCHOR_CONTINUOUS_RISE_RATE = 0.06e18;
     uint256 internal constant MAX_ANCHOR_FALL_PER_YEAR = 0.01e18;
     uint256 internal constant MAX_ANCHOR_BELOW_FENCE_BASE = 0.01e18;
     uint256 internal constant MAX_ANCHOR_ABOVE_FENCE_BASE = 0.002e18;
@@ -74,7 +74,7 @@ library TrailingAnchorOracleModel {
         return TrailingAnchorOracleBase.Parameters({
             maxPriceAboveAnchor: uint64(MAX_PRICE_ABOVE_ANCHOR),
             maxPriceBelowAnchor: uint64(MAX_PRICE_BELOW_ANCHOR),
-            maxAnchorRisePerYear: uint64(MAX_ANCHOR_RISE_PER_YEAR),
+            maxAnchorContinuousRiseRate: uint64(MAX_ANCHOR_CONTINUOUS_RISE_RATE),
             maxAnchorFallPerYear: uint64(MAX_ANCHOR_FALL_PER_YEAR),
             maxAnchorBelowFenceBase: uint64(MAX_ANCHOR_BELOW_FENCE_BASE),
             maxAnchorAboveFenceBase: uint64(MAX_ANCHOR_ABOVE_FENCE_BASE),
@@ -129,7 +129,7 @@ library TrailingAnchorOracleModel {
         s.fenceBasePrice = oracle.fenceBasePrice();
         s.maxPriceAboveAnchor = oracle.maxPriceAboveAnchor();
         s.maxPriceBelowAnchor = oracle.maxPriceBelowAnchor();
-        s.maxAnchorRisePerYear = oracle.maxAnchorRisePerYear();
+        s.maxAnchorContinuousRiseRate = oracle.maxAnchorContinuousRiseRate();
         s.maxAnchorFallPerYear = oracle.maxAnchorFallPerYear();
         s.maxAnchorBelowFenceBase = oracle.maxAnchorBelowFenceBase();
         s.maxAnchorAboveFenceBase = oracle.maxAnchorAboveFenceBase();
@@ -151,7 +151,7 @@ library TrailingAnchorOracleModel {
         next = copy(s);
         next.maxPriceAboveAnchor = parameters.maxPriceAboveAnchor;
         next.maxPriceBelowAnchor = parameters.maxPriceBelowAnchor;
-        next.maxAnchorRisePerYear = parameters.maxAnchorRisePerYear;
+        next.maxAnchorContinuousRiseRate = parameters.maxAnchorContinuousRiseRate;
         next.maxAnchorFallPerYear = parameters.maxAnchorFallPerYear;
         next.maxAnchorBelowFenceBase = parameters.maxAnchorBelowFenceBase;
         next.maxAnchorAboveFenceBase = parameters.maxAnchorAboveFenceBase;
@@ -259,7 +259,8 @@ library TrailingAnchorOracleModel {
         uint256 elapsed = time - s.anchorAt;
         uint256 fall = Math.min(Math.mulDiv(s.anchorPrice, s.maxAnchorFallPerYear * elapsed, WAD * YEAR), s.anchorPrice);
         lowest = Math.max(s.anchorPrice - fall, lowestAnchor(s));
-        highest = s.anchorPrice + Math.mulDiv(s.anchorPrice, compoundedRise(s.maxAnchorRisePerYear, elapsed), WAD);
+        highest =
+            s.anchorPrice + Math.mulDiv(s.anchorPrice, compoundedRise(s.maxAnchorContinuousRiseRate, elapsed), WAD);
     }
 
     /// @dev The anchor a drift toward `currentPrice` at `time` sets: the price held inside the reach.
@@ -525,10 +526,10 @@ library TrailingAnchorOracleModel {
         returns (bytes memory)
     {
         bool valid = p.maxPriceAboveAnchor != 0 && p.maxPriceBelowAnchor != 0 && p.maxPriceAboveAnchor < WAD
-            && p.maxPriceBelowAnchor < WAD && p.maxAnchorRisePerYear <= WAD && p.maxAnchorFallPerYear <= WAD
+            && p.maxPriceBelowAnchor < WAD && p.maxAnchorContinuousRiseRate <= WAD && p.maxAnchorFallPerYear <= WAD
             && p.maxAnchorBelowFenceBase < WAD && p.maxAnchorAboveFenceBase < WAD
             && p.reanchorDelay >= MIN_REANCHOR_DELAY && p.reanchorWindow != 0
-            && compoundedRise(p.maxAnchorRisePerYear, p.reanchorDelay) <= p.maxPriceAboveAnchor
+            && compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay) <= p.maxPriceAboveAnchor
             && uint256(p.reanchorDelay) * p.maxAnchorFallPerYear <= uint256(p.maxPriceBelowAnchor) * YEAR
             && sized(p, maxLltv);
         if (valid) return "";

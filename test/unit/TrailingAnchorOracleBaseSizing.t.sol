@@ -113,7 +113,7 @@ contract TrailingAnchorOracleBaseSizingTest is Test {
     function test_setParameters_fallSpeedEdgeOverOneDelay() public {
         TrailingAnchorOracleBase oracle = _deploy(0.98e18);
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorRisePerYear = 0;
+        p.maxAnchorContinuousRiseRate = 0;
         p.reanchorDelay = 48 hours;
         p.maxAnchorFallPerYear = 0.1825e18;
         _set(oracle, p);

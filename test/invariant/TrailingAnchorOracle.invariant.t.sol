@@ -102,7 +102,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleBase.Parameters({
             maxPriceAboveAnchor: uint64(s.maxPriceAboveAnchor),
             maxPriceBelowAnchor: uint64(s.maxPriceBelowAnchor),
-            maxAnchorRisePerYear: uint64(s.maxAnchorRisePerYear),
+            maxAnchorContinuousRiseRate: uint64(s.maxAnchorContinuousRiseRate),
             maxAnchorFallPerYear: uint64(s.maxAnchorFallPerYear),
             maxAnchorBelowFenceBase: uint64(s.maxAnchorBelowFenceBase),
             maxAnchorAboveFenceBase: uint64(s.maxAnchorAboveFenceBase),

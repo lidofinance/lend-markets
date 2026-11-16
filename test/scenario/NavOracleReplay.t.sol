@@ -346,7 +346,7 @@ contract NavOracleReplayTest is Test {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
         p.maxPriceAboveAnchor = uint64(bound_);
         p.maxPriceBelowAnchor = uint64(bound_);
-        p.maxAnchorRisePerYear = uint64(rise);
+        p.maxAnchorContinuousRiseRate = uint64(rise);
         p.maxAnchorFallPerYear = uint64(fall);
         p.maxAnchorBelowFenceBase = uint64(belowFenceBase);
         p.maxAnchorAboveFenceBase = uint64(aboveFenceBase);

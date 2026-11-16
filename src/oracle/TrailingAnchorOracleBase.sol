@@ -49,7 +49,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     struct Parameters {
         uint64 maxPriceAboveAnchor;
         uint64 maxPriceBelowAnchor;
-        uint64 maxAnchorRisePerYear;
+        uint64 maxAnchorContinuousRiseRate;
         uint64 maxAnchorFallPerYear;
         uint64 maxAnchorBelowFenceBase;
         uint64 maxAnchorAboveFenceBase;
@@ -102,7 +102,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     uint256 public constant MIN_REANCHOR_DELAY = 1 hours;
     /// @notice Longest a pricing suspension may run from the call that sets it.
     uint256 public constant MAX_PRICING_SUSPENSION = 7 days;
-    /// @dev The period `maxAnchorRisePerYear` and `maxAnchorFallPerYear` are quoted per.
+    /// @dev The period `maxAnchorContinuousRiseRate` and `maxAnchorFallPerYear` are quoted per.
     uint256 private constant YEAR = 365 days;
 
     // ---
@@ -154,7 +154,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // Slot layout; `price()` reads only the first two:
     // 0: maxPriceAboveAnchor, maxPriceBelowAnchor, anchorAt, pricingResumesAt
     // 1: anchorPrice
-    // 2: maxAnchorRisePerYear, maxAnchorFallPerYear, reanchorDelay, reanchorWindow, pendingAnchorAt
+    // 2: maxAnchorContinuousRiseRate, maxAnchorFallPerYear, reanchorDelay, reanchorWindow, pendingAnchorAt
     // 3: pendingAnchorPrice
     // 4: maxAnchorBelowFenceBase, maxAnchorAboveFenceBase
     // 5: fenceBasePrice
@@ -176,7 +176,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @notice Continuously compounded yearly rate at which an update may raise the anchor toward a price within the
     ///         bounds, WAD. 0.06e18 lets it rise e^0.06 − 1, about 6.18%, in a year, whatever the schedule of
     ///         updates.
-    uint64 public maxAnchorRisePerYear;
+    uint64 public maxAnchorContinuousRiseRate;
     /// @notice Yearly speed at which an update may lower the anchor toward a price within the bounds, as a fraction of
     ///         the anchor price, WAD. 0.01e18 lets it fall 1% a year, about 0.003% a day.
     uint64 public maxAnchorFallPerYear;
@@ -340,7 +340,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///      for the same reason.
     function _moveAnchorTowards(uint256 currentPrice) private {
         uint256 elapsed = block.timestamp - anchorAt;
-        uint256 rise = Math.mulDiv(anchorPrice, _compoundedRise(maxAnchorRisePerYear, elapsed), WAD);
+        uint256 rise = Math.mulDiv(anchorPrice, _compoundedRise(maxAnchorContinuousRiseRate, elapsed), WAD);
         uint256 fall = Math.min(Math.mulDiv(anchorPrice, maxAnchorFallPerYear * elapsed, WAD * YEAR), anchorPrice);
         uint256 lowest = Math.max(anchorPrice - fall, _lowestAnchor());
         uint256 newAnchorPrice = Math.min(Math.max(currentPrice, lowest), anchorPrice + rise);
@@ -458,11 +458,11 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         if (p.maxPriceAboveAnchor == 0 || p.maxPriceBelowAnchor == 0) revert InvalidParameters();
         if (p.maxPriceAboveAnchor >= WAD || p.maxPriceBelowAnchor >= WAD) revert InvalidParameters();
         if (p.maxAnchorBelowFenceBase >= WAD || p.maxAnchorAboveFenceBase >= WAD) revert InvalidParameters();
-        if (p.maxAnchorRisePerYear > WAD || p.maxAnchorFallPerYear > WAD) revert InvalidParameters();
+        if (p.maxAnchorContinuousRiseRate > WAD || p.maxAnchorFallPerYear > WAD) revert InvalidParameters();
         if (p.reanchorDelay < MIN_REANCHOR_DELAY || p.reanchorWindow == 0) revert InvalidParameters();
         // A source moving at a speed must stay within its bound over one delay, or each re-anchor would land short of
         // the price and record the next pending anchor.
-        if (_compoundedRise(p.maxAnchorRisePerYear, p.reanchorDelay) > p.maxPriceAboveAnchor) {
+        if (_compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay) > p.maxPriceAboveAnchor) {
             revert InvalidParameters();
         }
         if (uint256(p.reanchorDelay) * p.maxAnchorFallPerYear > uint256(p.maxPriceBelowAnchor) * YEAR) {
@@ -485,7 +485,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
 
         maxPriceAboveAnchor = p.maxPriceAboveAnchor;
         maxPriceBelowAnchor = p.maxPriceBelowAnchor;
-        maxAnchorRisePerYear = p.maxAnchorRisePerYear;
+        maxAnchorContinuousRiseRate = p.maxAnchorContinuousRiseRate;
         maxAnchorFallPerYear = p.maxAnchorFallPerYear;
         maxAnchorBelowFenceBase = p.maxAnchorBelowFenceBase;
         maxAnchorAboveFenceBase = p.maxAnchorAboveFenceBase;

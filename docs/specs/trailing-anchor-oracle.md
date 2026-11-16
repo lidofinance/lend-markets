@@ -43,7 +43,7 @@ Inside them, edges included, `price()` returns the current price. Outside them i
 
 | Current price `P` | What happens to the anchor | Limit |
 |---|---|---|
-| within the bounds | an update moves it toward `P`: a **drift** | `maxAnchorRisePerYear` up, compounded continuously, and `maxAnchorFallPerYear` down a year, counted since the anchor was last set; down not below the floor |
+| within the bounds | an update moves it toward `P`: a **drift** | `maxAnchorContinuousRiseRate` up, compounded continuously, and `maxAnchorFallPerYear` down a year, counted since the anchor was last set; down not below the floor |
 | outside the bounds | an update records `P` as the pending anchor; later updates hold it while `P` stays outside on its side | — |
 | outside, on the pending anchor's side, from `reanchorDelay` after it was recorded until `reanchorWindow` later | an update moves it onto the pending anchor or `P`, whichever is nearer: a **re-anchor** | the delay; down not below the floor, up not above the ceiling |
 | anywhere | the price acceptor moves it onto `P` with `acceptPrice` | the range the acceptor passes; the floor and the ceiling restart there |
@@ -98,11 +98,11 @@ The examples use illustrative values, not any market's: bounds of +0.05% and −
 |---|---|---|---|
 | `maxPriceAboveAnchor` | `uint64`, WAD fraction | `0 < x < 1e18` | upper bound above the anchor |
 | `maxPriceBelowAnchor` | `uint64`, WAD fraction | `0 < x < 1e18` | lower bound below the anchor |
-| `maxAnchorRisePerYear` | `uint64`, WAD continuous rate a year | `0 ≤ x ≤ 1e18` | how fast a drift may raise the anchor; zero stops it. In a year the anchor rises at most `e^x − 1`: 6.18% at `0.06e18`, for any schedule of updates |
+| `maxAnchorContinuousRiseRate` | `uint64`, WAD continuous rate a year | `0 ≤ x ≤ 1e18` | how fast a drift may raise the anchor; zero stops it. In a year the anchor rises at most `e^x − 1`: 6.18% at `0.06e18`, for any schedule of updates |
 | `maxAnchorFallPerYear` | `uint64`, WAD fraction a year | `0 ≤ x ≤ 1e18` | how fast a drift may lower the anchor; zero stops it |
 | `maxAnchorBelowFenceBase` | `uint64`, WAD fraction | `0 ≤ x < 1e18` | how far below `fenceBasePrice` updates may take the anchor; zero stops every update from lowering it below that |
 | `maxAnchorAboveFenceBase` | `uint64`, WAD fraction | `0 ≤ x < 1e18` | how far above `fenceBasePrice` a re-anchor may take the anchor; zero stops every re-anchor from raising it above that |
-| `reanchorDelay` | `uint40`, seconds | `x ≥ MIN_REANCHOR_DELAY` (1 hour), `e^(maxAnchorRisePerYear × x / (1e18 × 365 days)) − 1 ≤ maxPriceAboveAnchor / 1e18` and `x × maxAnchorFallPerYear ≤ maxPriceBelowAnchor × 365 days` | how long a pending anchor waits before a re-anchor |
+| `reanchorDelay` | `uint40`, seconds | `x ≥ MIN_REANCHOR_DELAY` (1 hour), `e^(maxAnchorContinuousRiseRate × x / (1e18 × 365 days)) − 1 ≤ maxPriceAboveAnchor / 1e18` and `x × maxAnchorFallPerYear ≤ maxPriceBelowAnchor × 365 days` | how long a pending anchor waits before a re-anchor |
 | `reanchorWindow` | `uint40`, seconds | `x > 0` | how long after the delay a re-anchor may come before the pending anchor expires |
 
 The parameters together must also pass the [sizing rule](#choosing-values) at `MAX_LLTV`, an immutable of the implementation below `1e18`. `MAX_LLTV` is the highest LLTV of a market that may read the oracle. The deployment preflight refuses a market with a higher LLTV, and the acceptance suite makes the same check on the live deployment. No contract makes this check, so a market created in a different way can read the oracle at any LLTV. The contract accepts a `MAX_LLTV` of zero, which turns the sizing rule off. The deployment config refuses a zero `max_lltv`.
@@ -175,7 +175,7 @@ The `min` and the `max` keep each line from moving an anchor already past it, as
 
 ```text
 reachLow       = max(A − min(floor(A × maxAnchorFallPerYear × t / (1e18 × 365 days)), A), low)
-reachHigh      = A + floor(A × (e^(maxAnchorRisePerYear × t / (1e18 × 365 days)) − 1))
+reachHigh      = A + floor(A × (e^(maxAnchorContinuousRiseRate × t / (1e18 × 365 days)) − 1))
 newAnchorPrice = min(max(P, reachLow), reachHigh)
 ```
 
@@ -224,15 +224,15 @@ The limits below hold while the parameters stay as they were at the last seed or
 Between re-anchors, the price `price()` returns stays within these limits, up to a wei of rounding, for a time `T` after the last seed, acceptance or re-anchor set `anchor0`:
 
 ```text
-currentPrice ≤ anchor0 × (1 + maxPriceAboveAnchor / 1e18) × e^(maxAnchorRisePerYear × T / (1e18 × 365 days))
+currentPrice ≤ anchor0 × (1 + maxPriceAboveAnchor / 1e18) × e^(maxAnchorContinuousRiseRate × T / (1e18 × 365 days))
 currentPrice ≥ anchor0 × (1 − maxPriceBelowAnchor / 1e18) × (1 − maxAnchorFallPerYear × T / (1e18 × 365 days))
 ```
 
-The upper limit is the bound times the rise speed compounded continuously, for any schedule of updates. At the examples' values a source that keeps to the edge of the bounds moves the price by at most +0.54% or −0.18% in 30 days, and +6.24% or −1.10% in a year. Upward that is a creep no update stops. Over a flat real price at a 98% LLTV, it reaches 1.43% in about 83 days, where a position borrowed at LLTV at the inflated price can be liquidated only at a loss to suppliers, and 2.04% in about 120, where that position is insolvent at the real price. Over an asset with a yield, the gap grows only at `maxAnchorRisePerYear` less the yield. A monitor that compares the anchor's rise with the asset's yield must catch the creep well before.
+The upper limit is the bound times the rise speed compounded continuously, for any schedule of updates. At the examples' values a source that keeps to the edge of the bounds moves the price by at most +0.54% or −0.18% in 30 days, and +6.24% or −1.10% in a year. Upward that is a creep no update stops. Over a flat real price at a 98% LLTV, it reaches 1.43% in about 83 days, where a position borrowed at LLTV at the inflated price can be liquidated only at a loss to suppliers, and 2.04% in about 120, where that position is insolvent at the real price. Over an asset with a yield, the gap grows only at `maxAnchorContinuousRiseRate` less the yield. A monitor that compares the anchor's rise with the asset's yield must catch the creep well before.
 
 Through re-anchors:
 
-- **Upward**, a re-anchor stops at the ceiling, and a drift never takes the anchor above the ceiling. So at all times, short of an acceptance or a parameter change, `currentPrice ≤ H × (1 + maxAnchorAboveFenceBase / 1e18) × (1 + maxPriceAboveAnchor / 1e18)`, with `H` the current `fenceBasePrice`. At the examples' values, this limit is 0.25% over `H`. A re-anchor does not raise `H`. But while the anchor sits above `H`, a drift up raises `H` by its full step, so the ceiling rises faster than the anchor. Thus, a second re-anchor can go above `anchor0 × e^(maxAnchorRisePerYear × T / (1e18 × 365 days))`: by about 0.0116% after a year at the top of the bounds, at the examples' values. `H` rises at most at `maxAnchorRisePerYear × (1 + maxAnchorAboveFenceBase / 1e18)`, compounded continuously.
+- **Upward**, a re-anchor stops at the ceiling, and a drift never takes the anchor above the ceiling. So at all times, short of an acceptance or a parameter change, `currentPrice ≤ H × (1 + maxAnchorAboveFenceBase / 1e18) × (1 + maxPriceAboveAnchor / 1e18)`, with `H` the current `fenceBasePrice`. At the examples' values, this limit is 0.25% over `H`. A re-anchor does not raise `H`. But while the anchor sits above `H`, a drift up raises `H` by its full step, so the ceiling rises faster than the anchor. Thus, a second re-anchor can go above `anchor0 × e^(maxAnchorContinuousRiseRate × T / (1e18 × 365 days))`: by about 0.0116% after a year at the top of the bounds, at the examples' values. `H` rises at most at `maxAnchorContinuousRiseRate × (1 + maxAnchorAboveFenceBase / 1e18)`, compounded continuously.
 - **Downward**, drift and re-anchors stop at the floor, so however many delays pass, short of an acceptance, `currentPrice ≥ floorPrice × (1 − maxPriceBelowAnchor / 1e18)`: 1.1% under `H` at the examples' values.
 
 ## Market impact
@@ -254,11 +254,11 @@ A freeze stops borrowing but leaves liquidation and settlement running, and a pa
 | Parameter | At least | At most |
 |---|---|---|
 | `maxPriceAboveAnchor`, `maxPriceBelowAnchor` | the largest honest move between two source values, plus how far the anchor lags a source faster than the speeds | the move the markets can take with no delay, and the sizing rule below |
-| `maxAnchorRisePerYear` | the asset's highest honest yield | close to that yield: it is the speed of a faulty creep |
+| `maxAnchorContinuousRiseRate` | the asset's highest honest yield | close to that yield: it is the speed of a faulty creep |
 | `maxAnchorFallPerYear` | the fastest honest decline to follow without a stop | under `maxPriceBelowAnchor × 365 days / (reanchorDelay + the keeper's interval)` |
 | `maxAnchorBelowFenceBase` | the deepest honest fall from a high | the sizing rule below |
 | `maxAnchorAboveFenceBase` | the largest honest rise over `fenceBasePrice` that drifts do not follow | the sizing rule below |
-| `reanchorDelay` | the time to pause the markets | how long the markets can go without liquidations, and under `maxPriceAboveAnchor × 365 days / maxAnchorRisePerYear` less the keeper's interval |
+| `reanchorDelay` | the time to pause the markets | how long the markets can go without liquidations, and under `maxPriceAboveAnchor × 365 days / maxAnchorContinuousRiseRate` less the keeper's interval |
 | `reanchorWindow` | the keeper's interval | a few keeper intervals: until the window ends, a pending anchor that an unseen return left can stand in for a later move's delay |
 
 Below the "At least" column, honest moves stop the price: a move past the bounds for a delay; a yield or a decline faster than the speeds each time the anchor's lag passes a bound; a fall past the floor or a rise past the ceiling until the price acceptor or the manager acts; and an expired pending anchor for another delay. The contract checks the delay against both speeds, without the keeper's interval. Past either speed's limit, a source that keeps moving at that speed after a move past the bound lands short of every re-anchor and keeps the price stopped while it moves and for up to two delays after.
@@ -283,7 +283,7 @@ The invariants hold for one storage namespace behind its proxy, from its `initia
 | I3 | `anchorAt ≤ block.timestamp` and `pendingAnchorAt ≤ block.timestamp` |
 | I4 | `anchorPrice` is never zero |
 | I5 | `pendingAnchorPrice` and `pendingAnchorAt` are both zero or both non-zero, and a recorded pending anchor lies outside the bounds around the anchor |
-| I6 | A drift moves the anchor toward a current price within the bounds, never past it, by at most `anchorPrice × (e^(maxAnchorRisePerYear × t / (1e18 × 365 days)) − 1)` up or `anchorPrice × maxAnchorFallPerYear × t / (1e18 × 365 days)` down, each rounded down, where `t` is the time since the anchor was last set, `block.timestamp − anchorAt` |
+| I6 | A drift moves the anchor toward a current price within the bounds, never past it, by at most `anchorPrice × (e^(maxAnchorContinuousRiseRate × t / (1e18 × 365 days)) − 1)` up or `anchorPrice × maxAnchorFallPerYear × t / (1e18 × 365 days)` down, each rounded down, where `t` is the time since the anchor was last set, `block.timestamp − anchorAt` |
 | I7 | A re-anchor moves the anchor onto the pending anchor or the current price, whichever is nearer it, or onto the floor or the ceiling when that is nearer still, only with a pending anchor recorded at least `reanchorDelay` before and unexpired, and the current price outside the bounds on its side |
 | I8 | Short of `acceptPrice`, the anchor moves only by I6 and I7 |
 | I9 | An update never stops or changes a price `price()` returned just before it. Short of an upgrade, no call to the oracle changes the value `price()` returns, only whether it returns: the value is the source's |
@@ -343,7 +343,7 @@ The [API reference](api/trailing-anchor-oracle.md) gives every signature, with a
 | current price, `anchorPrice`, `pendingAnchorPrice`, `fenceBasePrice`, bounds, floor, ceiling, the acceptance range, and the prices in errors and events | loan-token currency per collateral token, with `PRICE_DECIMALS` = 18 decimals |
 | `maxPriceAboveAnchor`, `maxPriceBelowAnchor` | fraction of the anchor price, WAD |
 | `maxAnchorBelowFenceBase`, `maxAnchorAboveFenceBase` | fraction of `fenceBasePrice`, WAD |
-| `maxAnchorRisePerYear` | continuously compounded rate per 365-day year, WAD |
+| `maxAnchorContinuousRiseRate` | continuously compounded rate per 365-day year, WAD |
 | `maxAnchorFallPerYear` | fraction of the anchor price per 365-day year, WAD |
 | `MAX_LLTV` | LLTV, WAD |
 | `reanchorDelay`, `reanchorWindow` | seconds |
@@ -385,7 +385,7 @@ Each adapter stores its state at `erc7201("lido.lend.storage.<ContractName>")`, 
 |---|---|
 | base + 0 | `maxPriceAboveAnchor` (`uint64`, 0–63), `maxPriceBelowAnchor` (`uint64`, 64–127), `anchorAt` (`uint40`, 128–167), `pricingResumesAt` (`uint40`, 168–207) |
 | base + 1 | `anchorPrice` (`uint256`) |
-| base + 2 | `maxAnchorRisePerYear` (`uint64`, 0–63), `maxAnchorFallPerYear` (`uint64`, 64–127), `reanchorDelay` (`uint40`, 128–167), `reanchorWindow` (`uint40`, 168–207), `pendingAnchorAt` (`uint40`, 208–247) |
+| base + 2 | `maxAnchorContinuousRiseRate` (`uint64`, 0–63), `maxAnchorFallPerYear` (`uint64`, 64–127), `reanchorDelay` (`uint40`, 128–167), `reanchorWindow` (`uint40`, 168–207), `pendingAnchorAt` (`uint40`, 208–247) |
 | base + 3 | `pendingAnchorPrice` (`uint256`) |
 | base + 4 | `maxAnchorBelowFenceBase` (`uint64`, 0–63), `maxAnchorAboveFenceBase` (`uint64`, 64–127) |
 | base + 5 | `fenceBasePrice` (`uint256`) |

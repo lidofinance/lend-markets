@@ -418,7 +418,7 @@ contract TrailingAnchorOracleHandler is Test {
         uint256 pick = _pick(seed, "parameters");
         p.maxPriceAboveAnchor = uint64(bound(_pick(seed, "aboveAnchor"), 0.0001e18, 0.005e18));
         p.maxPriceBelowAnchor = uint64(bound(_pick(seed, "belowAnchor"), 0.0001e18, 0.01e18));
-        p.maxAnchorRisePerYear = uint64(bound(_pick(seed, "rise"), 0, 0.2e18));
+        p.maxAnchorContinuousRiseRate = uint64(bound(_pick(seed, "rise"), 0, 0.2e18));
         p.maxAnchorFallPerYear = uint64(bound(_pick(seed, "fall"), 0, 0.2e18));
         bool sized = MAX_LLTV != 0;
         p.maxAnchorBelowFenceBase = uint64(bound(_pick(seed, "belowFenceBase"), 0, sized ? 0.012e18 : 0.05e18));

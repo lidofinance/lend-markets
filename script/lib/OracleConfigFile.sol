@@ -122,7 +122,8 @@ library OracleConfigFile {
         // over the fence base price to governance.
         cfg.parameters.maxPriceAboveAnchor = _requireUint64(toml, string.concat(prefix, ".max_price_above_anchor"));
         cfg.parameters.maxPriceBelowAnchor = _requireUint64(toml, string.concat(prefix, ".max_price_below_anchor"));
-        cfg.parameters.maxAnchorRisePerYear = _requireUint64(toml, string.concat(prefix, ".max_anchor_rise_per_year"));
+        cfg.parameters.maxAnchorContinuousRiseRate =
+            _requireUint64(toml, string.concat(prefix, ".max_anchor_continuous_rise_rate"));
         cfg.parameters.maxAnchorFallPerYear = _requireUint64(toml, string.concat(prefix, ".max_anchor_fall_per_year"));
         cfg.parameters.maxAnchorBelowFenceBase =
             _requireUint64(toml, string.concat(prefix, ".max_anchor_below_fence_base"));
@@ -214,7 +215,9 @@ library OracleConfigFile {
         s = string.concat(s, "max_lltv = \"", vm.toString(cfg.maxLltv), "\"\n");
         s = string.concat(s, "max_price_above_anchor = \"", vm.toString(uint256(p.maxPriceAboveAnchor)), "\"\n");
         s = string.concat(s, "max_price_below_anchor = \"", vm.toString(uint256(p.maxPriceBelowAnchor)), "\"\n");
-        s = string.concat(s, "max_anchor_rise_per_year = \"", vm.toString(uint256(p.maxAnchorRisePerYear)), "\"\n");
+        s = string.concat(
+            s, "max_anchor_continuous_rise_rate = \"", vm.toString(uint256(p.maxAnchorContinuousRiseRate)), "\"\n"
+        );
         s = string.concat(s, "max_anchor_fall_per_year = \"", vm.toString(uint256(p.maxAnchorFallPerYear)), "\"\n");
         s = string.concat(
             s, "max_anchor_below_fence_base = \"", vm.toString(uint256(p.maxAnchorBelowFenceBase)), "\"\n"

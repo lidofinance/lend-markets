@@ -44,7 +44,7 @@ What one `updateAnchor()` call did, by the case it took:
 struct Parameters {
     uint64 maxPriceAboveAnchor;
     uint64 maxPriceBelowAnchor;
-    uint64 maxAnchorRisePerYear;
+    uint64 maxAnchorContinuousRiseRate;
     uint64 maxAnchorFallPerYear;
     uint64 maxAnchorBelowFenceBase;
     uint64 maxAnchorAboveFenceBase;
@@ -285,7 +285,7 @@ Sets every parameter at once and drops the pending anchor; the anchor and `fence
 | `anchorAt` | `uint40` | When the anchor price was last set. |
 | `pricingResumesAt` | `uint40` | Time before which `price()` reverts with `PricingSuspended`. |
 | `anchorPrice` | `uint256` | Price the current price is compared with, with `PRICE_DECIMALS` decimals. |
-| `maxAnchorRisePerYear` | `uint64` | Continuously compounded yearly rate at which an update may raise the anchor toward a price within the bounds, WAD. 0.06e18 lets it rise e^0.06 − 1, about 6.18%, in a year, whatever the schedule of updates. |
+| `maxAnchorContinuousRiseRate` | `uint64` | Continuously compounded yearly rate at which an update may raise the anchor toward a price within the bounds, WAD. 0.06e18 lets it rise e^0.06 − 1, about 6.18%, in a year, whatever the schedule of updates. |
 | `maxAnchorFallPerYear` | `uint64` | Yearly speed at which an update may lower the anchor toward a price within the bounds, as a fraction of the anchor price, WAD. 0.01e18 lets it fall 1% a year, about 0.003% a day. |
 | `reanchorDelay` | `uint40` | Seconds a pending anchor waits before an update can re-anchor. |
 | `reanchorWindow` | `uint40` | Seconds after the delay during which an update can re-anchor; after them the pending anchor expires, and the next update drops it or replaces it with a current price outside the bounds. |

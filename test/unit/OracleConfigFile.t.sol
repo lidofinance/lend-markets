@@ -130,9 +130,9 @@ contract OracleConfigFileTest is Test {
             "max_price_below_anchor"
         );
         assertEq(
-            cfg.parameters.maxAnchorRisePerYear,
-            TrailingAnchorOracleModel.MAX_ANCHOR_RISE_PER_YEAR,
-            "max_anchor_rise_per_year"
+            cfg.parameters.maxAnchorContinuousRiseRate,
+            TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_RISE_RATE,
+            "max_anchor_continuous_rise_rate"
         );
         assertEq(
             cfg.parameters.maxAnchorFallPerYear,
@@ -159,9 +159,12 @@ contract OracleConfigFileTest is Test {
         harness.parseNav(invalid, "");
     }
 
-    function testRevert_parseNav_missingMaxAnchorRisePerYear() external {
-        string memory invalid = vm.replace(_navUsdyToml(), "max_anchor_rise_per_year = \"60000000000000000\"\n", "");
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_rise_per_year"));
+    function testRevert_parseNav_missingMaxAnchorContinuousRiseRate() external {
+        string memory invalid =
+            vm.replace(_navUsdyToml(), "max_anchor_continuous_rise_rate = \"60000000000000000\"\n", "");
+        vm.expectRevert(
+            abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_continuous_rise_rate")
+        );
         harness.parseNav(invalid, "");
     }
 
@@ -229,12 +232,12 @@ contract OracleConfigFileTest is Test {
     function testRevert_parseNav_valueWiderThanItsField() external {
         string memory invalid = vm.replace(
             _navUsdyToml(),
-            "max_anchor_rise_per_year = \"60000000000000000\"",
-            "max_anchor_rise_per_year = \"18446744073709551616\""
+            "max_anchor_continuous_rise_rate = \"60000000000000000\"",
+            "max_anchor_continuous_rise_rate = \"18446744073709551616\""
         );
         vm.expectRevert(
             abi.encodeWithSelector(
-                OracleConfigFile.ValueOutOfRange.selector, ".max_anchor_rise_per_year", uint256(1) << 64
+                OracleConfigFile.ValueOutOfRange.selector, ".max_anchor_continuous_rise_rate", uint256(1) << 64
             )
         );
         harness.parseNav(invalid, "");
@@ -304,7 +307,7 @@ contract OracleConfigFileTest is Test {
             "max_lltv = \"980000000000000000\"\n",
             "max_price_above_anchor = \"500000000000000\"\n",
             "max_price_below_anchor = \"1000000000000000\"\n",
-            "max_anchor_rise_per_year = \"60000000000000000\"\n",
+            "max_anchor_continuous_rise_rate = \"60000000000000000\"\n",
             "max_anchor_fall_per_year = \"10000000000000000\"\n",
             "max_anchor_below_fence_base = \"10000000000000000\"\n",
             "max_anchor_above_fence_base = \"2000000000000000\"\n",
@@ -327,7 +330,7 @@ contract OracleConfigFileTest is Test {
             "max_lltv = \"980000000000000000\"\n",
             "max_price_above_anchor = \"500000000000000\"\n",
             "max_price_below_anchor = \"1000000000000000\"\n",
-            "max_anchor_rise_per_year = \"60000000000000000\"\n",
+            "max_anchor_continuous_rise_rate = \"60000000000000000\"\n",
             "max_anchor_fall_per_year = \"10000000000000000\"\n",
             "max_anchor_below_fence_base = \"10000000000000000\"\n",
             "max_anchor_above_fence_base = \"2000000000000000\"\n",

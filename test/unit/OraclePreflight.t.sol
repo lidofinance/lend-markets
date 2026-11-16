@@ -354,9 +354,14 @@ contract OraclePreflightTest is Test {
             cfg, navOracle, p, "max_price_below_anchor", 0.002e18, TrailingAnchorOracleModel.MAX_PRICE_BELOW_ANCHOR
         );
         p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorRisePerYear = 0.07e18;
+        p.maxAnchorContinuousRiseRate = 0.07e18;
         _expectNavParameterMismatch(
-            cfg, navOracle, p, "max_anchor_rise_per_year", 0.07e18, TrailingAnchorOracleModel.MAX_ANCHOR_RISE_PER_YEAR
+            cfg,
+            navOracle,
+            p,
+            "max_anchor_continuous_rise_rate",
+            0.07e18,
+            TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_RISE_RATE
         );
         p = TrailingAnchorOracleModel.defaultParameters();
         p.maxAnchorFallPerYear = 0.02e18;

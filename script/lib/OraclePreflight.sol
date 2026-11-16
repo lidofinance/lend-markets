@@ -198,7 +198,9 @@ library OraclePreflight {
         TrailingAnchorOracleBase.Parameters memory p = cfg.parameters;
         _requireUint("max_price_above_anchor", p.maxPriceAboveAnchor, nav.maxPriceAboveAnchor());
         _requireUint("max_price_below_anchor", p.maxPriceBelowAnchor, nav.maxPriceBelowAnchor());
-        _requireUint("max_anchor_rise_per_year", p.maxAnchorRisePerYear, nav.maxAnchorRisePerYear());
+        _requireUint(
+            "max_anchor_continuous_rise_rate", p.maxAnchorContinuousRiseRate, nav.maxAnchorContinuousRiseRate()
+        );
         _requireUint("max_anchor_fall_per_year", p.maxAnchorFallPerYear, nav.maxAnchorFallPerYear());
         _requireUint("max_anchor_below_fence_base", p.maxAnchorBelowFenceBase, nav.maxAnchorBelowFenceBase());
         _requireUint("max_anchor_above_fence_base", p.maxAnchorAboveFenceBase, nav.maxAnchorAboveFenceBase());
