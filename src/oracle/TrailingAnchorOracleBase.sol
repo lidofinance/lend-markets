@@ -242,7 +242,10 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         if (block.timestamp < pricingResumesAt) revert PricingSuspended(pricingResumesAt);
         uint256 currentPrice = _currentPrice();
         if (currentPrice == 0) revert ZeroPrice();
-        _requireWithinBounds(currentPrice);
+        (uint256 lowerBound, uint256 upperBound) = _bounds();
+        if (currentPrice < lowerBound || currentPrice > upperBound) {
+            revert PriceOutOfBounds(currentPrice, lowerBound, upperBound);
+        }
         return currentPrice * PRICE_SCALE;
     }
 
@@ -417,14 +420,6 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
             return false;
         }
         return (pendingAnchorPrice > anchorPrice) == (currentPrice > anchorPrice);
-    }
-
-    /// @dev Reverts with `PriceOutOfBounds` if `currentPrice` is outside the bounds.
-    function _requireWithinBounds(uint256 currentPrice) private view {
-        (uint256 lowerBound, uint256 upperBound) = _bounds();
-        if (currentPrice < lowerBound || currentPrice > upperBound) {
-            revert PriceOutOfBounds(currentPrice, lowerBound, upperBound);
-        }
     }
 
     /// @dev True if `currentPrice` is inside the bounds. The two bounds are inclusive.
