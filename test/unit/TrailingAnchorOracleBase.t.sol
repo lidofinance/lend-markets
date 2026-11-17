@@ -7,6 +7,7 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
@@ -1442,10 +1443,11 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     // STORAGE
     // ---
 
-    /// @dev The base's state lives in the adapter's own namespace, low bits first: the bounds, `anchorAt` and
-    ///      `pricingResumesAt` in the first slot, the anchor price in the second, the rates, the delay, the window and
-    ///      `pendingAnchorAt` in the third, the pending anchor price in the fourth, `maxAnchorBelowBase` and
-    ///      `maxAnchorAboveBase` in the fifth and `basePrice` in the sixth.
+    /// @dev The base's state lives in the adapter's own namespace in four slots, low bits first, grouped by use:
+    ///      - the anchor price, the base price and the time of the anchor, which are all that a drift writes;
+    ///      - the two bounds and the two other times;
+    ///      - the two rates and the two distances from the base price;
+    ///      - the pending anchor price, the delay and the window.
     function test_storage_namespaceLayout() public {
         vm.prank(manager);
         oracle.setPricingResumesAt(uint40(START + 1 days));
@@ -1455,28 +1457,85 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         _update();
         bytes32 base = TrailingAnchorOracleModel.namespaceSlot(_namespace());
         uint256 first = uint256(vm.load(address(oracle), base));
-        assertEq(uint64(first), MAX_PRICE_ABOVE_ANCHOR, "maxPriceAboveAnchor in bits 0-63");
-        assertEq(uint64(first >> 64), MAX_PRICE_BELOW_ANCHOR, "maxPriceBelowAnchor in bits 64-127");
-        assertEq(uint40(first >> 128), START, "anchorAt in bits 128-167");
-        assertEq(uint40(first >> 168), START + 1 days, "pricingResumesAt in bits 168-207");
-        assertEq(first >> 208, 0, "nothing above in the first slot");
-        assertEq(uint256(vm.load(address(oracle), _slot(base, 1))), INITIAL_PRICE, "anchorPrice in the second slot");
+        assertEq(uint104(first), INITIAL_PRICE, "anchorPrice in bits 0-103");
+        assertEq(uint104(first >> 104), INITIAL_PRICE, "basePrice in bits 104-207");
+        assertEq(uint40(first >> 208), START, "anchorAt in bits 208-247");
+        assertEq(first >> 248, 0, "nothing above in the first slot");
+        uint256 second = uint256(vm.load(address(oracle), _slot(base, 1)));
+        assertEq(uint64(second), MAX_PRICE_ABOVE_ANCHOR, "maxPriceAboveAnchor in bits 0-63");
+        assertEq(uint64(second >> 64), MAX_PRICE_BELOW_ANCHOR, "maxPriceBelowAnchor in bits 64-127");
+        assertEq(uint40(second >> 128), START + 1 days, "pricingResumesAt in bits 128-167");
+        assertEq(uint40(second >> 168), START + 1 hours, "pendingAnchorAt in bits 168-207");
+        assertEq(second >> 208, 0, "nothing above in the second slot");
         uint256 third = uint256(vm.load(address(oracle), _slot(base, 2)));
         assertEq(uint64(third), MAX_ANCHOR_CONTINUOUS_RISE_RATE, "maxAnchorContinuousRiseRate in bits 0-63");
         assertEq(uint64(third >> 64), MAX_ANCHOR_CONTINUOUS_FALL_RATE, "maxAnchorContinuousFallRate in bits 64-127");
-        assertEq(uint40(third >> 128), DELAY, "reanchorDelay in bits 128-167");
-        assertEq(uint40(third >> 168), WINDOW, "reanchorWindow in bits 168-207");
-        assertEq(uint40(third >> 208), START + 1 hours, "pendingAnchorAt in bits 208-247");
-        assertEq(third >> 248, 0, "nothing above in the third slot");
-        assertEq(
-            uint256(vm.load(address(oracle), _slot(base, 3))), currentPrice, "pendingAnchorPrice in the fourth slot"
-        );
-        uint256 fifth = uint256(vm.load(address(oracle), _slot(base, 4)));
-        assertEq(uint64(fifth), MAX_ANCHOR_BELOW_BASE, "maxAnchorBelowBase in bits 0-63");
-        assertEq(uint64(fifth >> 64), MAX_ANCHOR_ABOVE_BASE, "maxAnchorAboveBase in bits 64-127");
-        assertEq(fifth >> 128, 0, "nothing above in the fifth slot");
-        assertEq(uint256(vm.load(address(oracle), _slot(base, 5))), INITIAL_PRICE, "basePrice in the sixth slot");
-        assertEq(uint256(vm.load(address(oracle), _slot(base, 6))), 0, "nothing in the seventh slot");
+        assertEq(uint64(third >> 128), MAX_ANCHOR_BELOW_BASE, "maxAnchorBelowBase in bits 128-191");
+        assertEq(uint64(third >> 192), MAX_ANCHOR_ABOVE_BASE, "maxAnchorAboveBase in bits 192-255");
+        uint256 fourth = uint256(vm.load(address(oracle), _slot(base, 3)));
+        assertEq(uint104(fourth), currentPrice, "pendingAnchorPrice in bits 0-103");
+        assertEq(uint40(fourth >> 104), DELAY, "reanchorDelay in bits 104-143");
+        assertEq(uint40(fourth >> 144), WINDOW, "reanchorWindow in bits 144-183");
+        assertEq(fourth >> 184, 0, "nothing above in the fourth slot");
+        assertEq(uint256(vm.load(address(oracle), _slot(base, 4))), 0, "nothing in the fifth slot");
+    }
+
+    /// @dev An update that has nothing to move reads the first two slots of the namespace only and writes none: a
+    ///      current price equal to the anchor, and a second update in the block of a move.
+    function test_updateAnchor_noMoveReadsTwoSlots() public {
+        vm.warp(START + 1 days);
+        _assertUpdateTouchesTwoSlots();
+
+        source.setCurrentPrice(_upper(INITIAL_PRICE));
+        oracle.updateAnchor();
+        assertGt(oracle.anchorPrice(), INITIAL_PRICE, "the anchor moved");
+        _assertUpdateTouchesTwoSlots();
+    }
+
+    function _assertUpdateTouchesTwoSlots() internal {
+        bytes32 base = TrailingAnchorOracleModel.namespaceSlot(_namespace());
+        uint256 anchorBefore = oracle.anchorPrice();
+        vm.record();
+        oracle.updateAnchor();
+        (bytes32[] memory reads, bytes32[] memory writes) = vm.accesses(address(oracle));
+        for (uint256 i; i < reads.length; ++i) {
+            if (reads[i] == IMPLEMENTATION_SLOT) continue;
+            assertLt(uint256(reads[i]) - uint256(base), 2, "a slot other than the first two");
+        }
+        assertEq(writes.length, 0, "a write");
+        assertEq(oracle.anchorPrice(), anchorBefore, "the anchor moved");
+    }
+
+    /// @dev A drift, the usual update of a keeper, reads the first three slots of the namespace and writes the first
+    ///      slot only. A drift up also raises the base price, which is in the same slot.
+    function test_updateAnchor_driftReadsThreeSlots() public {
+        bytes32 base = TrailingAnchorOracleModel.namespaceSlot(_namespace());
+        vm.warp(START + 1 days);
+        source.setCurrentPrice(_lower(INITIAL_PRICE));
+        vm.record();
+        oracle.updateAnchor();
+        (bytes32[] memory reads, bytes32[] memory writes) = vm.accesses(address(oracle));
+        for (uint256 i; i < reads.length; ++i) {
+            if (reads[i] == IMPLEMENTATION_SLOT) continue;
+            assertLt(uint256(reads[i]) - uint256(base), 3, "a slot other than the first three");
+        }
+        for (uint256 i; i < writes.length; ++i) {
+            assertEq(writes[i], base, "a drift down writes another slot than the first");
+        }
+
+        vm.warp(START + 2 days);
+        source.setCurrentPrice(_upper(oracle.anchorPrice()));
+        vm.record();
+        oracle.updateAnchor();
+        (reads, writes) = vm.accesses(address(oracle));
+        for (uint256 i; i < reads.length; ++i) {
+            if (reads[i] == IMPLEMENTATION_SLOT) continue;
+            assertLt(uint256(reads[i]) - uint256(base), 3, "a slot other than the first three");
+        }
+        for (uint256 i; i < writes.length; ++i) {
+            assertEq(writes[i], base, "a drift up writes another slot than the first");
+        }
+        assertGt(oracle.basePrice(), INITIAL_PRICE, "the drift up raised the base price");
     }
 
     // ---
@@ -1690,7 +1749,19 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     }
 }
 
-contract TrailingAnchorOracleBaseUsdyTest is TrailingAnchorOracleBaseTest, UsdyNavOracleFixture {}
+contract TrailingAnchorOracleBaseUsdyTest is TrailingAnchorOracleBaseTest, UsdyNavOracleFixture {
+    /// @dev The oracle stores prices in 104 bits, about 2.03e13 whole units at 18 decimals. A source price one above
+    ///      that range is refused, as a pending anchor and as an accepted price.
+    function testRevert_priceAboveTheStoredRange() public {
+        uint256 tooHigh = uint256(type(uint104).max) + 1;
+        source.setCurrentPrice(tooHigh);
+        vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 104, tooHigh));
+        oracle.updateAnchor();
+        vm.prank(priceAcceptor);
+        vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 104, tooHigh));
+        oracle.acceptPrice(0, type(uint256).max);
+    }
+}
 
 contract TrailingAnchorOracleBaseCentrifugeTest is TrailingAnchorOracleBaseTest, CentrifugeNavOracleFixture {}
 

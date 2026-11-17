@@ -138,11 +138,11 @@ contract CentrifugeNavOracleTest is Test {
         spoke.pricePoolPerShare(JTRSY_POOL, JTRSY_SC, true);
     }
 
-    /// @dev Any share decimals up to 18 above the loan token's: the price is the share price times
-    ///      `10^(36 + 6 − shareDecimals − 18)`.
+    /// @dev Any share decimals up to 18 above the loan token's, and any share price that the oracle can store: the
+    ///      price is the share price times `10^(36 + 6 − shareDecimals − 18)`.
     function testFuzz_price_scalesToShareDecimals(uint8 shareDecimals, uint128 sharePrice) public {
         shareDecimals = uint8(bound(shareDecimals, 0, 24));
-        sharePrice = uint128(bound(sharePrice, 1, type(uint128).max));
+        sharePrice = uint128(bound(sharePrice, 1, type(uint104).max));
         spoke.setCurrentPrice(sharePrice);
         CentrifugeNavOracle oracle = _deploy(shareDecimals);
         uint256 scale = TrailingAnchorOracleModel.priceScale(6, shareDecimals);

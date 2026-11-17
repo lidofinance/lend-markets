@@ -206,7 +206,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         handler.keeperTick(0);
         assertEq(handler.succeeded("drift"), 1, "a drift");
 
-        handler.jumpSource(oracle.anchorPrice() * 0.995e18 / WAD);
+        handler.jumpSource(uint256(oracle.anchorPrice()) * 0.995e18 / WAD);
         handler.updateAnchor(1);
         assertEq(handler.succeeded("pendingAnchor"), 1, "a pending anchor");
         handler.updateAnchor(2);
@@ -223,7 +223,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         assertEq(oracle.pendingAnchorAt(), 0, "the price sits within the new bounds");
 
         // A 10% fall stops on the floor, and the next window finds the anchor pinned there.
-        handler.jumpSource(oracle.anchorPrice() * 0.9e18 / WAD);
+        handler.jumpSource(uint256(oracle.anchorPrice()) * 0.9e18 / WAD);
         handler.updateAnchor(6);
         handler.warpToWindowEdge(_seedFor(1));
         handler.updateAnchor(7);
@@ -233,7 +233,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         assertEq(handler.succeeded("pinned"), 1, "a pinned update");
 
         // A 5% rise from the floor stops on the ceiling, and the next window finds the anchor pinned there.
-        handler.jumpSource(oracle.anchorPrice() * 1.05e18 / WAD);
+        handler.jumpSource(uint256(oracle.anchorPrice()) * 1.05e18 / WAD);
         handler.updateAnchor(5);
         handler.warpToWindowEdge(_seedFor(1));
         handler.updateAnchor(9);

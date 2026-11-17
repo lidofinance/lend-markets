@@ -123,7 +123,7 @@ Every `e^y − 1` in the contract is the sum of the first three Taylor terms, `y
 
 ## Anchor updates
 
-`updateAnchor()` runs in any block, also while `price()` reverts or pricing is suspended. It reverts only when the source read reverts or returns zero, or when its arithmetic overflows at prices near the `uint256` limit. Otherwise it takes the first case that applies, returns its `UpdateOutcome`, and emits `AnchorUpdated(outcome, currentPrice)` after the events of the state it changed:
+`updateAnchor()` runs in any block, also while `price()` reverts or pricing is suspended. It reverts only when the source read reverts or returns zero, or when it must store a price above the `uint104` maximum. That maximum is about 2.03e13 whole units at 18 decimals. Otherwise it takes the first case that applies, returns its `UpdateOutcome`, and emits `AnchorUpdated(outcome, currentPrice)` after the events of the state it changed:
 
 ```mermaid
 flowchart LR
@@ -379,16 +379,14 @@ Both adapters return the source's value as is: one loan token counts as one unit
 
 ### Storage
 
-Each adapter stores its state at `erc7201("lido.lend.storage.<ContractName>")`, in six slots, with packed fields from the low bits up. The base is `0x122c02b6c23a425b38bb372a8ef92bda1cb6c1f0f92387327be1d4669516e800` for `UsdyNavOracle` and `0xadd8a162807c0a5c641cbb443f3a5adf7735f0856ce3d3f8789bb5d6d97ba000` for `CentrifugeNavOracle`.
+Each adapter stores its state at `erc7201("lido.lend.storage.<ContractName>")`, in four slots, with packed fields from the low bits up. The fields are grouped by use, so a drift reads three slots and writes one. The base is `0x122c02b6c23a425b38bb372a8ef92bda1cb6c1f0f92387327be1d4669516e800` for `UsdyNavOracle` and `0xadd8a162807c0a5c641cbb443f3a5adf7735f0856ce3d3f8789bb5d6d97ba000` for `CentrifugeNavOracle`.
 
 | Slot | Fields, with bits |
 |---|---|
-| base + 0 | `maxPriceAboveAnchor` (`uint64`, 0–63), `maxPriceBelowAnchor` (`uint64`, 64–127), `anchorAt` (`uint40`, 128–167), `pricingResumesAt` (`uint40`, 168–207) |
-| base + 1 | `anchorPrice` (`uint256`) |
-| base + 2 | `maxAnchorContinuousRiseRate` (`uint64`, 0–63), `maxAnchorContinuousFallRate` (`uint64`, 64–127), `reanchorDelay` (`uint40`, 128–167), `reanchorWindow` (`uint40`, 168–207), `pendingAnchorAt` (`uint40`, 208–247) |
-| base + 3 | `pendingAnchorPrice` (`uint256`) |
-| base + 4 | `maxAnchorBelowBase` (`uint64`, 0–63), `maxAnchorAboveBase` (`uint64`, 64–127) |
-| base + 5 | `basePrice` (`uint256`) |
+| base + 0 | `anchorPrice` (`uint104`, 0 to 103), `basePrice` (`uint104`, 104 to 207), `anchorAt` (`uint40`, 208 to 247) |
+| base + 1 | `maxPriceAboveAnchor` (`uint64`, 0 to 63), `maxPriceBelowAnchor` (`uint64`, 64 to 127), `pricingResumesAt` (`uint40`, 128 to 167), `pendingAnchorAt` (`uint40`, 168 to 207) |
+| base + 2 | `maxAnchorContinuousRiseRate` (`uint64`, 0 to 63), `maxAnchorContinuousFallRate` (`uint64`, 64 to 127), `maxAnchorBelowBase` (`uint64`, 128 to 191), `maxAnchorAboveBase` (`uint64`, 192 to 255) |
+| base + 3 | `pendingAnchorPrice` (`uint104`, 0 to 103), `reanchorDelay` (`uint40`, 104 to 143), `reanchorWindow` (`uint40`, 144 to 183) |
 
 Roles and the initializer flag live in OpenZeppelin's own namespaces (`openzeppelin.storage.AccessControl`, `openzeppelin.storage.AccessControlEnumerable` and `openzeppelin.storage.Initializable`), which every implementation behind the same proxy shares.
 

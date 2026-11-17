@@ -229,7 +229,7 @@ function updateAnchor() external returns (UpdateOutcome outcome);
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `outcome` | `UpdateOutcome` | The result of the call. A keeper can read it with `eth_call` before it sends the transaction. |
+| `outcome` | `UpdateOutcome` | The result of the call. |
 
 Updates the anchor from the current price. Anyone can call it in any block, also while `price()` reverts.
 
@@ -296,20 +296,20 @@ The oracle does not know the markets that read it, so it does not check the para
 | `PRICE_SCALE` | `uint256` (immutable) | Factor that converts a source price to the price that the core reads. 10^(ORACLE_PRICE_DECIMALS + loanDecimals − collateralDecimals − PRICE_DECIMALS). |
 | `MIN_REANCHOR_DELAY` | `uint256` (constant) | Shortest permitted `reanchorDelay`. |
 | `MAX_PRICING_SUSPENSION` | `uint256` (constant) | Longest time that one call can suspend pricing, counted from that call. |
+| `anchorPrice` | `uint104` | Price that the bounds are measured from, with `PRICE_DECIMALS` decimals. |
+| `basePrice` | `uint104` | Price that the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals. It starts at the seed price, and `acceptPrice()` restarts it at the accepted price. A drift up raises it. A re-anchor does not change it, so a re-anchor up can leave the anchor above it, up to the ceiling. |
+| `anchorAt` | `uint40` | Time when the anchor price was last set. |
 | `maxPriceAboveAnchor` | `uint64` | Upper bound: how far above the anchor price the current price can be, as a fraction of the anchor price, WAD. Above it, `price()` reverts. 0.0005e18 is 0.05%. |
 | `maxPriceBelowAnchor` | `uint64` | Lower bound: how far below the anchor price the current price can be, as a fraction of the anchor price, WAD. Below it, `price()` reverts. 0.001e18 is 0.1%. |
-| `anchorAt` | `uint40` | Time when the anchor price was last set. |
 | `pricingResumesAt` | `uint40` | Time before which `price()` reverts with `PricingSuspended`. |
-| `anchorPrice` | `uint256` | Price that the bounds are measured from, with `PRICE_DECIMALS` decimals. |
+| `pendingAnchorAt` | `uint40` | Time when the pending anchor was recorded. Zero means no pending anchor. |
 | `maxAnchorContinuousRiseRate` | `uint64` | Largest rate at which a drift can raise the anchor, continuously compounded per year, WAD. 0.06e18 permits a rise of e^0.06 − 1, about 6.18%, in a year. The update schedule does not change that. |
 | `maxAnchorContinuousFallRate` | `uint64` | Largest rate at which a drift can lower the anchor, continuously compounded per year, WAD. 0.01e18 permits a fall of 1 − e^−0.01, about 0.995%, in a year. The update schedule does not change that. |
-| `reanchorDelay` | `uint40` | Seconds that a pending anchor must wait before an update can re-anchor. |
-| `reanchorWindow` | `uint40` | Seconds after the delay in which an update can re-anchor. After the window, the pending anchor expires: the next update drops it or records a new one. |
-| `pendingAnchorAt` | `uint40` | Time when the pending anchor was recorded. Zero means no pending anchor. |
-| `pendingAnchorPrice` | `uint256` | Price of the pending anchor, with `PRICE_DECIMALS` decimals. Zero means no pending anchor. |
 | `maxAnchorBelowBase` | `uint64` | Floor: how far below `basePrice` an update can move the anchor, as a fraction of that price, WAD. 0.01e18 is 1%. |
 | `maxAnchorAboveBase` | `uint64` | Ceiling: how far above `basePrice` a re-anchor can move the anchor, as a fraction of that price, WAD. 0.002e18 is 0.2%. |
-| `basePrice` | `uint256` | Price that the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals. It starts at the seed price, and `acceptPrice()` restarts it at the accepted price. A drift up raises it. A re-anchor does not change it, so a re-anchor up can leave the anchor above it, up to the ceiling. |
+| `pendingAnchorPrice` | `uint104` | Price of the pending anchor, with `PRICE_DECIMALS` decimals. Zero means no pending anchor. |
+| `reanchorDelay` | `uint40` | Seconds that a pending anchor must wait before an update can re-anchor. |
+| `reanchorWindow` | `uint40` | Seconds after the delay in which an update can re-anchor. After the window, the pending anchor expires: the next update drops it or records a new one. |
 
 ## UsdyNavOracle
 

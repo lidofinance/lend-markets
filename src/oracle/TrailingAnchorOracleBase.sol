@@ -9,6 +9,7 @@ import {
 } from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {WAD} from "../libs/Constants.sol";
 
@@ -141,13 +142,24 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // STORAGE
     // ---
 
-    // Slot layout, counted from the base slot of the adapter's namespace. `price()` reads only slots 0 and 1.
-    // 0: maxPriceAboveAnchor, maxPriceBelowAnchor, anchorAt, pricingResumesAt
-    // 1: anchorPrice
-    // 2: maxAnchorContinuousRiseRate, maxAnchorContinuousFallRate, reanchorDelay, reanchorWindow, pendingAnchorAt
-    // 3: pendingAnchorPrice
-    // 4: maxAnchorBelowBase, maxAnchorAboveBase
-    // 5: basePrice
+    // Slot layout, counted from the base slot of the adapter's namespace. The fields are grouped by use, so that an
+    // update reads and writes as few slots as possible. A drift writes slot 0 only.
+    // 0: anchorPrice 104 + basePrice 104 + anchorAt 40 = 248 bits
+    // 1: maxPriceAboveAnchor 64 + maxPriceBelowAnchor 64 + pricingResumesAt 40 + pendingAnchorAt 40 = 208 bits
+    // 2: maxAnchorContinuousRiseRate 64 + maxAnchorContinuousFallRate 64 + maxAnchorBelowBase 64
+    //    + maxAnchorAboveBase 64 = 256 bits
+    // 3: pendingAnchorPrice 104 + reanchorDelay 40 + reanchorWindow 40 = 184 bits
+    //
+    // A stored price has 104 bits: about 2.03e13 whole units at `PRICE_DECIMALS` decimals.
+
+    /// @notice Price that the bounds are measured from, with `PRICE_DECIMALS` decimals.
+    uint104 public anchorPrice;
+    /// @notice Price that the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals. It starts at the
+    ///         seed price, and `acceptPrice()` restarts it at the accepted price. A drift up raises it. A re-anchor
+    ///         does not change it, so a re-anchor up can leave the anchor above it, up to the ceiling.
+    uint104 public basePrice;
+    /// @notice Time when the anchor price was last set.
+    uint40 public anchorAt;
 
     /// @notice Upper bound: how far above the anchor price the current price can be, as a fraction of the anchor
     ///         price, WAD. Above it, `price()` reverts. 0.0005e18 is 0.05%.
@@ -155,13 +167,10 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @notice Lower bound: how far below the anchor price the current price can be, as a fraction of the anchor
     ///         price, WAD. Below it, `price()` reverts. 0.001e18 is 0.1%.
     uint64 public maxPriceBelowAnchor;
-    /// @notice Time when the anchor price was last set.
-    uint40 public anchorAt;
     /// @notice Time before which `price()` reverts with `PricingSuspended`.
     uint40 public pricingResumesAt;
-
-    /// @notice Price that the bounds are measured from, with `PRICE_DECIMALS` decimals.
-    uint256 public anchorPrice;
+    /// @notice Time when the pending anchor was recorded. Zero means no pending anchor.
+    uint40 public pendingAnchorAt;
 
     /// @notice Largest rate at which a drift can raise the anchor, continuously compounded per year, WAD. 0.06e18
     ///         permits a rise of e^0.06 − 1, about 6.18%, in a year. The update schedule does not change that.
@@ -169,29 +178,20 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @notice Largest rate at which a drift can lower the anchor, continuously compounded per year, WAD. 0.01e18
     ///         permits a fall of 1 − e^−0.01, about 0.995%, in a year. The update schedule does not change that.
     uint64 public maxAnchorContinuousFallRate;
+    /// @notice Floor: how far below `basePrice` an update can move the anchor, as a fraction of that price, WAD.
+    ///         0.01e18 is 1%.
+    uint64 public maxAnchorBelowBase;
+    /// @notice Ceiling: how far above `basePrice` a re-anchor can move the anchor, as a fraction of that price,
+    ///         WAD. 0.002e18 is 0.2%.
+    uint64 public maxAnchorAboveBase;
+
+    /// @notice Price of the pending anchor, with `PRICE_DECIMALS` decimals. Zero means no pending anchor.
+    uint104 public pendingAnchorPrice;
     /// @notice Seconds that a pending anchor must wait before an update can re-anchor.
     uint40 public reanchorDelay;
     /// @notice Seconds after the delay in which an update can re-anchor. After the window, the pending anchor expires:
     ///         the next update drops it or records a new one.
     uint40 public reanchorWindow;
-    /// @notice Time when the pending anchor was recorded. Zero means no pending anchor.
-    uint40 public pendingAnchorAt;
-
-    /// @notice Price of the pending anchor, with `PRICE_DECIMALS` decimals. Zero means no pending anchor.
-    uint256 public pendingAnchorPrice;
-
-    /// @notice Floor: how far below `basePrice` an update can move the anchor, as a fraction of that price, WAD.
-    ///         0.01e18 is 1%.
-    uint64 public maxAnchorBelowBase;
-
-    /// @notice Ceiling: how far above `basePrice` a re-anchor can move the anchor, as a fraction of that price,
-    ///         WAD. 0.002e18 is 0.2%.
-    uint64 public maxAnchorAboveBase;
-
-    /// @notice Price that the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals. It starts at the
-    ///         seed price, and `acceptPrice()` restarts it at the accepted price. A drift up raises it. A re-anchor
-    ///         does not change it, so a re-anchor up can leave the anchor above it, up to the ceiling.
-    uint256 public basePrice;
 
     // ---
     // CONSTRUCTOR
@@ -258,7 +258,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///         is already past one of them does not move further past it.
     /// @dev The call uses `block.timestamp`. A few seconds of validator skew change the drift limit, the delay and
     ///      the window by those seconds.
-    /// @return outcome The result of the call. A keeper can read it with `eth_call` before it sends the transaction.
+    /// @return outcome The result of the call.
     function updateAnchor() external returns (UpdateOutcome outcome) {
         uint256 currentPrice = _currentPrice();
         if (currentPrice == 0) revert ZeroPrice();
@@ -333,14 +333,24 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///      stays the same. The caller passes a price inside the bounds, so one move does not go past a bound after
     ///      a long rest.
     function _moveAnchorTowards(uint256 currentPrice) private {
+        uint256 anchor = anchorPrice;
         uint256 elapsed = block.timestamp - anchorAt;
-        uint256 rise = Math.mulDiv(anchorPrice, _compoundedRise(maxAnchorContinuousRiseRate, elapsed), WAD);
-        uint256 fall = Math.mulDiv(anchorPrice, _compoundedFall(maxAnchorContinuousFallRate, elapsed), WAD);
-        uint256 lowest = Math.max(anchorPrice - fall, _lowestAnchor());
-        uint256 newAnchorPrice = Math.min(Math.max(currentPrice, lowest), anchorPrice + rise);
-        if (newAnchorPrice == anchorPrice) return;
-        uint256 top = Math.max(anchorPrice, basePrice);
-        if (newAnchorPrice > top) basePrice += newAnchorPrice - top;
+        // Nothing to move. The return keeps the call in the two slots that it has already read.
+        if (currentPrice == anchor || elapsed == 0) return;
+
+        uint256 newAnchorPrice;
+        if (currentPrice > anchor) {
+            uint256 rise = Math.mulDiv(anchor, _compoundedRise(maxAnchorContinuousRiseRate, elapsed), WAD);
+            newAnchorPrice = Math.min(currentPrice, anchor + rise);
+            if (newAnchorPrice == anchor) return;
+            uint256 base = basePrice;
+            uint256 top = Math.max(anchor, base);
+            if (newAnchorPrice > top) basePrice = SafeCast.toUint104(base + newAnchorPrice - top);
+        } else {
+            uint256 fall = Math.mulDiv(anchor, _compoundedFall(maxAnchorContinuousFallRate, elapsed), WAD);
+            newAnchorPrice = Math.max(currentPrice, Math.max(anchor - fall, _lowestAnchor()));
+            if (newAnchorPrice == anchor) return;
+        }
         _setAnchor(newAnchorPrice, false);
     }
 
@@ -362,22 +372,25 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @dev The lowest anchor that an update can set: the floor, or the anchor when it is already below the floor.
     ///      Floor = `basePrice` × (1 − maxAnchorBelowBase), with the subtracted part rounded down.
     function _lowestAnchor() private view returns (uint256) {
-        uint256 floor = basePrice - Math.mulDiv(basePrice, maxAnchorBelowBase, WAD);
+        uint256 base = basePrice;
+        uint256 floor = base - Math.mulDiv(base, maxAnchorBelowBase, WAD);
         return Math.min(floor, anchorPrice);
     }
 
     /// @dev The highest anchor that a re-anchor can set: the ceiling, or the anchor when it is already above the
     ///      ceiling. Ceiling = `basePrice` × (1 + maxAnchorAboveBase), with the added part rounded down.
     function _highestAnchor() private view returns (uint256) {
-        uint256 ceiling = basePrice + Math.mulDiv(basePrice, maxAnchorAboveBase, WAD);
+        uint256 base = basePrice;
+        uint256 ceiling = base + Math.mulDiv(base, maxAnchorAboveBase, WAD);
         return Math.max(ceiling, anchorPrice);
     }
 
     /// @dev Records `currentPrice`, which is outside the bounds, as the pending anchor at the current time.
     function _recordPendingAnchor(uint256 currentPrice) private {
-        pendingAnchorPrice = currentPrice;
-        pendingAnchorAt = uint40(block.timestamp);
-        emit PendingAnchorSet(currentPrice, pendingAnchorAt);
+        uint40 time = uint40(block.timestamp);
+        pendingAnchorPrice = SafeCast.toUint104(currentPrice);
+        pendingAnchorAt = time;
+        emit PendingAnchorSet(currentPrice, time);
     }
 
     /// @dev Re-anchor, for a held pending anchor after its delay. Moves the anchor onto the pending anchor or
@@ -422,17 +435,20 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
 
     /// @dev The lowest and highest current price that the bounds permit, both rounded down.
     function _bounds() private view returns (uint256 lowerBound, uint256 upperBound) {
-        lowerBound = Math.mulDiv(anchorPrice, WAD - maxPriceBelowAnchor, WAD);
-        upperBound = Math.mulDiv(anchorPrice, WAD + maxPriceAboveAnchor, WAD);
+        uint256 anchor = anchorPrice;
+        lowerBound = Math.mulDiv(anchor, WAD - maxPriceBelowAnchor, WAD);
+        upperBound = Math.mulDiv(anchor, WAD + maxPriceAboveAnchor, WAD);
     }
 
     /// @dev Sets the anchor to `newAnchorPrice` at the current time. If `accepted` is true, also sets
-    ///      `basePrice` to that price.
+    ///      `basePrice` to that price. Reverts if the price does not fit in 104 bits.
     function _setAnchor(uint256 newAnchorPrice, bool accepted) private {
-        anchorPrice = newAnchorPrice;
-        anchorAt = uint40(block.timestamp);
-        if (accepted) basePrice = newAnchorPrice;
-        emit AnchorSet(newAnchorPrice, anchorAt, accepted);
+        uint104 stored = SafeCast.toUint104(newAnchorPrice);
+        uint40 time = uint40(block.timestamp);
+        anchorPrice = stored;
+        anchorAt = time;
+        if (accepted) basePrice = stored;
+        emit AnchorSet(newAnchorPrice, time, accepted);
     }
 
     /// @dev Sets the anchor and `basePrice` to the current price and drops the pending anchor. Reverts if the
