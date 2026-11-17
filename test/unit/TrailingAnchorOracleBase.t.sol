@@ -39,8 +39,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_RISE_RATE;
     uint256 internal constant MAX_ANCHOR_CONTINUOUS_FALL_RATE =
         TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_FALL_RATE;
-    uint256 internal constant MAX_ANCHOR_BELOW_FENCE_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_FENCE_BASE;
-    uint256 internal constant MAX_ANCHOR_ABOVE_FENCE_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_FENCE_BASE;
+    uint256 internal constant MAX_ANCHOR_BELOW_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_BASE;
+    uint256 internal constant MAX_ANCHOR_ABOVE_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_BASE;
     uint256 internal constant DELAY = TrailingAnchorOracleModel.REANCHOR_DELAY;
     uint256 internal constant WINDOW = TrailingAnchorOracleModel.REANCHOR_WINDOW;
     /// @dev The longest delay over which a rate of 0.06, compounded continuously, rises at most 0.05%:
@@ -111,7 +111,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(s.pricingResumesAt, 0, "no suspension");
         assertEq(s.pendingAnchorPrice, 0, "no pending anchor price");
         assertEq(s.pendingAnchorAt, 0, "no pending anchor time");
-        assertEq(s.fenceBasePrice, INITIAL_PRICE, "fenceBasePrice is the seed");
+        assertEq(s.basePrice, INITIAL_PRICE, "basePrice is the seed");
         _assertParameters(s, p);
         assertTrue(fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), admin), "admin role");
         assertEq(fresh.getRoleMemberCount(fresh.DEFAULT_ADMIN_ROLE()), 1, "one admin");
@@ -803,7 +803,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     /// @dev Any walk of prices and times: every anchor move is a drift toward a price within the bounds, inside the
     ///      rates' reach, or a move onto the nearer of the price and a pending anchor recorded at least the delay
     ///      before, with the price outside the bounds on the pending anchor's side. No move goes under the floor, no
-    ///      re-anchor over the ceiling, a re-anchor leaves the fence base price, and a drift never widens the anchor's
+    ///      re-anchor over the ceiling, a re-anchor leaves the base price, and a drift never widens the anchor's
     ///      gap over it nor raises it by more than its own step.
     function testFuzz_updateAnchor_movesOnlyByReachOrWaitedPendingAnchors(uint256 seed) public {
         for (uint256 i; i < 40; ++i) {
@@ -825,10 +825,10 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         uint256 currentPrice
     ) internal view {
         uint256 moved = next.anchorPrice;
-        uint256 low = Math.min(_floor(s.fenceBasePrice), s.anchorPrice);
-        uint256 high = Math.max(_ceiling(s.fenceBasePrice), s.anchorPrice);
+        uint256 low = Math.min(_floor(s.basePrice), s.anchorPrice);
+        uint256 high = Math.max(_ceiling(s.basePrice), s.anchorPrice);
         assertGe(moved, low, "a move under the floor");
-        assertGe(next.fenceBasePrice, s.fenceBasePrice, "the fence base price fell");
+        assertGe(next.basePrice, s.basePrice, "the base price fell");
         bool waited = s.pendingAnchorAt != 0 && block.timestamp >= s.pendingAnchorAt + s.reanchorDelay;
         bool up = s.pendingAnchorPrice > s.anchorPrice;
         bool heldSide = !s.withinBounds(currentPrice) && (currentPrice > s.anchorPrice) == up;
@@ -836,25 +836,25 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
             ? Math.min(Math.min(s.pendingAnchorPrice, currentPrice), high)
             : Math.max(Math.max(s.pendingAnchorPrice, currentPrice), low);
         if (waited && heldSide && moved == nearer) {
-            assertEq(next.fenceBasePrice, s.fenceBasePrice, "a re-anchor moved the fence base price");
+            assertEq(next.basePrice, s.basePrice, "a re-anchor moved the base price");
             return;
         }
         assertTrue(s.withinBounds(currentPrice), "a drift toward a price outside the bounds");
         (uint256 lowest, uint256 highest) = s.reach(block.timestamp);
         assertGe(moved, lowest, "a drift under the reach");
         assertLe(moved, highest, "a drift over the reach");
-        uint256 gapBefore = s.anchorPrice > s.fenceBasePrice ? s.anchorPrice - s.fenceBasePrice : 0;
-        uint256 gapAfter = moved > next.fenceBasePrice ? moved - next.fenceBasePrice : 0;
-        assertLe(gapAfter, gapBefore, "a drift widened the gap over the fence base price");
+        uint256 gapBefore = s.anchorPrice > s.basePrice ? s.anchorPrice - s.basePrice : 0;
+        uint256 gapAfter = moved > next.basePrice ? moved - next.basePrice : 0;
+        assertLe(gapAfter, gapBefore, "a drift widened the gap over the base price");
         uint256 step = moved > s.anchorPrice ? moved - s.anchorPrice : 0;
-        assertLe(next.fenceBasePrice - s.fenceBasePrice, step, "the fence base price rose past the drift's step");
+        assertLe(next.basePrice - s.basePrice, step, "the base price rose past the drift's step");
     }
 
     // ---
     // UPDATE ANCHOR: FLOOR
     // ---
 
-    /// @dev A 5% fall waits out the delay and then moves the anchor only onto the floor, 1% under the fence base price.
+    /// @dev A 5% fall waits out the delay and then moves the anchor only onto the floor, 1% under the base price.
     ///      The price, still outside the floor's bounds, keeps reverting and is recorded as the next pending anchor.
     function test_updateAnchor_reanchorDownStopsAtTheFloor() public {
         uint256 fallen = Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD);
@@ -866,7 +866,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertTrue(u.anchorSet && u.pendingAnchorSet, "onto the floor, and the price recorded again");
         assertEq(_read().anchorPrice, floorPrice, "the anchor on the floor");
         assertEq(_read().pendingAnchorPrice, fallen, "the price is the next pending anchor");
-        assertEq(_read().fenceBasePrice, INITIAL_PRICE, "the fence base price stays");
+        assertEq(_read().basePrice, INITIAL_PRICE, "the base price stays");
         vm.expectRevert(
             abi.encodeWithSelector(
                 TrailingAnchorOracleBase.PriceOutOfBounds.selector, fallen, _lower(floorPrice), _upper(floorPrice)
@@ -934,15 +934,15 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(_read().anchorPrice, floorPrice, "on the floor");
     }
 
-    /// @dev The fence base price follows a drift up onto the anchor, stays through a re-anchor up, rises with the next
+    /// @dev The base price follows a drift up onto the anchor, stays through a re-anchor up, rises with the next
     ///      drift by its step only, so the anchor keeps its gap over it, and stays when the anchor falls.
-    function test_updateAnchor_fenceBasePriceFollowsDriftsOnly() public {
+    function test_updateAnchor_basePriceFollowsDriftsOnly() public {
         vm.warp(START + 1 days);
         source.setCurrentPrice(_upper(INITIAL_PRICE));
         _update();
         uint256 drifted = _read().anchorPrice;
         assertGt(drifted, INITIAL_PRICE, "drifted up");
-        assertEq(_read().fenceBasePrice, drifted, "follows a drift");
+        assertEq(_read().basePrice, drifted, "follows a drift");
 
         source.setCurrentPrice(Math.mulDiv(drifted, 1.05e18, WAD));
         _update();
@@ -950,14 +950,14 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         _update();
         uint256 capped = _ceiling(drifted);
         assertEq(_read().anchorPrice, capped, "re-anchored up onto the ceiling");
-        assertEq(_read().fenceBasePrice, drifted, "stays through a re-anchor");
+        assertEq(_read().basePrice, drifted, "stays through a re-anchor");
 
         vm.warp(block.timestamp + 1 days);
         source.setCurrentPrice(_upper(capped));
         _update();
         uint256 step = _riseStep(capped, 1 days);
         assertEq(_read().anchorPrice, capped + step, "drifted up from the ceiling");
-        assertEq(_read().fenceBasePrice, drifted + step, "rises by the drift's step");
+        assertEq(_read().basePrice, drifted + step, "rises by the drift's step");
 
         uint256 top = capped + step;
         uint256 fallen = Math.mulDiv(top, 0.995e18, WAD);
@@ -970,14 +970,14 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         source.setCurrentPrice(_lower(fallen));
         _update();
         assertLt(_read().anchorPrice, fallen, "drifted down");
-        assertEq(_read().fenceBasePrice, drifted + step, "stays through both falls");
+        assertEq(_read().basePrice, drifted + step, "stays through both falls");
     }
 
-    /// @dev A zero `maxAnchorBelowFenceBase` stops every open fall: neither a drift nor a re-anchor lowers the anchor,
+    /// @dev A zero `maxAnchorBelowBase` stops every open fall: neither a drift nor a re-anchor lowers the anchor,
     ///      while a drift still raises it.
-    function test_updateAnchor_zeroBelowFenceBaseStopsEveryOpenFall() public {
+    function test_updateAnchor_zeroBelowBaseStopsEveryOpenFall() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorBelowFenceBase = 0;
+        p.maxAnchorBelowBase = 0;
         _setParameters(p);
         vm.warp(START + 1 days);
         source.setCurrentPrice(_lower(INITIAL_PRICE));
@@ -994,9 +994,9 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     // UPDATE ANCHOR: CEILING
     // ---
 
-    /// @dev A 5% rise waits out the delay and then moves the anchor only onto the ceiling, 0.2% over the fence base
+    /// @dev A 5% rise waits out the delay and then moves the anchor only onto the ceiling, 0.2% over the base
     ///      price. The price, still outside the ceiling's bounds, keeps reverting and is recorded as the next pending
-    ///      anchor, and the fence base price stays.
+    ///      anchor, and the base price stays.
     function test_updateAnchor_reanchorUpStopsAtTheCeiling() public {
         uint256 risen = Math.mulDiv(INITIAL_PRICE, 1.05e18, WAD);
         source.setCurrentPrice(risen);
@@ -1007,7 +1007,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertTrue(u.anchorSet && u.pendingAnchorSet, "onto the ceiling, and the price recorded again");
         assertEq(_read().anchorPrice, ceilingPrice, "the anchor on the ceiling");
         assertEq(_read().pendingAnchorPrice, risen, "the price is the next pending anchor");
-        assertEq(_read().fenceBasePrice, INITIAL_PRICE, "the fence base price stays");
+        assertEq(_read().basePrice, INITIAL_PRICE, "the base price stays");
         vm.expectRevert(
             abi.encodeWithSelector(
                 TrailingAnchorOracleBase.PriceOutOfBounds.selector, risen, _lower(ceilingPrice), _upper(ceilingPrice)
@@ -1048,7 +1048,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
             _update();
             assertGe(_read().anchorPrice, anchorBefore, "never down");
             assertLe(_read().anchorPrice, ceilingPrice, "never over the ceiling");
-            assertEq(_read().fenceBasePrice, INITIAL_PRICE, "the fence base price stays");
+            assertEq(_read().basePrice, INITIAL_PRICE, "the base price stays");
         }
         assertEq(_read().anchorPrice, ceilingPrice, "on the ceiling");
         uint256 higher = Math.mulDiv(ceilingPrice, 1.0008e18, WAD);
@@ -1061,12 +1061,12 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         oracle.price();
     }
 
-    /// @dev A zero `maxAnchorAboveFenceBase` keeps every re-anchor up at the fence base price: from the floor, a rise
-    ///      re-anchors back onto it and no higher, while a drift still raises the anchor and the fence base price with
+    /// @dev A zero `maxAnchorAboveBase` keeps every re-anchor up at the base price: from the floor, a rise
+    ///      re-anchors back onto it and no higher, while a drift still raises the anchor and the base price with
     ///      it.
-    function test_updateAnchor_zeroAboveFenceBaseStopsReanchorsOverTheFenceBase() public {
+    function test_updateAnchor_zeroAboveBaseStopsReanchorsOverTheBasePrice() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorAboveFenceBase = 0;
+        p.maxAnchorAboveBase = 0;
         _setParameters(p);
         source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD));
         _update();
@@ -1077,13 +1077,13 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         _update();
         vm.warp(block.timestamp + DELAY);
         _update();
-        assertEq(_read().anchorPrice, INITIAL_PRICE, "back onto the fence base price, no higher");
+        assertEq(_read().anchorPrice, INITIAL_PRICE, "back onto the base price, no higher");
         vm.warp(block.timestamp + DELAY);
         assertFalse(_update().anchorSet, "no re-anchor over it");
         vm.warp(block.timestamp + 1 days);
         source.setCurrentPrice(_upper(INITIAL_PRICE));
         assertTrue(_update().anchorSet, "a drift up");
-        assertEq(_read().fenceBasePrice, _read().anchorPrice, "the fence base price follows the drift");
+        assertEq(_read().basePrice, _read().anchorPrice, "the base price follows the drift");
     }
 
     // ---
@@ -1121,9 +1121,9 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(oracle.price(), currentPrice * priceScale, "price follows at once");
     }
 
-    /// @dev Only an acceptance goes under the floor. It moves the anchor onto the price and restarts the fence base
+    /// @dev Only an acceptance goes under the floor. It moves the anchor onto the price and restarts the base
     ///      price there, downward too, so the next floor hangs off the accepted price.
-    function test_acceptPrice_underTheFloorRestartsTheFenceBasePrice() public {
+    function test_acceptPrice_underTheFloorRestartsTheBasePrice() public {
         uint256 fallen = Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD);
         source.setCurrentPrice(fallen);
         _update();
@@ -1133,7 +1133,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         vm.prank(priceAcceptor);
         oracle.acceptPrice(fallen, fallen);
         assertEq(_read().anchorPrice, fallen, "accepted under the floor");
-        assertEq(_read().fenceBasePrice, fallen, "the fence base price restarts at the accepted price");
+        assertEq(_read().basePrice, fallen, "the base price restarts at the accepted price");
         assertEq(oracle.price(), fallen * priceScale, "priced");
 
         source.setCurrentPrice(Math.mulDiv(fallen, 0.95e18, WAD));
@@ -1143,9 +1143,9 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(_read().anchorPrice, _floor(fallen), "the next floor, under the accepted price");
     }
 
-    /// @dev Only an acceptance goes over the ceiling. It moves the anchor onto the price and restarts the fence base
+    /// @dev Only an acceptance goes over the ceiling. It moves the anchor onto the price and restarts the base
     ///      price there, so the next ceiling hangs off the accepted price.
-    function test_acceptPrice_overTheCeilingRestartsTheFenceBasePrice() public {
+    function test_acceptPrice_overTheCeilingRestartsTheBasePrice() public {
         uint256 risen = Math.mulDiv(INITIAL_PRICE, 1.05e18, WAD);
         source.setCurrentPrice(risen);
         _update();
@@ -1155,7 +1155,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         vm.prank(priceAcceptor);
         oracle.acceptPrice(risen, risen);
         assertEq(_read().anchorPrice, risen, "accepted over the ceiling");
-        assertEq(_read().fenceBasePrice, risen, "the fence base price restarts at the accepted price");
+        assertEq(_read().basePrice, risen, "the base price restarts at the accepted price");
         assertEq(oracle.price(), risen * priceScale, "priced");
 
         source.setCurrentPrice(Math.mulDiv(risen, 1.05e18, WAD));
@@ -1314,8 +1314,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
             maxPriceBelowAnchor: 0.002e18,
             maxAnchorContinuousRiseRate: 0.1e18,
             maxAnchorContinuousFallRate: 0.05e18,
-            maxAnchorBelowFenceBase: 0.02e18,
-            maxAnchorAboveFenceBase: 0.005e18,
+            maxAnchorBelowBase: 0.02e18,
+            maxAnchorAboveBase: 0.005e18,
             reanchorDelay: 12 hours,
             reanchorWindow: 2 days
         });
@@ -1341,9 +1341,9 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         _assertPriceMatchesRule();
     }
 
-    /// @dev A narrower `maxAnchorBelowFenceBase` leaves an anchor already under its floor where it is: no update lifts
+    /// @dev A narrower `maxAnchorBelowBase` leaves an anchor already under its floor where it is: no update lifts
     ///      it, a drift does not lower it, and the next fall finds it pinned.
-    function test_setParameters_narrowerBelowFenceBaseKeepsADeeperAnchor() public {
+    function test_setParameters_narrowerBelowBaseKeepsADeeperAnchor() public {
         uint256 fallen = Math.mulDiv(INITIAL_PRICE, 0.992e18, WAD);
         source.setCurrentPrice(fallen);
         _update();
@@ -1351,7 +1351,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         _update();
         assertEq(_read().anchorPrice, fallen, "0.8% down, inside the 1% floor");
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorBelowFenceBase = 0.005e18;
+        p.maxAnchorBelowBase = 0.005e18;
         _setParameters(p);
         vm.warp(block.timestamp + 1 days);
         assertFalse(_update().anchorSet, "not lifted onto the narrower floor");
@@ -1364,10 +1364,10 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(_read().anchorPrice, fallen, "kept");
     }
 
-    /// @dev A narrower `maxAnchorAboveFenceBase` leaves an anchor already over its ceiling where it is: no update
-    ///      lowers it, a drift up moves it with the fence base price and keeps its gap over it, and the next rise finds
+    /// @dev A narrower `maxAnchorAboveBase` leaves an anchor already over its ceiling where it is: no update
+    ///      lowers it, a drift up moves it with the base price and keeps its gap over it, and the next rise finds
     ///      it pinned.
-    function test_setParameters_narrowerAboveFenceBaseKeepsAHigherAnchor() public {
+    function test_setParameters_narrowerAboveBaseKeepsAHigherAnchor() public {
         uint256 risen = Math.mulDiv(INITIAL_PRICE, 1.0015e18, WAD);
         source.setCurrentPrice(risen);
         _update();
@@ -1375,7 +1375,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         _update();
         assertEq(_read().anchorPrice, risen, "0.15% up, inside the 0.2% ceiling");
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorAboveFenceBase = 0.001e18;
+        p.maxAnchorAboveBase = 0.001e18;
         _setParameters(p);
         vm.warp(block.timestamp + 1 days);
         assertFalse(_update().anchorSet, "not lowered onto the narrower ceiling");
@@ -1384,7 +1384,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         _update();
         uint256 step = _riseStep(risen, 2 days);
         assertEq(_read().anchorPrice, risen + step, "a drift up");
-        assertEq(_read().fenceBasePrice, INITIAL_PRICE + step, "the gap kept");
+        assertEq(_read().basePrice, INITIAL_PRICE + step, "the gap kept");
         source.setCurrentPrice(Math.mulDiv(risen + step, 1.001e18, WAD));
         _update();
         vm.warp(block.timestamp + DELAY);
@@ -1421,14 +1421,14 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         p.reanchorDelay = uint40(LONGEST_DELAY_FOR_FALL);
         _setParameters(p);
         p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorBelowFenceBase = 0;
+        p.maxAnchorBelowBase = 0;
         _setParameters(p);
-        p.maxAnchorBelowFenceBase = uint64(WAD - 1);
+        p.maxAnchorBelowBase = uint64(WAD - 1);
         _setParameters(p);
         p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorAboveFenceBase = 0;
+        p.maxAnchorAboveBase = 0;
         _setParameters(p);
-        p.maxAnchorAboveFenceBase = uint64(WAD - 1);
+        p.maxAnchorAboveBase = uint64(WAD - 1);
         _setParameters(p);
         TrailingAnchorOracleBase.Parameters[] memory cases = _invalidParameters();
         for (uint256 i; i < cases.length; ++i) {
@@ -1444,8 +1444,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
 
     /// @dev The base's state lives in the adapter's own namespace, low bits first: the bounds, `anchorAt` and
     ///      `pricingResumesAt` in the first slot, the anchor price in the second, the rates, the delay, the window and
-    ///      `pendingAnchorAt` in the third, the pending anchor price in the fourth, `maxAnchorBelowFenceBase` and
-    ///      `maxAnchorAboveFenceBase` in the fifth and `fenceBasePrice` in the sixth.
+    ///      `pendingAnchorAt` in the third, the pending anchor price in the fourth, `maxAnchorBelowBase` and
+    ///      `maxAnchorAboveBase` in the fifth and `basePrice` in the sixth.
     function test_storage_namespaceLayout() public {
         vm.prank(manager);
         oracle.setPricingResumesAt(uint40(START + 1 days));
@@ -1472,10 +1472,10 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
             uint256(vm.load(address(oracle), _slot(base, 3))), currentPrice, "pendingAnchorPrice in the fourth slot"
         );
         uint256 fifth = uint256(vm.load(address(oracle), _slot(base, 4)));
-        assertEq(uint64(fifth), MAX_ANCHOR_BELOW_FENCE_BASE, "maxAnchorBelowFenceBase in bits 0-63");
-        assertEq(uint64(fifth >> 64), MAX_ANCHOR_ABOVE_FENCE_BASE, "maxAnchorAboveFenceBase in bits 64-127");
+        assertEq(uint64(fifth), MAX_ANCHOR_BELOW_BASE, "maxAnchorBelowBase in bits 0-63");
+        assertEq(uint64(fifth >> 64), MAX_ANCHOR_ABOVE_BASE, "maxAnchorAboveBase in bits 64-127");
         assertEq(fifth >> 128, 0, "nothing above in the fifth slot");
-        assertEq(uint256(vm.load(address(oracle), _slot(base, 5))), INITIAL_PRICE, "fenceBasePrice in the sixth slot");
+        assertEq(uint256(vm.load(address(oracle), _slot(base, 5))), INITIAL_PRICE, "basePrice in the sixth slot");
         assertEq(uint256(vm.load(address(oracle), _slot(base, 6))), 0, "nothing in the seventh slot");
     }
 
@@ -1562,13 +1562,13 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(s.pricingResumesAt, e.pricingResumesAt, "pricingResumesAt");
         assertEq(s.pendingAnchorPrice, e.pendingAnchorPrice, "pendingAnchorPrice");
         assertEq(s.pendingAnchorAt, e.pendingAnchorAt, "pendingAnchorAt");
-        assertEq(s.fenceBasePrice, e.fenceBasePrice, "fenceBasePrice");
+        assertEq(s.basePrice, e.basePrice, "basePrice");
         assertEq(s.maxPriceAboveAnchor, e.maxPriceAboveAnchor, "maxPriceAboveAnchor");
         assertEq(s.maxPriceBelowAnchor, e.maxPriceBelowAnchor, "maxPriceBelowAnchor");
         assertEq(s.maxAnchorContinuousRiseRate, e.maxAnchorContinuousRiseRate, "maxAnchorContinuousRiseRate");
         assertEq(s.maxAnchorContinuousFallRate, e.maxAnchorContinuousFallRate, "maxAnchorContinuousFallRate");
-        assertEq(s.maxAnchorBelowFenceBase, e.maxAnchorBelowFenceBase, "maxAnchorBelowFenceBase");
-        assertEq(s.maxAnchorAboveFenceBase, e.maxAnchorAboveFenceBase, "maxAnchorAboveFenceBase");
+        assertEq(s.maxAnchorBelowBase, e.maxAnchorBelowBase, "maxAnchorBelowBase");
+        assertEq(s.maxAnchorAboveBase, e.maxAnchorAboveBase, "maxAnchorAboveBase");
         assertEq(s.reanchorDelay, e.reanchorDelay, "reanchorDelay");
         assertEq(s.reanchorWindow, e.reanchorWindow, "reanchorWindow");
     }
@@ -1581,8 +1581,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(s.maxPriceBelowAnchor, p.maxPriceBelowAnchor, "maxPriceBelowAnchor");
         assertEq(s.maxAnchorContinuousRiseRate, p.maxAnchorContinuousRiseRate, "maxAnchorContinuousRiseRate");
         assertEq(s.maxAnchorContinuousFallRate, p.maxAnchorContinuousFallRate, "maxAnchorContinuousFallRate");
-        assertEq(s.maxAnchorBelowFenceBase, p.maxAnchorBelowFenceBase, "maxAnchorBelowFenceBase");
-        assertEq(s.maxAnchorAboveFenceBase, p.maxAnchorAboveFenceBase, "maxAnchorAboveFenceBase");
+        assertEq(s.maxAnchorBelowBase, p.maxAnchorBelowBase, "maxAnchorBelowBase");
+        assertEq(s.maxAnchorAboveBase, p.maxAnchorAboveBase, "maxAnchorAboveBase");
         assertEq(s.reanchorDelay, p.reanchorDelay, "reanchorDelay");
         assertEq(s.reanchorWindow, p.reanchorWindow, "reanchorWindow");
     }
@@ -1597,31 +1597,31 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     ///      past the working floor; the floor has tests of its own.
     function _withoutFloor() internal {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorBelowFenceBase = uint64(WAD - 1);
+        p.maxAnchorBelowBase = uint64(WAD - 1);
         _setParameters(p);
     }
 
-    /// @dev Moves the ceiling out of the way, almost a whole price over the fence base price, for the tests of the
+    /// @dev Moves the ceiling out of the way, almost a whole price over the base price, for the tests of the
     ///      re-anchor mechanics on rises past the working ceiling; the ceiling has tests of its own.
     function _withoutCeiling() internal {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorAboveFenceBase = uint64(WAD - 1);
+        p.maxAnchorAboveBase = uint64(WAD - 1);
         _setParameters(p);
     }
 
-    /// @dev `fenceBase` × (1 − `MAX_ANCHOR_BELOW_FENCE_BASE`), the distance term rounded down.
-    function _floor(uint256 fenceBase) internal pure returns (uint256) {
-        return fenceBase - Math.mulDiv(fenceBase, MAX_ANCHOR_BELOW_FENCE_BASE, WAD);
+    /// @dev `basePrice` × (1 − `MAX_ANCHOR_BELOW_BASE`), the distance term rounded down.
+    function _floor(uint256 basePrice) internal pure returns (uint256) {
+        return basePrice - Math.mulDiv(basePrice, MAX_ANCHOR_BELOW_BASE, WAD);
     }
 
-    /// @dev `fenceBase` × (1 + `MAX_ANCHOR_ABOVE_FENCE_BASE`), the distance term rounded down.
-    function _ceiling(uint256 fenceBase) internal pure returns (uint256) {
-        return fenceBase + Math.mulDiv(fenceBase, MAX_ANCHOR_ABOVE_FENCE_BASE, WAD);
+    /// @dev `basePrice` × (1 + `MAX_ANCHOR_ABOVE_BASE`), the distance term rounded down.
+    function _ceiling(uint256 basePrice) internal pure returns (uint256) {
+        return basePrice + Math.mulDiv(basePrice, MAX_ANCHOR_ABOVE_BASE, WAD);
     }
 
     /// @dev One parameter past its range in each case: a zero bound, a bound at a whole price, a rate over 1e18, a
     ///      delay under an hour or longer than a rate takes to cover its bound, a zero window, and a
-    ///      `maxAnchorBelowFenceBase` or `maxAnchorAboveFenceBase` of a whole price.
+    ///      `maxAnchorBelowBase` or `maxAnchorAboveBase` of a whole price.
     function _invalidParameters() internal pure returns (TrailingAnchorOracleBase.Parameters[] memory cases) {
         cases = new TrailingAnchorOracleBase.Parameters[](12);
         for (uint256 i; i < cases.length; ++i) {
@@ -1642,8 +1642,8 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         cases[6].reanchorDelay = 1 hours - 1;
         cases[7].reanchorWindow = 0;
         cases[8].reanchorDelay = uint40(LONGEST_DELAY_FOR_RISE + 1);
-        cases[9].maxAnchorBelowFenceBase = uint64(WAD);
-        cases[10].maxAnchorAboveFenceBase = uint64(WAD);
+        cases[9].maxAnchorBelowBase = uint64(WAD);
+        cases[10].maxAnchorAboveBase = uint64(WAD);
         cases[11].maxAnchorContinuousRiseRate = 0;
         cases[11].reanchorDelay = uint40(LONGEST_DELAY_FOR_FALL + 1);
         for (uint256 i; i < cases.length; ++i) {
@@ -1674,7 +1674,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     function _wideFall() internal pure returns (TrailingAnchorOracleBase.Parameters memory p) {
         p = TrailingAnchorOracleModel.defaultParameters();
         p.maxPriceBelowAnchor = 0.1e18;
-        p.maxAnchorBelowFenceBase = uint64(WAD - 1);
+        p.maxAnchorBelowBase = uint64(WAD - 1);
     }
 
     function _lower(uint256 center) internal pure returns (uint256) {

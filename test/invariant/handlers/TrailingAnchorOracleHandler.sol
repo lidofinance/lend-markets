@@ -50,17 +50,17 @@ contract TrailingAnchorOracleHandler is Test {
     uint256 public stoppedPrices;
     uint256 public parameterPriceChanges;
     uint256 public strayAnchorMoves;
-    /// @dev Ghost violations: an update that set the anchor under the floor below `expectedFenceBasePrice`, when the
-    ///      anchor sat above it, and one that left the anchor further over `expectedFenceBasePrice` than both
-    ///      `maxAnchorAboveFenceBase` of it and its distance before the update.
+    /// @dev Ghost violations: an update that set the anchor under the floor below `expectedBasePrice`, when the
+    ///      anchor sat above it, and one that left the anchor further over `expectedBasePrice` than both
+    ///      `maxAnchorAboveBase` of it and its distance before the update.
     uint256 public floorBreaches;
     uint256 public ceilingBreaches;
 
-    /// @dev The fence base price by its rule, from the oracle's anchor after each call: the seed or the last
+    /// @dev The base price by its rule, from the oracle's anchor after each call: the seed or the last
     ///      acceptance, raised by a drift up to max(H, A' − max(A − H, 0)) and left by a re-anchor.
-    uint256 public expectedFenceBasePrice;
-    /// @dev How far the anchor sat over `expectedFenceBasePrice` at the last parameter change, zero after an
-    ///      acceptance: a narrower `maxAnchorAboveFenceBase` may leave the anchor that high.
+    uint256 public expectedBasePrice;
+    /// @dev How far the anchor sat over `expectedBasePrice` at the last parameter change, zero after an
+    ///      acceptance: a narrower `maxAnchorAboveBase` may leave the anchor that high.
     uint256 public gapAtParameterChange;
 
     /// @dev When `setPricingResumesAt` last succeeded.
@@ -93,7 +93,7 @@ contract TrailingAnchorOracleHandler is Test {
         MANAGER = manager;
         PRICE_ACCEPTOR = priceAcceptor;
         shadow = TrailingAnchorOracleModel.read(oracle);
-        expectedFenceBasePrice = oracle.anchorPrice();
+        expectedBasePrice = oracle.anchorPrice();
         LLTV = lltv;
         COVERAGE = lltv * TrailingAnchorOracleModel.liquidationIncentive(lltv) / WAD;
         ROUNDING = oracle.PRICE_SCALE() * WAD;
@@ -265,27 +265,26 @@ contract TrailingAnchorOracleHandler is Test {
     ///      the ceiling. A re-anchor needs a waited, unexpired pending anchor and a price outside the bounds on its
     ///      side, and lands on whichever of the two is nearer the anchor, down never under the floor and up never over
     ///      the ceiling. A drift needs a price within the bounds and stays inside the rates' reach, toward the price.
-    ///      The floor and the ceiling hang off `expectedFenceBasePrice`, which a drift up raises.
+    ///      The floor and the ceiling hang off `expectedBasePrice`, which a drift up raises.
     function _checkAnchorMove(TrailingAnchorOracleState memory s, uint256 currentPrice, uint256 stored) internal {
         if (stored == s.anchorPrice) return;
-        uint256 fenceBaseBefore = expectedFenceBasePrice;
-        uint256 gapBefore = s.anchorPrice > fenceBaseBefore ? s.anchorPrice - fenceBaseBefore : 0;
-        uint256 low =
-            Math.min(fenceBaseBefore - Math.mulDiv(fenceBaseBefore, s.maxAnchorBelowFenceBase, WAD), s.anchorPrice);
+        uint256 basePriceBefore = expectedBasePrice;
+        uint256 gapBefore = s.anchorPrice > basePriceBefore ? s.anchorPrice - basePriceBefore : 0;
+        uint256 low = Math.min(basePriceBefore - Math.mulDiv(basePriceBefore, s.maxAnchorBelowBase, WAD), s.anchorPrice);
         uint256 high =
-            Math.max(fenceBaseBefore + Math.mulDiv(fenceBaseBefore, s.maxAnchorAboveFenceBase, WAD), s.anchorPrice);
+            Math.max(basePriceBefore + Math.mulDiv(basePriceBefore, s.maxAnchorAboveBase, WAD), s.anchorPrice);
         if (stored < low) ++floorBreaches;
         if (_isReanchor(s, currentPrice, stored, low, high)) {
             ++succeeded["reanchor"];
         } else if (_isDrift(s, currentPrice, stored)) {
             ++succeeded["drift"];
-            if (stored > s.anchorPrice) expectedFenceBasePrice = Math.max(fenceBaseBefore, stored - gapBefore);
+            if (stored > s.anchorPrice) expectedBasePrice = Math.max(basePriceBefore, stored - gapBefore);
         } else {
             ++strayAnchorMoves;
         }
-        uint256 fenceBaseAfter = expectedFenceBasePrice;
-        uint256 gapAfter = stored > fenceBaseAfter ? stored - fenceBaseAfter : 0;
-        if (gapAfter > Math.max(Math.mulDiv(fenceBaseAfter, s.maxAnchorAboveFenceBase, WAD), gapBefore)) {
+        uint256 basePriceAfter = expectedBasePrice;
+        uint256 gapAfter = stored > basePriceAfter ? stored - basePriceAfter : 0;
+        if (gapAfter > Math.max(Math.mulDiv(basePriceAfter, s.maxAnchorAboveBase, WAD), gapBefore)) {
             ++ceilingBreaches;
         }
     }
@@ -352,7 +351,7 @@ contract TrailingAnchorOracleHandler is Test {
         vm.prank(PRICE_ACCEPTOR);
         ORACLE.acceptPrice(minPrice, maxPrice);
         shadow = shadow.accepted(currentPrice, block.timestamp);
-        expectedFenceBasePrice = currentPrice;
+        expectedBasePrice = currentPrice;
         gapAtParameterChange = 0;
         highestPrice = 0;
         corridorHeld = true;
@@ -380,11 +379,11 @@ contract TrailingAnchorOracleHandler is Test {
         ORACLE.setParameters(p);
         shadow = shadow.withParameters(p);
         uint256 anchor = ORACLE.anchorPrice();
-        gapAtParameterChange = anchor > expectedFenceBasePrice ? anchor - expectedFenceBasePrice : 0;
-        uint256 fenceBase = expectedFenceBasePrice;
+        gapAtParameterChange = anchor > expectedBasePrice ? anchor - expectedBasePrice : 0;
+        uint256 basePrice = expectedBasePrice;
         highestPrice = 0;
-        corridorHeld = anchor >= fenceBase - Math.mulDiv(fenceBase, p.maxAnchorBelowFenceBase, WAD)
-            && anchor <= fenceBase + Math.mulDiv(fenceBase, p.maxAnchorAboveFenceBase, WAD);
+        corridorHeld = anchor >= basePrice - Math.mulDiv(basePrice, p.maxAnchorBelowBase, WAD)
+            && anchor <= basePrice + Math.mulDiv(basePrice, p.maxAnchorAboveBase, WAD);
         (bool pricedAfter, uint256 afterCall) = _price();
         if (pricedBefore && pricedAfter && before != afterCall) ++parameterPriceChanges;
         ++succeeded["parameters"];
@@ -424,8 +423,8 @@ contract TrailingAnchorOracleHandler is Test {
         p.maxAnchorContinuousRiseRate = uint64(bound(_pick(seed, "rise"), 0, 0.2e18));
         p.maxAnchorContinuousFallRate = uint64(bound(_pick(seed, "fall"), 0, 0.2e18));
         bool sized = LLTV != 0;
-        p.maxAnchorBelowFenceBase = uint64(bound(_pick(seed, "belowFenceBase"), 0, sized ? 0.012e18 : 0.05e18));
-        p.maxAnchorAboveFenceBase = uint64(bound(_pick(seed, "aboveFenceBase"), 0, sized ? 0.004e18 : 0.01e18));
+        p.maxAnchorBelowBase = uint64(bound(_pick(seed, "belowBase"), 0, sized ? 0.012e18 : 0.05e18));
+        p.maxAnchorAboveBase = uint64(bound(_pick(seed, "aboveBase"), 0, sized ? 0.004e18 : 0.01e18));
         p.reanchorDelay = uint40(bound(_pick(seed, "delay"), 1 hours, 2 days));
         p.reanchorWindow = uint40(bound(_pick(seed, "window"), 1 hours, 3 days));
         if (pick % 8 != 0) return p;
@@ -436,8 +435,8 @@ contract TrailingAnchorOracleHandler is Test {
         else if (field == 3) p.maxAnchorContinuousFallRate = uint64(WAD + 1);
         else if (field == 4) p.reanchorDelay = 1 hours - 1;
         else if (field == 5) p.reanchorWindow = 0;
-        else if (field == 6) p.maxAnchorBelowFenceBase = uint64(WAD);
-        else p.maxAnchorAboveFenceBase = uint64(WAD);
+        else if (field == 6) p.maxAnchorBelowBase = uint64(WAD);
+        else p.maxAnchorAboveBase = uint64(WAD);
     }
 
     /// @dev Sets the source within `low` and `high` of the anchor, as WAD fractions of it.

@@ -141,14 +141,10 @@ contract OracleConfigFileTest is Test {
             "max_anchor_continuous_fall_rate"
         );
         assertEq(
-            cfg.parameters.maxAnchorBelowFenceBase,
-            TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_FENCE_BASE,
-            "max_anchor_below_fence_base"
+            cfg.parameters.maxAnchorBelowBase, TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_BASE, "max_anchor_below_base"
         );
         assertEq(
-            cfg.parameters.maxAnchorAboveFenceBase,
-            TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_FENCE_BASE,
-            "max_anchor_above_fence_base"
+            cfg.parameters.maxAnchorAboveBase, TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_BASE, "max_anchor_above_base"
         );
         assertEq(cfg.parameters.reanchorDelay, TrailingAnchorOracleModel.REANCHOR_DELAY, "reanchor_delay");
         assertEq(cfg.parameters.reanchorWindow, TrailingAnchorOracleModel.REANCHOR_WINDOW, "reanchor_window");
@@ -184,11 +180,11 @@ contract OracleConfigFileTest is Test {
 
     /// @dev The floor's and the ceiling's keys and the window are required.
     function testRevert_parseNav_missingFloorCeilingOrWindow() external {
-        string memory invalid = vm.replace(_navUsdyToml(), "max_anchor_below_fence_base = \"10000000000000000\"\n", "");
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_below_fence_base"));
+        string memory invalid = vm.replace(_navUsdyToml(), "max_anchor_below_base = \"10000000000000000\"\n", "");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_below_base"));
         harness.parseNav(invalid, "");
-        invalid = vm.replace(_navUsdyToml(), "max_anchor_above_fence_base = \"2000000000000000\"\n", "");
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_above_fence_base"));
+        invalid = vm.replace(_navUsdyToml(), "max_anchor_above_base = \"2000000000000000\"\n", "");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_above_base"));
         harness.parseNav(invalid, "");
         invalid = vm.replace(_navUsdyToml(), "reanchor_window = 86400\n", "");
         vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".reanchor_window"));
@@ -196,8 +192,8 @@ contract OracleConfigFileTest is Test {
     }
 
     /// @dev The validator needs both bounds, the delay and the window, a zero rate would leave the anchor unable to
-    ///      follow the source, and a zero `max_anchor_below_fence_base` or `max_anchor_above_fence_base` would leave
-    ///      every honest re-anchor under or over the fence base price to governance, so a zero one is refused as unset
+    ///      follow the source, and a zero `max_anchor_below_base` or `max_anchor_above_base` would leave
+    ///      every honest re-anchor under or over the base price to governance, so a zero one is refused as unset
     ///      before broadcast.
     function testRevert_parseNav_zeroRequiredParam() external {
         string memory invalid = vm.replace(
@@ -218,14 +214,13 @@ contract OracleConfigFileTest is Test {
         );
         harness.parseNav(invalid, "");
         invalid = vm.replace(
-            _navUsdyToml(), "max_anchor_below_fence_base = \"10000000000000000\"", "max_anchor_below_fence_base = \"0\""
+            _navUsdyToml(), "max_anchor_below_base = \"10000000000000000\"", "max_anchor_below_base = \"0\""
         );
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_below_fence_base"));
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_below_base"));
         harness.parseNav(invalid, "");
-        invalid = vm.replace(
-            _navUsdyToml(), "max_anchor_above_fence_base = \"2000000000000000\"", "max_anchor_above_fence_base = \"0\""
-        );
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_above_fence_base"));
+        invalid =
+            vm.replace(_navUsdyToml(), "max_anchor_above_base = \"2000000000000000\"", "max_anchor_above_base = \"0\"");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_above_base"));
         harness.parseNav(invalid, "");
     }
 
@@ -307,8 +302,8 @@ contract OracleConfigFileTest is Test {
             "max_price_below_anchor = \"1000000000000000\"\n",
             "max_anchor_continuous_rise_rate = \"60000000000000000\"\n",
             "max_anchor_continuous_fall_rate = \"10000000000000000\"\n",
-            "max_anchor_below_fence_base = \"10000000000000000\"\n",
-            "max_anchor_above_fence_base = \"2000000000000000\"\n",
+            "max_anchor_below_base = \"10000000000000000\"\n",
+            "max_anchor_above_base = \"2000000000000000\"\n",
             "reanchor_delay = 21600\n",
             "reanchor_window = 86400\n",
             "seed_min_price = \"1100000000000000000\"\n",
@@ -329,8 +324,8 @@ contract OracleConfigFileTest is Test {
             "max_price_below_anchor = \"1000000000000000\"\n",
             "max_anchor_continuous_rise_rate = \"60000000000000000\"\n",
             "max_anchor_continuous_fall_rate = \"10000000000000000\"\n",
-            "max_anchor_below_fence_base = \"10000000000000000\"\n",
-            "max_anchor_above_fence_base = \"2000000000000000\"\n",
+            "max_anchor_below_base = \"10000000000000000\"\n",
+            "max_anchor_above_base = \"2000000000000000\"\n",
             "reanchor_delay = 21600\n",
             "reanchor_window = 86400\n",
             "seed_min_price = \"1100000000000000000\"\n",

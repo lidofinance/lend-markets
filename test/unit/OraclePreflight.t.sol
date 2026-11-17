@@ -377,24 +377,14 @@ contract OraclePreflightTest is Test {
             TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_FALL_RATE
         );
         p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorBelowFenceBase = 0.005e18;
+        p.maxAnchorBelowBase = 0.005e18;
         _expectNavParameterMismatch(
-            cfg,
-            navOracle,
-            p,
-            "max_anchor_below_fence_base",
-            0.005e18,
-            TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_FENCE_BASE
+            cfg, navOracle, p, "max_anchor_below_base", 0.005e18, TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_BASE
         );
         p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorAboveFenceBase = 0.001e18;
+        p.maxAnchorAboveBase = 0.001e18;
         _expectNavParameterMismatch(
-            cfg,
-            navOracle,
-            p,
-            "max_anchor_above_fence_base",
-            0.001e18,
-            TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_FENCE_BASE
+            cfg, navOracle, p, "max_anchor_above_base", 0.001e18, TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_BASE
         );
         p = TrailingAnchorOracleModel.defaultParameters();
         p.reanchorDelay = 7 hours;
@@ -570,51 +560,51 @@ contract OraclePreflightNavSizingTest is Test {
         harness = new OraclePreflightHarness();
     }
 
-    /// @dev The largest `maxAnchorAboveFenceBase` the sizing rule leaves over each class's floor, by the spec's
+    /// @dev The largest `maxAnchorAboveBase` the sizing rule leaves over each class's floor, by the spec's
     ///      formula: 0.26% at a 98% LLTV with bounds of +0.05% and −0.1% and a 1% floor, 0.31% at ±0.05%, 0.21% at
     ///      ±0.1%, and 1.23% at 92% with ±0.3% and 4%. Each edge passes, and one wei more is refused.
-    function test_requireNavSizing_largestAboveFenceBaseIsTheEdge() public {
+    function test_requireNavSizing_largestAboveBaseIsTheEdge() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        _assertAboveFenceBaseEdge(p, 0.98e18, 0.0026e18, "0.26% at 98%");
+        _assertAboveBaseEdge(p, 0.98e18, 0.0026e18, "0.26% at 98%");
         p.maxPriceBelowAnchor = 0.0005e18;
-        _assertAboveFenceBaseEdge(p, 0.98e18, 0.0031e18, "0.31% at 98% with 0.05% bounds");
+        _assertAboveBaseEdge(p, 0.98e18, 0.0031e18, "0.31% at 98% with 0.05% bounds");
         p.maxPriceAboveAnchor = 0.001e18;
         p.maxPriceBelowAnchor = 0.001e18;
-        _assertAboveFenceBaseEdge(p, 0.98e18, 0.0021e18, "0.21% at 98% with 0.1% bounds");
+        _assertAboveBaseEdge(p, 0.98e18, 0.0021e18, "0.21% at 98% with 0.1% bounds");
         p.maxPriceAboveAnchor = 0.003e18;
         p.maxPriceBelowAnchor = 0.003e18;
-        p.maxAnchorBelowFenceBase = 0.04e18;
-        _assertAboveFenceBaseEdge(p, 0.92e18, 0.0123e18, "1.23% at 92% with 0.3% bounds and 4%");
+        p.maxAnchorBelowBase = 0.04e18;
+        _assertAboveBaseEdge(p, 0.92e18, 0.0123e18, "1.23% at 92% with 0.3% bounds and 4%");
     }
 
     /// @dev Under an LLTV of about 56.5% the core holds the liquidation incentive at 1.15. At 50% the rule needs
     ///      0.5 × 1.15 × 1.0005 = 0.5752875 of the 0.99 × 0.999 the floor leaves, so the ceiling may sit 71.92% over
-    ///      the fence base price. With the incentive not held, 1 / 0.85, it would stop at 68.05%.
+    ///      the base price. With the incentive not held, 1 / 0.85, it would stop at 68.05%.
     function test_requireNavSizing_edgeWhereTheIncentiveIsHeld() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        _assertAboveFenceBaseEdge(p, 0.5e18, 0.71916e18, "71.92% at 50%");
+        _assertAboveBaseEdge(p, 0.5e18, 0.71916e18, "71.92% at 50%");
     }
 
-    /// @dev The other way round: with the working 0.2% ceiling the rule allows a floor about 1.06% under the fence base
+    /// @dev The other way round: with the working 0.2% ceiling the rule allows a floor about 1.06% under the base
     ///      price at 98%, and with a 1% ceiling at 92% and ±0.3% bounds about 4.22%. Each edge passes, and one wei
     ///      deeper is refused.
-    function test_requireNavSizing_largestBelowFenceBaseIsTheEdge() public {
+    function test_requireNavSizing_largestBelowBaseIsTheEdge() public {
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        uint256 largest = _largestBelowFenceBase(p, 0.98e18);
+        uint256 largest = _largestBelowBase(p, 0.98e18);
         assertApproxEqAbs(largest, 0.0106e18, 0.00005e18, "1.06% at 98%");
-        p.maxAnchorBelowFenceBase = uint64(largest);
+        p.maxAnchorBelowBase = uint64(largest);
         harness.requireNavSizing(p, 0.98e18);
-        p.maxAnchorBelowFenceBase = uint64(largest + 1);
+        p.maxAnchorBelowBase = uint64(largest + 1);
         _expectRefused(p, 0.98e18);
 
         p.maxPriceAboveAnchor = 0.003e18;
         p.maxPriceBelowAnchor = 0.003e18;
-        p.maxAnchorAboveFenceBase = 0.01e18;
-        largest = _largestBelowFenceBase(p, 0.92e18);
+        p.maxAnchorAboveBase = 0.01e18;
+        largest = _largestBelowBase(p, 0.92e18);
         assertApproxEqAbs(largest, 0.0422e18, 0.00005e18, "4.22% at 92% with 0.3% bounds and 1%");
-        p.maxAnchorBelowFenceBase = uint64(largest);
+        p.maxAnchorBelowBase = uint64(largest);
         harness.requireNavSizing(p, 0.92e18);
-        p.maxAnchorBelowFenceBase = uint64(largest + 1);
+        p.maxAnchorBelowBase = uint64(largest + 1);
         _expectRefused(p, 0.92e18);
     }
 
@@ -627,15 +617,15 @@ contract OraclePreflightNavSizingTest is Test {
         uint256 lltv,
         uint64 above,
         uint64 below,
-        uint64 belowFenceBase,
-        uint64 aboveFenceBase
+        uint64 belowBase,
+        uint64 aboveBase
     ) public {
         lltv = bound(lltv, 0.3e18, 0.99e18);
         TrailingAnchorOracleBase.Parameters memory p;
         p.maxPriceAboveAnchor = uint64(bound(above, 1, 0.05e18));
         p.maxPriceBelowAnchor = uint64(bound(below, 1, 0.05e18));
-        p.maxAnchorBelowFenceBase = uint64(bound(belowFenceBase, 0, 0.5e18));
-        p.maxAnchorAboveFenceBase = uint64(bound(aboveFenceBase, 0, 0.5e18));
+        p.maxAnchorBelowBase = uint64(bound(belowBase, 0, 0.5e18));
+        p.maxAnchorAboveBase = uint64(bound(aboveBase, 0, 0.5e18));
 
         try harness.requireNavSizing(p, lltv) {
             assertTrue(_covers(p, lltv, 0, 4), "taken, so the corridor covers the liquidation");
@@ -696,55 +686,55 @@ contract OraclePreflightNavSizingTest is Test {
         harness.requireNavSizing(p, lltv);
     }
 
-    /// @dev Checks that `p`'s largest `maxAnchorAboveFenceBase` at `lltv` is about `expected`, that the preflight
+    /// @dev Checks that `p`'s largest `maxAnchorAboveBase` at `lltv` is about `expected`, that the preflight
     ///      takes it, and that it refuses one wei more and names the largest.
-    function _assertAboveFenceBaseEdge(
+    function _assertAboveBaseEdge(
         TrailingAnchorOracleBase.Parameters memory p,
         uint256 lltv,
         uint256 expected,
         string memory label
     ) internal {
-        uint256 largest = _largestAboveFenceBase(p, lltv);
+        uint256 largest = _largestAboveBase(p, lltv);
         assertApproxEqAbs(largest, expected, 0.00005e18, label);
-        p.maxAnchorAboveFenceBase = uint64(largest);
+        p.maxAnchorAboveBase = uint64(largest);
         harness.requireNavSizing(p, lltv);
-        p.maxAnchorAboveFenceBase = uint64(largest + 1);
+        p.maxAnchorAboveBase = uint64(largest + 1);
         vm.expectRevert(
             abi.encodeWithSelector(
-                OraclePreflight.NavCorridorTooWide.selector, p.maxAnchorBelowFenceBase, largest + 1, lltv, largest
+                OraclePreflight.NavCorridorTooWide.selector, p.maxAnchorBelowBase, largest + 1, lltv, largest
             )
         );
         harness.requireNavSizing(p, lltv);
     }
 
-    /// @dev The widest `maxAnchorAboveFenceBase` the sizing rule allows, from the spec's formula: the highest price the
+    /// @dev The widest `maxAnchorAboveBase` the sizing rule allows, from the spec's formula: the highest price the
     ///      oracle returns, the ceiling × (1 + maxPriceAboveAnchor), times LLTV × LIF must stay under the lowest, the
     ///      floor × (1 − maxPriceBelowAnchor), with LIF rounded down as the core rounds it, and every other step
     ///      rounded against the corridor.
-    function _largestAboveFenceBase(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
+    function _largestAboveBase(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
         internal
         pure
         returns (uint256)
     {
-        uint256 room = (WAD - p.maxAnchorBelowFenceBase) * (WAD - p.maxPriceBelowAnchor) / WAD;
-        uint256 needed = _neededAtTheFenceBase(p, lltv);
+        uint256 room = (WAD - p.maxAnchorBelowBase) * (WAD - p.maxPriceBelowAnchor) / WAD;
+        uint256 needed = _neededAtTheBasePrice(p, lltv);
         return room < needed ? 0 : room * WAD / needed - WAD;
     }
 
-    /// @dev The widest `maxAnchorBelowFenceBase` the sizing rule allows for `p`'s `maxAnchorAboveFenceBase`, from the
+    /// @dev The widest `maxAnchorBelowBase` the sizing rule allows for `p`'s `maxAnchorAboveBase`, from the
     ///      same formula.
-    function _largestBelowFenceBase(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
+    function _largestBelowBase(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
         internal
         pure
         returns (uint256)
     {
-        uint256 needed = _ceilDiv(_neededAtTheFenceBase(p, lltv) * (WAD + p.maxAnchorAboveFenceBase), WAD);
+        uint256 needed = _ceilDiv(_neededAtTheBasePrice(p, lltv) * (WAD + p.maxAnchorAboveBase), WAD);
         return WAD - _ceilDiv(needed * WAD, WAD - p.maxPriceBelowAnchor);
     }
 
-    /// @dev What the rule needs with the ceiling on the fence base price: LLTV × LIF × (1 + maxPriceAboveAnchor),
+    /// @dev What the rule needs with the ceiling on the base price: LLTV × LIF × (1 + maxPriceAboveAnchor),
     ///      with LIF rounded down as the core rounds it, and each other step rounded up.
-    function _neededAtTheFenceBase(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
+    function _neededAtTheBasePrice(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv)
         internal
         pure
         returns (uint256)
@@ -753,8 +743,8 @@ contract OraclePreflightNavSizingTest is Test {
         return _ceilDiv(_ceilDiv(lltv * lif, WAD) * (WAD + p.maxPriceAboveAnchor), WAD);
     }
 
-    /// @dev The sizing rule in whole numbers: (1 − below fence)(1 − below anchor) ≥ LLTV × LIF × (1 + above
-    ///      fence)(1 + above anchor), with LIF = 10 / (7 + 3 × LLTV), or 1.15 where that is higher, and both sides
+    /// @dev The sizing rule in whole numbers: (1 − below base)(1 − below anchor) ≥ LLTV × LIF × (1 + above
+    ///      base)(1 + above anchor), with LIF = 10 / (7 + 3 × LLTV), or 1.15 where that is higher, and both sides
     ///      multiplied through. `slackFor` wei of a whole price are added to the left side and `slackAgainst` taken
     ///      from it.
     function _covers(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv, uint256 slackAgainst, uint256 slackFor)
@@ -762,8 +752,8 @@ contract OraclePreflightNavSizingTest is Test {
         pure
         returns (bool)
     {
-        uint256 room = (WAD - p.maxAnchorBelowFenceBase) * (WAD - p.maxPriceBelowAnchor);
-        uint256 reach = (WAD + p.maxAnchorAboveFenceBase) * (WAD + p.maxPriceAboveAnchor);
+        uint256 room = (WAD - p.maxAnchorBelowBase) * (WAD - p.maxPriceBelowAnchor);
+        uint256 reach = (WAD + p.maxAnchorAboveBase) * (WAD + p.maxPriceAboveAnchor);
         room = room + slackFor * WAD - slackAgainst * WAD;
         if (10 * WAD * 100 > 115 * (7 * WAD + 3 * lltv)) return room * 100 * WAD >= 115 * lltv * reach;
         return room * (7 * WAD + 3 * lltv) >= 10 * lltv * reach;
@@ -786,8 +776,8 @@ contract OraclePreflightNavSizingTest is Test {
     }
 
     function _setLine(TrailingAnchorOracleBase.Parameters memory p, bool ceiling, uint256 value) internal pure {
-        if (ceiling) p.maxAnchorAboveFenceBase = uint64(value);
-        else p.maxAnchorBelowFenceBase = uint64(value);
+        if (ceiling) p.maxAnchorAboveBase = uint64(value);
+        else p.maxAnchorBelowBase = uint64(value);
     }
 
     function _ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {

@@ -116,18 +116,16 @@ library OracleConfigFile {
         cfg.seedMaxPrice = ConfigToml.requireUint(toml, string.concat(prefix, ".seed_max_price"));
         // All eight are required non-zero: the oracle's validator needs both bounds, the delay and the window, a zero
         // rate would leave the anchor unable to follow the source in that direction, and a zero
-        // `max_anchor_below_fence_base` or `max_anchor_above_fence_base` would leave every honest re-anchor under or
-        // over the fence base price to governance.
+        // `max_anchor_below_base` or `max_anchor_above_base` would leave every honest re-anchor under or
+        // over the base price to governance.
         cfg.parameters.maxPriceAboveAnchor = _requireUint64(toml, string.concat(prefix, ".max_price_above_anchor"));
         cfg.parameters.maxPriceBelowAnchor = _requireUint64(toml, string.concat(prefix, ".max_price_below_anchor"));
         cfg.parameters.maxAnchorContinuousRiseRate =
             _requireUint64(toml, string.concat(prefix, ".max_anchor_continuous_rise_rate"));
         cfg.parameters.maxAnchorContinuousFallRate =
             _requireUint64(toml, string.concat(prefix, ".max_anchor_continuous_fall_rate"));
-        cfg.parameters.maxAnchorBelowFenceBase =
-            _requireUint64(toml, string.concat(prefix, ".max_anchor_below_fence_base"));
-        cfg.parameters.maxAnchorAboveFenceBase =
-            _requireUint64(toml, string.concat(prefix, ".max_anchor_above_fence_base"));
+        cfg.parameters.maxAnchorBelowBase = _requireUint64(toml, string.concat(prefix, ".max_anchor_below_base"));
+        cfg.parameters.maxAnchorAboveBase = _requireUint64(toml, string.concat(prefix, ".max_anchor_above_base"));
         cfg.parameters.reanchorDelay = _requireUint40(toml, string.concat(prefix, ".reanchor_delay"));
         cfg.parameters.reanchorWindow = _requireUint40(toml, string.concat(prefix, ".reanchor_window"));
     }
@@ -219,12 +217,8 @@ library OracleConfigFile {
         s = string.concat(
             s, "max_anchor_continuous_fall_rate = \"", vm.toString(uint256(p.maxAnchorContinuousFallRate)), "\"\n"
         );
-        s = string.concat(
-            s, "max_anchor_below_fence_base = \"", vm.toString(uint256(p.maxAnchorBelowFenceBase)), "\"\n"
-        );
-        s = string.concat(
-            s, "max_anchor_above_fence_base = \"", vm.toString(uint256(p.maxAnchorAboveFenceBase)), "\"\n"
-        );
+        s = string.concat(s, "max_anchor_below_base = \"", vm.toString(uint256(p.maxAnchorBelowBase)), "\"\n");
+        s = string.concat(s, "max_anchor_above_base = \"", vm.toString(uint256(p.maxAnchorAboveBase)), "\"\n");
         s = string.concat(s, "reanchor_delay = ", vm.toString(uint256(p.reanchorDelay)), "\n");
         s = string.concat(s, "reanchor_window = ", vm.toString(uint256(p.reanchorWindow)), "\n");
         s = string.concat(s, "seed_min_price = \"", vm.toString(cfg.seedMinPrice), "\"\n");

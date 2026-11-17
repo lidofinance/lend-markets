@@ -55,10 +55,10 @@ library OraclePreflight {
     error OraclePriceOutOfConfiguredBounds(uint256 price, uint256 minPrice, uint256 maxPrice);
     error OraclePriceIsZero();
     /// @notice A position borrowed at `lltv` against the highest price the NAV oracle returns would not cover its debt
-    ///         and the liquidation incentive at the lowest. `largestAboveFenceBase` is the widest
-    ///         `maxAnchorAboveFenceBase` that would with this `maxAnchorBelowFenceBase`, zero when none would.
+    ///         and the liquidation incentive at the lowest. `largestAboveBase` is the widest
+    ///         `maxAnchorAboveBase` that would with this `maxAnchorBelowBase`, zero when none would.
     error NavCorridorTooWide(
-        uint256 maxAnchorBelowFenceBase, uint256 maxAnchorAboveFenceBase, uint256 lltv, uint256 largestAboveFenceBase
+        uint256 maxAnchorBelowBase, uint256 maxAnchorAboveBase, uint256 lltv, uint256 largestAboveBase
     );
     /// @notice The NAV oracle's `role` has `actual` holders, not the `expected` ones.
     error NavRoleHolderCountMismatch(bytes32 role, uint256 expected, uint256 actual);
@@ -213,8 +213,8 @@ library OraclePreflight {
         _requireUint(
             "max_anchor_continuous_fall_rate", p.maxAnchorContinuousFallRate, nav.maxAnchorContinuousFallRate()
         );
-        _requireUint("max_anchor_below_fence_base", p.maxAnchorBelowFenceBase, nav.maxAnchorBelowFenceBase());
-        _requireUint("max_anchor_above_fence_base", p.maxAnchorAboveFenceBase, nav.maxAnchorAboveFenceBase());
+        _requireUint("max_anchor_below_base", p.maxAnchorBelowBase, nav.maxAnchorBelowBase());
+        _requireUint("max_anchor_above_base", p.maxAnchorAboveBase, nav.maxAnchorAboveBase());
         _requireUint("reanchor_delay", p.reanchorDelay, nav.reanchorDelay());
         _requireUint("reanchor_window", p.reanchorWindow, nav.reanchorWindow());
         requireNavSizing(p, lltv);
@@ -247,23 +247,23 @@ library OraclePreflight {
     /// @notice The sizing rule, which the oracle cannot check because it does not know the market. A position borrowed
     ///         at `lltv` against the highest price the oracle returns, the ceiling × (1 + maxPriceAboveAnchor), must
     ///         still cover its debt and the core's liquidation incentive at the lowest, the floor × (1 −
-    ///         maxPriceBelowAnchor): (1 − maxAnchorBelowFenceBase)(1 − maxPriceBelowAnchor) ≥ lltv × LIF × (1 +
-    ///         maxAnchorAboveFenceBase)(1 + maxPriceAboveAnchor). LIF has the rounding of the core, and each other step
+    ///         maxPriceBelowAnchor): (1 − maxAnchorBelowBase)(1 − maxPriceBelowAnchor) ≥ lltv × LIF × (1 +
+    ///         maxAnchorAboveBase)(1 + maxPriceAboveAnchor). LIF has the rounding of the core, and each other step
     ///         rounds against the corridor.
     function requireNavSizing(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv) internal pure {
         uint256 incentive = Math.min(
             MAX_LIQUIDATION_INCENTIVE_FACTOR,
             MathLib.wDivDown(WAD, WAD - MathLib.wMulDown(LIQUIDATION_CURSOR, WAD - lltv))
         );
-        // What the upper bound needs with the ceiling on the fence base price, and the room the floor's lower bound
+        // What the upper bound needs with the ceiling on the base price, and the room the floor's lower bound
         // leaves.
         uint256 needed = Math.mulDiv(
             Math.mulDiv(lltv, incentive, WAD, Math.Rounding.Ceil), WAD + p.maxPriceAboveAnchor, WAD, Math.Rounding.Ceil
         );
-        uint256 room = Math.mulDiv(WAD - p.maxAnchorBelowFenceBase, WAD - p.maxPriceBelowAnchor, WAD);
-        if (room < Math.mulDiv(needed, WAD + p.maxAnchorAboveFenceBase, WAD, Math.Rounding.Ceil)) {
+        uint256 room = Math.mulDiv(WAD - p.maxAnchorBelowBase, WAD - p.maxPriceBelowAnchor, WAD);
+        if (room < Math.mulDiv(needed, WAD + p.maxAnchorAboveBase, WAD, Math.Rounding.Ceil)) {
             uint256 largest = room < needed ? 0 : Math.mulDiv(room, WAD, needed) - WAD;
-            revert NavCorridorTooWide(p.maxAnchorBelowFenceBase, p.maxAnchorAboveFenceBase, lltv, largest);
+            revert NavCorridorTooWide(p.maxAnchorBelowBase, p.maxAnchorAboveBase, lltv, largest);
         }
     }
 

@@ -7,7 +7,7 @@ The Trailing Anchor Oracle prices a market's collateral from a single price sour
 - `price()` returns the source's current price only while it is within the **bounds**, a narrow range around the anchor. Otherwise, or while the manager has suspended pricing, it reverts, and the market actions that need a price stop.
 - Anyone can call `updateAnchor()`, and a bot calls it periodically. While the price is within the bounds, the update moves the anchor toward it at no more than continuous **rates**: a **drift**.
 - An update records a price outside the bounds as a **pending anchor**. If the price stays outside for `reanchorDelay`, a later update moves the anchor toward it: a **re-anchor**. Until then `price()` reverts, which gives the markets time to stop before the move becomes their price.
-- The **floor** and the **ceiling**, the two lines, limit how far a wrong source can move the anchor. No update takes it below the floor, `maxAnchorBelowFenceBase` under `fenceBasePrice`, and no re-anchor takes it above the ceiling, `maxAnchorAboveFenceBase` over that price. `fenceBasePrice` is the first anchor or the last accepted price, and only drifts raise it. It is not a high-water mark: a re-anchor up can leave the anchor above it, up to the ceiling.
+- The **floor** and the **ceiling**, the two lines, limit how far a wrong source can move the anchor. No update takes it below the floor, `maxAnchorBelowBase` under `basePrice`, and no re-anchor takes it above the ceiling, `maxAnchorAboveBase` over that price. `basePrice` is the first anchor or the last accepted price, and only drifts raise it. It is not a high-water mark: a re-anchor up can leave the anchor above it, up to the ceiling.
 - Past these lines, or before the delay, the anchor moves only by the price acceptor's `acceptPrice`, which sets it to the current price. The manager can instead widen the bounds, which lets the price through without moving the anchor, or the lines, which a re-anchor reaches only after a new delay.
 
 Two things it does not stop. A wrong value within the bounds is returned at once. A wrong value that rises slowly, inside the bounds at every update, drags the anchor up at the rise rate, and the price with it; only monitoring catches that. [What a faulty source can do](#what-a-faulty-source-can-do) gives how far each can go.
@@ -50,14 +50,14 @@ Inside them, edges included, `price()` returns the current price. Outside them i
 
 ### The floor and the ceiling
 
-`fenceBasePrice`, here `H`, is the anchor `initialize` seeded or the last accepted price. Between acceptances only a drift up raises it: onto the new anchor when that passes `H`, or by the drift's step while the anchor already sits above `H`. A re-anchor never moves it, and it never falls by itself. The floor and the ceiling hang off it:
+`basePrice`, here `H`, is the anchor `initialize` seeded or the last accepted price. Between acceptances only a drift up raises it: onto the new anchor when that passes `H`, or by the drift's step while the anchor already sits above `H`. A re-anchor never moves it, and it never falls by itself. The floor and the ceiling hang off it:
 
 ```text
-floorPrice   = H − floor(H × maxAnchorBelowFenceBase / 1e18)
-ceilingPrice = H + floor(H × maxAnchorAboveFenceBase / 1e18)
+floorPrice   = H − floor(H × maxAnchorBelowBase / 1e18)
+ceilingPrice = H + floor(H × maxAnchorAboveBase / 1e18)
 ```
 
-The floor binds on the way down, once an update would take the anchor more than `maxAnchorBelowFenceBase` below `H`. The ceiling binds on the way up, once a re-anchor would take it more than `maxAnchorAboveFenceBase` above `H`; a drift is not held by it, since a drift raises `H` as it goes. Because re-anchors do not move `H`, each line caps the total of all re-anchors on its side, not each one. Were a re-anchor to raise `H`, each one the ceiling stopped would lift the ceiling by `maxAnchorAboveFenceBase`, and a source held above the bounds would climb by as much every delay.
+The floor binds on the way down, once an update would take the anchor more than `maxAnchorBelowBase` below `H`. The ceiling binds on the way up, once a re-anchor would take it more than `maxAnchorAboveBase` above `H`; a drift is not held by it, since a drift raises `H` as it goes. Because re-anchors do not move `H`, each line caps the total of all re-anchors on its side, not each one. Were a re-anchor to raise `H`, each one the ceiling stopped would lift the ceiling by `maxAnchorAboveBase`, and a source held above the bounds would climb by as much every delay.
 
 A line's bounds are the bounds around an anchor that sits on it. From `A` = `H` = 100, in % of the seed, with a floor 1% under `H`, a ceiling 0.2% over it, bounds of +0.05% and −0.1% and rates of 0.06 up and 0.01 down, the floor is 99 with bounds from 98.901 to 99.0495, and the ceiling is 100.2 with bounds from 100.0998 to 100.2501:
 
@@ -100,8 +100,8 @@ The examples use illustrative values, not any market's: bounds of +0.05% and −
 | `maxPriceBelowAnchor` | `uint64`, WAD fraction | `0 < x < 1e18` | lower bound below the anchor |
 | `maxAnchorContinuousRiseRate` | `uint64`, WAD continuous rate a year | `0 ≤ x ≤ 1e18` | how fast a drift may raise the anchor; zero stops it. In a year the anchor rises at most `e^x − 1`: 6.18% at `0.06e18`, for any schedule of updates |
 | `maxAnchorContinuousFallRate` | `uint64`, WAD continuous rate a year | `0 ≤ x ≤ 1e18` | how fast a drift may lower the anchor; zero stops it. In a year the anchor falls at most `1 − e^(−x)`: 0.995% at `0.01e18`, for any schedule of updates |
-| `maxAnchorBelowFenceBase` | `uint64`, WAD fraction | `0 ≤ x < 1e18` | how far below `fenceBasePrice` updates may take the anchor; zero stops every update from lowering it below that |
-| `maxAnchorAboveFenceBase` | `uint64`, WAD fraction | `0 ≤ x < 1e18` | how far above `fenceBasePrice` a re-anchor may take the anchor; zero stops every re-anchor from raising it above that |
+| `maxAnchorBelowBase` | `uint64`, WAD fraction | `0 ≤ x < 1e18` | how far below `basePrice` updates may take the anchor; zero stops every update from lowering it below that |
+| `maxAnchorAboveBase` | `uint64`, WAD fraction | `0 ≤ x < 1e18` | how far above `basePrice` a re-anchor may take the anchor; zero stops every re-anchor from raising it above that |
 | `reanchorDelay` | `uint40`, seconds | `x ≥ MIN_REANCHOR_DELAY` (1 hour), `e^(maxAnchorContinuousRiseRate × x / (1e18 × 365 days)) − 1 ≤ maxPriceAboveAnchor / 1e18` and `1 − e^(−maxAnchorContinuousFallRate × x / (1e18 × 365 days)) ≤ maxPriceBelowAnchor / 1e18` | how long a pending anchor waits before a re-anchor |
 | `reanchorWindow` | `uint40`, seconds | `x > 0` | how long after the delay a re-anchor may come before the pending anchor expires |
 
@@ -162,14 +162,14 @@ Each arrow is an update or the time passing. "Price within" and "price outside" 
 
 ### Rules
 
-With `A` the anchor price and `H` = `fenceBasePrice`, no update sets the anchor below `low`, and no re-anchor sets it above `high`:
+With `A` the anchor price and `H` = `basePrice`, no update sets the anchor below `low`, and no re-anchor sets it above `high`:
 
 ```text
 low  = min(floorPrice, A)
 high = max(ceilingPrice, A)
 ```
 
-The `min` and the `max` keep each line from moving an anchor already past it, as after the manager narrows `maxAnchorBelowFenceBase` or `maxAnchorAboveFenceBase`. A drift up from `A` to `A′` sets `H = max(H, A′ − max(A − H, 0))`. Besides drifts only `initialize` and `acceptPrice` change `H`.
+The `min` and the `max` keep each line from moving an anchor already past it, as after the manager narrows `maxAnchorBelowBase` or `maxAnchorAboveBase`. A drift up from `A` to `A′` sets `H = max(H, A′ − max(A − H, 0))`. Besides drifts only `initialize` and `acceptPrice` change `H`.
 
 **Drift.** With `t = block.timestamp − anchorAt`:
 
@@ -201,19 +201,19 @@ What follows:
 
 ## Setup and privileged actions
 
-`initialize(admin, parameters, minPrice, maxPrice)` stores the parameters as `setParameters` does, seeds the anchor and `fenceBasePrice` from the current price with `AnchorSet(price, block.timestamp, true)`, and grants `DEFAULT_ADMIN_ROLE` to `admin`. It reverts with `UnexpectedPrice(currentPrice, minPrice, maxPrice)` when the current price is outside `[minPrice, maxPrice]`, as `acceptPrice` does. Thus, a wrong source value at deployment causes a revert. No action writes a zero anchor, and no caller chooses the price: each reads the source.
+`initialize(admin, parameters, minPrice, maxPrice)` stores the parameters as `setParameters` does, seeds the anchor and `basePrice` from the current price with `AnchorSet(price, block.timestamp, true)`, and grants `DEFAULT_ADMIN_ROLE` to `admin`. It reverts with `UnexpectedPrice(currentPrice, minPrice, maxPrice)` when the current price is outside `[minPrice, maxPrice]`, as `acceptPrice` does. Thus, a wrong source value at deployment causes a revert. No action writes a zero anchor, and no caller chooses the price: each reads the source.
 
-**`acceptPrice(minPrice, maxPrice)`**, for `PRICE_ACCEPTOR_ROLE`, moves the anchor onto the current price at any distance, past the floor or the ceiling included. It sets `fenceBasePrice` to that price, drops the pending anchor and emits `AnchorSet(price, block.timestamp, true)`.
+**`acceptPrice(minPrice, maxPrice)`**, for `PRICE_ACCEPTOR_ROLE`, moves the anchor onto the current price at any distance, past the floor or the ceiling included. It sets `basePrice` to that price, drops the pending anchor and emits `AnchorSet(price, block.timestamp, true)`.
 
 - It reverts with `UnexpectedPrice(currentPrice, minPrice, maxPrice)` when the current price is outside `[minPrice, maxPrice]`, so a price that moved after the acceptor's check is refused. The range is its only binding: it has no deadline.
 - A reverting source makes it revert with the source's error, and a zero current price with `ZeroPrice`, inside the range or outside it.
 
-**`setParameters(parameters)`**, for `MANAGER_ROLE`, sets all eight parameters at once and drops the pending anchor, which restarts the delay of a waiting move even with unchanged values. The anchor and `fenceBasePrice` stay. It reverts with `InvalidParameters`, as `initialize` does, when a value is outside its range in [Parameters](#parameters). Each change applies in the same transaction:
+**`setParameters(parameters)`**, for `MANAGER_ROLE`, sets all eight parameters at once and drops the pending anchor, which restarts the delay of a waiting move even with unchanged values. The anchor and `basePrice` stay. It reverts with `InvalidParameters`, as `initialize` does, when a value is outside its range in [Parameters](#parameters). Each change applies in the same transaction:
 
 - a tighter bound can make `price()` revert at once, and a wider one let a price through with no pending anchor;
 - a new rate applies to the time since the anchor was last set, so a higher one lets the next drift go further, up to one bound;
-- a wider `maxAnchorBelowFenceBase` lowers the floor for the next update, and a narrower one leaves an anchor already below the new floor where it is;
-- a wider `maxAnchorAboveFenceBase` raises the ceiling for the next re-anchor, and a narrower one leaves an anchor already above the new ceiling where it is.
+- a wider `maxAnchorBelowBase` lowers the floor for the next update, and a narrower one leaves an anchor already below the new floor where it is;
+- a wider `maxAnchorAboveBase` raises the ceiling for the next re-anchor, and a narrower one leaves an anchor already above the new ceiling where it is.
 
 **`setPricingResumesAt(resumesAt)`**, for `MANAGER_ROLE`, makes `price()` revert until `resumesAt`. It reverts with `InvalidPricingResumesAt(resumesAt)` when that is more than `MAX_PRICING_SUSPENSION` (7 days) after the call. A time not in the future lifts the suspension, and each call overwrites the last, so repeated calls can keep pricing suspended. Updates and acceptances run during a suspension, so the anchor at its end may differ from the one at its start.
 
@@ -232,7 +232,7 @@ Each limit is the bound times its rate compounded continuously, for any schedule
 
 Through re-anchors:
 
-- **Upward**, a re-anchor stops at the ceiling, and a drift never takes the anchor above the ceiling. So at all times, short of an acceptance or a parameter change, `currentPrice ≤ H × (1 + maxAnchorAboveFenceBase / 1e18) × (1 + maxPriceAboveAnchor / 1e18)`, with `H` the current `fenceBasePrice`. At the examples' values, this limit is 0.25% over `H`. A re-anchor does not raise `H`. But while the anchor sits above `H`, a drift up raises `H` by its full step, so the ceiling rises faster than the anchor. Thus, a second re-anchor can go above `anchor0 × e^(maxAnchorContinuousRiseRate × T / (1e18 × 365 days))`: by about 0.0116% after a year at the top of the bounds, at the examples' values. `H` rises at most at `maxAnchorContinuousRiseRate × (1 + maxAnchorAboveFenceBase / 1e18)`, compounded continuously.
+- **Upward**, a re-anchor stops at the ceiling, and a drift never takes the anchor above the ceiling. So at all times, short of an acceptance or a parameter change, `currentPrice ≤ H × (1 + maxAnchorAboveBase / 1e18) × (1 + maxPriceAboveAnchor / 1e18)`, with `H` the current `basePrice`. At the examples' values, this limit is 0.25% over `H`. A re-anchor does not raise `H`. But while the anchor sits above `H`, a drift up raises `H` by its full step, so the ceiling rises faster than the anchor. Thus, a second re-anchor can go above `anchor0 × e^(maxAnchorContinuousRiseRate × T / (1e18 × 365 days))`: by about 0.0116% after a year at the top of the bounds, at the examples' values. `H` rises at most at `maxAnchorContinuousRiseRate × (1 + maxAnchorAboveBase / 1e18)`, compounded continuously.
 - **Downward**, drift and re-anchors stop at the floor, so however many delays pass, short of an acceptance, `currentPrice ≥ floorPrice × (1 − maxPriceBelowAnchor / 1e18)`: 1.1% under `H` at the examples' values.
 
 ## Market impact
@@ -244,7 +244,7 @@ A freeze stops borrowing but leaves liquidation and settlement running, and a pa
 > [!WARNING]
 > **A move past the bounds stops the price for a delay and then lands, upward at most on the ceiling and downward at most on the floor.**
 > - On a real fall, liquidations wait at least `reanchorDelay`. Lenders can withdraw free liquidity meanwhile at a share price that does not yet count the bad debt the later liquidations realize. A real fall past the floor's bounds, or a real rise past the ceiling's, waits for the price acceptor or the manager, and the priced actions with it.
-> - A faulty value that stays past the delay is priced the same way, up to its line. Upward, one past the ceiling's bounds keeps the price reverting, and one up to their top becomes the price: at most `maxAnchorAboveFenceBase` and the upper bound over `H`, which [the sizing rule](#choosing-values) covers. A freeze within the delay stops borrowing against it but not settlement, which then short-pays exiting lenders by up to that much. The re-anchor does not move `H`; the drifts that follow the value raise `H`, and the floor with it, by at most `maxPriceAboveAnchor` of the ceiling.
+> - A faulty value that stays past the delay is priced the same way, up to its line. Upward, one past the ceiling's bounds keeps the price reverting, and one up to their top becomes the price: at most `maxAnchorAboveBase` and the upper bound over `H`, which [the sizing rule](#choosing-values) covers. A freeze within the delay stops borrowing against it but not settlement, which then short-pays exiting lenders by up to that much. The re-anchor does not move `H`; the drifts that follow the value raise `H`, and the floor with it, by at most `maxPriceAboveAnchor` of the ceiling.
 > - Against a downward one above the floor's lower bound, once it has landed, only a pause or a pricing suspension stops liquidation and settlement, and it must hold until the source is fixed or the proxy admin upgrades the oracle to a working source.
 
 ## Choosing values
@@ -256,8 +256,8 @@ The contract does not check the sizing rule below. The deployment preflight chec
 | `maxPriceAboveAnchor`, `maxPriceBelowAnchor` | the largest honest move between two source values, plus how far the anchor lags a source faster than the rates | the move the markets can take with no delay, and the sizing rule below |
 | `maxAnchorContinuousRiseRate` | the asset's highest honest yield | close to that yield: it is the rate of a faulty creep |
 | `maxAnchorContinuousFallRate` | the fastest honest decline to follow without a stop | under `−ln(1 − maxPriceBelowAnchor) × 365 days / (reanchorDelay + the keeper's interval)` |
-| `maxAnchorBelowFenceBase` | the deepest honest fall from a high | the sizing rule below |
-| `maxAnchorAboveFenceBase` | the largest honest rise over `fenceBasePrice` that drifts do not follow | the sizing rule below |
+| `maxAnchorBelowBase` | the deepest honest fall from a high | the sizing rule below |
+| `maxAnchorAboveBase` | the largest honest rise over `basePrice` that drifts do not follow | the sizing rule below |
 | `reanchorDelay` | the time to pause the markets | how long the markets can go without liquidations, and under `ln(1 + maxPriceAboveAnchor) × 365 days / maxAnchorContinuousRiseRate` less the keeper's interval |
 | `reanchorWindow` | the keeper's interval | a few keeper intervals: until the window ends, a pending anchor that an unseen return left can stand in for a later move's delay |
 
@@ -266,11 +266,11 @@ Below the "At least" column, honest moves stop the price: a move past the bounds
 The sizing rule keeps a position borrowed at LLTV against the highest price the oracle returns, `ceilingPrice × (1 + maxPriceAboveAnchor)`, covering its debt and incentive in a full liquidation at the lowest one, `floorPrice × (1 − maxPriceBelowAnchor)`, with the parameters as plain fractions:
 
 ```text
-(1 − maxAnchorBelowFenceBase) × (1 − maxPriceBelowAnchor) ≥ LLTV × LIF × (1 + maxAnchorAboveFenceBase) × (1 + maxPriceAboveAnchor)
+(1 − maxAnchorBelowBase) × (1 − maxPriceBelowAnchor) ≥ LLTV × LIF × (1 + maxAnchorAboveBase) × (1 + maxPriceAboveAnchor)
 LIF = min(1.15, 1 / (1 − 0.3 × (1 − LLTV)))
 ```
 
-`LIF` is the core's liquidation incentive factor. `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` share one budget: at the examples' bounds and a 98% LLTV, a floor 1% under `H` leaves a ceiling at most 0.26% over it, and a 0.2% ceiling a floor at most 1.06% under it; with ±0.3% bounds at 92%, a 4% floor leaves 1.23%. The rule holds however the source grew before, since a position opens only at a price the oracle returned and `H` never falls without an acceptance. A narrower `maxAnchorBelowFenceBase` or `maxAnchorAboveFenceBase` leaves an anchor already past its new line where it is, and a position opened under wider bounds keeps its debt, so the rule must hold for the widest values of all four parameters set since the last acceptance. The contract checks only the values of each call. Interest that accrues while a market waits on a line eats into it, so keep some slack under the limit.
+`LIF` is the core's liquidation incentive factor. `maxAnchorBelowBase` and `maxAnchorAboveBase` share one budget: at the examples' bounds and a 98% LLTV, a floor 1% under `H` leaves a ceiling at most 0.26% over it, and a 0.2% ceiling a floor at most 1.06% under it; with ±0.3% bounds at 92%, a 4% floor leaves 1.23%. The rule holds however the source grew before, since a position opens only at a price the oracle returned and `H` never falls without an acceptance. A narrower `maxAnchorBelowBase` or `maxAnchorAboveBase` leaves an anchor already past its new line where it is, and a position opened under wider bounds keeps its debt, so the rule must hold for the widest values of all four parameters set since the last acceptance. The contract checks only the values of each call. Interest that accrues while a market waits on a line eats into it, so keep some slack under the limit.
 
 ## Invariants
 
@@ -291,9 +291,9 @@ The invariants hold for one storage namespace behind its proxy, from its `initia
 | I11 | `acceptPrice` moves the anchor only to a current price inside the range its caller passed |
 | I12 | Each adapter keeps its state in its own namespace, in the layout in [Interfaces and stored data](#interfaces-and-stored-data) |
 | I13 | No update sets the anchor below `min(floorPrice, anchor before the update)` |
-| I14 | `fenceBasePrice` changes only in `initialize` and `acceptPrice`, which set it to the price, and in a drift up from `A` to `A′`, which sets it to `max(H, A′ − max(A − H, 0))` |
+| I14 | `basePrice` changes only in `initialize` and `acceptPrice`, which set it to the price, and in a drift up from `A` to `A′`, which sets it to `max(H, A′ − max(A − H, 0))` |
 | I15 | Every `updateAnchor()` that does not revert returns the outcome of the case it took and emits it in exactly one `AnchorUpdated`, its last event |
-| I16 | Every update keeps `max(A′ − H′, 0) ≤ max(floor(H′ × maxAnchorAboveFenceBase / 1e18), max(A − H, 0))`, with `A` and `H` the anchor and `fenceBasePrice` before it and `A′` and `H′` after |
+| I16 | Every update keeps `max(A′ − H′, 0) ≤ max(floor(H′ × maxAnchorAboveBase / 1e18), max(A − H, 0))`, with `A` and `H` the anchor and `basePrice` before it and `A′` and `H′` after |
 
 ## Trust model
 
@@ -305,8 +305,8 @@ The invariants hold for one storage namespace behind its proxy, from its `initia
 | Anyone | call `updateAnchor()` and `price()`, and so pick when an update runs | nothing: an update takes only the source's own value and chooses only when a drift, a record or a re-anchor happens |
 | Keeper | call `updateAnchor()` after each change of the source and in each window | stop updating: drifts and re-anchors need updates, and short of the price acceptor and the manager, only an update drops a pending anchor a passing wrong value left. Without updates, a source that grows at a yield `g` leaves the upper bound after about `maxPriceAboveAnchor / g`, and `price()` reverts. Once the source is more than one bound above the ceiling, an update moves the anchor only onto the ceiling, and the market prices again only after `acceptPrice`, or after the manager widens the ceiling or the upper bound |
 | Block proposer | choose which block includes an update, and so the time it reads | nothing for safety: the time moves only the rates' reach, a pending anchor's delay and window, and the end of a suspension, by as long as a proposer can hold an update back |
-| `PRICE_ACCEPTOR_ROLE` | move the anchor to the current source price at any distance, past the floor or the ceiling included, inside a range it passes, at once, restarting `fenceBasePrice` there | pass a range it has not checked |
-| `MANAGER_ROLE` | set the bounds, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` up to almost a whole price, with no check of the sizing rule, the rise rate and the fall rate up to `1e18`, a rise of about 171.8% and a fall of about 63.2% a year, the delay down to an hour and the window, each at once; drop the pending anchor with any `setParameters` call, again and again; suspend pricing for up to 7 days per call, again and again, or lift the suspension | loosen the parameters until the checks mean nothing; or tighten them, suspend pricing or drop pending anchors again and again to stop the markets or keep a real move off the price |
+| `PRICE_ACCEPTOR_ROLE` | move the anchor to the current source price at any distance, past the floor or the ceiling included, inside a range it passes, at once, restarting `basePrice` there | pass a range it has not checked |
+| `MANAGER_ROLE` | set the bounds, `maxAnchorBelowBase` and `maxAnchorAboveBase` up to almost a whole price, with no check of the sizing rule, the rise rate and the fall rate up to `1e18`, a rise of about 171.8% and a fall of about 63.2% a year, the delay down to an hour and the window, each at once; drop the pending anchor with any `setParameters` call, again and again; suspend pricing for up to 7 days per call, again and again, or lift the suspension | loosen the parameters until the checks mean nothing; or tighten them, suspend pricing or drop pending anchors again and again to stop the markets or keep a real move off the price |
 | `DEFAULT_ADMIN_ROLE` | grant and revoke the roles | grant them to unvetted holders |
 | Market freezer and pauser | freeze or pause each market that reads the oracle | act slower than `reanchorDelay` |
 | Monitor, off-chain | watch `PendingAnchorSet`, `AnchorUpdated`, `price()` reverts and the anchor's moves | miss a pending anchor, whose delay counts from the record whether anyone saw it or not, or a creep at the rise rate, which no check in the contract stops |
@@ -341,9 +341,9 @@ The [API reference](api/trailing-anchor-oracle.md) gives every signature, with a
 
 | Value | Unit |
 |---|---|
-| current price, `anchorPrice`, `pendingAnchorPrice`, `fenceBasePrice`, bounds, floor, ceiling, the acceptance range, and the prices in errors and events | loan-token currency per collateral token, with `PRICE_DECIMALS` = 18 decimals |
+| current price, `anchorPrice`, `pendingAnchorPrice`, `basePrice`, bounds, floor, ceiling, the acceptance range, and the prices in errors and events | loan-token currency per collateral token, with `PRICE_DECIMALS` = 18 decimals |
 | `maxPriceAboveAnchor`, `maxPriceBelowAnchor` | fraction of the anchor price, WAD |
-| `maxAnchorBelowFenceBase`, `maxAnchorAboveFenceBase` | fraction of `fenceBasePrice`, WAD |
+| `maxAnchorBelowBase`, `maxAnchorAboveBase` | fraction of `basePrice`, WAD |
 | `maxAnchorContinuousRiseRate` | continuously compounded rate per 365-day year, WAD |
 | `maxAnchorContinuousFallRate` | continuously compounded rate per 365-day year, WAD |
 | `reanchorDelay`, `reanchorWindow` | seconds |
@@ -387,14 +387,14 @@ Each adapter stores its state at `erc7201("lido.lend.storage.<ContractName>")`, 
 | base + 1 | `anchorPrice` (`uint256`) |
 | base + 2 | `maxAnchorContinuousRiseRate` (`uint64`, 0–63), `maxAnchorContinuousFallRate` (`uint64`, 64–127), `reanchorDelay` (`uint40`, 128–167), `reanchorWindow` (`uint40`, 168–207), `pendingAnchorAt` (`uint40`, 208–247) |
 | base + 3 | `pendingAnchorPrice` (`uint256`) |
-| base + 4 | `maxAnchorBelowFenceBase` (`uint64`, 0–63), `maxAnchorAboveFenceBase` (`uint64`, 64–127) |
-| base + 5 | `fenceBasePrice` (`uint256`) |
+| base + 4 | `maxAnchorBelowBase` (`uint64`, 0–63), `maxAnchorAboveBase` (`uint64`, 64–127) |
+| base + 5 | `basePrice` (`uint256`) |
 
 Roles and the initializer flag live in OpenZeppelin's own namespaces (`openzeppelin.storage.AccessControl`, `openzeppelin.storage.AccessControlEnumerable` and `openzeppelin.storage.Initializable`), which every implementation behind the same proxy shares.
 
 ### Upgrades
 
-The implementation's constructor disables initializers and fixes the immutables: `PRICE_SCALE`, the source address and the adapter's own constants, such as `MAX_PRICE_AGE`. An upgrade to another implementation with the same storage namespace keeps the anchor, `fenceBasePrice`, the pending anchor, the suspension and the parameters, whatever its immutables: one bound to another source starts from the old anchor and any pending anchor the old source left, and one that changes the layout misreads them.
+The implementation's constructor disables initializers and fixes the immutables: `PRICE_SCALE`, the source address and the adapter's own constants, such as `MAX_PRICE_AGE`. An upgrade to another implementation with the same storage namespace keeps the anchor, `basePrice`, the pending anchor, the suspension and the parameters, whatever its immutables: one bound to another source starts from the old anchor and any pending anchor the old source left, and one that changes the layout misreads them.
 An upgrade must keep the adapter's namespace. An implementation with another one, such as the other adapter, reads empty storage, and that case is not supported.
 
 ## Related references

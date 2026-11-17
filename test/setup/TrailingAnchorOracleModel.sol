@@ -17,13 +17,13 @@ struct TrailingAnchorOracleState {
     uint256 pricingResumesAt;
     uint256 pendingAnchorPrice;
     uint256 pendingAnchorAt;
-    uint256 fenceBasePrice;
+    uint256 basePrice;
     uint256 maxPriceAboveAnchor;
     uint256 maxPriceBelowAnchor;
     uint256 maxAnchorContinuousRiseRate;
     uint256 maxAnchorContinuousFallRate;
-    uint256 maxAnchorBelowFenceBase;
-    uint256 maxAnchorAboveFenceBase;
+    uint256 maxAnchorBelowBase;
+    uint256 maxAnchorAboveBase;
     uint256 reanchorDelay;
     uint256 reanchorWindow;
 }
@@ -52,15 +52,15 @@ library TrailingAnchorOracleModel {
 
     /// @dev Working defaults: a USDY-sized 0.05% bound up and a wider 0.1% down; an anchor that may drift at a
     ///      continuous rate of 0.06 up and 0.01 down, 6.18% and 0.995% a year, a little above a treasury yield and
-    ///      well under it; a floor 1% under the fence base price and a ceiling 0.2% over it, inside the 0.26% at
+    ///      well under it; a floor 1% under the base price and a ceiling 0.2% over it, inside the 0.26% at
     ///      which a 98% LLTV position borrowed at the top of the ceiling's bounds stops covering its liquidation at
     ///      the bottom of the floor's; a six-hour delay and a one-day window.
     uint256 internal constant MAX_PRICE_ABOVE_ANCHOR = 0.0005e18;
     uint256 internal constant MAX_PRICE_BELOW_ANCHOR = 0.001e18;
     uint256 internal constant MAX_ANCHOR_CONTINUOUS_RISE_RATE = 0.06e18;
     uint256 internal constant MAX_ANCHOR_CONTINUOUS_FALL_RATE = 0.01e18;
-    uint256 internal constant MAX_ANCHOR_BELOW_FENCE_BASE = 0.01e18;
-    uint256 internal constant MAX_ANCHOR_ABOVE_FENCE_BASE = 0.002e18;
+    uint256 internal constant MAX_ANCHOR_BELOW_BASE = 0.01e18;
+    uint256 internal constant MAX_ANCHOR_ABOVE_BASE = 0.002e18;
     uint256 internal constant REANCHOR_DELAY = 6 hours;
     uint256 internal constant REANCHOR_WINDOW = 1 days;
 
@@ -74,8 +74,8 @@ library TrailingAnchorOracleModel {
             maxPriceBelowAnchor: uint64(MAX_PRICE_BELOW_ANCHOR),
             maxAnchorContinuousRiseRate: uint64(MAX_ANCHOR_CONTINUOUS_RISE_RATE),
             maxAnchorContinuousFallRate: uint64(MAX_ANCHOR_CONTINUOUS_FALL_RATE),
-            maxAnchorBelowFenceBase: uint64(MAX_ANCHOR_BELOW_FENCE_BASE),
-            maxAnchorAboveFenceBase: uint64(MAX_ANCHOR_ABOVE_FENCE_BASE),
+            maxAnchorBelowBase: uint64(MAX_ANCHOR_BELOW_BASE),
+            maxAnchorAboveBase: uint64(MAX_ANCHOR_ABOVE_BASE),
             reanchorDelay: uint40(REANCHOR_DELAY),
             reanchorWindow: uint40(REANCHOR_WINDOW)
         });
@@ -124,13 +124,13 @@ library TrailingAnchorOracleModel {
         s.pricingResumesAt = oracle.pricingResumesAt();
         s.pendingAnchorPrice = oracle.pendingAnchorPrice();
         s.pendingAnchorAt = oracle.pendingAnchorAt();
-        s.fenceBasePrice = oracle.fenceBasePrice();
+        s.basePrice = oracle.basePrice();
         s.maxPriceAboveAnchor = oracle.maxPriceAboveAnchor();
         s.maxPriceBelowAnchor = oracle.maxPriceBelowAnchor();
         s.maxAnchorContinuousRiseRate = oracle.maxAnchorContinuousRiseRate();
         s.maxAnchorContinuousFallRate = oracle.maxAnchorContinuousFallRate();
-        s.maxAnchorBelowFenceBase = oracle.maxAnchorBelowFenceBase();
-        s.maxAnchorAboveFenceBase = oracle.maxAnchorAboveFenceBase();
+        s.maxAnchorBelowBase = oracle.maxAnchorBelowBase();
+        s.maxAnchorAboveBase = oracle.maxAnchorAboveBase();
         s.reanchorDelay = oracle.reanchorDelay();
         s.reanchorWindow = oracle.reanchorWindow();
     }
@@ -140,7 +140,7 @@ library TrailingAnchorOracleModel {
     }
 
     /// @dev The state after `setParameters(parameters)`: the parameters stored and the pending anchor dropped; the
-    ///      anchor and the fence base price stay.
+    ///      anchor and the base price stay.
     function withParameters(TrailingAnchorOracleState memory s, TrailingAnchorOracleBase.Parameters memory parameters)
         internal
         pure
@@ -151,8 +151,8 @@ library TrailingAnchorOracleModel {
         next.maxPriceBelowAnchor = parameters.maxPriceBelowAnchor;
         next.maxAnchorContinuousRiseRate = parameters.maxAnchorContinuousRiseRate;
         next.maxAnchorContinuousFallRate = parameters.maxAnchorContinuousFallRate;
-        next.maxAnchorBelowFenceBase = parameters.maxAnchorBelowFenceBase;
-        next.maxAnchorAboveFenceBase = parameters.maxAnchorAboveFenceBase;
+        next.maxAnchorBelowBase = parameters.maxAnchorBelowBase;
+        next.maxAnchorAboveBase = parameters.maxAnchorAboveBase;
         next.reanchorDelay = parameters.reanchorDelay;
         next.reanchorWindow = parameters.reanchorWindow;
         next.pendingAnchorPrice = 0;
@@ -198,9 +198,9 @@ library TrailingAnchorOracleModel {
     // FLOOR
     // ---
 
-    /// @dev fenceBasePrice × (1 − maxAnchorBelowFenceBase), the distance term rounded down so the floor rounds up.
+    /// @dev basePrice × (1 − maxAnchorBelowBase), the distance term rounded down so the floor rounds up.
     function floor(TrailingAnchorOracleState memory s) internal pure returns (uint256) {
-        return s.fenceBasePrice - Math.mulDiv(s.fenceBasePrice, s.maxAnchorBelowFenceBase, WAD);
+        return s.basePrice - Math.mulDiv(s.basePrice, s.maxAnchorBelowBase, WAD);
     }
 
     /// @dev The lowest anchor an update may set: the floor, or the anchor when it already sits under the floor.
@@ -212,9 +212,9 @@ library TrailingAnchorOracleModel {
     // CEILING
     // ---
 
-    /// @dev fenceBasePrice × (1 + maxAnchorAboveFenceBase), the distance term rounded down.
+    /// @dev basePrice × (1 + maxAnchorAboveBase), the distance term rounded down.
     function ceiling(TrailingAnchorOracleState memory s) internal pure returns (uint256) {
-        return s.fenceBasePrice + Math.mulDiv(s.fenceBasePrice, s.maxAnchorAboveFenceBase, WAD);
+        return s.basePrice + Math.mulDiv(s.basePrice, s.maxAnchorAboveBase, WAD);
     }
 
     /// @dev The highest anchor a re-anchor may set: the ceiling, or the anchor when it already sits over the ceiling.
@@ -222,17 +222,17 @@ library TrailingAnchorOracleModel {
         return Math.max(ceiling(s), s.anchorPrice);
     }
 
-    /// @dev The fence base price after a drift to `newAnchorPrice`: max(H, A' − max(A − H, 0)) for a drift up, so
+    /// @dev The base price after a drift to `newAnchorPrice`: max(H, A' − max(A − H, 0)) for a drift up, so
     ///      the new anchor while the anchor sits at or under H, else H raised by the step and the gap a re-anchor left
     ///      above H kept. A drift down leaves it.
-    function raisedFenceBasePrice(TrailingAnchorOracleState memory s, uint256 newAnchorPrice)
+    function raisedBasePrice(TrailingAnchorOracleState memory s, uint256 newAnchorPrice)
         internal
         pure
         returns (uint256)
     {
-        if (newAnchorPrice <= s.anchorPrice) return s.fenceBasePrice;
-        uint256 gap = s.anchorPrice > s.fenceBasePrice ? s.anchorPrice - s.fenceBasePrice : 0;
-        return Math.max(s.fenceBasePrice, newAnchorPrice - gap);
+        if (newAnchorPrice <= s.anchorPrice) return s.basePrice;
+        uint256 gap = s.anchorPrice > s.basePrice ? s.anchorPrice - s.basePrice : 0;
+        return Math.max(s.basePrice, newAnchorPrice - gap);
     }
 
     // ---
@@ -379,7 +379,7 @@ library TrailingAnchorOracleModel {
     ///      - an open pending anchor that would take the anchor under the floor or over the ceiling moves it onto that
     ///        line, and one with the anchor already there changes nothing;
     ///      - any other price outside the bounds is recorded as the pending anchor.
-    ///      A drift up raises the fence base price by `raisedFenceBasePrice`, a re-anchor leaves it, and every call
+    ///      A drift up raises the base price by `raisedBasePrice`, a re-anchor leaves it, and every call
     ///      that does not revert returns the outcome of its case.
     function update(TrailingAnchorOracleState memory s, uint256 currentPrice, bool sourceDown, uint256 time)
         internal
@@ -410,7 +410,7 @@ library TrailingAnchorOracleModel {
         if (withinBounds(s, currentPrice)) {
             uint256 newAnchorPrice = drifted(s, currentPrice, time);
             if (newAnchorPrice != s.anchorPrice) {
-                n.fenceBasePrice = raisedFenceBasePrice(s, newAnchorPrice);
+                n.basePrice = raisedBasePrice(s, newAnchorPrice);
                 _setAnchor(n, u, newAnchorPrice, time);
             }
             _dropPendingAnchor(n, u);
@@ -451,7 +451,7 @@ library TrailingAnchorOracleModel {
         u.pendingAnchorSet = true;
     }
 
-    /// @dev Sets the anchor of `n` by an update, and marks the update. The fence base price is the caller's.
+    /// @dev Sets the anchor of `n` by an update, and marks the update. The base price is the caller's.
     function _setAnchor(
         TrailingAnchorOracleState memory n,
         TrailingAnchorOracleUpdate memory u,
@@ -491,7 +491,7 @@ library TrailingAnchorOracleModel {
         return "";
     }
 
-    /// @dev The state after a successful `acceptPrice()` at `time`: the fence base price restarts at the price.
+    /// @dev The state after a successful `acceptPrice()` at `time`: the base price restarts at the price.
     function accepted(TrailingAnchorOracleState memory s, uint256 currentPrice, uint256 time)
         internal
         pure
@@ -500,19 +500,19 @@ library TrailingAnchorOracleModel {
         next = copy(s);
         next.anchorPrice = currentPrice;
         next.anchorAt = time;
-        next.fenceBasePrice = currentPrice;
+        next.basePrice = currentPrice;
         next.pendingAnchorPrice = 0;
         next.pendingAnchorAt = 0;
     }
 
     /// @dev `InvalidParameters()`, or nothing: each bound above zero and below a whole price, each rate at most
-    ///      1e18, `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` below a whole price, a delay of at least an
+    ///      1e18, `maxAnchorBelowBase` and `maxAnchorAboveBase` below a whole price, a delay of at least an
     ///      hour in which each rate covers at most its bound, and a window above zero.
     function parametersRevert(TrailingAnchorOracleBase.Parameters memory p) internal pure returns (bytes memory) {
         bool valid = p.maxPriceAboveAnchor != 0 && p.maxPriceBelowAnchor != 0 && p.maxPriceAboveAnchor < WAD
             && p.maxPriceBelowAnchor < WAD && p.maxAnchorContinuousRiseRate <= WAD
-            && p.maxAnchorContinuousFallRate <= WAD && p.maxAnchorBelowFenceBase < WAD
-            && p.maxAnchorAboveFenceBase < WAD && p.reanchorDelay >= MIN_REANCHOR_DELAY && p.reanchorWindow != 0
+            && p.maxAnchorContinuousFallRate <= WAD && p.maxAnchorBelowBase < WAD && p.maxAnchorAboveBase < WAD
+            && p.reanchorDelay >= MIN_REANCHOR_DELAY && p.reanchorWindow != 0
             && compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay) <= p.maxPriceAboveAnchor
             && compoundedFall(p.maxAnchorContinuousFallRate, p.reanchorDelay) <= p.maxPriceBelowAnchor;
         if (valid) return "";
@@ -520,12 +520,12 @@ library TrailingAnchorOracleModel {
     }
 
     /// @dev The sizing rule a market at `lltv` needs, which the oracle does not check, from the spec formula: (1 −
-    ///      maxAnchorBelowFenceBase)(1 −
-    ///      maxPriceBelowAnchor) ≥ LLTV × LIF × (1 + maxAnchorAboveFenceBase)(1 + maxPriceAboveAnchor). LIF is the
+    ///      maxAnchorBelowBase)(1 −
+    ///      maxPriceBelowAnchor) ≥ LLTV × LIF × (1 + maxAnchorAboveBase)(1 + maxPriceAboveAnchor). LIF is the
     ///      `liquidationIncentive`. The rest is multiplied through in whole numbers, so nothing else is rounded.
     function sized(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv) internal pure returns (bool) {
-        uint256 lowest = (WAD - p.maxAnchorBelowFenceBase) * (WAD - p.maxPriceBelowAnchor);
-        uint256 highest = (WAD + p.maxAnchorAboveFenceBase) * (WAD + p.maxPriceAboveAnchor);
+        uint256 lowest = (WAD - p.maxAnchorBelowBase) * (WAD - p.maxPriceBelowAnchor);
+        uint256 highest = (WAD + p.maxAnchorAboveBase) * (WAD + p.maxPriceAboveAnchor);
         return lowest * WAD * WAD >= lltv * liquidationIncentive(lltv) * highest;
     }
 

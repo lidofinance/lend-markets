@@ -82,7 +82,7 @@ make deploy-protocol CONFIG=mainnet RUN=mainnet-weth-wsteth
 `nav-centrifuge`) from the config's constructor arguments, puts it behind an `OssifiableProxy` with
 the DAO Agent as admin, and initializes it from the live source with the config's `max_price_above_anchor`,
 `max_price_below_anchor`, `max_anchor_continuous_rise_rate`, `max_anchor_continuous_fall_rate`,
-`max_anchor_below_fence_base`, `max_anchor_above_fence_base`, `reanchor_delay` and `reanchor_window`. For `nav-centrifuge`, the constructor arguments include `max_price_age` in
+`max_anchor_below_base`, `max_anchor_above_base`, `reanchor_delay` and `reanchor_window`. For `nav-centrifuge`, the constructor arguments include `max_price_age` in
 seconds. The initialization reverts unless the live source price is inside the config's `seed_min_price` and
 `seed_max_price`, which are source prices with 18 decimals.
 
@@ -94,13 +94,13 @@ and
 The config reader refuses a zero value for `max_price_age`, the seed range and each of the eight parameters.
 
 The oracle does not check the sizing rule, because it does not know the LLTV of the market:
-`(1 − max_anchor_below_fence_base)(1 − max_price_below_anchor) ≥ LLTV × LIF × (1 + max_anchor_above_fence_base)(1 + max_price_above_anchor)`.
+`(1 − max_anchor_below_base)(1 − max_price_below_anchor) ≥ LLTV × LIF × (1 + max_anchor_above_base)(1 + max_price_above_anchor)`.
 The preflight of `deploy-market` checks the rule at the LLTV of the market.
 The manager must keep the rule in each later `setParameters` call.
 
 The reader does not check the width of the seed range.
 The config reviewer must check that `seed_min_price` and `seed_max_price` are a narrow range around the live source price.
-The seed price becomes the anchor and the fence base price, and the floor and the ceiling hang off it.
+The seed price becomes the anchor and the base price, and the floor and the ceiling hang off it.
 With a wide range, a wrong source price at deployment becomes the anchor, and the oracle returns prices around it.
 
 The deployer initializes as the temporary `DEFAULT_ADMIN_ROLE` holder, grants `MANAGER_ROLE` to

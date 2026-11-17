@@ -104,8 +104,8 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
             maxPriceBelowAnchor: uint64(s.maxPriceBelowAnchor),
             maxAnchorContinuousRiseRate: uint64(s.maxAnchorContinuousRiseRate),
             maxAnchorContinuousFallRate: uint64(s.maxAnchorContinuousFallRate),
-            maxAnchorBelowFenceBase: uint64(s.maxAnchorBelowFenceBase),
-            maxAnchorAboveFenceBase: uint64(s.maxAnchorAboveFenceBase),
+            maxAnchorBelowBase: uint64(s.maxAnchorBelowBase),
+            maxAnchorAboveBase: uint64(s.maxAnchorAboveBase),
             reanchorDelay: uint40(s.reanchorDelay),
             reanchorWindow: uint40(s.reanchorWindow)
         });
@@ -157,29 +157,29 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
         assertEq(handler.strayAnchorMoves(), 0, "an anchor move outside the rules");
     }
 
-    /// @dev No update sets the anchor under the floor, `maxAnchorBelowFenceBase` below the fence base price, unless the
+    /// @dev No update sets the anchor under the floor, `maxAnchorBelowBase` below the base price, unless the
     ///      anchor already sat under it.
     function invariant_anchorNeverUnderTheFloor() public view {
         assertEq(handler.floorBreaches(), 0, "an update moved the anchor under the floor");
     }
 
-    /// @dev No update leaves the anchor further over the fence base price than both `maxAnchorAboveFenceBase` of it and
+    /// @dev No update leaves the anchor further over the base price than both `maxAnchorAboveBase` of it and
     ///      its distance before the update: a re-anchor up stops on the ceiling, and a drift keeps the gap.
     function invariant_anchorNeverOverTheCeiling() public view {
         assertEq(handler.ceilingBreaches(), 0, "an update moved the anchor over the ceiling");
     }
 
-    /// @dev The stored fence base price follows its rule: the seed or the last acceptance, raised by each drift up and
-    ///      left by re-anchors. The anchor sits over it by at most `maxAnchorAboveFenceBase` of it, or by its gap at
-    ///      the last parameter change when a narrower `maxAnchorAboveFenceBase` left it higher.
-    function invariant_fenceBasePriceFollowsItsRule() public view {
-        uint256 fenceBase = oracle.fenceBasePrice();
-        assertEq(fenceBase, handler.expectedFenceBasePrice(), "fenceBasePrice");
+    /// @dev The stored base price follows its rule: the seed or the last acceptance, raised by each drift up and
+    ///      left by re-anchors. The anchor sits over it by at most `maxAnchorAboveBase` of it, or by its gap at
+    ///      the last parameter change when a narrower `maxAnchorAboveBase` left it higher.
+    function invariant_basePriceFollowsItsRule() public view {
+        uint256 basePrice = oracle.basePrice();
+        assertEq(basePrice, handler.expectedBasePrice(), "basePrice");
         uint256 anchor = oracle.anchorPrice();
-        uint256 gap = anchor > fenceBase ? anchor - fenceBase : 0;
+        uint256 gap = anchor > basePrice ? anchor - basePrice : 0;
         uint256 allowed =
-            Math.max(Math.mulDiv(fenceBase, oracle.maxAnchorAboveFenceBase(), WAD), handler.gapAtParameterChange());
-        assertLe(gap, allowed, "an anchor too far over the fence base price");
+            Math.max(Math.mulDiv(basePrice, oracle.maxAnchorAboveBase(), WAD), handler.gapAtParameterChange());
+        assertLe(gap, allowed, "an anchor too far over the base price");
     }
 
     /// @dev A parameter change never changes a returned price.

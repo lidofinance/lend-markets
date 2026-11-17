@@ -49,8 +49,8 @@ struct Parameters {
     uint64 maxPriceBelowAnchor;
     uint64 maxAnchorContinuousRiseRate;
     uint64 maxAnchorContinuousFallRate;
-    uint64 maxAnchorBelowFenceBase;
-    uint64 maxAnchorAboveFenceBase;
+    uint64 maxAnchorBelowBase;
+    uint64 maxAnchorAboveBase;
     uint40 reanchorDelay;
     uint40 reanchorWindow;
 }
@@ -253,7 +253,7 @@ function acceptPrice(uint256 minPrice, uint256 maxPrice) external;
 | `minPrice` | `uint256` | Lowest current price to accept, inclusive, with `PRICE_DECIMALS` decimals. |
 | `maxPrice` | `uint256` | Highest current price to accept, inclusive, with `PRICE_DECIMALS` decimals. |
 
-Sets the anchor and `fenceBasePrice` to the current price, at any distance from the old anchor, and drops the pending anchor. It ends a revert on the bounds without the delay. It is the only way to move the anchor past the floor or the ceiling.
+Sets the anchor and `basePrice` to the current price, at any distance from the old anchor, and drops the pending anchor. It ends a revert on the bounds without the delay. It is the only way to move the anchor past the floor or the ceiling.
 
 The call reverts if the current price is outside `minPrice` and `maxPrice`. Thus a price that changed after the caller checked it is not accepted.
 
@@ -277,10 +277,10 @@ Makes `price()` revert until `resumesAt`. Liquidations stop during that time, an
 function setParameters(Parameters calldata parameters) external;
 ```
 
-Sets all parameters and drops the pending anchor. The anchor and `fenceBasePrice` do not change. The call reverts unless:
+Sets all parameters and drops the pending anchor. The anchor and `basePrice` do not change. The call reverts unless:
 
 - each bound is above zero and below 1e18;
-- `maxAnchorBelowFenceBase` and `maxAnchorAboveFenceBase` are below 1e18;
+- `maxAnchorBelowBase` and `maxAnchorAboveBase` are below 1e18;
 - each rate is at most 1e18;
 - the delay is at least `MIN_REANCHOR_DELAY`, and the window is above zero;
 - a source that moves at a rate for one delay stays inside the bound on that side.
@@ -307,9 +307,9 @@ The oracle does not know the markets that read it, so it does not check the para
 | `reanchorWindow` | `uint40` | Seconds after the delay in which an update can re-anchor. After the window, the pending anchor expires: the next update drops it or records a new one. |
 | `pendingAnchorAt` | `uint40` | Time when the pending anchor was recorded. Zero means no pending anchor. |
 | `pendingAnchorPrice` | `uint256` | Price of the pending anchor, with `PRICE_DECIMALS` decimals. Zero means no pending anchor. |
-| `maxAnchorBelowFenceBase` | `uint64` | Floor: how far below `fenceBasePrice` an update can move the anchor, as a fraction of that price, WAD. 0.01e18 is 1%. |
-| `maxAnchorAboveFenceBase` | `uint64` | Ceiling: how far above `fenceBasePrice` a re-anchor can move the anchor, as a fraction of that price, WAD. 0.002e18 is 0.2%. |
-| `fenceBasePrice` | `uint256` | Price that the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals. It starts at the seed price, and `acceptPrice()` restarts it at the accepted price. A drift up raises it. A re-anchor does not change it, so a re-anchor up can leave the anchor above it, up to the ceiling. |
+| `maxAnchorBelowBase` | `uint64` | Floor: how far below `basePrice` an update can move the anchor, as a fraction of that price, WAD. 0.01e18 is 1%. |
+| `maxAnchorAboveBase` | `uint64` | Ceiling: how far above `basePrice` a re-anchor can move the anchor, as a fraction of that price, WAD. 0.002e18 is 0.2%. |
+| `basePrice` | `uint256` | Price that the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals. It starts at the seed price, and `acceptPrice()` restarts it at the accepted price. A drift up raises it. A re-anchor does not change it, so a re-anchor up can leave the anchor above it, up to the ceiling. |
 
 ## UsdyNavOracle
 
