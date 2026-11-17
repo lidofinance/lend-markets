@@ -34,7 +34,7 @@ The result of one `updateAnchor()` call:
 
 - `WithinBounds`: the price is inside the bounds. The anchor drifted toward it as far as the rates and the floor permit, and the pending anchor was dropped.
 - `PendingAnchorRecorded`: the price is outside the bounds, and it became the pending anchor.
-- `PendingAnchorHeld`: the held pending anchor is still in its delay. Nothing changed.
+- `PendingAnchorHeld`: the active pending anchor is still in its delay. Nothing changed.
 - `PendingAnchorApplied`: the anchor moved onto the pending anchor or the price, whichever is nearer, but not past the floor or the ceiling. A price still outside the new bounds became the next pending anchor.
 - `AnchorOnFloor`: the delay is over, but the anchor is on or below the floor. Nothing changed.
 - `AnchorOnCeiling`: the delay is over, but the anchor is on or above the ceiling. Nothing changed.
@@ -234,9 +234,9 @@ function updateAnchor() external returns (UpdateOutcome outcome);
 Updates the anchor from the current price. Anyone can call it in any block, also while `price()` reverts.
 
 - Price inside the bounds: the anchor drifts toward it, and the pending anchor is dropped.
-- Price outside the bounds with no held pending anchor: the price becomes the pending anchor.
-- Held pending anchor in its delay: nothing changes.
-- Held pending anchor after its delay: the anchor moves onto the pending anchor or the price, whichever is nearer. No update moves the anchor below the floor, and no re-anchor moves it above the ceiling. An anchor that is already past one of them does not move further past it.
+- Active pending anchor in its delay: nothing changes.
+- Active pending anchor after its delay: the anchor moves onto the pending anchor or the price, whichever is nearer.
+- Price outside the bounds with no active pending anchor: the price becomes the pending anchor. No update moves the anchor below the floor, and no re-anchor moves it above the ceiling. An anchor that is already past one of them does not move further past it.
 
 The call uses `block.timestamp`. A few seconds of validator skew change the drift limit, the delay and the window by those seconds.
 

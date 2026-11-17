@@ -54,7 +54,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///         - `WithinBounds`: the price is inside the bounds. The anchor drifted toward it as far as the rates and
     ///           the floor permit, and the pending anchor was dropped.
     ///         - `PendingAnchorRecorded`: the price is outside the bounds, and it became the pending anchor.
-    ///         - `PendingAnchorHeld`: the held pending anchor is still in its delay. Nothing changed.
+    ///         - `PendingAnchorHeld`: the active pending anchor is still in its delay. Nothing changed.
     ///         - `PendingAnchorApplied`: the anchor moved onto the pending anchor or the price, whichever is nearer,
     ///           but not past the floor or the ceiling. A price still outside the new bounds became the next pending
     ///           anchor.
@@ -252,10 +252,10 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @notice Updates the anchor from the current price. Anyone can call it in any block, also while `price()`
     ///         reverts.
     ///         - Price inside the bounds: the anchor drifts toward it, and the pending anchor is dropped.
-    ///         - Price outside the bounds with no held pending anchor: the price becomes the pending anchor.
-    ///         - Held pending anchor in its delay: nothing changes.
-    ///         - Held pending anchor after its delay: the anchor moves onto the pending anchor or the price,
+    ///         - Active pending anchor in its delay: nothing changes.
+    ///         - Active pending anchor after its delay: the anchor moves onto the pending anchor or the price,
     ///           whichever is nearer.
+    ///         - Price outside the bounds with no active pending anchor: the price becomes the pending anchor.
     ///
     ///         No update moves the anchor below the floor, and no re-anchor moves it above the ceiling. An anchor that
     ///         is already past one of them does not move further past it.
@@ -267,16 +267,16 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         if (currentPrice == 0) revert ZeroPrice();
 
         if (_isWithinBounds(currentPrice)) {
-            _moveAnchorTowards(currentPrice);
+            _drift(currentPrice);
             _clearPendingAnchor();
             outcome = UpdateOutcome.WithinBounds;
-        } else if (!_isPendingAnchorHeld(currentPrice)) {
+        } else if (_isPendingAnchorActive(currentPrice)) {
+            outcome = block.timestamp < uint256(pendingAnchorAt) + reanchorDelay
+                ? UpdateOutcome.PendingAnchorHeld
+                : _reanchor(currentPrice);
+        } else {
             _recordPendingAnchor(currentPrice);
             outcome = UpdateOutcome.PendingAnchorRecorded;
-        } else if (block.timestamp < uint256(pendingAnchorAt) + reanchorDelay) {
-            outcome = UpdateOutcome.PendingAnchorHeld;
-        } else {
-            outcome = _applyPendingAnchor(currentPrice);
         }
         emit AnchorUpdated(outcome, currentPrice);
     }
@@ -330,31 +330,26 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // PRIVATE
     // ---
 
-    /// @dev Drift. Moves the anchor toward `currentPrice`, limited by the rise or fall rate for the time since the
-    ///      anchor was last set. A move down stops at the floor. A move up raises `basePrice` by the part of
-    ///      the move above both the old anchor and that price, so the gap that a re-anchor up left between them
-    ///      stays the same. The caller passes a price inside the bounds, so one move does not go past a bound after
-    ///      a long rest.
-    function _moveAnchorTowards(uint256 currentPrice) private {
+    /// @dev Moves the anchor toward `currentPrice`, limited by the rise or fall rate for the time since the anchor
+    ///      was last set. A move down stops at the floor. The caller passes a price inside the bounds, so one move
+    ///      does not go past a bound after a long rest.
+    function _drift(uint256 currentPrice) private {
         uint256 anchor = anchorPrice;
         uint256 elapsed = block.timestamp - anchorAt;
-        // Nothing to move. The return keeps the call in the two slots that it has already read.
-        if (currentPrice == anchor || elapsed == 0) return;
-
-        uint256 newAnchorPrice;
+        uint256 newAnchorPrice = anchor;
         if (currentPrice > anchor) {
             uint256 rise = Math.mulDiv(anchor, _compoundedRise(maxAnchorContinuousRiseRate, elapsed), WAD);
             newAnchorPrice = Math.min(currentPrice, anchor + rise);
-            if (newAnchorPrice == anchor) return;
+            // `basePrice` rises by the part of the move above both the old anchor and `basePrice`. Thus the gap that
+            // a re-anchor up left above `basePrice` stays the same.
             uint256 base = basePrice;
             uint256 top = Math.max(anchor, base);
             if (newAnchorPrice > top) basePrice = SafeCast.toUint104(base + newAnchorPrice - top);
-        } else {
+        } else if (currentPrice < anchor) {
             uint256 fall = Math.mulDiv(anchor, _compoundedFall(maxAnchorContinuousFallRate, elapsed), WAD);
             newAnchorPrice = Math.max(currentPrice, Math.max(anchor - fall, _lowestAnchor()));
-            if (newAnchorPrice == anchor) return;
         }
-        _setAnchor(newAnchorPrice, false);
+        if (newAnchorPrice != anchor) _setAnchor(newAnchorPrice, false);
     }
 
     /// @dev e^(rate × elapsed / YEAR) − 1 from its first three Taylor terms, WAD, rounded down. The three terms are
@@ -396,17 +391,22 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         emit PendingAnchorSet(currentPrice, time);
     }
 
-    /// @dev Re-anchor, for a held pending anchor after its delay. Moves the anchor onto the pending anchor or
+    /// @dev Re-anchor, for an active pending anchor after its delay. Moves the anchor onto the pending anchor or
     ///      `currentPrice`, whichever is nearer, so the move is not larger than the recorded one. The move stops at
     ///      the floor or the ceiling. An anchor that is already on or past that line does not move. After a move,
     ///      `currentPrice` becomes the next pending anchor if it is still outside the bounds. If not, the pending
     ///      anchor is dropped.
-    function _applyPendingAnchor(uint256 currentPrice) private returns (UpdateOutcome) {
-        bool up = pendingAnchorPrice > anchorPrice;
-        uint256 newAnchorPrice = up
-            ? Math.min(Math.min(pendingAnchorPrice, currentPrice), _highestAnchor())
-            : Math.max(Math.max(pendingAnchorPrice, currentPrice), _lowestAnchor());
-        if (newAnchorPrice == anchorPrice) return up ? UpdateOutcome.AnchorOnCeiling : UpdateOutcome.AnchorOnFloor;
+    function _reanchor(uint256 currentPrice) private returns (UpdateOutcome) {
+        uint256 anchor = anchorPrice;
+        uint256 pending = pendingAnchorPrice;
+        uint256 newAnchorPrice;
+        if (pending > anchor) {
+            newAnchorPrice = Math.min(Math.min(pending, currentPrice), _highestAnchor());
+            if (newAnchorPrice == anchor) return UpdateOutcome.AnchorOnCeiling;
+        } else {
+            newAnchorPrice = Math.max(Math.max(pending, currentPrice), _lowestAnchor());
+            if (newAnchorPrice == anchor) return UpdateOutcome.AnchorOnFloor;
+        }
         _setAnchor(newAnchorPrice, false);
         if (_isWithinBounds(currentPrice)) _clearPendingAnchor();
         else _recordPendingAnchor(currentPrice);
@@ -415,7 +415,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
 
     /// @dev True if a pending anchor exists, has not expired, and is on the same side of the anchor as
     ///      `currentPrice`. The caller passes a price outside the bounds.
-    function _isPendingAnchorHeld(uint256 currentPrice) private view returns (bool) {
+    function _isPendingAnchorActive(uint256 currentPrice) private view returns (bool) {
         if (pendingAnchorAt == 0 || block.timestamp > uint256(pendingAnchorAt) + reanchorDelay + reanchorWindow) {
             return false;
         }

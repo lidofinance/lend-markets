@@ -1480,19 +1480,20 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         assertEq(uint256(vm.load(address(oracle), _slot(base, 4))), 0, "nothing in the fifth slot");
     }
 
-    /// @dev An update that has nothing to move reads the first two slots of the namespace only and writes none: a
-    ///      current price equal to the anchor, and a second update in the block of a move.
-    function test_updateAnchor_noMoveReadsTwoSlots() public {
+    /// @dev An update that has nothing to move writes no slot. A current price equal to the anchor reads the first
+    ///      two slots of the namespace only. A second update in the block of a move also reads the rates.
+    function test_updateAnchor_noMoveWritesNothing() public {
         vm.warp(START + 1 days);
-        _assertUpdateTouchesTwoSlots();
+        _assertUpdateReadsOnly(2);
 
         source.setCurrentPrice(_upper(INITIAL_PRICE));
         oracle.updateAnchor();
         assertGt(oracle.anchorPrice(), INITIAL_PRICE, "the anchor moved");
-        _assertUpdateTouchesTwoSlots();
+        _assertUpdateReadsOnly(3);
     }
 
-    function _assertUpdateTouchesTwoSlots() internal {
+    /// @dev Asserts that an update reads only the first `slotCount` slots of the namespace and writes none.
+    function _assertUpdateReadsOnly(uint256 slotCount) internal {
         bytes32 base = TrailingAnchorOracleModel.namespaceSlot(_namespace());
         uint256 anchorBefore = oracle.anchorPrice();
         vm.record();
@@ -1500,7 +1501,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         (bytes32[] memory reads, bytes32[] memory writes) = vm.accesses(address(oracle));
         for (uint256 i; i < reads.length; ++i) {
             if (reads[i] == IMPLEMENTATION_SLOT) continue;
-            assertLt(uint256(reads[i]) - uint256(base), 2, "a slot other than the first two");
+            assertLt(uint256(reads[i]) - uint256(base), slotCount, "a slot past the expected ones");
         }
         assertEq(writes.length, 0, "a write");
         assertEq(oracle.anchorPrice(), anchorBefore, "the anchor moved");
