@@ -3,7 +3,8 @@ pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 
-import {ForkTest} from "./helpers/ForkTest.sol";
+import {RecordedDeployment} from "../../script/deployment/RecordedDeployment.sol";
+import {DeploymentSnapshot} from "../../script/deployment/DeploymentTypes.sol";
 
 import {AddLendFactoriesOmnibus} from "../../script/vote/AddLendFactoriesOmnibus.sol";
 import {CallsScriptBuilder} from "../../script/vote/CallsScriptBuilder.sol";
@@ -59,7 +60,7 @@ contract EmptyFactoryStub {}
 /// @notice Executes the Add-Lend-Factories omnibus through the real Hoodi Aragon governance on a fork of a
 ///         deployed run, then asserts the resulting governance topology: the EVMScriptExecutor holds every
 ///         management capability and the legacy multisig participates only as one of the guardians.
-contract LendGovernanceVoteFork is Test, ForkTest {
+contract LendGovernanceVoteFork is Test {
     address internal constant VOTING = 0x49B3512c44891bef83F8967d075121Bd1b07a01B;
     address internal constant TOKEN_MANAGER = 0x8ab4a56721Ad8e68c6Ad86F9D9929782A78E39E5;
     address internal constant EASY_TRACK = 0x284D91a7D47850d21A6DEaaC6E538AC7E5E6fc2a;
@@ -76,23 +77,33 @@ contract LendGovernanceVoteFork is Test, ForkTest {
     address internal riskStewardDashboard;
     address internal core;
     address internal guardianSignals;
-    string[3] internal marketNames;
+    address[] internal controllers;
 
     address[] internal factories;
     bytes[] internal permissions;
 
     function setUp() public {
-        _fork();
+        if (bytes(vm.envOr("DEPLOYMENT_RUN", string(""))).length == 0) {
+            vm.skip(true, "governance vote requires an existing Hoodi deployment");
+        }
+        uint256 pin = vm.envOr("FORK_BLOCK", uint256(0));
+        if (pin == 0) vm.createSelectFork(vm.envString("RPC_URL"));
+        else vm.createSelectFork(vm.envString("RPC_URL"), pin);
         if (block.chainid != 560048) vm.skip(true, "hoodi governance only");
-        if (_protocol("agent") != AGENT) vm.skip(true, "run is not governed by the Hoodi DAO");
-        ownerFacade = _protocol("owner_facade");
-        irmRouter = _protocol("irm_router");
-        adaptiveCurveIrm = _protocol("adaptive_curve_irm");
-        circuitBreaker = _protocol("circuit_breaker");
-        riskStewardDashboard = _protocol("risk_steward_dashboard");
-        core = _protocol("core");
-        guardianSignals = _artifactAddr("guardians/hoodi-shared.toml", "guardian_signals.address");
-        marketNames = ["hoodi-weth-wsteth", "hoodi-usdt-usdy", "hoodi-usdc-usdy"];
+        DeploymentSnapshot memory d = RecordedDeployment.load(vm.envString("DEPLOYMENT_RUN"));
+        if (d.protocol.agent != AGENT) vm.skip(true, "run is not governed by the Hoodi DAO");
+        ownerFacade = d.protocol.ownerFacade;
+        irmRouter = d.protocol.irmRouter;
+        adaptiveCurveIrm = d.protocol.adaptiveCurveIrm;
+        circuitBreaker = d.protocol.circuitBreaker;
+        riskStewardDashboard = d.protocol.dashboard;
+        core = d.protocol.core;
+        require(d.markets.length != 0, "governance vote requires recorded markets");
+        guardianSignals = d.markets[0].contracts.guardianSignals;
+        for (uint256 i; i < d.markets.length; ++i) {
+            assertEq(d.markets[i].contracts.guardianSignals, guardianSignals, "Hoodi shared guardian registry");
+            controllers.push(d.markets[i].contracts.controller);
+        }
     }
 
     function test_addFactoriesVote_executesAndLeavesExecutorOnlyTopology() public {
@@ -208,8 +219,8 @@ contract LendGovernanceVoteFork is Test, ForkTest {
         assertEq(ICoreViews(core).proxy__getAdmin(), AGENT, "core proxy admin must be the agent");
         assertTrue(IManagedViews(irmRouter).owner() != MULTISIG, "multisig must not own the router");
 
-        for (uint256 i = 0; i < marketNames.length; ++i) {
-            address controller = _market(marketNames[i], "controller");
+        for (uint256 i = 0; i < controllers.length; ++i) {
+            address controller = controllers[i];
             _assertRoleFree(controller, "controller");
             _assertNamedRoleAbsent(controller, "MANAGER_ROLE", "controller");
             _assertNamedRoleAbsent(controller, "PAUSER_ROLE", "controller");

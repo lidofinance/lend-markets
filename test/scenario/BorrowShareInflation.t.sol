@@ -87,10 +87,14 @@ contract BorrowShareInflationTest is LidoLendSetup {
                 try m.core.borrow(m.params, 0, amt, attacker, attacker) {} catch {}
             } else if (r % 4 == 2) {
                 uint256 s = m.core.position(m.id, attacker).borrowShares;
-                if (s > 1) try m.core.repay(m.params, 0, 1 + (amt % (s - 1)), attacker, "") {} catch {}
+                if (s > 1) {
+                    try m.core.repay(m.params, 0, 1 + (amt % (s - 1)), attacker, "") {} catch {}
+                }
             } else {
                 uint256 tba = m.core.market(m.id).totalBorrowAssets;
-                if (tba > 0) try m.core.repay(m.params, 1 + (amt % tba), 0, attacker, "") {} catch {}
+                if (tba > 0) {
+                    try m.core.repay(m.params, 1 + (amt % tba), 0, attacker, "") {} catch {}
+                }
             }
 
             // Far below any legitimate short-chain total (a whale borrow mints ~amount*VS) and the ~1e38 uint128

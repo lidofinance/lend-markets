@@ -34,7 +34,7 @@ import {Random} from "./Random.sol";
 ///         scheduled time, and a slot of time passes after every move. Two ways to leave:
 ///         - repayment: borrowers repay, suppliers redeem, the market must empty exactly;
 ///         - forced exit: borrowers never repay, lenders leave through `fallbackExit` and are paid in collateral.
-///         The market is the default config, which mirrors `script/config/markets/weth-wsteth.toml`. The suites
+///         The market uses the shared default WETH/wstETH fixture. The suites
 ///         differ in decimals, price band and price walk, and each runs on the fixed and the adaptive IRM.
 ///         Long runs need `RUN_SOLVENCY_SIMULATION=true`.
 /// @dev The clock moves inside a transaction, so the activation inflow decays between moves, and a reduction gives

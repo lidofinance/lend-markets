@@ -77,7 +77,7 @@ contract LidoLendScenarioTest is ForkStack {
         _pokeAccrue(m); // fold in pending interest up front so exact totals / delta math below holds
 
         WETH_ADDRESS = address(m.loanToken);
-        STETH_ADDRESS = _ext("stEth");
+        STETH_ADDRESS = forkDeployment.stEth;
         WSTETH_ADDRESS = address(m.collateralToken);
         WETH = IWETH(WETH_ADDRESS);
         STETH = IStETH(STETH_ADDRESS);

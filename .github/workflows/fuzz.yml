@@ -1,12 +1,16 @@
 name: fuzz
 
-# Heavy fuzz/invariant suite. Runs on demand.
-# Kept off the PR path because high run counts slow down feedback.
+# Heavy fuzz/invariant suite.
 on:
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   fuzz:
@@ -21,20 +25,19 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      # The bundler suites deploy Bundler3 from the artifact this anchor produces; forge test does not build script/.
-      - name: build Bundler3 anchor
-        run: forge build script/Bundler3Anchor.sol
+      - name: build deployment dependencies
+        run: make build-deps
 
       - name: deep fuzz (10000 runs)
         env:
           FOUNDRY_FUZZ_RUNS: '10000'
-        run: forge test --match-test 'testFuzz_'
+        run: forge test --no-match-path 'test/{fork,deployment}/**' --match-test 'testFuzz_'
 
       - name: invariant (longer than default)
         env:
           FOUNDRY_INVARIANT_RUNS: '4096'
           FOUNDRY_INVARIANT_DEPTH: '64'
-        run: forge test --match-test 'invariant_'
+        run: forge test --no-match-path 'test/{fork,deployment}/**' --match-test 'invariant_'
 
       - name: solvency simulations (365 days)
         run: make test-simulation

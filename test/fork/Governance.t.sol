@@ -183,7 +183,7 @@ abstract contract GovernanceForkBase is ForkMarketStack {
         _seedLenderAndBorrower();
         address recipient = _freshActor(deployed, "governance.feeRecipient");
         uint256 feeBefore = deployed.core.market(deployed.id).fee;
-        uint256 fee = 0.1e18;
+        uint256 fee = 0.05e18;
         require(fee != feeBefore, "Governance: pick a fee the market does not already carry");
 
         vm.startPrank(executor);
