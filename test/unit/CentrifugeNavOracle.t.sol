@@ -56,7 +56,7 @@ contract CentrifugeNavOracleTest is Test {
     }
 
     function testRevert_constructor_zeroMaxPriceAge() public {
-        vm.expectRevert(CentrifugeNavOracle.ZeroMaxPriceAge.selector);
+        vm.expectRevert(CentrifugeNavOracle.MaxPriceAgeIsZero.selector);
         new CentrifugeNavOracle(address(spoke), JTRSY_POOL, JTRSY_SC, 0, address(usdc), address(jtrsy));
     }
 

@@ -272,15 +272,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     }
 
     /// @notice Updates the anchor from the current price. Anyone can call it in any block, also while `price()`
-    ///         reverts.
-    ///         - Price inside the bounds: the anchor drifts toward it, and the pending anchor is dropped.
-    ///         - Active pending anchor in its delay: nothing changes.
-    ///         - Active pending anchor after its delay: the anchor moves onto the pending anchor or the price,
-    ///           whichever is nearer.
-    ///         - Price outside the bounds with no active pending anchor: the price becomes the pending anchor.
-    ///
-    ///         No update moves the anchor below the floor, and no re-anchor moves it above the ceiling. An anchor that
-    ///         is already past one of them does not move further past it.
+    ///         reverts. The returned outcome tells what changed.
     /// @dev The call uses `block.timestamp`. A few seconds of validator skew change the drift limit, the delay and
     ///      the window by those seconds.
     /// @return outcome The result of the call.
@@ -324,13 +316,8 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         emit PricingResumesAtSet(resumesAt);
     }
 
-    /// @notice Sets all parameters and drops the pending anchor. The anchor and `basePrice` do not change. The
-    ///         call reverts unless:
-    ///         - each bound is above zero and below 1e18;
-    ///         - `maxAnchorBelowBase` and `maxAnchorAboveBase` are below 1e18;
-    ///         - each rate is at most 1e18;
-    ///         - the delay is at least `MIN_REANCHOR_DELAY`, and the window is above zero;
-    ///         - a source that moves at a rate for one delay stays inside the bound on that side.
+    /// @notice Sets all parameters and drops the pending anchor. The anchor and `basePrice` do not change. The call
+    ///         reverts if a value is outside its range. Each check has its own error.
     /// @dev The oracle does not know the markets that read it, so it does not check the parameters against their
     ///      LLTV. The manager must keep this rule for each market: a position borrowed at the LLTV against the highest
     ///      price still covers its debt and the liquidation incentive at the lowest price.
@@ -438,10 +425,10 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @dev True if a pending anchor exists, has not expired, and is on the same side of the anchor as
     ///      `currentPrice`. The caller passes a price outside the bounds.
     function _isPendingAnchorActive(uint256 currentPrice) private view returns (bool) {
-        if (pendingAnchorAt == 0 || block.timestamp > uint256(pendingAnchorAt) + reanchorDelay + reanchorWindow) {
-            return false;
-        }
-        return (pendingAnchorPrice > anchorPrice) == (currentPrice > anchorPrice);
+        uint256 recordedAt = pendingAnchorAt;
+        if (recordedAt == 0 || block.timestamp > recordedAt + reanchorDelay + reanchorWindow) return false;
+        uint256 anchor = anchorPrice;
+        return (pendingAnchorPrice > anchor) == (currentPrice > anchor);
     }
 
     /// @dev True if `currentPrice` is inside the bounds. The two bounds are inclusive.

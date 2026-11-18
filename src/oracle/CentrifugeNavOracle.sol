@@ -46,7 +46,7 @@ contract CentrifugeNavOracle layout at erc7201("lido.lend.storage.CentrifugeNavO
     /// @notice The token of the share class on the Spoke is not the collateral token.
     error ShareTokenMismatch(address shareToken, address collateralToken);
     /// @notice `maxPriceAge` is zero.
-    error ZeroMaxPriceAge();
+    error MaxPriceAgeIsZero();
     /// @notice The Spoke computed the share price at `computedAt`, which is more than `MAX_PRICE_AGE` ago.
     error StalePrice(uint64 computedAt);
     /// @notice The Spoke gives the share price the time `computedAt`, which is after the block time.
@@ -66,7 +66,7 @@ contract CentrifugeNavOracle layout at erc7201("lido.lend.storage.CentrifugeNavO
         address collateralToken
     ) TrailingAnchorOracleBase(loanToken, collateralToken) {
         if (spoke == address(0)) revert ZeroAddress();
-        if (maxPriceAge == 0) revert ZeroMaxPriceAge();
+        if (maxPriceAge == 0) revert MaxPriceAgeIsZero();
         address shareToken = ICentrifugeSpoke(spoke).shareToken(poolId, scId);
         if (shareToken != collateralToken) revert ShareTokenMismatch(shareToken, collateralToken);
         SPOKE = ICentrifugeSpoke(spoke);

@@ -368,7 +368,7 @@ The constructor reverts with `UnsupportedDecimals` when `36 + loanDecimals < col
 
 `CentrifugeNavOracle` passes `checkValidity = false`, because the Spoke's own maximum age is unbounded on the deployed pools. The adapter adds its own checks:
 
-- The constructor reverts with `ZeroMaxPriceAge` on a zero `maxPriceAge`.
+- The constructor reverts with `MaxPriceAgeIsZero` on a zero `maxPriceAge`.
 - The constructor reverts with `ShareTokenMismatch(shareToken, collateralToken)` when the Spoke's `shareToken(poolId, scId)` is not the collateral token.
 - Each price read reverts with `StalePrice(computedAt)` when `block.timestamp − computedAt > MAX_PRICE_AGE`. Thus, `price()`, `updateAnchor()`, `acceptPrice()` and `initialize` revert on an old price.
 - Each price read reverts with `PriceFromFuture(computedAt)` when `computedAt > block.timestamp`. The issuer supplies `computedAt`, so it can be later than the block time.
