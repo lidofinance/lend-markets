@@ -505,18 +505,74 @@ library TrailingAnchorOracleModel {
         next.pendingAnchorAt = 0;
     }
 
-    /// @dev `InvalidParameters()`, or nothing: each bound above zero and below a whole price, each rate at most
-    ///      1e18, `maxAnchorBelowBase` and `maxAnchorAboveBase` below a whole price, a delay of at least an
-    ///      hour in which each rate covers at most its bound, and a window above zero.
+    /// @dev The error of the first rule that `p` breaks, or nothing. The rules, in order: each bound above zero and
+    ///      below a whole price, `maxAnchorBelowBase` and `maxAnchorAboveBase` below a whole price, each rate at
+    ///      most 1e18, a delay of at least an hour, a window above zero, and each rate that covers at most its bound
+    ///      in one delay.
     function parametersRevert(TrailingAnchorOracleBase.Parameters memory p) internal pure returns (bytes memory) {
-        bool valid = p.maxPriceAboveAnchor != 0 && p.maxPriceBelowAnchor != 0 && p.maxPriceAboveAnchor < WAD
-            && p.maxPriceBelowAnchor < WAD && p.maxAnchorContinuousRiseRate <= WAD
-            && p.maxAnchorContinuousFallRate <= WAD && p.maxAnchorBelowBase < WAD && p.maxAnchorAboveBase < WAD
-            && p.reanchorDelay >= MIN_REANCHOR_DELAY && p.reanchorWindow != 0
-            && compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay) <= p.maxPriceAboveAnchor
-            && compoundedFall(p.maxAnchorContinuousFallRate, p.reanchorDelay) <= p.maxPriceBelowAnchor;
-        if (valid) return "";
-        return abi.encodeWithSelector(TrailingAnchorOracleBase.InvalidParameters.selector);
+        if (p.maxPriceAboveAnchor == 0) {
+            return abi.encodeWithSelector(TrailingAnchorOracleBase.MaxPriceAboveAnchorIsZero.selector);
+        }
+        if (p.maxPriceBelowAnchor == 0) {
+            return abi.encodeWithSelector(TrailingAnchorOracleBase.MaxPriceBelowAnchorIsZero.selector);
+        }
+        if (p.maxPriceAboveAnchor >= WAD) {
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.MaxPriceAboveAnchorNotBelowWad.selector, p.maxPriceAboveAnchor
+            );
+        }
+        if (p.maxPriceBelowAnchor >= WAD) {
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.MaxPriceBelowAnchorNotBelowWad.selector, p.maxPriceBelowAnchor
+            );
+        }
+        if (p.maxAnchorBelowBase >= WAD) {
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.MaxAnchorBelowBaseNotBelowWad.selector, p.maxAnchorBelowBase
+            );
+        }
+        if (p.maxAnchorAboveBase >= WAD) {
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.MaxAnchorAboveBaseNotBelowWad.selector, p.maxAnchorAboveBase
+            );
+        }
+        if (p.maxAnchorContinuousRiseRate > WAD) {
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.MaxAnchorContinuousRiseRateExceedsWad.selector, p.maxAnchorContinuousRiseRate
+            );
+        }
+        if (p.maxAnchorContinuousFallRate > WAD) {
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.MaxAnchorContinuousFallRateExceedsWad.selector, p.maxAnchorContinuousFallRate
+            );
+        }
+        if (p.reanchorDelay < MIN_REANCHOR_DELAY) {
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.ReanchorDelayBelowMinReanchorDelay.selector,
+                p.reanchorDelay,
+                MIN_REANCHOR_DELAY
+            );
+        }
+        if (p.reanchorWindow == 0) {
+            return abi.encodeWithSelector(TrailingAnchorOracleBase.ReanchorWindowIsZero.selector);
+        }
+        uint256 riseOverDelay = compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay);
+        if (riseOverDelay > p.maxPriceAboveAnchor) {
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.RiseOverDelayExceedsMaxPriceAboveAnchor.selector,
+                riseOverDelay,
+                p.maxPriceAboveAnchor
+            );
+        }
+        uint256 fallOverDelay = compoundedFall(p.maxAnchorContinuousFallRate, p.reanchorDelay);
+        if (fallOverDelay > p.maxPriceBelowAnchor) {
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.FallOverDelayExceedsMaxPriceBelowAnchor.selector,
+                fallOverDelay,
+                p.maxPriceBelowAnchor
+            );
+        }
+        return "";
     }
 
     /// @dev The sizing rule a market at `lltv` needs, which the oracle does not check, from the spec formula: (1 −

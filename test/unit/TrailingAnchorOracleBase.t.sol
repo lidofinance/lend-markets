@@ -192,9 +192,9 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
     /// @dev `initialize` validates as `setParameters` does: every invalid case of the validator test refuses it.
     function testRevert_initialize_invalidParameters() public {
         address impl = _newImplementation(address(loan));
-        TrailingAnchorOracleBase.Parameters[] memory cases = _invalidParameters();
+        (TrailingAnchorOracleBase.Parameters[] memory cases, bytes[] memory errors) = _invalidParameters();
         for (uint256 i; i < cases.length; ++i) {
-            vm.expectRevert(TrailingAnchorOracleBase.InvalidParameters.selector);
+            vm.expectRevert(errors[i]);
             new OssifiableProxy(impl, admin, TrailingAnchorOracleModel.initializeCall(admin, cases[i]));
         }
     }
@@ -407,7 +407,13 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         oracle.setParameters(p);
         p.maxPriceAboveAnchor = 10_000_050_000_165;
         vm.prank(manager);
-        vm.expectRevert(TrailingAnchorOracleBase.InvalidParameters.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.RiseOverDelayExceedsMaxPriceAboveAnchor.selector,
+                10_000_050_000_166,
+                10_000_050_000_165
+            )
+        );
         oracle.setParameters(p);
     }
 
@@ -424,7 +430,14 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         oracle.setParameters(p);
         p.maxAnchorContinuousFallRate = 182_591_310_886_608_673;
         vm.prank(manager);
-        vm.expectRevert(TrailingAnchorOracleBase.InvalidParameters.selector);
+        // Over 48 hours this rate falls 0.001e18 + 1 wei, one wei past the bound.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.FallOverDelayExceedsMaxPriceBelowAnchor.selector,
+                0.001e18 + 1,
+                MAX_PRICE_BELOW_ANCHOR
+            )
+        );
         oracle.setParameters(p);
     }
 
@@ -1431,10 +1444,10 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         _setParameters(p);
         p.maxAnchorAboveBase = uint64(WAD - 1);
         _setParameters(p);
-        TrailingAnchorOracleBase.Parameters[] memory cases = _invalidParameters();
+        (TrailingAnchorOracleBase.Parameters[] memory cases, bytes[] memory errors) = _invalidParameters();
         for (uint256 i; i < cases.length; ++i) {
             vm.prank(manager);
-            vm.expectRevert(TrailingAnchorOracleBase.InvalidParameters.selector);
+            vm.expectRevert(errors[i]);
             oracle.setParameters(cases[i]);
         }
     }
@@ -1679,11 +1692,16 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         return basePrice + Math.mulDiv(basePrice, MAX_ANCHOR_ABOVE_BASE, WAD);
     }
 
-    /// @dev One parameter past its range in each case: a zero bound, a bound at a whole price, a rate over 1e18, a
-    ///      delay under an hour or longer than a rate takes to cover its bound, a zero window, and a
-    ///      `maxAnchorBelowBase` or `maxAnchorAboveBase` of a whole price.
-    function _invalidParameters() internal pure returns (TrailingAnchorOracleBase.Parameters[] memory cases) {
+    /// @dev One parameter past its range in each case, with the error that names that parameter: a zero bound, a
+    ///      bound at a whole price, a rate over 1e18, a delay under an hour or longer than a rate takes to cover its
+    ///      bound, a zero window, and a `maxAnchorBelowBase` or `maxAnchorAboveBase` of a whole price.
+    function _invalidParameters()
+        internal
+        pure
+        returns (TrailingAnchorOracleBase.Parameters[] memory cases, bytes[] memory errors)
+    {
         cases = new TrailingAnchorOracleBase.Parameters[](12);
+        errors = new bytes[](12);
         for (uint256 i; i < cases.length; ++i) {
             cases[i] = TrailingAnchorOracleModel.defaultParameters();
         }
@@ -1706,8 +1724,33 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         cases[10].maxAnchorAboveBase = uint64(WAD);
         cases[11].maxAnchorContinuousRiseRate = 0;
         cases[11].reanchorDelay = uint40(LONGEST_DELAY_FOR_FALL + 1);
+
+        errors[0] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxPriceAboveAnchorIsZero.selector);
+        errors[1] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxPriceBelowAnchorIsZero.selector);
+        errors[2] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxPriceAboveAnchorNotBelowWad.selector, WAD);
+        errors[3] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxPriceBelowAnchorNotBelowWad.selector, WAD);
+        errors[4] =
+            abi.encodeWithSelector(TrailingAnchorOracleBase.MaxAnchorContinuousRiseRateExceedsWad.selector, WAD + 1);
+        errors[5] =
+            abi.encodeWithSelector(TrailingAnchorOracleBase.MaxAnchorContinuousFallRateExceedsWad.selector, WAD + 1);
+        errors[6] = abi.encodeWithSelector(
+            TrailingAnchorOracleBase.ReanchorDelayBelowMinReanchorDelay.selector, 1 hours - 1, 1 hours
+        );
+        errors[7] = abi.encodeWithSelector(TrailingAnchorOracleBase.ReanchorWindowIsZero.selector);
+        errors[8] = abi.encodeWithSelector(
+            TrailingAnchorOracleBase.RiseOverDelayExceedsMaxPriceAboveAnchor.selector,
+            TrailingAnchorOracleModel.compoundedRise(MAX_ANCHOR_CONTINUOUS_RISE_RATE, LONGEST_DELAY_FOR_RISE + 1),
+            MAX_PRICE_ABOVE_ANCHOR
+        );
+        errors[9] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxAnchorBelowBaseNotBelowWad.selector, WAD);
+        errors[10] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxAnchorAboveBaseNotBelowWad.selector, WAD);
+        errors[11] = abi.encodeWithSelector(
+            TrailingAnchorOracleBase.FallOverDelayExceedsMaxPriceBelowAnchor.selector,
+            TrailingAnchorOracleModel.compoundedFall(MAX_ANCHOR_CONTINUOUS_FALL_RATE, LONGEST_DELAY_FOR_FALL + 1),
+            MAX_PRICE_BELOW_ANCHOR
+        );
         for (uint256 i; i < cases.length; ++i) {
-            assertGt(TrailingAnchorOracleModel.parametersRevert(cases[i]).length, 0, "the model refuses the case");
+            assertEq(TrailingAnchorOracleModel.parametersRevert(cases[i]), errors[i], "the model gives the error");
         }
     }
 

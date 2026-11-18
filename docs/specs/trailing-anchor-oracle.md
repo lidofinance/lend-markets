@@ -208,7 +208,7 @@ What follows:
 - It reverts with `UnexpectedPrice(currentPrice, minPrice, maxPrice)` when the current price is outside `[minPrice, maxPrice]`, so a price that moved after the acceptor's check is refused. The range is its only binding: it has no deadline.
 - A reverting source makes it revert with the source's error, and a zero current price with `ZeroPrice`, inside the range or outside it.
 
-**`setParameters(parameters)`**, for `MANAGER_ROLE`, sets all eight parameters at once and drops the pending anchor, which restarts the delay of a waiting move even with unchanged values. The anchor and `basePrice` stay. It reverts with `InvalidParameters`, as `initialize` does, when a value is outside its range in [Parameters](#parameters). Each change applies in the same transaction:
+**`setParameters(parameters)`**, for `MANAGER_ROLE`, sets all eight parameters at once and drops the pending anchor, which restarts the delay of a waiting move even with unchanged values. The anchor and `basePrice` stay. It reverts, as `initialize` does, when a value is outside its range in [Parameters](#parameters). Each check has its own error, which carries the values that failed it. Each change applies in the same transaction:
 
 - a tighter bound can make `price()` revert at once, and a wider one let a price through with no pending anchor;
 - a new rate applies to the time since the anchor was last set, so a higher one lets the next drift go further, up to one bound;

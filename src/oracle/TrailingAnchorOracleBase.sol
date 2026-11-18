@@ -106,8 +106,30 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     error ZeroAddress();
     /// @notice The token decimals give a negative exponent for `PRICE_SCALE`.
     error UnsupportedDecimals(uint256 loanDecimals, uint256 collateralDecimals);
-    /// @notice A parameter is outside the range that `setParameters()` permits.
-    error InvalidParameters();
+    /// @notice `maxPriceAboveAnchor` is zero.
+    error MaxPriceAboveAnchorIsZero();
+    /// @notice `maxPriceBelowAnchor` is zero.
+    error MaxPriceBelowAnchorIsZero();
+    /// @notice `maxPriceAboveAnchor` is 1e18 or more.
+    error MaxPriceAboveAnchorNotBelowWad(uint256 maxPriceAboveAnchor);
+    /// @notice `maxPriceBelowAnchor` is 1e18 or more.
+    error MaxPriceBelowAnchorNotBelowWad(uint256 maxPriceBelowAnchor);
+    /// @notice `maxAnchorBelowBase` is 1e18 or more.
+    error MaxAnchorBelowBaseNotBelowWad(uint256 maxAnchorBelowBase);
+    /// @notice `maxAnchorAboveBase` is 1e18 or more.
+    error MaxAnchorAboveBaseNotBelowWad(uint256 maxAnchorAboveBase);
+    /// @notice `maxAnchorContinuousRiseRate` is more than 1e18.
+    error MaxAnchorContinuousRiseRateExceedsWad(uint256 maxAnchorContinuousRiseRate);
+    /// @notice `maxAnchorContinuousFallRate` is more than 1e18.
+    error MaxAnchorContinuousFallRateExceedsWad(uint256 maxAnchorContinuousFallRate);
+    /// @notice `reanchorDelay` is shorter than `MIN_REANCHOR_DELAY`.
+    error ReanchorDelayBelowMinReanchorDelay(uint256 reanchorDelay, uint256 minReanchorDelay);
+    /// @notice `reanchorWindow` is zero.
+    error ReanchorWindowIsZero();
+    /// @notice A source that rises at the rise rate for one delay goes above the upper bound.
+    error RiseOverDelayExceedsMaxPriceAboveAnchor(uint256 riseOverDelay, uint256 maxPriceAboveAnchor);
+    /// @notice A source that falls at the fall rate for one delay goes below the lower bound.
+    error FallOverDelayExceedsMaxPriceBelowAnchor(uint256 fallOverDelay, uint256 maxPriceBelowAnchor);
     /// @notice `resumesAt` is more than `MAX_PRICING_SUSPENSION` after the current time.
     error InvalidPricingResumesAt(uint40 resumesAt);
     /// @notice The source returned a zero price.
@@ -267,13 +289,13 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         if (currentPrice == 0) revert ZeroPrice();
 
         if (_isWithinBounds(currentPrice)) {
-            _drift(currentPrice);
+            _moveAnchorTowards(currentPrice);
             _clearPendingAnchor();
             outcome = UpdateOutcome.WithinBounds;
         } else if (_isPendingAnchorActive(currentPrice)) {
             outcome = block.timestamp < uint256(pendingAnchorAt) + reanchorDelay
                 ? UpdateOutcome.PendingAnchorHeld
-                : _reanchor(currentPrice);
+                : _applyPendingAnchor(currentPrice);
         } else {
             _recordPendingAnchor(currentPrice);
             outcome = UpdateOutcome.PendingAnchorRecorded;
@@ -333,7 +355,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @dev Moves the anchor toward `currentPrice`, limited by the rise or fall rate for the time since the anchor
     ///      was last set. A move down stops at the floor. The caller passes a price inside the bounds, so one move
     ///      does not go past a bound after a long rest.
-    function _drift(uint256 currentPrice) private {
+    function _moveAnchorTowards(uint256 currentPrice) private {
         uint256 anchor = anchorPrice;
         uint256 elapsed = block.timestamp - anchorAt;
         uint256 newAnchorPrice = anchor;
@@ -396,7 +418,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///      the floor or the ceiling. An anchor that is already on or past that line does not move. After a move,
     ///      `currentPrice` becomes the next pending anchor if it is still outside the bounds. If not, the pending
     ///      anchor is dropped.
-    function _reanchor(uint256 currentPrice) private returns (UpdateOutcome) {
+    function _applyPendingAnchor(uint256 currentPrice) private returns (UpdateOutcome) {
         uint256 anchor = anchorPrice;
         uint256 pending = pendingAnchorPrice;
         uint256 newAnchorPrice;
@@ -468,18 +490,31 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
 
     /// @dev Checks the parameters as `setParameters()` describes, stores them and drops the pending anchor.
     function _setParameters(Parameters calldata p) private {
-        if (p.maxPriceAboveAnchor == 0 || p.maxPriceBelowAnchor == 0) revert InvalidParameters();
-        if (p.maxPriceAboveAnchor >= WAD || p.maxPriceBelowAnchor >= WAD) revert InvalidParameters();
-        if (p.maxAnchorBelowBase >= WAD || p.maxAnchorAboveBase >= WAD) revert InvalidParameters();
-        if (p.maxAnchorContinuousRiseRate > WAD || p.maxAnchorContinuousFallRate > WAD) revert InvalidParameters();
-        if (p.reanchorDelay < MIN_REANCHOR_DELAY || p.reanchorWindow == 0) revert InvalidParameters();
+        if (p.maxPriceAboveAnchor == 0) revert MaxPriceAboveAnchorIsZero();
+        if (p.maxPriceBelowAnchor == 0) revert MaxPriceBelowAnchorIsZero();
+        if (p.maxPriceAboveAnchor >= WAD) revert MaxPriceAboveAnchorNotBelowWad(p.maxPriceAboveAnchor);
+        if (p.maxPriceBelowAnchor >= WAD) revert MaxPriceBelowAnchorNotBelowWad(p.maxPriceBelowAnchor);
+        if (p.maxAnchorBelowBase >= WAD) revert MaxAnchorBelowBaseNotBelowWad(p.maxAnchorBelowBase);
+        if (p.maxAnchorAboveBase >= WAD) revert MaxAnchorAboveBaseNotBelowWad(p.maxAnchorAboveBase);
+        if (p.maxAnchorContinuousRiseRate > WAD) {
+            revert MaxAnchorContinuousRiseRateExceedsWad(p.maxAnchorContinuousRiseRate);
+        }
+        if (p.maxAnchorContinuousFallRate > WAD) {
+            revert MaxAnchorContinuousFallRateExceedsWad(p.maxAnchorContinuousFallRate);
+        }
+        if (p.reanchorDelay < MIN_REANCHOR_DELAY) {
+            revert ReanchorDelayBelowMinReanchorDelay(p.reanchorDelay, MIN_REANCHOR_DELAY);
+        }
+        if (p.reanchorWindow == 0) revert ReanchorWindowIsZero();
         // A source that moves at a rate must stay inside its bound for one delay. If not, each re-anchor stops short
         // of the price and records a new pending anchor.
-        if (_compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay) > p.maxPriceAboveAnchor) {
-            revert InvalidParameters();
+        uint256 riseOverDelay = _compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay);
+        if (riseOverDelay > p.maxPriceAboveAnchor) {
+            revert RiseOverDelayExceedsMaxPriceAboveAnchor(riseOverDelay, p.maxPriceAboveAnchor);
         }
-        if (_compoundedFall(p.maxAnchorContinuousFallRate, p.reanchorDelay) > p.maxPriceBelowAnchor) {
-            revert InvalidParameters();
+        uint256 fallOverDelay = _compoundedFall(p.maxAnchorContinuousFallRate, p.reanchorDelay);
+        if (fallOverDelay > p.maxPriceBelowAnchor) {
+            revert FallOverDelayExceedsMaxPriceBelowAnchor(fallOverDelay, p.maxPriceBelowAnchor);
         }
 
         maxPriceAboveAnchor = p.maxPriceAboveAnchor;

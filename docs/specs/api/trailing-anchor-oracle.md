@@ -126,13 +126,101 @@ error UnsupportedDecimals(uint256 loanDecimals, uint256 collateralDecimals);
 
 The token decimals give a negative exponent for `PRICE_SCALE`.
 
-#### `InvalidParameters`
+#### `MaxPriceAboveAnchorIsZero`
 
 ```solidity
-error InvalidParameters();
+error MaxPriceAboveAnchorIsZero();
 ```
 
-A parameter is outside the range that `setParameters()` permits.
+`maxPriceAboveAnchor` is zero.
+
+#### `MaxPriceBelowAnchorIsZero`
+
+```solidity
+error MaxPriceBelowAnchorIsZero();
+```
+
+`maxPriceBelowAnchor` is zero.
+
+#### `MaxPriceAboveAnchorNotBelowWad`
+
+```solidity
+error MaxPriceAboveAnchorNotBelowWad(uint256 maxPriceAboveAnchor);
+```
+
+`maxPriceAboveAnchor` is 1e18 or more.
+
+#### `MaxPriceBelowAnchorNotBelowWad`
+
+```solidity
+error MaxPriceBelowAnchorNotBelowWad(uint256 maxPriceBelowAnchor);
+```
+
+`maxPriceBelowAnchor` is 1e18 or more.
+
+#### `MaxAnchorBelowBaseNotBelowWad`
+
+```solidity
+error MaxAnchorBelowBaseNotBelowWad(uint256 maxAnchorBelowBase);
+```
+
+`maxAnchorBelowBase` is 1e18 or more.
+
+#### `MaxAnchorAboveBaseNotBelowWad`
+
+```solidity
+error MaxAnchorAboveBaseNotBelowWad(uint256 maxAnchorAboveBase);
+```
+
+`maxAnchorAboveBase` is 1e18 or more.
+
+#### `MaxAnchorContinuousRiseRateExceedsWad`
+
+```solidity
+error MaxAnchorContinuousRiseRateExceedsWad(uint256 maxAnchorContinuousRiseRate);
+```
+
+`maxAnchorContinuousRiseRate` is more than 1e18.
+
+#### `MaxAnchorContinuousFallRateExceedsWad`
+
+```solidity
+error MaxAnchorContinuousFallRateExceedsWad(uint256 maxAnchorContinuousFallRate);
+```
+
+`maxAnchorContinuousFallRate` is more than 1e18.
+
+#### `ReanchorDelayBelowMinReanchorDelay`
+
+```solidity
+error ReanchorDelayBelowMinReanchorDelay(uint256 reanchorDelay, uint256 minReanchorDelay);
+```
+
+`reanchorDelay` is shorter than `MIN_REANCHOR_DELAY`.
+
+#### `ReanchorWindowIsZero`
+
+```solidity
+error ReanchorWindowIsZero();
+```
+
+`reanchorWindow` is zero.
+
+#### `RiseOverDelayExceedsMaxPriceAboveAnchor`
+
+```solidity
+error RiseOverDelayExceedsMaxPriceAboveAnchor(uint256 riseOverDelay, uint256 maxPriceAboveAnchor);
+```
+
+A source that rises at the rise rate for one delay goes above the upper bound.
+
+#### `FallOverDelayExceedsMaxPriceBelowAnchor`
+
+```solidity
+error FallOverDelayExceedsMaxPriceBelowAnchor(uint256 fallOverDelay, uint256 maxPriceBelowAnchor);
+```
+
+A source that falls at the fall rate for one delay goes below the lower bound.
 
 #### `InvalidPricingResumesAt`
 
