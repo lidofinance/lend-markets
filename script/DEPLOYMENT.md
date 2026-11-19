@@ -10,7 +10,7 @@ Easy Track motion. This repository does not deploy Easy Track or its executor.
 - `MarketDeployment`: market creation, price-feed proxy deployment/validation and address output.
 - `WethWstethMarket` at the start of `mainnet/DeployWethWsteth.s.sol`: shared WETH/wstETH parameters and price-feed functions.
 - `ProtocolDeployer._deployExitBooks`: independent exit-book deployment.
-- `PeripheryDeployment`: bundler and Vault V2 helpers.
+- `PeripheryDeployment`: bundler deployment.
 
 The concrete `.s.sol` files inherit `Script` and the shared operations they use. Only these entrypoints contain
 `run()` and `startBroadcast`/`stopBroadcast`. Fork fixtures inherit the shared recipe class; only the runnable class inherits `Script` and exposes `run()`.
@@ -78,7 +78,7 @@ successful Forge receipts and deployed code. `ExitBooks.sol` and `Bundler.sol` i
 recorded addresses. New deployment inputs stay in the scripts; recorded expectations stay in `artifacts/`.
 
 `script/deployment/<run>/artifacts/Deployment.sol` provides `snapshot()`, returning a `DeploymentSnapshot`:
-protocol addresses, expected parameters, optional books/bundler/vaults and the recorded markets. Mainnet and
+protocol addresses, expected parameters, optional books/bundler and the recorded markets. Mainnet and
 Hoodi descriptions are checked in. Add a market's actual addresses and deployment block after deployment;
 keep its approved parameters in its Solidity recipe. Each market carries its price-feed sources and optional
 collateral blocklist; token addresses belong to its market parameters. Do not infer expected values from the contracts being tested.
@@ -108,8 +108,8 @@ make test-fork RUN=<run> PREPARE=false RPC_URL=<deployment-rpc>
 make test-deployment RPC_URL=<mainnet-archive-rpc>
 ```
 
-Without command-line `RUN`, `test-fork` creates a fresh protocol, two WETH/wstETH markets, books, bundler and
-Vault V2 inside each suite's Forge fork. No Anvil, artifact directory or shell provisioning is required.
+Without command-line `RUN`, `test-fork` creates a fresh protocol, two WETH/wstETH markets, books and bundler
+inside each suite's Forge fork. No Anvil, artifact directory or shell provisioning is required.
 With `RUN`, it reads the Solidity description, prepares missing/inert markets, and tests the resulting private state.
 With `PREPARE=false`, it tests existing state without preparing it. `RUN` and `PREPARE` from `.env` or the
 shell environment do not select the mode. Make sets `DEPLOYMENT_RUN` and `PREPARE_MARKETS` internally.
@@ -130,6 +130,10 @@ against their post-vote RPC after supplying and registering a Solidity descripti
 The regression action starts Anvil at the caller's post-vote block with `--fork-state-by-number` for Hardhat
 compatibility, runs the Forge suites against Anvil, and stops it on exit.
 Callers using the old TOML export must migrate before using this branch.
+
+Morpho Vault V2 is an external integration example, not a deployment resource of this project. Its fork test
+creates a disposable vault through Morpho's onchain factory and deploys an unaudited test-only adapter.
+See [the integration example](../test/fork/helpers/README.md) for prerequisites, scope and limitations.
 
 Verify an inert or activated deployment independently:
 

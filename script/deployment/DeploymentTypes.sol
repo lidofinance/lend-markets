@@ -102,8 +102,6 @@ struct RecordedMarket {
     MarketParameters parameters;
     MarketDeploymentResult contracts;
     address collateralBlocklist;
-    address vaultV2;
-    address adapter;
 }
 
 struct DeploymentSnapshot {
@@ -130,15 +128,4 @@ struct BundlerAddresses {
     address bundler;
     address generalAdapter;
     address vaultAdapter;
-}
-
-struct VaultV2Parameters {
-    string name;
-    address owner;
-    address asset;
-}
-
-struct VaultV2Addresses {
-    address vault;
-    address adapter;
 }

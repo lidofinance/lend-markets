@@ -21,6 +21,8 @@
   deployment without preparation; `make test-fork RUN=<run>` prepares its missing/inert WETH/wstETH markets.
   Only Make command-line `RUN` and `PREPARE` select these modes; environment and `.env` values are ignored.
   Make sets `DEPLOYMENT_RUN` and `PREPARE_MARKETS` internally. No source-node transactions or artifact writes.
+  The Morpho Vault V2 example creates its own vault through Morpho's onchain factory on the fork
+  (`test/fork/helpers/README.md`).
 - `test/deployment/`: Solidity deployment scenarios run by CI, selected by the `deployment` Foundry profile.
   Prepares missing/inert markets inside its own Forge fork using the shared deployment functions;
   never writes to the source RPC and is excluded from default/local/recorded-deployment fork suites.
@@ -58,7 +60,7 @@
 - Build: `forge build --force`.
 - All tests (local + fork): `make test` requires `RPC_URL`; ordinary fork suites prepare their own stack.
 - Fresh mainnet integrations and acceptance: `make test-fork RPC_URL=<archive-rpc>`. No Anvil,
-  shell provisioning or test TOML configs. The fixture has two WETH/wstETH markets, books, bundler and Vault V2;
+  shell provisioning or test TOML configs. The fixture has two WETH/wstETH markets, books and bundler;
   USDY is currently omitted. `FORK_BLOCK` pins the fork.
 - Existing run, without preparation: `make test-fork RUN=<run> PREPARE=false RPC_URL=<rpc>`; historical Mainnet and Hoodi
   deployments have Solidity descriptions. Missing recorded contracts fail rather than trigger redeployment.

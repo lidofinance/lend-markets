@@ -22,6 +22,9 @@ gas_limit = "18446744073709551615"
 # forge 1.8 defaults to isolate = true, which makes every top-level test call its own transaction; the
 # same-transaction activation-inflow tests need the whole test to be one.
 isolate = false
+# An isolated suite runs each top-level call as its own transaction, and a fork caps that transaction at the
+# forked block's gas limit, below what deploying the fresh fork fixture needs.
+disable_block_gas_limit = true
 fs_permissions = [
     { access = "read", path = "./out" },
     { access = "read", path = "./lib" },

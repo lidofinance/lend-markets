@@ -35,7 +35,7 @@ unexport capture_exported_value restore_exported_value
 FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces \
 	src/oracle src/libs src/periphery src/utils script test
 
-DEPLOYMENT_ANCHORS := script/Bundler3Anchor.sol script/CircuitBreakerAnchor.sol script/VaultV2Anchor.sol
+DEPLOYMENT_ANCHORS := script/Bundler3Anchor.sol script/CircuitBreakerAnchor.sol
 
 .PHONY: help build build-deps sizes deploy test test-local test-fork test-deployment test-simulation test-mutation \
 	fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc test-plan test-plan-check audit-checksums ci clean \
