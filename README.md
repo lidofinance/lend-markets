@@ -26,7 +26,7 @@ forge test --no-match-path 'test/{fork,deployment}/**'
 
 The fork suites create their own Forge fork and prepare the lending stack using shared Solidity deployment
 functions. No Anvil or shell provisioning is required. The fresh fixture currently supports mainnet, with two
-WETH/wstETH markets, exit books, bundler and Vault V2; USDY is omitted from that fixture.
+WETH/wstETH markets, exit books and bundler; USDY is omitted from that fixture.
 
 ```sh
 make test-fork RPC_URL=<mainnet-archive-rpc>  # integrations + fresh-deployment acceptance

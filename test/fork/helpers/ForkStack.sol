@@ -127,14 +127,6 @@ abstract contract ForkStack is Test {
         }
     }
 
-    function _vaultPair(string memory marketName) internal view returns (address vault, address adapter) {
-        for (uint256 i; i < forkDeployment.markets.length; ++i) {
-            if (keccak256(bytes(forkDeployment.markets[i].parameters.name)) == keccak256(bytes(marketName))) {
-                return (forkDeployment.markets[i].vaultV2, forkDeployment.markets[i].adapter);
-            }
-        }
-    }
-
     // ---
     // BINDING
     // ---

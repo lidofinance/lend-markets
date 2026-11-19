@@ -14,8 +14,6 @@ import {
     ExitBookConfig,
     BundlerParameters,
     BundlerAddresses,
-    VaultV2Parameters,
-    VaultV2Addresses,
     DeploymentSnapshot,
     RecordedMarket
 } from "../../script/deployment/DeploymentTypes.sol";
@@ -160,10 +158,6 @@ contract ForkFixture is ProtocolDeployment, PeripheryDeployment, MarketPreparati
                 : _deployMarket(d.protocol, parameters);
             d.markets[i].parameters = parameters;
         }
-        VaultV2Addresses memory vault =
-            _deployVaultV2(d.protocol, VaultV2Parameters({name: "weth-wsteth", owner: d.protocol.agent, asset: WETH}));
-        d.markets[0].vaultV2 = vault.vault;
-        d.markets[0].adapter = vault.adapter;
         BundlerAddresses memory bundler = _deployBundler(d.protocol, BundlerParameters({weth: WETH, wstEth: WSTETH}));
         d.bundler = bundler.bundler;
         d.generalAdapter = bundler.generalAdapter;
