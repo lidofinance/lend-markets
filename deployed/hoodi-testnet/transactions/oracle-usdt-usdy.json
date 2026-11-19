@@ -1,7 +1,7 @@
 {
   "transactions": [
     {
-      "hash": "0x2253ebe59d8d12755429e6a64501f2466fb4470cc6dd34872944b23aee571e16",
+      "hash": "0xa14d6462b76462a480b5e11f5a2a62624a9ae77e7876a825c38ef889fe904c3d",
       "transactionType": "CREATE",
       "contractName": "UsdyStableOracle",
       "contractAddress": "0x32f290ff3666288d6fa6b9badc60f0e5457668d7",
@@ -24,7 +24,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xa14d6462b76462a480b5e11f5a2a62624a9ae77e7876a825c38ef889fe904c3d",
+      "hash": "0x2253ebe59d8d12755429e6a64501f2466fb4470cc6dd34872944b23aee571e16",
       "transactionType": "CREATE",
       "contractName": "OssifiableProxy",
       "contractAddress": "0x53d670dd018a09af8bfbadd9817e383fddf2fb27",

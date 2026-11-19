@@ -20,7 +20,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x17d77e71cd52c268e83042c444a71bd8faa7742f444cea7af8ffb027381a9514",
+      "hash": "0xeca56919380bf2d7307712107bcf2dbdd77e310c71b47910beab54c1bc0fc0a9",
       "transactionType": "CREATE",
       "contractName": "EthereumGeneralAdapter1",
       "contractAddress": "0x0c6151f0205a6edf143b42c4f7b4e97a8f099260",
@@ -44,7 +44,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xeca56919380bf2d7307712107bcf2dbdd77e310c71b47910beab54c1bc0fc0a9",
+      "hash": "0x17d77e71cd52c268e83042c444a71bd8faa7742f444cea7af8ffb027381a9514",
       "transactionType": "CREATE",
       "contractName": "LidoLendVaultAdapter",
       "contractAddress": "0xb1a64663b5390ecf1a582df7e19d0a6753d1b84a",
