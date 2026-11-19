@@ -732,6 +732,63 @@ contract GuardianSignalsTest is Test {
         assertEq(gs.getQuorumFrontier(), 998, "anyone can advance the frontier");
     }
 
+    /// @dev Property: for every committee size and quorum, the synced frontier is the quorum-th largest heartbeat.
+    function test_syncQuorumFrontier_everyCommitteeSizeAndQuorum_isQuorumthLargest() public {
+        address impl = address(new GuardianSignals());
+        uint256 maxCount = gs.MAX_GUARDIANS_COUNT();
+        for (uint256 n = 1; n <= maxCount; ++n) {
+            _checkFrontierForEveryQuorum(impl, n, false);
+            _checkFrontierForEveryQuorum(impl, n, true);
+        }
+    }
+
+    /// @dev Heartbeats from `n` guardians, one silent if `oneSilent`, then a sync at every quorum from `n` to 1.
+    function _checkFrontierForEveryQuorum(address impl, uint256 n, bool oneSilent) internal {
+        address[] memory guardians = new address[](n);
+        for (uint256 i; i < n; ++i) {
+            guardians[i] = address(uint160(0x6000 + i));
+        }
+        bytes memory initData =
+            abi.encodeWithSignature("initialize(address,address[],uint256)", address(this), guardians, n);
+        GuardianSignals registry = GuardianSignals(address(new OssifiableProxy(impl, address(this), initData)));
+        registry.grantRole(registry.MANAGER_ROLE(), address(this));
+
+        uint40[] memory heartbeats = new uint40[](n);
+        for (uint256 i; i < n; ++i) {
+            if (oneSilent && i == n / 2) continue;
+            heartbeats[i] = uint40(800 + 3 * (((i * 13) % n) / 2));
+            vm.prank(guardians[i]);
+            registry.heartbeat(guardians[i], _block(heartbeats[i]), "");
+        }
+        assertLe(
+            registry.getQuorumFrontier(), _quorumthLargest(heartbeats, n), "a heartbeat's own sync stays at or below"
+        );
+
+        for (uint256 quorum = n; quorum >= 1; --quorum) {
+            if (quorum < n) registry.setQuorum(quorum);
+            registry.syncQuorumFrontier();
+            assertEq(
+                registry.getQuorumFrontier(),
+                _quorumthLargest(heartbeats, quorum),
+                string.concat("size ", vm.toString(n), ", quorum ", vm.toString(quorum))
+            );
+        }
+    }
+
+    /// @dev The `quorum`-th largest of `values`, counted without sorting.
+    function _quorumthLargest(uint40[] memory values, uint256 quorum) internal pure returns (uint40) {
+        for (uint256 i; i < values.length; ++i) {
+            uint256 above;
+            uint256 atOrAbove;
+            for (uint256 j; j < values.length; ++j) {
+                if (values[j] > values[i]) ++above;
+                if (values[j] >= values[i]) ++atOrAbove;
+            }
+            if (above < quorum && quorum <= atOrAbove) return values[i];
+        }
+        revert("no quorum-th largest value");
+    }
+
     // ── heartbeat validation ──
 
     function testRevert_heartbeat_blockInTheFuture() public {

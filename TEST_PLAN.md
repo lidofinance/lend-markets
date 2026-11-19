@@ -902,7 +902,7 @@ Tests: [`test/unit/GuardianSignals.t.sol`](test/unit/GuardianSignals.t.sol), [`t
    - [x] state effects: delegate heartbeats are stored under the guardian (fuzzed) — [`test/invariant/GuardianSignals.invariant.t.sol`](test/invariant/GuardianSignals.invariant.t.sol): [`invariant_frontierMatchesModel`](test/invariant/GuardianSignals.invariant.t.sol#L124)
 
 10. [`syncQuorumFrontier()`](src/GuardianSignals.sol#L226)
-    - [x] positive: sets the frontier to the quorum-th largest heartbeat — [`test_frontier_atQuorum_advancesToQuorumthLargest`](test/unit/GuardianSignals.t.sol#L683), [`testFuzz_frontier_isQuorumthLargest`](test/unit/GuardianSignals.t.sol#L1491)
+    - [x] positive: sets the frontier to the quorum-th largest heartbeat — [`test_frontier_atQuorum_advancesToQuorumthLargest`](test/unit/GuardianSignals.t.sol#L683), [`testFuzz_frontier_isQuorumthLargest`](test/unit/GuardianSignals.t.sol#L1491), [`test_syncQuorumFrontier_everyCommitteeSizeAndQuorum_isQuorumthLargest`](test/unit/GuardianSignals.t.sol#L736)
     - [x] access control: callable by anyone — [`test_syncQuorumFrontier_isPermissionless`](test/unit/GuardianSignals.t.sol#L702)
     - [x] boundaries: fewer than quorum heartbeats keep the frontier at zero — [`test_frontier_belowQuorumHeartbeats_noAdvance`](test/unit/GuardianSignals.t.sol#L668)
     - [x] boundaries: quorum 0 on an uninitialized registry is a no-op — [`test_frontier_uninitializedRegistry_syncIsNoOp`](test/unit/GuardianSignals.t.sol#L676)
