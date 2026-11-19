@@ -74,7 +74,7 @@ Expiry is not a stored state. A request remains `Open` after its deadline but ca
 Placement and cancellation are non-custodial. Placement checks the owner's current position and permission, but it does not reserve shares, allowance, authorization, or source liquidity. The same position can therefore back several requests, and later owner actions can make any of them unfillable.
 
 > [!WARNING]
-> **An unfillable request revives when its backing returns.** A request stays open until it is filled, cancelled or past its deadline, so once the owner again holds the shares and the allowance or authorization it needs, any filler can fill it at its current rate and keep the reward, even if the source is already liquid. Cancelling the request prevents this.
+> **An unfillable request revives when its backing returns.** A request stays fillable until it is filled, cancelled or past its deadline, so once the owner again holds the shares and the allowance or authorization it needs, any filler can fill it at its current rate and keep the reward, even if the source is already liquid. Cancelling the request prevents this.
 
 ## Placement and backing
 
@@ -131,7 +131,7 @@ The second condition lets the final remainder close even when it is below the mi
 
 The fill executes in this order:
 
-1. Check pause, request status, deadline, reward recipient, and fill amount.
+1. Check pause, reward recipient, request status, deadline, and fill amount.
 2. Subtract `F` from the remaining request and mark it `Filled` when the remainder reaches zero.
 3. Ask the source to withdraw exactly `F` from the owner's position to the book.
 4. Measure the book's loan-asset balance change and require it to equal `F`; separately read the source-reported share burn and apply the optional limit.
@@ -197,7 +197,7 @@ Do not leave a new position or token balance in a public `Bundler3` or a shared 
 
 In a `Bundler3` bundle, every required preparation call and the fill use `skipRevert = false`. If the bundle skips a failed fill, earlier preparation can remain committed.
 
-Morpho supply and repay callbacks run before the core receives the incoming loan tokens. A fill called from either callback cannot use those tokens; the supply or repayment must finish first.
+Morpho supply and repay callbacks run before the core receives the incoming loan tokens. A fill called from either callback cannot use those tokens. It succeeds only if the core already holds enough of the loan token from elsewhere, for example from another market with the same loan token. Otherwise the supply or repayment must finish first.
 
 ## Filler workflow
 

@@ -43,7 +43,7 @@ A borrow checks the caller, debt owner, and receiver for a ban. The receiver che
 > [!NOTE]
 > **A ban on a shared caller blocks every borrow made through it.** The borrow check covers the caller, so a ban on the bundler's general adapter reverts every borrow through it in that market until the ban is lifted, while direct core borrows still work. Anyone can supply at least `minActivationAmount` of tainted collateral on the adapter's behalf, which the adapter can never withdraw, so guardians flag it and a quorum of their flags bans it.
 
-A ban does not directly gate repayment, liquidation, settlement, or a debt-free collateral withdrawal. It does prevent maturation. If an activation lock is still live, the unmatured collateral can therefore delay a debt-free withdrawal of the inactive balance until the lock expires, and a top-up can restart that lock ([Market Controller Policy](market-controller.md#voluntary-withdrawals-and-forced-collateral-reductions)). While the lock lasts, the active balance stays withdrawable.
+A ban does not directly gate repayment, liquidation, settlement, or collateral withdrawal. It does prevent maturation. If an activation lock is still live, the unmatured collateral can therefore delay a debt-free withdrawal of the inactive balance until the lock expires, and a top-up can restart that lock ([Market Controller Policy](market-controller.md#voluntary-withdrawals-and-forced-collateral-reductions)). While the lock lasts, the active balance stays withdrawable.
 
 ## Guardian identities and authority
 
@@ -110,7 +110,7 @@ A report is still active when `reportedAt + suspectWindow == block.timestamp`; i
 activatingStart < suspectExpiryTimestamp
 ```
 
-The lot's start time decides whether the extra delay applies. Once it applies, waiting for the report to expire does not shorten that lot's delay, but the next `suspect`, `unsuspect` or `prune` rebuilds the snapshot from the live reports and can lower or remove it ([Snapshot updates](#snapshot-updates)).
+The lot's start time decides whether the extra delay applies. Once it applies, waiting for the report to expire does not shorten that lot's delay, but the next `suspect`, or an `unsuspect` or `prune` that removes a report, rebuilds the snapshot from the live reports and can lower or remove it ([Snapshot updates](#snapshot-updates)).
 
 A zero suspect window does not disable reports: a report at time `t` can still affect a lot started before `t`. Setting the controller's `delayPerSuspect` to zero removes the added delay.
 
@@ -167,7 +167,7 @@ The controller first calculates an activating lot's `unlockTime` from its start 
 The fallback deadline is `activatingStart + maxGuardiansQuorumDelay`. Setting that delay to zero removes only the frontier wait.
 
 > [!WARNING]
-> **Accepted liveness trade-off.** The fallback prevents guardian silence from locking activation forever, but permits maturation without new scan evidence after the deadline.
+> **Accepted liveness trade-off.** The fallback prevents guardian silence from locking activation forever, but permits maturation without new scan evidence after the deadline. It applies whatever keeps the frontier from advancing, including a cause outside the committee's control. A freeze stops maturation for as long as it lasts.
 
 `GuardianSignals` itself is not frozen or paused. Reports, configuration, and frontier progress continue while a controller is stopped. The next relevant controller hook reads the current registry state. The full activation state machine is in [Market Controller Policy](market-controller.md#collateral-activation).
 

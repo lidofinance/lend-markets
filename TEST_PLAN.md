@@ -1424,6 +1424,7 @@ Cross-contract flows on a freshly deployed stack with mock tokens ([`test/setup/
 - [x] below target utilization an accrual one second later can book less interest — `test/scenario/IrmConfigRisk.t.sol`: `test_idleBelowTarget_oneSecondLaterAccrualBooksLessInterest`
 - [x] a lender that exits before a write-off leaves its loss share to the lenders who stay — `test/scenario/Liquidation.t.sol`: `test_lenderExitsBeforeWriteOff_remainingLenderTakesItsLossShare`
 - [x] at the market's supply cap a supply-funded exit-book fill stays closed — `test/scenario/MorphoExitBook.t.sol`: `test_supplyCapReached_blocksSupplyFundedFillUntilCapRaised`
+- [x] an exit-book fill inside a core supply callback cannot use the incoming loan tokens, and inside a supply or repay callback it succeeds on loan tokens a second market left in the core — `test/scenario/MorphoExitBook.t.sol`: `testRevert_fillInSupplyCallback_cannotUseIncomingLoanTokens`, `test_fillInSupplyCallback_usesLoanTokensOfAnotherMarket`, `test_fillInRepayCallback_usesLoanTokensOfAnotherMarket`
 - [x] a one-share front-run breaks an exact-share lift of an unavailable root, and a repay of the live shares still lifts it — `test/scenario/SettleSeizeFloor.t.sol`: `test_unavailableRootLift_frontRunByOneShare_liveShareRepayStillLifts`
 - [x] debt left on zero collateral is written off by a one-share liquidation — `test/scenario/SettlementSafety.t.sol`: `test_debtOnZeroCollateral_oneShareLiquidationWritesItOff`
 

@@ -146,10 +146,9 @@ contract GatedCollateralMarketTest is LidoLendSetup {
         );
     }
 
-    /// @dev Specified behaviour: an issuer freeze of the core's collateral balance does not stop borrowing against
-    ///      it, since a borrow moves only the loan token, but every liquidation reverts on the seizure. If the issuer
-    ///      then takes the frozen balance, the core still books collateral it no longer holds and the debt is unbacked.
-    ///      `markets/stables-usdy.md` describes it.
+    /// @dev An issuer freeze of the core's collateral balance does not stop borrowing against it, since a borrow
+    ///      moves only the loan token, but every liquidation reverts on the seizure. If the issuer then takes the
+    ///      frozen balance, the core still books collateral it no longer holds and the debt is unbacked.
     function test_issuerFreezeOfCore_borrowingContinues_liquidationReverts() public {
         Market storage m = _m();
         address lender = _actor("lender");
