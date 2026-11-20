@@ -146,8 +146,9 @@ contract SettlementDisabledMarketTest is LidoLendSetup {
 
     /// @dev The consequence worth knowing: with any borrower in the queue, the root policy quotes a cut even
     ///      when nobody opted into a personal settlement LTV. So on a settlement-disabled market a lender whose
-    ///      request exceeds free liquidity cannot exit at all — not even partially — until borrowers repay.
-    ///      The liquid leg is rolled back with the settle leg rather than paid out.
+    ///      request exceeds free liquidity cannot use `fallbackExit` at all — not even partially — until free
+    ///      liquidity covers the request. The liquid leg is rolled back with the settle leg rather than paid out. A
+    ///      plain redeem of the liquid part still pays.
     function testRevert_FallbackExitBeyondLiquidity_LenderIsStuckUntilRepayment() public {
         Market storage m = _m();
         uint256 shares = m.vaultDeposit(vaultLender, 1000 ether);
@@ -179,12 +180,21 @@ contract SettlementDisabledMarketTest is LidoLendSetup {
         assertEq(m.vault.balanceOf(vaultLender), shares, "no shares burned");
         assertEq(m.loanToken.balanceOf(vaultLender), loanBefore, "no partial payout: liquid leg rolled back too");
 
-        // Repayment restores liquidity, and the same exit now completes entirely through the liquid leg.
+        // A plain redeem of the liquid part still pays.
+        {
+            uint256 liquidShares = m.vault.maxRedeem(vaultLender);
+            assertGt(liquidShares, 0, "setup: part of the position is liquid");
+            m.vaultRedeem(vaultLender, liquidShares);
+            shares -= liquidShares;
+        }
+        assertEq(m.vault.balanceOf(vaultLender), shares, "the illiquid part stays");
+
+        // Repayment restores liquidity, and the rest of the exit now completes entirely through the liquid leg.
         _fund(m.loanToken, borrower, borrowed * 2);
         m.repay(borrower, m.core.position(m.id, borrower).borrowShares);
 
         (uint256 burned,, uint256 collateralSeized,) = m.fallbackExit(vaultLender, shares, vaultLender, 0);
-        assertEq(burned, shares, "whole request exits once liquidity returns");
+        assertEq(burned, shares, "the rest of the request exits once liquidity returns");
         assertEq(collateralSeized, 0, "settle leg still never runs");
     }
 

@@ -7,6 +7,7 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC20Errors, IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 
 import {AssetRecoverer} from "../../src/utils/AssetRecoverer.sol";
@@ -247,5 +248,31 @@ contract AssetRecovererTest is Test {
         vm.prank(owner);
         vm.expectRevert(AssetRecoverer.ZeroRecipient.selector);
         rec.recoverERC1155(address(multi), address(0), 5);
+    }
+
+    // ── zero token address ──
+
+    /// @dev `recoverERC20` with a token that has no code reverts with `SafeERC20FailedOperation`, not a zero-token
+    ///      error. Only the recoverer can make this call, which is `RECOVERER_ROLE` in the exit books.
+    function testRevert_recoverERC20_zeroToken_safeErc20FailedOperation() public {
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(0)));
+        rec.recoverERC20(address(0), recipient, 1 ether);
+    }
+
+    /// @dev `recoverERC721` with a token that has no code reverts on the compiler code check with no data. Only the
+    ///      recoverer can make this call.
+    function testRevert_recoverERC721_zeroToken_emptyRevert() public {
+        vm.prank(owner);
+        vm.expectRevert(bytes(""));
+        rec.recoverERC721(address(0), recipient, 7);
+    }
+
+    /// @dev `recoverERC1155` with a token that has no code reverts with no data, because `balanceOf` returns no data
+    ///      to decode. Only the recoverer can make this call.
+    function testRevert_recoverERC1155_zeroToken_emptyRevert() public {
+        vm.prank(owner);
+        vm.expectRevert(bytes(""));
+        rec.recoverERC1155(address(0), recipient, 5);
     }
 }

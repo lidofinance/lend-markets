@@ -200,6 +200,13 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
     /// @dev With idle liquidity present both legs run, so the event's three amounts are three different numbers:
     ///      `sharesBurned` (whole call), `sharesSettled` (settle leg alone) and `assetsWithdrawn` (liquid leg alone).
     ///      The settle-leg-only test above cannot tell them apart, since there they coincide.
+    /// @dev Fixed issue: the `FallbackExit` event reported only the settle-leg burn and omitted the liquid leg. A
+    ///      `FallbackExit` reader thus under-counted the shares burned. The liquid leg showed only in a separate
+    ///      `Withdraw` event.
+    ///      Root cause: the old `fallbackExit` passed `settledShares` as the burned amount and had no field for
+    ///      `loanAssets`. Now: one `FallbackExit` per successful call reports `sharesBurned`, `sharesSettled`,
+    ///      `assetsWithdrawn`, `collateralSeized` and `debtCanceled`.
+    ///      Same cause: a partial fill that stops at the iteration cap or at an unavailable cut.
     function test_fallbackExit_bothLegs_eventSplitsTheLegs() public {
         (address owner, address borrower) = _distressFull();
         Market storage m = _m();
@@ -238,7 +245,10 @@ contract LidoLendERC4626ExitsTest is LidoLendSetup {
     }
 
     /// @dev A request serviced entirely from liquidity never reaches the settle leg but still emits `FallbackExit`,
-    ///      with both settle-leg amounts zero — one event per successful call regardless of the path taken.
+    ///      with the three settle-leg amounts zero. Each successful call emits one event, whatever path it takes.
+    /// @dev Fixed issue: a fully liquid `fallbackExit` emitted no `FallbackExit` event.
+    ///      Root cause: the old `fallbackExit` returned before the emit when the liquid leg burned all requested
+    ///      shares. Now: one emit follows both legs on every successful path.
     function test_fallbackExit_fullyLiquid_emitsEventWithZeroSettleLeg() public {
         Market storage m = _m();
         address lender = _actor("lender");

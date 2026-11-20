@@ -2,8 +2,10 @@
 pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
+import {IGuardianSignals} from "../../src/interfaces/IGuardianSignals.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 /// @notice Regression for audit finding M1: the effective ban must track the CURRENT quorum, so lowering it bans
@@ -92,5 +94,58 @@ contract GuardianSignalsQuorumBanTest is Test {
 
         gs.unban(MARKET, BOB);
         assertFalse(gs.isBanned(MARKET, BOB), "unban clears flags -> no residual derived ban");
+    }
+
+    /// @dev Asserts that the registry emitted exactly one recorded log, and that its topic is `topic0`.
+    function _assertOnlyRegistryLog(bytes32 topic0) internal {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 count;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(gs)) continue;
+            assertEq(logs[i].topics[0], topic0, "unexpected registry event");
+            ++count;
+        }
+        assertEq(count, 1, "one registry event");
+    }
+
+    /// @dev Specified behaviour: `setQuorum` turns a derived ban on and off with only a `QuorumSet` event, never
+    ///      `Banned` or `Unbanned`. `guardian-signals.md` states that a quorum change writes no ban latch and can
+    ///      create or lift derived bans.
+    ///      Mechanism: `_isBanned` returns true when the latch is set or `flaggedBy.length()` reaches the current
+    ///      `_quorum`. A call that changes the count or the quorum without a latch write emits no ban event.
+    ///      Same cause: a `prune` that drops a removed guardian's flag lets a derived ban lapse with only
+    ///      `FlagPruned`. One `setQuorum` call, up or down, flips each affected account in each market of the
+    ///      registry. `unflag` latches a derived ban and emits `Banned` before it drops the count, so it does not flip
+    ///      the result silently.
+    function test_setQuorumFlipsDerivedBan_emitsNoBanEvent() public {
+        gs.setQuorum(3);
+        _flag(G1, BOB);
+        _flag(G2, BOB);
+        assertFalse(gs.isBanned(MARKET, BOB), "setup: below quorum 3");
+
+        vm.recordLogs();
+        gs.setQuorum(2);
+        assertTrue(gs.isBanned(MARKET, BOB), "lowering the quorum bans");
+        _assertOnlyRegistryLog(IGuardianSignals.QuorumSet.selector);
+
+        vm.recordLogs();
+        gs.setQuorum(3);
+        assertFalse(gs.isBanned(MARKET, BOB), "raising the quorum unbans");
+        _assertOnlyRegistryLog(IGuardianSignals.QuorumSet.selector);
+    }
+
+    /// @dev Same issue as `test_setQuorumFlipsDerivedBan_emitsNoBanEvent`; a `prune` lapse emits only `FlagPruned`.
+    function test_pruneLapsesDerivedBan_emitsNoUnbanned() public {
+        gs.setQuorum(3);
+        _flag(G1, BOB);
+        _flag(G2, BOB);
+        gs.setQuorum(2);
+        assertTrue(gs.isBanned(MARKET, BOB), "setup: derived ban in effect");
+        gs.removeGuardian(G1);
+
+        vm.recordLogs();
+        gs.prune(MARKET, BOB);
+        assertFalse(gs.isBanned(MARKET, BOB), "prune lets the derived ban lapse");
+        _assertOnlyRegistryLog(IGuardianSignals.FlagPruned.selector);
     }
 }

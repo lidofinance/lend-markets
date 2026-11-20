@@ -94,6 +94,8 @@ contract MarketFactoryScenarioTest is Test {
         guardianSignals = factory.deployGuardianSignals(_guardianSpec(), keccak256("primary"));
     }
 
+    /// @dev Both proxies and the controller admin role belong to `ADMIN`. The factory holds no admin role, and the
+    ///      market stays uncreated.
     function test_deployMarketComponents_producesInertWiredComponents() external {
         (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
         LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
@@ -185,10 +187,16 @@ contract MarketFactoryScenarioTest is Test {
         _deployMarketComponents(market, erc4626WrapperSpec);
     }
 
-    /// @dev A deploy script records the addresses its simulation returned, so those addresses must not depend on
-    ///      anything a third party controls. Here another caller advances the factory's transaction count and also
-    ///      deploys the very same reviewed specification first, and the components still land where they were
-    ///      predicted, at addresses that caller could not reach.
+    /// @dev Fixed issue: a front-run factory call moved the controller and wrapper away from the addresses that the
+    ///      deploy script recorded from its simulation.
+    ///      Root cause: the factory deployed proxies with `CREATE`, so each address followed a nonce that any caller
+    ///      can advance. Now: `_deployProxy` uses `CREATE2` with a salt that includes `msg.sender`. The address depends
+    ///      only on the factory, the caller, the caller salt, and the init data.
+    ///      Same cause: a front-run through `deployMarketController`, `deployERC4626Wrapper`, `deployGuardianSignals`,
+    ///      or `deployMarketComponents`, with the same spec or another spec. The fix stops each of them. The
+    ///      `IrmConfigFactory` nonce race is a separate known issue.
+    ///      Here another caller deploys the same reviewed spec first, and the components still land at the predicted
+    ///      addresses, which that caller cannot reach.
     function test_deployMarketComponents_addressesSurviveAnotherCallerDeployingFirst() external {
         (MockERC20 loan, MockERC20 collateral, address oracle) = _deployTokensAndOracle("A", 1.05e36);
         LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
@@ -215,9 +223,9 @@ contract MarketFactoryScenarioTest is Test {
         LidoLendMarketFactory.MarketSpec memory market = _marketSpec(loan, collateral, oracle);
         _deployMarketComponents(market, _erc4626WrapperSpec("A"));
 
-        // A CREATE2 collision reverts with no return data, so there is no selector to match here.
+        // A CREATE2 collision reverts with no return data, so the expectation matches empty data exactly.
         vm.prank(caller);
-        vm.expectRevert();
+        vm.expectRevert(bytes(""));
         factory.deployMarketComponents(market, _erc4626WrapperSpec("A"));
     }
 
@@ -414,9 +422,9 @@ contract MarketFactoryScenarioTest is Test {
         assertEq(address(LidoLendERC4626(erc4626Wrapper).controller()), controllerAddress, "controller");
     }
 
-    /// @dev Two committees can be configured identically and still want registries of their own. Nothing in the
-    ///      specification separates them — the suspect window is applied after initialization, so it does not reach
-    ///      the address either — which is what the caller-chosen salt is for.
+    /// @dev `_deployProxy` uses `CREATE2`, so two registries with identical specs need different caller salts. Each
+    ///      registry lands at its predicted address. The reused-salt revert is in
+    ///      `testRevert_deployGuardianSignals_rejectsAReusedSalt`.
     function test_deployGuardianSignals_identicalSpecsSeparatedBySalt() external {
         LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
 
@@ -439,9 +447,9 @@ contract MarketFactoryScenarioTest is Test {
         vm.prank(caller);
         factory.deployGuardianSignals(spec, keccak256("group-a"));
 
-        // A CREATE2 collision reverts with no return data, so there is no selector to match here.
+        // A CREATE2 collision reverts with no return data, so the expectation matches empty data exactly.
         vm.prank(caller);
-        vm.expectRevert();
+        vm.expectRevert(bytes(""));
         factory.deployGuardianSignals(spec, keccak256("group-a"));
     }
 
@@ -462,6 +470,9 @@ contract MarketFactoryScenarioTest is Test {
         factory.deployGuardianSignals(spec, callerSalt);
     }
 
+    /// @dev Same issue as `test_deployMarketComponents_addressesSurviveAnotherCallerDeployingFirst`; this test shows
+    ///      that a registry lands at the address predicted from the caller and the caller salt. The registry has the
+    ///      fixed governance roles, and the factory keeps no role.
     function test_deployGuardianSignals_producesWiredRegistry() external {
         address[] memory guardianSet = new address[](2);
         guardianSet[0] = makeAddr("guardian1");

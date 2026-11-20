@@ -28,6 +28,30 @@ contract LiquidationTest is LidoLendSetup {
         MockPriceOracle(address(_m().oracle)).setPrice(oraclePrice * numerator / denominator);
     }
 
+    /// @dev Funds `lender` with `assets` and deposits them into the vault.
+    function _lend(address lender, uint256 assets) internal returns (uint256 shares) {
+        _fund(_m().loanToken, lender, assets);
+        shares = _m().vaultDeposit(lender, assets);
+    }
+
+    /// @dev Baseline, rolled back after it is read: a keeper liquidates all collateral at once, and both lenders share
+    ///      the written-off debt.
+    function _sharedLossBaseline(address borrower, uint256 collateral, uint256 aliceShares, uint256 bobShares)
+        internal
+        returns (uint256 badDebt, uint256 aliceShared, uint256 bobShared)
+    {
+        Market storage m = _m();
+        uint256 snapshot = vm.snapshotState();
+        uint256 supplyBefore = m.core.market(m.id).totalSupplyAssets;
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 10_000 ether);
+        m.liquidateBadDebt(keeper, borrower, collateral, 0);
+        badDebt = supplyBefore - m.core.market(m.id).totalSupplyAssets;
+        aliceShared = m.vault.previewRedeem(aliceShares);
+        bobShared = m.vault.previewRedeem(bobShares);
+        assertTrue(vm.revertToState(snapshot), "baseline rolled back");
+    }
+
     /// @dev Lender liquidity + a borrower at ~99% of LLTV-max, ready to be tipped unhealthy by a price drop.
     function _seedNearMax(uint256 collat) internal returns (address borrower) {
         Market storage m = _m();
@@ -104,6 +128,39 @@ contract LiquidationTest is LidoLendSetup {
         assertEq(seized, 10 ether, "seized exactly the requested collateral");
         assertEq(m.core.position(m.id, borrower).collateral, 100 ether - seized, "collateral debited by exactly seized");
         assertTrue(m.controller.hasBadDebt(), "bad debt remains (partial seize did not clear the underwater root)");
+    }
+
+    /// @dev Specified behaviour: the core writes bad debt off only when a liquidation exhausts the collateral. A lender
+    ///      that liquidates all but one raw collateral unit, redeems at the unchanged share price and then liquidates
+    ///      the last unit avoids its share of the loss, and the lender that stays takes it. The lend
+    ///      `SPECIFICATION.md` describes it.
+    function test_lenderExitsBeforeWriteOff_remainingLenderTakesItsLossShare() public {
+        Market storage m = _m();
+        address bob = _actor("bob");
+        uint256 aliceShares = _lend(_actor("alice"), 1000 ether);
+        uint256 bobShares = _lend(bob, 1000 ether);
+        address borrower = _actor("borrower");
+        uint256 collateral = 1000 ether * 1e36 / oraclePrice * 2; // 50% LTV
+        _fund(m.collateralToken, borrower, collateral);
+        m.supplyCollateral(borrower, collateral);
+        m.activateCollateral();
+        m.borrow(borrower, 1000 ether);
+        m.distress(borrower, 1.2e18); // past 1 / LIF: a collateral-exhausting liquidation leaves bad debt
+        (uint256 badDebt, uint256 aliceShared, uint256 bobShared) =
+            _sharedLossBaseline(borrower, collateral, aliceShares, bobShares);
+
+        // Bob leaves one raw unit, which keeps the loss out of the share price, redeems, then takes the last unit.
+        _fund(m.loanToken, bob, 10_000 ether);
+        m.liquidate(bob, borrower, collateral - 1, 0);
+        uint256 bobOut = m.vaultRedeem(bob, bobShares);
+        m.liquidateBadDebt(bob, borrower, 1, 0);
+
+        uint256 shifted = aliceShared - m.vault.previewRedeem(aliceShares);
+        assertGt(bobOut, bobShared, "bob exits above the shared-loss value");
+        // Rounding slack, in raw loan units: four floored vault previews (both baseline values, bob's redeem, alice's
+        // value after) and the split liquidation, whose two up-rounded repays can lower the write-off by up to two.
+        assertApproxEqAbs(bobOut - bobShared, shifted, 4, "bob's avoided loss lands on alice, the total is unchanged");
+        assertApproxEqAbs(shifted, badDebt / 2, 4, "alice takes bob's half of the bad debt");
     }
 
     /// @dev With no price drop the position stays healthy and the core rejects any liquidation attempt.
