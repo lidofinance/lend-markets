@@ -1543,28 +1543,6 @@ Tests: [`test/unit/CentrifugeNavOracle.t.sol`](test/unit/CentrifugeNavOracle.t.s
 3. views: [`SPOKE`](src/oracle/CentrifugeNavOracle.sol#L34), [`POOL_ID`](src/oracle/CentrifugeNavOracle.sol#L36), [`SHARE_CLASS_ID`](src/oracle/CentrifugeNavOracle.sol#L38), [`MAX_PRICE_AGE`](src/oracle/CentrifugeNavOracle.sol#L40)
    - [x] positive: read back the constructor arguments — [`test_price_sixDecimalShare`](test/unit/CentrifugeNavOracle.t.sol#L128), [`test_constructor_maxPriceAge`](test/unit/CentrifugeNavOracle.t.sol#L120)
 
-### `LidoLendTrailingAnchorOracleAdapter` — [`src/oracle/LidoLendTrailingAnchorOracleAdapter.sol`](src/oracle/LidoLendTrailingAnchorOracleAdapter.sol)
-Tests: [`test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol)
-
-1. [`constructor(address)`](src/oracle/LidoLendTrailingAnchorOracleAdapter.sol#L25)
-   - [x] positive: stores the executor — [`test_constructor_storesTheExecutor`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L38)
-   - [x] negative: a zero executor reverts `ZeroAddress` — [`testRevert_constructor_zeroExecutor`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L42)
-
-2. [`setParameters(address,Parameters)`](src/oracle/LidoLendTrailingAnchorOracleAdapter.sol#L33)
-   - [x] positive: forwards every field in place; the oracle stores them and emits `ParametersSet` — [`test_setParameters_storesTheParametersInTheOracle`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L47)
-   - [x] negative: the oracle's own check reverts through the adapter (`ReanchorWindowBelowMinReanchorWindow`) — [`testRevert_oracleChecks_reachTheExecutor`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L100)
-   - [x] access control: any caller but the executor reverts `Unauthorized(caller)` — [`testFuzz_onlyTheExecutorCanCall`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L74)
-   - [x] access control: an oracle that did not grant the adapter `MANAGER_ROLE` reverts `AccessControlUnauthorizedAccount` — [`testRevert_oracleWithoutTheRole_refusesTheCalls`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L86)
-
-3. [`setPricingResumesAt(address,uint40)`](src/oracle/LidoLendTrailingAnchorOracleAdapter.sol#L43)
-   - [x] positive: forwards the time; the oracle stores it and emits `PricingResumesAtSet` — [`test_setPricingResumesAt_storesTheTimeInTheOracle`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L64)
-   - [x] boundaries: a time exactly `MAX_PRICING_SUSPENSION` ahead goes through, one second more reverts `InvalidPricingResumesAt` — [`test_setPricingResumesAt_storesTheTimeInTheOracle`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L64), [`testRevert_oracleChecks_reachTheExecutor`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L100)
-   - [x] access control: any caller but the executor reverts `Unauthorized(caller)` — [`testFuzz_onlyTheExecutorCanCall`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L74)
-   - [x] access control: an oracle that did not grant the adapter `MANAGER_ROLE` reverts `AccessControlUnauthorizedAccount` — [`testRevert_oracleWithoutTheRole_refusesTheCalls`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L86)
-
-4. views: [`EVM_SCRIPT_EXECUTOR`](src/oracle/LidoLendTrailingAnchorOracleAdapter.sol#L14)
-   - [x] positive: reads back the constructor argument — [`test_constructor_storesTheExecutor`](test/unit/LidoLendTrailingAnchorOracleAdapter.t.sol#L38)
-
 ## Scenario testing
 Cross-contract flows on a freshly deployed stack with mock tokens ([`test/setup/LidoLendSetup.sol`](test/setup/LidoLendSetup.sol)); actions go through [`test/setup/MarketActions.sol`](test/setup/MarketActions.sol), which recomputes every expected amount.
 
