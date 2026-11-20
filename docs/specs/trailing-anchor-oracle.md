@@ -1,7 +1,5 @@
 # Trailing Anchor Oracle
 
-Review status: slop
-
 The Trailing Anchor Oracle prices a market's collateral from a single price source and protects the market from a faulty or compromised value of that source. It returns the current price only near a stored **anchor** that trails the source, and a larger move becomes the price only after it has been public for a delay:
 
 - `price()` returns the source's current price only while it is within the **bounds**, a narrow range around the anchor. Otherwise, or while the manager has suspended pricing, it reverts, and the market actions that need a price stop.
@@ -103,7 +101,7 @@ The examples use illustrative values, not any market's: bounds of +0.05% and −
 | `maxAnchorBelowBase` | `uint64`, WAD fraction | `0 ≤ x < 1e18` | how far below `basePrice` updates may take the anchor; zero stops every update from lowering it below that |
 | `maxAnchorAboveBase` | `uint64`, WAD fraction | `0 ≤ x < 1e18` | how far above `basePrice` a re-anchor may take the anchor; zero stops every re-anchor from raising it above that |
 | `reanchorDelay` | `uint40`, seconds | `x ≥ MIN_REANCHOR_DELAY` (1 hour), `e^(maxAnchorContinuousRiseRate × x / (1e18 × 365 days)) − 1 ≤ maxPriceAboveAnchor / 1e18` and `1 − e^(−maxAnchorContinuousFallRate × x / (1e18 × 365 days)) ≤ maxPriceBelowAnchor / 1e18` | how long a pending anchor waits before a re-anchor |
-| `reanchorWindow` | `uint40`, seconds | `x > 0` | how long after the delay a re-anchor may come before the pending anchor expires |
+| `reanchorWindow` | `uint40`, seconds | `x ≥ MIN_REANCHOR_WINDOW` (1 hour) | how long after the delay a re-anchor may come before the pending anchor expires |
 
 The contract does not check the [sizing rule](#choosing-values), because it does not know the LLTV of the markets that read it. The deployment preflight checks the rule at the LLTV of the market, and the acceptance suite makes the same check on the live deployment. The manager must keep the rule in each later `setParameters` call. No contract makes this check, so a too-wide corridor from a `setParameters` call stays until the manager corrects it.
 

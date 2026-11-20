@@ -58,21 +58,49 @@ struct Parameters {
 
 The values that `initialize()` and `setParameters()` store. Each field has the units of the getter with the same name.
 
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `maxPriceAboveAnchor` | `uint64` | Upper bound, as a fraction of the anchor price. |
+| `maxPriceBelowAnchor` | `uint64` | Lower bound, as a fraction of the anchor price. |
+| `maxAnchorContinuousRiseRate` | `uint64` | Largest yearly rate at which a drift raises the anchor. |
+| `maxAnchorContinuousFallRate` | `uint64` | Largest yearly rate at which a drift lowers the anchor. |
+| `maxAnchorBelowBase` | `uint64` | Floor, as a fraction of `basePrice`. |
+| `maxAnchorAboveBase` | `uint64` | Ceiling, as a fraction of `basePrice`. |
+| `reanchorDelay` | `uint40` | Seconds that a pending anchor waits before a re-anchor. |
+| `reanchorWindow` | `uint40` | Seconds after the delay in which a re-anchor can occur. |
+
 ### Events
 
 #### `AnchorSet`
 
 ```solidity
-event AnchorSet(uint256 anchorPrice, uint40 anchorAt, bool accepted);
+event AnchorSet(uint256 anchorPrice, uint256 anchorAt, bool accepted);
 ```
 
-The anchor changed. `accepted` is true for the seed in `initialize()` and for `acceptPrice()`, and false for an update.
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `anchorPrice` | `uint256` | The new anchor price, with `PRICE_DECIMALS` decimals. |
+| `anchorAt` | `uint256` | Time when the anchor changed. |
+| `accepted` | `bool` | True for the seed in `initialize()` and for `acceptPrice()`, false for an update. |
+
+The anchor changed.
 
 #### `PendingAnchorSet`
 
 ```solidity
-event PendingAnchorSet(uint256 pendingAnchorPrice, uint40 pendingAnchorAt);
+event PendingAnchorSet(uint256 pendingAnchorPrice, uint256 pendingAnchorAt);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `pendingAnchorPrice` | `uint256` | Price of the pending anchor, with `PRICE_DECIMALS` decimals. |
+| `pendingAnchorAt` | `uint256` | Time when the update recorded the pending anchor. |
 
 An update recorded a pending anchor.
 
@@ -90,6 +118,13 @@ The pending anchor was dropped.
 event AnchorUpdated(UpdateOutcome indexed outcome, uint256 currentPrice);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `outcome` | `UpdateOutcome` | The result of the call. |
+| `currentPrice` | `uint256` | The current price that the call read, with `PRICE_DECIMALS` decimals. |
+
 An `updateAnchor()` call completed, with its result and the current price that it read. The call emits this event after the events of its state changes.
 
 #### `ParametersSet`
@@ -98,13 +133,25 @@ An `updateAnchor()` call completed, with its result and the current price that i
 event ParametersSet(Parameters parameters);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `parameters` | `Parameters` | The new parameters. |
+
 The parameters changed.
 
 #### `PricingResumesAtSet`
 
 ```solidity
-event PricingResumesAtSet(uint40 resumesAt);
+event PricingResumesAtSet(uint256 resumesAt);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `resumesAt` | `uint256` | Time at which pricing resumes. |
 
 The time at which pricing resumes changed.
 
@@ -198,13 +245,13 @@ error ReanchorDelayBelowMinReanchorDelay(uint256 reanchorDelay, uint256 minReanc
 
 `reanchorDelay` is shorter than `MIN_REANCHOR_DELAY`.
 
-#### `ReanchorWindowIsZero`
+#### `ReanchorWindowBelowMinReanchorWindow`
 
 ```solidity
-error ReanchorWindowIsZero();
+error ReanchorWindowBelowMinReanchorWindow(uint256 reanchorWindow, uint256 minReanchorWindow);
 ```
 
-`reanchorWindow` is zero.
+`reanchorWindow` is shorter than `MIN_REANCHOR_WINDOW`.
 
 #### `RiseOverDelayExceedsMaxPriceAboveAnchor`
 
@@ -225,7 +272,7 @@ A source that falls at the fall rate for one delay goes below the lower bound.
 #### `InvalidPricingResumesAt`
 
 ```solidity
-error InvalidPricingResumesAt(uint40 resumesAt);
+error InvalidPricingResumesAt(uint256 resumesAt);
 ```
 
 `resumesAt` is more than `MAX_PRICING_SUSPENSION` after the current time.
@@ -249,7 +296,7 @@ The current price is outside the bounds around the anchor price.
 #### `PricingSuspended`
 
 ```solidity
-error PricingSuspended(uint40 resumesAt);
+error PricingSuspended(uint256 resumesAt);
 ```
 
 Pricing is suspended until `resumesAt`.
@@ -372,6 +419,7 @@ The oracle does not know the markets that read it, so it does not check the para
 | `PRICE_ACCEPTOR_ROLE` | `bytes32` (constant) | Can accept the current price as the anchor, at any distance from the old anchor. |
 | `PRICE_SCALE` | `uint256` (immutable) | Factor that converts a source price to the price that the core reads. 10^(ORACLE_PRICE_DECIMALS + loanDecimals − collateralDecimals − PRICE_DECIMALS). |
 | `MIN_REANCHOR_DELAY` | `uint256` (constant) | Shortest permitted `reanchorDelay`. |
+| `MIN_REANCHOR_WINDOW` | `uint256` (constant) | Shortest permitted `reanchorWindow`. Block times have a fixed step. A window shorter than that step can contain no block, and then a pending anchor never applies. |
 | `MAX_PRICING_SUSPENSION` | `uint256` (constant) | Longest time that one call can suspend pricing, counted from that call. |
 | `anchorPrice` | `uint104` | Price that the bounds are measured from, with `PRICE_DECIMALS` decimals. |
 | `basePrice` | `uint104` | Price that the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals. It starts at the seed price, and `acceptPrice()` restarts it at the accepted price. A drift up raises it. A re-anchor does not change it, so a re-anchor up can leave the anchor above it, up to the ceiling. |

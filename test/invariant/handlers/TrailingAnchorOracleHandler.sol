@@ -434,7 +434,7 @@ contract TrailingAnchorOracleHandler is Test {
         else if (field == 2) p.maxPriceAboveAnchor = uint64(WAD);
         else if (field == 3) p.maxAnchorContinuousFallRate = uint64(WAD + 1);
         else if (field == 4) p.reanchorDelay = 1 hours - 1;
-        else if (field == 5) p.reanchorWindow = 0;
+        else if (field == 5) p.reanchorWindow = 1 hours - 1;
         else if (field == 6) p.maxAnchorBelowBase = uint64(WAD);
         else p.maxAnchorAboveBase = uint64(WAD);
     }

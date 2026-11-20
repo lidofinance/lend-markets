@@ -48,6 +48,7 @@ library TrailingAnchorOracleModel {
     uint256 internal constant PRICE_DECIMALS = 18;
     uint256 internal constant ORACLE_PRICE_DECIMALS = 36;
     uint256 internal constant MIN_REANCHOR_DELAY = 1 hours;
+    uint256 internal constant MIN_REANCHOR_WINDOW = 1 hours;
     uint256 internal constant MAX_PRICING_SUSPENSION = 7 days;
 
     /// @dev Working defaults: a USDY-sized 0.05% bound up and a wider 0.1% down; an anchor that may drift at a
@@ -553,8 +554,12 @@ library TrailingAnchorOracleModel {
                 MIN_REANCHOR_DELAY
             );
         }
-        if (p.reanchorWindow == 0) {
-            return abi.encodeWithSelector(TrailingAnchorOracleBase.ReanchorWindowIsZero.selector);
+        if (p.reanchorWindow < MIN_REANCHOR_WINDOW) {
+            return abi.encodeWithSelector(
+                TrailingAnchorOracleBase.ReanchorWindowBelowMinReanchorWindow.selector,
+                p.reanchorWindow,
+                MIN_REANCHOR_WINDOW
+            );
         }
         uint256 riseOverDelay = compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay);
         if (riseOverDelay > p.maxPriceAboveAnchor) {

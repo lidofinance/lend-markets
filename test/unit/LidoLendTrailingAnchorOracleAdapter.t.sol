@@ -99,11 +99,15 @@ contract LidoLendTrailingAnchorOracleAdapterTest is UsdyNavOracleFixture {
 
     function testRevert_oracleChecks_reachTheExecutor() public {
         TrailingAnchorOracleBase.Parameters memory parameters = _changedParameters();
-        parameters.reanchorWindow = 0;
+        parameters.reanchorWindow = 1 hours - 1;
         uint40 resumesAt = uint40(START + MAX_PRICING_SUSPENSION + 1);
 
         vm.startPrank(executor);
-        vm.expectRevert(TrailingAnchorOracleBase.ReanchorWindowIsZero.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.ReanchorWindowBelowMinReanchorWindow.selector, 1 hours - 1, 1 hours
+            )
+        );
         adapter.setParameters(address(oracle), parameters);
         vm.expectRevert(abi.encodeWithSelector(TrailingAnchorOracleBase.InvalidPricingResumesAt.selector, resumesAt));
         adapter.setPricingResumesAt(address(oracle), resumesAt);

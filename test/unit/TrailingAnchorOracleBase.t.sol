@@ -1408,6 +1408,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
 
     /// @dev Each validator edge: the last valid value is taken and the first invalid one refused.
     function test_setParameters_validatorEdges() public {
+        assertEq(oracle.MIN_REANCHOR_WINDOW(), 1 hours, "MIN_REANCHOR_WINDOW");
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
         // One-wei bounds leave the delay rules room only with both rates off.
         p.maxPriceAboveAnchor = 1;
@@ -1423,7 +1424,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         p.maxAnchorContinuousRiseRate = uint64(WAD);
         p.maxAnchorContinuousFallRate = 0;
         p.reanchorDelay = 1 hours;
-        p.reanchorWindow = 1;
+        p.reanchorWindow = 1 hours;
         _setParameters(p);
         // The longest delay the rise rule takes: e^(6% × delay / 365 days) − 1 stays at most 0.05%.
         p = TrailingAnchorOracleModel.defaultParameters();
@@ -1718,7 +1719,7 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         cases[4].reanchorDelay = 1 hours;
         cases[5].maxAnchorContinuousFallRate = uint64(WAD + 1);
         cases[6].reanchorDelay = 1 hours - 1;
-        cases[7].reanchorWindow = 0;
+        cases[7].reanchorWindow = 1 hours - 1;
         cases[8].reanchorDelay = uint40(LONGEST_DELAY_FOR_RISE + 1);
         cases[9].maxAnchorBelowBase = uint64(WAD);
         cases[10].maxAnchorAboveBase = uint64(WAD);
@@ -1736,7 +1737,9 @@ abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
         errors[6] = abi.encodeWithSelector(
             TrailingAnchorOracleBase.ReanchorDelayBelowMinReanchorDelay.selector, 1 hours - 1, 1 hours
         );
-        errors[7] = abi.encodeWithSelector(TrailingAnchorOracleBase.ReanchorWindowIsZero.selector);
+        errors[7] = abi.encodeWithSelector(
+            TrailingAnchorOracleBase.ReanchorWindowBelowMinReanchorWindow.selector, 1 hours - 1, 1 hours
+        );
         errors[8] = abi.encodeWithSelector(
             TrailingAnchorOracleBase.RiseOverDelayExceedsMaxPriceAboveAnchor.selector,
             TrailingAnchorOracleModel.compoundedRise(MAX_ANCHOR_CONTINUOUS_RISE_RATE, LONGEST_DELAY_FOR_RISE + 1),

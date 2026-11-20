@@ -39,6 +39,14 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
 
     /// @notice The values that `initialize()` and `setParameters()` store. Each field has the units of the getter with
     ///         the same name.
+    /// @param maxPriceAboveAnchor         Upper bound, as a fraction of the anchor price.
+    /// @param maxPriceBelowAnchor         Lower bound, as a fraction of the anchor price.
+    /// @param maxAnchorContinuousRiseRate Largest yearly rate at which a drift raises the anchor.
+    /// @param maxAnchorContinuousFallRate Largest yearly rate at which a drift lowers the anchor.
+    /// @param maxAnchorBelowBase          Floor, as a fraction of `basePrice`.
+    /// @param maxAnchorAboveBase          Ceiling, as a fraction of `basePrice`.
+    /// @param reanchorDelay               Seconds that a pending anchor waits before a re-anchor.
+    /// @param reanchorWindow              Seconds after the delay in which a re-anchor can occur.
     struct Parameters {
         uint64 maxPriceAboveAnchor;
         uint64 maxPriceBelowAnchor;
@@ -93,6 +101,10 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
 
     /// @notice Shortest permitted `reanchorDelay`.
     uint256 public constant MIN_REANCHOR_DELAY = 1 hours;
+    /// @notice Shortest permitted `reanchorWindow`.
+    /// @dev Block times have a fixed step. A window shorter than that step can contain no block, and then a pending
+    ///      anchor never applies.
+    uint256 public constant MIN_REANCHOR_WINDOW = 1 hours;
     /// @notice Longest time that one call can suspend pricing, counted from that call.
     uint256 public constant MAX_PRICING_SUSPENSION = 7 days;
     /// @dev The period of the rise rate and the fall rate.
@@ -124,20 +136,20 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     error MaxAnchorContinuousFallRateExceedsWad(uint256 maxAnchorContinuousFallRate);
     /// @notice `reanchorDelay` is shorter than `MIN_REANCHOR_DELAY`.
     error ReanchorDelayBelowMinReanchorDelay(uint256 reanchorDelay, uint256 minReanchorDelay);
-    /// @notice `reanchorWindow` is zero.
-    error ReanchorWindowIsZero();
+    /// @notice `reanchorWindow` is shorter than `MIN_REANCHOR_WINDOW`.
+    error ReanchorWindowBelowMinReanchorWindow(uint256 reanchorWindow, uint256 minReanchorWindow);
     /// @notice A source that rises at the rise rate for one delay goes above the upper bound.
     error RiseOverDelayExceedsMaxPriceAboveAnchor(uint256 riseOverDelay, uint256 maxPriceAboveAnchor);
     /// @notice A source that falls at the fall rate for one delay goes below the lower bound.
     error FallOverDelayExceedsMaxPriceBelowAnchor(uint256 fallOverDelay, uint256 maxPriceBelowAnchor);
     /// @notice `resumesAt` is more than `MAX_PRICING_SUSPENSION` after the current time.
-    error InvalidPricingResumesAt(uint40 resumesAt);
+    error InvalidPricingResumesAt(uint256 resumesAt);
     /// @notice The source returned a zero price.
     error ZeroPrice();
     /// @notice The current price is outside the bounds around the anchor price.
     error PriceOutOfBounds(uint256 currentPrice, uint256 lowerBound, uint256 upperBound);
     /// @notice Pricing is suspended until `resumesAt`.
-    error PricingSuspended(uint40 resumesAt);
+    error PricingSuspended(uint256 resumesAt);
     /// @notice The current price is outside the range that the caller gave.
     error UnexpectedPrice(uint256 currentPrice, uint256 minPrice, uint256 maxPrice);
 
@@ -145,20 +157,28 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     // EVENTS
     // ---
 
-    /// @notice The anchor changed. `accepted` is true for the seed in `initialize()` and for `acceptPrice()`, and
-    ///         false for an update.
-    event AnchorSet(uint256 anchorPrice, uint40 anchorAt, bool accepted);
+    /// @notice The anchor changed.
+    /// @param anchorPrice The new anchor price, with `PRICE_DECIMALS` decimals.
+    /// @param anchorAt    Time when the anchor changed.
+    /// @param accepted    True for the seed in `initialize()` and for `acceptPrice()`, false for an update.
+    event AnchorSet(uint256 anchorPrice, uint256 anchorAt, bool accepted);
     /// @notice An update recorded a pending anchor.
-    event PendingAnchorSet(uint256 pendingAnchorPrice, uint40 pendingAnchorAt);
+    /// @param pendingAnchorPrice Price of the pending anchor, with `PRICE_DECIMALS` decimals.
+    /// @param pendingAnchorAt    Time when the update recorded the pending anchor.
+    event PendingAnchorSet(uint256 pendingAnchorPrice, uint256 pendingAnchorAt);
     /// @notice The pending anchor was dropped.
     event PendingAnchorCleared();
     /// @notice An `updateAnchor()` call completed, with its result and the current price that it read. The call emits
     ///         this event after the events of its state changes.
+    /// @param outcome      The result of the call.
+    /// @param currentPrice The current price that the call read, with `PRICE_DECIMALS` decimals.
     event AnchorUpdated(UpdateOutcome indexed outcome, uint256 currentPrice);
     /// @notice The parameters changed.
+    /// @param parameters The new parameters.
     event ParametersSet(Parameters parameters);
     /// @notice The time at which pricing resumes changed.
-    event PricingResumesAtSet(uint40 resumesAt);
+    /// @param resumesAt Time at which pricing resumes.
+    event PricingResumesAtSet(uint256 resumesAt);
 
     // ---
     // STORAGE
@@ -492,7 +512,9 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
         if (p.reanchorDelay < MIN_REANCHOR_DELAY) {
             revert ReanchorDelayBelowMinReanchorDelay(p.reanchorDelay, MIN_REANCHOR_DELAY);
         }
-        if (p.reanchorWindow == 0) revert ReanchorWindowIsZero();
+        if (p.reanchorWindow < MIN_REANCHOR_WINDOW) {
+            revert ReanchorWindowBelowMinReanchorWindow(p.reanchorWindow, MIN_REANCHOR_WINDOW);
+        }
         // A source that moves at a rate must stay inside its bound for one delay. If not, each re-anchor stops short
         // of the price and records a new pending anchor.
         uint256 riseOverDelay = _compoundedRise(p.maxAnchorContinuousRiseRate, p.reanchorDelay);
