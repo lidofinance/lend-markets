@@ -7,7 +7,8 @@ import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
-import {SettlementQuote, SettlementSlice} from "../../src/types/SettlementTypes.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
+import {SettlementConfig, SettlementQuote, SettlementSlice} from "../../src/types/SettlementTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
@@ -109,6 +110,9 @@ contract SettleSeizeFloorTest is LidoLendSetup {
     /// @dev A budget worth two loan assets funds a one-loan-asset cut (budget -> supply assets -> borrow shares
     ///      floors twice), which seizes nothing at this price. The library reports it as unavailable rather
     ///      than a nonzero cut the core would reject.
+    /// @dev Same issue as `test_fallbackExit_dustRootPartialFillsUntilDustIsRepaid` in
+    ///      `test/scenario/SettleVaultBorrowAnchor.t.sol`; this test shows that a budget-shrunk cut below the seizure
+    ///      floor reads as unavailable.
     function test_settlementSlice_budgetShrunkCutBelowSeizureFloor_isUnavailable() public view {
         Market storage m = protocol.markets[0];
         CoreMarket memory cm = m.core.market(m.id);
@@ -192,6 +196,9 @@ contract SettleSeizeFloorTest is LidoLendSetup {
 
     /// @dev `fallbackExit` documents budget exhaustion as a partial fill. With the boundary tail reported as an
     ///      unavailable cut the settle loop breaks on it, so the liquid leg that already paid out survives.
+    /// @dev Same issue as `test_fallbackExit_dustRootPartialFillsUntilDustIsRepaid` in
+    ///      `test/scenario/SettleVaultBorrowAnchor.t.sol`; this test reaches the zero-collateral cut by the budget
+    ///      instead of a dust root.
     function test_fallbackExit_boundaryTail_partialFillsLiquidLeg() public {
         Market storage m = protocol.markets[0];
 
@@ -218,6 +225,108 @@ contract SettleSeizeFloorTest is LidoLendSetup {
         assertEq(collateralSeized, 0, "the settle leg cut nothing");
         assertEq(m.loanToken.balanceOf(receiver), liquidAssets, "and the receiver keeps the liquid payout");
         assertEq(m.vault.balanceOf(lender), m.vault.totalSupply(), "the unsettled tail stays with the lender");
+    }
+
+    // ---
+    // AN UNAVAILABLE QUEUE ROOT STOPS THE FALLBACK SETTLE LEG
+    // ---
+
+    /// @dev Known issue: when the queue root has no executable cut, `fallbackExit` stops at it and reverts
+    ///      `NothingSettled` in a fully borrowed market. This occurs although a borrower behind the root has an
+    ///      executable cut.
+    ///      Root cause: `nextSettlementBorrower` quotes only `peekRoot()`, and `settlementSlice` returns zero borrow
+    ///      shares when the cut seizes no whole collateral unit. `fallbackExit` reads a zero cut as the end of its
+    ///      settle loop and never tries another borrower.
+    ///      Same cause: any root whose cut rounds to zero collateral. Examples are a small `sliceFloorAssets` at a
+    ///      price above `ORACLE_PRICE_SCALE` and a dust-debt root. A zero oracle price and a
+    ///      root with no policy or personal slice also stop the loop. The root holds the block for every lender and
+    ///      every repeated exit while its cut stays unavailable. With free liquidity the call partial-fills on its
+    ///      liquid leg instead of a revert.
+    function testRevert_unavailableRoot_blocksFallbackExitPastExecutableBorrower() public {
+        Market storage m = protocol.markets[0];
+        _seedUnavailableRootInFullyBorrowedMarket();
+        uint256 shares = m.vault.balanceOf(lender);
+
+        SettlementQuote memory quote = m.controller.settlementFor(borrower, 0);
+        assertGt(quote.personal.borrowShares, 0, "setup: the borrower behind the root has an executable cut");
+
+        vm.prank(lender);
+        vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
+        m.vault.fallbackExit(shares, receiver, lender, 0);
+    }
+
+    /// @dev Same issue as `testRevert_unavailableRoot_blocksFallbackExitPastExecutableBorrower`; this control shows
+    ///      that a targeted `settle` in the same state still reaches the borrower behind the root.
+    function test_unavailableRoot_targetedSettleStillCuts() public {
+        Market storage m = protocol.markets[0];
+        _seedUnavailableRootInFullyBorrowedMarket();
+        address[] memory borrowers = new address[](1);
+        borrowers[0] = borrower;
+        uint128 borrowSharesBefore = m.core.position(m.id, borrower).borrowShares;
+
+        (uint256 sharesBurned, uint256 collateralSeized,) =
+            m.settle(lender, m.vault.balanceOf(lender) / 10, borrowers, receiver);
+
+        assertGt(sharesBurned, 0, "the targeted settle burns lender shares");
+        assertGt(collateralSeized, 0, "and seizes collateral");
+        assertLt(m.core.position(m.id, borrower).borrowShares, borrowSharesBefore, "and cuts the borrower");
+    }
+
+    /// @dev Specified behaviour: anyone can make a repay of the root's exact borrow shares revert by first repaying
+    ///      one of them for one raw unit. A repay that reads the root's shares when it runs still lifts it, and
+    ///      `fallbackExit` then settles past it. `lender-settlement.md` describes it.
+    function test_unavailableRootLift_frontRunByOneShare_liveShareRepayStillLifts() public {
+        Market storage m = protocol.markets[0];
+        _seedUnavailableRootInFullyBorrowedMarket();
+        address root = _actor("unavailableRoot");
+        uint256 rootShares = m.core.position(m.id, root).borrowShares;
+
+        address griefer = _actor("griefer");
+        _fund(m.loanToken, griefer, 1);
+        vm.startPrank(griefer);
+        m.loanToken.approve(address(m.core), 1);
+        (uint256 griefPaid,) = m.core.repay(m.params, 0, 1, root, "");
+        vm.stopPrank();
+        assertEq(griefPaid, 1, "one borrow share costs one raw unit");
+
+        address lifter = _actor("lifter");
+        _fund(m.loanToken, lifter, 100 ether);
+        vm.startPrank(lifter);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+        vm.expectRevert(ILidoLendMarketController.PositionAccountingMismatch.selector);
+        m.core.repay(m.params, 0, rootShares, root, "");
+        m.core.repay(m.params, 0, m.core.position(m.id, root).borrowShares, root, "");
+        vm.stopPrank();
+
+        (address queueRoot,) = m.controller.nextSettlementBorrower(0);
+        assertEq(queueRoot, borrower, "the executable borrower is the root again");
+        (,, uint256 collateralSeized,) = m.fallbackExit(lender, m.vault.balanceOf(lender), receiver, 0);
+        assertGt(collateralSeized, 0, "the exit settles against the borrower behind the old root");
+    }
+
+    /// @dev The settlement policy under test: a one-loan-asset root slice and nothing else. At this price that slice
+    ///      buys no collateral unit. A new root with no personal LTV then borrows all free liquidity.
+    ///      No market config in `script/config/markets` uses this policy. The test uses it to give the root an
+    ///      unavailable cut.
+    function _seedUnavailableRootInFullyBorrowedMarket() internal {
+        Market storage m = protocol.markets[0];
+        m.setSettlementConfig(
+            SettlementConfig({sliceFloorBps: 0, sliceFloorAssets: 1, fullCutBelowCollateral: 0, ltvStepBps: 0})
+        );
+
+        address root = _actor("unavailableRoot");
+        _fund(m.collateralToken, root, 60 ether);
+        m.supplyCollateral(root, 60 ether);
+        m.activateCollateral();
+        m.accrueInterest();
+        CoreMarket memory cm = m.core.market(m.id);
+        // About 50 loan assets against 60 collateral units: 70% LTV, and a higher key than the first borrower.
+        m.borrow(root, cm.totalSupplyAssets - cm.totalBorrowAssets);
+
+        (address queueRoot, SettlementSlice memory rootSlice) = m.controller.nextSettlementBorrower(0);
+        assertEq(queueRoot, root, "setup: the new borrower is the queue root");
+        assertEq(rootSlice.borrowShares, 0, "setup: the root cut buys no collateral unit");
+        assertEq(m.controller.maxWithdrawableAssets(address(m.vault)), 0, "setup: no liquid leg");
     }
 
     // ---

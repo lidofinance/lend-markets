@@ -4,12 +4,16 @@ pragma solidity 0.8.36;
 import {stdError} from "forge-std/StdError.sol";
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
+import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
 import {MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {IMorphoRepayCallback, IMorphoSupplyCallback} from "@lido-lend/src/interfaces/IMorphoCallbacks.sol";
 import {MorphoBalancesLib} from "@lido-lend/src/libraries/periphery/MorphoBalancesLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {MorphoExitBook} from "../../src/periphery/MorphoExitBook.sol";
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {Request, ExitStatus, PriorityRamp} from "../../src/types/ExitBookTypes.sol";
@@ -20,6 +24,39 @@ import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {MockERC20, MockPriceOracle} from "../setup/Mocks.sol";
+
+/// @dev An integrator that fills an exit request from inside the core's supply and repay callbacks, before the core
+///      pulls the incoming loan tokens.
+contract CallbackFiller is IMorphoSupplyCallback, IMorphoRepayCallback {
+    ILidoLend private immutable CORE;
+    MorphoExitBook private immutable BOOK;
+    MarketParams private params;
+
+    constructor(ILidoLend core, MorphoExitBook book, MarketParams memory marketParams) {
+        CORE = core;
+        BOOK = book;
+        params = marketParams;
+        IERC20(marketParams.loanToken).approve(address(core), type(uint256).max);
+    }
+
+    /// @dev Supplies `assets` and fills request `id` for the same amount in the callback.
+    function supplyAndFill(uint256 assets, uint256 id) external {
+        CORE.supply(params, assets, 0, address(this), abi.encode(id));
+    }
+
+    /// @dev Repays `assets` of `borrower`'s debt and fills request `id` for the same amount in the callback.
+    function repayAndFill(address borrower, uint256 assets, uint256 id) external {
+        CORE.repay(params, assets, 0, borrower, abi.encode(id));
+    }
+
+    function onMorphoSupply(uint256 assets, bytes calldata data) external {
+        BOOK.fillExitRequest(abi.decode(data, (uint256)), assets, address(this));
+    }
+
+    function onMorphoRepay(uint256 assets, bytes calldata data) external {
+        BOOK.fillExitRequest(abi.decode(data, (uint256)), assets, address(this));
+    }
+}
 
 /// @notice L2 scenario coverage for `MorphoExitBook` — the Direct-mode exit book over a LidoLend/Morpho
 ///         supply position. The lender's backing is its CORE supply position (not a vault share); the book is
@@ -733,6 +770,14 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertGt(m.core.position(m.id, coreFeeRecipient).supplyShares, 0, "fees minted to distinct recipient");
     }
 
+    /// @dev Fixed issue: a loss after placement let a fill pay the lender less than the request implied.
+    ///      Root cause: the old fill paid the lower of a placement price snapshot and the measured proceeds, so a lower
+    ///      live price passed through. Now: a request names an exact asset amount, and each fill pays that amount or
+    ///      reverts. A nonzero `maxShareBurn` caps the shares each fill burns, pro rata with ceiling rounding. A fill
+    ///      above that cap reverts with `ShareBurnExceedsMaximum`.
+    ///      Same cause: bad debt in the Morpho market, and a loss or an exit fee in an ERC-4626 vault. With
+    ///      `maxShareBurn` at zero, a loss still raises the share burn with no limit.
+    ///      Here bad debt raises the live share burn, and the fill still pays the exact 50 tokens.
     function test_badDebtLoss_stillFillsExactAssetsWhenBackingRemains() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -760,6 +805,8 @@ contract MorphoExitBookTest is LidoLendSetup {
         assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "exact request filled after loss");
     }
 
+    /// @dev Same issue as `test_badDebtLoss_stillFillsExactAssetsWhenBackingRemains`; this test shows that a
+    ///      `maxShareBurn` at the placement quote rejects the higher burn after bad debt and rolls back.
     function testRevert_maxShareBurn_badDebtLossUsesActualBurnAndRollsBack() public {
         Market storage m = _m();
         address lender = _actor("lender");
@@ -878,6 +925,60 @@ contract MorphoExitBookTest is LidoLendSetup {
         Request memory request = book.getExitRequest(id);
         assertEq(request.assetsRemaining, requestedAssets - liveBacking, "explicit smaller fill leaves exact tail");
         assertEq(uint8(request.status), uint8(ExitStatus.Open), "underbacked tail remains open");
+    }
+
+    /// @dev Same issue as `test_collapsedSupplyPrice_requestPaysExactAssets`; this test shows that a placement above
+    ///      the live backing reverts, so a new request cannot name more assets than the position holds.
+    function testRevert_collapsedSupplyPrice_placeAboveBacking_insufficientBacking() public {
+        address lender = _actor("lender");
+        uint256 liveBacking = _collapseSupplyPrice(lender);
+
+        vm.prank(lender);
+        vm.expectRevert(MorphoExitBook.InsufficientBacking.selector);
+        book.placeExitRequest(_m().id, liveBacking + 1, lender, 0, 0, _flat(0), block.timestamp + MAX_LIFETIME);
+    }
+
+    /// @dev Fixed issue: a Morpho exit request placed at a collapsed supply price stored a zero price, and each fill
+    ///      paid the lender nothing.
+    ///      Root cause: the old `placeExitRequest` stored `_supplySharesToAssets(marketParams, WAD)`, which rounds
+    ///      down, and had no zero check. Now: the request stores assets, and `placeExitRequest` converts them to
+    ///      shares at the live price, rounding up. It reverts with `InsufficientBacking` when the owner holds too few
+    ///      shares.
+    ///      Same cause: a snapshot that rounds to a small nonzero price, in either book. The fix stops it too.
+    ///      Here bad debt collapses the supply price, and the fill pays the receiver the exact requested assets.
+    function test_collapsedSupplyPrice_requestPaysExactAssets() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        address receiver = _actor("receiver");
+        uint256 liveBacking = _collapseSupplyPrice(lender);
+        uint256 id = _place(lender, liveBacking, receiver, 0, _flat(0));
+        uint256 receiverBefore = m.loanToken.balanceOf(receiver);
+
+        _fillAndAssert(id, liveBacking, _actor("filler"));
+
+        assertEq(m.loanToken.balanceOf(receiver) - receiverBefore, liveBacking, "receiver gets the exact assets");
+        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "request filled");
+    }
+
+    /// @dev The borrower takes all of a 100-token supply. The price falls by a factor of 1e13, and a full-collateral
+    ///      liquidation writes off almost all the debt. One `WAD` of supply shares is then worth zero assets. Returns
+    ///      the lender's live backing.
+    function _collapseSupplyPrice(address lender) internal returns (uint256 liveBacking) {
+        Market storage m = _m();
+        uint256 supplied = 100 ether;
+        _lenderSupply(lender, supplied);
+        address borrower = _actor("borrower");
+        _borrowOut(borrower, supplied);
+        MockPriceOracle(address(m.oracle)).setPrice(oraclePrice / 1e13);
+        address keeper = _actor("keeper");
+        _fund(m.loanToken, keeper, 1 ether);
+        m.liquidateBadDebt(keeper, borrower, m.core.position(m.id, borrower).collateral, 0);
+
+        liveBacking = _positionAssets(lender);
+        assertGt(liveBacking, 0, "setup: some backing is left");
+        (uint256 totalSupplyAssets, uint256 totalSupplyShares,,) =
+            MorphoBalancesLib.expectedMarketBalances(m.core, m.params);
+        assertEq(WAD.toAssetsDown(totalSupplyAssets, totalSupplyShares), 0, "setup: one WAD of shares is worth zero");
     }
 
     function test_externalSelfSupplyThenFill_preservesLenderAssets() public {
@@ -1007,6 +1108,124 @@ contract MorphoExitBookTest is LidoLendSetup {
         vm.stopPrank();
 
         assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "freeze leaves lender exits open");
+    }
+
+    /// @dev Specified behaviour: at the market's supply cap the supply a filler makes before the fill reverts on its
+    ///      gross amount, and accrued interest keeps the total above the cap, so the supply route stays closed while
+    ///      total supply stays at or above the cap. `market-controller.md` describes it.
+    function test_supplyCapReached_blocksSupplyFundedFillUntilCapRaised() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        address filler = _actor("filler");
+        _lenderSupply(lender, 100 ether);
+        m.setSupplyCap(100 ether);
+        _borrowOut(_actor("borrower"), 100 ether);
+        uint256 id = _place(lender, 40 ether, lender, 0, _flat(PRIORITY_FEE));
+        _fund(m.loanToken, filler, 200 ether);
+        vm.prank(filler);
+        m.loanToken.approve(address(m.core), type(uint256).max);
+
+        vm.prank(filler);
+        vm.expectRevert(
+            abi.encodeWithSelector(ILidoLendMarketController.SupplyCapExceeded.selector, 100 ether, 140 ether)
+        );
+        m.core.supply(m.params, 40 ether, 0, filler, "");
+        vm.prank(filler);
+        vm.expectRevert(bytes("insufficient liquidity"));
+        book.fillExitRequest(id, 40 ether, filler);
+
+        vm.warp(block.timestamp + 29 days);
+        m.accrueInterest();
+        uint256 totalSupplyAssets = m.core.market(m.id).totalSupplyAssets;
+        assertGt(totalSupplyAssets, 100 ether, "interest carries the total above the cap");
+        vm.prank(filler);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ILidoLendMarketController.SupplyCapExceeded.selector, 100 ether, totalSupplyAssets + 1
+            )
+        );
+        m.core.supply(m.params, 1, 0, filler, "");
+
+        m.setSupplyCap(totalSupplyAssets + 40 ether);
+        vm.startPrank(filler);
+        m.core.supply(m.params, 40 ether, 0, filler, "");
+        book.fillExitRequest(id, 40 ether, filler);
+        vm.stopPrank();
+        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "fills once the cap is raised");
+    }
+
+    /// @dev A core supply runs its callback before it pulls the supplied loan tokens, so a fill called from the
+    ///      callback cannot pay out of them. With no other loan token in the core the fill reverts on the core's
+    ///      transfer, though the supply brings in the whole fill amount.
+    function testRevert_fillInSupplyCallback_cannotUseIncomingLoanTokens() public {
+        (uint256 id, CallbackFiller filler) = _borrowedOutRequestAndCallbackFiller(_actor("lender"), _actor("borrower"));
+
+        vm.expectRevert(bytes("transfer reverted"));
+        filler.supplyAndFill(40 ether, id);
+
+        assertEq(book.getExitRequest(id).assetsRemaining, 40 ether, "request debit rolled back");
+    }
+
+    /// @dev The core holds the loan tokens of all its markets in one balance, so the same fill succeeds once a second
+    ///      market with the same loan token has left the fill amount in the core. The supply then pulls its tokens
+    ///      and restores that balance.
+    function test_fillInSupplyCallback_usesLoanTokensOfAnotherMarket() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        (uint256 id, CallbackFiller filler) = _borrowedOutRequestAndCallbackFiller(lender, _actor("borrower"));
+        _supplySecondMarketWithSameLoanToken(40 ether);
+        uint256 lenderAssetsBefore = m.loanToken.balanceOf(lender);
+
+        filler.supplyAndFill(40 ether, id);
+
+        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "filled inside the callback");
+        assertEq(m.loanToken.balanceOf(lender) - lenderAssetsBefore, 40 ether, "receiver paid in full");
+        assertEq(m.loanToken.balanceOf(address(filler)), 0, "the supply pulled its tokens after the fill");
+        assertEq(m.loanToken.balanceOf(address(m.core)), 40 ether, "the second market's tokens are back");
+    }
+
+    /// @dev A core repay also runs its callback before it pulls the repaid loan tokens, and a fill called from it
+    ///      succeeds the same way on the loan tokens a second market left in the core.
+    function test_fillInRepayCallback_usesLoanTokensOfAnotherMarket() public {
+        Market storage m = _m();
+        address lender = _actor("lender");
+        address borrower = _actor("borrower");
+        (uint256 id, CallbackFiller filler) = _borrowedOutRequestAndCallbackFiller(lender, borrower);
+        _supplySecondMarketWithSameLoanToken(40 ether);
+        uint256 lenderAssetsBefore = m.loanToken.balanceOf(lender);
+
+        filler.repayAndFill(borrower, 40 ether, id);
+
+        assertEq(uint8(book.getExitRequest(id).status), uint8(ExitStatus.Filled), "filled inside the callback");
+        assertEq(m.loanToken.balanceOf(lender) - lenderAssetsBefore, 40 ether, "receiver paid in full");
+        assertEq(m.loanToken.balanceOf(address(filler)), 0, "the repay pulled its tokens after the fill");
+        assertEq(m.loanToken.balanceOf(address(m.core)), 40 ether, "the second market's tokens are back");
+    }
+
+    /// @dev `borrower` takes all of `lender`'s 100-token supply, so the core holds no loan token, and `lender` places
+    ///      40 tokens for exit. Returns the request and a filler that holds the 40 tokens its supply or repay brings.
+    function _borrowedOutRequestAndCallbackFiller(address lender, address borrower)
+        internal
+        returns (uint256 id, CallbackFiller filler)
+    {
+        Market storage m = _m();
+        _lenderSupply(lender, 100 ether);
+        _borrowOut(borrower, 100 ether);
+        id = _place(lender, 40 ether, lender, 0, _flat(0));
+        filler = new CallbackFiller(m.core, book, m.params);
+        _fund(m.loanToken, address(filler), 40 ether);
+        assertEq(m.loanToken.balanceOf(address(m.core)), 0, "setup: the core holds no loan token");
+    }
+
+    /// @dev Adds a second market with the same loan token on the same core and supplies `assets` to it, which stay
+    ///      in the core.
+    function _supplySecondMarketWithSameLoanToken(uint256 assets) internal {
+        MockERC20 collateral = new MockERC20("Collateral 2", "COLL2", 18);
+        Market storage second =
+            _addMarket(_defaultConfig(address(_m().loanToken), address(collateral), address(collateral)));
+        address lender = _actor("secondMarketLender");
+        _fund(second.loanToken, lender, assets);
+        second.coreSupply(lender, assets);
     }
 
     /// @dev Constructing the book with a zero core (Morpho) address reverts.

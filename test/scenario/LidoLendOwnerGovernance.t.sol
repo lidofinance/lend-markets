@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.36;
 
-import {Id} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {Id, Market as MorphoMarket} from "@lido-lend/src/interfaces/IMorpho.sol";
+import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
+import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {GuardianSignals} from "../../src/GuardianSignals.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
@@ -10,17 +12,24 @@ import {SettlementConfig} from "../../src/types/SettlementTypes.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {MockERC20} from "../setup/Mocks.sol";
-import {Market} from "../setup/Types.sol";
+import {IrmKind, Market} from "../setup/Types.sol";
+import {MarketActions} from "../setup/MarketActions.sol";
 
 /// @notice End-to-end governance flows through one stable owner facade into two real market controllers and
 ///         guardian registries. Unit tests cover each facade branch; these scenarios prove the downstream
 ///         AccessControl wiring and market-id resolution against the deployed protocol stack.
 contract LidoLendOwnerGovernanceTest is LidoLendSetup {
+    using MarketActions for Market;
+    using MathLib for uint256;
+    using SharesMathLib for uint256;
+
     address internal constant EXECUTOR = address(0xE7EC);
 
     LidoLendOwner internal facade;
 
     function setUp() public {
+        // A constant borrow rate, so the fee tests derive interest from `fixedBorrowRate` and not from the IRM.
+        irmKind = IrmKind.Fixed;
         MockERC20 loan1 = new MockERC20("Loan 1", "LOAN1", 18);
         MockERC20 collateral1 = new MockERC20("Collateral 1", "COLL1", 18);
         MockERC20 loan2 = new MockERC20("Loan 2", "LOAN2", 18);
@@ -203,5 +212,85 @@ contract LidoLendOwnerGovernanceTest is LidoLendSetup {
         assertTrue(guardians.isGuardian(newGuardian), "replacement added");
         assertEq(guardians.getGuardianCount(), guardians.MAX_GUARDIANS_COUNT(), "guardian count preserved at cap");
         assertEq(guardians.getQuorum(), guardians.MAX_GUARDIANS_COUNT(), "full quorum restored");
+    }
+
+    /// @dev Sets the market fee through the facade (the caller holds `FEE_MANAGER_ROLE`), then opens a borrow on
+    /// `market` and checkpoints accrual, so the next accrual window starts now.
+    function _seedFeeBearingMarket(Market storage market, uint256 fee) internal {
+        facade.setFee(market.params, fee);
+
+        address lender = _actor("lender");
+        _fund(market.loanToken, lender, 1000 ether);
+        market.vaultDeposit(lender, 1000 ether);
+        address borrower = _actor("borrower");
+        _fund(market.collateralToken, borrower, 100 ether);
+        market.supplyCollateral(borrower, 100 ether);
+        market.activateCollateral();
+        market.borrow(borrower, 100 ether * oraclePrice / 1e36 * 40 / 100); // half of the 0.8 LLTV capacity
+        market.accrueInterest();
+    }
+
+    /// @dev Fee shares the next accrual mints for the open window, from the core fee formula.
+    function _pendingFeeShares(Market storage market) internal view returns (uint256) {
+        MorphoMarket memory state = market.core.market(market.id);
+        uint256 interest = uint256(state.totalBorrowAssets)
+            .wMulDown(fixedBorrowRate.wTaylorCompounded(block.timestamp - state.lastUpdate));
+        uint256 feeAmount = interest.wMulDown(state.fee);
+        return feeAmount.toSharesDown(state.totalSupplyAssets + interest - feeAmount, state.totalSupplyShares);
+    }
+
+    /// @dev Known issue: `setFeeRecipient` does not accrue first. The next accrual then mints the whole fee of the
+    ///      window before the switch to the new recipient and none to the old one.
+    ///      Root cause: `LidoLend.setFeeRecipient` writes `feeRecipient` with no `_accrueInterest` call.
+    ///      `_accrueInterest` mints the fee shares to whoever is the recipient at accrual time. `LidoLend.setFee`
+    ///      accrues first.
+    ///      Same cause: each market of the core has its own open window, and the new recipient gets all of them. A
+    ///      switch and a switch back before the next accrual leave the middle recipient with nothing. The path through
+    ///      `LidoLendOwner.setFeeRecipient` is the same.
+    function test_setFeeRecipient_mintsOpenWindowFeeToNewRecipient() public {
+        Market storage market = protocol.markets[0];
+        address oldRecipient = _actor("oldRecipient");
+        address newRecipient = _actor("newRecipient");
+        facade.grantRole(facade.FEE_MANAGER_ROLE(), address(this));
+        facade.setFeeRecipient(oldRecipient);
+        _seedFeeBearingMarket(market, 0.1e18);
+        uint256 oldShares = market.core.position(market.id, oldRecipient).supplyShares;
+
+        vm.warp(block.timestamp + 30 days);
+        uint256 windowFeeShares = _pendingFeeShares(market);
+        assertGt(windowFeeShares, 0, "setup: the window earns a fee");
+        uint256 lastUpdate = market.core.market(market.id).lastUpdate;
+
+        facade.setFeeRecipient(newRecipient);
+        assertEq(market.core.market(market.id).lastUpdate, lastUpdate, "the switch does not accrue");
+
+        market.core.accrueInterest(market.params);
+        assertEq(
+            market.core.position(market.id, newRecipient).supplyShares, windowFeeShares, "new recipient gets it all"
+        );
+        assertEq(market.core.position(market.id, oldRecipient).supplyShares, oldShares, "old recipient gets none");
+    }
+
+    /// @dev After a zero fee recipient is set, the next accrual mints the fee shares to the zero address.
+    ///      `setFeeRecipient` on the facade requires `FEE_MANAGER_ROLE`.
+    function test_zeroFeeRecipient_mintsFeeSharesToZero() public {
+        Market storage market = protocol.markets[0];
+        facade.grantRole(facade.FEE_MANAGER_ROLE(), address(this));
+        facade.setFeeRecipient(_actor("recipient"));
+        facade.setFeeRecipient(address(0));
+        assertEq(market.core.feeRecipient(), address(0), "the zero recipient is stored");
+        _seedFeeBearingMarket(market, 0.1e18);
+        uint256 zeroShares = market.core.position(market.id, address(0)).supplyShares;
+
+        vm.warp(block.timestamp + 30 days);
+        uint256 windowFeeShares = _pendingFeeShares(market);
+        assertGt(windowFeeShares, 0, "setup: the window earns a fee");
+
+        market.core.accrueInterest(market.params);
+        assertEq(
+            market.core.position(market.id, address(0)).supplyShares,
+            zeroShares + windowFeeShares,
+            "fee shares minted to the zero address"
+        );
     }
 }

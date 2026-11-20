@@ -2,7 +2,7 @@
 
 This document records the initial privilege topology created by the production deployment scripts. A single `LidoLend` core serves all markets in a deployment, so core ownership is global. Each controller has its own roles. `GuardianSignals` roles belong to a registry, which may serve several markets.
 
-The tables cover the integrated production deployment and its production prerequisite and add-on scripts for CircuitBreaker, oracles, new markets, guardian registries, optional IRMs, and Exit Books. Devnet and test helpers intentionally use broader local administrators and are outside this topology. Exact function parameters and errors belong to the [generated API reference](README.md#api-reference-generated).
+The tables cover the integrated production deployment and its production prerequisite and add-on scripts for CircuitBreaker, oracles, new markets, guardian registries, and Exit Books. Devnet and test helpers intentionally use broader local administrators and are outside this topology. Exact function parameters and errors belong to the [generated API reference](README.md#api-reference-generated).
 
 ## Onchain holders and governance routes
 
@@ -13,7 +13,7 @@ The tables cover the integrated production deployment and its production prerequ
 | Market steward | An address appointed for one market in `RiskStewardDashboard`; it is not an AccessControl role holder. |
 | Risk Steward Committee | The configured emergency address that initially holds `PAUSER_ROLE` on both Exit Books. |
 | Registered controller pauser | An address registered for one target through CircuitBreaker; the registration is distinct from CircuitBreaker's immutable admin authority. |
-| Reseal Manager | The protocol-wide pause-extension authority that initially holds `PAUSER_ROLE` and `RESUMER_ROLE` on every controller. |
+| Reseal Manager | A contract of the Dual Governance system that initially holds `PAUSER_ROLE` and `RESUMER_ROLE` on every controller. It uses them only on a call from Dual Governance, to make a running finite pause indefinite or to resume a paused controller. |
 
 The contracts see these addresses, not the governance process that controls them. Lido DAO Voting, Dual Governance, and EasyTrack are intended execution routes; their ownership, motion factories, delays, and objection rules are outside this repository's deployment and acceptance checks. An EasyTrack motion may execute through EVMScriptExecutor, but possession of an executor role does not prove that a bounded motion factory exists for that action.
 
@@ -36,7 +36,7 @@ No action listed below, other than proxy administration, can directly rewrite or
 
 The production deployer and market factory use temporary setup authority, grant the holders listed below, and revoke their temporary roles before returning. Calling the permissionless market factory does not give the caller any role. The factory validates the exact controller and guardian-registry sets, including roles that must start empty. The standalone Exit Book script checks its required holders, sole pauser, and empty resumer set; acceptance later checks every listed Exit Book role exactly.
 
-At deployment, the deployer, Lido DAO Agent, and EVMScriptExecutor must be distinct. An Exit Book pauser must also differ from all three. These checks do not constrain guardians, stewards, delegates, controller pausers, or later role assignments.
+At deployment, the deployer, Lido DAO Agent, and EVMScriptExecutor must be distinct. An Exit Book pauser must also differ from all three, and so must a controller pauser committee when the deploy config names one. These checks do not constrain guardians, stewards, delegates, or later role assignments.
 
 Acceptance checks the exact holder set for every AccessControl role listed below and rejects missing or extra holders. It also checks proxy admins, core ownership, and the router and Adaptive IRM owner-manager pairs.
 
@@ -61,14 +61,17 @@ The production deployment uses one CircuitBreaker instance for its controllers. 
 
 A successful pause consumes that controller registration. CircuitBreaker does not validate a target or its pause permission when registration is written. The registered pauser cannot configure CircuitBreaker or resume the controller. The admin cannot exceed the immutable duration bounds or pause through CircuitBreaker without a live registration.
 
+> [!NOTE]
+> **Pauses can be chained.** After a pause, the CircuitBreaker `ADMIN` can register a new pauser, so a chain of pauses can keep a market's exits blocked for longer than one pause. Each registration goes through an EasyTrack motion that LDO holders can object to.
+
 ## Interest-rate management
 
-In the standard market, the immutable `irm` field points to `IrmRouter`. The router selects an address for each market. `AdaptiveCurveIrm` is the standard model; `LinearKinkIrm` is optional. Each standard model references or stores a per-market configuration.
+In the standard market, the immutable `irm` field points to `IrmRouter`. The router selects an address for each market. `AdaptiveCurveIrm` is the standard model; `LinearKinkIrm` is optional and not used by the current markets. Each standard model references or stores a per-market configuration.
 
 | Authority | Powers | Class | Initial onchain holder |
 |---|---|---|---|
 | Router or IRM owner | transfer ownership, replace the manager, and use the manager operations below | C1 / C4 | Lido DAO Agent |
-| `IrmRouter` manager | route an uncreated market to any nonzero address without an allowlist or interface check; a live route must pass one `borrowRate` call | C4 | EVMScriptExecutor |
+| `IrmRouter` manager | route an uncreated market to any nonzero address without an allowlist or interface check; a live route first accrues the market through the core, which reverts while the controller is paused, and the new address must then pass one `borrowRate` call | C4 | EVMScriptExecutor |
 | Adaptive or Linear IRM manager | apply a compatible configuration contract to a market | C3 / C4 | EVMScriptExecutor |
 
 The standard `IrmConfigFactory` permissionlessly deploys immutable configs and holds no role, but neither model requires a config to come from that factory. Adaptive rereads the selected config on each rate calculation, so a compatible mutable config can change its parameters without another manager call. Linear copies the returned parameters when the config is applied.
@@ -112,7 +115,7 @@ Neither the facade nor the core requires factory-produced components or the stan
 
 These roles are granted before market creation, but the facade and dashboard cannot resolve this controller until market activation binds it in the core. Market activation does not change the role sets. No caller is enabled for instant collateral activation initially.
 
-The initial topology has one unfreeze path through `LidoLendOwner`. A CircuitBreaker pause normally ends when its duration expires. The Reseal Manager can extend the pause or end it early. As controller admin, the Agent can later change any of these role assignments.
+The initial topology has one unfreeze path through `LidoLendOwner`. A CircuitBreaker pause normally ends when its duration expires. The Reseal Manager acts only on a call from Dual Governance. Its Reseal Committee can make a running finite pause indefinite in any Dual Governance state except Normal. Its Tiebreaker Committee can resume a paused controller only in a tie, which cannot occur in the Normal state. In the Normal state a finite pause therefore runs to its expiry and an indefinite one stays in place. As controller admin, the Agent can later change any of these role assignments.
 
 ### `RiskStewardDashboard`
 

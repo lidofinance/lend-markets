@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 import {Test, stdError} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {SlotDerivation} from "@openzeppelin/contracts/utils/SlotDerivation.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -61,6 +62,12 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         return protocol.markets[0];
     }
 
+    /// @dev Fixed issue: the controller had no getter and no event for its guardian registry. A monitor could not read
+    ///      the registry of a controller through the ABI or the logs.
+    ///      Root cause: the registry lived only in private storage, and `initialize` emitted nothing about it. Now:
+    ///      `initialize` emits `GuardianSignalsSet`, and `guardianSignals` returns the bound registry. The fix covers
+    ///      controllers from the deploy scripts and from `LidoLendMarketFactory`, because both paths call the same
+    ///      `initialize`.
     function test_initialize_emitsGuardianSignalsSet() public {
         MockERC20 loanToken = new MockERC20("Loan2", "LN2", 18);
         MockERC20 collateralToken = new MockERC20("Coll2", "CL2", 18);
@@ -84,6 +91,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertGe(found, 1, "GuardianSignalsSet emitted at initialization");
     }
 
+    /// @dev Fixed issue: a new market had no supply cap until a later `setSupplyCap` call.
+    ///      Root cause: `initialize` took no cap, so a cap needed a later `setSupplyCap` call. Now: `initialize` takes
+    ///      `supplyCap_`, and the factory `MarketSpec` carries `supplyCap`. A zero value still means no cap.
+    ///      Same cause: deposits of any size in the gap between launch and the cap call, through the vault or a direct
+    ///      core `supply`. The fix stops them when the market config sets a non-zero cap.
     function test_deployConfig_initializesSupplyCap() public {
         DeployConfig memory cfg = _defaultConfig(address(loan), address(collateral), address(collateral));
         cfg.supplyCap = 500 ether;
@@ -93,6 +105,11 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertEq(market.controller.supplyCap(), cfg.supplyCap, "configured supply cap");
     }
 
+    /// @dev Fixed issue: the controller accepted the zero address for the core, the admin, and the guardian registry.
+    ///      A zero admin left the controller with no role admin. A zero registry made each guardian read revert.
+    ///      Root cause: the constructor and `initialize` had no zero-address checks. Now: the constructor reverts with
+    ///      `ZeroAddress` on a zero core, and `initialize` reverts on a zero admin or guardian registry.
+    ///      Same cause: the `RiskStewardDashboard` constructor also rejects a zero admin or core.
     function test_constructor_zeroCoreReverts() public {
         vm.expectRevert(ILidoLendMarketController.ZeroAddress.selector);
         new LidoLendMarketController(IMorpho(address(0)));
@@ -1197,7 +1214,8 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
     // ── views ──
 
-    /// @dev The controller exposes the guardian-signals registry it was wired with at deploy.
+    /// @dev Same issue as `test_initialize_emitsGuardianSignalsSet`; this test reads the bound registry through the
+    ///      getter.
     function test_guardianSignals_returnsWiredRegistry() public view {
         Market storage m = _m();
         assertEq(m.controller.guardianSignals(), address(m.guardianSignals), "controller exposes its registry");
@@ -1323,7 +1341,7 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
 
         // One wei past the limit needs more supply shares than the position holds -> the core refuses.
         vm.prank(direct);
-        vm.expectRevert();
+        vm.expectRevert(stdError.arithmeticError);
         m.core.withdraw(m.params, reported + 1, 0, direct, direct);
 
         // The limit itself withdraws in full.
@@ -1462,6 +1480,33 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
         assertTrue(d.isNextToSettle, "sole borrower is the queue root");
         assertEq(d.personalSliceAssets, 0, "no personal slice");
         assertGt(d.queueRootSliceAssets, 0, "dashboard reports the root-policy slice");
+    }
+
+    /// @dev Known issue: `positionOf` shows a lot past its unlock time as activating until a hook syncs it. After a
+    ///      borrow hook it shows the lot as active.
+    ///      Root cause: `positionOf` reads the stored buckets through `CollateralActivationLib.getActivationState` and
+    ///      does not run the maturity check of `CollateralActivationLib.sync`. Only the supply-collateral,
+    ///      withdraw-collateral, and borrow hooks call `sync`.
+    ///      Same cause: `positionOf` also understates `active` and reports a past `unlockTime` for the lot. Any reader
+    ///      of `positionOf` sees the stale split. The liquidate and settle hooks
+    ///      call `seize` on the stored split with no `sync`.
+    function test_positionOf_reportsMaturedLotActivatingUntilHook() public {
+        Market storage m = _m();
+        uint256 collat = 100 ether;
+        (, address borrower) = _seedBorrower(1000 ether, collat, 0); // warps past the max activation delay
+
+        ILidoLendMarketController.BorrowerPosition memory stale = c.positionOf(borrower);
+        assertGt(stale.unlockTime, 0, "setup: the lot has a timer");
+        assertLe(stale.unlockTime, block.timestamp, "setup: the unlock time has passed");
+        assertEq(stale.activating, collat, "the matured lot still shows as activating");
+        assertEq(stale.active, 0, "active is understated");
+
+        m.borrow(borrower, 1 ether); // the borrow hook syncs the lot
+
+        ILidoLendMarketController.BorrowerPosition memory synced = c.positionOf(borrower);
+        assertEq(synced.activating, 0, "the hook matured the lot");
+        assertEq(synced.active, collat, "the lot shows as active");
+        assertEq(synced.unlockTime, 0, "the timer is cleared");
     }
 
     /// @dev `positionOf` reflects a banned borrower and a personal settlement LTV opt-in.
@@ -2105,6 +2150,26 @@ contract LidoLendMarketControllerTest is LidoLendSetup {
             (, SettlementSlice memory sliceB) = c2.nextSettlementBorrower(0);
             assertGt(sliceB.remainingBorrowShares, 0, "B above the floor keeps a partial remainder");
         }
+    }
+
+    // ── storage layout ──
+
+    /// @dev `marketId` opens the ERC-7201 namespace and `supplyCap` follows at base + 1. `_instantActivationCallers`
+    ///      closes it at base + 12, after the packed `isFrozen` and `_guardianSignals` (1 slot), `_activation`
+    ///      (5 slots) and `_settlementQueue` (4 slots). A mapping slot holds no value, so the pin reads one entry of
+    ///      the mapping. The `supplyCap` pin catches a move of `supplyCap`. The last
+    ///      pin catches a change of the total size. A reorder of the fields between them is not checked.
+    function test_storageLayout_firstSecondAndLastFieldAtErc7201Slots() public {
+        address caller = _actor("instantCaller");
+        _m().setInstantActivation(caller, true);
+        _m().setSupplyCap(500 ether);
+
+        bytes32 base = SlotDerivation.erc7201Slot("lido.lend.storage.LidoLendMarketController");
+        assertEq(vm.load(address(c), base), Id.unwrap(c.marketId()), "marketId at the base slot");
+        assertEq(uint256(vm.load(address(c), bytes32(uint256(base) + 1))), 500 ether, "supplyCap at base + 1");
+        bytes32 entry = keccak256(abi.encode(caller, uint256(base) + 12));
+        assertTrue(c.hasInstantActivation(caller), "setup: caller has instant activation");
+        assertEq(vm.load(address(c), entry), bytes32(uint256(1)), "_instantActivationCallers at base + 12");
     }
 }
 

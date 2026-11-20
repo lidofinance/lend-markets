@@ -64,6 +64,72 @@ contract MarketFactoryCompatibleProxy is OssifiableProxy {
     }
 }
 
+/// @dev Not a `GuardianSignals` and not a proxy. It returns the reviewed answer for each getter that the factory
+///      reads, and nothing more.
+contract CounterfeitGuardianSignals {
+    bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+    bytes32 public constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
+    bytes32 public constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
+
+    address internal immutable _admin;
+    address internal immutable _lidoLendOwner;
+    uint256 internal immutable _quorum;
+    uint256 internal immutable _suspectWindow;
+    address[] internal _guardians;
+
+    constructor(
+        address admin,
+        address lidoLendOwner,
+        address[] memory guardians,
+        uint256 quorum,
+        uint256 suspectWindow
+    ) {
+        _admin = admin;
+        _lidoLendOwner = lidoLendOwner;
+        _guardians = guardians;
+        _quorum = quorum;
+        _suspectWindow = suspectWindow;
+    }
+
+    function proxy__getAdmin() external view returns (address) {
+        return _admin;
+    }
+
+    function getQuorum() external view returns (uint256) {
+        return _quorum;
+    }
+
+    function getSuspectWindow() external view returns (uint256) {
+        return _suspectWindow;
+    }
+
+    function getGuardianCount() external view returns (uint256) {
+        return _guardians.length;
+    }
+
+    function isGuardian(address account) external view returns (bool) {
+        for (uint256 i; i < _guardians.length; ++i) {
+            if (_guardians[i] == account) return true;
+        }
+        return false;
+    }
+
+    function getRoleMemberCount(bytes32 role) external pure returns (uint256) {
+        return role == ACCESS_LIMITER_ROLE ? 0 : 1;
+    }
+
+    function hasRole(bytes32 role, address account) external view returns (bool) {
+        if (role == DEFAULT_ADMIN_ROLE) return account == _admin;
+        if (role == MANAGER_ROLE || role == ACCESS_RESTORER_ROLE) return account == _lidoLendOwner;
+        return false;
+    }
+
+    function getRoleAdmin(bytes32) external pure returns (bytes32) {
+        return DEFAULT_ADMIN_ROLE;
+    }
+}
+
 contract LidoLendMarketFactoryRoleValidationTest is Test {
     using MarketParamsLib for MarketParams;
 
@@ -144,6 +210,14 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         vault = factory.deployERC4626Wrapper(controller, marketParams, _erc4626WrapperSpec());
     }
 
+    /// @dev Fixed issue: the factory accepted a zero admin, a zero circuit breaker, and market tokens with no code.
+    ///      Root cause: the old constructor and `_validateMarketSpec` did not check these inputs. Now: the constructor
+    ///      reverts on a zero admin, circuit breaker, or reseal manager, and on one address for both emergency roles.
+    ///      `_validateMarketSpec` reverts with `NotContract` when the loan token, collateral token, oracle, or
+    ///      registry has no code.
+    ///      Same cause: each market spec input on its own, through `deployMarketController` or
+    ///      `deployMarketComponents`. The constructor still does not check that the circuit breaker or the reseal
+    ///      manager has code.
     function testRevert_constructor_rejectsZeroAdmin() external {
         LidoLendMarketFactory.Implementations memory implementations = _implementations();
         LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(circuitBreaker);
@@ -152,6 +226,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         new LidoLendMarketFactory(implementations, dependencies, address(0));
     }
 
+    /// @dev Same issue as `testRevert_constructor_rejectsZeroAdmin`; this test covers a zero circuit breaker.
     function testRevert_constructor_rejectsZeroCircuitBreaker() external {
         LidoLendMarketFactory.Implementations memory implementations = _implementations();
         LidoLendMarketFactory.Dependencies memory dependencies = _dependencies(address(0));
@@ -178,6 +253,7 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         new LidoLendMarketFactory(implementations, dependencies, controllerAdmin);
     }
 
+    /// @dev Same issue as `testRevert_constructor_rejectsZeroAdmin`; this test covers a loan token with no code.
     function testRevert_deployMarketController_rejectsCodelessLoanToken() external {
         LidoLendMarketFactory.MarketSpec memory spec = marketSpec;
         spec.loanToken = makeAddr("codelessLoanToken");
@@ -453,6 +529,9 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.validateGuardianSignals(guardianSignals, _guardianSpec());
     }
 
+    /// @dev A proxy with other runtime code over the real implementation passes `validateGuardianSignals`, because no
+    ///      check reads the code hash. Only the core owner can make a market live on such a registry. At launch the
+    ///      owner is the owner facade, which requires `MARKET_CREATOR_ROLE` for `createMarket`.
     function test_validateGuardianSignals_acceptsCompatibleProxyWithDifferentRuntimeCodehash() external {
         LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
         address registryAddress = address(
@@ -533,6 +612,14 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.validateGuardianSignals(guardianSignals, spec);
     }
 
+    /// @dev Fixed issue: `AddMarket` accepted a reused guardian registry with extra role holders, and they gained power
+    ///      over the new market.
+    ///      Root cause: the old reuse check only proved that the expected holders had their roles. It did not count
+    ///      the holders of each role. Now: `_validateGuardianSignals` requires `ADMIN` as the sole default admin and
+    ///      the owner facade as the sole manager and sole access restorer. It requires zero access limiters and
+    ///      `DEFAULT_ADMIN_ROLE` as the admin of each of these roles.
+    ///      Same cause: a reused registry whose role holders or role admins differ from the factory topology. Each
+    ///      difference now makes validation revert.
     function testRevert_validateGuardianSignals_unexpectedHolderOfEveryKnownRole() external {
         GuardianSignals registry = GuardianSignals(guardianSignals);
         bytes32[] memory roles = new bytes32[](4);
@@ -612,6 +699,8 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
         factory.validateGuardianSignals(guardianSignals, _guardianSpec());
     }
 
+    /// @dev Same issue as `testRevert_validateGuardianSignals_unexpectedHolderOfEveryKnownRole`; this test adds an
+    ///      access limiter to a fresh factory registry, where that role must stay empty.
     function testRevert_validateGuardianSignals_unexpectedAccessLimiter() external {
         LidoLendMarketFactory.GuardianSpec memory spec = _otherGuardianSpec();
         address registryAddress = factory.deployGuardianSignals(spec, keccak256("other"));
@@ -777,6 +866,44 @@ contract LidoLendMarketFactoryRoleValidationTest is Test {
 
         assertEq(address(LidoLendERC4626(secondVault).controller()), controller, "controller");
         assertEq(Id.unwrap(LidoLendERC4626(secondVault).marketId()), Id.unwrap(marketId), "market id");
+    }
+
+    /// @dev A contract that is not `GuardianSignals` passes `validateGuardianSignals` when its getters return the
+    ///      reviewed values. Only the core owner can make a market live on such a registry. At launch the owner is
+    ///      the owner facade, which requires `MARKET_CREATOR_ROLE` for `createMarket`.
+    function test_counterfeitRegistrySpoofsGetters_passesValidation() external {
+        LidoLendMarketFactory.GuardianSpec memory spec = _guardianSpec();
+        address counterfeit = address(
+            new CounterfeitGuardianSignals(
+                controllerAdmin, address(lidoLendOwner), spec.guardians, spec.quorum, spec.suspectWindow
+            )
+        );
+
+        factory.validateGuardianSignals(counterfeit, spec);
+
+        LidoLendMarketFactory.MarketSpec memory counterfeitSpec = marketSpec;
+        counterfeitSpec.guardianSignals = counterfeit;
+        (Id counterfeitMarketId, address counterfeitController) = factory.deployMarketController(counterfeitSpec);
+
+        assertEq(Id.unwrap(counterfeitMarketId), Id.unwrap(marketId), "same market id");
+        assertEq(LidoLendMarketController(counterfeitController).guardianSignals(), counterfeit, "controller binds it");
+    }
+
+    /// @dev Before `createMarket`, two controllers for one market id with different activation configs both pass
+    ///      controller validation. Only the core owner selects the controller, through `createMarket`. At launch the
+    ///      owner is the owner facade, which requires `MARKET_CREATOR_ROLE` for `createMarket`.
+    function test_twoControllersSameMarketBeforeCreate_bothPassValidation() external {
+        address otherController = _otherControllerForSameMarket();
+        assertEq(core.market(marketId).lastUpdate, 0, "setup: market not created");
+        assertNotEq(otherController, controller, "setup: distinct controllers");
+        assertEq(
+            LidoLendMarketController(otherController).collateralActivationConfig().minActivationDelay,
+            LidoLendMarketController(controller).collateralActivationConfig().minActivationDelay + 1,
+            "setup: activation configs differ"
+        );
+
+        factory.validateMarketController(controller, marketId, guardianSignals);
+        factory.validateMarketController(otherController, marketId, guardianSignals);
     }
 
     function test_deployMarketComponents_lltvJustBelowWad_accepted() external {

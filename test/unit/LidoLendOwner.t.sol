@@ -608,6 +608,20 @@ contract LidoLendOwnerTest is Test {
         assertEq(core.feeRecipient(), recipient, "fee recipient set");
     }
 
+    /// @dev The facade passes a zero fee recipient to the core. Only `FEE_MANAGER_ROLE` can make this call.
+    function test_setFeeRecipient_zeroAddressAccepted() public {
+        _grant(facade.FEE_MANAGER_ROLE(), FEE_MGR);
+        vm.prank(FEE_MGR);
+        facade.setFeeRecipient(address(0x1234)); // the core rejects a no-op set, so move off zero first
+
+        vm.expectEmit(true, true, true, true, address(core));
+        emit SetFeeRecipient(address(0));
+        vm.prank(FEE_MGR);
+        facade.setFeeRecipient(address(0));
+
+        assertEq(core.feeRecipient(), address(0), "zero fee recipient stored");
+    }
+
     /// @notice Setting the fee recipient without the role reverts at the facade's gate.
     function testRevert_setFeeRecipient_withoutRole() public {
         bytes32 role = facade.FEE_MANAGER_ROLE();
@@ -621,6 +635,7 @@ contract LidoLendOwnerTest is Test {
     // ---
 
     /// @notice `DEFAULT_ADMIN_ROLE` hands the core's ownership away; the core emits `SetOwner`.
+    /// @dev The core owner moves in one call with no acceptance step. Only `DEFAULT_ADMIN_ROLE` can make this call.
     function test_transferCoreOwnership_byAdmin_movesOwner() public {
         address newOwner = address(0xBEEF);
 
@@ -642,6 +657,7 @@ contract LidoLendOwnerTest is Test {
     }
 
     /// @notice Transferring ownership to the zero address is rejected before reaching the core.
+    /// @dev Among the facade functions, only `transferLidoLendOwnership` has its own zero-address check.
     function testRevert_transferCoreOwnership_zeroAddress() public {
         vm.prank(ADMIN);
         vm.expectRevert(ILidoLendOwner.ZeroAddress.selector);
