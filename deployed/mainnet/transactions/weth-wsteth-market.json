@@ -22,7 +22,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x9a3c90bbd7a542d3206347a5e5d395cfa027d7569c0c818946511f3bd0f2b96c",
+      "hash": "0x227d11ff29c521f7af9fa21c1e623a4b4e604cad568b506de18e5e3e17b5c860",
       "transactionType": "CREATE",
       "contractName": "OssifiableProxy",
       "contractAddress": "0x20a078f9940dc05c46de4153d1bcbd54d2b5b151",
@@ -74,7 +74,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x3402643d171818c372b50587b12174cf6bb5457502e3a56fa700274a825e40a9",
+      "hash": "0x9a3c90bbd7a542d3206347a5e5d395cfa027d7569c0c818946511f3bd0f2b96c",
       "transactionType": "CALL",
       "contractName": null,
       "contractAddress": "0xe7ce129eb67970c4d71e1456ad50f84b43c35496",
@@ -102,7 +102,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x227d11ff29c521f7af9fa21c1e623a4b4e604cad568b506de18e5e3e17b5c860",
+      "hash": "0x3402643d171818c372b50587b12174cf6bb5457502e3a56fa700274a825e40a9",
       "transactionType": "CALL",
       "contractName": null,
       "contractAddress": "0xbe1c1eabda3ed8a93d3ce3246cf4eef8111c76c7",
